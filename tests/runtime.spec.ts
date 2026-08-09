@@ -12,84 +12,27 @@
  * illegal-selector warning path.
  *
  * The heavier coexistence/integration matrix (full llm-retry semantics, real
- * agent loop) is Task 4 (`tests/coexist-llm-retry.spec.ts` etc.).
+ * agent loop) is Task 4 (`tests/plugin.spec.ts`,
+ * `tests/coexist-llm-retry.spec.ts`, `tests/always-mode.spec.ts`).
+ *
+ * The waterfall drivers / fake agent / config helper were extracted to
+ * `tests/support/harness.ts` (Task 4) and are imported here — the Task 4
+ * spec files reuse the same seam.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { Context, type Logger } from 'cordis'
-import type { Agent, RequestErrorAction } from '@deepseek-ai/dsh-agent'
-import type { LlmCallConfig, LlmFailure, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
+import type { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import { apply, countRetryEvents, normalizeChains, stateStore } from '../src/index.ts'
-import { defaultFallbacksConfig, type FallbacksConfig } from '../src/config.ts'
 import { registrations, resetSettingsStub } from './support/settings-stub.ts'
-
-/** Config helper: spec defaults + overrides (the plugin re-resolves through the schema). */
-function cfg(overrides: Partial<FallbacksConfig> = {}): FallbacksConfig {
-  return { ...defaultFallbacksConfig, ...overrides }
-}
-
-/** Fake agent + session; `setRoute` simulates the loop logging a new request header after a switch. */
-function makeAgent(id: string, options: { provider?: string; model?: string } = {}) {
-  const route: { provider?: string; model?: string } = { ...options }
-  const events: Array<{ type: string; data: Record<string, unknown> }> = []
-  const agent = {
-    id,
-    options,
-    status: 'idle' as const,
-    session: {
-      id,
-      events,
-      append(type: string, data: Record<string, unknown>) {
-        events.push({ type, data })
-        return { seq: events.length, type, data }
-      },
-      requestHeader: () => (route.provider === undefined ? undefined : { config: route }),
-    },
-  }
-  return {
-    agent: agent as unknown as Agent,
-    setRoute(provider: string, model: string): void {
-      route.provider = provider
-      route.model = model
-    },
-  }
-}
-
-/** Ordered `fallbacks/switch` events on an agent's session. */
-function switchEvents(agent: Agent): SessionEvent<'fallbacks/switch'>[] {
-  return agent.session.events.filter((event) => event.type === 'fallbacks/switch') as SessionEvent<'fallbacks/switch'>[]
-}
-
-function dispatchRequestError(
-  ctx: Context,
-  agent: Agent,
-  overrides: { turn?: number; step?: number; provider?: string; failure?: LlmFailure } = {},
-): Promise<RequestErrorAction> {
-  return ctx.waterfall('agent/request-error', {
-    agent,
-    turn: overrides.turn ?? 1,
-    step: overrides.step ?? 1,
-    provider: overrides.provider ?? 'mock',
-    failure: overrides.failure ?? { message: 'boom', code: 'AUTH' },
-    retryPolicy: undefined,
-    signal: new AbortController().signal,
-  }, () => Promise.resolve(undefined))
-}
-
-function dispatchRequest(
-  ctx: Context,
-  agent: Agent,
-  seed: LlmCallConfig,
-  overrides: { turn?: number; step?: number } = {},
-): Promise<LlmCallConfig> {
-  return ctx.waterfall('agent/request', {
-    agent,
-    turn: overrides.turn ?? 1,
-    step: overrides.step ?? 1,
-    signal: new AbortController().signal,
-  }, () => Promise.resolve(seed))
-}
+import {
+  cfg,
+  dispatchRequest,
+  dispatchRequestError,
+  makeAgent,
+  switchEvents,
+} from './support/harness.ts'
 
 let ctx: Context
 
