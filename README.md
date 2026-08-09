@@ -58,7 +58,17 @@ fallbacks:
     default:            # 角色 default 链：主模型失败后按顺序尝试
       - anthropic/claude-3-5-sonnet
       - openai/*
+  roles:
+    default: default
+    rules:
+      - origin: subagent   # 所有 subagent → reviewer 角色（走独立链）
+        role: reviewer
 ```
+
+角色是链的分组键：`roles.default` 为兜底角色，`roles.rules` 按 origin/provider/model
+顺序匹配到具体角色（首个命中即停）；显式 `agent.options.role`（subagent 经
+`agentOptions.role` 传入，需 dsh role patch，见 [docs/dsh-patch.md](docs/dsh-patch.md)）
+优先级最高——配置了 `reviewer` 链后，归属该角色的 agent 走独立 fallback 链。
 
 保存并重启 web 会话后生效。插件默认已启用（`enabled: true`），`triggerCodes` 默认覆盖 `AUTH` / `QUOTA` / `RATE_LIMIT`，**未配置任何链时行为与未安装插件完全一致**。更多示例（角色链、provider 通配键、roles 规则）见 [docs/configuration.md](docs/configuration.md)。
 

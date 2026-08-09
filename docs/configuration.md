@@ -16,7 +16,7 @@
 | `maxSwitchesPerStep` | number | `8` | 单步安全阀：每 step 切换次数上限，超限停止切换、保持原错误语义，防止链循环放大延迟 |
 | `alwaysModeRetryCap` | number | `5` | always 模式重试上限：`retryPolicy.mode === 'always'` 的 provider 在同一请求内重试达到该次数后切换；`0` 禁用 |
 
-> 默认值以 spec §4 为准，与 `src/config.ts` 的 schema 默认值一致；设置页对每个字段展示默认值。
+> 默认值以 spec §4 为准，与 `src/config.ts` 的 schema 默认值一致；设置页对数值字段（`cooldownMs` / `maxSwitchesPerStep` / `alwaysModeRetryCap`）旁显示默认值，其余字段展示当前生效值（未配置时即默认值）。
 
 ## Selector 语法
 
@@ -31,7 +31,7 @@
 - `provider/model` —— 切换到指定模型；
 - `provider/*` —— 保留失败模型 id，仅切换 provider；目标 provider 无此模型 id 时跳过该候选（近匹配模糊解析不在本迭代范围）。
 
-非法/未知 selector（缺分隔符、空段、多余分隔符等）在启动与设置变更时告警，不崩溃、不生效；`*/*` 永不匹配。
+非法/未知 selector（缺分隔符、空段、多余分隔符等）在启动与设置变更时告警，不崩溃、不生效；在 dsh 运行环境（存在模型目录服务）下，`*/*` 永不匹配——作为链键，查找键来自具体失败 provider，`*` 不可能命中；作为条目，目标 provider 无 `*` 模型目录，存在性探针会跳过该候选。
 
 ## 链解析（specificity）
 
@@ -95,7 +95,7 @@ fallbacks:
 ## web 设置页使用说明
 
 - **入口**：web 设置 GUI → Settings → **Fallbacks**（位于 Models 页之后）。
-- **可读标签**：枚举型配置项显示可读标签而非原始枚举值——`RATE_LIMIT` →「限流（429）」、`QUOTA` →「配额超限」、`AUTH` →「权限/认证失败」；`cooldown-expiry` →「冷却到期后回主模型」、`never` →「保持备用模型」。每个字段旁显示默认值。
+- **可读标签**：枚举型配置项显示可读标签而非原始枚举值——`RATE_LIMIT` →「限流（429）」、`QUOTA` →「配额超限」、`AUTH` →「权限/认证失败」；`cooldown-expiry` →「冷却到期后回主模型」、`never` →「保持备用模型」。数值字段旁显示默认值；其余字段展示当前生效值（未配置时即默认值）。
 - **链/角色行编辑**：`chains` 以「键 + 每行一个选择器的多行输入」编辑；`roles.rules` 以行编辑（origin/provider/model/role），空字段不参与匹配。
 - **恢复默认**：一键把该命名空间的用户配置重置为组合默认值。
 - **冲突重载**：保存携带 `expectedRevision`；配置被其它地方修改时保存被拒，页面显示冲突横幅与「重新加载」按钮，避免静默覆盖并发修改。
