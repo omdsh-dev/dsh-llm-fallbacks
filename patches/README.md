@@ -11,7 +11,7 @@ fallback 链角色解析的最高优先级来源（spec §3：`options.role` →
 | 文件 | 目标包 | 改动 |
 |------|--------|------|
 | `@deepseek-ai+dsh-agent@0.0.1.patch` | `@deepseek-ai/dsh-agent` | `AgentOptions`（merge-extensible 创建选项接口，`packages/core/agent/src/runtime-types.ts`）追加可选 `role?: string` + JSDoc，与既有 `provider`/`model`/`maxTokens` 同形 |
-| `@deepseek-ai+dsh-tool-subagent@0.0.1.patch` | `@deepseek-ai/dsh-tool-subagent` | `Config.agentOptions` schema（`packages/subagent/tool-subagent/src/index.ts`，`z.object({provider, model, maxTokens}).default(undefined)`）追加 `role: z.string()`（可选字段） |
+| `@deepseek-ai+dsh-tool-subagent@0.0.1.patch` | `@deepseek-ai/dsh-tool-subagent` | `Config.agentOptions` schema（`packages/subagent/tool-subagent/src/index.ts`，`z.object({provider, model, maxTokens}).default(undefined)`）追加 `role: z.string()`（可选字段），并将 `.default(undefined)` 的 cast 类型同步补 `role: string`（与 schema 输出全等，见下文） |
 
 > 文件名为 pnpm `patchedDependencies` 惯例 `@scope+pkg@version.patch`（版本 0.0.1
 > 与两个包 `package.json` 一致）。本仓库通过 `scripts/*.sh` 直接对 dsh 源码树应用
@@ -25,10 +25,16 @@ fallback 链角色解析的最高优先级来源（spec §3：`options.role` →
    （`provider`/`model`/`maxTokens` 同形）。追加 `role?: string` 后，任意 agent
    均可携带显式角色标签，供角色感知的消费者（如本插件的 fallback 链选择）读取。
    纯类型追加，无运行期行为变化。
-2. **`dsh-tool-subagent`**：其 `Config.agentOptions` 的 schemastery schema 必须
-   与 `AgentOptions` 类型保持一致——`Config: z<Config>` 的 schema 输出类型需可赋
-   值给 `agentOptions?: AgentOptions`；仅 patch dsh-agent 而不 patch 此 schema 会
-   使 `z<Config>` 类型检查失败。运行时：`resolveChildAgentOptions`
+2. **`dsh-tool-subagent`**：其 `Config.agentOptions` 的 schemastery schema 追加
+   `role: z.string()`，让配置可携带 `agentOptions.role`。两个 patch 必须成对是
+   **功能必要性**：patch 1 提供 `AgentOptions.role` 类型面（插件读取
+   `agent.options.role` 需要该字段存在），patch 2 让 schema 接受 role（配置可
+   携带）。此外还有 **cast 一致性**约束：`.default(undefined as unknown as
+   {...})` 的 cast 类型必须与 schema 输出类型全等——schemastery 的
+   `ObjectT` 输出键全部 required，追加 `role` 后输出含 `role: string`，cast 必须
+   同步补 `role: string`，否则 `default(value: T)` 参数检查报 TS2345（schema
+   输出与 cast 全等是既有代码模式，见 patch 2 中 `toolFilter` 的同类 cast）。
+   运行时：`resolveChildAgentOptions`
    （`packages/subagent/subagent/src/child-agent.ts`）的 `{...parent, ...requested,
    subagentDepth}` spread 会把 `requested` 中的未知字段（含 `role`）透传到 child
    `agent.options`，因此**无需修改任何子代理逻辑**——patch 应用后
