@@ -1,0 +1,6 @@
+{
+  "name": "@deepseek-ai/dsh-client-connection",
+  "version": "0.0.1",
+  "private": true,
+  "types": "index.d.ts"
+}
