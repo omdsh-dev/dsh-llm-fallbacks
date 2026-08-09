@@ -1,0 +1,19 @@
+# The dsh-llm-fallbacks profile-bundle patch: ONE insert of the plugin row over
+# the profile's bundle stack (`dsh.profile.bundles` order — dsh-base first,
+# this bundle after the llm-retry bundle; later layers win per row).
+#
+# Insert position matters for the host waterfall: the profile must list the
+# llm-retry bundle BEFORE dsh-llm-fallbacks, so this plugin's
+# `agent/request-error` listener composes after llm-retry and only intervenes
+# once retry policy is exhausted (normal mode) or delegates downstream first
+# (always mode). See plan Risk table.
+#
+# A patch replaces the targeted row's whole `config` rather than merging into
+# it, so a user-level override must restate every field it keeps. The row
+# ships only neutral defaults; profile-layer (`cordis.patch.yml`) overrides
+# win.
+
+- insert:
+    - id: llm-fallbacks
+      name: 'dsh-llm-fallbacks'
+      config: {}
