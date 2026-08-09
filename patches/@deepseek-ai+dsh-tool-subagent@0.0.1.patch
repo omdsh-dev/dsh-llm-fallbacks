@@ -1,0 +1,12 @@
+diff --git a/packages/subagent/tool-subagent/src/index.ts b/packages/subagent/tool-subagent/src/index.ts
+index bfb02b1..6712eed 100644
+--- a/packages/subagent/tool-subagent/src/index.ts
++++ b/packages/subagent/tool-subagent/src/index.ts
+@@ -83,6 +83,7 @@ export const Config: z<Config> = z.object({
+     provider: z.string(),
+     model: z.string(),
+     maxTokens: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER),
++    role: z.string(),
+   }).default(undefined as unknown as { provider: string; model: string; maxTokens: number }),
+   persona: z.string(),
+   // Preserve omission; Schemastery's `{ allow: [] }` default would deny every tool.
