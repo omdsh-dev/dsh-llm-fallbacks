@@ -111,6 +111,39 @@ function normalizeSelectorKey(key: string, logger: Logger): string | null {
 }
 
 /**
+ * Whether any chain entry reachable for this failing (provider, model) is a
+ * wildcard (`provider/*`). F-002: `resolveChain` resolves wildcard entries to
+ * concrete models, so the wildcard provenance is invisible on the resolved
+ * candidate list — the decision path consults the raw entries under the same
+ * keys `resolveChain` walks (exact → `provider/*` → role → `default`) to
+ * decide whether the catalog existence probe is needed at all. Malformed
+ * entries never become candidates and are skipped.
+ */
+function hasWildcardEntry(
+  chains: Record<string, string[]>,
+  role: string,
+  provider: string,
+  model: string,
+): boolean {
+  const keys = [selectorKey(provider, model), selectorKey(provider), role, 'default']
+  const seen = new Set<string>()
+  for (const key of keys) {
+    if (seen.has(key)) continue
+    seen.add(key)
+    const entries = chains[key]
+    if (!entries) continue
+    for (const entry of entries) {
+      try {
+        if (parseSelector(entry).model === undefined) return true
+      } catch {
+        // malformed entries never become candidates (config-warning path)
+      }
+    }
+  }
+  return false
+}
+
+/**
  * The `provider/*`-entry existence probe (spec §2 clause 2): the target
  * provider's advertised catalog, fetched once per decision and cached per
  * provider. A missing/unknown provider or a failing catalog reads as "no such
@@ -195,6 +228,10 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   const entry = Config(config)
   let source: () => FallbacksConfig = () => entry
   let chains = normalizeChains(entry.chains, logger)
+  // F-001: an unconfigured install (empty chains) must be truly zero-cost —
+  // the always-cap session scan is short-circuited on this flag, so a plain
+  // request never touches the event log when no chains are configured (AC-8).
+  let hasChains = Object.keys(chains).length > 0
 
   installSettingsSection(ctx, settingsNamespace('fallbacks'), Config, entry, {
     setSource: (current) => {
@@ -202,6 +239,7 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     },
     onChange: () => {
       chains = normalizeChains(source().chains, logger)
+      hasChains = Object.keys(chains).length > 0
     },
   })
 
@@ -213,6 +251,11 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
    * role and chain, filter candidates (same-model / cooldown / step-failed /
    * `provider/*`-missing-id), enforce the per-step safety valve, and — on a
    * hit — return the pending switch for the caller to commit.
+   *
+   * `state` is the agent's peeked entry: `undefined` for agents with no state
+   * yet (F-004 — the store is only grown on a real switch intent, inside
+   * `commit`). With no state there is no step bookkeeping, so the valve check
+   * passes and cooldown/step-failed reads are false.
    */
   async function decide(
     agent: Agent,
@@ -220,32 +263,35 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     step: number,
     current: FailingModel,
     reason: FallbackSwitchReason,
-    state: AgentFallbackState,
+    state: AgentFallbackState | undefined,
   ): Promise<PendingSwitch | null> {
     const config = source()
-    states.syncStep(state, turn, step)
-    if (state.stepFailures.switchCount >= config.maxSwitchesPerStep) return null
+    if (state !== undefined) {
+      states.syncStep(state, turn, step)
+      if (state.stepFailures.switchCount >= config.maxSwitchesPerStep) return null
+    }
     const role = resolveRole(agent, config.roles.rules, config.roles.default)
     const all = resolveChain(chains, role, current.provider, current.model)
     if (all.length === 0) return null
-    // T2 review Important #1: the decision path filters through
-    // createCandidateFilter AND forwards the existence probe to
-    // resolveChain/resolveCandidate, so the "missing id" skip stays scoped to
-    // `provider/*` entries (spec §2 clause 2 — exact entries are never
-    // existence-filtered; createCandidateFilter's own modelExists would
-    // over-filter them).
-    const modelExists = await makeModelExists(
-      ctx,
-      [...new Set(all.map((candidate) => candidate.provider))],
-    )
-    const cooldown = { isSuppressed: (key: string) => states.isSuppressed(state, key) }
-    const failed = { has: (key: string) => state.stepFailures.failed.has(key) }
-    // T2 review Important #1: the decision path filters through
-    // createCandidateFilter AND forwards the existence probe to
-    // resolveChain/resolveCandidate, so the "missing id" skip stays scoped to
-    // `provider/*` entries (spec §2 clause 2 — exact entries are never
-    // existence-filtered; createCandidateFilter's own modelExists would
-    // over-filter them). The filter deliberately does NOT receive modelExists.
+    // T2 review Important #1 (decision-path contract): the "missing id" skip
+    // stays scoped to `provider/*` entries (spec §2 clause 2 — exact entries
+    // are never existence-filtered; createCandidateFilter's own modelExists
+    // would over-filter them), so the probe is forwarded to
+    // resolveChain/resolveCandidate while the filter deliberately does NOT
+    // receive modelExists. F-002: the probe is built only when a wildcard
+    // entry is reachable — pure exact chains take zero catalog probes.
+    const modelExists = hasWildcardEntry(chains, role, current.provider, current.model)
+      ? await makeModelExists(
+        ctx,
+        [...new Set(all.map((candidate) => candidate.provider))],
+      )
+      : undefined
+    const cooldown = {
+      isSuppressed: (key: string) => state !== undefined && states.isSuppressed(state, key),
+    }
+    const failed = {
+      has: (key: string) => state !== undefined && state.stepFailures.failed.has(key),
+    }
     const filter = createCandidateFilter({ current, cooldown, failed })
     const surviving = resolveChain(chains, role, current.provider, current.model, filter, modelExists)
     const target = surviving[0]
@@ -281,6 +327,11 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     const config = source()
     const fromKey = selectorKey(pending.from.provider, pending.from.model)
     const until = config.revertPolicy === 'never' ? Number.POSITIVE_INFINITY : Date.now() + config.cooldownMs
+    // F-004 follow-up: a state freshly created by `states.get` at the commit
+    // site carries no (turn, step) markers — sync them here so the next
+    // decision's valve/failed-set bookkeeping sees this committed step (a
+    // no-op for states `decide` already synced at the same (turn, step)).
+    states.syncStep(state, turn, step)
     states.writePending(state, pending)
     states.suppress(state, fromKey, until)
     states.recordFailure(state, fromKey)
@@ -306,11 +357,23 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     if (!config.enabled || !config.triggerCodes.includes(failure.code)) return next()
     const current = currentModel(agent, provider)
     if (!current.model) return next()
-    const state = states.get(agent.id)
-    const pending = await decide(agent, turn, step, current, 'trigger-code', state)
-    if (pending === null) return next()
-    commit(agent, state, pending, turn, step)
-    return { kind: 'retry' }
+    // F-005: the decision path is defensive — an unexpected throw (e.g. a
+    // session.append failure, a future refactor) must not replace the original
+    // failure semantics (spec §6); log and delegate instead.
+    try {
+      // F-004: peek, never create — a null decision must not grow the store.
+      const state = states.peek(agent.id)
+      const pending = await decide(agent, turn, step, current, 'trigger-code', state)
+      if (pending === null) return next()
+      commit(agent, states.get(agent.id), pending, turn, step)
+      return { kind: 'retry' }
+    } catch (error) {
+      logger.warn(
+        'llm-fallbacks: decision path failed, passing the original failure through: %s',
+        (error as Error)?.message ?? String(error),
+      )
+      return next()
+    }
   })
 
   ctx.on('agent/request', async ({ agent, turn, step }, next) => {
@@ -326,12 +389,15 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     if (applied !== undefined) return overrideConfig(seed, applied.to)
     const config = source()
     if (
-      config.enabled
+      hasChains
+      && config.enabled
       && config.alwaysModeRetryCap > 0
       && countRetryEvents(agent.session, turn, step, seed.provider) >= config.alwaysModeRetryCap
     ) {
-      // Cap tripped: a genuine switch intent — create the state lazily.
-      const decisionState = states.get(agent.id)
+      // Cap tripped: a genuine switch intent — but the state is still only
+      // grown when the decision actually commits (F-004: a null decision —
+      // e.g. all candidates filtered — leaves no entry behind).
+      const decisionState = states.peek(agent.id)
       const pending = await decide(
         agent,
         turn,
@@ -341,8 +407,9 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
         decisionState,
       )
       if (pending !== null) {
-        commit(agent, decisionState, pending, turn, step)
-        const appliedCap = states.applyPending(decisionState, turn, step)
+        const commitState = states.get(agent.id)
+        commit(agent, commitState, pending, turn, step)
+        const appliedCap = states.applyPending(commitState, turn, step)
         if (appliedCap !== undefined) return overrideConfig(seed, appliedCap.to)
       }
     }

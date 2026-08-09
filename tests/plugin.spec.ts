@@ -234,6 +234,27 @@ describe('safety valve (spec §2 clause 4)', () => {
   })
 })
 
+describe('decision-path failure defense (F-005)', () => {
+  it('passes the original failure through when the decision path throws', async () => {
+    const { agent } = makeAgent('defensive', { provider: 'mock', model: 'gpt-4o' })
+    apply(ctx, cfg({ chains: { default: ['other/gpt-4o'] } }))
+
+    // The durable append inside commit() explodes: the request-error listener
+    // must catch, log, and delegate — the original failure semantics (spec §6)
+    // survive and no switch event is recorded.
+    const session = agent.session as unknown as { append: (type: string, data: unknown) => unknown }
+    const originalAppend = session.append
+    session.append = () => { throw new Error('append exploded') }
+    try {
+      const action = await dispatchRequestError(ctx, agent, { failure: { message: 'denied', code: 'AUTH' } })
+      expect(action).toBeUndefined()
+    } finally {
+      session.append = originalAppend
+    }
+    expect(switchEvents(agent)).toHaveLength(0)
+  })
+})
+
 describe('no-op regression (AC-8)', () => {
   it('unconfigured chains: zero events, request path unchanged', async () => {
     const { agent } = makeAgent('noop', { provider: 'mock', model: 'gpt-4o' })

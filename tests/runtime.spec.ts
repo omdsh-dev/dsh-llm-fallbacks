@@ -20,7 +20,7 @@
  * spec files reuse the same seam.
  */
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Context, type Logger } from 'cordis'
 import type { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
@@ -281,6 +281,34 @@ describe('decision-path candidate filtering (T2 review Important #1)', () => {
     expect(switchEvents(agent)[0]?.data.to).toEqual({ provider: 'other', model: 'gpt-4o' })
   })
 
+  it('does not probe the model catalog when no candidate is a wildcard (F-002)', async () => {
+    const listModels = vi.fn()
+    ctx.provide('llm', { listModels })
+    const { agent } = makeAgent('f002-exact', { provider: 'mock', model: 'gpt-4o' })
+    apply(ctx, cfg({ chains: { default: ['other/gpt-4o'] } }))
+
+    // Exact-entry chains only: the existence probe is pure waste on the
+    // error-recovery critical path — it must not run at all.
+    const action = await dispatchRequestError(ctx, agent)
+    expect(action).toEqual({ kind: 'retry' })
+    expect(switchEvents(agent)[0]?.data.to).toEqual({ provider: 'other', model: 'gpt-4o' })
+    expect(listModels).not.toHaveBeenCalled()
+  })
+
+  it('probes the catalog once per decision when a wildcard candidate exists (F-002)', async () => {
+    const listModels = vi.fn(async (provider: string) =>
+      (provider === 'other' ? [{ id: 'gpt-4o' }] : []))
+    ctx.provide('llm', { listModels })
+    const { agent } = makeAgent('f002-wild', { provider: 'mock', model: 'gpt-4o' })
+    apply(ctx, cfg({ chains: { 'mock/*': ['other/*'] } }))
+
+    const action = await dispatchRequestError(ctx, agent)
+    expect(action).toEqual({ kind: 'retry' })
+    expect(switchEvents(agent)[0]?.data.to).toEqual({ provider: 'other', model: 'gpt-4o' })
+    expect(listModels).toHaveBeenCalledTimes(1)
+    expect(listModels).toHaveBeenCalledWith('other')
+  })
+
   it('excludes cooldown-suppressed and step-failed candidates (double suppression)', async () => {
     const { agent, setRoute } = makeAgent('agent-suppress', { provider: 'mock', model: 'gpt-4o' })
     apply(ctx, cfg({ chains: { default: ['mock/gpt-4o', 'other/gpt-4o'] } }))
@@ -420,6 +448,56 @@ describe('lazy per-agent state on agent/request (T3 review Minor 3)', () => {
     const { agent } = makeAgent('agent-lazy-noop', { provider: 'mock', model: 'gpt-4o' })
     apply(ctx, cfg())
     await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
+    expect(stateStore(ctx)?.size).toBe(0)
+  })
+
+  it('skips the always-cap session scan entirely when no chains are configured (F-001)', async () => {
+    const { agent } = makeAgent('f001-scan', { provider: 'mock', model: 'gpt-4o' })
+    // The no-op invariant promises a truly zero-cost request on an unconfigured
+    // install (AC-8). Watch for any read of the session event log during the
+    // request path: with default config (enabled + cap > 0 but chains {}) the
+    // always-cap counting must be short-circuited, not scanned per request.
+    let eventReads = 0
+    const events: Array<{ type: string; data: Record<string, unknown> }> = []
+    Object.defineProperty(agent.session, 'events', {
+      configurable: true,
+      get() {
+        eventReads += 1
+        return events
+      },
+    })
+    apply(ctx, cfg())
+    await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
+    expect(eventReads).toBe(0)
+  })
+
+  it('does not create a state entry when the request-error decision yields no candidate (F-004)', async () => {
+    const { agent } = makeAgent('f004-noentry', { provider: 'mock', model: 'gpt-4o' })
+    apply(ctx, cfg())
+
+    expect(await dispatchRequestError(ctx, agent, { failure: { message: 'denied', code: 'AUTH' } })).toBeUndefined()
+    expect(stateStore(ctx)?.has(agent.id)).toBe(false)
+    expect(stateStore(ctx)?.size).toBe(0)
+  })
+
+  it('does not create a state entry when every candidate is filtered out (F-004)', async () => {
+    const { agent } = makeAgent('f004-filtered', { provider: 'mock', model: 'gpt-4o' })
+    // The only candidate equals the current model → filtered as same-as-current.
+    apply(ctx, cfg({ chains: { default: ['mock/gpt-4o'] } }))
+
+    expect(await dispatchRequestError(ctx, agent)).toBeUndefined()
+    expect(stateStore(ctx)?.has(agent.id)).toBe(false)
+    expect(stateStore(ctx)?.size).toBe(0)
+  })
+
+  it('does not create a state entry when the always-cap decision yields no candidate (F-004)', async () => {
+    const { agent } = makeAgent('f004-cap', { provider: 'mock', model: 'gpt-4o' })
+    apply(ctx, cfg({ chains: { default: ['mock/gpt-4o'] }, alwaysModeRetryCap: 1 }))
+    agent.session.append('llm/retry', { turn: 1, step: 1, provider: 'mock', mode: 'always', policyKey: 'always', retry: 1 })
+
+    const config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
+    expect(config).toEqual({ provider: 'mock', model: 'gpt-4o' })
+    expect(stateStore(ctx)?.has(agent.id)).toBe(false)
     expect(stateStore(ctx)?.size).toBe(0)
   })
 
