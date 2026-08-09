@@ -40,7 +40,12 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --absent) ABSENT=1; shift ;;
     -q|--quiet) QUIET=1; shift ;;
-    -d|--target) TARGET="$2"; shift 2 ;;
+    -d|--target)
+      if [[ $# -lt 2 || -z "$2" || "$2" == -* ]]; then
+        echo "ERROR: $1 需要一个目标目录参数" >&2
+        usage 1
+      fi
+      TARGET="$2"; shift 2 ;;
     -h|--help) usage 0 ;;
     *) echo "未知选项: $1" >&2; usage 1 ;;
   esac

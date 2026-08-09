@@ -43,6 +43,12 @@ fallback 链角色解析的最高优先级来源（spec §3：`options.role` →
 两处都是**最小改动**：不触碰重试/路由逻辑，不改变任何既有默认行为；未设置 `role`
 时与 patch 前完全一致。
 
+> 类型面说明：`@deepseek-ai/dsh-subagent` / `@deepseek-ai/dsh-tool-subagent` 的
+> role 类型面**仅由本目录的 patch 文档承载**，插件本身不直接消费（无 import、无
+> peer-stub、无 tsconfig paths），因此也不在 `package.json` peerDependencies 中
+> 声明；`agent.options.role` 的读取经 `resolveChildAgentOptions` 的 spread 贯通，
+> 类型上以 patch 后 dsh 源码树为准。
+
 ## 用法
 
 所有脚本的目标目录在**运行时**解析，脚本文件本身不含本地绝对路径：

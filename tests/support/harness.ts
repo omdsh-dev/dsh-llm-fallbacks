@@ -133,19 +133,34 @@ export function dispatchRequestError(
   }, () => Promise.resolve(undefined))
 }
 
-/** Drive one `agent/request` waterfall (the loop's buildRequest, spec §5 table). */
-export function dispatchRequest(
+/**
+ * Drive one `agent/request` waterfall (the loop's buildRequest, spec §5 table).
+ *
+ * M-02: mirrors the real agent loop, which folds (logs) the request header
+ * with the served route after buildRequest — the effective config returned by
+ * the waterfall is written back into the fake session's route, so
+ * `currentModel` reads the actually-served provider/model on the next
+ * `agent/request-error` without the test author hand-syncing `setRoute`.
+ * `setRoute` degrades to an explicit override for tests that route manually.
+ */
+export async function dispatchRequest(
   ctx: Context,
   agent: Agent,
   seed: LlmCallConfig,
   overrides: { turn?: number; step?: number } = {},
 ): Promise<LlmCallConfig> {
-  return ctx.waterfall('agent/request', {
+  const config = await ctx.waterfall('agent/request', {
     agent,
     turn: overrides.turn ?? 1,
     step: overrides.step ?? 1,
     signal: new AbortController().signal,
   }, () => Promise.resolve(seed))
+  const header = agent.session.requestHeader()
+  if (header !== undefined) {
+    header.config.provider = config.provider
+    header.config.model = config.model
+  }
+  return config
 }
 
 /** Provider retry policy with `mode: 'normal'` (llm-retry semantics; default retryable codes per spec §2 note). */
