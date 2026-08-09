@@ -45,9 +45,12 @@ export function parseSelector(input: string): Selector {
   if (slash <= 0 || slash === trimmed.length - 1) {
     throw new SelectorError(`invalid selector "${input}": expected "provider/model" or "provider/*"`)
   }
-  const provider = trimmed.slice(0, slash)
-  const modelPart = trimmed.slice(slash + 1)
-  if (!provider.trim() || !modelPart.trim()) {
+  // Trim inside each segment too (T2 review Minor #1): 'openai/ gpt-4o' and
+  // ' openai /gpt-4o ' must parse to canonical provider/model instead of
+  // silently carrying whitespace into a never-matching candidate/chain key.
+  const provider = trimmed.slice(0, slash).trim()
+  const modelPart = trimmed.slice(slash + 1).trim()
+  if (!provider || !modelPart) {
     throw new SelectorError(`invalid selector "${input}": empty provider or model`)
   }
   if (modelPart.includes('/')) {

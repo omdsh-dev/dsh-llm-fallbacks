@@ -61,8 +61,11 @@ export function resolveCandidate(
  * `role` → `default`); every present key contributes its entries, so the
  * result is a priority-ordered union. Wildcard entries are resolved against
  * the failing model. `filter` optionally drops candidates — the caller owns
- * cooldown/failed-set/same-model/absent-id filtering (see
- * {@link createCandidateFilter}).
+ * cooldown/failed-set/same-model filtering (see {@link createCandidateFilter}).
+ * `modelExists` is forwarded to {@link resolveCandidate}, so the
+ * "target provider has no such model id" skip (spec §2 clause 2) applies to
+ * `provider/*` entries only — explicitly listed exact entries are never
+ * existence-filtered (T2 review Important #1: Task 3 decision path contract).
  */
 export function resolveChain(
   chains: Record<string, string[]>,
@@ -70,6 +73,7 @@ export function resolveChain(
   provider: string,
   model: string,
   filter?: (candidate: Selector) => boolean,
+  modelExists?: (provider: string, model: string) => boolean,
 ): Selector[] {
   const failing: FailingModel = { provider, model }
   const keys = [selectorKey(provider, model), selectorKey(provider), role, 'default']
@@ -81,7 +85,7 @@ export function resolveChain(
     const entries = chains[key]
     if (!entries) continue
     for (const entry of entries) {
-      const candidate = resolveCandidate(entry, failing)
+      const candidate = resolveCandidate(entry, failing, modelExists)
       if (candidate && (!filter || filter(candidate))) candidates.push(candidate)
     }
   }

@@ -11,7 +11,14 @@
     "declaration": true,
     "emitDeclarationOnly": true,
     "rootDir": "src",
-    "outDir": "dist"
+    "outDir": "dist",
+    "paths": {
+      "@deepseek-ai/dsh-agent": ["./peer-stubs/@deepseek-ai/dsh-agent/index.d.ts"],
+      "@deepseek-ai/dsh-llm": ["./peer-stubs/@deepseek-ai/dsh-llm/index.d.ts"],
+      "@deepseek-ai/dsh-settings": ["./peer-stubs/@deepseek-ai/dsh-settings/index.d.ts"],
+      "@deepseek-ai/dsh-session": ["./peer-stubs/@deepseek-ai/dsh-session/index.d.ts"],
+      "@deepseek-ai/dsh-session/types": ["./peer-stubs/@deepseek-ai/dsh-session/types.d.ts"]
+    }
   },
   "include": ["src"]
 }

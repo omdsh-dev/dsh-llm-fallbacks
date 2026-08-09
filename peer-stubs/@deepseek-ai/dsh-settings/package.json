@@ -1,0 +1,8 @@
+{
+  "name": "@deepseek-ai/dsh-settings",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "types": "index.d.ts",
+  "description": "Dev-time type-only stub for @deepseek-ai/dsh-settings. The real package is private (not on the npm registry) and ships from the host dsh app at runtime; this stub declares the type surface dsh-llm-fallbacks consumes (installSettingsSection / settingsNamespace / SettingsScope / SettingsRegisterOptions / SettingsSectionHooks). Mirrors dsh-private commit b8343cb (2026-08-09 snapshot). Runtime access in tests is aliased to tests/support/settings-stub.ts."
+}

@@ -21,7 +21,7 @@ describe('resolveRole', () => {
   it('prefers the explicit agent.options.role over rules and default', () => {
     const agent: AgentLike = {
       options: { role: 'explicit-role', provider: 'openai', model: 'gpt-4o' },
-      session: { meta: { origin: 'root' } },
+      session: { header: { origin: 'root' } },
     }
     expect(resolveRole(agent, RULES, 'default')).toBe('explicit-role')
   })
@@ -29,7 +29,7 @@ describe('resolveRole', () => {
   it('matches the first rule in listed order for a subagent', () => {
     const agent: AgentLike = {
       options: { provider: 'openai', model: 'gpt-4o' },
-      session: { meta: { origin: 'subagent' } },
+      session: { header: { origin: 'subagent' } },
     }
     expect(resolveRole(agent, RULES, 'default')).toBe('code-review')
   })
@@ -44,7 +44,7 @@ describe('resolveRole', () => {
     // second ({origin:'root', provider:'openai'}) → third rule matches.
     const agent: AgentLike = {
       options: { provider: 'anthropic', model: 'claude-3-5-sonnet' },
-      session: { meta: { origin: 'root' } },
+      session: { header: { origin: 'root' } },
     }
     expect(resolveRole(agent, RULES, 'default')).toBe('anthropic-only')
   })
@@ -52,7 +52,7 @@ describe('resolveRole', () => {
   it('matches a model-only rule', () => {
     const agent: AgentLike = {
       options: { provider: 'google', model: 'gpt-4o' },
-      session: { meta: { origin: 'root' } },
+      session: { header: { origin: 'root' } },
     }
     expect(resolveRole(agent, RULES, 'default')).toBe('gpt4o-only')
   })
@@ -66,14 +66,14 @@ describe('resolveRole', () => {
   it('returns the default role when nothing matches', () => {
     const agent: AgentLike = {
       options: { provider: 'google', model: 'gemini-1.5-pro' },
-      session: { meta: { origin: 'root' } },
+      session: { header: { origin: 'root' } },
     }
     expect(resolveRole(agent, RULES, 'default')).toBe('default')
   })
 
   it('matches an unconstrained rule (catch-all) for any agent', () => {
     const rules: RoleRule[] = [{ role: 'catch-all' }]
-    const agent: AgentLike = { options: { provider: 'x', model: 'y' }, session: { meta: { origin: 'subagent' } } }
+    const agent: AgentLike = { options: { provider: 'x', model: 'y' }, session: { header: { origin: 'subagent' } } }
     expect(resolveRole(agent, rules, 'default')).toBe('catch-all')
   })
 

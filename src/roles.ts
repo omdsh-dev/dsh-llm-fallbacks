@@ -1,5 +1,5 @@
 /**
- * Role resolution for fallback chains (spec §3, ADR-3; plan Task 2).
+ * Role resolution for fallback chains (spec §3, ADR-3; plan Task 2/3).
  *
  * Precedence (first hit wins):
  * 1. `agent.options.role` — the explicit role (dsh patch, Task 6);
@@ -7,8 +7,13 @@
  *    all match the agent;
  * 3. `defaultRole` (`roles.default`, itself `'default'`).
  *
- * A missing agent origin is treated as `'root'` — root agents carry no
- * `session.meta.origin`. Unspecified rule fields do not constrain.
+ * A missing agent origin is treated as `'root'`. Origin is read from
+ * `session.header.origin` — the durable `SessionHeader` field the store folds
+ * from `CreateSessionOptions.meta.origin` (`packages/core/session/src/
+ * index.ts:899`); subagent children set it via `childSessionMeta`
+ * (`packages/subagent/subagent/src/child-agent.ts:93`), root agents carry
+ * none. (Task 3 contract refinement: the live `Session` exposes `header`, not
+ * a `meta` field.)
  *
  * @module dsh-llm-fallbacks/roles
  */
@@ -32,7 +37,7 @@ export interface AgentLike {
     model?: string
   }
   session?: {
-    meta?: {
+    header?: {
       origin?: Origin
     }
   }
@@ -44,7 +49,7 @@ export interface AgentLike {
  */
 export function resolveRole(agent: AgentLike, rules: RoleRule[], defaultRole: string): string {
   if (agent.options?.role) return agent.options.role
-  const origin = agent.session?.meta?.origin ?? 'root'
+  const origin = agent.session?.header?.origin ?? 'root'
   for (const rule of rules) {
     if (rule.origin && rule.origin !== origin) continue
     if (rule.provider && rule.provider !== agent.options?.provider) continue

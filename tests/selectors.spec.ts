@@ -39,6 +39,24 @@ describe('parseSelector', () => {
     })
   })
 
+  it('trims whitespace inside each segment (T2 review Minor #1)', () => {
+    expect(parseSelector('openai/ gpt-4o')).toEqual({
+      provider: 'openai',
+      model: 'gpt-4o',
+      raw: 'openai/ gpt-4o',
+    })
+    expect(parseSelector(' openai /gpt-4o ')).toEqual({
+      provider: 'openai',
+      model: 'gpt-4o',
+      raw: 'openai /gpt-4o',
+    })
+    expect(parseSelector('openai/ *')).toEqual({
+      provider: 'openai',
+      model: undefined,
+      raw: 'openai/ *',
+    })
+  })
+
   it('throws SelectorError on selectors without a provider/model separator', () => {
     for (const bad of ['', 'openai', '*', ' ', '  ']) {
       expect(() => parseSelector(bad), `selector ${JSON.stringify(bad)}`).toThrow(SelectorError)
