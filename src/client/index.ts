@@ -57,7 +57,13 @@ export function apply(ctx: ClientContext): void {
       ctx.on('settings/changed', refresh),
       ctx.on('connection/reset', () => { refresh() }),
     ]
-    return () => { for (const dispose of disposers) dispose() }
+    return () => {
+      for (const dispose of disposers) dispose()
+      // F-006 / M-01: stop in-flight describe/update/replace responses from
+      // publishing to the dead store once the plugin unloads (HMR/dispose) —
+      // the generation guard only helps when it is actually bumped here.
+      controller.dispose()
+    }
   }, 'llm-fallbacks: pushed invalidations')
 
   ctx.slots.inject('settings.section', () => ctx.slots.register({

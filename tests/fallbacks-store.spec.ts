@@ -11,9 +11,13 @@
  * bundle (build-client) + tsc; runtime UI verification lands with T8.
  */
 
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { Context } from 'cordis'
+import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import type { SettingsNamespaceView } from '@deepseek-ai/dsh-client-connection/client'
 import { defaultFallbacksConfig, type FallbacksConfig } from '../src/config.ts'
+import { KNOWN_TRIGGER_CODES, TRIGGER_CODE_LABELS } from '../src/client/locales.ts'
+import { apply as applyClient } from '../src/client/index.ts'
 import {
   chainsToRows,
   conflictDetailsOf,
@@ -277,6 +281,64 @@ describe('FallbacksSettingsController', () => {
     const state = controller.store.getSnapshot()
     // The stale response never published: the store stays on the loading
     // state it was left in, with the initial revision (never accepted).
+    expect(state.status).not.toBe('ready')
+    expect(state.revision).toBe(0)
+  })
+})
+
+describe('known trigger codes (M-04 single source)', () => {
+  it('derives the toggle set from the host defaults', () => {
+    expect(KNOWN_TRIGGER_CODES).toEqual(defaultFallbacksConfig.triggerCodes)
+  })
+
+  it('labels every derived code', () => {
+    for (const code of KNOWN_TRIGGER_CODES) {
+      expect(TRIGGER_CODE_LABELS[code]).toBeDefined()
+    }
+  })
+})
+
+describe('client apply disposal wiring (F-006 / M-01)', () => {
+  let ctx: Context
+
+  beforeEach(() => {
+    ctx = new Context()
+  })
+
+  afterEach(async () => {
+    await ctx.fiber.dispose()
+  })
+
+  it('stops in-flight settings responses from publishing after the fiber is disposed', async () => {
+    // Locale service double: register + bind (bind returns a translate thunk).
+    ctx.provide('locale', { register: () => () => {}, bind: () => () => '' })
+    // Connection service double: a controllable settings.describe.
+    let resolveDescribe: (value: unknown) => void = () => {}
+    const describe = vi.fn(() => new Promise<unknown>(resolve => { resolveDescribe = resolve }))
+    ctx.provide('connection', {
+      api: { settings: { describe, update: vi.fn(), replace: vi.fn(), mutate: vi.fn() } },
+    })
+    // Slots service double: run the section-registration thunk and capture the
+    // injected controller — the seam apply() uses to hand the controller over.
+    let controller: FallbacksSettingsController | undefined
+    ctx.provide('slots', {
+      inject: (_name: string, thunk: () => unknown) => { thunk() },
+      register: (options: { inject: () => unknown }) => {
+        controller = (options.inject() as { controller: FallbacksSettingsController }).controller
+        return {}
+      },
+    })
+    applyClient(ctx as unknown as ClientContext)
+    expect(controller).toBeDefined()
+
+    // A load is in flight when the plugin unloads (HMR / dispose).
+    const loading = controller!.load()
+    await ctx.fiber.dispose()
+    // The response arrives after unload: the dispose wiring must bump the
+    // generation so the stale response never publishes to the dead store.
+    resolveDescribe(ok({ writable: true, hasDocument: false, namespaces: [viewOf({ revision: 9 })] }))
+    await loading
+    const state = controller!.store.getSnapshot()
     expect(state.status).not.toBe('ready')
     expect(state.revision).toBe(0)
   })

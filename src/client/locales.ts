@@ -8,6 +8,7 @@
  * strings.
  */
 import type { FallbacksConfig } from '../config.ts'
+import { defaultFallbacksConfig } from '../config.ts'
 
 /** Simplified Chinese dictionary (the key-set source of truth). */
 export const zh = {
@@ -149,8 +150,13 @@ export const TRIGGER_CODE_LABELS: Readonly<Record<string, FallbacksKey>> = {
   AUTH: 'triggerCodes.AUTH',
 }
 
-/** The known trigger codes the form toggles; unknown codes are preserved. */
-export const KNOWN_TRIGGER_CODES: readonly string[] = ['AUTH', 'QUOTA', 'RATE_LIMIT']
+/**
+ * The known trigger codes the form toggles; unknown codes are preserved.
+ * M-04: derived from the host defaults so the toggle set can never drift from
+ * the decision set (`defaultFallbacksConfig.triggerCodes` is the single
+ * source of truth; the labels mapping above stays keyed by code).
+ */
+export const KNOWN_TRIGGER_CODES: readonly string[] = [...defaultFallbacksConfig.triggerCodes]
 
 /** Toggle one known code's membership in `codes` (used by the form; pure). */
 export function withTriggerCode(codes: readonly string[], code: string, present: boolean): string[] {
