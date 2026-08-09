@@ -12,12 +12,15 @@ export interface SessionEventMap {
   /**
    * Placeholder for the llm-retry event the plugin's always-mode cap counts
    * (the real augmentation lives in llm-retry). Only the fields the plugin
-   * consumes are declared.
+   * consumes are declared — `mode` discriminates always-mode (unbounded)
+   * retries from normal (bounded) ones, which the cap must not count
+   * (T3 review Minor 2).
    */
   'llm/retry': {
     turn: number
     step: number
     provider: string
+    mode: 'normal' | 'always'
     policyKey?: string
     retry?: number
   }

@@ -121,3 +121,47 @@ export function createCandidateFilter(options: CandidateFilterOptions): (candida
     return true
   }
 }
+
+/** Why one considered candidate was excluded from the selection (spec §2 行为可见性). */
+export type CandidateSkipReason = 'same-as-current' | 'cooldown' | 'step-failed' | 'missing-id'
+
+/** One entry of the ordered, per-candidate annotation (T3 review Minor 1). */
+export interface AnnotatedCandidate {
+  candidate: Selector
+  /** Why this candidate was excluded; `undefined` = it survived every exclusion. */
+  skip?: CandidateSkipReason
+}
+
+/**
+ * Annotate the ordered "considered" candidate list with each candidate's skip
+ * reason (spec §2 行为可见性: the switch log must show the attempt order and
+ * why each candidate was skipped). The selection-relevant view is the
+ * `surviving` list the decision path resolved with filter + existence probe:
+ * a candidate absent from it failed one of the exclusions, and the concrete
+ * reason is derived from the same checks {@link createCandidateFilter}
+ * applies, in the same precedence. `missing-id` therefore only ever labels
+ * entries the existence probe dropped — exact entries are never
+ * existence-probed (T2 contract), so they stay in `surviving` and are
+ * reported as usable, never as missing-id.
+ *
+ * This is the diagnostic counterpart of {@link createCandidateFilter} — pure,
+ * order-preserving, and duplicate-preserving.
+ */
+export function annotateCandidates(
+  candidates: readonly Selector[],
+  surviving: readonly Selector[],
+  options: Pick<CandidateFilterOptions, 'current' | 'cooldown' | 'failed'>,
+): AnnotatedCandidate[] {
+  const { current, cooldown, failed } = options
+  const usable = new Set(surviving.map((candidate) => selectorKey(candidate.provider, candidate.model)))
+  return candidates.map((candidate) => {
+    if (candidate.provider === current.provider && candidate.model === current.model) {
+      return { candidate, skip: 'same-as-current' }
+    }
+    const key = selectorKey(candidate.provider, candidate.model)
+    if (usable.has(key)) return { candidate }
+    if (cooldown.isSuppressed(key)) return { candidate, skip: 'cooldown' }
+    if (failed.has(key)) return { candidate, skip: 'step-failed' }
+    return { candidate, skip: 'missing-id' }
+  })
+}

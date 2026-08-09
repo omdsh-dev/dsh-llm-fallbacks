@@ -34,7 +34,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { LlmCallConfig } from '@deepseek-ai/dsh-llm'
 import type { Session } from '@deepseek-ai/dsh-session'
 import { Config, defaultFallbacksConfig, type FallbacksConfig } from './config.ts'
-import { createCandidateFilter, resolveChain, type FailingModel } from './chains.ts'
+import { annotateCandidates, createCandidateFilter, resolveChain, type FailingModel } from './chains.ts'
 import { parseSelector, selectorKey } from './selectors.ts'
 import { resolveRole } from './roles.ts'
 import { FallbackStateStore, type AgentFallbackState, type PendingSwitch } from './state.ts'
@@ -52,6 +52,23 @@ export type { AgentFallbackState, FallbackStateStore, PendingSwitch, StepFailure
 /** Model-catalog service shape the wildcard existence probe reads (`ctx.llm`). */
 interface ModelCatalogService {
   listModels(provider: string): Promise<readonly { id: string }[]>
+}
+
+/**
+ * Per-apply state stores, keyed by context. Weak so entries die with the
+ * context; the plugin's own dispose effect clears the store contents.
+ * @internal
+ */
+const stateStores = new WeakMap<Context, FallbackStateStore>()
+
+/**
+ * @internal Test seam (T3 review Minor 3): the per-agent fallback state store
+ * of the plugin applied to `ctx` — last apply wins. Not part of the plugin's
+ * public surface; lets tests assert the no-op purity invariant (a plain
+ * request must not grow the store) without reaching into the closure.
+ */
+export function stateStore(ctx: Context): FallbackStateStore | undefined {
+  return stateStores.get(ctx)
 }
 
 /**
@@ -122,12 +139,35 @@ async function makeModelExists(
   return (provider, model) => catalog.get(provider)?.has(model) ?? false
 }
 
-/** Count durable `llm/retry` events for the current (turn, step, provider) (ADR-2, llm-retry matching pattern). */
-function countRetryEvents(session: Session, turn: number, step: number, provider: string): number {
+/**
+ * Count durable `llm/retry` events for the current (turn, step, provider) in
+ * **always mode** (ADR-2; spec §2 clause 5). Normal-mode retries belong to
+ * llm-retry's bounded budget and must not preempt the fallback, so only
+ * `mode: 'always'` events count toward `alwaysModeRetryCap` (T3 review
+ * Minor 2 — the real event carries the discriminator, llm-retry types.ts).
+ *
+ * Fast path (T3 review Minor 4): the session log is append-ordered, so the
+ * scan runs backwards and stops at the first event older than the target
+ * (turn, step) — a long session's earlier turns are never scanned.
+ *
+ * Exported for direct unit testing of the counting + fast path.
+ */
+export function countRetryEvents(session: Session, turn: number, step: number, provider: string): number {
   let count = 0
-  for (const event of session.events) {
+  const events = session.events
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]!
+    const data = event.data as { turn?: number; step?: number }
+    // Everything before the first event older than the target cannot match.
+    if (
+      typeof data.turn === 'number'
+      && typeof data.step === 'number'
+      && (data.turn < turn || (data.turn === turn && data.step < step))
+    ) break
     if (event.type !== 'llm/retry') continue
-    if (event.data.turn === turn && event.data.step === step && event.data.provider === provider) count += 1
+    if (data.turn === turn && data.step === step && event.data.provider === provider && event.data.mode === 'always') {
+      count += 1
+    }
   }
   return count
 }
@@ -166,6 +206,7 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   })
 
   const states = new FallbackStateStore()
+  stateStores.set(ctx, states)
 
   /**
    * Shared decision path (spec §5.1 lifecycle step 1): resolve the agent's
@@ -197,15 +238,20 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
       ctx,
       [...new Set(all.map((candidate) => candidate.provider))],
     )
-    const filter = createCandidateFilter({
-      current,
-      cooldown: { isSuppressed: (key) => states.isSuppressed(state, key) },
-      failed: { has: (key) => state.stepFailures.failed.has(key) },
-    })
-    const target = resolveChain(chains, role, current.provider, current.model, filter, modelExists)[0]
+    const cooldown = { isSuppressed: (key: string) => states.isSuppressed(state, key) }
+    const failed = { has: (key: string) => state.stepFailures.failed.has(key) }
+    // T2 review Important #1: the decision path filters through
+    // createCandidateFilter AND forwards the existence probe to
+    // resolveChain/resolveCandidate, so the "missing id" skip stays scoped to
+    // `provider/*` entries (spec §2 clause 2 — exact entries are never
+    // existence-filtered; createCandidateFilter's own modelExists would
+    // over-filter them). The filter deliberately does NOT receive modelExists.
+    const filter = createCandidateFilter({ current, cooldown, failed })
+    const surviving = resolveChain(chains, role, current.provider, current.model, filter, modelExists)
+    const target = surviving[0]
     if (target === undefined || target.model === undefined) return null
     logger.info(
-      'llm-fallbacks: agent "%s" switch %s/%s -> %s/%s (role=%s, reason=%s, considered=%o)',
+      'llm-fallbacks: agent "%s" switch %s/%s -> %s/%s (role=%s, reason=%s, candidates=%o)',
       agent.id,
       current.provider,
       current.model,
@@ -213,7 +259,14 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
       target.model,
       role,
       reason,
-      all.map((candidate) => `${candidate.provider}/${candidate.model}`),
+      // spec §2 行为可见性: the log shows the candidate attempt order AND why
+      // each candidate was skipped (cooldown / step-failed / same-as-current /
+      // target-provider missing id); survivors (including the target) are
+      // unlabelled.
+      annotateCandidates(all, surviving, { current, cooldown, failed })
+        .map(({ candidate, skip }) => skip === undefined
+          ? `${candidate.provider}/${candidate.model}`
+          : `${candidate.provider}/${candidate.model} (skipped: ${skip})`),
     )
     return {
       from: { provider: current.provider, model: current.model },
@@ -262,10 +315,14 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
 
   ctx.on('agent/request', async ({ agent, turn, step }, next) => {
     const seed = await next()
-    const state = states.get(agent.id)
+    // No-op purity (T3 review Minor 3): peek, never create — a plain request
+    // must not grow the per-agent map (AC-8). State is created lazily only
+    // when a real switch intent exists (a pending decision to apply, or the
+    // always-cap tripped below).
+    const state = states.peek(agent.id)
     // Apply a pending decision first (trigger-code path); a switch for this
     // request means the always-cap count of the previous provider is moot.
-    const applied = states.applyPending(state, turn, step)
+    const applied = state === undefined ? undefined : states.applyPending(state, turn, step)
     if (applied !== undefined) return overrideConfig(seed, applied.to)
     const config = source()
     if (
@@ -273,17 +330,19 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
       && config.alwaysModeRetryCap > 0
       && countRetryEvents(agent.session, turn, step, seed.provider) >= config.alwaysModeRetryCap
     ) {
+      // Cap tripped: a genuine switch intent — create the state lazily.
+      const decisionState = states.get(agent.id)
       const pending = await decide(
         agent,
         turn,
         step,
         { provider: seed.provider, model: seed.model },
         'always-cap',
-        state,
+        decisionState,
       )
       if (pending !== null) {
-        commit(agent, state, pending, turn, step)
-        const appliedCap = states.applyPending(state, turn, step)
+        commit(agent, decisionState, pending, turn, step)
+        const appliedCap = states.applyPending(decisionState, turn, step)
         if (appliedCap !== undefined) return overrideConfig(seed, appliedCap.to)
       }
     }

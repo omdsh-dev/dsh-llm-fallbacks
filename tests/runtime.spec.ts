@@ -20,7 +20,7 @@ import { Context, type Logger } from 'cordis'
 import type { Agent, RequestErrorAction } from '@deepseek-ai/dsh-agent'
 import type { LlmCallConfig, LlmFailure, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
-import { apply, normalizeChains } from '../src/index.ts'
+import { apply, countRetryEvents, normalizeChains, stateStore } from '../src/index.ts'
 import { defaultFallbacksConfig, type FallbacksConfig } from '../src/config.ts'
 import { registrations, resetSettingsStub } from './support/settings-stub.ts'
 
@@ -202,6 +202,7 @@ describe('always mode: downstream first, cap at agent/request (ADR-2)', () => {
         turn: payload.turn,
         step: payload.step,
         provider: payload.provider,
+        mode: 'always',
         policyKey: 'always',
         retry: 1,
       })
@@ -225,7 +226,7 @@ describe('always mode: downstream first, cap at agent/request (ADR-2)', () => {
     apply(ctx, cfg({ chains: { default: ['other/gpt-4o'] }, alwaysModeRetryCap: 5 }))
 
     for (let retry = 1; retry <= 4; retry += 1) {
-      agent.session.append('llm/retry', { turn: 1, step: 1, provider: 'mock', policyKey: 'always', retry })
+      agent.session.append('llm/retry', { turn: 1, step: 1, provider: 'mock', mode: 'always', policyKey: 'always', retry })
     }
     const below = await dispatchRequest(ctx, agent, {
       provider: 'mock',
@@ -235,7 +236,7 @@ describe('always mode: downstream first, cap at agent/request (ADR-2)', () => {
     expect(below).toEqual({ provider: 'mock', model: 'gpt-4o', reasoningEffort: 'high' as ReasoningEffortId })
     expect(switchEvents(agent)).toHaveLength(0)
 
-    agent.session.append('llm/retry', { turn: 1, step: 1, provider: 'mock', policyKey: 'always', retry: 5 })
+    agent.session.append('llm/retry', { turn: 1, step: 1, provider: 'mock', mode: 'always', policyKey: 'always', retry: 5 })
     const switched = await dispatchRequest(ctx, agent, {
       provider: 'mock',
       model: 'gpt-4o',
@@ -258,7 +259,29 @@ describe('always mode: downstream first, cap at agent/request (ADR-2)', () => {
 
     // Five retries but for a different step/provider — cap must not trip.
     for (let retry = 1; retry <= 5; retry += 1) {
-      agent.session.append('llm/retry', { turn: 1, step: 2, provider: 'other', policyKey: 'always', retry })
+      agent.session.append('llm/retry', { turn: 1, step: 2, provider: 'other', mode: 'always', policyKey: 'always', retry })
+    }
+    const config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
+    expect(config).toEqual({ provider: 'mock', model: 'gpt-4o' })
+    expect(switchEvents(agent)).toHaveLength(0)
+  })
+
+  it('does not count normal-mode retries toward the cap (llm-retry owns them)', async () => {
+    const { agent } = makeAgent('agent-cap-normal', { provider: 'mock', model: 'gpt-4o' })
+    apply(ctx, cfg({ chains: { default: ['other/gpt-4o'] }, alwaysModeRetryCap: 3 }))
+
+    // A normal-mode provider retrying RATE_LIMIT with maxRetries ≥ cap: those
+    // bounded retries belong to llm-retry and must not preempt-switch the
+    // fallback (spec §2 clause 5 — the cap is an always-mode mechanism).
+    for (let retry = 1; retry <= 5; retry += 1) {
+      agent.session.append('llm/retry', {
+        turn: 1,
+        step: 1,
+        provider: 'mock',
+        mode: 'normal',
+        policyKey: 'normal',
+        retry,
+      })
     }
     const config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
     expect(config).toEqual({ provider: 'mock', model: 'gpt-4o' })
@@ -270,7 +293,7 @@ describe('always mode: downstream first, cap at agent/request (ADR-2)', () => {
     apply(ctx, cfg({ chains: { default: ['other/gpt-4o'] }, alwaysModeRetryCap: 0 }))
 
     for (let retry = 1; retry <= 5; retry += 1) {
-      agent.session.append('llm/retry', { turn: 1, step: 1, provider: 'mock', policyKey: 'always', retry })
+      agent.session.append('llm/retry', { turn: 1, step: 1, provider: 'mock', mode: 'always', policyKey: 'always', retry })
     }
     const config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
     expect(config).toEqual({ provider: 'mock', model: 'gpt-4o' })
@@ -358,6 +381,138 @@ describe('decision-path candidate filtering (T2 review Important #1)', () => {
     const third = await dispatchRequestError(ctx, agent, { provider: 'c' })
     expect(third).toBeUndefined()
     expect(switchEvents(agent)).toHaveLength(2)
+  })
+})
+
+describe('switch log skip reasons (spec §2 行为可见性; T3 review Minor 1)', () => {
+  /** The `candidates=%o` array arg of the nth switch info log line. */
+  function switchLogCandidates(logs: Array<{ type: string; args: unknown[] }>, index: number): unknown[] {
+    const switchLogs = logs.filter((message) => message.type === 'info' && String(message.args[0]).includes('switch'))
+    const candidates = switchLogs[index]?.args.find((arg) => Array.isArray(arg))
+    return (candidates ?? []) as unknown[]
+  }
+
+  it('annotates every considered candidate with its skip reason in order', async () => {
+    const logs: Array<{ type: string; args: unknown[] }> = []
+    ctx.logger.exporter({ export: (message) => logs.push(message) })
+    const { agent, setRoute } = makeAgent('agent-log', { provider: 'mock', model: 'gpt-4o' })
+    apply(ctx, cfg({ chains: { default: ['mock/gpt-4o', 'other/gpt-4o', 'third/x'] } }))
+
+    // Failure 1: mock is the current model → same-as-current; other/gpt-4o wins.
+    expect((await dispatchRequestError(ctx, agent))).toEqual({ kind: 'retry' })
+    expect(switchLogCandidates(logs, 0)).toEqual([
+      'mock/gpt-4o (skipped: same-as-current)',
+      'other/gpt-4o',
+      'third/x',
+    ])
+    setRoute('other', 'gpt-4o')
+
+    // Failure 2 at other (same step): mock is cooled AND step-failed (cooldown
+    // wins precedence), other == current → third/x wins.
+    expect((await dispatchRequestError(ctx, agent, { provider: 'other' }))).toEqual({ kind: 'retry' })
+    expect(switchLogCandidates(logs, 1)).toEqual([
+      'mock/gpt-4o (skipped: cooldown)',
+      'other/gpt-4o (skipped: same-as-current)',
+      'third/x',
+    ])
+  })
+
+  it('labels wildcard entries the target provider lacks as missing-id', async () => {
+    ctx.provide('llm', {
+      listModels: async (provider: string) =>
+        (provider === 'other' ? [] : [{ provider, id: 'gpt-4o', name: 'gpt-4o' }]),
+    })
+    const logs: Array<{ type: string; args: unknown[] }> = []
+    ctx.logger.exporter({ export: (message) => logs.push(message) })
+    const { agent } = makeAgent('agent-log-missing', { provider: 'mock', model: 'gpt-4o' })
+    apply(ctx, cfg({ chains: { 'mock/*': ['other/*', 'local/*'] } }))
+
+    expect((await dispatchRequestError(ctx, agent))).toEqual({ kind: 'retry' })
+    expect(switchLogCandidates(logs, 0)).toEqual([
+      'other/gpt-4o (skipped: missing-id)',
+      'local/gpt-4o',
+    ])
+  })
+})
+
+describe('countRetryEvents — always-mode counting + fast path (T3 review Minor 4)', () => {
+  /** Minimal session double — `countRetryEvents` only reads `session.events`. */
+  function sessionWith(events: Array<{ type: string; data: Record<string, unknown> }>): Session {
+    return { events: events as unknown as SessionEvent[] } as Session
+  }
+
+  it('returns 0 without scanning earlier turns when the target (turn, step) has no retries', () => {
+    const events: Array<{ type: string; data: Record<string, unknown> }> = []
+    for (let step = 1; step <= 50; step += 1) {
+      events.push({ type: 'llm/retry', data: { turn: 1, step, provider: 'mock', mode: 'always', policyKey: 'always', retry: 1 } })
+    }
+    // 50 old-turn events, target (2, 1): the reverse scan breaks on the first
+    // event older than the target and returns 0.
+    expect(countRetryEvents(sessionWith(events), 2, 1, 'mock')).toBe(0)
+  })
+
+  it('counts only always-mode retries at the exact (turn, step, provider)', () => {
+    // Append-ordered log (oldest first — the session log is append-only).
+    const events: Array<{ type: string; data: Record<string, unknown> }> = [
+      { type: 'llm/retry', data: { turn: 1, step: 9, provider: 'mock', mode: 'always', policyKey: 'always', retry: 1 } },
+      { type: 'llm/retry', data: { turn: 2, step: 3, provider: 'mock', mode: 'normal', policyKey: 'normal', retry: 1 } },
+      { type: 'llm/retry', data: { turn: 2, step: 3, provider: 'mock', mode: 'always', policyKey: 'always', retry: 1 } },
+      { type: 'llm/retry', data: { turn: 2, step: 3, provider: 'mock', mode: 'always', policyKey: 'always', retry: 2 } },
+      { type: 'llm/retry', data: { turn: 2, step: 3, provider: 'other', mode: 'always', policyKey: 'always', retry: 1 } },
+    ]
+    expect(countRetryEvents(sessionWith(events), 2, 3, 'mock')).toBe(2)
+  })
+
+  it('does not let events after the target (turn, step) leak into the count', () => {
+    const events: Array<{ type: string; data: Record<string, unknown> }> = [
+      { type: 'llm/retry', data: { turn: 2, step: 3, provider: 'mock', mode: 'always', policyKey: 'always', retry: 1 } },
+      { type: 'llm/retry', data: { turn: 2, step: 4, provider: 'mock', mode: 'always', policyKey: 'always', retry: 1 } },
+    ]
+    expect(countRetryEvents(sessionWith(events), 2, 3, 'mock')).toBe(1)
+  })
+})
+
+describe('lazy per-agent state on agent/request (T3 review Minor 3)', () => {
+  it('keeps the store empty after a no-op request (no chains)', async () => {
+    const { agent } = makeAgent('agent-lazy-noop', { provider: 'mock', model: 'gpt-4o' })
+    apply(ctx, cfg())
+    await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
+    expect(stateStore(ctx)?.size).toBe(0)
+  })
+
+  it('keeps the store empty after a request while disabled', async () => {
+    const { agent } = makeAgent('agent-lazy-disabled', { provider: 'mock', model: 'gpt-4o' })
+    apply(ctx, cfg({ enabled: false, chains: { default: ['other/gpt-4o'] } }))
+    await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
+    expect(stateStore(ctx)?.size).toBe(0)
+  })
+
+  it('creates state lazily only once the always-cap path has a real switch intent', async () => {
+    const { agent } = makeAgent('agent-lazy-cap', { provider: 'mock', model: 'gpt-4o' })
+    apply(ctx, cfg({ chains: { default: ['other/gpt-4o'] }, alwaysModeRetryCap: 2 }))
+
+    // Below cap: no switch intent yet → still no state entry.
+    agent.session.append('llm/retry', { turn: 1, step: 1, provider: 'mock', mode: 'always', policyKey: 'always', retry: 1 })
+    const below = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
+    expect(below).toEqual({ provider: 'mock', model: 'gpt-4o' })
+    expect(stateStore(ctx)?.size).toBe(0)
+
+    // At cap: genuine switch intent → state created and the switch applied.
+    agent.session.append('llm/retry', { turn: 1, step: 1, provider: 'mock', mode: 'always', policyKey: 'always', retry: 2 })
+    const switched = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
+    expect(switched).toEqual({ provider: 'other', model: 'gpt-4o' })
+    expect(stateStore(ctx)?.size).toBe(1)
+  })
+
+  it('applies a pending switch from request-error without growing the store', async () => {
+    const { agent } = makeAgent('agent-lazy-pending', { provider: 'mock', model: 'gpt-4o' })
+    apply(ctx, cfg({ chains: { default: ['other/gpt-4o'] } }))
+
+    expect((await dispatchRequestError(ctx, agent))).toEqual({ kind: 'retry' })
+    expect(stateStore(ctx)?.size).toBe(1)
+    const config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
+    expect(config).toEqual({ provider: 'other', model: 'gpt-4o' })
+    expect(stateStore(ctx)?.size).toBe(1)
   })
 })
 

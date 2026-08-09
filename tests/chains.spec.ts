@@ -12,6 +12,7 @@ import { describe, expect, it } from 'vitest'
 import { CooldownStore, StepFailureSet } from '../src/cooldown.ts'
 import type { Selector } from '../src/selectors.ts'
 import {
+  annotateCandidates,
   createCandidateFilter,
   resolveCandidate,
   resolveChain,
@@ -162,37 +163,37 @@ describe('createCandidateFilter — caller-side candidate filtering', () => {
   }
 
   it('accepts a usable candidate', () => {
-    expect(makeFilter()({ provider: 'anthropic', model: 'claude-3-5-sonnet' })).toBe(true)
+    expect(makeFilter()({ provider: 'anthropic', model: 'claude-3-5-sonnet', raw: 'anthropic/claude-3-5-sonnet' })).toBe(true)
   })
 
   it('skips a candidate equal to the current model', () => {
-    expect(makeFilter()({ provider: 'openai', model: 'gpt-4o' })).toBe(false)
+    expect(makeFilter()({ provider: 'openai', model: 'gpt-4o', raw: 'openai/gpt-4o' })).toBe(false)
   })
 
   it('keeps a candidate that shares only the provider with the current model', () => {
-    expect(makeFilter()({ provider: 'openai', model: 'gpt-4-turbo' })).toBe(true)
+    expect(makeFilter()({ provider: 'openai', model: 'gpt-4-turbo', raw: 'openai/gpt-4-turbo' })).toBe(true)
   })
 
   it('skips cooldown-suppressed candidates (keyed provider/model)', () => {
     const cooldown = new CooldownStore()
     cooldown.suppress('anthropic/claude-3-5-sonnet', Infinity)
     const filter = makeFilter({ cooldown })
-    expect(filter({ provider: 'anthropic', model: 'claude-3-5-sonnet' })).toBe(false)
-    expect(filter({ provider: 'google', model: 'gemini-1.5-pro' })).toBe(true)
+    expect(filter({ provider: 'anthropic', model: 'claude-3-5-sonnet', raw: 'anthropic/claude-3-5-sonnet' })).toBe(false)
+    expect(filter({ provider: 'google', model: 'gemini-1.5-pro', raw: 'google/gemini-1.5-pro' })).toBe(true)
   })
 
   it('skips candidates already failed in this step', () => {
     const failed = new StepFailureSet()
     failed.add('anthropic/claude-3-5-sonnet')
     const filter = makeFilter({ failed })
-    expect(filter({ provider: 'anthropic', model: 'claude-3-5-sonnet' })).toBe(false)
-    expect(filter({ provider: 'google', model: 'gemini-1.5-pro' })).toBe(true)
+    expect(filter({ provider: 'anthropic', model: 'claude-3-5-sonnet', raw: 'anthropic/claude-3-5-sonnet' })).toBe(false)
+    expect(filter({ provider: 'google', model: 'gemini-1.5-pro', raw: 'google/gemini-1.5-pro' })).toBe(true)
   })
 
   it('skips candidates whose model id is absent on the target provider', () => {
     const filter = makeFilter({ modelExists: (_p, m) => m !== 'gpt-4o' })
-    expect(filter({ provider: 'anthropic', model: 'gpt-4o' })).toBe(false)
-    expect(filter({ provider: 'anthropic', model: 'claude-3-5-sonnet' })).toBe(true)
+    expect(filter({ provider: 'anthropic', model: 'gpt-4o', raw: 'anthropic/gpt-4o' })).toBe(false)
+    expect(filter({ provider: 'anthropic', model: 'claude-3-5-sonnet', raw: 'anthropic/claude-3-5-sonnet' })).toBe(true)
   })
 
   it('does not require modelExists (wildcard absence decided by caller)', () => {
@@ -201,5 +202,68 @@ describe('createCandidateFilter — caller-side candidate filtering', () => {
     const filter = createCandidateFilter({ current: failing, cooldown, failed })
     const candidate: Selector = { provider: 'anthropic', model: 'gpt-4o', raw: 'anthropic/gpt-4o' }
     expect(filter(candidate)).toBe(true)
+  })
+})
+
+describe('annotateCandidates — per-candidate skip reasons (T3 review Minor 1)', () => {
+  const failing = { provider: 'openai', model: 'gpt-4o' }
+
+  function makeBase() {
+    const cooldown = new CooldownStore()
+    const failed = new StepFailureSet()
+    return {
+      options: { current: failing, cooldown, failed },
+      cooldown,
+      failed,
+    }
+  }
+
+  it('labels each skipped candidate with its concrete reason and leaves survivors unlabelled', () => {
+    const { options, cooldown, failed } = makeBase()
+    cooldown.suppress('google/gemini-1.5-pro', Infinity)
+    failed.add('anthropic/claude-3-5-sonnet')
+    const candidates: Selector[] = [
+      { provider: 'openai', model: 'gpt-4o', raw: 'openai/gpt-4o' },
+      { provider: 'google', model: 'gemini-1.5-pro', raw: 'google/gemini-1.5-pro' },
+      { provider: 'anthropic', model: 'claude-3-5-sonnet', raw: 'anthropic/claude-3-5-sonnet' },
+      { provider: 'mistral', model: 'mistral-large', raw: 'mistral/mistral-large' },
+    ]
+    const annotated = annotateCandidates(candidates, [candidates[3]!], options)
+    expect(annotated.map(({ candidate, skip }) => [candidate.raw, skip])).toEqual([
+      ['openai/gpt-4o', 'same-as-current'],
+      ['google/gemini-1.5-pro', 'cooldown'],
+      ['anthropic/claude-3-5-sonnet', 'step-failed'],
+      ['mistral/mistral-large', undefined],
+    ])
+  })
+
+  it('labels a wildcard entry dropped only by the existence probe as missing-id', () => {
+    const { options } = makeBase()
+    // The caller resolved with modelExists, so the wildcard entry whose target
+    // provider lacks the id is absent from `surviving` (exact entries are
+    // never existence-probed — T2 contract; they stay in `surviving`).
+    const candidates: Selector[] = [
+      { provider: 'anthropic', model: 'gpt-4o', raw: 'anthropic/gpt-4o' },
+      { provider: 'local', model: 'gpt-4o', raw: 'local/gpt-4o' },
+    ]
+    const annotated = annotateCandidates(candidates, [candidates[1]!], options)
+    expect(annotated[0]?.skip).toBe('missing-id')
+    expect(annotated[1]?.skip).toBeUndefined()
+  })
+
+  it('keeps the considered order and preserves duplicates', () => {
+    const { options, cooldown } = makeBase()
+    cooldown.suppress('a/x', Infinity)
+    const candidates: Selector[] = [
+      { provider: 'a', model: 'x', raw: 'a/x' },
+      { provider: 'b', model: 'y', raw: 'b/y' },
+      { provider: 'a', model: 'x', raw: 'a/x' },
+    ]
+    const annotated = annotateCandidates(candidates, [candidates[1]!], options)
+    expect(annotated.map(({ candidate, skip }) => [candidate.raw, skip])).toEqual([
+      ['a/x', 'cooldown'],
+      ['b/y', undefined],
+      ['a/x', 'cooldown'],
+    ])
   })
 })
