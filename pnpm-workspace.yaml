@@ -1,0 +1,5 @@
+# dsh profile convention: the @deepseek-ai/* and cordis peer dependencies
+# resolve from the dsh installation at runtime (in-box bundles), never from
+# the npm registry. Disable auto-install-peers so a local `pnpm install`
+# does not try to fetch unpublished packages.
+autoInstallPeers: false
