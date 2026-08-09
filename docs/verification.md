@@ -15,8 +15,8 @@
 
 | 范围 | 文件 | 数量 | 覆盖契约 |
 |---|---|---|---|
-| 单元（T2） | `selectors.spec.ts` / `chains.spec.ts` / `roles.spec.ts` / `cooldown.spec.ts` | 10 / 23 / 10 / 9 | selector 解析与 specificity（exact → `provider/*` → 角色 → default）、`provider/*` 条目保留模型 id 仅换 provider、角色规则顺序匹配、cooldown/revert（惰性过期、never 无限 TTL） |
-| 单元（T3） | `state.spec.ts` / `events.spec.ts` / `config.spec.ts` / `runtime.spec.ts` | 13 / 4 / 2 / 20 | 状态机（pendingSwitch 产生→应用→清除、appliedTurnStep 防重放、step 推进重置）、`fallbacks/switch` 事件形状与 JSON 往返、`Config({})` 恒等于默认配置（no-op 基线）、小集成 Step 6 全项 |
+| 单元（T2） | `selectors.spec.ts` / `chains.spec.ts` / `roles.spec.ts` / `cooldown.spec.ts` | 11 / 26 / 10 / 9 | selector 解析与 specificity（exact → `provider/*` → 角色 → default）、`provider/*` 条目保留模型 id 仅换 provider、角色规则顺序匹配、cooldown/revert（惰性过期、never 无限 TTL） |
+| 单元（T3） | `state.spec.ts` / `events.spec.ts` / `config.spec.ts` / `runtime.spec.ts` | 13 / 4 / 2 / 30 | 状态机（pendingSwitch 产生→应用→清除、appliedTurnStep 防重放、step 推进重置）、`fallbacks/switch` 事件形状与 JSON 往返、`Config({})` 恒等于默认配置（no-op 基线）、小集成 Step 6 全项 |
 | 集成（T4） | `plugin.spec.ts` / `coexist-llm-retry.spec.ts` / `always-mode.spec.ts` | 16 / 4 / 5 | 端到端重集成、**双插件共存顺序**（normal 先退避、预算耗尽后切换；不可重试码直切）、**always 先委托下游 + cap 在 request 边界**（ADR-2）、冷却/revert 集成、**安全阀**超限后原错误语义、组合顺序互不干扰 |
 | client（T5） | `fallbacks-store.spec.ts` | 20 | 设置页描述符读/写（redactSecrets 面、expectedRevision 冲突保护、settings-conflict 状态）、chain/rule 行编辑往返、controller 生命周期 |
 | 回归 | `skeleton.spec.ts` | 3 | bundle 契约（row id、空 schema 接受、host+client apply 入口） |
@@ -60,7 +60,7 @@ bundle 层顺序一节；真实 web profile 层序 `dsh-base → dsh-web-app →
   坏 env（`DSH_HOME=/nonexistent`）按预期报错退出 1。
 - **类型正确性**（T6 修复轮）：真实 `tsc` 编译验证 cast 修正后 red→green（TS2345 原文
   复现 → exit 0），`z<Config>` 与 patch 后 `AgentOptions`（含 `role?`）双向可赋值。
-- **构建管线**：`pnpm build`（host bundle + client bundle + tsc 声明）在 T1/T5/T7 各轮全绿。
+- **构建管线**：`pnpm build`（host bundle + client bundle + tsc 声明）在 T1/T5 各轮全绿（T6/T7 无构建面变更）。
 
 ### 4. 运行契约（以测试证据支撑）
 
