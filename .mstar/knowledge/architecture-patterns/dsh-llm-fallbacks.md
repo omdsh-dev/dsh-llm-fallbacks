@@ -52,6 +52,7 @@ Map<agent.id, AgentFallbackState>：pendingSwitch（产生→应用→清除；�
 ### 已知限制（open residual）
 
 - 活跃 model-selection（installModelSelection 先注册且 selection 活跃）会在 fallback 覆写之上再次应用外层 selection，路由最终指向用户所选模型（切换仍决策/事件化）；协调 seam 需 dsh 核心决策。
+  > **注（iter-20260810-fallbacks-settings-ux 规划）**：本条限制由该迭代 R2 关闭（A1 标记让位机制，见该迭代 spec §2.5 D-1 / plan T2）处理；落地后本条应从「已知限制」移除或改写（iteration-close compound-refresh 时执行）。
 - 失败码默认 ['AUTH','QUOTA','RATE_LIMIT']；5xx/TRANSPORT 等由 llm-retry 先行退避，预算耗尽后同样进入 fallback 决策，无需额外配置。
 
 ## Why This Matters
