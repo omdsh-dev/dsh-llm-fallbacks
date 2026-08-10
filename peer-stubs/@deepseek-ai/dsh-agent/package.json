@@ -1,8 +1,0 @@
-{
-  "name": "@deepseek-ai/dsh-agent",
-  "version": "0.0.1",
-  "private": true,
-  "type": "module",
-  "types": "index.d.ts",
-  "description": "Dev-time type-only stub for @deepseek-ai/dsh-agent. The real package is private (not on the npm registry) and ships from the host dsh app at runtime; this stub declares the type surface dsh-llm-fallbacks consumes (Agent / AgentOptions / RequestErrorAction + the agent/request-error, agent/request, agent/status, agent/disposed cordis Events entries). Mirrors dsh-private commit b8343cb (2026-08-09 snapshot)."
-}

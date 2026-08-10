@@ -25,7 +25,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Context } from 'cordis'
 import type { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import { apply, stateStore } from '../src/index.ts'
-import { resetSettingsStub } from './support/settings-stub.ts'
+import { MemorySettings } from './support/memory-settings.ts'
 import {
   appendLlmRetry,
   cfg,
@@ -41,8 +41,8 @@ import { installModelSelectionStub, type ModelSelectionRef } from './support/mod
 let ctx: Context
 
 beforeEach(() => {
-  resetSettingsStub()
   ctx = new Context()
+  ctx.plugin(MemorySettings)
 })
 
 afterEach(async () => {

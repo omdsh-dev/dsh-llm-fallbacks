@@ -45,11 +45,12 @@ function viewOf(overrides: Partial<SettingsNamespaceView> = {}): SettingsNamespa
   }
 }
 
-/** A settings wire face whose methods are spies. */
+/** A settings wire face whose methods are spies (real `IApiClient.settings` also carries `openDocument`). */
 function makeApi() {
   return {
     settings: {
       describe: vi.fn(),
+      openDocument: vi.fn(),
       update: vi.fn(),
       replace: vi.fn(),
       mutate: vi.fn(),
