@@ -20,7 +20,9 @@
   },
   "files": [
     "dist",
-    "bundle"
+    "bundle",
+    "scripts",
+    "patches"
   ],
   "dsh": {
     "bundle": {
@@ -40,7 +42,8 @@
     "build": "rm -rf dist && bun build src/index.ts --target node --outdir dist --external cordis --external '@deepseek-ai/*' && bun run build-client && bunx tsc",
     "build-client": "bun run scripts/build-client.ts",
     "test": "vitest run",
-    "prepare": "bun run build"
+    "prepare": "bun run build && bash scripts/autopatch-install.sh",
+    "postinstall": "bash scripts/autopatch-install.sh"
   },
   "engines": {
     "node": ">=22",

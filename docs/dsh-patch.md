@@ -1,6 +1,6 @@
 # dsh 本体 role patch 指南
 
-`dsh-llm-fallbacks` 的角色解析以 `agent.options.role`（显式角色）为最高优先级来源（`options.role` → `roles.rules` → `roles.default`，见 [docs/configuration.md](docs/configuration.md)）。dsh 本体目前没有该字段，本仓库在 `patches/` 交付两个最小 git patch + 配套脚本（`scripts/apply-dsh-patch.sh` / `revert-dsh-patch.sh` / `verify-dsh-patch.sh`），把改动应用到**本机的 dsh 源码树**（本仓库不携带 dsh 源码）。
+`dsh-llm-fallbacks` 的角色解析以 `agent.options.role`（显式角色）为最高优先级来源（`options.role` → `roles.rules` → `roles.default`，见 [docs/configuration.md](docs/configuration.md)）。dsh 本体目前没有该字段，本仓库在 `patches/` 交付两个最小 git patch + 配套脚本（`scripts/apply-dsh-patch.sh` / `revert-dsh-patch.sh` / `verify-dsh-patch.sh` / `autopatch-install.sh`），把改动应用到**本机的 dsh 源码树**（本仓库不携带 dsh 源码）。`autopatch-install.sh` 在插件安装生命周期自动应用（见下文「自动应用」），其余脚本供手动应用 / 回滚 / 验证。
 
 ## 动机：subagent 显式角色
 
@@ -48,6 +48,19 @@ scripts/verify-dsh-patch.sh --absent
 - **`--check` 优先**：应用/回滚前先用 `--check` 确认目标树状态，零副作用。
 - **构建步骤**：`apply`/`revert` 会重建受影响包（`pnpm exec tsc -b packages/core/agent packages/subagent/tool-subagent` + `pnpm exec tsdown --env.DSH_BUILD_FACE host`）。目标树无 pnpm 环境时脚本明确提示并跳过构建、退出非 0（此时可 `--skip-build` 应用后手动构建）。
 - **验证探针**：agent 检查 `src/runtime-types.ts` 与构建产物 `lib/types/runtime-types.d.ts` 含 `role?: string`；tool-subagent 检查 `src/index.ts` 与构建产物 `lib/types/index.js` 含 `role: z.string()`（探针布局与真实构建产物一致，缺失记为 SKIP）。
+
+## 自动应用（安装期）
+
+插件在安装生命周期自动检测目标 dsh 源码树并**幂等应用**这两个 patch（脚本 `scripts/autopatch-install.sh`，与 `apply-dsh-patch.sh` 同构的三态判定：可应用 → apply；已应用 → skip；冲突 → warn），无需手动执行 `apply-dsh-patch.sh`：
+
+- **触发时机**：
+  - `postinstall`：插件作为依赖被安装时（git / tarball 安装）。pnpm ≥ 10 默认不执行依赖的构建脚本，需放行后才触发（见 [docs/install.md](docs/install.md) 的 allowBuilds 说明）；
+  - `prepare`：git 安装（pnpm 在克隆后构建）以及在本仓库目录执行 `pnpm install` 时；
+  - **本地 link 安装（`dsh plugin --profile <name> add .`）不触发生命周期脚本**（pnpm 对 `link:` 依赖不运行 prepare/postinstall，已实证）——此类安装后请手动执行一次 `bash scripts/autopatch-install.sh`（幂等，已应用则跳过）。
+- **开关**：环境变量 `DSH_LLM_FALLBACKS_AUTOPATCH`，默认开启（`1`）；`DSH_LLM_FALLBACKS_AUTOPATCH=0` 完全跳过（含 prepare 链的 autopatch 段）。
+- **目标解析**：`$DSH_SOURCE_DIR` 优先，缺省 `${DSH_HOME}/source/current`；目标缺失或非 git 树 → info 跳过（退出 0）。
+- **失败语义**：任何失败只 warn、**绝不导致安装失败**（退出 0）：patch 冲突 → warn 并提示手动处理（`apply-dsh-patch.sh`）；重建失败 / 缺 pnpm / 缺 node_modules → warn 并附手动重建命令；verify 探针未通过 → warn 附手动应用命令。幂等：已应用 / 已原生支持（`AgentOptions` 已含 `role`，verify 探针通过）→ 跳过。
+- **升级后重跑仍靠 `apply-dsh-patch.sh`**：自动应用只在插件安装时触发一次，dsh 升级重置本体改动后**不会**自动重打——升级后仍需按下文「dsh 升级后需重跑」手动执行 `apply-dsh-patch.sh` 并 `verify-dsh-patch.sh` 确认。
 
 ## dsh 升级后需重跑
 
