@@ -1,12 +1,18 @@
-/* Fallbacks settings section, in the settings-panel design language: 14/22
- * body, 12/18 captions, `border-l2` hairlines, and the --dsw-alias-* tokens
- * the Models section and GeneralSection already use (theme-agnostic — colors
- * resolve through the alias tokens, never light-mode literals). */
+/* Fallbacks settings section, in the settings-panel design language — the
+ * same vocabulary as the Models section and the Button/Input primitives:
+ * 14/22 body, 12/18 captions, capsule controls (h36 r18; h28 r14 dense),
+ * h32 r8 fields, r12 cards (outlined on the panel, `bg-module-platform` for
+ * the row editors), and `border-l2` hairlines.
+ *
+ * Every color resolves through a `--dsw-alias-*` token. Bare `--border` /
+ * `--surface` / `--text-*` names, which nothing in this app defines, would
+ * render the light-mode literals written as their fallbacks and stay light
+ * under the dark theme. */
 
 .section {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 12px;
   max-width: 720px;
   color: var(--dsw-alias-label-primary);
 }
@@ -26,31 +32,8 @@
   color: var(--dsw-alias-label-tertiary);
 }
 
-/* Enabled OFF notice (readme-settings spec §1.2): neutral guidance shown in
- * place of the hidden form body — informational, not an error. */
-.offNotice {
-  padding: 8px 12px;
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 8px;
-  font-size: 13px;
-  line-height: 20px;
-  color: var(--dsw-alias-label-secondary);
-  background: var(--dsw-alias-bg-layer-1);
-}
-
-/* Namespace-not-registered info banner (spec §1.4-3): informational, not a
- * dead-end notice — the page shows the default-config seed and saves are
- * attempted. Uses the business (info) state tokens. */
-.infoBanner {
-  padding: 8px 12px;
-  border: 1px solid var(--dsw-alias-state-business-primary);
-  border-radius: 8px;
-  font-size: 13px;
-  line-height: 20px;
-  color: var(--dsw-alias-state-business-primary);
-  background: var(--dsw-alias-state-business-tertiary);
-}
-
+/* Field grouping: legend + hint + controls. `margin: 0; border: none` keeps
+   the fieldset a pure grouping box (the inner gap is the field rhythm). */
 .field {
   display: flex;
   flex-direction: column;
@@ -62,23 +45,10 @@
 }
 
 .fieldLabel {
-  font-size: 14px;
-  line-height: 22px;
-  font-weight: 500;
-  color: var(--dsw-alias-label-primary);
   padding: 0;
-}
-
-.subField {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin-top: 4px;
-}
-
-.subFieldLabel {
   font-size: 12px;
   line-height: 18px;
+  font-weight: 500;
   color: var(--dsw-alias-label-secondary);
 }
 
@@ -96,6 +66,41 @@
   color: var(--dsw-alias-label-tertiary);
 }
 
+/* The `enabled` switch is a row-level preference: title + hint on the left,
+   the control on the right (the Permission-row rhythm). */
+.fieldRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.fieldRowText {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.fieldRowTitle {
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--dsw-alias-label-primary);
+}
+
+.fieldRowDesc {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+/* The panel has no switch primitive, so the native checkbox/radio keeps its
+   geometry and semantics; the alias brand tint ties it to the theme. */
+.switch,
+.optionRow input {
+  accent-color: var(--dsw-alias-brand-primary);
+}
+
 .optionRow {
   display: flex;
   align-items: center;
@@ -105,28 +110,72 @@
   color: var(--dsw-alias-label-primary);
 }
 
-.textInput,
-.numberInput,
-.textarea {
+.subField {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.subFieldLabel {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+/* Text/enum fields: h32 r8 on the layer-1 fill, brand border on focus
+   (the Models `.input`). */
+.input {
   box-sizing: border-box;
   width: 100%;
-  font: inherit;
-  color: var(--dsw-alias-label-primary);
-  background: var(--dsw-alias-bg-layer-1);
+  height: 32px;
+  padding: 0 10px;
   border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 6px;
-  padding: 6px 10px;
+  border-radius: 8px;
+  font: inherit;
+  font-size: 14px;
+  line-height: 22px;
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-primary);
+}
+
+.input:focus {
+  outline: none;
+  border-color: var(--dsw-alias-brand-primary);
+}
+
+.input::placeholder {
+  color: var(--dsw-alias-label-dimmed);
+}
+
+.input:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* Enum pickers hold a handful of short options; a field-width dropdown reads
+   as a text field the user is expected to fill. */
+select.input {
+  max-width: 240px;
+  cursor: pointer;
+}
+
+/* Select variant of .input: replaces the OS arrow (which sits flush against
+   the right edge) with the shared 12px chevron inset; the right pad
+   reserves its cell. */
+.selectInput {
+  appearance: none;
+  padding-right: 32px;
+  /* Data-URI SVGs cannot resolve CSS variables; #81858C is the caption gray
+     shared by both themes. */
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none'%3E%3Cpath d='M3 4.5L6 7.5L9 4.5' stroke='%2381858C' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  background-size: 12px 12px;
 }
 
 .numberInput {
   width: 180px;
-}
-
-.textarea {
-  resize: vertical;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 13px;
-  line-height: 20px;
 }
 
 .list {
@@ -136,21 +185,26 @@
   margin-top: 4px;
 }
 
-.rowCard,
-.ruleCard {
+/* Row editors (chains / role rules): a filled module on the panel, matching
+   the Models editor surface — r12 on the module-platform fill. */
+.editorCard {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 10px;
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 8px;
-  background: var(--dsw-alias-bg-base);
+  gap: 10px;
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: var(--dsw-alias-bg-module-platform);
 }
 
-.ruleCard {
-  flex-direction: row;
+.cardFoot {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.ruleGrid {
+  display: flex;
   flex-wrap: wrap;
-  align-items: flex-end;
+  gap: 10px;
 }
 
 .ruleCell {
@@ -167,78 +221,123 @@
   color: var(--dsw-alias-label-secondary);
 }
 
-.addButton,
-.primaryButton,
-.secondaryButton {
-  font: inherit;
-  font-size: 14px;
-  line-height: 22px;
-  border-radius: 6px;
-  cursor: pointer;
+/* Chain selector rows (provider select + model select + wildcard): each row
+   is its own edit surface inside the chain card — the same grid rhythm as
+   the role rules, with the wildcard checkbox as a row-level cell. */
+.chainSelectors {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
+.selectorRow {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* The wildcard cell flips the column cell to a row layout: the checkbox
+   stands beside its label, centered against the selects above it. */
+.wildcardCell {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  min-width: 200px;
+  align-self: center;
+}
+
+/* Icon-only actions: the label rides `data-tip` (and aria-label) so the card
+   stays quiet until someone reaches for it (the Agent-presets pattern). */
+.iconButton {
+  position: relative;
+  appearance: none;
+  border: 0;
+  border-radius: 7px;
+  padding: 6px;
+  background: none;
+  color: var(--dsw-alias-label-tertiary);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+}
+
+.iconButton:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.iconButton:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+}
+
+.iconButton:focus-visible {
+  outline: 2px solid var(--dsw-alias-brand-primary);
+  outline-offset: -1px;
+}
+
+.iconButton::after {
+  content: attr(data-tip);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: var(--dsw-alias-label-primary);
+  color: var(--dsw-alias-bg-layer-3);
+  font-size: 11px;
+  line-height: 17px;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .12s;
+}
+
+.iconButton:hover::after,
+.iconButton:focus-visible::after {
+  opacity: 1;
+}
+
+/* Row removals are destructive: the danger tint on hover. */
+.iconButtonDanger:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover-danger);
+  color: var(--dsw-alias-state-error-primary);
+}
+
+/* The inline add affordances (Button primitive, outline sm): align to the
+   field's start edge rather than stretching across it. */
 .addButton {
   align-self: flex-start;
-  padding: 4px 12px;
-  color: var(--dsw-alias-label-primary);
-  background: var(--dsw-alias-bg-layer-1);
-  border: 1px solid var(--dsw-alias-border-l2);
-}
-
-.linkButton {
-  font: inherit;
-  font-size: 13px;
-  line-height: 20px;
-  padding: 2px 0;
-  color: var(--dsw-alias-brand-primary);
-  background: none;
-  border: none;
-  cursor: pointer;
-  text-align: left;
 }
 
 .actions {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
   margin-top: 4px;
 }
 
-.primaryButton {
-  padding: 8px 20px;
-  color: var(--dsw-alias-label-primary-foreground);
-  background: var(--dsw-alias-brand-primary);
-  border: 1px solid transparent;
-}
-
-.secondaryButton {
-  padding: 8px 20px;
-  color: var(--dsw-alias-label-primary);
-  background: var(--dsw-alias-bg-layer-1);
-  border: 1px solid var(--dsw-alias-border-l2);
-}
-
-.primaryButton:disabled,
-.secondaryButton:disabled,
-.addButton:disabled,
-.textInput:disabled,
-.numberInput:disabled,
-.textarea:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
+/* AC-7 read-only status: an outlined card like the Models rows, so the
+   summary reads as a panel on the page rather than an editor surface. */
 .statusBlock {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  padding: 10px 12px;
+  padding: 12px 14px;
   border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 8px;
-  background: var(--dsw-alias-bg-layer-1);
+  border-radius: 12px;
 }
 
 .statusTitle {
+  font-size: 12px;
+  line-height: 18px;
+  font-weight: 500;
+  color: var(--dsw-alias-label-secondary);
+}
+
+/* Block sub-label ("当前生效模型" / "最近切换") — same rhythm as the block title. */
+.statusSubTitle {
   font-size: 12px;
   line-height: 18px;
   font-weight: 500;
@@ -250,6 +349,54 @@
   font-size: 13px;
   line-height: 20px;
   color: var(--dsw-alias-label-primary);
+}
+
+/* Derived effective-model line: value + the always-appended non-probing note. */
+.statusEffective {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.statusEffectiveValue {
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--dsw-alias-label-primary);
+}
+
+/* Recent-switch summary: list of route + meta lines, or the empty/error note. */
+.statusSwitches {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.statusSwitchList {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.statusSwitchItem {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.statusSwitchRoute {
+  font-size: 13px;
+  line-height: 20px;
+  font-variant-numeric: tabular-nums;
+  color: var(--dsw-alias-label-primary);
+}
+
+.statusSwitchMeta {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
 }
 
 .statusPlaceholder {
@@ -267,6 +414,19 @@
   color: var(--dsw-alias-label-dimmed);
 }
 
+/* Enabled OFF (readme-settings spec §1.2): an empty-state card in place of
+   the hidden form body — dashed, like every other "nothing here yet"
+   affordance on the settings pages. */
+.offNotice {
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px dashed var(--dsw-alias-border-l3);
+  border-radius: 12px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--dsw-alias-label-secondary);
+}
+
 .banner {
   display: flex;
   align-items: center;
@@ -275,7 +435,40 @@
   line-height: 20px;
   padding: 8px 12px;
   border: 1px solid var(--dsw-alias-state-warn-primary);
-  border-radius: 8px;
+  border-radius: 12px;
   color: var(--dsw-alias-state-warn-label);
   background: var(--dsw-alias-state-warn-tertiary);
+}
+
+/* Namespace-not-registered info banner (spec §1.4-3): informational, not a
+   dead-end notice — the page shows the default-config seed and saves are
+   attempted. Uses the business (info) state tokens. */
+.infoBanner {
+  padding: 8px 12px;
+  border: 1px solid var(--dsw-alias-state-business-primary);
+  border-radius: 12px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--dsw-alias-state-business-primary);
+  background: var(--dsw-alias-state-business-tertiary);
+}
+
+/* Reset-to-defaults confirmation dialog (the Models delete-confirm width). */
+.resetDialog {
+  width: min(480px, 100%);
+}
+
+.confirmDanger:not(:disabled) {
+  border-color: var(--dsw-alias-state-error-primary);
+  color: var(--dsw-alias-state-error-primary);
+}
+
+.confirmDanger:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover-danger);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .iconButton::after {
+    transition: none;
+  }
 }

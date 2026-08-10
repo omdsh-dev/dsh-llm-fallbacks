@@ -14,7 +14,10 @@
  * - the AC-8 no-op regression (unconfigured / disabled → zero events),
  * - the composition order with a model-selection listener (T3 review ⚠️3:
  *   the real bundle registers agent-default-model's `installModelSelection`
- *   before this plugin — both orders must keep fallback switching intact).
+ *   before this plugin — both orders must keep fallback switching intact),
+ * - the marker handoff under an active selection (Task 2 / spec §2.5 D-1:
+ *   the switched step routes to the chain target, the next step reverts to
+ *   the user selection).
  *
  * The dual-plugin matrix with the llm-retry semantic double lives in
  * `tests/coexist-llm-retry.spec.ts`; the always-mode cap matrix lives in
@@ -37,6 +40,31 @@ import {
   switchEvents,
 } from './support/harness.ts'
 import { installModelSelectionStub, type ModelSelectionRef } from './support/model-selection-stub.ts'
+
+/**
+ * Task 2 (spec §2.5 D-1): the plugin namespace-imports `@deepseek-ai/dsh-agent`
+ * and optional-calls `markFallbackRouted` (W1 guard), but the link farm
+ * resolves the UNPATCHED dsh-agent (dsh-private tree), which does not export
+ * the marker functions — so the import would be `undefined` at runtime. This
+ * mock SIMULATES THE PATCHED MODULE: the plugin's `markFallbackRouted` and the
+ * stub's `isFallbackRouted` (both resolved through this mock) share ONE
+ * WeakSet registry, exactly like the patched real module's single-process
+ * module-level WeakSet.
+ *
+ * The UNPATCHED failure mode (no `markFallbackRouted` export → optional-call
+ * degrade, never throw) is NOT covered by this suite — it is pinned by
+ * `tests/unpatched-host.spec.ts` (W1) and re-verified against the real
+ * patched host by the QA gate (docs/verification.md §6).
+ */
+vi.mock('@deepseek-ai/dsh-agent', async (importOriginal) => {
+  const original = await importOriginal<typeof import('@deepseek-ai/dsh-agent')>()
+  const fallbackRouted = new WeakSet<object>()
+  return {
+    ...original,
+    markFallbackRouted: (config: object) => { fallbackRouted.add(config); return config },
+    isFallbackRouted: (config: object) => fallbackRouted.has(config),
+  }
+})
 
 let ctx: Context
 
@@ -328,14 +356,13 @@ describe('composition order with model-selection (T3 review ⚠️3)', () => {
     expect(switchEvents(agent)).toHaveLength(1)
   })
 
-  it('pins the documented corner: an active selection (registered first) overrides the fallback routing', async () => {
+  it('routes a fallback-switched step to the chain target even under an active selection (marker handoff)', async () => {
     const { agent } = makeAgent('ms-active', { provider: 'mock', model: 'gpt-4o' })
-    // T3 review ⚠️3: "先于本插件注册且存在活跃 selection 的 model-selection 会
-    // 最终覆写 fallback 的切换" — the real listener re-applies the assembled
-    // selection on top of the resolved config. Pin that exact semantics here so
-    // it stays explicit (this is the documented real-host composition, not a
-    // plugin defect): the switch decision is still recorded and its pending
-    // state is still applied/cleared, but the outer selection wins routing.
+    // Task 2 (spec §2.5 D-1): the patched model-selection yields the step when
+    // the plugin marks its override as fallback-routed — the chain target wins
+    // routing on the switched step (previously the selection re-applied on
+    // top). The switch decision is still recorded and the pending state is
+    // still applied/cleared, exactly as before.
     const selection: ModelSelectionRef = {
       current: undefined,
       assembled: { provider: 'sel', model: 'm' },
@@ -346,10 +373,30 @@ describe('composition order with model-selection (T3 review ⚠️3)', () => {
     expect(await dispatchRequestError(ctx, agent)).toEqual({ kind: 'retry' })
     expect(switchEvents(agent)).toHaveLength(1)
     const config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
-    expect(config).toEqual({ provider: 'sel', model: 'm' })
-    // The pending switch was applied and cleared — no replay on the next request.
-    const again = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
-    expect(again).toEqual({ provider: 'sel', model: 'm' })
+    expect(config).toEqual({ provider: 'other', model: 'gpt-4o' })
+  })
+
+  it('restores the user selection on the next request (the marker is per-step)', async () => {
+    const { agent } = makeAgent('ms-restore', { provider: 'mock', model: 'gpt-4o' })
+    const selection: ModelSelectionRef = {
+      current: undefined,
+      assembled: { provider: 'sel', model: 'm' },
+    }
+    installModelSelectionStub(ctx, selection)
+    apply(ctx, cfg({ chains: { default: ['other/gpt-4o'] } }))
+
+    expect(await dispatchRequestError(ctx, agent)).toEqual({ kind: 'retry' })
+    // The switched step routes to the chain target…
+    expect(await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })).toEqual({
+      provider: 'other',
+      model: 'gpt-4o',
+    })
+    // …but the next request has no pending switch → no marker on its config →
+    // the stub applies the user selection again (only the switched step yields).
+    expect(await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })).toEqual({
+      provider: 'sel',
+      model: 'm',
+    })
     expect(switchEvents(agent)).toHaveLength(1)
   })
 })
