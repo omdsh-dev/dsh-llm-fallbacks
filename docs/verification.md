@@ -21,8 +21,8 @@
 | client（T5） | `fallbacks-store.spec.ts` | 27 | 设置页描述符读/写（redactSecrets 面、expectedRevision 冲突保护、settings-conflict 状态）、chain/rule 行编辑往返、controller 生命周期 |
 | 回归 | `skeleton.spec.ts` | 3 | bundle 契约（row id、空 schema 接受、host+client apply 入口） |
 
-结果：**13 files / 168 tests 全绿**（`pnpm test`，vitest run）；`pnpm build`（bun build host →
-`bunx tsc` → bun build client）全绿。no-op 回归不变量（空链 / 未命中 / 链耗尽 / 安全阀
+结果：**13 files / 168 tests 全绿**（`pnpm test`，vitest run）；`pnpm build`（tsdown host bundle →
+`pnpm run build-client`（tsdown client bundle）→ `tsc` 声明）全绿。no-op 回归不变量（空链 / 未命中 / 链耗尽 / 安全阀
 超限 → 透传、不产生 `fallbacks/switch` 事件）由 T3/T4 测试持久断言。
 
 ### 2. bundle 层序（scratch profile `--dump-config` 实证）
@@ -88,7 +88,7 @@ bundle 层顺序一节；真实 web profile 层序 `dsh-base → dsh-web-app →
 
 ```sh
 cd <插件仓库目录>
-pnpm install          # prepare 自构建（需要 bun）
+pnpm install          # prepare 自构建（pnpm 工具链）
 dsh plugin --profile web add .
 dsh --profile web --dump-config   # 组合树末尾应出现 # == dsh-llm-fallbacks 层
 ```

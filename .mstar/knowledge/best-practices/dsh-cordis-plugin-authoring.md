@@ -32,8 +32,8 @@ dsh 插件 = npm 包，package.json 声明 dsh.bundle.patch（指向 bundle/cord
 ### 包结构与构建
 
 - exports：主入口、./client、./bundle/cordis.patch.yml、./package.json；files 含 dist 与 bundle。
-- host 半：bun build --target node --external cordis --external '@deepseek-ai/*'（外部化 import 由宿主 in-box 解析）+ bunx tsc（d.ts）。
-- client 半：closure-factory CJS bundle（window.__ModuleLoader__.load 契约），经 dshClient.inject 声明依赖；CSS-modules 需自定义 transform（类名哈希 + style 标签内联注入/卸载）+ NODE_ENV define。
+- host 半：tsdown（`tsdown.config.ts`：node ESM bundle，`deps.neverBundle ['cordis', /^@deepseek-ai\//]`——外部化 import 由宿主 in-box 解析）+ tsc（d.ts，`emitDeclarationOnly`）。构建栈与 dsh 宿主一致（pnpm + tsdown + tsx，无 bun）。
+- client 半：closure-factory CJS bundle（`window.__ModuleLoader__.load` 契约；`tsx scripts/build-client.ts` 跑 tsdown，`deps.neverBundle` 加载器表 + `alwaysBundle` 内联其余），经 dshClient.inject 声明依赖；CSS-modules 需自定义 transform（rolldown 插件 resolveId/load 虚拟 id + 类名哈希 + style 标签内联注入/卸载）+ NODE_ENV define。
 - prepare 脚本自建（git 安装不跑 build；prepare 需自包含）。
 
 ### 类型访问（dsh link farm，取代 peer-stubs）

@@ -4,7 +4,7 @@
 
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![node](https://img.shields.io/badge/node-%3E%3D22-339933.svg)
-![bun](https://img.shields.io/badge/bun-%3E%3D1.2.17-fbf0df.svg)
+![pnpm](https://img.shields.io/badge/pnpm-%3E%3D10-f69220.svg)
 ![dsh](https://img.shields.io/badge/dsh-DeepSeek%20Harness%20compatible-4B32C3.svg)
 
 Automatic provider/model fallback chains for dsh (DeepSeek Harness): when an agent's LLM requests keep failing — retries exhausted, auth errors, quota exceeded, rate limiting (429) — the plugin switches provider/model along the fallback chain for the current role, and the current step/turn continues on the target model: tasks are not interrupted by model problems.
@@ -36,7 +36,7 @@ dsh plugin --profile web add https://github.com/dsh-external/dsh-llm-fallbacks.g
 ### Local directory install (recommended for development / verification)
 
 ```sh
-# 1) Build in the plugin repo (the prepare self-build needs bun)
+# 1) Build in the plugin repo (the prepare self-build runs the pnpm toolchain: tsdown + tsc, no bun)
 pnpm install
 # 2) Add to the target profile (example: web)
 dsh plugin --profile web add .

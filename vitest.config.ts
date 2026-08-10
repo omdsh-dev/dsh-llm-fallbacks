@@ -15,9 +15,9 @@
  *   and revisions are the real semantics.
  * - The client half's other runtime `@deepseek-ai/*` import is
  *   `@deepseek-ai/dsh-client-runtime/client` (the snapshot-store engine);
- *   bun keeps it external for the host to resolve in-box, and its built
- *   `./client` entry is a browser loader artifact — so tests alias the
- *   subpath to the tree's SOURCE store engine instead.
+ *   the tsdown client build keeps it external for the host to resolve
+ *   in-box, and its built `./client` entry is a browser loader artifact — so
+ *   tests alias the subpath to the tree's SOURCE store engine instead.
  */
 import { homedir } from 'node:os'
 import { join } from 'node:path'
