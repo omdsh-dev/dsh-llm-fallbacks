@@ -11,17 +11,17 @@
 
 ## 已验证（本迭代证据，T1–T8）
 
-### 1. 测试矩阵（单元 + 集成，133 → 153 全绿）
+### 1. 测试矩阵（单元 + 集成，153 → 168 全绿）
 
 | 范围 | 文件 | 数量 | 覆盖契约 |
 |---|---|---|---|
 | 单元（T2） | `selectors.spec.ts` / `chains.spec.ts` / `roles.spec.ts` / `cooldown.spec.ts` | 11 / 26 / 10 / 9 | selector 解析与 specificity（exact → `provider/*` → 角色 → default）、`provider/*` 条目保留模型 id 仅换 provider、角色规则顺序匹配、cooldown/revert（惰性过期、never 无限 TTL） |
-| 单元（T3） | `state.spec.ts` / `events.spec.ts` / `config.spec.ts` / `runtime.spec.ts` | 13 / 4 / 2 / 30 | 状态机（pendingSwitch 产生→应用→清除、appliedTurnStep 防重放、step 推进重置）、`fallbacks/switch` 事件形状与 JSON 往返、`Config({})` 恒等于默认配置（no-op 基线）、小集成 Step 6 全项 |
-| 集成（T4） | `plugin.spec.ts` / `coexist-llm-retry.spec.ts` / `always-mode.spec.ts` | 16 / 4 / 5 | 端到端重集成、**双插件共存顺序**（normal 先退避、预算耗尽后切换；不可重试码直切）、**always 先委托下游 + cap 在 request 边界**（ADR-2）、冷却/revert 集成、**安全阀**超限后原错误语义、组合顺序互不干扰 |
-| client（T5） | `fallbacks-store.spec.ts` | 20 | 设置页描述符读/写（redactSecrets 面、expectedRevision 冲突保护、settings-conflict 状态）、chain/rule 行编辑往返、controller 生命周期 |
+| 单元（T3） | `state.spec.ts` / `events.spec.ts` / `config.spec.ts` / `runtime.spec.ts` | 13 / 4 / 2 / 37 | 状态机（pendingSwitch 产生→应用→清除、appliedTurnStep 防重放、step 推进重置）、`fallbacks/switch` 事件形状与 JSON 往返、`Config({})` 恒等于默认配置（no-op 基线）、小集成 Step 6 全项 |
+| 集成（T4） | `plugin.spec.ts` / `coexist-llm-retry.spec.ts` / `always-mode.spec.ts` | 17 / 4 / 5 | 端到端重集成、**双插件共存顺序**（normal 先退避、预算耗尽后切换；不可重试码直切）、**always 先委托下游 + cap 在 request 边界**（ADR-2）、冷却/revert 集成、**安全阀**超限后原错误语义、组合顺序互不干扰 |
+| client（T5） | `fallbacks-store.spec.ts` | 27 | 设置页描述符读/写（redactSecrets 面、expectedRevision 冲突保护、settings-conflict 状态）、chain/rule 行编辑往返、controller 生命周期 |
 | 回归 | `skeleton.spec.ts` | 3 | bundle 契约（row id、空 schema 接受、host+client apply 入口） |
 
-结果：**13 files / 153 tests 全绿**（`pnpm test`，vitest run）；`pnpm build`（bun build host →
+结果：**13 files / 168 tests 全绿**（`pnpm test`，vitest run）；`pnpm build`（bun build host →
 `bunx tsc` → bun build client）全绿。no-op 回归不变量（空链 / 未命中 / 链耗尽 / 安全阀
 超限 → 透传、不产生 `fallbacks/switch` 事件）由 T3/T4 测试持久断言。
 
@@ -95,11 +95,17 @@ dsh --profile web --dump-config   # 组合树末尾应出现 # == dsh-llm-fallba
 ### 2. web 设置页验证
 
 1. 打开 web 设置 GUI → Settings，确认出现 **Fallbacks** 页（位于 Models 页之后）。
-2. 编辑任一字段（如把 `cooldownMs` 改为 `600000`）并保存。
-3. **预期**：保存成功、无冲突横幅；`$DSH_HOME/settings.yaml`（或该 profile 的 settings
-   路径）写入新值；再次进入页面显示已保存的值，revision 正常（并发修改时出现冲突横幅
-   +「重新加载」按钮，不静默覆盖）。
-4. 一键「恢复默认」后确认配置回组合默认值。
+2. **首次打开（尚无 `fallbacks` 配置）**：页面显示骨架（`nav` 标题 / 介绍 / 只读状态块 /
+   功能级开关 / 保存 / 恢复默认），功能级开关 `enabled` **默认 OFF**，配置表单主体隐藏、
+   显示「功能未开启」提示——页面始终可用，不因命名空间缺失而空白。
+3. 打开 `enabled` 开关 → 配置表单主体出现（`triggerCodes` / `chains` / `roles` /
+   `cooldownMs` / `revertPolicy` / `maxSwitchesPerStep` / `alwaysModeRetryCap`）。
+4. 编辑任一字段（如把 `cooldownMs` 改为 `600000`）并保存。
+5. **预期**：保存成功、无冲突横幅；`$DSH_HOME/settings.yaml`（或该 profile 的 settings
+   路径）写入新值（含 `enabled: true`）；再次进入页面显示已保存的值、开关保持 ON，
+   revision 正常（并发修改时出现冲突横幅 +「重新加载」按钮，不静默覆盖）。
+6. 关闭 `enabled` 开关 → 表单主体再次隐藏（编辑中的 draft 保留，重新打开仍在）；
+   一键「恢复默认」后确认配置回组合默认值（`enabled` 回 `false`）。
 
 ### 3. 运行期 fallback 验证（模拟失败）
 
@@ -145,7 +151,7 @@ dsh 升级（`$DSH_HOME/source/current` 指向新 staging）会重置本体改�
 
 | 面 | 未覆盖原因 | 验证归属 |
 |---|---|---|
-| web 设置 GUI 交互（页面出现、编辑保存、冲突重载） | 沙箱无法操作真实 web 会话 | 用户待执行 §2（client 半逻辑已由 T5 20 例测试覆盖） |
+| web 设置 GUI 交互（页面出现、编辑保存、冲突重载） | 沙箱无法操作真实 web 会话 | 用户待执行 §2（client 半逻辑已由 T5 27 例测试覆盖） |
 | 真实模型调用与失败注入（AUTH/QUOTA/RATE_LIMIT 触发、切换继续） | 沙箱无真实模型凭据与运行中会话 | 用户待执行 §3（决策逻辑已由 T3/T4 集成测试覆盖） |
 | 跨进程观察（日志、`fallbacks/switch` 会话事件在真实会话中的落地） | 沙箱无法运行真实 dsh 会话 | 用户待执行 §3/§4 |
 | 真实安装上的 patch apply → build | 对运行中 `$DSH_HOME` 的写操作被沙箱拒绝 | 用户待执行 §4（可应用性已只读 `git apply --check` + 沙箱全流程验证） |

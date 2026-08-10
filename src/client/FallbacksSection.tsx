@@ -22,6 +22,7 @@ import type { ReactNode } from 'react'
 import { useSyncExternalStore } from 'react'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { FallbacksConfig, RevertPolicy } from '../config.ts'
+import { defaultFallbacksConfig } from '../config.ts'
 import {
   FallbacksSettingsController,
   chainsToRows,
@@ -117,11 +118,20 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
     }
   }, [controller])
 
-  // Editors seed from the descriptor once per revision; a save or a reload
-  // bumps the revision and re-seeds with server truth.
-  const [scalars, setScalars] = useState<FallbacksScalars | null>(null)
-  const [chainRows, setChainRows] = useState<ChainRow[]>([])
-  const [ruleRows, setRuleRows] = useState<RoleRuleRow[]>([])
+  // Editors seed from `defaultFallbacksConfig` on mount (readme-settings spec
+  // §1.4-1): the skeleton is always visible — even before any descriptor
+  // arrives (idle/loading) or when the namespace is missing (unavailable).
+  // The mount seed is only a placeholder: `seededRevision` stays null until
+  // the first ready descriptor, and every later ready (a refresh re-load)
+  // re-seeds with server truth. Controls are not gated on `ready` — a missing
+  // namespace with `writable: true` leaves the switch/form body editable
+  // pre-ready (§1.4-4) — so a mid-edit push (host registers the namespace →
+  // settings/changed → refresh → load → ready) overwrites the draft with
+  // server truth on the next ready: unsaved drafts are not preserved across
+  // the unavailable→ready upgrade.
+  const [scalars, setScalars] = useState<FallbacksScalars>(() => scalarsOf(defaultFallbacksConfig))
+  const [chainRows, setChainRows] = useState<ChainRow[]>(() => chainsToRows(defaultFallbacksConfig.chains))
+  const [ruleRows, setRuleRows] = useState<RoleRuleRow[]>(() => rulesToRows(defaultFallbacksConfig.roles.rules))
   const seededRevision = useRef<number | null>(null)
 
   useEffect(() => {
@@ -133,27 +143,16 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
     setRuleRows(rulesToRows(state.config.roles.rules))
   }, [state.status, state.revision, state.config])
 
-  // Statuses that keep the form mounted: ready, saving, and error-with-
-  // conflict (the stale draft stays visible next to the conflict banner so a
-  // reload can re-seed instead of silently discarding the user's edits).
-  const formMounted = scalars !== null && (
-    state.status === 'ready'
-    || state.status === 'saving'
-    || (state.status === 'error' && state.conflict !== null)
-  )
-  if (!formMounted) {
-    if (state.status === 'unavailable') {
-      return <div className={css.notice}>{t('unavailable')}</div>
-    }
-    if (state.status === 'error') {
-      return <div className={css.notice} role="alert">{t('error.generic', { message: state.error ?? '' })}</div>
-    }
-    return <div className={css.notice}>{t('loading')}</div>
-  }
+  // The skeleton always renders (readme-settings spec §1.2): title, intro,
+  // banners, the read-only status block, the `enabled` switch, and the
+  // save/reset actions are visible in every store state (idle / loading /
+  // ready / saving / unavailable / error). The form body below is gated on
+  // the draft's `enabled` flag. Controls are disabled while `writable` is
+  // false (initial load, loading, or a read-only describe response), so an
+  // empty skeleton never invites edits the host would refuse.
 
   const updateScalars = (mutator: (draft: FallbacksScalars) => void): void => {
     setScalars(prev => {
-      if (prev === null) return prev
       const next: FallbacksScalars = { ...prev, triggerCodes: [...prev.triggerCodes] }
       mutator(next)
       return next
@@ -205,6 +204,12 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
       {state.error !== null && state.conflict === null && (
         <div className={css.banner} role="alert">{t('error.generic', { message: state.error })}</div>
       )}
+      {state.status === 'unavailable' && (
+        // Namespace not registered (readme-settings spec §1.4-3): an
+        // informational banner — the page shows the default-config seed and
+        // saves are attempted; failures land in the error banner above.
+        <div className={css.infoBanner}>{t('unavailable')}</div>
+      )}
 
       {/* AC-7 read-only status: effective config summary; the recent-switch
        * summary is a placeholder until T8 wires a session-event reading face
@@ -232,6 +237,15 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
         <span className={css.hint}>{t('enabled.hint')}</span>
       </label>
 
+      {/* Enabled OFF (readme-settings spec §1.2): the form body is hidden but
+       * never discarded — the draft stays in state and comes right back when
+       * the switch is toggled on. */}
+      {!scalars.enabled && (
+        <div className={css.offNotice}>{t('enabled.off')}</div>
+      )}
+
+      {scalars.enabled && (
+      <>
       <fieldset className={css.field} disabled={!writable}>
         <legend className={css.fieldLabel}>{t('triggerCodes.label')}</legend>
         <span className={css.hint}>{t('triggerCodes.hint')}</span>
@@ -416,6 +430,8 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
           {t('roles.addRule')}
         </button>
       </fieldset>
+      </>
+      )}
 
       <div className={css.actions}>
         <button

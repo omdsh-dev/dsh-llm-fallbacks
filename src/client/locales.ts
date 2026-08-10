@@ -16,6 +16,7 @@ export const zh = {
   'nav.description': '模型故障自动降级',
   'enabled.label': '启用故障降级',
   'enabled.hint': '关闭后插件完全不介入；开启但未配置任何链时行为与未安装插件一致。',
+  'enabled.off': '功能未开启：打开 enabled 开关以显示配置界面。',
   'triggerCodes.label': '触发失败码',
   'triggerCodes.hint': '命中这些失败码时进入降级链决策；可重试型故障（如 5xx）由 llm-retry 先行退避，预算耗尽后同样进入决策。',
   'triggerCodes.RATE_LIMIT': '限流（429）',
@@ -66,7 +67,7 @@ export const zh = {
   'reset': '恢复默认',
   'reset.confirm': '确定要把 fallbacks 配置恢复为默认值吗？',
   'loading': '加载中…',
-  'unavailable': '无法读取 fallbacks 设置（未注册或只读环境）。',
+  'unavailable': 'fallbacks 命名空间尚未注册：以下显示默认配置，可尝试保存；保存失败会在此处如实提示。',
   'error.generic': '出错：{message}',
 } satisfies Record<string, string>
 
@@ -79,6 +80,7 @@ export const en = {
   'nav.description': 'Automatic fallback on model failures',
   'enabled.label': 'Enable failure fallback',
   'enabled.hint': 'When off the plugin never intervenes; when on with no chains configured behavior is identical to an uninstalled plugin.',
+  'enabled.off': 'Feature disabled: turn on the enabled switch to show the configuration interface.',
   'triggerCodes.label': 'Trigger failure codes',
   'triggerCodes.hint': 'Failures with these codes enter chain decision; retryable failures (e.g. 5xx) back off via llm-retry first and reach the decision only when its budget is exhausted.',
   'triggerCodes.RATE_LIMIT': 'Rate limit (429)',
@@ -129,7 +131,7 @@ export const en = {
   'reset': 'Reset to defaults',
   'reset.confirm': 'Reset the fallbacks configuration to defaults?',
   'loading': 'Loading…',
-  'unavailable': 'Cannot read fallbacks settings (namespace not registered or read-only environment).',
+  'unavailable': 'The fallbacks namespace is not registered yet: showing the default configuration. You can try to save; failures will be reported here.',
   'error.generic': 'Error: {message}',
 } satisfies Record<FallbacksKey, string>
 

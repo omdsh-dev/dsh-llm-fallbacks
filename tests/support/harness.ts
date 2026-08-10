@@ -22,9 +22,16 @@ import type { LlmCallConfig, LlmFailure, ReasoningEffortId, ResolvedRetryPolicy 
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import { defaultFallbacksConfig, type FallbacksConfig } from '../../src/config.ts'
 
-/** Config helper: spec defaults + overrides (the plugin re-resolves through the schema). */
+/**
+ * Config helper: spec defaults + overrides (the plugin re-resolves through
+ * the schema). The `enabled` baseline is explicit `true` — the default value
+ * flipped to `false` in this iteration (readme-settings spec §1.2), and the
+ * runtime tests exercise the *active* plugin, so every cfg() call inherits
+ * `enabled: true` unless a case overrides it (AC-3 default no-op is pinned
+ * by its own explicit test).
+ */
 export function cfg(overrides: Partial<FallbacksConfig> = {}): FallbacksConfig {
-  return { ...defaultFallbacksConfig, ...overrides }
+  return { ...defaultFallbacksConfig, enabled: true, ...overrides }
 }
 
 /** Fake agent + session; `setRoute` simulates the loop logging a new request header after a switch. */

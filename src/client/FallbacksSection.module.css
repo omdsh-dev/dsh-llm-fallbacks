@@ -26,11 +26,29 @@
   color: var(--dsw-alias-label-tertiary);
 }
 
-.notice {
-  margin: 0;
-  font-size: 14px;
-  line-height: 22px;
-  color: var(--dsw-alias-label-tertiary);
+/* Enabled OFF notice (readme-settings spec §1.2): neutral guidance shown in
+ * place of the hidden form body — informational, not an error. */
+.offNotice {
+  padding: 8px 12px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--dsw-alias-label-secondary);
+  background: var(--dsw-alias-bg-layer-1);
+}
+
+/* Namespace-not-registered info banner (spec §1.4-3): informational, not a
+ * dead-end notice — the page shows the default-config seed and saves are
+ * attempted. Uses the business (info) state tokens. */
+.infoBanner {
+  padding: 8px 12px;
+  border: 1px solid var(--dsw-alias-state-business-primary);
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--dsw-alias-state-business-primary);
+  background: var(--dsw-alias-state-business-tertiary);
 }
 
 .field {
