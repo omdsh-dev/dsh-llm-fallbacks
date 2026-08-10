@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 #
-# verify-dsh-patch.sh — 校验目标 dsh 源码树中 role patch 的效果（出现 / 消失）。
+# verify-dsh-patch.sh — 校验目标 dsh 源码树中 role + 暴露组 patch 的效果（出现 / 消失）。
 #
-# 检查两组探针（文件存在即检查，缺失记为 SKIP；不会把缺失误判为通过或失败）：
+# 检查两组（role 组 + 暴露组，共四个 patch）探针（文件存在即检查，缺失记为
+# SKIP；不会把缺失误判为通过或失败）：
 #   @deepseek-ai/dsh-agent          src/runtime-types.ts          → 期望 `role?: string`
 #                                   lib/types/runtime-types.d.ts  → 期望 `role?: string`
 #                                   （构建产物；注意 AgentOptions 编译到
@@ -11,6 +12,12 @@
 #                                   lib/types/index.js            → 期望 `role: z.string()`
 #                                   （构建产物；类型只引用 AgentOptions，
 #                                     role 的文本标记在编译后的 schema JS 中）
+#   @deepseek-ai/dsh-settings       src/index.ts                  → 期望 `exposeToWebClients?: boolean`
+#                                   lib/types/index.d.ts          → 期望 `exposeToWebClients?: boolean`
+#                                   （构建产物；注册选项的声明面在 .d.ts）
+#   @deepseek-ai/dsh-host-apiproxy  src/api-proxy.ts              → 期望 `descriptor.exposed === true`
+#                                   lib/types/api-proxy.js        → 期望 `descriptor.exposed === true`
+#                                   （构建产物；注册表查询逻辑在编译后 JS 中）
 #
 # 默认断言 marker 出现（patch 已应用并已构建）；--absent 反转断言（revert 后）。
 # 判定：任一存在的探针不符合断言 → exit 1；所有探针文件均缺失 → 视为非 dsh 树 → exit 1。
@@ -28,7 +35,7 @@
 set -euo pipefail
 
 usage() {
-  sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'
   exit "${1:-0}"
 }
 
@@ -67,6 +74,10 @@ PROBES=(
   "packages/core/agent/lib/types/runtime-types.d.ts|role?: string|agent build (lib/types/runtime-types.d.ts)"
   "packages/subagent/tool-subagent/src/index.ts|role: z.string()|tool-subagent source (index.ts)"
   "packages/subagent/tool-subagent/lib/types/index.js|role: z.string()|tool-subagent build (lib/types/index.js)"
+  "packages/settings/settings/src/index.ts|exposeToWebClients?: boolean|settings source (index.ts)"
+  "packages/settings/settings/lib/types/index.d.ts|exposeToWebClients?: boolean|settings build (lib/types/index.d.ts)"
+  "packages/host/apiproxy/src/api-proxy.ts|descriptor.exposed === true|apiproxy source (api-proxy.ts)"
+  "packages/host/apiproxy/lib/types/api-proxy.js|descriptor.exposed === true|apiproxy build (lib/types/api-proxy.js)"
 )
 
 EXPECT_LABEL="出现"
@@ -113,8 +124,8 @@ if [[ "$CHECKED" -eq 0 ]]; then
 fi
 
 if [[ "$FAIL" -eq 1 ]]; then
-  echo "== 校验失败：role 标记（期望${EXPECT_LABEL}）未满足" >&2
+  echo "== 校验失败：patch 标记（role + 暴露组，期望${EXPECT_LABEL}）未满足" >&2
   exit 1
 fi
 
-echo "== 校验通过：role 标记（期望${EXPECT_LABEL}）满足"
+echo "== 校验通过：patch 标记（role + 暴露组，期望${EXPECT_LABEL}）满足"

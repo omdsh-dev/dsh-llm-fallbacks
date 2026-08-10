@@ -1,6 +1,6 @@
 # 配置指南（`fallbacks` 命名空间）
 
-插件配置集中在 `fallbacks` settings 命名空间，可在 dsh 设置文档（默认 `$DSH_HOME/settings.yaml`）中编辑，也可在 web 设置 GUI 的 **Fallbacks** 页中编辑——两者读写同一命名空间，GUI 保存带修订号冲突保护。
+插件配置集中在 `fallbacks` settings 命名空间，可在 dsh 设置文档（默认 `$DSH_HOME/settings.yaml`）中编辑，也可在 web 设置 GUI 的 **Fallbacks** 页中编辑——两者读写同一命名空间，GUI 保存带修订号冲突保护。web 页的读写可用依赖 dsh 本体暴露 patch（`dsh-settings` + `dsh-host-apiproxy`，见 [docs/dsh-patch.md](docs/dsh-patch.md)）应用并重建；未应用时页面显示「未注册」、保存被拒并如实提示。
 
 ## 字段总览
 
@@ -99,10 +99,11 @@ fallbacks:
 - **始终可用（骨架恒渲染）**：无论是否已配置 `fallbacks` 命名空间（首次打开、loading、error 等任意描述符状态），页面都渲染骨架——`nav` 标题、介绍、只读状态块、功能级开关 `enabled`、保存/恢复默认动作。命名空间尚未注册时显示默认配置种子，保存动作可用（失败会如实提示，见下）。
 - **功能级开关 `enabled`（默认 OFF）**：开关即用户配置字段 `fallbacks.enabled`，默认关闭。关闭时隐藏配置表单主体（`triggerCodes` / `chains` / `roles` / `cooldownMs` / `revertPolicy` / `maxSwitchesPerStep` / `alwaysModeRetryCap`），显示「功能未开启：打开 `enabled` 开关以显示配置界面」提示——隐藏不丢弃，编辑中的 draft 保留；打开后显示完整配置界面。拨动开关即时显隐（draft 驱动），经保存动作持久化。
 - **可读标签**：枚举型配置项显示可读标签而非原始枚举值——`RATE_LIMIT` →「限流（429）」、`QUOTA` →「配额超限」、`AUTH` →「权限/认证失败」；`cooldown-expiry` →「冷却到期后回主模型」、`never` →「保持备用模型」。数值字段旁显示默认值；其余字段展示当前生效值（未配置时即默认值）。
-- **链/角色行编辑**：`chains` 以「键 + 每行一个选择器的多行输入」编辑；`roles.rules` 以行编辑（origin/provider/model/role），空字段不参与匹配。
+- **链/角色行编辑**：`chains` 以「键 + 每行一个选择器的多行输入」编辑；`roles.rules` 以行编辑（origin/provider/model/role），空字段不参与匹配。provider/model 输入为**目录下拉**（模型目录驱动）：新行只提供目录内选项，目录外值读回时以合成选项标注保留（不被目录选择丢弃）；目录不可用/为空时下拉禁用并显示提示，不阻塞手写。
+- **model-selection 协调（AC-2）**：存在活跃 model-selection（用户在设置页 / `settings.yaml` 选择了 provider/model）时，触发码故障后的切换**同样生效**——fallback-routed 标记使外层 model-selection 监听器对当步让位，请求路由到链目标，下一步恢复用户选择（spec §2.5 D-1）。
 - **恢复默认**：一键把该命名空间的用户配置重置为组合默认值（`enabled` 回 `false`）。
 - **冲突重载**：保存携带 `expectedRevision`；配置被其它地方修改时保存被拒，页面显示冲突横幅与「重新加载」按钮，避免静默覆盖并发修改。命名空间尚未注册时保存省略 `expectedRevision` 尝试写入，host 拒绝则错误横幅如实呈现、骨架与 draft 保留。
-- **只读状态块**：显示当前生效配置摘要（启用状态/默认角色/链数/触发码）；「最近切换摘要」当前为占位，运行期验证后接入会话事件读取面（见实现）。
+- **只读状态块**：显示当前生效配置摘要（启用状态/默认角色/链数/触发码）+ **最近切换摘要**（来自当前会话原始 `fallbacks/switch` 事件面，最新在前，每条含 from/to/role/reason/时间）+ **当前生效模型**（由配置 + 最近切换**推导**的展示值，非实时路由探测，附非实时说明文案）。摘要随 `settings/changed` / 会话切换 / 连接重置推送刷新（无轮询）——页面打开期间发生的切换，在下一次推送或重载页面后呈现；状态块只读、不可编辑。
 
 ## 行为说明
 

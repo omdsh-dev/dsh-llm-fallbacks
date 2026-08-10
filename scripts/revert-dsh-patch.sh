@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 #
-# revert-dsh-patch.sh — 回滚 apply-dsh-patch.sh 应用到目标 dsh 源码树的 role patch。
+# revert-dsh-patch.sh — 回滚 apply-dsh-patch.sh 应用到目标 dsh 源码树的四个
+# patch（role 组 + 暴露组）。
 #
 # 对每个 patch 执行 git apply --reverse（先 --reverse --check 确认已应用）；
 # 已回滚的 patch 幂等跳过；随后重建受影响包（与 apply 相同的构建步骤）。
+# 回滚顺序与 apply 相反（apiproxy → settings → tool-subagent → agent）：先撤销
+# 依赖方（apiproxy 依赖 settings 的 descriptor.exposed），再撤销被依赖方。
 #
 # 目标解析（运行时，脚本本身不含本地绝对路径）：
 #   $DSH_SOURCE_DIR（若设置）→ 缺省 ${DSH_HOME}/source/current
@@ -24,14 +27,17 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 PATCHES_DIR="${REPO_ROOT}/patches"
 
-# 与 apply-dsh-patch.sh 相同的两个 pnpm 格式 patch
+# 与 apply-dsh-patch.sh 相同的四个 pnpm 格式 patch；回滚顺序与 apply 相反
+# （先撤销暴露组、再撤销 role 组：apiproxy → settings → tool-subagent → agent）
 PATCH_FILES=(
-  "@deepseek-ai+dsh-agent@0.0.1.patch"
+  "@deepseek-ai+dsh-host-apiproxy@0.0.1.patch"
+  "@deepseek-ai+dsh-settings@0.0.1.patch"
   "@deepseek-ai+dsh-tool-subagent@0.0.1.patch"
+  "@deepseek-ai+dsh-agent@0.0.1.patch"
 )
 
 usage() {
-  sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
   exit "${1:-0}"
 }
 
@@ -81,16 +87,16 @@ patch_status() {
 build_affected() {
   if ! command -v pnpm >/dev/null 2>&1; then
     echo "WARN: PATH 中找不到 pnpm；patch 已回滚但构建已跳过。" >&2
-    echo "      请手动重建: cd \"\$DSH_SOURCE_DIR\" && pnpm install && pnpm exec tsc -b packages/core/agent packages/subagent/tool-subagent && pnpm exec tsdown --env.DSH_BUILD_FACE host" >&2
+    echo "      请手动重建: cd \"\$DSH_SOURCE_DIR\" && pnpm install && pnpm exec tsc -b packages/core/agent packages/subagent/tool-subagent packages/settings/settings packages/host/apiproxy && pnpm exec tsdown --env.DSH_BUILD_FACE host" >&2
     return 1
   fi
   if [[ ! -d "$TARGET/node_modules" ]]; then
     echo "WARN: 目标树缺少 node_modules（非 pnpm 工作区安装）；patch 已回滚但构建已跳过。" >&2
-    echo "      请手动重建: cd \"\$DSH_SOURCE_DIR\" && pnpm install && pnpm exec tsc -b packages/core/agent packages/subagent/tool-subagent && pnpm exec tsdown --env.DSH_BUILD_FACE host" >&2
+    echo "      请手动重建: cd \"\$DSH_SOURCE_DIR\" && pnpm install && pnpm exec tsc -b packages/core/agent packages/subagent/tool-subagent packages/settings/settings packages/host/apiproxy && pnpm exec tsdown --env.DSH_BUILD_FACE host" >&2
     return 1
   fi
   echo "== 重建受影响包（tsc -b 增量 + tsdown host 打包）"
-  if ! ( cd "$TARGET" && pnpm exec tsc -b packages/core/agent packages/subagent/tool-subagent ); then
+  if ! ( cd "$TARGET" && pnpm exec tsc -b packages/core/agent packages/subagent/tool-subagent packages/settings/settings packages/host/apiproxy ); then
     echo "ERROR: tsc 增量构建失败（见上方输出）。" >&2
     return 1
   fi

@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 #
-# autopatch-install.sh — 插件安装期自动应用 dsh 本体 role patch（幂等、失败仅 warn）。
+# autopatch-install.sh — 插件安装期自动应用 dsh 本体 patch（role + 暴露，幂等、失败仅 warn）。
 #
-# 背景：dsh-llm-fallbacks 需要 subagent 的显式角色来源（同 apply-dsh-patch.sh）。
+# 背景：dsh-llm-fallbacks 需要 subagent 的显式角色来源 + 设置命名空间 web 暴露
+# 机制（同 apply-dsh-patch.sh）。
 # 本脚本在插件安装生命周期（postinstall / prepare）自动检测目标 dsh 源码树并
-# 幂等应用两个 role patch，随后 best-effort 重建受影响包；任何失败只 warn、
-# 绝不导致插件安装失败（全局约束：不破坏安装）。
+# 幂等应用全部四个 patch（role 组 + 暴露组，顺序与 apply-dsh-patch.sh 一致），
+# 随后 best-effort 重建受影响包；任何失败只 warn、绝不导致插件安装失败
+# （全局约束：不破坏安装）。
 #
 # 开关：DSH_LLM_FALLBACKS_AUTOPATCH（默认 1；设为 "0" 完全跳过，exit 0）。
 #
@@ -16,10 +18,11 @@
 # 流程（对每个 patch，与 apply-dsh-patch.sh 同构的三态判定）：
 #   git apply --check 通过       → 尚未应用 → git apply 应用；
 #   git apply --reverse --check 通过 → 已应用 → 跳过（幂等）；
-#   两者都失败 → 记为冲突；全部 patch 处理完后统一判定：verify 探针通过（role 标记
+#   两者都失败 → 记为冲突；全部 patch 处理完后统一判定：verify 探针通过（patch 标记
 #   已就位，即 dsh 已原生支持/已等价应用）→ info 跳过；否则 → warn 提示手动处理
 #   （不中断安装）。
 # 应用后 best-effort 重建：tsc -b packages/core/agent packages/subagent/tool-subagent
+#   packages/settings/settings packages/host/apiproxy
 #   + tsdown --env.DSH_BUILD_FACE host（缺 pnpm / 缺 node_modules / 失败 → warn 不中断）。
 # 最后运行 verify 探针并提示结果（失败附手动命令）。
 #
@@ -37,14 +40,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 PATCHES_DIR="${REPO_ROOT}/patches"
 
-# 与 apply-dsh-patch.sh 相同的两个 pnpm 格式 patch
+# 与 apply-dsh-patch.sh 相同的四个 pnpm 格式 patch
 PATCH_FILES=(
   "@deepseek-ai+dsh-agent@0.0.1.patch"
   "@deepseek-ai+dsh-tool-subagent@0.0.1.patch"
+  "@deepseek-ai+dsh-settings@0.0.1.patch"
+  "@deepseek-ai+dsh-host-apiproxy@0.0.1.patch"
 )
 
 usage() {
-  sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,35p' "$0" | sed 's/^# \{0,1\}//'
   exit "${1:-0}"
 }
 
@@ -90,7 +95,7 @@ patch_status() {
 
 # 重建受影响包（tsc -b 增量 → tsdown host 打包）。best-effort：任何失败仅 warn 并返回 0。
 build_affected() {
-  local manual="cd \"$TARGET\" && pnpm install && pnpm exec tsc -b packages/core/agent packages/subagent/tool-subagent && pnpm exec tsdown --env.DSH_BUILD_FACE host"
+  local manual="cd \"$TARGET\" && pnpm install && pnpm exec tsc -b packages/core/agent packages/subagent/tool-subagent packages/settings/settings packages/host/apiproxy && pnpm exec tsdown --env.DSH_BUILD_FACE host"
   if ! command -v pnpm >/dev/null 2>&1; then
     warn "PATH 中找不到 pnpm；patch 已应用但构建已跳过。请手动重建: ${manual}"
     return 0
@@ -100,7 +105,7 @@ build_affected() {
     return 0
   fi
   log "重建受影响包（tsc -b 增量 + tsdown host 打包）"
-  if ! ( cd "$TARGET" && pnpm exec tsc -b packages/core/agent packages/subagent/tool-subagent ); then
+  if ! ( cd "$TARGET" && pnpm exec tsc -b packages/core/agent packages/subagent/tool-subagent packages/settings/settings packages/host/apiproxy ); then
     warn "tsc 增量构建失败（见上方输出），构建已跳过。请手动重建: ${manual}"
     return 0
   fi
@@ -114,9 +119,9 @@ build_affected() {
 # verify 探针结果提示（探针已在冲突判定前运行一次，此处仅按 VERIFY_OK 输出，不重复探测）
 run_verify() {
   if [[ "$VERIFY_OK" -eq 1 ]]; then
-    log "verify 探针通过：role 标记已就位（源码/构建产物）"
+    log "verify 探针通过：patch 标记已就位（role + 暴露组，源码/构建产物）"
   else
-    warn "verify 探针未通过：role 标记未就位。请手动应用并验证: bash \"${SCRIPT_DIR}/apply-dsh-patch.sh\" && bash \"${SCRIPT_DIR}/verify-dsh-patch.sh\""
+    warn "verify 探针未通过：patch 标记未就位（role + 暴露组）。请手动应用并验证: bash \"${SCRIPT_DIR}/apply-dsh-patch.sh\" && bash \"${SCRIPT_DIR}/verify-dsh-patch.sh\""
   fi
 }
 
