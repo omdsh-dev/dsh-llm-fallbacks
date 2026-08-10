@@ -4,7 +4,7 @@
 
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![node](https://img.shields.io/badge/node-%3E%3D22-339933.svg)
-![bun](https://img.shields.io/badge/bun-%3E%3D1.2.17-fbf0df.svg)
+![pnpm](https://img.shields.io/badge/pnpm-%3E%3D10-f69220.svg)
 ![dsh](https://img.shields.io/badge/dsh-DeepSeek%20Harness%20compatible-4B32C3.svg)
 
 dsh（DeepSeek Harness）的自动模型降级插件：当 root agent 或 subagent 的模型请求持续失败（重试耗尽、权限、配额超限、限流 429）时，按角色/模型 fallback 链自动切换 provider/model，当前 step/turn 在目标模型上继续完成——任务不因模型问题中断。
@@ -36,7 +36,7 @@ dsh plugin --profile web add https://github.com/dsh-external/dsh-llm-fallbacks.g
 ### 本地目录安装（开发/验证推荐）
 
 ```sh
-# 1) 在插件仓库目录构建（prepare 自构建需要 bun）
+# 1) 在插件仓库目录构建（prepare 自构建走 pnpm 工具链：tsdown + tsc，无 bun）
 pnpm install
 # 2) 装入目标 profile（示例为 web）
 dsh plugin --profile web add .

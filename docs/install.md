@@ -5,12 +5,12 @@
 ## 前置条件
 
 - 可用的 dsh 运行环境（`$DSH_HOME`，默认 `~/.dsh`），且其源码树在 `$DSH_SOURCE_DIR`（缺省 `${DSH_HOME}/source/current`）——**开发期类型检查与测试需要它**（见下文「真实 `@deepseek-ai/*` 链接」）。
-- 构建需要 **bun**（`>= 1.2.17`）与 **node**（`>= 22`）——插件的 `prepare` 脚本自构建（`bun run build`）。
+- 构建需要 **node**（`>= 22`）与 **pnpm**（`>= 10`）——插件的 `prepare` 脚本自构建（`pnpm run build`，tsdown + tsc，pnpm 栈无 bun）。
 - 目标 profile（如 `web`）可读写，安装后需要重启 dsh 会话。
 
 ## 真实 `@deepseek-ai/*` 链接 farm（开发期）
 
-`@deepseek-ai/*` 是私有包，运行时由宿主 dsh 盒内 bundle 提供（`peerDependencies` 契约，`bun build --external '@deepseek-ai/*'`）。开发期不再使用手写 `peer-stubs/`：`pnpm install`（`prepare` 前置）会调用 `scripts/setup-dsh-links.mjs`，从 dsh 源码树把**真实包**符号链接进 `node_modules/`——类型检查、测试与跳转全部走真实代码（方案经 dsh-advisor 全链路验证）。
+`@deepseek-ai/*` 是私有包，运行时由宿主 dsh 盒内 bundle 提供（`peerDependencies` 契约，tsdown 构建期外部化 `@deepseek-ai/*`）。开发期不再使用手写 `peer-stubs/`：`pnpm install`（`prepare` 前置）会调用 `scripts/setup-dsh-links.mjs`，从 dsh 源码树把**真实包**符号链接进 `node_modules/`——类型检查、测试与跳转全部走真实代码（方案经 dsh-advisor 全链路验证）。
 
 - **链接范围**：源码树 `packages/` 与 `vendor/` 下所有声明 `bin` 之外的 `@deepseek-ai/*` 包（按各自 package.json 的 name），外加 `vendor/cordis` 的 **bin-less shim**（`node_modules/cordis/` 的入口文件符号链接到 vendored cordis 的真实文件）——真实包的 `.d.ts` 引用的是 dsh 树里 vendor 的 cordis，shim 保证 `import 'cordis'` 与它们解析到同一物理文件（否则 `Context`/`Events` 类型实例不匹配，tsc 报错）。
 - **路径解析**（与 patch 脚本同一约定）：`$DSH_SOURCE_DIR` 优先 → `${DSH_HOME}/source/current` → `~/.dsh/source/current`（取第一个存在的）——不同开发者只要各自的 `$DSH_HOME` 指向自己的 dsh 安装即可，无需改任何仓库内路径。源码树缺失或 peer 包不可链接时**报错退出并给出指引**（开发期硬性要求；宿主安装路径不受影响，见下）。
@@ -54,7 +54,7 @@ dsh plugin --profile web add https://github.com/dsh-external/dsh-llm-fallbacks.g
 
 git 安装注意：
 
-- **prepare 自建**：pnpm 在安装 git 依赖时会执行包的 `prepare` 脚本（`bun run build`）自构建，安装机需要具备 bun；构建失败会导致装入未构建的包。
+- **prepare 自建**：pnpm 在安装 git 依赖时会执行包的 `prepare` 脚本（`pnpm run build`）自构建，安装机需要 node 与 pnpm；构建失败会导致装入未构建的包。
 - **自动 patch**：git 安装会执行 `prepare`（构建）并随后触发 `postinstall`——两处都会调用 `scripts/autopatch-install.sh` 自动检测并幂等应用 dsh 本体 role patch（目标 = `$DSH_SOURCE_DIR`，缺省 `${DSH_HOME}/source/current`；缺失/非 git 树则跳过；失败仅 warn 不中断安装）。可用 `DSH_LLM_FALLBACKS_AUTOPATCH=0` 禁用。详见 [docs/dsh-patch.md](docs/dsh-patch.md)「自动应用」。
 - **allowBuilds（构建脚本放行）**：pnpm ≥ 10 默认不执行依赖的构建脚本（含 `postinstall`）。若安装被策略拦截、或装入后 `--dump-config` 看不到 `llm-fallbacks` 层 / 设置页不出现 / 自动 patch 未触发，请放行本包构建（如 `dsh plugin --profile web approve-builds`，或在该 profile 的 pnpm 配置中把 `dsh-llm-fallbacks` 加入 `onlyBuiltDependencies`）。确切行为以你所用 pnpm 版本的策略为准。
 

@@ -39,17 +39,16 @@
     "platform": "web"
   },
   "scripts": {
-    "build": "rm -rf dist && bun build src/index.ts --target node --outdir dist --external cordis --external '@deepseek-ai/*' && bun run build-client && bunx tsc",
-    "build-client": "bun run scripts/build-client.ts",
+    "build": "tsdown && pnpm run build-client && tsc",
+    "build-client": "tsx scripts/build-client.ts",
     "test": "vitest run",
     "dsh:link": "node scripts/setup-dsh-links.mjs",
     "dsh:link:check": "node scripts/setup-dsh-links.mjs --check",
-    "prepare": "node scripts/setup-dsh-links.mjs && bun run build && bash scripts/autopatch-install.sh",
+    "prepare": "node scripts/setup-dsh-links.mjs && pnpm run build && bash scripts/autopatch-install.sh",
     "postinstall": "bash scripts/autopatch-install.sh"
   },
   "engines": {
-    "node": ">=22",
-    "bun": ">=1.2.17"
+    "node": ">=22"
   },
   "peerDependencies": {
     "@deepseek-ai/dsh-agent": "^0.0.1",
@@ -64,10 +63,12 @@
     "react": "^18.2.0"
   },
   "devDependencies": {
+    "@types/node": "^22.20.0",
     "@types/react": "~18.3.31",
-    "bun-types": "^1.2.17",
     "react": "^18.3.1",
     "schemastery": "^3.18.0",
+    "tsdown": "^0.22.2",
+    "tsx": "^4.22.4",
     "typescript": "^5.9.3",
     "vitest": "^4.1.8"
   }
