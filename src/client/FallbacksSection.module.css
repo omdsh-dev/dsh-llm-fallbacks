@@ -174,37 +174,6 @@ select.input {
   background-size: 12px 12px;
 }
 
-/* Multi-line selector list: the input geometry with room to breathe; the
-   selectors are provider/model routes, so they keep the mono face. */
-.textarea {
-  box-sizing: border-box;
-  width: 100%;
-  min-height: 56px;
-  padding: 6px 10px;
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 8px;
-  font-family: var(--dsw-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
-  font-size: 13px;
-  line-height: 20px;
-  background: var(--dsw-alias-bg-layer-1);
-  color: var(--dsw-alias-label-primary);
-  resize: vertical;
-}
-
-.textarea:focus {
-  outline: none;
-  border-color: var(--dsw-alias-brand-primary);
-}
-
-.textarea::placeholder {
-  color: var(--dsw-alias-label-dimmed);
-}
-
-.textarea:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
-
 .numberInput {
   width: 180px;
 }
@@ -250,6 +219,31 @@ select.input {
   font-size: 12px;
   line-height: 18px;
   color: var(--dsw-alias-label-secondary);
+}
+
+/* Chain selector rows (provider select + model select + wildcard): each row
+   is its own edit surface inside the chain card — the same grid rhythm as
+   the role rules, with the wildcard checkbox as a row-level cell. */
+.chainSelectors {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.selectorRow {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* The wildcard cell flips the column cell to a row layout: the checkbox
+   stands beside its label, centered against the selects above it. */
+.wildcardCell {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  min-width: 200px;
+  align-self: center;
 }
 
 /* Icon-only actions: the label rides `data-tip` (and aria-label) so the card

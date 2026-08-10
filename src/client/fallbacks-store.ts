@@ -25,7 +25,7 @@
  */
 
 import type {
-  IApiClient, SettingsNamespaceView,
+  ConfigurableProviderView, IApiClient, ModelProviderGroup, SettingsNamespaceView,
 } from '@deepseek-ai/dsh-client-connection/client'
 import {
   createSnapshotStore, type SnapshotStore,
@@ -33,6 +33,7 @@ import {
 import {
   defaultFallbacksConfig, type FallbacksConfig, type FallbacksRoleRule,
 } from '../config.ts'
+import { parseSelector } from '../selectors.ts'
 
 /** The plugin's settings namespace on the host wire. */
 export const FALLBACKS_SETTINGS_NS = 'fallbacks'
@@ -52,6 +53,16 @@ export interface FallbacksSettingsState {
   revision: number
   /** A refused write's expected/actual revisions; null when none pending. */
   conflict: { expected: number; actual: number } | null
+  /** Provider/model directory snapshot (spec §2.5 D-4). */
+  catalogStatus: 'idle' | 'loading' | 'ready' | 'error'
+  /** Catalog read diagnostic: whole-load failure or per-provider lookups. */
+  catalogError: string | null
+  /** Configurable-provider directory (`llm.providers`). */
+  providers: ConfigurableProviderView[]
+  /** Model catalog groups (`llm.models`). */
+  groups: ModelProviderGroup[]
+  /** Bumped on every accepted catalog read; drives row re-classification. */
+  catalogEpoch: number
 }
 
 function messageOf(error: unknown): string {
@@ -151,25 +162,100 @@ export function conflictDetailsOf(error: { code?: string; details?: unknown } | 
   return { expected: details.expected, actual: details.actual }
 }
 
-/** Split a chains textarea into trimmed, non-empty selector lines. */
-export function parseEntryLines(text: string): string[] {
-  return text.split(/\r?\n/).map(line => line.trim()).filter(line => line.length > 0)
+/**
+ * Row-level selection state of one provider/model cell (spec §2.5 D-3):
+ * a catalog id, an out-of-catalog raw value read back from the server, or
+ * nothing (empty / "any"). Serialization always writes the raw string, so an
+ * outside value is preserved verbatim — round-trip lossless.
+ */
+export type CatalogSelection =
+  | { kind: 'catalog'; id: string }
+  | { kind: 'outside'; raw: string }
+  | null
+
+/** The catalog faces row conversions classify raw values against (D-4). */
+export interface CatalogLookup {
+  providers: readonly ConfigurableProviderView[]
+  groups: readonly ModelProviderGroup[]
 }
 
-/** Join ordered selectors into one textarea body. */
-export function formatEntries(entries: readonly string[]): string {
-  return entries.join('\n')
+/** The raw selector string a selection serializes to ('' when empty). */
+export function selectionToRaw(selection: CatalogSelection): string {
+  return selection === null ? '' : selection.kind === 'catalog' ? selection.id : selection.raw
 }
 
-/** One chain row in the editor: key + the entries textarea body. */
+/**
+ * Classify a raw provider value against the catalog: a catalog route id is a
+ * catalog selection, anything else is an outside value kept verbatim.
+ */
+export function classifyProvider(raw: string, catalog: CatalogLookup | undefined): CatalogSelection {
+  if (raw === '') return null
+  if (catalog !== undefined && catalog.providers.some(entry => entry.provider === raw)) {
+    return { kind: 'catalog', id: raw }
+  }
+  return { kind: 'outside', raw }
+}
+
+/**
+ * Classify a raw model value under its provider against the catalog: a model
+ * id advertised by that provider is a catalog selection, anything else is an
+ * outside value kept verbatim.
+ */
+export function classifyModel(provider: string, raw: string, catalog: CatalogLookup | undefined): CatalogSelection {
+  if (raw === '') return null
+  if (catalog !== undefined && catalog.groups.some(group => group.id === provider && group.models.some(model => model.id === raw))) {
+    return { kind: 'catalog', id: raw }
+  }
+  return { kind: 'outside', raw }
+}
+
+/** One chain selector row: provider + model (or wildcard). */
+export interface ChainSelectorRow {
+  /** `provider/*` wildcard entry: the model part is absent. */
+  wildcard: boolean
+  provider: CatalogSelection
+  /** Null when wildcard (or the entry carries no model part). */
+  model: CatalogSelection
+}
+
+/** One chain row in the editor: key (free text) + ordered selector rows. */
 export interface ChainRow {
   key: string
-  entries: string
+  selectors: ChainSelectorRow[]
 }
 
-/** Project the chains record into editable rows (one textarea body per key). */
-export function chainsToRows(chains: Record<string, string[]>): ChainRow[] {
-  return Object.entries(chains).map(([key, entries]) => ({ key, entries: formatEntries(entries) }))
+/** Serialize one selector row to its wire string (`provider/model` | `provider/*`). */
+export function selectorRowToRaw(row: ChainSelectorRow): string {
+  const provider = selectionToRaw(row.provider)
+  if (provider === '') return ''
+  if (row.wildcard) return `${provider}/*`
+  const model = selectionToRaw(row.model)
+  return model === '' ? provider : `${provider}/${model}`
+}
+
+/** Project the chains record into editable rows (one selector list per key). */
+export function chainsToRows(chains: Record<string, string[]>, catalog?: CatalogLookup): ChainRow[] {
+  return Object.entries(chains).map(([key, entries]) => ({
+    key,
+    selectors: entries.map(entry => entryToSelectorRow(entry, catalog)),
+  }))
+}
+
+/** Parse one entry line into a selector row, classifying against the catalog. */
+function entryToSelectorRow(entry: string, catalog: CatalogLookup | undefined): ChainSelectorRow {
+  try {
+    const selector = parseSelector(entry)
+    return {
+      wildcard: selector.model === undefined,
+      provider: classifyProvider(selector.provider, catalog),
+      model: selector.model === undefined ? null : classifyModel(selector.provider, selector.model, catalog),
+    }
+  } catch {
+    // A malformed legacy entry (not `provider/model`): keep it verbatim as a
+    // bare outside value so a save never drops it — the runtime's
+    // config-warning semantics are unchanged.
+    return { wildcard: false, provider: { kind: 'outside', raw: entry.trim() }, model: null }
+  }
 }
 
 /** Rebuild the chains record from edited rows; empty keys drop out. */
@@ -178,7 +264,7 @@ export function rowsToChains(rows: readonly ChainRow[]): Record<string, string[]
   for (const row of rows) {
     const key = row.key.trim()
     if (key === '') continue
-    chains[key] = parseEntryLines(row.entries)
+    chains[key] = row.selectors.map(selectorRowToRaw).filter(entry => entry !== '')
   }
   return chains
 }
@@ -186,17 +272,17 @@ export function rowsToChains(rows: readonly ChainRow[]): Record<string, string[]
 /** One role-rule row in the editor; empty origin means "any". */
 export interface RoleRuleRow {
   origin: string
-  provider: string
-  model: string
+  provider: CatalogSelection
+  model: CatalogSelection
   role: string
 }
 
-/** Project the role rules into editable rows. */
-export function rulesToRows(rules: readonly FallbacksRoleRule[]): RoleRuleRow[] {
+/** Project the role rules into editable rows (provider/model classified). */
+export function rulesToRows(rules: readonly FallbacksRoleRule[], catalog?: CatalogLookup): RoleRuleRow[] {
   return rules.map(rule => ({
     origin: rule.origin ?? '',
-    provider: rule.provider ?? '',
-    model: rule.model ?? '',
+    provider: classifyProvider(rule.provider ?? '', catalog),
+    model: classifyModel(rule.provider ?? '', rule.model ?? '', catalog),
     role: rule.role,
   }))
 }
@@ -206,8 +292,8 @@ export function rowsToRules(rows: readonly RoleRuleRow[]): FallbacksRoleRule[] {
   return rows
     .map(row => ({
       ...(row.origin === '' ? {} : { origin: row.origin as 'root' | 'subagent' }),
-      ...(row.provider.trim() === '' ? {} : { provider: row.provider.trim() }),
-      ...(row.model.trim() === '' ? {} : { model: row.model.trim() }),
+      ...(row.provider === null ? {} : { provider: selectionToRaw(row.provider) }),
+      ...(row.model === null ? {} : { model: selectionToRaw(row.model) }),
       role: row.role.trim(),
     }))
     .filter(rule => rule.role !== '')
@@ -223,13 +309,19 @@ export class FallbacksSettingsController {
     config: defaultFallbacksConfig,
     revision: 0,
     conflict: null,
+    catalogStatus: 'idle',
+    catalogError: null,
+    providers: [],
+    groups: [],
+    catalogEpoch: 0,
   })
 
   private generation = 0
+  private catalogGeneration = 0
   private view: SettingsNamespaceView | undefined
 
-  /** @param api - Settings wire face. */
-  constructor(private readonly api: Pick<IApiClient, 'settings'>) {}
+  /** @param api - Settings + Llm wire faces (the catalog reads ride llm.*). */
+  constructor(private readonly api: Pick<IApiClient, 'settings' | 'llm'>) {}
 
   /**
    * Refresh the `fallbacks` descriptor. Latest request wins.
@@ -268,6 +360,51 @@ export class FallbacksSettingsController {
     } catch (error) {
       if (generation !== this.generation) return
       this.fail(error)
+    }
+  }
+
+  /**
+   * Refresh the provider/model catalog (`llm.providers` + `llm.models`), an
+   * independent read path with its own generation guard so it can run
+   * parallel to {@link load} without clobbering it (spec §2.5 D-4).
+   * Per-provider lookup failures ride `catalogError` as a diagnostic without
+   * failing the sound groups; a whole-load failure lands `catalogStatus:
+   * 'error'` and never blocks the rest of the form.
+   * @returns nothing; {@link store} carries success or failure.
+   */
+  async loadCatalog(): Promise<void> {
+    const generation = ++this.catalogGeneration
+    this.store.update((state) => {
+      state.catalogStatus = 'loading'
+      state.catalogError = null
+    })
+    try {
+      const [providersResponse, modelsResponse] = await Promise.all([
+        this.api.llm.providers({}),
+        this.api.llm.models({}),
+      ])
+      if (generation !== this.catalogGeneration) return
+      if (!providersResponse.result.ok) throw providersResponse.result.error
+      if (!modelsResponse.result.ok) throw modelsResponse.result.error
+      const providers = providersResponse.result.value.providers
+      const groups = modelsResponse.result.value.groups
+      const failures = modelsResponse.result.value.failures
+      this.store.update((state) => {
+        state.catalogStatus = 'ready'
+        state.catalogError = failures.length > 0
+          ? failures.map(failure => `${failure.name}: ${failure.message}`).join('; ')
+          : null
+        state.providers = providers
+        state.groups = groups
+        state.catalogEpoch += 1
+      })
+    } catch (error) {
+      if (generation !== this.catalogGeneration) return
+      const wire = error as { message?: string } | null
+      this.store.update((state) => {
+        state.catalogStatus = 'error'
+        state.catalogError = typeof wire?.message === 'string' ? wire.message : messageOf(error)
+      })
     }
   }
 
@@ -339,6 +476,7 @@ export class FallbacksSettingsController {
   /** Stop in-flight responses from publishing after plugin disposal. */
   dispose(): void {
     this.generation += 1
+    this.catalogGeneration += 1
     this.view = undefined
   }
 
@@ -373,4 +511,14 @@ export class FallbacksSettingsController {
 export function refreshFallbacksIfLoaded(controller: FallbacksSettingsController): void {
   if (controller.store.getSnapshot().status === 'idle') return
   void controller.load()
+}
+
+/**
+ * Refetch the catalog after `models/changed` only when it has already been
+ * opened once (the catalog twin of {@link refreshFallbacksIfLoaded}).
+ * @param controller - the fallbacks settings controller.
+ */
+export function refreshCatalogIfLoaded(controller: FallbacksSettingsController): void {
+  if (controller.store.getSnapshot().catalogStatus === 'idle') return
+  void controller.loadCatalog()
 }

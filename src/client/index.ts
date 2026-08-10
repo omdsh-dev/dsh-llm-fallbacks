@@ -24,7 +24,8 @@ import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type { ConnectionHandle } from '@deepseek-ai/dsh-client-connection/client'
 import { FallbacksSection } from './FallbacksSection.tsx'
 import {
-  FallbacksSettingsController, FALLBACKS_SETTINGS_NS, refreshFallbacksIfLoaded,
+  FallbacksSettingsController, FALLBACKS_SETTINGS_NS,
+  refreshCatalogIfLoaded, refreshFallbacksIfLoaded,
 } from './fallbacks-store.ts'
 import { en, NS, zh } from './locales.ts'
 
@@ -47,15 +48,20 @@ export function apply(ctx: ClientContext): void {
   const connection = ctx.get('connection') as ConnectionHandle
   const controller = new FallbacksSettingsController(connection.api)
 
-  // Pushed invalidations converge every open surface without polling.
+  // Pushed invalidations converge every open surface without polling:
+  // `settings/changed` refetches the descriptor, `models/changed` refetches
+  // only the provider/model catalog (never the form), and `connection/reset`
+  // refetches both.
   ctx.effect(() => {
     const refresh = (ns?: string): void => {
       if (ns !== undefined && ns !== FALLBACKS_SETTINGS_NS) return
       refreshFallbacksIfLoaded(controller)
     }
+    const refreshCatalog = (): void => { refreshCatalogIfLoaded(controller) }
     const disposers = [
       ctx.on('settings/changed', refresh),
-      ctx.on('connection/reset', () => { refresh() }),
+      ctx.on('models/changed', refreshCatalog),
+      ctx.on('connection/reset', () => { refresh(); refreshCatalog() }),
     ]
     return () => {
       for (const dispose of disposers) dispose()

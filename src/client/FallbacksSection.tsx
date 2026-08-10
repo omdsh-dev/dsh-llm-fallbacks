@@ -37,10 +37,16 @@ import { defaultFallbacksConfig } from '../config.ts'
 import {
   FallbacksSettingsController,
   chainsToRows,
+  classifyModel,
+  classifyProvider,
   rowsToChains,
   rowsToRules,
   rulesToRows,
+  selectionToRaw,
+  type CatalogLookup,
   type ChainRow,
+  type ChainSelectorRow,
+  type FallbacksSettingsState,
   type RoleRuleRow,
 } from './fallbacks-store.ts'
 import {
@@ -105,6 +111,117 @@ function parseCount(raw: string): number {
   return Number.isNaN(parsed) ? 0 : Math.max(0, parsed)
 }
 
+/** The catalog faces the dropdowns classify against; undefined while unready. */
+function catalogOf(state: FallbacksSettingsState): CatalogLookup | undefined {
+  return state.catalogStatus === 'ready' ? { providers: state.providers, groups: state.groups } : undefined
+}
+
+/**
+ * One chain entry selector row: provider select + model select (cascade) +
+ * wildcard checkbox (spec §2.5 D-3). Out-of-catalog values read back from the
+ * server render as a synthetic option with the short "outside catalog"
+ * annotation and stay selected — keeping them saves verbatim; picking a
+ * catalog option is an intentional change. New rows only offer catalog
+ * options.
+ */
+function ChainSelectorEditor({
+  selector, catalog, disabled, t, onChange, onRemove,
+}: {
+  selector: ChainSelectorRow
+  catalog: CatalogLookup | undefined
+  disabled: boolean
+  t: FallbacksSectionProps['t']
+  onChange: (patch: Partial<ChainSelectorRow>) => void
+  onRemove: () => void
+}): ReactNode {
+  const providerRaw = selectionToRaw(selector.provider)
+  const providerOutside = selector.provider?.kind === 'outside'
+  const modelRaw = selectionToRaw(selector.model)
+  const modelOutside = selector.model?.kind === 'outside'
+  const group = catalog?.groups.find(entry => entry.id === providerRaw)
+  // Catalog provider with no successful model listing: model select disabled
+  // with a hint (D-4); the wildcard stays available (D-4: never depends on
+  // the models).
+  const groupMissing = providerRaw !== '' && !providerOutside && !selector.wildcard && group === undefined
+  // Nothing selectable: outside provider with no outside model to keep.
+  const modelDisabled = disabled || selector.wildcard || providerRaw === '' || groupMissing || (providerOutside && modelRaw === '')
+
+  return (
+    <div className={css.selectorRow}>
+      <div className={css.ruleGrid}>
+        <label className={css.ruleCell}>
+          <span className={css.ruleCellLabel}>{t('roles.rule.provider')}</span>
+          <select
+            className={`${css.input} ${css.selectInput}`}
+            value={providerRaw}
+            disabled={disabled}
+            onChange={event => {
+              // Cascade: a different provider clears the model choice (D-3).
+              onChange({ provider: classifyProvider(event.target.value, catalog), model: null })
+            }}
+          >
+            <option value="">{t('chains.selector.providerPlaceholder')}</option>
+            {(catalog?.providers ?? []).map(entry => (
+              <option key={entry.provider} value={entry.provider}>{entry.displayName}</option>
+            ))}
+            {providerOutside && (
+              <option value={providerRaw}>{`${providerRaw}${t('catalog.outside.short')}`}</option>
+            )}
+          </select>
+        </label>
+        <label className={css.ruleCell}>
+          <span className={css.ruleCellLabel}>{t('roles.rule.model')}</span>
+          <select
+            className={`${css.input} ${css.selectInput}`}
+            value={selector.wildcard ? '' : modelRaw}
+            disabled={modelDisabled}
+            onChange={event => { onChange({ model: classifyModel(providerRaw, event.target.value, catalog) }) }}
+          >
+            {modelRaw === '' && !providerOutside && !selector.wildcard && (
+              <option value="">{t('chains.selector.modelPlaceholder')}</option>
+            )}
+            {(group?.models ?? []).map(model => (
+              <option key={model.id} value={model.id}>{model.name}</option>
+            ))}
+            {modelOutside && !selector.wildcard && (
+              <option value={modelRaw}>{`${modelRaw}${t('catalog.outside.short')}`}</option>
+            )}
+          </select>
+          {groupMissing && <span className={css.hint}>{t('chains.selector.noModels')}</span>}
+        </label>
+        <label className={`${css.ruleCell} ${css.wildcardCell}`}>
+          <input
+            type="checkbox"
+            checked={selector.wildcard}
+            disabled={disabled || providerRaw === ''}
+            onChange={event => {
+              onChange({
+                wildcard: event.target.checked,
+                ...(event.target.checked ? { model: null } : {}),
+              })
+            }}
+          />
+          {t('chains.selector.wildcard')}
+        </label>
+      </div>
+      {(providerOutside || modelOutside) && (
+        <span className={css.hint}>{t('catalog.outside.hint')}</span>
+      )}
+      <div className={css.cardFoot}>
+        <button
+          type="button"
+          className={`${css.iconButton} ${css.iconButtonDanger}`}
+          data-tip={t('chains.selector.remove')}
+          aria-label={t('chains.selector.remove')}
+          onClick={onRemove}
+        >
+          <IconTrashOutline16 />
+        </button>
+      </div>
+    </div>
+  )
+}
+
 /**
  * Render the Fallbacks settings section content column.
  * @param props - composed slot props (contract/slots.ts).
@@ -119,14 +236,15 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
 
   // Initial load: the store starts 'idle' and pushed invalidations only
   // refresh an already-loaded store (`refreshFallbacksIfLoaded` skips
-  // 'idle'), so the section must pull the descriptor itself on mount.
+  // 'idle'), so the section must pull the descriptor itself on mount. The
+  // catalog read is the parallel twin (D-4): each side keeps its own idle
+  // guard (no retry loop on persistent errors).
   // `controller` is the stable slot-injected singleton, so this fires once
-  // per mount; the idle guard (not a status effect) avoids re-triggering on
-  // later transitions (no retry loop on persistent errors).
+  // per mount.
   useEffect(() => {
-    if (controller.store.getSnapshot().status === 'idle') {
-      void controller.load()
-    }
+    const snapshot = controller.store.getSnapshot()
+    if (snapshot.status === 'idle') void controller.load()
+    if (snapshot.catalogStatus === 'idle') void controller.loadCatalog()
   }, [controller])
 
   // Editors seed from `defaultFallbacksConfig` on mount (readme-settings spec
@@ -150,8 +268,8 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
     if (seededRevision.current === state.revision) return
     seededRevision.current = state.revision
     setScalars(scalarsOf(state.config))
-    setChainRows(chainsToRows(state.config.chains))
-    setRuleRows(rulesToRows(state.config.roles.rules))
+    setChainRows(chainsToRows(state.config.chains, catalogOf(state)))
+    setRuleRows(rulesToRows(state.config.roles.rules, catalogOf(state)))
   }, [state.status, state.revision, state.config])
 
   // Reset-to-defaults confirmation (replaces `window.confirm`): the dialog
@@ -185,6 +303,15 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
     })
   }
 
+  const updateChainSelector = (chainIndex: number, selectorIndex: number, patch: Partial<ChainSelectorRow>): void => {
+    setChainRows(rows => {
+      const next = rows.map(row => ({ ...row, selectors: row.selectors.map(selector => ({ ...selector })) }))
+      const selectors = next[chainIndex]!.selectors
+      selectors[selectorIndex] = { ...selectors[selectorIndex]!, ...patch }
+      return next
+    })
+  }
+
   const updateRuleRow = (index: number, patch: Partial<RoleRuleRow>): void => {
     setRuleRows(rows => {
       const next = rows.map(row => ({ ...row }))
@@ -197,6 +324,20 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
   const saving = state.status === 'saving'
   const writable = state.writable && state.conflict === null
   const unknownCodes = scalars.triggerCodes.filter(code => !KNOWN_TRIGGER_CODES.includes(code))
+
+  // Catalog refresh (models/changed) re-classifies rows against the fresh
+  // directory: a value that was outside when the settings seeded becomes a
+  // catalog option, and the empty-catalog guidance clears (R-3a). Only
+  // untouched drafts are re-seeded — in-progress edits are never clobbered.
+  const catalogSeededEpoch = useRef<number | null>(null)
+  useEffect(() => {
+    if (state.catalogStatus !== 'ready') return
+    if (catalogSeededEpoch.current === state.catalogEpoch) return
+    catalogSeededEpoch.current = state.catalogEpoch
+    if (dirty) return
+    setChainRows(chainsToRows(state.config.chains, catalogOf(state)))
+    setRuleRows(rulesToRows(state.config.roles.rules, catalogOf(state)))
+  }, [state.catalogStatus, state.catalogEpoch, state.config, dirty])
 
   const save = (): void => {
     void controller.save(assembleConfig(scalars, chainRows, ruleRows))
@@ -365,6 +506,18 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
       <fieldset className={css.field} disabled={!writable}>
         <legend className={css.fieldLabel}>{t('chains.label')}</legend>
         <span className={css.hint}>{t('chains.hint')}</span>
+        {/* Catalog state is an enrichment of the dropdowns, never a blocker:
+         * a failed read (or an empty directory) only adds a hint line and
+         * leaves every other field editable and saveable (spec §2.3 R-3a). */}
+        {state.catalogStatus === 'error' && state.catalogError !== null && (
+          <span className={css.hint}>{t('catalog.error', { message: state.catalogError })}</span>
+        )}
+        {state.catalogStatus === 'ready' && state.catalogError !== null && (
+          <span className={css.hint}>{t('catalog.partial', { message: state.catalogError })}</span>
+        )}
+        {state.catalogStatus === 'ready' && state.groups.length === 0 && (
+          <span className={css.hint}>{t('catalog.empty')}</span>
+        )}
         <div className={css.list}>
           {chainRows.map((row, index) => (
             <div key={index} className={css.editorCard}>
@@ -375,14 +528,36 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
                 aria-label={t('chains.key')}
                 onChange={event => { updateChainRow(index, { key: event.target.value }) }}
               />
-              <textarea
-                className={css.textarea}
-                rows={2}
-                value={row.entries}
-                placeholder={t('chains.entriesPlaceholder')}
-                aria-label={t('chains.entries')}
-                onChange={event => { updateChainRow(index, { entries: event.target.value }) }}
-              />
+              <div className={css.chainSelectors}>
+                {row.selectors.map((selector, selectorIndex) => (
+                  <ChainSelectorEditor
+                    key={selectorIndex}
+                    selector={selector}
+                    catalog={catalogOf(state)}
+                    disabled={!writable}
+                    t={t}
+                    onChange={patch => { updateChainSelector(index, selectorIndex, patch) }}
+                    onRemove={() => {
+                      setChainRows(rows => rows.map((entry, entryIndex) => entryIndex === index
+                        ? { ...entry, selectors: entry.selectors.filter((_, sIndex) => sIndex !== selectorIndex) }
+                        : entry))
+                    }}
+                  />
+                ))}
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                icon={<IconPlusOutline16 size={14} />}
+                className={css.addButton}
+                onClick={() => {
+                  setChainRows(rows => rows.map((entry, entryIndex) => entryIndex === index
+                    ? { ...entry, selectors: [...entry.selectors, { wildcard: false, provider: null, model: null }] }
+                    : entry))
+                }}
+              >
+                {t('chains.selector.add')}
+              </Button>
               <div className={css.cardFoot}>
                 <button
                   type="button"
@@ -405,7 +580,7 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
           icon={<IconPlusOutline16 size={14} />}
           className={css.addButton}
           onClick={() => {
-            setChainRows(rows => [...rows, { key: '', entries: '' }])
+            setChainRows(rows => [...rows, { key: '', selectors: [] }])
           }}
         >
           {t('chains.add')}
@@ -424,7 +599,13 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
           />
         </label>
         <div className={css.list}>
-          {ruleRows.map((row, index) => (
+          {ruleRows.map((row, index) => {
+            const catalog = catalogOf(state)
+            const providerRaw = selectionToRaw(row.provider)
+            const group = catalog?.groups.find(entry => entry.id === providerRaw)
+            const providerOutside = row.provider?.kind === 'outside'
+            const modelOutside = row.model?.kind === 'outside'
+            return (
             <div key={index} className={css.editorCard}>
               <div className={css.ruleGrid}>
                 <label className={css.ruleCell}>
@@ -441,19 +622,41 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
                 </label>
                 <label className={css.ruleCell}>
                   <span className={css.ruleCellLabel}>{t('roles.rule.provider')}</span>
-                  <input
-                    className={css.input}
-                    value={row.provider}
-                    onChange={event => { updateRuleRow(index, { provider: event.target.value }) }}
-                  />
+                  <select
+                    className={`${css.input} ${css.selectInput}`}
+                    value={providerRaw}
+                    onChange={event => {
+                      // Cascade (same D-3 rule as chains): a different provider
+                      // clears the model choice.
+                      updateRuleRow(index, { provider: classifyProvider(event.target.value, catalog), model: null })
+                    }}
+                  >
+                    <option value="">{t('roles.rule.provider.any')}</option>
+                    {(catalog?.providers ?? []).map(entry => (
+                      <option key={entry.provider} value={entry.provider}>{entry.displayName}</option>
+                    ))}
+                    {providerOutside && (
+                      <option value={providerRaw}>{`${providerRaw}${t('catalog.outside.short')}`}</option>
+                    )}
+                  </select>
                 </label>
                 <label className={css.ruleCell}>
                   <span className={css.ruleCellLabel}>{t('roles.rule.model')}</span>
-                  <input
-                    className={css.input}
-                    value={row.model}
-                    onChange={event => { updateRuleRow(index, { model: event.target.value }) }}
-                  />
+                  <select
+                    className={`${css.input} ${css.selectInput}`}
+                    value={selectionToRaw(row.model)}
+                    onChange={event => {
+                      updateRuleRow(index, { model: classifyModel(providerRaw, event.target.value, catalog) })
+                    }}
+                  >
+                    <option value="">{t('roles.rule.model.any')}</option>
+                    {(group?.models ?? []).map(model => (
+                      <option key={model.id} value={model.id}>{model.name}</option>
+                    ))}
+                    {modelOutside && (
+                      <option value={selectionToRaw(row.model)}>{`${selectionToRaw(row.model)}${t('catalog.outside.short')}`}</option>
+                    )}
+                  </select>
                 </label>
                 <label className={css.ruleCell}>
                   <span className={css.ruleCellLabel}>{t('roles.rule.role')}</span>
@@ -464,6 +667,9 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
                   />
                 </label>
               </div>
+              {(providerOutside || modelOutside) && (
+                <span className={css.hint}>{t('catalog.outside.hint')}</span>
+              )}
               <div className={css.cardFoot}>
                 <button
                   type="button"
@@ -478,7 +684,8 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
                 </button>
               </div>
             </div>
-          ))}
+            )
+          })}
         </div>
         <Button
           variant="outline"
@@ -486,7 +693,7 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
           icon={<IconPlusOutline16 size={14} />}
           className={css.addButton}
           onClick={() => {
-            setRuleRows(rows => [...rows, { origin: '', provider: '', model: '', role: '' }])
+            setRuleRows(rows => [...rows, { origin: '', provider: null, model: null, role: '' }])
           }}
         >
           {t('roles.addRule')}
