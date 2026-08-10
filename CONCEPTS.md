@@ -8,8 +8,8 @@
 一个声明 `dsh.bundle.patch` 的 npm 包：以 `cordis.patch.yml` 组合层向 profile 插入插件行。后装入的 bundle 行插在内置行（如 llm-retry）之后——waterfall 监听注册顺序依赖此。
 *Avoid:* plugin row / patch layer（口语混用时可接受，正式文档用 bundle）
 
-### peer-stubs
-dsh 私有 `@deepseek-ai/*` 包（未发布 registry）的类型访问方案：`peer-stubs/@deepseek-ai/<pkg>/` 内只声明消费面的 `index.d.ts` + `package.json`，经 tsconfig `paths` 映射；运行时值 import 保持 external 由宿主 in-box 解析，测试用 vitest alias 替身。
+### dsh link farm
+dsh 私有 `@deepseek-ai/*` 包（未发布 registry）的开发期类型/测试解析方案：`scripts/setup-dsh-links.mjs` 从 dsh 源码树（`$DSH_SOURCE_DIR`，缺省 `${DSH_HOME}/source/current`，再缺省 `~/.dsh/source/current`）把真实包符号链接进 `node_modules/`（含 `vendor/cordis` 的 bin-less shim，保证 `import 'cordis'` 与真实包解析到同一物理文件）；运行时值 import 保持 external 由宿主 in-box 解析，测试用真实 `dsh-settings`（内存 provider）与真实 store 引擎。`*Avoid:* peer-stubs / tsconfig paths（历史方案，已移除）`
 
 ## LLM fallbacks
 

@@ -1,7 +1,8 @@
 /**
  * Small-integration runtime tests for the plugin `apply()` (plan Task 3
- * Step 6): real cordis waterfall dispatch + fake agent/session, the settings
- * seam aliased to `tests/support/settings-stub.ts`.
+ * Step 6): real cordis waterfall dispatch + fake agent/session, with the
+ * real `@deepseek-ai/dsh-settings` mounted over an in-memory provider
+ * (`tests/support/memory-settings.ts`).
  *
  * Covers the request-error → request switch closed loop, coexistence order
  * with an llm-retry-like listener, always-mode downstream-first delegation
@@ -23,11 +24,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Context, type Logger } from 'cordis'
 import type { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
-import type { SessionEvent } from '@deepseek-ai/dsh-session'
+import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
+import { settingsNamespace } from '@deepseek-ai/dsh-settings'
 import { apply, countRetryEvents, normalizeChains, stateStore } from '../src/index.ts'
 import { defaultFallbacksConfig } from '../src/config.ts'
-import { registrations, resetSettingsStub } from './support/settings-stub.ts'
+import { MemorySettings } from './support/memory-settings.ts'
 import {
+  appendLlmRetry,
   cfg,
   dispatchRequest,
   dispatchRequestError,
@@ -38,8 +41,8 @@ import {
 let ctx: Context
 
 beforeEach(() => {
-  resetSettingsStub()
   ctx = new Context()
+  ctx.plugin(MemorySettings)
 })
 
 afterEach(async () => {
@@ -163,7 +166,7 @@ describe('always mode: downstream first, cap at agent/request (ADR-2)', () => {
     ctx.on('agent/request-error', async (payload, next) => {
       const downstream = await next()
       if (downstream?.kind === 'retry') return downstream
-      agent.session.append('llm/retry', {
+      appendLlmRetry(agent, {
         turn: payload.turn,
         step: payload.step,
         provider: payload.provider,
@@ -191,7 +194,7 @@ describe('always mode: downstream first, cap at agent/request (ADR-2)', () => {
     apply(ctx, cfg({ chains: { default: ['other/gpt-4o'] }, alwaysModeRetryCap: 5 }))
 
     for (let retry = 1; retry <= 4; retry += 1) {
-      agent.session.append('llm/retry', { turn: 1, step: 1, provider: 'mock', mode: 'always', policyKey: 'always', retry })
+      appendLlmRetry(agent, { turn: 1, step: 1, provider: 'mock', mode: 'always', policyKey: 'always', retry })
     }
     const below = await dispatchRequest(ctx, agent, {
       provider: 'mock',
@@ -201,7 +204,7 @@ describe('always mode: downstream first, cap at agent/request (ADR-2)', () => {
     expect(below).toEqual({ provider: 'mock', model: 'gpt-4o', reasoningEffort: 'high' as ReasoningEffortId })
     expect(switchEvents(agent)).toHaveLength(0)
 
-    agent.session.append('llm/retry', { turn: 1, step: 1, provider: 'mock', mode: 'always', policyKey: 'always', retry: 5 })
+    appendLlmRetry(agent, { turn: 1, step: 1, provider: 'mock', mode: 'always', policyKey: 'always', retry: 5 })
     const switched = await dispatchRequest(ctx, agent, {
       provider: 'mock',
       model: 'gpt-4o',
@@ -224,7 +227,7 @@ describe('always mode: downstream first, cap at agent/request (ADR-2)', () => {
 
     // Five retries but for a different step/provider — cap must not trip.
     for (let retry = 1; retry <= 5; retry += 1) {
-      agent.session.append('llm/retry', { turn: 1, step: 2, provider: 'other', mode: 'always', policyKey: 'always', retry })
+      appendLlmRetry(agent, { turn: 1, step: 2, provider: 'other', mode: 'always', policyKey: 'always', retry })
     }
     const config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
     expect(config).toEqual({ provider: 'mock', model: 'gpt-4o' })
@@ -239,7 +242,7 @@ describe('always mode: downstream first, cap at agent/request (ADR-2)', () => {
     // bounded retries belong to llm-retry and must not preempt-switch the
     // fallback (spec §2 clause 5 — the cap is an always-mode mechanism).
     for (let retry = 1; retry <= 5; retry += 1) {
-      agent.session.append('llm/retry', {
+      appendLlmRetry(agent, {
         turn: 1,
         step: 1,
         provider: 'mock',
@@ -258,7 +261,7 @@ describe('always mode: downstream first, cap at agent/request (ADR-2)', () => {
     apply(ctx, cfg({ chains: { default: ['other/gpt-4o'] }, alwaysModeRetryCap: 0 }))
 
     for (let retry = 1; retry <= 5; retry += 1) {
-      agent.session.append('llm/retry', { turn: 1, step: 1, provider: 'mock', mode: 'always', policyKey: 'always', retry })
+      appendLlmRetry(agent, { turn: 1, step: 1, provider: 'mock', mode: 'always', policyKey: 'always', retry })
     }
     const config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
     expect(config).toEqual({ provider: 'mock', model: 'gpt-4o' })
@@ -431,7 +434,7 @@ describe('switch log skip reasons (spec §2 行为可见性; T3 review Minor 1)'
 describe('countRetryEvents — always-mode counting + fast path (T3 review Minor 4)', () => {
   /** Minimal session double — `countRetryEvents` only reads `session.events`. */
   function sessionWith(events: Array<{ type: string; data: Record<string, unknown> }>): Session {
-    return { events: events as unknown as SessionEvent[] } as Session
+    return { events: events as unknown as SessionEvent[] } as unknown as Session
   }
 
   it('returns 0 without scanning earlier turns when the target (turn, step) has no retries', () => {
@@ -515,7 +518,7 @@ describe('lazy per-agent state on agent/request (T3 review Minor 3)', () => {
   it('does not create a state entry when the always-cap decision yields no candidate (F-004)', async () => {
     const { agent } = makeAgent('f004-cap', { provider: 'mock', model: 'gpt-4o' })
     apply(ctx, cfg({ chains: { default: ['mock/gpt-4o'] }, alwaysModeRetryCap: 1 }))
-    agent.session.append('llm/retry', { turn: 1, step: 1, provider: 'mock', mode: 'always', policyKey: 'always', retry: 1 })
+    appendLlmRetry(agent, { turn: 1, step: 1, provider: 'mock', mode: 'always', policyKey: 'always', retry: 1 })
 
     const config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
     expect(config).toEqual({ provider: 'mock', model: 'gpt-4o' })
@@ -535,13 +538,13 @@ describe('lazy per-agent state on agent/request (T3 review Minor 3)', () => {
     apply(ctx, cfg({ chains: { default: ['other/gpt-4o'] }, alwaysModeRetryCap: 2 }))
 
     // Below cap: no switch intent yet → still no state entry.
-    agent.session.append('llm/retry', { turn: 1, step: 1, provider: 'mock', mode: 'always', policyKey: 'always', retry: 1 })
+    appendLlmRetry(agent, { turn: 1, step: 1, provider: 'mock', mode: 'always', policyKey: 'always', retry: 1 })
     const below = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
     expect(below).toEqual({ provider: 'mock', model: 'gpt-4o' })
     expect(stateStore(ctx)?.size).toBe(0)
 
     // At cap: genuine switch intent → state created and the switch applied.
-    agent.session.append('llm/retry', { turn: 1, step: 1, provider: 'mock', mode: 'always', policyKey: 'always', retry: 2 })
+    appendLlmRetry(agent, { turn: 1, step: 1, provider: 'mock', mode: 'always', policyKey: 'always', retry: 2 })
     const switched = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
     expect(switched).toEqual({ provider: 'other', model: 'gpt-4o' })
     expect(stateStore(ctx)?.size).toBe(1)
@@ -587,22 +590,29 @@ describe('per-agent state lifecycle', () => {
 })
 
 describe('settings live re-read', () => {
-  it('re-reads chains and enabled from the settings source on change', async () => {
+  it('re-reads chains and enabled through the real settings service on update', async () => {
     const { agent } = makeAgent('agent-settings', { provider: 'mock', model: 'gpt-4o' })
+    const ns = settingsNamespace('fallbacks')
     apply(ctx, cfg({ chains: { default: ['other/gpt-4o'] } }))
-    const registration = registrations[0]
-    expect(registration).toBeDefined()
-    expect(registration?.ns).toBe('fallbacks')
 
-    registration?.hooks.setSource(() => cfg({ chains: { default: ['third/x'] } }))
-    registration?.hooks.onChange()
+    // The real installSettingsSection registers through `ctx.inject` (a
+    // deferred callback even when the service is already mounted), so settle
+    // one macrotask before probing the registration.
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    // The namespace is registered on the mounted service; the user document
+    // is empty, so the composition entry (the cfg() default) resolves.
+    expect(ctx.settings.describe().map((descriptor) => descriptor.ns)).toContain(ns)
+
+    // A real settings update merges into the user document; scope.watch →
+    // onChange re-reads the source thunk (scope.get()) and re-applies.
+    await ctx.settings.update(ns, { chains: { default: ['third/x'] } })
 
     const action = await dispatchRequestError(ctx, agent)
     expect(action).toEqual({ kind: 'retry' })
     expect(switchEvents(agent)[0]?.data.to).toEqual({ provider: 'third', model: 'x' })
 
-    registration?.hooks.setSource(() => cfg({ enabled: false, chains: { default: ['third/x'] } }))
-    registration?.hooks.onChange()
+    await ctx.settings.update(ns, { enabled: false })
 
     const disabled = await dispatchRequestError(ctx, agent)
     expect(disabled).toBeUndefined()

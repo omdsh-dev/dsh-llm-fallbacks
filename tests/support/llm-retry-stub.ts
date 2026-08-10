@@ -24,6 +24,7 @@
 
 import type { Context } from 'cordis'
 import type { Agent, RequestErrorAction } from '@deepseek-ai/dsh-agent'
+import { RetryId } from '@deepseek-ai/dsh-llm-retry'
 import type { LlmFailure, ResolvedRetryPolicy } from '@deepseek-ai/dsh-llm'
 
 /** Stable policy key mirroring llm-retry's `retryPolicyKey` (src/index.ts). */
@@ -70,20 +71,35 @@ function backoff(
   retry: number,
   retryId: string,
 ): RequestErrorAction {
-  agent.session.append('llm/retry', {
-    retryId,
-    turn,
-    step,
-    provider,
-    mode: policy.mode,
-    policyKey: key,
-    retry,
-    // simplify: the stub never waits — Task 4 asserts contract semantics; the
-    // real backoff's delay/jitter math is covered by llm-retry's own suite.
-    ...(policy.mode === 'normal' && policy.maxRetries !== undefined ? { maxRetries: policy.maxRetries } : {}),
-    delayMs: policy.initialDelayMs,
-    failure,
-  })
+  // Real shape (llm-retry types.ts): `retryId` is a branded `RetryId` and
+  // `maxRetries` is REQUIRED on the normal variant (absent on always).
+  // Branching on the literal `mode` lets the object satisfy the union.
+  if (policy.mode === 'normal') {
+    agent.session.append('llm/retry', {
+      retryId: RetryId(retryId),
+      turn,
+      step,
+      provider,
+      mode: policy.mode,
+      policyKey: key,
+      retry,
+      maxRetries: policy.maxRetries,
+      delayMs: policy.initialDelayMs,
+      failure,
+    })
+  } else {
+    agent.session.append('llm/retry', {
+      retryId: RetryId(retryId),
+      turn,
+      step,
+      provider,
+      mode: policy.mode,
+      policyKey: key,
+      retry,
+      delayMs: policy.initialDelayMs,
+      failure,
+    })
+  }
   return { kind: 'retry' }
 }
 

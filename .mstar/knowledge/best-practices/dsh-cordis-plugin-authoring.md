@@ -15,7 +15,7 @@ tags:
   - cordis
   - plugin
   - bundle
-  - peer-stubs
+  - real-code-linking
   - settings
 ---
 
@@ -36,11 +36,12 @@ dsh 插件 = npm 包，package.json 声明 dsh.bundle.patch（指向 bundle/cord
 - client 半：closure-factory CJS bundle（window.__ModuleLoader__.load 契约），经 dshClient.inject 声明依赖；CSS-modules 需自定义 transform（类名哈希 + style 标签内联注入/卸载）+ NODE_ENV define。
 - prepare 脚本自建（git 安装不跑 build；prepare 需自包含）。
 
-### 类型访问（peer-stubs 模式）
+### 类型访问（dsh link farm，取代 peer-stubs）
 
-- @deepseek-ai/* 不可安装：建 peer-stubs/@deepseek-ai/<pkg>/（index.d.ts 只声明消费面 + package.json {name, version, private, types}），tsconfig paths 映射（含子路径如 @deepseek-ai/dsh-session/types）。
-- 运行时值 import（如 @deepseek-ai/dsh-settings 的 installSettingsSection）保持 external；vitest 用 resolve.alias 指向测试替身。
-- stub 头部注明镜像的 dsh 源码 commit/日期；dsh 基线漂移会静默破坏类型面（事件形状变更尤其危险）。
+- @deepseek-ai/* 不可安装（registry 404），运行期由宿主 in-box 解析；开发期用 `scripts/setup-dsh-links.mjs`（prepare 前置；独立入口 `pnpm dsh:link` / `pnpm dsh:link:check`）从 dsh 源码树链接**真实包**到 node_modules：`$DSH_SOURCE_DIR` → `${DSH_HOME}/source/current` → `~/.dsh/source/current`（取第一个存在）。链接范围 = 源码树 `packages/`+`vendor/` 下所有**无 `bin`** 的 `@deepseek-ai/*` 包（bin 工具包会让 pnpm 往共享 dsh 树写 `.bin`，跳过）。tsconfig 无需 paths。
+- **cordis 必须同物理文件**：真实包的 .d.ts 引用 dsh 树 vendor 的 cordis（非 npm 副本）——直接 symlink vendor/cordis 会带出它的 bin；改为生成 **bin-less shim**（`node_modules/cordis/`：package.json + index.js/index.d.ts/src 符号链接到 vendor 文件），`import 'cordis'` 两侧解析到同一 realpath，`Context`/`Events` 增广才合并（否则 TS2345 满屏）。
+- 安全守卫：宿主 profile 的 pnpm store 内安装（git 依赖 prepare/postinstall 在 node_modules/.pnpm 内运行）或仓库根无 node_modules/ 时自动跳过（exit 0）——绝不把 staging 树链进宿主运行环境；源码树缺失/peer 不可链接 → 报错退出带指引（开发期硬性要求）。
+- 运行时值 import 保持 external；测试缝走真实实现：`installSettingsSection` 挂真实 `@deepseek-ai/dsh-settings`（内存 provider 继承真实 `Settings` 基类，只实现 load/persist + seed 播种），client 半 store 引擎 vitest alias 到 dsh 源码树 `src/.../store.ts`（built `./client` 是浏览器 loader artifact，不可直跑）。
 
 ### 设置与 UI
 
@@ -68,4 +69,4 @@ dsh 插件 = npm 包，package.json 声明 dsh.bundle.patch（指向 bundle/cord
 
 ## Examples
 
-本仓库 dsh-llm-fallbacks（package.json、scripts/build-client.ts、peer-stubs/、src/client/ 为可运行范例）。
+本仓库 dsh-llm-fallbacks（package.json、scripts/setup-dsh-links.mjs、scripts/build-client.ts、src/client/、tests/support/memory-settings.ts 为可运行范例）。

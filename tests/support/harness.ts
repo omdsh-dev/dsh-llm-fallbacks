@@ -18,7 +18,11 @@
 
 import type { Context } from 'cordis'
 import type { Agent, RequestErrorAction } from '@deepseek-ai/dsh-agent'
-import type { LlmCallConfig, LlmFailure, ReasoningEffortId, ResolvedRetryPolicy } from '@deepseek-ai/dsh-llm'
+import { ProviderRequestId } from '@deepseek-ai/dsh-llm'
+import { RetryId } from '@deepseek-ai/dsh-llm-retry'
+import type {
+  LlmCallConfig, LlmFailure, ReasoningEffortId, ResolvedNormalRetryPolicy, ResolvedRetryPolicy,
+} from '@deepseek-ai/dsh-llm'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import { defaultFallbacksConfig, type FallbacksConfig } from '../../src/config.ts'
 
@@ -103,18 +107,38 @@ export function appendLlmRetry(
   const policyKey = data.policyKey ?? (mode === 'always'
     ? '["always",500,10000,0]'
     : '["normal",2,["RATE_LIMIT"],500,10000,0]')
-  agent.session.append('llm/retry', {
-    retryId: `llm-retry:${provider}:${turn}:${step}:${retry}`,
-    turn,
-    step,
-    provider,
-    mode,
-    policyKey,
-    retry,
-    ...(mode === 'normal' && data.maxRetries !== undefined ? { maxRetries: data.maxRetries } : {}),
-    delayMs: data.delayMs ?? 500,
-    failure: data.failure ?? { message: 'busy', code: mode === 'normal' ? 'RATE_LIMIT' : 'SERVER' },
-  })
+  const delayMs = data.delayMs ?? 500
+  const failure = data.failure ?? { message: 'busy', code: mode === 'normal' ? 'RATE_LIMIT' : 'SERVER' }
+  // Real shape (llm-retry `src/types.ts`): `retryId` is a branded `RetryId`,
+  // `maxRetries` is REQUIRED on the normal variant (and must stay absent on
+  // the always variant — excess-property check). Branching on the literal
+  // `mode` lets the object literal satisfy the discriminated union.
+  if (mode === 'normal') {
+    agent.session.append('llm/retry', {
+      retryId: RetryId(`llm-retry:${provider}:${turn}:${step}:${retry}`),
+      turn,
+      step,
+      provider,
+      mode,
+      policyKey,
+      retry,
+      maxRetries: data.maxRetries ?? 2,
+      delayMs,
+      failure,
+    })
+  } else {
+    agent.session.append('llm/retry', {
+      retryId: RetryId(`llm-retry:${provider}:${turn}:${step}:${retry}`),
+      turn,
+      step,
+      provider,
+      mode,
+      policyKey,
+      retry,
+      delayMs,
+      failure,
+    })
+  }
 }
 
 /** Drive one `agent/request-error` waterfall (the loop's dispatch, spec §5 table). */
@@ -170,8 +194,13 @@ export async function dispatchRequest(
   return config
 }
 
-/** Provider retry policy with `mode: 'normal'` (llm-retry semantics; default retryable codes per spec §2 note). */
-export function normalPolicy(overrides: Partial<Omit<ResolvedRetryPolicy, 'mode'>> = {}): ResolvedRetryPolicy {
+/**
+ * Provider retry policy with `mode: 'normal'` (llm-retry semantics; default retryable codes per spec §2 note).
+ * The overrides type is the distributive partial over both resolved variants
+ * (`ResolvedRetryPolicy` is a concrete union, so a plain `Omit` would only
+ * expose the common keys).
+ */
+export function normalPolicy(overrides: Partial<Omit<ResolvedNormalRetryPolicy, 'mode'>> = {}): ResolvedRetryPolicy {
   return {
     mode: 'normal',
     maxRetries: 2,
@@ -195,12 +224,13 @@ export function alwaysPolicy(overrides: Partial<Omit<ResolvedRetryPolicy, 'mode'
 }
 
 /**
- * Runtime double for the declared `LlmError` surface (peer-stubs/
- * `@deepseek-ai/dsh-llm`), mirroring the real class
- * (`packages/llm/llm/src/index.ts`): `(message, code, options?)` with a
- * frozen serializable `failure`. The loop constructs the terminal error as
- * `new LlmError(failure.message, failure.code, failure)` (spec §6) — the
- * failure object doubles as the options bag.
+ * Runtime double for the declared `LlmError` surface (the real
+ * `@deepseek-ai/dsh-llm`, linked from the dsh source tree by the link farm),
+ * mirroring the real class (`packages/llm/llm/src/index.ts`):
+ * `(message, code, options?)` with a frozen serializable `failure`. The loop
+ * constructs the terminal error as `new LlmError(failure.message,
+ * failure.code, failure)` (spec §6) — the failure object doubles as the
+ * options bag.
  */
 export class LlmError extends Error {
   readonly code: string
@@ -219,7 +249,9 @@ export class LlmError extends Error {
       code,
       ...(options.status === undefined ? {} : { status: options.status }),
       ...(options.providerRetryAfterMs === undefined ? {} : { providerRetryAfterMs: options.providerRetryAfterMs }),
-      ...(options.requestId === undefined ? {} : { requestId: options.requestId }),
+      // The real `LlmFailure.requestId` is a branded `ProviderRequestId`
+      // (dsh-llm brand.ts); the double converts the plain-string test input.
+      ...(options.requestId === undefined ? {} : { requestId: ProviderRequestId(options.requestId) }),
     })
   }
 }

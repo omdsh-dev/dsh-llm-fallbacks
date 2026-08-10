@@ -1,8 +1,0 @@
-{
-  "name": "@deepseek-ai/dsh-session",
-  "version": "0.0.1",
-  "private": true,
-  "type": "module",
-  "types": "index.d.ts",
-  "description": "Dev-time type-only stub for @deepseek-ai/dsh-session. The real package is private (not on the npm registry) and ships from the host dsh app at runtime; this stub declares the type surface dsh-llm-fallbacks consumes (SessionEventMap / SessionEvent / Session / SessionId / EpochHeader; the @deepseek-ai/dsh-session/types subpath feeds the fallbacks/switch module augmentation). Mirrors dsh-private commit b8343cb (2026-08-09 snapshot)."
-}
