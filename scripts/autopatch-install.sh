@@ -44,7 +44,7 @@ PATCH_FILES=(
 )
 
 usage() {
-  sed -n '2,31p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'
   exit "${1:-0}"
 }
 
@@ -111,9 +111,9 @@ build_affected() {
   log "构建完成"
 }
 
-# verify 探针提示（失败附手动命令，不改变退出码）
+# verify 探针结果提示（探针已在冲突判定前运行一次，此处仅按 VERIFY_OK 输出，不重复探测）
 run_verify() {
-  if "${SCRIPT_DIR}/verify-dsh-patch.sh" -d "$TARGET" -q; then
+  if [[ "$VERIFY_OK" -eq 1 ]]; then
     log "verify 探针通过：role 标记已就位（源码/构建产物）"
   else
     warn "verify 探针未通过：role 标记未就位。请手动应用并验证: bash \"${SCRIPT_DIR}/apply-dsh-patch.sh\" && bash \"${SCRIPT_DIR}/verify-dsh-patch.sh\""
@@ -166,8 +166,14 @@ if [[ "$APPLIED_ANY" -eq 1 ]]; then
   build_affected
 fi
 
+# verify 探针（只读、幂等）：只运行一次，结果存 VERIFY_OK，冲突降级判定与最终提示共用
+VERIFY_OK=0
+if "${SCRIPT_DIR}/verify-dsh-patch.sh" -d "$TARGET" -q >/dev/null 2>&1; then
+  VERIFY_OK=1
+fi
+
 # 冲突统一判定：verify 探针通过 → dsh 已原生支持（或已等价应用）→ 降级为 info
-if [[ "$HAD_CONFLICT" -eq 1 ]] && "${SCRIPT_DIR}/verify-dsh-patch.sh" -d "$TARGET" -q >/dev/null 2>&1; then
+if [[ "$HAD_CONFLICT" -eq 1 ]] && [[ "$VERIFY_OK" -eq 1 ]]; then
   log "存在冲突 patch，但 verify 探针通过（dsh 已原生支持/已等价应用），视为完成"
   HAD_CONFLICT=0
 fi
