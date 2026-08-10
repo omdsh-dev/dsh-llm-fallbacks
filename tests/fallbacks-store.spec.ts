@@ -307,6 +307,26 @@ describe('FallbacksSettingsController', () => {
     expect(state.revision).toBe(1)
   })
 
+  it('resets via settings.replace with no expectedRevision when the namespace is missing but writable (spec §1.4-2)', async () => {
+    // resetToDefaults mirrors save()'s precondition-less policy: no view →
+    // expectedRevision is omitted (no precondition); the host's acceptance
+    // lands the store in ready with a real view/revision.
+    const api = makeApi()
+    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
+    api.settings.replace.mockResolvedValue(ok(viewOf({ value: defaultFallbacksConfig, revision: 1 })))
+    const controller = new FallbacksSettingsController(api)
+    await controller.load()
+    await controller.resetToDefaults()
+    expect(api.settings.replace).toHaveBeenCalledTimes(1)
+    const write = api.settings.replace.mock.calls[0]![0] as Record<string, unknown>
+    expect(write.ns).toBe('fallbacks')
+    expect(write.section).toEqual({})
+    expect(write).not.toHaveProperty('expectedRevision')
+    const state = controller.store.getSnapshot()
+    expect(state.status).toBe('ready')
+    expect(state.revision).toBe(1)
+  })
+
   it('surfaces a host refusal of a precondition-less write as an error (spec §1.4-2)', async () => {
     // The host says no (unregistered namespace / read refusal): the error
     // state + banner render honestly — the skeleton and draft survive.

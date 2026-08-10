@@ -34,7 +34,7 @@ This plugin aligns with omp's `retry.modelFallback` / `retry.fallbackChains` sem
 | `fallbacks.enabled` | `retry.modelFallback` | Feature switch. dsh defaults to `false` (empty chains are a no-op); omp does not trigger when off |
 | `fallbacks.chains` | `retry.fallbackChains` | Chain configuration. Key/entry selector syntax and specificity (exact → `provider/*` → role → default) match |
 | `fallbacks.revertPolicy` | `retry.fallbackRevertPolicy` | `cooldown-expiry` / `never` semantics match: return to primary on cooldown expiry / never within the session |
-| `fallbacks.roles`（default / rules / `agent.options.role`） | subagent model pattern list (first resolvable pattern is the primary model, the rest are fallbacks; no `agent:<name>` chain keys) | Both group chains by role/agent; dsh's explicit roles and rule matching are more precise and let subagents form their own chains |
+| `fallbacks.roles`(default / rules / `agent.options.role`) | subagent model pattern list (first resolvable pattern is the primary model, the rest are fallbacks; no `agent:<name>` chain keys) | Both group chains by role/agent; dsh's explicit roles and rule matching are more precise and let subagents form their own chains |
 | `fallbacks.triggerCodes` | no public counterpart (triggered by failure type) | dsh exposes the trigger failure-code set as configurable, defaulting to `['AUTH', 'QUOTA', 'RATE_LIMIT']` |
 | `fallbacks.cooldownMs` / `maxSwitchesPerStep` / `alwaysModeRetryCap` | no public counterpart (cooldown is built-in) | dsh-side configurable cooldown duration, per-step safety valve, and always-mode retry cap |
 
@@ -82,6 +82,8 @@ fallbacks:
 Roles are the grouping key for chains: `roles.default` is the fallback role; `roles.rules` match origin/provider/model in order to a concrete role (first match wins); an explicit `agent.options.role` (subagents via `agentOptions.role`, requires the dsh role patch, see [docs/dsh-patch.md](docs/dsh-patch.md)) has the highest priority — once a `reviewer` chain is configured, agents in that role use their own fallback chain.
 
 Save and restart the web session for the changes to take effect. The feature switch `fallbacks.enabled` **defaults to off (`false`)** — the plugin only engages once it is turned on; `triggerCodes` defaults to `AUTH` / `QUOTA` / `RATE_LIMIT`; and with **no chains configured the behavior is identical to not having the plugin installed**. More examples (role chains, provider wildcard keys, roles rules) → [docs/configuration.md](docs/configuration.md).
+
+> **Upgrade note (behavior change)**: an existing `fallbacks:` section **without an explicit `enabled` key** now resolves to `false` after upgrading — add `enabled: true` to keep the plugin active.
 
 ## Documentation
 

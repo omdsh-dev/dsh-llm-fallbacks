@@ -121,10 +121,14 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
   // Editors seed from `defaultFallbacksConfig` on mount (readme-settings spec
   // §1.4-1): the skeleton is always visible — even before any descriptor
   // arrives (idle/loading) or when the namespace is missing (unavailable).
-  // `seededRevision` stays null until the first ready descriptor, which then
-  // re-seeds with server truth. Because controls stay disabled until
-  // `writable` turns true (only a ready descriptor sets it), the mount seed
-  // can never be overwritten while the user is editing.
+  // The mount seed is only a placeholder: `seededRevision` stays null until
+  // the first ready descriptor, and every later ready (a refresh re-load)
+  // re-seeds with server truth. Controls are not gated on `ready` — a missing
+  // namespace with `writable: true` leaves the switch/form body editable
+  // pre-ready (§1.4-4) — so a mid-edit push (host registers the namespace →
+  // settings/changed → refresh → load → ready) overwrites the draft with
+  // server truth on the next ready: unsaved drafts are not preserved across
+  // the unavailable→ready upgrade.
   const [scalars, setScalars] = useState<FallbacksScalars>(() => scalarsOf(defaultFallbacksConfig))
   const [chainRows, setChainRows] = useState<ChainRow[]>(() => chainsToRows(defaultFallbacksConfig.chains))
   const [ruleRows, setRuleRows] = useState<RoleRuleRow[]>(() => rulesToRows(defaultFallbacksConfig.roles.rules))
