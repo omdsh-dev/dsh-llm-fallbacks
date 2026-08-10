@@ -20,7 +20,9 @@ describe('fallbacks Config schema', () => {
     } as unknown as FallbacksConfig)
     expect(resolved.cooldownMs).toBe(1_000)
     expect(resolved.chains).toEqual({ default: ['other/gpt-4o'] })
-    expect(resolved.enabled).toBe(true)
+    // The feature switch defaults OFF (readme-settings spec §1.2); a partial
+    // input inherits the new default.
+    expect(resolved.enabled).toBe(false)
     expect(resolved.triggerCodes).toEqual(['AUTH', 'QUOTA', 'RATE_LIMIT'])
   })
 })

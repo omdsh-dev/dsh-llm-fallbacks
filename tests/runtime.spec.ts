@@ -25,6 +25,7 @@ import { Context, type Logger } from 'cordis'
 import type { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import { apply, countRetryEvents, normalizeChains, stateStore } from '../src/index.ts'
+import { defaultFallbacksConfig } from '../src/config.ts'
 import { registrations, resetSettingsStub } from './support/settings-stub.ts'
 import {
   cfg,
@@ -101,6 +102,27 @@ describe('request-error → request switch closed loop', () => {
     const action = await dispatchRequestError(ctx, agent)
     expect(action).toBeUndefined()
     expect(switchEvents(agent)).toHaveLength(0)
+  })
+})
+
+describe('default-config no-op (AC-3: enabled default OFF flips nothing at runtime)', () => {
+  it('passes trigger-code failures and requests through with zero events on the default config', async () => {
+    const { agent } = makeAgent('agent-ac3', { provider: 'mock', model: 'gpt-4o' })
+    // The true spec default — `enabled: false`, empty chains — must behave
+    // exactly like an uninstalled plugin (readme-settings spec §1.3: the
+    // default-value flip does not change the runtime gating).
+    apply(ctx, defaultFallbacksConfig)
+
+    // request-error: the trigger code would enter the decision path if the
+    // switch were on; with the default config it passes through untouched.
+    const action = await dispatchRequestError(ctx, agent, { failure: { message: 'denied', code: 'AUTH' } })
+    expect(action).toBeUndefined()
+    expect(switchEvents(agent)).toHaveLength(0)
+
+    // request: passthrough, and no state entry was ever grown (zero-cost).
+    const config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
+    expect(config).toEqual({ provider: 'mock', model: 'gpt-4o' })
+    expect(stateStore(ctx)?.size).toBe(0)
   })
 })
 

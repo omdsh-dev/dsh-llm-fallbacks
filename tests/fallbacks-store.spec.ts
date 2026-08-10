@@ -178,14 +178,33 @@ describe('FallbacksSettingsController', () => {
     expect(api.settings.describe).toHaveBeenCalledWith({})
   })
 
-  it('reports unavailable when the namespace is missing from the descriptor', async () => {
+  it('seeds defaults and follows writable when the namespace is missing (unavailable, not a dead end)', async () => {
+    // readme-settings spec §1.4-3: the 'unavailable' status is kept — there is
+    // no server truth (no view/revision) — but the page must stay a usable
+    // skeleton: spec-default seed + writable following the describe response.
     const api = makeApi()
     api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
     const controller = new FallbacksSettingsController(api)
     await controller.load()
     const state = controller.store.getSnapshot()
     expect(state.status).toBe('unavailable')
+    expect(state.writable).toBe(true)
+    expect(state.config).toEqual(defaultFallbacksConfig)
+    expect(state.revision).toBe(0)
+    expect(state.error).toBeNull()
+  })
+
+  it('keeps a read-only environment honest: missing namespace + writable:false stays disabled', async () => {
+    // §1.4-4: only a real read-only describe response disables the controls —
+    // the always-visible skeleton must not weaken honest read-only rendering.
+    const api = makeApi()
+    api.settings.describe.mockResolvedValue(ok({ writable: false, hasDocument: false, namespaces: [] }))
+    const controller = new FallbacksSettingsController(api)
+    await controller.load()
+    const state = controller.store.getSnapshot()
+    expect(state.status).toBe('unavailable')
     expect(state.writable).toBe(false)
+    expect(state.config).toEqual(defaultFallbacksConfig)
   })
 
   it('surfaces a failed describe as an error state', async () => {
@@ -258,7 +277,7 @@ describe('FallbacksSettingsController', () => {
     expect(controller.store.getSnapshot().revision).toBe(3)
   })
 
-  it('refuses writes when the namespace is missing or not writable', async () => {
+  it('refuses writes when the provider is not writable', async () => {
     const api = makeApi()
     api.settings.describe.mockResolvedValue(ok({ writable: false, hasDocument: false, namespaces: [viewOf()] }))
     const controller = new FallbacksSettingsController(api)
@@ -267,6 +286,40 @@ describe('FallbacksSettingsController', () => {
     await controller.resetToDefaults()
     expect(api.settings.update).not.toHaveBeenCalled()
     expect(api.settings.replace).not.toHaveBeenCalled()
+  })
+
+  it('attempts a precondition-less write when the namespace is missing but writable (spec §1.4-2)', async () => {
+    // No view → expectedRevision is omitted (no precondition); the host's
+    // acceptance lands the store in ready with a real view/revision.
+    const api = makeApi()
+    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
+    api.settings.update.mockResolvedValue(ok(viewOf({ value: defaultFallbacksConfig, revision: 1 })))
+    const controller = new FallbacksSettingsController(api)
+    await controller.load()
+    await controller.save(defaultFallbacksConfig)
+    expect(api.settings.update).toHaveBeenCalledTimes(1)
+    const write = api.settings.update.mock.calls[0]![0] as Record<string, unknown>
+    expect(write.ns).toBe('fallbacks')
+    expect(write.patch).toEqual(defaultFallbacksConfig)
+    expect(write).not.toHaveProperty('expectedRevision')
+    const state = controller.store.getSnapshot()
+    expect(state.status).toBe('ready')
+    expect(state.revision).toBe(1)
+  })
+
+  it('surfaces a host refusal of a precondition-less write as an error (spec §1.4-2)', async () => {
+    // The host says no (unregistered namespace / read refusal): the error
+    // state + banner render honestly — the skeleton and draft survive.
+    const api = makeApi()
+    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
+    api.settings.update.mockResolvedValue(error('settings-rejected', 'namespace not registered', { ns: 'fallbacks' }))
+    const controller = new FallbacksSettingsController(api)
+    await controller.load()
+    await controller.save(defaultFallbacksConfig)
+    const state = controller.store.getSnapshot()
+    expect(state.status).toBe('error')
+    expect(state.error).toBe('namespace not registered')
+    expect(state.conflict).toBeNull()
   })
 
   it('drops in-flight responses after dispose (generation guard)', async () => {
