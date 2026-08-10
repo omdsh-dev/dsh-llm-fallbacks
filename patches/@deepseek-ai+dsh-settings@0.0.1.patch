@@ -1,0 +1,71 @@
+diff --git a/packages/settings/settings/src/index.ts b/packages/settings/settings/src/index.ts
+index 2c2fb17201e9fc3a90484a7013a7fe9a2182670e..d9d9c1c95fd815fee80bd2ee7cf80d8841ca295b 100644
+@@ -44,6 +44,13 @@
+   base?: Partial<T>
+   /** Owner's effect timing, surfaced to configuration UIs; defaults to `live`. */
+   applies?: SettingsApplies
++  /**
++   * Whether this namespace's resolved section is readable and writable through
++   * configuration-client wire surfaces (e.g. the web settings RPC). Defaults
++   * to false: a registration does not become remotely readable or writable
++   * unless its owner opts in.
++   */
++  exposeToWebClients?: boolean
+   /**
+    * Reject a resolved section the owner could not act on, for constraints its
+    * schema cannot express — a cross-field requirement, or one field's validity
+@@ -90,6 +97,8 @@
+   user?: unknown
+   /** Owner's declared effect timing. */
+   applies: SettingsApplies
++  /** Whether this namespace is exposed to configuration clients (registration opt-in). */
++  exposed: boolean
+   /** Schema-declared secret positions; present only under `redactSecrets`. */
+   secrets?: RedactedSecret[]
+ }
+@@ -363,6 +372,8 @@
+   schema: z<unknown>
+   base: unknown
+   applies: SettingsApplies
++  /** Registration-level opt-in for configuration-client exposure. */
++  exposed: boolean
+   /** Owner-supplied check for constraints the schema cannot express. */
+   validate?: (value: unknown) => void
+   resolved: unknown
+@@ -478,6 +489,7 @@
+       schema: schema as z<unknown>,
+       base: options?.base,
+       applies: options?.applies ?? 'live',
++      exposed: options?.exposeToWebClients ?? false,
+       ...options?.validate === undefined
+         ? {}
+         : { validate: options.validate as (value: unknown) => void },
+@@ -534,6 +546,7 @@
+         ...base === undefined ? {} : { base },
+         ...detachedUser === undefined ? {} : { user: detachedUser },
+         applies: registration.applies,
++        exposed: registration.exposed,
+       }
+       if (options?.redactSecrets !== true) return descriptor
+       const schema = registration.schema as z<never>
+@@ -877,6 +890,12 @@
+    */
+   onChange(): void
+   /**
++   * Whether the consumer's namespace should be readable and writable through
++   * configuration-client wire surfaces. Passed through to the settings
++   * registration; defaults to false.
++   */
++  exposeToWebClients?: boolean
++  /**
+    * Reject a resolved section this consumer could not act on, for constraints
+    * its schema cannot express. See {@link SettingsRegisterOptions.validate}.
+    * @param value - the resolved section, schema-valid by construction.
+@@ -908,6 +927,7 @@
+     const scope = sctx.settings.register(ns, schema, {
+       base: entry,
+       ...hooks.validate === undefined ? {} : { validate: hooks.validate },
++      ...hooks.exposeToWebClients === undefined ? {} : { exposeToWebClients: hooks.exposeToWebClients },
+     })
+     hooks.setSource(() => scope.get())
+     sctx.effect(() => () => {

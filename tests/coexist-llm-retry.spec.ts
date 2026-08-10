@@ -14,6 +14,16 @@
  *   passes non-triggerCode failures through and only trigger codes switch;
  * - the reverse registration order (fallback first) is pinned as the
  *   bundle-order risk: the fallback then owns trigger codes outright.
+ *
+ * > Mock trap (S-h): this file deliberately has NO `vi.mock('@deepseek-ai/
+ * > dsh-agent')` — its cases only drive `agent/request-error` (the decision
+ * > path), never `agent/request` (the switch-apply path), so the marker
+ * > functions are never touched. If a FUTURE case adds a request dispatch
+ * > (e.g. asserting routing on the switched step), it MUST sync the
+ * > patched-module vi.mock from `tests/plugin.spec.ts` — otherwise the
+ * > marker-handoff assertions cannot run (the linked dsh-agent is unpatched;
+ * > with W1's optional-call guard the apply path degrades instead of
+ * > throwing, silently skipping the marker semantics under test).
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
