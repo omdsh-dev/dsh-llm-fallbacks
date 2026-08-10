@@ -105,6 +105,18 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
     controller.store.getSnapshot,
   )
 
+  // Initial load: the store starts 'idle' and pushed invalidations only
+  // refresh an already-loaded store (`refreshFallbacksIfLoaded` skips
+  // 'idle'), so the section must pull the descriptor itself on mount.
+  // `controller` is the stable slot-injected singleton, so this fires once
+  // per mount; the idle guard (not a status effect) avoids re-triggering on
+  // later transitions (no retry loop on persistent errors).
+  useEffect(() => {
+    if (controller.store.getSnapshot().status === 'idle') {
+      void controller.load()
+    }
+  }, [controller])
+
   // Editors seed from the descriptor once per revision; a save or a reload
   // bumps the revision and re-seeds with server truth.
   const [scalars, setScalars] = useState<FallbacksScalars | null>(null)
