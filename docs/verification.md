@@ -95,11 +95,17 @@ dsh --profile web --dump-config   # 组合树末尾应出现 # == dsh-llm-fallba
 ### 2. web 设置页验证
 
 1. 打开 web 设置 GUI → Settings，确认出现 **Fallbacks** 页（位于 Models 页之后）。
-2. 编辑任一字段（如把 `cooldownMs` 改为 `600000`）并保存。
-3. **预期**：保存成功、无冲突横幅；`$DSH_HOME/settings.yaml`（或该 profile 的 settings
-   路径）写入新值；再次进入页面显示已保存的值，revision 正常（并发修改时出现冲突横幅
-   +「重新加载」按钮，不静默覆盖）。
-4. 一键「恢复默认」后确认配置回组合默认值。
+2. **首次打开（尚无 `fallbacks` 配置）**：页面显示骨架（`nav` 标题 / 介绍 / 只读状态块 /
+   功能级开关 / 保存 / 恢复默认），功能级开关 `enabled` **默认 OFF**，配置表单主体隐藏、
+   显示「功能未开启」提示——页面始终可用，不因命名空间缺失而空白。
+3. 打开 `enabled` 开关 → 配置表单主体出现（`triggerCodes` / `chains` / `roles` /
+   `cooldownMs` / `revertPolicy` / `maxSwitchesPerStep` / `alwaysModeRetryCap`）。
+4. 编辑任一字段（如把 `cooldownMs` 改为 `600000`）并保存。
+5. **预期**：保存成功、无冲突横幅；`$DSH_HOME/settings.yaml`（或该 profile 的 settings
+   路径）写入新值（含 `enabled: true`）；再次进入页面显示已保存的值、开关保持 ON，
+   revision 正常（并发修改时出现冲突横幅 +「重新加载」按钮，不静默覆盖）。
+6. 关闭 `enabled` 开关 → 表单主体再次隐藏（编辑中的 draft 保留，重新打开仍在）；
+   一键「恢复默认」后确认配置回组合默认值（`enabled` 回 `false`）。
 
 ### 3. 运行期 fallback 验证（模拟失败）
 

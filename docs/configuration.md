@@ -6,7 +6,7 @@
 
 | 字段 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
-| `enabled` | boolean | `true` | 总开关。`false` 时插件完全不介入；`true` 但未配置任何链时行为与未安装插件一致（no-op） |
+| `enabled` | boolean | `false` | 功能级总开关。默认关闭（OFF）：`false` 时插件完全不介入、设置页隐藏配置表单主体；`true` 但未配置任何链时行为与未安装插件一致（no-op） |
 | `triggerCodes` | string[] | `['AUTH', 'QUOTA', 'RATE_LIMIT']` | 命中这些失败码时进入链决策。可重试型故障（5xx / `RATE_LIMIT` 等）先由 llm-retry 退避重试，预算耗尽后同样进入决策——**无需为 5xx 额外添加 triggerCodes** |
 | `chains` | Record&lt;string, string[]&gt; | `{}` | 链键 → 有序 fallback 选择器列表。键为 `provider/model`、`provider/*` 或角色名；条目为 `provider/model` 或 `provider/*`（见下文 selector 语法） |
 | `roles.default` | string | `'default'` | 角色解析兜底：无显式 role、无规则命中时使用的角色 |
@@ -16,7 +16,7 @@
 | `maxSwitchesPerStep` | number | `8` | 单步安全阀：每 step 切换次数上限，超限停止切换、保持原错误语义，防止链循环放大延迟 |
 | `alwaysModeRetryCap` | number | `5` | always 模式重试上限：`retryPolicy.mode === 'always'` 的 provider 在同一请求内重试达到该次数后切换；`0` 禁用 |
 
-> 默认值以 spec §4 为准，与 `src/config.ts` 的 schema 默认值一致；设置页对数值字段（`cooldownMs` / `maxSwitchesPerStep` / `alwaysModeRetryCap`）旁显示默认值，其余字段展示当前生效值（未配置时即默认值）。
+> 默认值以本迭代 readme-settings spec §1.2 为准（`enabled` 默认 `false`），与 `src/config.ts` 的 schema 默认值一致；设置页对数值字段（`cooldownMs` / `maxSwitchesPerStep` / `alwaysModeRetryCap`）旁显示默认值，其余字段展示当前生效值（未配置时即默认值）。
 
 ## Selector 语法
 
@@ -88,6 +88,7 @@ fallbacks:
 
 要点：
 
+- 示例显式设置 `enabled: true`——功能级开关默认 `false`，未显式打开时插件不介入、设置页隐藏配置表单主体。
 - 链首条目即主模型之后的第一个降级目标；链内条目即优先级。
 - 切换只改变后续请求的 provider/model 路由，不重置会话上下文与工具状态。
 - 链目标模型需各自已配置密钥与配额（不同 provider 之间成本/额度可能不同）。
@@ -95,10 +96,12 @@ fallbacks:
 ## web 设置页使用说明
 
 - **入口**：web 设置 GUI → Settings → **Fallbacks**（位于 Models 页之后）。
+- **始终可用（骨架恒渲染）**：无论是否已配置 `fallbacks` 命名空间（首次打开、loading、error 等任意描述符状态），页面都渲染骨架——`nav` 标题、介绍、只读状态块、功能级开关 `enabled`、保存/恢复默认动作。命名空间尚未注册时显示默认配置种子，保存动作可用（失败会如实提示，见下）。
+- **功能级开关 `enabled`（默认 OFF）**：开关即用户配置字段 `fallbacks.enabled`，默认关闭。关闭时隐藏配置表单主体（`triggerCodes` / `chains` / `roles` / `cooldownMs` / `revertPolicy` / `maxSwitchesPerStep` / `alwaysModeRetryCap`），显示「功能未开启：打开 `enabled` 开关以显示配置界面」提示——隐藏不丢弃，编辑中的 draft 保留；打开后显示完整配置界面。拨动开关即时显隐（draft 驱动），经保存动作持久化。
 - **可读标签**：枚举型配置项显示可读标签而非原始枚举值——`RATE_LIMIT` →「限流（429）」、`QUOTA` →「配额超限」、`AUTH` →「权限/认证失败」；`cooldown-expiry` →「冷却到期后回主模型」、`never` →「保持备用模型」。数值字段旁显示默认值；其余字段展示当前生效值（未配置时即默认值）。
 - **链/角色行编辑**：`chains` 以「键 + 每行一个选择器的多行输入」编辑；`roles.rules` 以行编辑（origin/provider/model/role），空字段不参与匹配。
-- **恢复默认**：一键把该命名空间的用户配置重置为组合默认值。
-- **冲突重载**：保存携带 `expectedRevision`；配置被其它地方修改时保存被拒，页面显示冲突横幅与「重新加载」按钮，避免静默覆盖并发修改。
+- **恢复默认**：一键把该命名空间的用户配置重置为组合默认值（`enabled` 回 `false`）。
+- **冲突重载**：保存携带 `expectedRevision`；配置被其它地方修改时保存被拒，页面显示冲突横幅与「重新加载」按钮，避免静默覆盖并发修改。命名空间尚未注册时保存省略 `expectedRevision` 尝试写入，host 拒绝则错误横幅如实呈现、骨架与 draft 保留。
 - **只读状态块**：显示当前生效配置摘要（启用状态/默认角色/链数/触发码）；「最近切换摘要」当前为占位，运行期验证后接入会话事件读取面（见实现）。
 
 ## 行为说明
