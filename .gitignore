@@ -15,3 +15,4 @@
 # build artifacts
 node_modules/
 dist/
+.pnpm-store/
