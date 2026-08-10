@@ -24,4 +24,4 @@ dsh 私有 `@deepseek-ai/*` 包（未发布 registry）的类型访问方案：`
 
 ## 已决歧义
 
-- `QUOTA_EXCEEDED`（omp/常见命名）→ 本插件与 dsh taxonomy 用 `QUOTA`；文档中不要混用。
+- `QUOTA_EXCEEDED`（常见命名）→ 本插件与 dsh taxonomy 用 `QUOTA`；文档中不要混用。

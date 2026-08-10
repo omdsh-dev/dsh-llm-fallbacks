@@ -25,21 +25,6 @@ dsh plugin --profile web add https://github.com/dsh-external/dsh-llm-fallbacks.g
 - **安全阀**：每 step 的 `maxSwitchesPerStep` 超限后停止切换、保持原错误语义，防止链循环放大延迟；`mode: 'always'` 的 provider 另有重试上限（`alwaysModeRetryCap`）。
 - **无配置回归（no-op）**：`enabled` 默认关闭（`false`），空链 / 未命中触发码 / 角色解析失败时插件完全 no-op——行为与未安装时一致，不产生任何事件。
 
-## 与 omp `retry.modelFallback` / `fallbackChains` 语义对照
-
-本插件与 omp 的 `retry.modelFallback` / `retry.fallbackChains` 语义对齐（对照见下），dsh 侧以 `fallbacks` settings 命名空间承载配置。
-
-| dsh-llm-fallbacks | omp | 语义对照 |
-|---|---|---|
-| `fallbacks.enabled` | `retry.modelFallback` | 功能总开关。dsh 默认 `false`（空链即 no-op）；omp 关闭即不触发 |
-| `fallbacks.chains` | `retry.fallbackChains` | 链配置。键/条目 selector 语法与 specificity（exact → `provider/*` → 角色 → default）一致 |
-| `fallbacks.revertPolicy` | `retry.fallbackRevertPolicy` | `cooldown-expiry` / `never` 语义一致：冷却到期回主 / 会话内不回 |
-| `fallbacks.roles`（default / rules / `agent.options.role`） | 子代理模型 pattern 列表（首个可解析 pattern 为主模型、其余为 fallback；无 `agent:<name>` 链键） | 都以「角色/agent」为链分组维度；dsh 的显式 role 与规则匹配更精确，可让 subagent 独立成链 |
-| `fallbacks.triggerCodes` | 无公开对应配置（按失败类型触发） | dsh 将触发失败码集合开放为可配置项，默认 `['AUTH', 'QUOTA', 'RATE_LIMIT']` |
-| `fallbacks.cooldownMs` / `maxSwitchesPerStep` / `alwaysModeRetryCap` | 无公开对应配置（冷却为内置行为） | dsh 侧可配置的冷却时长、单步安全阀、always 模式重试上限 |
-
-> omp 侧语义以 omp 自身文档为准；本表仅列出本插件与之对齐/差异的部分，dsh 侧字段定义见 [docs/configuration.md](docs/configuration.md)。
-
 ## 安装
 
 ### 一句话 URL 安装

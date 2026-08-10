@@ -25,21 +25,6 @@ dsh plugin --profile web add https://github.com/dsh-external/dsh-llm-fallbacks.g
 - **Safety valves**: switching stops and the original error semantics are kept once `maxSwitchesPerStep` is exceeded for a step, preventing chain loops from amplifying latency; `mode: 'always'` providers additionally have a retry cap (`alwaysModeRetryCap`).
 - **No-config no-op**: `enabled` defaults to off (`false`); with empty chains, unmatched trigger codes, or unresolved roles the plugin is a complete no-op — identical to not being installed, and no events are emitted.
 
-## Comparison with omp `retry.modelFallback` / `fallbackChains`
-
-This plugin aligns with omp's `retry.modelFallback` / `retry.fallbackChains` semantics (see the table below); on the dsh side, configuration lives in the `fallbacks` settings namespace.
-
-| dsh-llm-fallbacks | omp | Semantics |
-|---|---|---|
-| `fallbacks.enabled` | `retry.modelFallback` | Feature switch. dsh defaults to `false` (empty chains are a no-op); omp does not trigger when off |
-| `fallbacks.chains` | `retry.fallbackChains` | Chain configuration. Key/entry selector syntax and specificity (exact → `provider/*` → role → default) match |
-| `fallbacks.revertPolicy` | `retry.fallbackRevertPolicy` | `cooldown-expiry` / `never` semantics match: return to primary on cooldown expiry / never within the session |
-| `fallbacks.roles`(default / rules / `agent.options.role`) | subagent model pattern list (first resolvable pattern is the primary model, the rest are fallbacks; no `agent:<name>` chain keys) | Both group chains by role/agent; dsh's explicit roles and rule matching are more precise and let subagents form their own chains |
-| `fallbacks.triggerCodes` | no public counterpart (triggered by failure type) | dsh exposes the trigger failure-code set as configurable, defaulting to `['AUTH', 'QUOTA', 'RATE_LIMIT']` |
-| `fallbacks.cooldownMs` / `maxSwitchesPerStep` / `alwaysModeRetryCap` | no public counterpart (cooldown is built-in) | dsh-side configurable cooldown duration, per-step safety valve, and always-mode retry cap |
-
-> omp-side semantics follow omp's own docs; this table only lists where this plugin aligns with or differs from them. dsh-side field definitions → [docs/configuration.md](docs/configuration.md).
-
 ## Install
 
 ### One-line URL install
