@@ -4,6 +4,14 @@
  * `fallbacks`, order 30 — after the Models section at 10); owner props are
  * empty and all data flows through {@link FallbacksSettingsController}.
  *
+ * Rendering follows the settings-panel design language shared with the
+ * Models / Agent-presets / General pages: primitives (`Button` / `Modal` /
+ * `Icon*`) for actions and dialogs, capsule controls (h36 r18; h28 r14
+ * dense), h32 r8 inputs with the `.selectInput` chevron, r12 cards on the
+ * `bg-module-platform` fill, and `--dsw-alias-*` tokens throughout. The
+ * reset-to-defaults confirmation is a `Modal` (the delete-confirm pattern of
+ * the Models page) — no `window.confirm`.
+ *
  * Form surface (spec §4 用户直观性): enumerable values render readable labels
  * (`RATE_LIMIT` → 限流（429）, `QUOTA` → 配额超限, `AUTH` → 权限/认证失败;
  * `cooldown-expiry` → 冷却到期后回主模型, `never` → 保持备用模型) and every
@@ -20,6 +28,9 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { useSyncExternalStore } from 'react'
+import {
+  Button, IconPlusOutline16, IconTrashOutline16, Modal,
+} from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { FallbacksConfig, RevertPolicy } from '../config.ts'
 import { defaultFallbacksConfig } from '../config.ts'
@@ -143,6 +154,13 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
     setRuleRows(rulesToRows(state.config.roles.rules))
   }, [state.status, state.revision, state.config])
 
+  // Reset-to-defaults confirmation (replaces `window.confirm`): the dialog
+  // stays open while the replace is in flight — the Models page's
+  // delete-confirm pattern. The store's `saving` state also disables the
+  // page actions, so a regular save and a reset cannot overlap.
+  const [confirmingReset, setConfirmingReset] = useState(false)
+  const [resetting, setResetting] = useState(false)
+
   // The skeleton always renders (readme-settings spec §1.2): title, intro,
   // banners, the read-only status block, the `enabled` switch, and the
   // save/reset actions are visible in every store state (idle / loading /
@@ -184,21 +202,28 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
     void controller.save(assembleConfig(scalars, chainRows, ruleRows))
   }
 
-  const reset = (): void => {
-    if (window.confirm(t('reset.confirm'))) void controller.resetToDefaults()
+  const confirmReset = (): void => {
+    setResetting(true)
+    // The controller never rejects — failures land in the store as the
+    // `error` state and surface in the section's error banner; either way
+    // the dialog closes once the store settles.
+    void controller.resetToDefaults().finally(() => {
+      setResetting(false)
+      setConfirmingReset(false)
+    })
   }
 
   return (
     <div className={css.section}>
-      <h3 className={css.title}>{t('nav')}</h3>
+      <h2 className={css.title}>{t('nav')}</h2>
       <p className={css.intro}>{t('nav.description')}</p>
 
       {state.conflict !== null && (
         <div className={css.banner} role="alert">
           {t('save.conflict', { expected: state.conflict.expected, actual: state.conflict.actual })}
-          <button type="button" className={css.linkButton} onClick={() => { void controller.load() }}>
+          <Button variant="ghost" size="sm" onClick={() => { void controller.load() }}>
             {t('reload')}
-          </button>
+          </Button>
         </div>
       )}
       {state.error !== null && state.conflict === null && (
@@ -226,15 +251,22 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
         </p>
       </div>
 
-      <label className={css.field}>
-        <span className={css.fieldLabel}>{t('enabled.label')}</span>
+      {/* The `enabled` switch is a row-level preference (the Permission-row
+       * rhythm): title + hint on the left, the native checkbox on the right
+       * — the panel has no switch primitive, and the checkbox semantics are
+       * the behavior the spec pins. */}
+      <label className={css.fieldRow}>
+        <span className={css.fieldRowText}>
+          <span className={css.fieldRowTitle}>{t('enabled.label')}</span>
+          <span className={css.fieldRowDesc}>{t('enabled.hint')}</span>
+        </span>
         <input
           type="checkbox"
+          className={css.switch}
           checked={scalars.enabled}
           disabled={!writable}
           onChange={event => { updateScalars(draft => { draft.enabled = event.target.checked }) }}
         />
-        <span className={css.hint}>{t('enabled.hint')}</span>
       </label>
 
       {/* Enabled OFF (readme-settings spec §1.2): the form body is hidden but
@@ -288,7 +320,7 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
           <span className={css.defaultNote}>{t('defaults.prefix')}: {state.config.cooldownMs}</span>
         </span>
         <input
-          className={css.numberInput}
+          className={`${css.input} ${css.numberInput}`}
           type="number"
           min={0}
           value={String(scalars.cooldownMs)}
@@ -304,7 +336,7 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
           <span className={css.defaultNote}>{t('defaults.prefix')}: {state.config.maxSwitchesPerStep}</span>
         </span>
         <input
-          className={css.numberInput}
+          className={`${css.input} ${css.numberInput}`}
           type="number"
           min={0}
           value={String(scalars.maxSwitchesPerStep)}
@@ -320,7 +352,7 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
           <span className={css.defaultNote}>{t('defaults.prefix')}: {state.config.alwaysModeRetryCap}</span>
         </span>
         <input
-          className={css.numberInput}
+          className={`${css.input} ${css.numberInput}`}
           type="number"
           min={0}
           value={String(scalars.alwaysModeRetryCap)}
@@ -335,9 +367,9 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
         <span className={css.hint}>{t('chains.hint')}</span>
         <div className={css.list}>
           {chainRows.map((row, index) => (
-            <div key={index} className={css.rowCard}>
+            <div key={index} className={css.editorCard}>
               <input
-                className={css.textInput}
+                className={css.input}
                 value={row.key}
                 placeholder={t('chains.keyPlaceholder')}
                 aria-label={t('chains.key')}
@@ -351,19 +383,33 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
                 aria-label={t('chains.entries')}
                 onChange={event => { updateChainRow(index, { entries: event.target.value }) }}
               />
-              <button type="button" className={css.linkButton} onClick={() => {
-                setChainRows(rows => rows.filter((_, rowIndex) => rowIndex !== index))
-              }}>
-                {t('chains.remove')}
-              </button>
+              <div className={css.cardFoot}>
+                <button
+                  type="button"
+                  className={`${css.iconButton} ${css.iconButtonDanger}`}
+                  data-tip={t('chains.remove')}
+                  aria-label={t('chains.remove')}
+                  onClick={() => {
+                    setChainRows(rows => rows.filter((_, rowIndex) => rowIndex !== index))
+                  }}
+                >
+                  <IconTrashOutline16 />
+                </button>
+              </div>
             </div>
           ))}
         </div>
-        <button type="button" className={css.addButton} onClick={() => {
-          setChainRows(rows => [...rows, { key: '', entries: '' }])
-        }}>
+        <Button
+          variant="outline"
+          size="sm"
+          icon={<IconPlusOutline16 size={14} />}
+          className={css.addButton}
+          onClick={() => {
+            setChainRows(rows => [...rows, { key: '', entries: '' }])
+          }}
+        >
           {t('chains.add')}
-        </button>
+        </Button>
       </fieldset>
 
       <fieldset className={css.field} disabled={!writable}>
@@ -372,80 +418,126 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
         <label className={css.subField}>
           <span className={css.subFieldLabel}>{t('roles.default')}</span>
           <input
-            className={css.textInput}
+            className={css.input}
             value={scalars.defaultRole}
             onChange={event => { updateScalars(draft => { draft.defaultRole = event.target.value }) }}
           />
         </label>
         <div className={css.list}>
           {ruleRows.map((row, index) => (
-            <div key={index} className={css.ruleCard}>
-              <label className={css.ruleCell}>
-                <span className={css.ruleCellLabel}>{t('roles.rule.origin')}</span>
-                <select
-                  className={css.textInput}
-                  value={row.origin}
-                  onChange={event => { updateRuleRow(index, { origin: event.target.value }) }}
+            <div key={index} className={css.editorCard}>
+              <div className={css.ruleGrid}>
+                <label className={css.ruleCell}>
+                  <span className={css.ruleCellLabel}>{t('roles.rule.origin')}</span>
+                  <select
+                    className={`${css.input} ${css.selectInput}`}
+                    value={row.origin}
+                    onChange={event => { updateRuleRow(index, { origin: event.target.value }) }}
+                  >
+                    <option value="">{t('roles.rule.origin.any')}</option>
+                    <option value="root">{t('roles.rule.origin.root')}</option>
+                    <option value="subagent">{t('roles.rule.origin.subagent')}</option>
+                  </select>
+                </label>
+                <label className={css.ruleCell}>
+                  <span className={css.ruleCellLabel}>{t('roles.rule.provider')}</span>
+                  <input
+                    className={css.input}
+                    value={row.provider}
+                    onChange={event => { updateRuleRow(index, { provider: event.target.value }) }}
+                  />
+                </label>
+                <label className={css.ruleCell}>
+                  <span className={css.ruleCellLabel}>{t('roles.rule.model')}</span>
+                  <input
+                    className={css.input}
+                    value={row.model}
+                    onChange={event => { updateRuleRow(index, { model: event.target.value }) }}
+                  />
+                </label>
+                <label className={css.ruleCell}>
+                  <span className={css.ruleCellLabel}>{t('roles.rule.role')}</span>
+                  <input
+                    className={css.input}
+                    value={row.role}
+                    onChange={event => { updateRuleRow(index, { role: event.target.value }) }}
+                  />
+                </label>
+              </div>
+              <div className={css.cardFoot}>
+                <button
+                  type="button"
+                  className={`${css.iconButton} ${css.iconButtonDanger}`}
+                  data-tip={t('roles.removeRule')}
+                  aria-label={t('roles.removeRule')}
+                  onClick={() => {
+                    setRuleRows(rows => rows.filter((_, rowIndex) => rowIndex !== index))
+                  }}
                 >
-                  <option value="">{t('roles.rule.origin.any')}</option>
-                  <option value="root">{t('roles.rule.origin.root')}</option>
-                  <option value="subagent">{t('roles.rule.origin.subagent')}</option>
-                </select>
-              </label>
-              <label className={css.ruleCell}>
-                <span className={css.ruleCellLabel}>{t('roles.rule.provider')}</span>
-                <input
-                  className={css.textInput}
-                  value={row.provider}
-                  onChange={event => { updateRuleRow(index, { provider: event.target.value }) }}
-                />
-              </label>
-              <label className={css.ruleCell}>
-                <span className={css.ruleCellLabel}>{t('roles.rule.model')}</span>
-                <input
-                  className={css.textInput}
-                  value={row.model}
-                  onChange={event => { updateRuleRow(index, { model: event.target.value }) }}
-                />
-              </label>
-              <label className={css.ruleCell}>
-                <span className={css.ruleCellLabel}>{t('roles.rule.role')}</span>
-                <input
-                  className={css.textInput}
-                  value={row.role}
-                  onChange={event => { updateRuleRow(index, { role: event.target.value }) }}
-                />
-              </label>
-              <button type="button" className={css.linkButton} onClick={() => {
-                setRuleRows(rows => rows.filter((_, rowIndex) => rowIndex !== index))
-              }}>
-                {t('roles.removeRule')}
-              </button>
+                  <IconTrashOutline16 />
+                </button>
+              </div>
             </div>
           ))}
         </div>
-        <button type="button" className={css.addButton} onClick={() => {
-          setRuleRows(rows => [...rows, { origin: '', provider: '', model: '', role: '' }])
-        }}>
+        <Button
+          variant="outline"
+          size="sm"
+          icon={<IconPlusOutline16 size={14} />}
+          className={css.addButton}
+          onClick={() => {
+            setRuleRows(rows => [...rows, { origin: '', provider: '', model: '', role: '' }])
+          }}
+        >
           {t('roles.addRule')}
-        </button>
+        </Button>
       </fieldset>
       </>
       )}
 
       <div className={css.actions}>
-        <button
-          type="button"
-          className={css.primaryButton}
+        <Button
+          variant="primary"
           disabled={!writable || saving || !dirty}
           onClick={save}
         >
           {saving ? t('save.saving') : t('save')}
-        </button>
-        <button type="button" className={css.secondaryButton} disabled={!writable || saving} onClick={reset}>
+        </Button>
+        <Button variant="outline" disabled={!writable || saving} onClick={() => { setConfirmingReset(true) }}>
           {t('reset')}
-        </button>
+        </Button>
       </div>
+
+      {/* Reset-to-defaults confirmation: the Models page's delete-confirm
+       * pattern — outline cancel + danger-styled outline confirm. */}
+      <Modal
+        open={confirmingReset}
+        onClose={() => { if (!resetting) setConfirmingReset(false) }}
+        title={t('reset.confirmTitle')}
+        closeLabel={t('close')}
+        description={t('reset.confirm')}
+        className={css.resetDialog}
+        footer={(
+          <>
+            <Button
+              variant="outline"
+              autoFocus
+              disabled={resetting}
+              onClick={() => { setConfirmingReset(false) }}
+            >
+              {t('reset.confirm.cancel')}
+            </Button>
+            <Button
+              variant="outline"
+              className={css.confirmDanger}
+              disabled={resetting}
+              onClick={confirmReset}
+            >
+              {resetting ? t('reset.saving') : t('reset.confirm.action')}
+            </Button>
+          </>
+        )}
+      />
     </div>
   )
 }
