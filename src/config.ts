@@ -47,9 +47,15 @@ export interface FallbacksConfig {
   alwaysModeRetryCap: number
 }
 
-/** Spec §4 defaults — `Config({})` must equal this (no-op install). */
+/**
+ * Spec §4 defaults — `Config({})` must equal this (no-op install).
+ * `enabled` defaults to `false` (readme-settings spec §1.2): the feature
+ * switch is off until the user turns it on in the settings page; an
+ * unconfigured install (`enabled: false`, empty chains) behaves exactly like
+ * an uninstalled plugin (AC-3).
+ */
 export const defaultFallbacksConfig: FallbacksConfig = {
-  enabled: true,
+  enabled: false,
   triggerCodes: ['AUTH', 'QUOTA', 'RATE_LIMIT'],
   chains: {},
   roles: { default: 'default', rules: [] },
@@ -65,7 +71,7 @@ export const defaultFallbacksConfig: FallbacksConfig = {
  * the spec defaults, `.required()` keeps `rules[].role` mandatory.
  */
 export const Config = z.object({
-  enabled: z.boolean().default(true),
+  enabled: z.boolean().default(false),
   triggerCodes: z.array(z.string()).default(['AUTH', 'QUOTA', 'RATE_LIMIT']),
   chains: z.dict(z.array(z.string())).default({}),
   roles: z

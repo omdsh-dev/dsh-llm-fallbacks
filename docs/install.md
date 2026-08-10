@@ -39,8 +39,8 @@ dsh 的 profile 由有序 bundle 层组合而成：`@deepseek-ai/dsh-base`（内
 ## 2. git 安装
 
 ```sh
-dsh plugin --profile web add https://github.com/<owner>/dsh-llm-fallbacks.git
-# 或指定 ref：add https://github.com/<owner>/dsh-llm-fallbacks.git#<branch|tag|commit>
+dsh plugin --profile web add https://github.com/dsh-external/dsh-llm-fallbacks.git
+# 或指定 ref：add https://github.com/dsh-external/dsh-llm-fallbacks.git#<branch|tag|commit>
 ```
 
 git 安装注意：
@@ -68,8 +68,8 @@ dsh --profile web --dump-config
 
 然后**重启 dsh web 会话**（`dsh web` 或重启正在运行的会话），让 host 半与 client 半（设置页）加载：
 
-- web 设置 GUI 的 Settings 中应出现 **Fallbacks** 页（位于 Models 页之后）。
-- 页面可读、可编辑、可保存；未配置任何链时显示默认配置，行为 no-op（详见 [docs/configuration.md](docs/configuration.md)）。
+- web 设置 GUI 的 Settings 中应出现 **Fallbacks** 页（位于 Models 页之后），且**始终可用**——首次打开（尚无 `fallbacks` 配置）也渲染页面骨架。
+- 页面可读、可编辑、可保存；功能级开关 `enabled` **默认 OFF**（关闭时隐藏配置表单主体），打开开关后显示完整配置表单；未配置任何链时行为 no-op（详见 [docs/configuration.md](docs/configuration.md)）。
 
 ## 4. 卸载
 

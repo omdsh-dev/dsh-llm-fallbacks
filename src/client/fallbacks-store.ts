@@ -17,6 +17,11 @@
  * surfaces it as `state.conflict` so the form can prompt a reload instead of
  * silently overwriting a concurrent change (the `SettingsConflictError`
  * presentation contract).
+ *
+ * Namespace-missing writes (readme-settings spec §1.4-2): when no view has
+ * ever been accepted the store still attempts `update`/`replace` with
+ * `expectedRevision` omitted (no precondition) — acceptance is the host's
+ * call; a refusal lands in `error` with the banner surfacing it honestly.
  */
 
 import type {
@@ -243,10 +248,16 @@ export class FallbacksSettingsController {
       if (!response.result.ok) throw response.result.error
       const view = response.result.value.namespaces.find(entry => entry.ns === FALLBACKS_SETTINGS_NS)
       if (view === undefined) {
+        // Namespace not registered (readme-settings spec §1.4-3): keep the
+        // 'unavailable' status — there is no server truth (no view/revision)
+        // — but seed the spec defaults and follow the describe response's
+        // writable flag instead of forcing `false`, so the page stays a
+        // usable skeleton and a first config can be attempted.
         this.view = undefined
+        const writable = response.result.value.writable
         this.store.update((state) => {
           state.status = 'unavailable'
-          state.writable = false
+          state.writable = writable
           state.config = defaultFallbacksConfig
           state.revision = 0
           state.error = null
@@ -262,14 +273,17 @@ export class FallbacksSettingsController {
 
   /**
    * Persist the full edited configuration via `settings.update` (merge
-   * semantics), carrying the descriptor revision so a stale editor is
-   * refused rather than silently overwriting a concurrent change.
+   * semantics). With a descriptor view the write carries `view.revision` so a
+   * stale editor is refused rather than silently overwriting a concurrent
+   * change; without a view (namespace never registered) `expectedRevision` is
+   * omitted — a precondition-less write whose acceptance is the host's call
+   * (readme-settings spec §1.4-2).
    * @param next - the complete edited configuration.
    */
   async save(next: FallbacksConfig): Promise<void> {
     const view = this.view
     const state = this.store.getSnapshot()
-    if (view === undefined || !state.writable || state.status === 'saving') return
+    if (!state.writable || state.status === 'saving') return
     const generation = ++this.generation
     this.store.update((draft) => {
       draft.status = 'saving'
@@ -280,7 +294,7 @@ export class FallbacksSettingsController {
       const response = await this.api.settings.update({
         ns: FALLBACKS_SETTINGS_NS,
         patch: next as unknown as object,
-        expectedRevision: view.revision,
+        ...(view === undefined ? {} : { expectedRevision: view.revision }),
       })
       if (generation !== this.generation) return
       if (!response.result.ok) throw response.result.error
@@ -294,12 +308,13 @@ export class FallbacksSettingsController {
   /**
    * Reset the namespace's user section wholesale via `settings.replace`
    * (`section: {}` resets to composition defaults — the removal path a merge
-   * cannot express).
+   * cannot express). `expectedRevision` rides along when a view exists and is
+   * omitted otherwise, mirroring {@link save}'s namespace-missing policy.
    */
   async resetToDefaults(): Promise<void> {
     const view = this.view
     const state = this.store.getSnapshot()
-    if (view === undefined || !state.writable || state.status === 'saving') return
+    if (!state.writable || state.status === 'saving') return
     const generation = ++this.generation
     this.store.update((draft) => {
       draft.status = 'saving'
@@ -310,7 +325,7 @@ export class FallbacksSettingsController {
       const response = await this.api.settings.replace({
         ns: FALLBACKS_SETTINGS_NS,
         section: {},
-        expectedRevision: view.revision,
+        ...(view === undefined ? {} : { expectedRevision: view.revision }),
       })
       if (generation !== this.generation) return
       if (!response.result.ok) throw response.result.error
