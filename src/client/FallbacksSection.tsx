@@ -19,10 +19,12 @@
  * trigger codes loaded from the descriptor that are not in the known set are
  * preserved on save.
  *
- * Read-only status block (AC-7 行为可见性): an effective-config summary plus
- * a placeholder for the recent-switch summary. The client half has no
- * session-event reading face wired for a root-scoped settings section
- * (runtime confirmation lands with T8) — nothing here invents an API.
+ * Read-only status block (AC-7 行为可见性): an effective-config summary, the
+ * derived "current effective model" (spec §2.5 D-6 — a display value from
+ * config + recent switches, never a live route probe; the non-probing note is
+ * always appended), and the recent-switch summary from the current session's
+ * raw `fallbacks/switch` events (spec §2.5 D-5 — read through the store's
+ * `sessions.history` face, single page, newest-first, ≤ 5).
  */
 
 import { useEffect, useRef, useState } from 'react'
@@ -39,6 +41,7 @@ import {
   chainsToRows,
   classifyModel,
   classifyProvider,
+  deriveEffectiveModel,
   rowsToChains,
   rowsToRules,
   rulesToRows,
@@ -51,6 +54,7 @@ import {
 } from './fallbacks-store.ts'
 import {
   configSummary,
+  formatSwitchTime,
   KNOWN_TRIGGER_CODES,
   TRIGGER_CODE_LABELS,
   withTriggerCode,
@@ -235,16 +239,18 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
   )
 
   // Initial load: the store starts 'idle' and pushed invalidations only
-  // refresh an already-loaded store (`refreshFallbacksIfLoaded` skips
-  // 'idle'), so the section must pull the descriptor itself on mount. The
-  // catalog read is the parallel twin (D-4): each side keeps its own idle
-  // guard (no retry loop on persistent errors).
+  // refresh an already-loaded store (`refresh*IfLoaded` skips 'idle'), so the
+  // section must pull the descriptor itself on mount. The catalog read is the
+  // parallel twin (D-4), and the recent-switch summary follows the current
+  // session (D-5 — `setCurrentSession` recorded the id at apply time): each
+  // side keeps its own idle guard (no retry loop on persistent errors).
   // `controller` is the stable slot-injected singleton, so this fires once
   // per mount.
   useEffect(() => {
     const snapshot = controller.store.getSnapshot()
     if (snapshot.status === 'idle') void controller.load()
     if (snapshot.catalogStatus === 'idle') void controller.loadCatalog()
+    if (snapshot.switchesStatus === 'idle') void controller.loadSwitches()
   }, [controller])
 
   // Editors seed from `defaultFallbacksConfig` on mount (readme-settings spec
@@ -325,6 +331,14 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
   const writable = state.writable && state.conflict === null
   const unknownCodes = scalars.triggerCodes.filter(code => !KNOWN_TRIGGER_CODES.includes(code))
 
+  // R-4b: the status block's derived effective model (spec §2.5 D-6). The
+  // derivation is a display value over config + recent switches — the
+  // non-probing note renders beside it unconditionally.
+  const effectiveModel = deriveEffectiveModel(state.config, state.switches)
+  const effectiveModelText = effectiveModel.kind === 'unavailable'
+    ? t('status.effectiveModel.unavailable')
+    : `${effectiveModel.provider}/${effectiveModel.model}`
+
   // Catalog refresh (models/changed) re-classifies rows against the fresh
   // directory: a value that was outside when the settings seeded becomes a
   // catalog option, and the empty-catalog guidance clears (R-3a). Only
@@ -377,19 +391,56 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
         <div className={css.infoBanner}>{t('unavailable')}</div>
       )}
 
-      {/* AC-7 read-only status: effective config summary; the recent-switch
-       * summary is a placeholder until T8 wires a session-event reading face
-       * for the settings page (see module doc — no fabricated API). */}
+      {/* AC-7 read-only status: effective-config summary + derived "current
+       * effective model" (D-6) + the recent-switch summary from the current
+       * session's raw `fallbacks/switch` events (D-5). */}
       <div className={css.statusBlock}>
         <span className={css.statusTitle}>{t('status.title')}</span>
         <p className={css.statusSummary}>{configSummary(state.config, t)}</p>
-        {/* simplify: recent-switch placeholder. Upgrade path: T8 supplies a
-         * client session-event source (e.g. a session.history-derived face)
-         * and this block renders the latest `fallbacks/switch` events. */}
-        <p className={css.statusPlaceholder}>
-          {t('status.switchesPlaceholder')}
-          <span className={css.statusHint}>{t('status.switchesHint')}</span>
-        </p>
+
+        {/* R-4b: derived effective model — a display value (config + recent
+         * switches), never a live route probe; the non-probing note ⑤ is
+         * always appended (D-6 ④). */}
+        <div className={css.statusEffective}>
+          <span className={css.statusSubTitle}>{t('status.effectiveModel.label')}</span>
+          <span className={css.statusEffectiveValue}>{effectiveModelText}</span>
+          <span className={css.statusHint}>{t('status.effectiveModel.note')}</span>
+        </div>
+
+        {/* R-4a: recent-switch summary. Empty state (文案定稿 ③) replaces the
+         * old placeholder; a read failure degrades to an error note, never a
+         * crash (spec §2.4 边界). */}
+        <div className={css.statusSwitches}>
+          <span className={css.statusSubTitle}>{t('status.switches.label')}</span>
+          {state.switchesStatus === 'error' ? (
+            <p className={css.statusPlaceholder} role="alert">
+              {t('status.switches.error', { message: state.switchesError })}
+            </p>
+          ) : state.switchesStatus === 'loading' ? (
+            <p className={css.statusPlaceholder}>{t('loading')}</p>
+          ) : state.switches.length === 0 ? (
+            <p className={css.statusPlaceholder}>{t('status.switches.empty')}</p>
+          ) : (
+            <ul className={css.statusSwitchList}>
+              {state.switches.map(item => (
+                <li key={item.seq} className={css.statusSwitchItem}>
+                  <span className={css.statusSwitchRoute}>
+                    {item.from.provider}/{item.from.model} → {item.to.provider}/{item.to.model}
+                  </span>
+                  <span className={css.statusSwitchMeta}>
+                    {t('status.switches.item', {
+                      role: item.role,
+                      reason: t(item.reason === 'trigger-code'
+                        ? 'status.switches.reason.trigger-code'
+                        : 'status.switches.reason.always-cap'),
+                      time: formatSwitchTime(item.time),
+                    })}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
       </div>
 
       {/* The `enabled` switch is a row-level preference (the Permission-row

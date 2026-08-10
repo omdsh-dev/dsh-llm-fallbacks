@@ -67,8 +67,15 @@ export const zh = {
   'catalog.outside.short': '（目录外）',
   'status.title': '运行状态（只读）',
   'status.configSummary': '当前配置：已启用 {enabled}；默认角色 {role}；{chains} 条链；触发失败码 {codes}。',
-  'status.switchesPlaceholder': '最近切换摘要将在此显示。',
-  'status.switchesHint': '切换历史来自会话事件流；设置页的只读事件读取面将在运行期验证（T8）后接入，当前为占位。',
+  'status.effectiveModel.label': '当前生效模型',
+  'status.effectiveModel.unavailable': 'fallbacks 未启用（或未配置）：无当前生效模型。',
+  'status.effectiveModel.note': '配置 + 最近切换推导，非实时路由探测。',
+  'status.switches.label': '最近切换',
+  'status.switches.empty': '本会话暂无 fallback 切换。',
+  'status.switches.error': '切换历史读取失败：{message}',
+  'status.switches.item': '{role} · {reason} · {time}',
+  'status.switches.reason.trigger-code': '触发失败码',
+  'status.switches.reason.always-cap': 'always 模式上限',
   'defaults.prefix': '默认值',
   'save': '保存',
   'save.saving': '保存中…',
@@ -147,8 +154,15 @@ export const en = {
   'catalog.outside.short': ' (outside catalog)',
   'status.title': 'Runtime status (read-only)',
   'status.configSummary': 'Effective config: enabled {enabled}; default role {role}; {chains} chains; trigger codes {codes}.',
-  'status.switchesPlaceholder': 'Recent switch summary will appear here.',
-  'status.switchesHint': 'Switch history comes from the session event stream; the read-only event face for the settings page lands after runtime verification (T8) — placeholder for now.',
+  'status.effectiveModel.label': 'Current effective model',
+  'status.effectiveModel.unavailable': 'Fallbacks disabled (or not configured): no current effective model.',
+  'status.effectiveModel.note': 'Derived from configuration and recent switches; not real-time route probing.',
+  'status.switches.label': 'Recent switches',
+  'status.switches.empty': 'No fallback switches in this session yet.',
+  'status.switches.error': 'Switch history read failed: {message}',
+  'status.switches.item': '{role} · {reason} · {time}',
+  'status.switches.reason.trigger-code': 'trigger code',
+  'status.switches.reason.always-cap': 'always-mode cap',
   'defaults.prefix': 'Default',
   'save': 'Save',
   'save.saving': 'Saving…',
@@ -208,4 +222,15 @@ export function configSummary(config: FallbacksConfig, t: (key: FallbacksKey, pa
     chains: String(Object.keys(config.chains).length),
     codes: config.triggerCodes.join(', '),
   })
+}
+
+/**
+ * Render a switch event time (Unix epoch ms) for the status block as
+ * `YYYY-MM-DD HH:mm` in local time — locale-neutral, so zh/en share the
+ * format (the dictionaries stay the sole copy source).
+ */
+export function formatSwitchTime(time: number): string {
+  const date = new Date(time)
+  const pad = (value: number): string => String(value).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
 }

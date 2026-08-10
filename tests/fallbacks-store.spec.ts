@@ -14,8 +14,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Context } from 'cordis'
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
-import type { SettingsNamespaceView } from '@deepseek-ai/dsh-client-connection/client'
+import type { HistoryEntry, SettingsNamespaceView } from '@deepseek-ai/dsh-client-connection/client'
 import { defaultFallbacksConfig, type FallbacksConfig } from '../src/config.ts'
+import type { FallbacksSwitchEventData } from '../src/events.ts'
 import { KNOWN_TRIGGER_CODES, TRIGGER_CODE_LABELS } from '../src/client/locales.ts'
 import { apply as applyClient } from '../src/client/index.ts'
 import {
@@ -23,16 +24,22 @@ import {
   classifyModel,
   classifyProvider,
   conflictDetailsOf,
+  deriveEffectiveModel,
+  extractRecentSwitches,
   FallbacksSettingsController,
   isSettingsConflict,
   parseFallbacksConfig,
   refreshCatalogIfLoaded,
+  refreshSwitchesIfLoaded,
   rowsToChains,
   rowsToRules,
   rulesToRows,
   selectorRowToRaw,
   FALLBACKS_SETTINGS_NS,
+  RECENT_SWITCH_LIMIT,
+  SWITCHES_HISTORY_PAGE,
   type CatalogLookup,
+  type FallbacksSwitchSnapshot,
 } from '../src/client/fallbacks-store.ts'
 
 /** Build a fallbacks descriptor view with spec-default value unless overridden. */
@@ -48,7 +55,7 @@ function viewOf(overrides: Partial<SettingsNamespaceView> = {}): SettingsNamespa
   }
 }
 
-/** A settings + llm wire face whose methods are spies (real `IApiClient` also carries `openDocument`). */
+/** A settings + llm + sessions wire face whose methods are spies (real `IApiClient` also carries `openDocument`). */
 function makeApi() {
   return {
     settings: {
@@ -63,7 +70,35 @@ function makeApi() {
       models: vi.fn(),
       discoverModels: vi.fn(),
     },
+    sessions: {
+      history: vi.fn(),
+    },
   }
+}
+
+/** One `fallbacks/switch` history entry with a deterministic seq/time. */
+function switchEntry(seq: number, overrides: Partial<FallbacksSwitchEventData> = {}): HistoryEntry {
+  return {
+    event: {
+      type: 'fallbacks/switch',
+      seq,
+      time: 1_700_000_000_000 + seq * 1000,
+      data: {
+        turn: 1,
+        step: 1,
+        from: { provider: 'openai', model: 'gpt-4o' },
+        to: { provider: 'anthropic', model: 'claude-3-5-sonnet' },
+        role: 'default',
+        reason: 'trigger-code',
+        ...overrides,
+      },
+    },
+  } as HistoryEntry
+}
+
+/** A non-switch history entry (must be filtered out by the extraction). */
+function otherEntry(seq: number, type = 'assistant/message'): HistoryEntry {
+  return { event: { type, seq, time: 1_700_000_000_000, data: {} } } as unknown as HistoryEntry
 }
 
 /** A catalog fixture: two providers, one with advertised models, one without. */
@@ -257,6 +292,112 @@ describe('catalog classification (spec §2.5 D-3)', () => {
     const rows = chainsToRows({ default: ['gpt-4o'] }, catalogFixture())
     expect(rows[0]!.selectors[0]).toEqual({ wildcard: false, provider: { kind: 'outside', raw: 'gpt-4o' }, model: null })
     expect(rowsToChains(rows)).toEqual({ default: ['gpt-4o'] })
+  })
+})
+
+describe('extractRecentSwitches (spec §2.5 D-5 raw event face)', () => {
+  it('filters only `fallbacks/switch` events out of a mixed page', () => {
+    const entries = [
+      otherEntry(3),
+      switchEntry(5, { to: { provider: 'anthropic', model: 'claude-3-5-sonnet' } }),
+      otherEntry(4, 'tool/result'),
+      switchEntry(7, { to: { provider: 'google', model: 'gemini-2.0-flash' } }),
+    ]
+    const extracted = extractRecentSwitches(entries)
+    expect(extracted).toHaveLength(2)
+    expect(extracted.map(item => item.seq)).toEqual([7, 5])
+  })
+
+  it('orders by event seq descending (newest first)', () => {
+    const entries = [switchEntry(2), switchEntry(10), switchEntry(5)]
+    const extracted = extractRecentSwitches(entries)
+    expect(extracted.map(item => item.seq)).toEqual([10, 5, 2])
+  })
+
+  it('carries the durable payload plus the raw seq and time', () => {
+    const [item] = extractRecentSwitches([switchEntry(9, { role: 'reviewer', reason: 'always-cap' })])
+    expect(item).toEqual<FallbacksSwitchSnapshot>({
+      seq: 9,
+      time: 1_700_000_000_000 + 9000,
+      turn: 1,
+      step: 1,
+      from: { provider: 'openai', model: 'gpt-4o' },
+      to: { provider: 'anthropic', model: 'claude-3-5-sonnet' },
+      role: 'reviewer',
+      reason: 'always-cap',
+    })
+  })
+
+  it(`caps at the default N=${RECENT_SWITCH_LIMIT} (newest wins)`, () => {
+    const entries = Array.from({ length: 9 }, (_, index) => switchEntry(index + 1))
+    const extracted = extractRecentSwitches(entries)
+    expect(extracted).toHaveLength(RECENT_SWITCH_LIMIT)
+    expect(extracted.map(item => item.seq)).toEqual([9, 8, 7, 6, 5])
+  })
+
+  it('shows the actual count when the page holds fewer than N (no multi-page backfill)', () => {
+    const extracted = extractRecentSwitches([switchEntry(3), switchEntry(1)])
+    expect(extracted).toHaveLength(2)
+    expect(extracted.map(item => item.seq)).toEqual([3, 1])
+  })
+
+  it('returns an empty list for a page without switch events', () => {
+    expect(extractRecentSwitches([otherEntry(1), otherEntry(2)])).toEqual([])
+    expect(extractRecentSwitches([])).toEqual([])
+  })
+})
+
+describe('deriveEffectiveModel (spec §2.5 D-6 display value)', () => {
+  const enabledConfig: FallbacksConfig = {
+    ...defaultFallbacksConfig,
+    enabled: true,
+    chains: { default: ['openai/gpt-4o', 'openai/*'] },
+  }
+
+  it('① disabled → unavailable even when switches exist', () => {
+    const view = deriveEffectiveModel(defaultFallbacksConfig, [{
+      seq: 2, time: 1, turn: 1, step: 1,
+      from: { provider: 'openai', model: 'gpt-4o' },
+      to: { provider: 'anthropic', model: 'claude-3-5-sonnet' },
+      role: 'default', reason: 'trigger-code',
+    }])
+    expect(view).toEqual({ kind: 'unavailable' })
+  })
+
+  it('① enabled with no chains configured → unavailable', () => {
+    const config = { ...enabledConfig, chains: {} }
+    expect(deriveEffectiveModel(config, [])).toEqual({ kind: 'unavailable' })
+  })
+
+  it('② a recent switch exists → the latest one\'s target (`to`)', () => {
+    const switches: FallbacksSwitchSnapshot[] = [
+      { seq: 9, time: 1, turn: 1, step: 1, from: { provider: 'openai', model: 'gpt-4o' }, to: { provider: 'google', model: 'gemini-2.0-flash' }, role: 'default', reason: 'always-cap' },
+      { seq: 3, time: 1, turn: 1, step: 1, from: { provider: 'openai', model: 'gpt-4o' }, to: { provider: 'anthropic', model: 'claude-3-5-sonnet' }, role: 'default', reason: 'trigger-code' },
+    ]
+    // The store keeps switches newest-first, so [0] is the latest.
+    expect(deriveEffectiveModel(enabledConfig, switches)).toEqual({
+      kind: 'switched',
+      provider: 'google',
+      model: 'gemini-2.0-flash',
+    })
+  })
+
+  it('③ no switches → the config\'s primary target (first chain entry)', () => {
+    expect(deriveEffectiveModel(enabledConfig, [])).toEqual({
+      kind: 'config',
+      provider: 'openai',
+      model: 'gpt-4o',
+    })
+  })
+
+  it('③ a wildcard first entry derives as provider/*', () => {
+    const config = { ...enabledConfig, chains: { default: ['anthropic/*'] } }
+    expect(deriveEffectiveModel(config, [])).toEqual({ kind: 'config', provider: 'anthropic', model: '*' })
+  })
+
+  it('③ a malformed first entry stays verbatim rather than mis-parsed', () => {
+    const config = { ...enabledConfig, chains: { default: ['gpt-4o'] } }
+    expect(deriveEffectiveModel(config, [])).toEqual({ kind: 'config', provider: 'gpt-4o', model: '*' })
   })
 })
 
@@ -550,6 +691,137 @@ describe('FallbacksSettingsController', () => {
   })
 })
 
+describe('recent-switch summary (spec §2.5 D-5)', () => {
+  it('reads one history page for the recorded current session and lands the extracted switches', async () => {
+    const api = makeApi()
+    api.sessions.history.mockResolvedValue(ok({
+      events: [otherEntry(3), switchEntry(5), switchEntry(9)],
+      hasMore: false,
+    }))
+    const controller = new FallbacksSettingsController(api)
+    controller.setCurrentSession('sess-1' as never)
+    await controller.loadSwitches()
+    const state = controller.store.getSnapshot()
+    expect(api.sessions.history).toHaveBeenCalledWith({
+      sessionId: 'sess-1',
+      maxMessages: SWITCHES_HISTORY_PAGE,
+    })
+    expect(state.switchesStatus).toBe('ready')
+    expect(state.switchesError).toBeNull()
+    expect(state.switches.map(item => item.seq)).toEqual([9, 5])
+    // The switches read never touches the settings side of the store.
+    expect(state.status).toBe('idle')
+  })
+
+  it('resolves to the empty state without an RPC when there is no current session', async () => {
+    const api = makeApi()
+    const controller = new FallbacksSettingsController(api)
+    await controller.loadSwitches()
+    const state = controller.store.getSnapshot()
+    expect(state.switchesStatus).toBe('ready')
+    expect(state.switchesError).toBeNull()
+    expect(state.switches).toEqual([])
+    expect(api.sessions.history).not.toHaveBeenCalled()
+  })
+
+  it('marks the switches read errored on a failed history without blocking the settings state', async () => {
+    const api = makeApi()
+    api.sessions.history.mockResolvedValue(error('session-rejected', 'history read refused', { sessionId: 'sess-1' }))
+    const controller = new FallbacksSettingsController(api)
+    controller.setCurrentSession('sess-1' as never)
+    await controller.loadSwitches()
+    const state = controller.store.getSnapshot()
+    expect(state.switchesStatus).toBe('error')
+    expect(state.switchesError).toBe('history read refused')
+    // Settings status untouched: the form keeps editing/saving normally.
+    expect(state.status).toBe('idle')
+  })
+
+  it('surfaces a transport failure as the switches error (wire message extraction)', async () => {
+    const api = makeApi()
+    api.sessions.history.mockRejectedValue(new Error('transport down'))
+    const controller = new FallbacksSettingsController(api)
+    controller.setCurrentSession('sess-1' as never)
+    await controller.loadSwitches()
+    const state = controller.store.getSnapshot()
+    expect(state.switchesStatus).toBe('error')
+    expect(state.switchesError).toBe('transport down')
+  })
+
+  it('drops in-flight history responses after dispose (independent generation guard)', async () => {
+    const api = makeApi()
+    let resolveHistory: (value: unknown) => void = () => {}
+    api.sessions.history.mockReturnValue(new Promise(resolve => { resolveHistory = resolve }))
+    const controller = new FallbacksSettingsController(api)
+    controller.setCurrentSession('sess-1' as never)
+    const loading = controller.loadSwitches()
+    controller.dispose()
+    resolveHistory(ok({ events: [switchEntry(1)], hasMore: false }))
+    await loading
+    const state = controller.store.getSnapshot()
+    // The stale response never published: the block stays on the loading
+    // state it was left in.
+    expect(state.switchesStatus).not.toBe('ready')
+    expect(state.switches).toEqual([])
+  })
+
+  it('session switch reloads the summary for the new session once read', async () => {
+    const api = makeApi()
+    api.sessions.history.mockResolvedValue(ok({ events: [switchEntry(2)], hasMore: false }))
+    const controller = new FallbacksSettingsController(api)
+    controller.setCurrentSession('sess-1' as never)
+    await controller.loadSwitches()
+    expect(api.sessions.history).toHaveBeenCalledTimes(1)
+
+    // A different current session → immediate reload for the new id.
+    controller.setCurrentSession('sess-2' as never)
+    await Promise.resolve()
+    expect(api.sessions.history).toHaveBeenCalledTimes(2)
+    expect(api.sessions.history).toHaveBeenLastCalledWith({
+      sessionId: 'sess-2',
+      maxMessages: SWITCHES_HISTORY_PAGE,
+    })
+
+    // The same id again → no reload.
+    controller.setCurrentSession('sess-2' as never)
+    await Promise.resolve()
+    expect(api.sessions.history).toHaveBeenCalledTimes(2)
+  })
+
+  it('recording the current session before the block is read only stores the id (first read stays with the section mount)', async () => {
+    const api = makeApi()
+    api.sessions.history.mockResolvedValue(ok({ events: [], hasMore: false }))
+    const controller = new FallbacksSettingsController(api)
+    controller.setCurrentSession('sess-1' as never)
+    // Idle block: recording must not trigger a read.
+    expect(api.sessions.history).not.toHaveBeenCalled()
+    await controller.loadSwitches()
+    expect(api.sessions.history).toHaveBeenCalledWith({
+      sessionId: 'sess-1',
+      maxMessages: SWITCHES_HISTORY_PAGE,
+    })
+  })
+
+  it('refreshSwitchesIfLoaded skips an idle block and refreshes an opened one', async () => {
+    const api = makeApi()
+    api.sessions.history.mockResolvedValue(ok({ events: [], hasMore: false }))
+    const controller = new FallbacksSettingsController(api)
+    controller.setCurrentSession('sess-1' as never)
+    // Idle → no refetch.
+    refreshSwitchesIfLoaded(controller)
+    expect(api.sessions.history).not.toHaveBeenCalled()
+    await controller.loadSwitches()
+    expect(api.sessions.history).toHaveBeenCalledTimes(1)
+    // Opened (ready) → refetches for the tracked session.
+    refreshSwitchesIfLoaded(controller)
+    expect(api.sessions.history).toHaveBeenCalledTimes(2)
+    expect(api.sessions.history).toHaveBeenLastCalledWith({
+      sessionId: 'sess-1',
+      maxMessages: SWITCHES_HISTORY_PAGE,
+    })
+  })
+})
+
 describe('known trigger codes (M-04 single source)', () => {
   it('derives the toggle set from the host defaults', () => {
     expect(KNOWN_TRIGGER_CODES).toEqual(defaultFallbacksConfig.triggerCodes)
@@ -576,6 +848,11 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
   it('stops in-flight settings responses from publishing after the fiber is disposed', async () => {
     // Locale service double: register + bind (bind returns a translate thunk).
     ctx.provide('locale', { register: () => () => {}, bind: () => () => '' })
+    // Sessions service double: the apply wiring reads `list` current and
+    // subscribes to changes (D-5) — no current session in this test.
+    ctx.provide('sessions', {
+      list: { getSnapshot: () => ({ current: undefined }), subscribe: () => () => {} },
+    })
     // Connection service double: a controllable settings.describe.
     let resolveDescribe: (value: unknown) => void = () => {}
     const describe = vi.fn(() => new Promise<unknown>(resolve => { resolveDescribe = resolve }))
@@ -610,6 +887,10 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
   it('models/changed refreshes only the catalog, never the settings (D-4)', async () => {
     // Locale service double: register + bind (bind returns a translate thunk).
     ctx.provide('locale', { register: () => () => {}, bind: () => () => '' })
+    // Sessions service double: no current session; the wiring still subscribes.
+    ctx.provide('sessions', {
+      list: { getSnapshot: () => ({ current: undefined }), subscribe: () => () => {} },
+    })
     // Connection service double: controllable settings.describe + llm catalog.
     const describe = vi.fn()
     const providers = vi.fn()
@@ -641,5 +922,54 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
     await Promise.resolve()
     expect(providers).toHaveBeenCalledTimes(2)
     expect(describe).not.toHaveBeenCalled()
+  })
+
+  it('a sessions.list current change reloads the status-block switches (D-5)', async () => {
+    // Locale service double: register + bind (bind returns a translate thunk).
+    ctx.provide('locale', { register: () => () => {}, bind: () => () => '' })
+    // Sessions service double: a controllable current selection with a real
+    // subscriber list, so the apply wiring's D-5 subscription can be driven.
+    let current: string | undefined = 'sess-1'
+    const listeners = new Set<() => void>()
+    ctx.provide('sessions', {
+      list: {
+        getSnapshot: () => ({ current }),
+        subscribe: (fn: () => void) => {
+          listeners.add(fn)
+          return () => { listeners.delete(fn) }
+        },
+      },
+    })
+    // Connection service double: sessions.history is the status block's face.
+    const history = vi.fn().mockResolvedValue(ok({ events: [switchEntry(1)], hasMore: false }))
+    ctx.provide('connection', {
+      api: {
+        settings: { describe: vi.fn(), update: vi.fn(), replace: vi.fn(), mutate: vi.fn() },
+        llm: { providers: vi.fn(), models: vi.fn(), discoverModels: vi.fn() },
+        sessions: { history },
+      },
+    })
+    let controller: FallbacksSettingsController | undefined
+    ctx.provide('slots', {
+      inject: (_name: string, thunk: () => unknown) => { thunk() },
+      register: (options: { inject: () => unknown }) => {
+        controller = (options.inject() as { controller: FallbacksSettingsController }).controller
+        return {}
+      },
+    })
+    applyClient(ctx as unknown as ClientContext)
+    expect(controller).toBeDefined()
+
+    // The status block opened once (the section mount effect's first read).
+    await controller!.loadSwitches()
+    expect(history).toHaveBeenCalledTimes(1)
+    expect(history).toHaveBeenCalledWith({ sessionId: 'sess-1', maxMessages: SWITCHES_HISTORY_PAGE })
+
+    // The user switches session → the list subscription reloads for the new id.
+    current = 'sess-2'
+    for (const listener of [...listeners]) listener()
+    await Promise.resolve()
+    expect(history).toHaveBeenCalledTimes(2)
+    expect(history).toHaveBeenLastCalledWith({ sessionId: 'sess-2', maxMessages: SWITCHES_HISTORY_PAGE })
   })
 })

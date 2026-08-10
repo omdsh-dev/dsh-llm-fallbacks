@@ -25,7 +25,8 @@
  */
 
 import type {
-  ConfigurableProviderView, IApiClient, ModelProviderGroup, SettingsNamespaceView,
+  ConfigurableProviderView, HistoryEntry, IApiClient, ModelProviderGroup, SessionId,
+  SettingsNamespaceView,
 } from '@deepseek-ai/dsh-client-connection/client'
 import {
   createSnapshotStore, type SnapshotStore,
@@ -33,6 +34,7 @@ import {
 import {
   defaultFallbacksConfig, type FallbacksConfig, type FallbacksRoleRule,
 } from '../config.ts'
+import type { FallbacksSwitchEventData } from '../events.ts'
 import { parseSelector } from '../selectors.ts'
 
 /** The plugin's settings namespace on the host wire. */
@@ -40,6 +42,37 @@ export const FALLBACKS_SETTINGS_NS = 'fallbacks'
 
 /** Stable wire code of a refused stale-revision write (rpc.d.ts mirror). */
 export const SETTINGS_CONFLICT_CODE = 'settings-conflict'
+
+/** Single-page history read for the status block (spec §2.5 D-5: `HISTORY_PAGE_MESSAGES`-sized). */
+export const SWITCHES_HISTORY_PAGE = 50
+
+/** How many recent switches the status block renders (spec §2.5 D-5: N=5). */
+export const RECENT_SWITCH_LIMIT = 5
+
+/**
+ * One recent `fallbacks/switch` event as the status block renders it: the
+ * durable payload plus the raw event's ordering key and time (the payload
+ * itself carries no seq/time — spec §5 table).
+ */
+export interface FallbacksSwitchSnapshot extends FallbacksSwitchEventData {
+  /** Event seq within the session (newest-first ordering key). */
+  seq: number
+  /** Event time, Unix epoch milliseconds. */
+  time: number
+}
+
+/**
+ * The status block's derived "current effective model" (spec §2.5 D-6) — a
+ * **display value** derived from configuration + recent switches, never a
+ * live route probe.
+ */
+export type EffectiveModelView =
+  /** ① `enabled: false` or no chains configured. */
+  | { kind: 'unavailable' }
+  /** ② The most recent switch's target (`to`). */
+  | { kind: 'switched'; provider: string; model: string }
+  /** ③ No switches yet: the config's primary target (first chain entry). */
+  | { kind: 'config'; provider: string; model: string }
 
 /** Fallbacks settings-row snapshot. */
 export interface FallbacksSettingsState {
@@ -63,6 +96,12 @@ export interface FallbacksSettingsState {
   groups: ModelProviderGroup[]
   /** Bumped on every accepted catalog read; drives row re-classification. */
   catalogEpoch: number
+  /** Recent-switch summary (spec §2.4 R-4a / §2.5 D-5). */
+  switchesStatus: 'idle' | 'loading' | 'ready' | 'error'
+  /** Switch-read diagnostic (wire message); null when none. */
+  switchesError: string | null
+  /** Most recent `fallbacks/switch` events of the current session, newest first. */
+  switches: FallbacksSwitchSnapshot[]
 }
 
 function messageOf(error: unknown): string {
@@ -209,6 +248,65 @@ export function classifyModel(provider: string, raw: string, catalog: CatalogLoo
   return { kind: 'outside', raw }
 }
 
+/**
+ * Extract the most recent `fallbacks/switch` events from one history page
+ * (spec §2.5 D-5): filter by event type, order by `seq` descending, take at
+ * most `limit`. Single-page read — fewer than `limit` events show as-is; no
+ * multi-page backfill (Non-Goal).
+ */
+export function extractRecentSwitches(
+  entries: readonly HistoryEntry[],
+  limit: number = RECENT_SWITCH_LIMIT,
+): FallbacksSwitchSnapshot[] {
+  const switches: FallbacksSwitchSnapshot[] = []
+  for (const entry of entries) {
+    const event = entry.event
+    if (event.type !== 'fallbacks/switch') continue
+    // The discriminated union narrows `event.data` to FallbacksSwitchEventData
+    // after the type check (src/events.ts SessionEventMap augmentation).
+    switches.push({ ...event.data, seq: event.seq, time: event.time })
+  }
+  switches.sort((a, b) => b.seq - a.seq)
+  return switches.slice(0, limit)
+}
+
+/** The config's primary target: the first selector of the first chain (D-6 ③). */
+function configPrimaryTarget(config: FallbacksConfig): { provider: string; model: string } | null {
+  const firstChain = Object.values(config.chains)[0]
+  const firstEntry = firstChain?.[0]
+  if (firstEntry === undefined) return null
+  try {
+    const selector = parseSelector(firstEntry)
+    return { provider: selector.provider, model: selector.model ?? '*' }
+  } catch {
+    // A malformed legacy entry (not `provider/model`): show it verbatim rather
+    // than mis-parsing it into a plausible-looking route.
+    return { provider: firstEntry, model: '*' }
+  }
+}
+
+/**
+ * Derive the status block's "current effective model" (spec §2.5 D-6): ①
+ * disabled/empty chains → unavailable; ② a recent switch exists → the latest
+ * one's `to`; ③ otherwise → the config's primary target. A **display value** —
+ * never a live route probe (the section always appends the non-probing note).
+ */
+export function deriveEffectiveModel(
+  config: FallbacksConfig,
+  switches: readonly FallbacksSwitchSnapshot[],
+): EffectiveModelView {
+  if (!config.enabled || Object.keys(config.chains).length === 0) {
+    return { kind: 'unavailable' }
+  }
+  const latest = switches[0]
+  if (latest !== undefined) {
+    return { kind: 'switched', provider: latest.to.provider, model: latest.to.model }
+  }
+  const target = configPrimaryTarget(config)
+  if (target === null) return { kind: 'unavailable' }
+  return { kind: 'config', ...target }
+}
+
 /** One chain selector row: provider + model (or wildcard). */
 export interface ChainSelectorRow {
   /** `provider/*` wildcard entry: the model part is absent. */
@@ -314,14 +412,19 @@ export class FallbacksSettingsController {
     providers: [],
     groups: [],
     catalogEpoch: 0,
+    switchesStatus: 'idle',
+    switchesError: null,
+    switches: [],
   })
 
   private generation = 0
   private catalogGeneration = 0
+  private switchesGeneration = 0
   private view: SettingsNamespaceView | undefined
+  private currentSession: SessionId | undefined
 
-  /** @param api - Settings + Llm wire faces (the catalog reads ride llm.*). */
-  constructor(private readonly api: Pick<IApiClient, 'settings' | 'llm'>) {}
+  /** @param api - Settings / Llm / Sessions wire faces (the status block reads session history). */
+  constructor(private readonly api: Pick<IApiClient, 'settings' | 'llm' | 'sessions'>) {}
 
   /**
    * Refresh the `fallbacks` descriptor. Latest request wins.
@@ -409,6 +512,71 @@ export class FallbacksSettingsController {
   }
 
   /**
+   * Record the current session the status block reads (spec §2.5 D-5). Once
+   * the block has been read once, its summary follows session switches
+   * immediately; an idle block only records the id — the section's mount
+   * effect performs the first read.
+   * @param sessionId - the session whose history is summarized; undefined
+   *   (no current session) resolves to the empty state.
+   */
+  setCurrentSession(sessionId: SessionId | undefined): void {
+    if (sessionId === this.currentSession) return
+    this.currentSession = sessionId
+    if (this.store.getSnapshot().switchesStatus !== 'idle') {
+      void this.loadSwitches()
+    }
+  }
+
+  /**
+   * Read the recent-switch summary for the current session (spec §2.5 D-5):
+   * one `sessions.history` page (`maxMessages` = {@link SWITCHES_HISTORY_PAGE}),
+   * `fallbacks/switch` events extracted newest-first capped at
+   * {@link RECENT_SWITCH_LIMIT}. No current session → honest empty ready
+   * state (no RPC); a read failure lands `switchesStatus: 'error'` and never
+   * touches the settings state (the form keeps editing/saving normally).
+   * @returns nothing; {@link store} carries success or failure.
+   */
+  async loadSwitches(): Promise<void> {
+    const generation = ++this.switchesGeneration
+    const sessionId = this.currentSession
+    if (sessionId === undefined) {
+      this.store.update((state) => {
+        state.switchesStatus = 'ready'
+        state.switchesError = null
+        state.switches = []
+      })
+      return
+    }
+    this.store.update((state) => {
+      state.switchesStatus = 'loading'
+      state.switchesError = null
+    })
+    try {
+      const response = await this.api.sessions.history({
+        sessionId,
+        maxMessages: SWITCHES_HISTORY_PAGE,
+      })
+      if (generation !== this.switchesGeneration) return
+      if (!response.result.ok) throw response.result.error
+      // Narrowing of `response.result` is lost inside the store-update closure,
+      // so extract before publishing (the `ok` check narrows at this level).
+      const switches = extractRecentSwitches(response.result.value.events)
+      this.store.update((state) => {
+        state.switchesStatus = 'ready'
+        state.switchesError = null
+        state.switches = switches
+      })
+    } catch (error) {
+      if (generation !== this.switchesGeneration) return
+      const wire = error as { message?: string } | null
+      this.store.update((state) => {
+        state.switchesStatus = 'error'
+        state.switchesError = typeof wire?.message === 'string' ? wire.message : messageOf(error)
+      })
+    }
+  }
+
+  /**
    * Persist the full edited configuration via `settings.update` (merge
    * semantics). With a descriptor view the write carries `view.revision` so a
    * stale editor is refused rather than silently overwriting a concurrent
@@ -477,6 +645,7 @@ export class FallbacksSettingsController {
   dispose(): void {
     this.generation += 1
     this.catalogGeneration += 1
+    this.switchesGeneration += 1
     this.view = undefined
   }
 
@@ -521,4 +690,15 @@ export function refreshFallbacksIfLoaded(controller: FallbacksSettingsController
 export function refreshCatalogIfLoaded(controller: FallbacksSettingsController): void {
   if (controller.store.getSnapshot().catalogStatus === 'idle') return
   void controller.loadCatalog()
+}
+
+/**
+ * Refetch the recent-switch summary after `settings/changed` (fallbacks ns) /
+ * `connection/reset` only when the status block has already been read once
+ * (the switches twin of {@link refreshFallbacksIfLoaded}).
+ * @param controller - the fallbacks settings controller.
+ */
+export function refreshSwitchesIfLoaded(controller: FallbacksSettingsController): void {
+  if (controller.store.getSnapshot().switchesStatus === 'idle') return
+  void controller.loadSwitches()
 }

@@ -336,11 +336,67 @@ select.input {
   color: var(--dsw-alias-label-secondary);
 }
 
+/* Block sub-label ("当前生效模型" / "最近切换") — same rhythm as the block title. */
+.statusSubTitle {
+  font-size: 12px;
+  line-height: 18px;
+  font-weight: 500;
+  color: var(--dsw-alias-label-secondary);
+}
+
 .statusSummary {
   margin: 0;
   font-size: 13px;
   line-height: 20px;
   color: var(--dsw-alias-label-primary);
+}
+
+/* Derived effective-model line: value + the always-appended non-probing note. */
+.statusEffective {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.statusEffectiveValue {
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--dsw-alias-label-primary);
+}
+
+/* Recent-switch summary: list of route + meta lines, or the empty/error note. */
+.statusSwitches {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.statusSwitchList {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.statusSwitchItem {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.statusSwitchRoute {
+  font-size: 13px;
+  line-height: 20px;
+  font-variant-numeric: tabular-nums;
+  color: var(--dsw-alias-label-primary);
+}
+
+.statusSwitchMeta {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
 }
 
 .statusPlaceholder {
