@@ -56,12 +56,16 @@
    `SettingsDescriptor` 上带出 `exposed: boolean`；`SettingsSectionHooks` 与
    `installSettingsSection` 同步追加 `exposeToWebClients?: boolean` 并透传进
    `register` 选项。纯类型/数据面追加：缺省 false 时 `describe()` 输出与 patch 前
-   逐位一致，零运行期行为变化。
+   行为一致（descriptor 仅新增可选字段 `exposed`——wire 增量字段，客户端无该字段
+   容忍），零运行期行为变化。
 4. **`dsh-host-apiproxy`（查询注册表）**：`exposedNamespaces()` 在既有并集
    （configurable model providers + Web 偏好 + 产品自有白名单）之上，通过
    settings seam 自己的 `describe({ redactSecrets: true })` 并入
    `descriptor.exposed === true` 的命名空间——**flag 永不与注册者声明漂移**；
    `ctx.get('settings')` 缺失（无 settings 服务）时跳过、不多加任何命名空间。
+   防御：循环内 `typeof descriptor.ns === 'string'` 守卫 + describe 循环 try/catch
+   （单个注册 describe 抛错仅跳过、不拖垮整个并集）；`simplify:` 注明 settings 侧
+   元数据面（`exposedNamespaces()` 直读 describe）留待上游演进。
    `settingsWrite` 的 notExposed 判定与 describe RPC 过滤**零改动**（统一经
    `exposedNamespaces()` 判定，spec §2.5 D-2）。
 

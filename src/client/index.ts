@@ -14,6 +14,8 @@
  *   fallbacks namespace, `models/changed` for the catalog, `connection/reset`)
  *   and follows the current session (`sessions.list`) so the status block's
  *   recent-switch summary tracks the session being viewed (spec §2.5 D-5).
+ *   `sessions` is an optional reflection read (S-g): a host without the
+ *   session service leaves the switches face in its empty ready state.
  *
  * @module dsh-llm-fallbacks/client
  */
@@ -35,8 +37,15 @@ export type { FallbacksSectionInjected, FallbacksSectionProps } from './Fallback
 export type { FallbacksSettingsState } from './fallbacks-store.ts'
 export { FallbacksSettingsController, FALLBACKS_SETTINGS_NS } from './fallbacks-store.ts'
 
-/** Required services (cordis fiber inject); registrations wait on the slot declaration. */
-export const inject = ['slots', 'locale', 'connection', 'sessions']
+/**
+ * Required services (cordis fiber inject); registrations wait on the slot
+ * declaration. `sessions` is deliberately NOT injected (S-g): a non-web host
+ * without the dsh-session client service must not hang the fiber waiting for
+ * it — the wiring reads it reflectively and degrades to the switches empty
+ * state when absent (`setCurrentSession` never called, `loadSwitches` ready
+ * with an empty array, which the store already supports).
+ */
+export const inject = ['slots', 'locale', 'connection']
 
 /**
  * Register the `fallbacks` dictionaries and the settings section once the
@@ -52,8 +61,9 @@ export function apply(ctx: ClientContext): void {
   // merges collide in out-of-tree client programs, so read the service through
   // the reflection layer with the client face pinned — the same pattern as the
   // `connection` handle above (the dsh repo keeps the two merges in separate
-  // tsconfig programs; a third program sees both).
-  const sessions = ctx.get('sessions') as unknown as ISessions
+  // tsconfig programs; a third program sees both). `sessions` is optional
+  // (S-g): absent on a non-web host → the switches face stays empty.
+  const sessions = ctx.get('sessions') as unknown as ISessions | undefined
   const controller = new FallbacksSettingsController(connection.api)
 
   // Pushed invalidations converge every open surface without polling:
@@ -65,9 +75,9 @@ export function apply(ctx: ClientContext): void {
   // the list).
   ctx.effect(() => {
     const syncSession = (): void => {
-      controller.setCurrentSession(sessions.list.getSnapshot().current)
+      controller.setCurrentSession(sessions?.list.getSnapshot().current)
     }
-    syncSession()
+    if (sessions !== undefined) syncSession()
     const refresh = (ns?: string): void => {
       if (ns !== undefined && ns !== FALLBACKS_SETTINGS_NS) return
       refreshFallbacksIfLoaded(controller)
@@ -78,7 +88,7 @@ export function apply(ctx: ClientContext): void {
       ctx.on('settings/changed', refresh),
       ctx.on('models/changed', refreshCatalog),
       ctx.on('connection/reset', () => { refresh(); refreshCatalog() }),
-      sessions.list.subscribe(syncSession),
+      ...(sessions === undefined ? [] : [sessions.list.subscribe(syncSession)]),
     ]
     return () => {
       for (const dispose of disposers) dispose()

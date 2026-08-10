@@ -13,7 +13,8 @@
 #
 # 目标解析（运行时，脚本本身不含本地绝对路径）：
 #   $DSH_SOURCE_DIR（若设置）→ 缺省 ${DSH_HOME}/source/current
-#   目标缺失或非 git 树 → info 跳过（exit 0）。
+#   目标目录缺失或非 git 树（gitfile 感知判定，.git 目录或 gitfile worktree 均可）
+#   → 分别如实 info 跳过（exit 0，附手动 apply 命令）。
 #
 # 流程（对每个 patch，与 apply-dsh-patch.sh 同构的三态判定）：
 #   git apply --check 通过       → 尚未应用 → git apply 应用；
@@ -74,9 +75,17 @@ if [[ "${DSH_LLM_FALLBACKS_AUTOPATCH:-1}" == "0" ]]; then
 fi
 
 # 2) 目标解析：$DSH_SOURCE_DIR 优先，缺省 ${DSH_HOME}/source/current
+#    跳过信息如实区分「目录缺失」与「存在但不是 git 树」；git 判定为 gitfile
+#    感知（W3：.git 目录或 gitfile worktree 均可，见 apply-dsh-patch.sh 同款守卫）。
 TARGET="${DSH_SOURCE_DIR:-${DSH_HOME:-}/source/current}"
-if [[ ! -d "$TARGET/.git" ]]; then
-  log "未找到 dsh 源码树（$TARGET 缺失或非 git 树），跳过自动 patch 应用（安装后可用 scripts/apply-dsh-patch.sh 手动应用）"
+if [[ ! -d "$TARGET" ]]; then
+  log "未找到 dsh 源码树（$TARGET 目录缺失），跳过自动 patch 应用（安装后可用 bash \"${SCRIPT_DIR}/apply-dsh-patch.sh\" -d <DSH_SOURCE_DIR> 手动应用）"
+  exit 0
+fi
+if ! git -C "$TARGET" rev-parse --git-dir >/dev/null 2>&1; then
+  # `${TARGET}` 用花括号：macOS bash 3.2 在 set -u 下会把紧跟在裸 $VAR 后的多字节
+  # 字符（如全角「）」）误并入变量名报 unbound variable。
+  log "目标目录存在但不是 git 树（${TARGET}），跳过自动 patch 应用（patch 需以 git 树为目标；确认 DSH_SOURCE_DIR 指向 dsh 源码树后可用 bash \"${SCRIPT_DIR}/apply-dsh-patch.sh\" 手动应用）"
   exit 0
 fi
 log "目标 dsh 源码树: $TARGET"
@@ -121,7 +130,8 @@ run_verify() {
   if [[ "$VERIFY_OK" -eq 1 ]]; then
     log "verify 探针通过：patch 标记已就位（role + 暴露组，源码/构建产物）"
   else
-    warn "verify 探针未通过：patch 标记未就位（role + 暴露组）。请手动应用并验证: bash \"${SCRIPT_DIR}/apply-dsh-patch.sh\" && bash \"${SCRIPT_DIR}/verify-dsh-patch.sh\""
+    # git 树已确认但 patch 未就位：给出带目标目录的完整可执行命令（W4）。
+    warn "verify 探针未通过：patch 标记未就位（role + 暴露组）。请手动应用并验证: bash \"${SCRIPT_DIR}/apply-dsh-patch.sh\" -d \"$TARGET\" && bash \"${SCRIPT_DIR}/verify-dsh-patch.sh\" -d \"$TARGET\""
   fi
 }
 
@@ -185,8 +195,8 @@ fi
 
 if [[ "$HAD_CONFLICT" -eq 1 ]]; then
   warn "以下 patch 与目标树冲突（可能已手工改动或 dsh 升级偏移）: ${CONFLICTED_PATCHES[*]}"
-  warn "请手动处理: bash \"${SCRIPT_DIR}/apply-dsh-patch.sh\""
-  log "存在冲突 patch，跳过 verify 探针（请手动处理冲突后运行 scripts/apply-dsh-patch.sh）"
+  warn "请手动处理: bash \"${SCRIPT_DIR}/apply-dsh-patch.sh\" -d \"$TARGET\""
+  log "存在冲突 patch，跳过 verify 探针（请手动处理冲突后运行 bash \"${SCRIPT_DIR}/apply-dsh-patch.sh\" -d \"$TARGET\"）"
 else
   run_verify
 fi

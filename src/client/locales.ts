@@ -64,7 +64,7 @@ export const zh = {
   'catalog.error': '模型目录读取失败：{message}',
   'catalog.partial': '部分 provider 模型查询失败：{message}',
   'catalog.outside.hint': '目录外：不在当前模型目录，可保留原值并保存（新增条目仅可从目录选择）。',
-  'catalog.outside.short': '（目录外）',
+  'catalog.outside.short': ' （目录外）',
   'status.title': '运行状态（只读）',
   'status.configSummary': '当前配置：已启用 {enabled}；默认角色 {role}；{chains} 条链；触发失败码 {codes}。',
   'status.effectiveModel.label': '当前生效模型',

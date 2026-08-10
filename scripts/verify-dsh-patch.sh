@@ -8,6 +8,9 @@
 #                                   lib/types/runtime-types.d.ts  → 期望 `role?: string`
 #                                   （构建产物；注意 AgentOptions 编译到
 #                                     runtime-types.d.ts，而非 index.d.ts）
+#                                   src/model-selection.ts        → 期望 `markFallbackRouted`
+#                                   lib/types/model-selection.js  → 期望 `markFallbackRouted`
+#                                   （标记导出 + 外层监听器让位；构建产物在 .js）
 #   @deepseek-ai/dsh-tool-subagent  src/index.ts                  → 期望 `role: z.string()`
 #                                   lib/types/index.js            → 期望 `role: z.string()`
 #                                   （构建产物；类型只引用 AgentOptions，
@@ -35,7 +38,7 @@
 set -euo pipefail
 
 usage() {
-  sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,37p' "$0" | sed 's/^# \{0,1\}//'
   exit "${1:-0}"
 }
 
@@ -72,6 +75,8 @@ fi
 PROBES=(
   "packages/core/agent/src/runtime-types.ts|role?: string|agent source (runtime-types.ts)"
   "packages/core/agent/lib/types/runtime-types.d.ts|role?: string|agent build (lib/types/runtime-types.d.ts)"
+  "packages/core/agent/src/model-selection.ts|markFallbackRouted|agent source (model-selection.ts)"
+  "packages/core/agent/lib/types/model-selection.js|markFallbackRouted|agent build (lib/types/model-selection.js)"
   "packages/subagent/tool-subagent/src/index.ts|role: z.string()|tool-subagent source (index.ts)"
   "packages/subagent/tool-subagent/lib/types/index.js|role: z.string()|tool-subagent build (lib/types/index.js)"
   "packages/settings/settings/src/index.ts|exposeToWebClients?: boolean|settings source (index.ts)"

@@ -18,7 +18,7 @@
 - 未 patch 时，apiproxy 的 `exposedNamespaces()` 只暴露 configurable model providers + 硬编码白名单（Web 偏好 + 产品自有），本插件的 `fallbacks` 命名空间无法被 web 设置客户端读写——设置页显示「未注册」。
 - patch 后，注册表级 opt-in 生效：注册者（插件 `installSettingsSection` 调用）声明 `exposeToWebClients: true`，apiproxy 经 `settings.describe({ redactSecrets: true })` 并入 `descriptor.exposed === true` 的命名空间，`fallbacks` 进入 describe/update/replace 暴露集合。
 - **通用机制而非白名单硬编码**：上游新快照（`20da39e`）已把 `'advisor'` 移出 apiproxy 硬编码暴露白名单，web profile 同装 dsh-advisor 同病（无法被 web 设置客户端读写）——逐个补白名单是坏味道且追不上上游；注册表 opt-in 是正解（每个 owner 自行声明）。**本迭代不修 dsh-advisor**（其 opt-in 声明属上游/其它迭代范围）。
-- 向后兼容：`exposeToWebClients` 缺省 false，未声明暴露的命名空间 web describe 过滤与 update/replace/mutate 拒绝行为与 patch 前**逐位一致**；apiproxy 仅改 `exposedNamespaces()` 一处，`settingsWrite` 与 describe RPC 过滤零改动（spec §2.5 D-2）。保存后立即生效的进程内语义由既有「settings live re-read」机制承载（无需重启会话，证据链见 [docs/verification.md](docs/verification.md) §6）。
+- 向后兼容：`exposeToWebClients` 缺省 false，未声明暴露的命名空间 web describe 过滤与 update/replace/mutate 拒绝行为与 patch 前**行为一致**；descriptor 仅新增**可选字段 `exposed`**（wire 增量字段，客户端无该字段时容忍）；apiproxy 仅改 `exposedNamespaces()` 一处，`settingsWrite` 与 describe RPC 过滤零改动（spec §2.5 D-2）。保存后立即生效的进程内语义由既有「settings live re-read」机制承载（无需重启会话，证据链见 [docs/verification.md](docs/verification.md) §6）。
 
 ## 四个 patch 的改动面
 
@@ -26,10 +26,20 @@
 |---|---|---|
 | `@deepseek-ai+dsh-agent@0.0.1.patch` | `@deepseek-ai/dsh-agent` | `AgentOptions`（merge-extensible 创建选项接口，`packages/core/agent/src/runtime-types.ts`）追加可选 `role?: string` + JSDoc，与既有 `provider`/`model`/`maxTokens` 同形。纯类型追加，无运行期行为变化 |
 | `@deepseek-ai+dsh-tool-subagent@0.0.1.patch` | `@deepseek-ai/dsh-tool-subagent` | `Config.agentOptions` schema（`packages/subagent/tool-subagent/src/index.ts`，`z.object({provider, model, maxTokens}).default(undefined)`）追加 `role: z.string()`，并将 `.default(undefined as unknown as {...})` 的 cast 类型同步补 `role: string`（与 schema 输出全等，避免 `default(value: T)` 的 TS2345） |
-| `@deepseek-ai+dsh-settings@0.0.1.patch` | `@deepseek-ai/dsh-settings` | `SettingsRegisterOptions.exposeToWebClients?: boolean`（默认 false）+ 内部 `SettingsRegistration.exposed` + `SettingsDescriptor.exposed` + `SettingsSectionHooks`/`installSettingsSection` 透传（`packages/settings/settings/src/index.ts` 一个文件，7 处 hunk）。纯类型/数据面追加，缺省 false 时 `describe()` 输出与 patch 前逐位一致 |
+| `@deepseek-ai+dsh-settings@0.0.1.patch` | `@deepseek-ai/dsh-settings` | `SettingsRegisterOptions.exposeToWebClients?: boolean`（默认 false）+ 内部 `SettingsRegistration.exposed` + `SettingsDescriptor.exposed` + `SettingsSectionHooks`/`installSettingsSection` 透传（`packages/settings/settings/src/index.ts` 一个文件，7 处 hunk）。纯类型/数据面追加，缺省 false 时 `describe()` 输出与 patch 前行为一致；descriptor 新增可选字段 `exposed`（wire 增量字段，客户端无该字段容忍） |
 | `@deepseek-ai+dsh-host-apiproxy@0.0.1.patch` | `@deepseek-ai/dsh-host-apiproxy` | `exposedNamespaces()`（`packages/host/apiproxy/src/api-proxy.ts`）在 `modelProviderNamespaces() ∪ WEB_SETTINGS_NAMESPACES ∪ PRODUCT_SETTINGS_NAMESPACES` 并集之上，追加 `settings.describe({ redactSecrets: true })` 中 `descriptor.exposed === true` 的命名空间（`ctx.get('settings')` 缺失时跳过）；`settingsWrite` 与 describe RPC 过滤零改动 |
 
 patch 分两组、各自必须成对：**role 组**（`dsh-agent` + `dsh-tool-subagent`）——patch 1 提供 `AgentOptions.role` 类型面，patch 2 让 schema 接受 role；**暴露组**（`dsh-settings` + `dsh-host-apiproxy`）——apiproxy 读取 `SettingsDescriptor.exposed`（由 settings patch 提供），**应用顺序 settings 先、apiproxy 后**（`apply-dsh-patch.sh` 的 PATCH_FILES 已按此排序），**回滚顺序相反**（`revert-dsh-patch.sh` 按 apiproxy → settings → tool-subagent → agent 逆序，先撤销依赖方再撤销被依赖方）。均为最小改动，不触碰重试/路由逻辑，不改变任何既有默认行为。patch 内容细节见 [patches/README.md](../patches/README.md)。
+
+## 未打补丁宿主降级（运行期，W1）
+
+插件对 `markFallbackRouted`（agent patch 的导出）做**可选调用守卫**（namespace import + `?.()` + `??`），因此**未打补丁宿主**（`DSH_LLM_FALLBACKS_AUTOPATCH=0`、link 安装、或 dsh 升级后未重跑 apply）不会导致插件整包加载失败或切换点抛错，而是**降级为分支前语义**：
+
+- 切换**仍然发生**：触发码 / always-cap 决策照常记录并应用，请求路由到链目标（`provider/model` override 不变）；
+- 唯一的差异是**标记缺席**：切换步的 config 未标 fallback-routed，因此**存在活跃 model-selection 时，该步的路由由外层 selection 决定**（同分支前行为——selection 重新覆盖）；无活跃 selection 时路由到链目标，与 patch 后一致；
+- 该降级路径由 `tests/unpatched-host.spec.ts` 专项测试钉住（模拟不含 `markFallbackRouted` 的宿主模块，断言不抛、路由到链目标）；真实宿主复验归 QA gate [docs/verification.md](docs/verification.md) §6。
+
+补丁应用的完整效果（标记生效、活跃 selection 下切换步让位链目标）依赖 agent patch 已应用并重建。
 
 ## 应用 / 回滚 / 验证
 

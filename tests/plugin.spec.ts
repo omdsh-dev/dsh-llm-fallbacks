@@ -42,13 +42,19 @@ import {
 import { installModelSelectionStub, type ModelSelectionRef } from './support/model-selection-stub.ts'
 
 /**
- * Task 2 (spec §2.5 D-1): the plugin value-imports `markFallbackRouted` from
- * `@deepseek-ai/dsh-agent`, but the link farm resolves the UNPATCHED dsh-agent
- * (dsh-private tree), which does not export the marker functions — so the
- * import would be `undefined` at runtime. This mock simulates the patched
- * module: the plugin's `markFallbackRouted` and the stub's `isFallbackRouted`
- * (both resolved through this mock) share ONE WeakSet registry, exactly like
- * the patched real module's single-process module-level WeakSet.
+ * Task 2 (spec §2.5 D-1): the plugin namespace-imports `@deepseek-ai/dsh-agent`
+ * and optional-calls `markFallbackRouted` (W1 guard), but the link farm
+ * resolves the UNPATCHED dsh-agent (dsh-private tree), which does not export
+ * the marker functions — so the import would be `undefined` at runtime. This
+ * mock SIMULATES THE PATCHED MODULE: the plugin's `markFallbackRouted` and the
+ * stub's `isFallbackRouted` (both resolved through this mock) share ONE
+ * WeakSet registry, exactly like the patched real module's single-process
+ * module-level WeakSet.
+ *
+ * The UNPATCHED failure mode (no `markFallbackRouted` export → optional-call
+ * degrade, never throw) is NOT covered by this suite — it is pinned by
+ * `tests/unpatched-host.spec.ts` (W1) and re-verified against the real
+ * patched host by the QA gate (docs/verification.md §6).
  */
 vi.mock('@deepseek-ai/dsh-agent', async (importOriginal) => {
   const original = await importOriginal<typeof import('@deepseek-ai/dsh-agent')>()

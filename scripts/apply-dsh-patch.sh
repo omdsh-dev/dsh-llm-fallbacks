@@ -71,8 +71,11 @@ done
 if [[ -z "$TARGET" ]]; then
   TARGET="${DSH_SOURCE_DIR:-${DSH_HOME:-}/source/current}"
 fi
-if [[ ! -d "$TARGET/.git" ]]; then
-  echo "ERROR: 目标目录不是 git 仓库: $TARGET" >&2
+# gitfile 感知的 git 仓库判定（W3）：`-d "$TARGET/.git"` 会拒绝 gitfile worktree
+# （真实 $DSH_SOURCE_DIR 布局：.git 是文件，指向主仓库的 worktree 元数据）。
+# `git rev-parse --git-dir` 对目录式与 gitfile 式仓库都成立。
+if ! git -C "$TARGET" rev-parse --git-dir >/dev/null 2>&1; then
+  echo "ERROR: 目标目录不是 git 仓库（.git 目录或 gitfile worktree 均可）: $TARGET" >&2
   echo "       请设置 DSH_SOURCE_DIR（或 DSH_HOME），或使用 --target。" >&2
   exit 1
 fi

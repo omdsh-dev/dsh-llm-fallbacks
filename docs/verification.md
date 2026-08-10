@@ -22,7 +22,9 @@
 | 回归 | `skeleton.spec.ts` | 3 | bundle 契约（row id、空 schema 接受、host+client apply 入口） |
 
 结果：**13 files / 203 tests 全绿**（`pnpm test`，vitest run）；`pnpm build`（tsdown host bundle →
-`pnpm run build-client`（tsdown client bundle）→ `tsc` 声明）全绿。no-op 回归不变量（空链 / 未命中 / 链耗尽 / 安全阀
+`pnpm run build-client`（tsdown client bundle）→ `tsc` 声明）全绿——其中 dev 链接 farm 下的
+`tsc` 由仓内 ambient shim（`src/dsh-patch-ambient.d.ts`，声明 patch 侧 `markFallbackRouted` /
+`exposeToWebClients`）转绿；patch 应用 + 重建后的真实宿主类型复验归 QA gate §6。no-op 回归不变量（空链 / 未命中 / 链耗尽 / 安全阀
 超限 → 透传、不产生 `fallbacks/switch` 事件）由 T3/T4 测试持久断言。
 
 ### 2. bundle 层序（scratch profile `--dump-config` 实证）
@@ -62,8 +64,10 @@ bundle 层顺序一节；真实 web profile 层序 `dsh-base → dsh-web-app →
   `-d/--target` 覆盖生效；坏 env（`DSH_HOME=/nonexistent`）按预期报错退出 1。
 - **类型正确性**（autopatch 计划修复轮）：真实 `tsc` 编译验证 cast 修正后 red→green（TS2345 原文
   复现 → exit 0），`z<Config>` 与 patch 后 `AgentOptions`（含 `role?`）双向可赋值。
-- **构建管线**：`pnpm build`（host bundle + client bundle + tsc 声明）本迭代各轮全绿
-  （settings-runtime T6 仅脚本扩展与文档，无构建面变更）。
+- **构建管线**：`pnpm build`（host bundle + client bundle + tsc 声明）在 dev 链接 farm 下全绿——
+  `tsc` 的 patch 侧类型（`markFallbackRouted` / `exposeToWebClients`）由 ambient shim
+  （`src/dsh-patch-ambient.d.ts`）补齐，运行期真相仍是被应用的 patch；patch 应用 + 重建后的
+  真实宿主类型复验归 QA gate §6（settings-runtime T6 仅脚本扩展与文档，无构建面变更）。
 
 ### 4. 运行契约（以测试证据支撑）
 
@@ -166,6 +170,9 @@ dsh 升级（`$DSH_HOME/source/current` 指向新 staging）会重置本体改�
 
 1. **前置核对**：`$DSH_SOURCE_DIR`（缺省 `${DSH_HOME}/source/current`）是 git 树；
    记录 `dsh --version`（快照）与四个 patch 文件存在（插件仓库 `patches/`）。
+   插件侧 dev 链接 farm 需指向该树——patch 应用并重建后，在插件仓库重跑一次
+   `pnpm dsh:link`（重链后插件的 tsc 按真实宿主类型复验，替代 ambient shim，
+   见下方步骤 4 的说明）。
 2. **应用四 patch（幂等）**：
 
    ```sh
@@ -181,7 +188,9 @@ dsh 升级（`$DSH_HOME/source/current` 指向新 staging）会重置本体改�
    如需手动：`cd "$DSH_SOURCE_DIR" && pnpm exec tsc -b packages/core/agent
    packages/subagent/tool-subagent packages/settings/settings packages/host/apiproxy
    && pnpm exec tsdown --env.DSH_BUILD_FACE host`。
-4. **插件构建**：`cd <插件仓库目录> && pnpm build`（host bundle + client bundle + tsc 声明）绿。
+4. **插件构建**：`cd <插件仓库目录> && pnpm build`（host bundle + client bundle + tsc 声明）绿——
+   步骤 1 重链后 tsc 按重建后的真实宿主类型复验（`markFallbackRouted` / `exposeToWebClients`
+   由 patch 提供，替代 dev 环境的 ambient shim `src/dsh-patch-ambient.d.ts`）。
 5. **重启 `dsh web`（web profile）**：停止旧 host 进程 → 以 web profile 启动 `dsh web`
    （--dev 不可用时重建 web artifacts 后刷新验证 URL）。
 6. **记录基线**：`ps -o pid,lstart -p <dsh-web-pid>`（或 `pgrep -fl "dsh web"` 定位）——

@@ -36,6 +36,7 @@ import {
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { FallbacksConfig, RevertPolicy } from '../config.ts'
 import { defaultFallbacksConfig } from '../config.ts'
+import type { FallbackSwitchReason } from '../events.ts'
 import {
   FallbacksSettingsController,
   chainsToRows,
@@ -58,8 +59,20 @@ import {
   KNOWN_TRIGGER_CODES,
   TRIGGER_CODE_LABELS,
   withTriggerCode,
+  type FallbacksKey,
 } from './locales.ts'
 import css from './FallbacksSection.module.css'
+
+/**
+ * Reason → locale key map for the status block's switch summary (S-c). The
+ * session log is durable and forward-compatible: a reason value outside the
+ * current union (a newer plugin wrote it) renders raw instead of falling into
+ * the old binary ternary's else branch.
+ */
+const SWITCH_REASON_KEYS: Readonly<Partial<Record<FallbackSwitchReason, FallbacksKey>>> = {
+  'trigger-code': 'status.switches.reason.trigger-code',
+  'always-cap': 'status.switches.reason.always-cap',
+}
 
 /** Injected dependencies of {@link FallbacksSection} (slot `inject`). */
 export interface FallbacksSectionInjected {
@@ -160,7 +173,9 @@ function ChainSelectorEditor({
             value={providerRaw}
             disabled={disabled}
             onChange={event => {
-              // Cascade: a different provider clears the model choice (D-3).
+              // Cascade: a DIFFERENT provider clears the model choice (D-3);
+              // re-picking the same provider keeps the model (S-e).
+              if (event.target.value === providerRaw) return
               onChange({ provider: classifyProvider(event.target.value, catalog), model: null })
             }}
           >
@@ -343,12 +358,15 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
   // directory: a value that was outside when the settings seeded becomes a
   // catalog option, and the empty-catalog guidance clears (R-3a). Only
   // untouched drafts are re-seeded — in-progress edits are never clobbered.
+  // The epoch is recorded only on an actual re-seed (S-d): a dirty draft skips
+  // without consuming the epoch, so the effect re-runs after save (dirty →
+  // false) and re-seeds the just-saved values against the fresh catalog.
   const catalogSeededEpoch = useRef<number | null>(null)
   useEffect(() => {
     if (state.catalogStatus !== 'ready') return
     if (catalogSeededEpoch.current === state.catalogEpoch) return
-    catalogSeededEpoch.current = state.catalogEpoch
     if (dirty) return
+    catalogSeededEpoch.current = state.catalogEpoch
     setChainRows(chainsToRows(state.config.chains, catalogOf(state)))
     setRuleRows(rulesToRows(state.config.roles.rules, catalogOf(state)))
   }, [state.catalogStatus, state.catalogEpoch, state.config, dirty])
@@ -422,22 +440,23 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
             <p className={css.statusPlaceholder}>{t('status.switches.empty')}</p>
           ) : (
             <ul className={css.statusSwitchList}>
-              {state.switches.map(item => (
-                <li key={item.seq} className={css.statusSwitchItem}>
-                  <span className={css.statusSwitchRoute}>
-                    {item.from.provider}/{item.from.model} → {item.to.provider}/{item.to.model}
-                  </span>
-                  <span className={css.statusSwitchMeta}>
-                    {t('status.switches.item', {
-                      role: item.role,
-                      reason: t(item.reason === 'trigger-code'
-                        ? 'status.switches.reason.trigger-code'
-                        : 'status.switches.reason.always-cap'),
-                      time: formatSwitchTime(item.time),
-                    })}
-                  </span>
-                </li>
-              ))}
+              {state.switches.map(item => {
+                const reasonKey = SWITCH_REASON_KEYS[item.reason]
+                return (
+                  <li key={item.seq} className={css.statusSwitchItem}>
+                    <span className={css.statusSwitchRoute}>
+                      {item.from.provider}/{item.from.model} → {item.to.provider}/{item.to.model}
+                    </span>
+                    <span className={css.statusSwitchMeta}>
+                      {t('status.switches.item', {
+                        role: item.role,
+                        reason: reasonKey === undefined ? item.reason : t(reasonKey),
+                        time: formatSwitchTime(item.time),
+                      })}
+                    </span>
+                  </li>
+                )
+              })}
             </ul>
           )}
         </div>
@@ -677,8 +696,10 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
                     className={`${css.input} ${css.selectInput}`}
                     value={providerRaw}
                     onChange={event => {
-                      // Cascade (same D-3 rule as chains): a different provider
-                      // clears the model choice.
+                      // Cascade (same D-3 rule as chains): a DIFFERENT provider
+                      // clears the model choice; re-picking the same provider
+                      // keeps the model (S-e).
+                      if (event.target.value === providerRaw) return
                       updateRuleRow(index, { provider: classifyProvider(event.target.value, catalog), model: null })
                     }}
                   >
