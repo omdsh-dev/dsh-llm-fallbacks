@@ -30,6 +30,11 @@
 
 import type { Context, Logger } from 'cordis'
 import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings'
+// Value import, kept external like the dsh-settings one: the patched
+// @deepseek-ai/dsh-agent exports markFallbackRouted (spec §2.5 D-1); the same
+// process module instance shares the module-level WeakSet with the patched
+// model-selection listener, so a fallback-routed config is recognized by it.
+import { markFallbackRouted } from '@deepseek-ai/dsh-agent'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { LlmCallConfig } from '@deepseek-ai/dsh-llm'
 import type { Session } from '@deepseek-ai/dsh-session'
@@ -390,7 +395,11 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     // Apply a pending decision first (trigger-code path); a switch for this
     // request means the always-cap count of the previous provider is moot.
     const applied = state === undefined ? undefined : states.applyPending(state, turn, step)
-    if (applied !== undefined) return overrideConfig(seed, applied.to)
+    // The override creates a NEW spread config object; the marker rides only on
+    // this request step's object (never the deep-frozen LOOP seed) so the
+    // patched outer model-selection listener hands the step to the chain
+    // target, and the next step reverts to the user's selection (spec §2.5 D-1).
+    if (applied !== undefined) return markFallbackRouted(overrideConfig(seed, applied.to))
     const config = source()
     if (
       hasChains
@@ -414,7 +423,7 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
         const commitState = states.get(agent.id)
         commit(agent, commitState, pending, turn, step)
         const appliedCap = states.applyPending(commitState, turn, step)
-        if (appliedCap !== undefined) return overrideConfig(seed, appliedCap.to)
+        if (appliedCap !== undefined) return markFallbackRouted(overrideConfig(seed, appliedCap.to))
       }
     }
     return seed

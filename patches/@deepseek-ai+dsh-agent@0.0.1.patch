@@ -1,8 +1,42 @@
+diff --git a/packages/core/agent/src/model-selection.ts b/packages/core/agent/src/model-selection.ts
+index a49e2f5..6a7a784 100644
+--- a/packages/core/agent/src/model-selection.ts
++++ b/packages/core/agent/src/model-selection.ts
+@@ -24,6 +24,21 @@
+   assembled: ModelSelection | undefined
+ }
+ 
++/** Config objects whose provider/model routing was already decided by an outer
++ * coordinator (e.g. a fallback plugin) for this request step. */
++const fallbackRouted = new WeakSet<LlmCallConfig>()
++
++/** Mark a resolved request config as fallback-routed for this step. */
++export function markFallbackRouted(config: LlmCallConfig): LlmCallConfig {
++  fallbackRouted.add(config)
++  return config
++}
++
++/** Whether the resolved config was marked fallback-routed (coordinator-owned routing). */
++export function isFallbackRouted(config: LlmCallConfig): boolean {
++  return fallbackRouted.has(config)
++}
++
+ /**
+  * Couple one mutable selection to Agent-scoped prompt assembly and request routing.
+  * Prompt assembly snapshots the selected model before delegating, then applies
+@@ -55,6 +70,7 @@
+     'agent/request',
+     async (_payload, next): Promise<LlmCallConfig> => {
+       const resolved = await next()
++      if (isFallbackRouted(resolved)) return resolved
+       const selected = selection.assembled
+       if (selected === undefined) return resolved
+       const { reasoningEffort: _inheritedEffort, ...withoutInheritedEffort } = resolved
 diff --git a/packages/core/agent/src/runtime-types.ts b/packages/core/agent/src/runtime-types.ts
 index 3698c05..9118443 100644
 --- a/packages/core/agent/src/runtime-types.ts
 +++ b/packages/core/agent/src/runtime-types.ts
-@@ -28,6 +28,8 @@ export interface AgentOptions {
+@@ -28,6 +28,8 @@
    model?: string
    /** Maximum output tokens for each conversation-model request. */
    maxTokens?: number

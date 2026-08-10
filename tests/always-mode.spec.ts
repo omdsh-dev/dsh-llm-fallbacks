@@ -15,7 +15,7 @@
  * count toward the cap.
  */
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Context } from 'cordis'
 import type { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import { apply } from '../src/index.ts'
@@ -32,6 +32,23 @@ import {
   runAgentStep,
   switchEvents,
 } from './support/harness.ts'
+
+/**
+ * Task 2 (spec §2.5 D-1): the plugin value-imports `markFallbackRouted` from
+ * `@deepseek-ai/dsh-agent`, but the link farm resolves the UNPATCHED dsh-agent
+ * (dsh-private tree) which does not export it — see `tests/plugin.spec.ts` for
+ * the full rationale. This mock simulates the patched module so the switch
+ * apply path (`agent/request` → `markFallbackRouted`) can run here.
+ */
+vi.mock('@deepseek-ai/dsh-agent', async (importOriginal) => {
+  const original = await importOriginal<typeof import('@deepseek-ai/dsh-agent')>()
+  const fallbackRouted = new WeakSet<object>()
+  return {
+    ...original,
+    markFallbackRouted: (config: object) => { fallbackRouted.add(config); return config },
+    isFallbackRouted: (config: object) => fallbackRouted.has(config),
+  }
+})
 
 let ctx: Context
 
