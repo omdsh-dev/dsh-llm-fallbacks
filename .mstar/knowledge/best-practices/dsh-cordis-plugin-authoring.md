@@ -1,6 +1,7 @@
 ---
 module: dsh-plugin-authoring
 date: 2026-08-10
+last_updated: 2026-08-10
 problem_type: best_practice
 category: best-practices
 severity: low
@@ -45,6 +46,11 @@ dsh 插件 = npm 包，package.json 声明 dsh.bundle.patch（指向 bundle/cord
 
 - settings 命名空间：installSettingsSection(ctx, settingsNamespace(命名空间名), Config, entry, {setSource, onChange})（参照 agent-default-model）；composition entry 作 base、用户文档作覆盖层。
 - web 设置页：client 半 ctx.slots.inject('settings.section', …) 注册（name/id/order/locale-thunk label）；数据走自有 store（settings.describe/update/replace loopback + expectedRevision 冲突语义）；owner props 为空。
+- **设置页必须始终可用（不要死路）**：settings 的 describe 响应中 namespaces 缺失该命名空间 ≠ 页面该显示「无法读取」通知——首开无配置/命名空间未注册时也应渲染可操作骨架（标题/介绍/只读状态块/主开关/保存动作），以默认值种子展示，`writable` 跟随 describe 响应（不因缺失强制 false）。保存/恢复默认在无 view 时**省略 expectedRevision** 尝试写入（wire 契约该字段可选），host 接受→ready、拒绝→error 横幅如实呈现（不静默）。缺失状态可保留（语义为「未注册」，非死路），host 随后注册经 settings/changed 推送 → 重 describe → ready 原地升级。
+- **挂载即播种 + 首个 ready 重播种**：编辑状态从 defaultFallbacksConfig 初始化（不等待 ready），`seededRevision` 保持 null 直至首个 ready 描述符以服务端真值重播种；ready 之前控件可用性由 `writable` 驱动。注意：命名空间缺失但 `writable: true` 时用户可 pre-ready 编辑，中途推送升级会用服务端真值覆盖未保存 draft——这是设计的「骨架原地升级」，注释需如实说明，勿写「ready 前不可编辑」这类过期前提。
+- **功能级开关（feature master switch）模式**：用配置字段本身（如 fallbacks 命名空间的 `enabled` 字段）作页面显隐开关——OFF 时隐藏表单主体 + 显示提示（隐藏不丢弃：draft 保留、拨动即时显隐），ON 时显示完整配置界面；开关状态 = 用户配置字段（保存持久化、重载保持），不是纯 UI 本地态。默认值如需翻转（如 enabled true→false），单点改 defaultFallbacksConfig + schema。
+- **配置默认值翻转的测试基准**：翻转默认值会连带破坏所有走共享 cfg() 基准的用例——把测试基准显式钉到活跃态（cfg() = { ...defaults, enabled: true, ...overrides }），只翻转显式断言默认值的用例（config.spec），并新增「默认配置 → no-op」专项用例锁定回归不变量；store 单测的缺失命名空间用例按新语义拆分（writable 跟随 / 拒绝 / 无前置写入成功 / host 拒绝）。
+- **测试矩阵文档会漂移**：docs/verification.md 的用例计数在迭代中反复过期（153→163→168）——更新文档时顺手校准，或以 grep 计数为准。
 
 ### 关键坑
 
