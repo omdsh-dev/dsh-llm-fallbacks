@@ -9,10 +9,10 @@
 
 dsh（DeepSeek Harness）的自动模型降级插件：当 root agent 或 subagent 的模型请求持续失败（重试耗尽、权限、配额超限、限流 429）时，按角色/模型 fallback 链自动切换 provider/model，当前 step/turn 在目标模型上继续完成——任务不因模型问题中断。
 
-一句话安装：
+一句话安装（pnpm ≥ 10 需一次构建放行，见 [安装](#安装)）：
 
 ```sh
-dsh plugin --profile web add https://github.com/dsh-external/dsh-llm-fallbacks.git
+dsh plugin --profile web add github:dsh-external/dsh-llm-fallbacks   # 钉 commit：加 #<sha>
 ```
 
 ## 能力一览
@@ -27,11 +27,13 @@ dsh plugin --profile web add https://github.com/dsh-external/dsh-llm-fallbacks.g
 
 ## 安装
 
-### 一句话 URL 安装
+### 一句话 git 安装
 
 ```sh
-dsh plugin --profile web add https://github.com/dsh-external/dsh-llm-fallbacks.git
+dsh plugin --profile web add github:dsh-external/dsh-llm-fallbacks   # 钉 commit：加 #<sha>
 ```
+
+git 安装拉取的是**源码而非构建产物**，安装时由包自行构建（`prepare` 自构建，随后 `postinstall` 触发宿主 patch 自动应用）。pnpm ≥ 10 默认不执行 git 依赖的 `prepare`：第一次 `add` 会失败并打印 `ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`，同时给出精确的包 key。在该 profile 的 `pnpm-workspace.yaml` 中放行构建（`onlyBuiltDependencies: [dsh-llm-fallbacks]`，或运行 `dsh plugin --profile web approve-builds`），然后重跑 `add`。请把这次放行当作它本来的样子：允许该包代码在安装期于你的机器上执行——建议钉 commit（`github:dsh-external/dsh-llm-fallbacks#<sha>`），防止后续 push 悄悄改变实际运行的代码。完整 URL 形式等价：`dsh plugin --profile web add https://github.com/dsh-external/dsh-llm-fallbacks.git`。
 
 ### 本地目录安装（开发/验证推荐）
 

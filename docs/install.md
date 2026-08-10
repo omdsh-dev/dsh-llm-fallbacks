@@ -48,15 +48,28 @@ dsh 的 profile 由有序 bundle 层组合而成：`@deepseek-ai/dsh-base`（内
 ## 2. git 安装
 
 ```sh
-dsh plugin --profile web add https://github.com/dsh-external/dsh-llm-fallbacks.git
-# 或指定 ref：add https://github.com/dsh-external/dsh-llm-fallbacks.git#<branch|tag|commit>
+dsh plugin --profile web add github:dsh-external/dsh-llm-fallbacks   # 钉 commit：加 #<sha>
+# 等价完整 URL 形式（或加 #<branch|tag|commit> 指定 ref）：
+# dsh plugin --profile web add https://github.com/dsh-external/dsh-llm-fallbacks.git
 ```
 
 git 安装注意：
 
 - **prepare 自建**：pnpm 在安装 git 依赖时会执行包的 `prepare` 脚本（`pnpm run build`）自构建，安装机需要 node 与 pnpm；构建失败会导致装入未构建的包。
+- **pnpm ≥ 10 构建放行（第一次 add 必遇）**：pnpm ≥ 10 默认不执行 git 依赖的构建脚本（含 `prepare`/`postinstall`）。第一次 `add` 会失败并打印 `ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`，同时给出精确的包 key（`dsh-llm-fallbacks`）。把该 key 加进此 profile 的 `pnpm-workspace.yaml`：
+
+  ```yaml
+  # $DSH_HOME/profiles/web/pnpm-workspace.yaml
+  onlyBuiltDependencies:
+    - dsh-llm-fallbacks
+  # pnpm ≥ 10.26 也接受 allowBuilds 形式：
+  # allowBuilds:
+  #   dsh-llm-fallbacks: true
+  ```
+
+  然后重跑 `add`；也可交互式 `dsh plugin --profile web approve-builds` 选择放行。该放行 = 允许该包代码在安装期于你的机器上执行——建议钉 commit（`github:dsh-external/dsh-llm-fallbacks#<sha>`），防止后续 push 悄悄改变实际运行的代码。若安装未被拦截但装入后 `--dump-config` 看不到 `llm-fallbacks` 层 / 设置页不出现 / 自动 patch 未触发，同样先检查本项放行。确切行为以你所用 pnpm 版本的策略为准。
+- **传输协议**：`github:` 简写由 pnpm 解析——通常优先 HTTPS，探测失败时退回 SSH（`git@github.com:...`）；显式 https URL 形式则固定 HTTPS。两种形式等价，`#<ref>` 钉版均支持。
 - **自动 patch**：git 安装会执行 `prepare`（构建）并随后触发 `postinstall`——两处都会调用 `scripts/autopatch-install.sh` 自动检测并幂等应用 dsh 本体 role patch（目标 = `$DSH_SOURCE_DIR`，缺省 `${DSH_HOME}/source/current`；缺失/非 git 树则跳过；失败仅 warn 不中断安装）。可用 `DSH_LLM_FALLBACKS_AUTOPATCH=0` 禁用。详见 [docs/dsh-patch.md](docs/dsh-patch.md)「自动应用」。
-- **allowBuilds（构建脚本放行）**：pnpm ≥ 10 默认不执行依赖的构建脚本（含 `postinstall`）。若安装被策略拦截、或装入后 `--dump-config` 看不到 `llm-fallbacks` 层 / 设置页不出现 / 自动 patch 未触发，请放行本包构建（如 `dsh plugin --profile web approve-builds`，或在该 profile 的 pnpm 配置中把 `dsh-llm-fallbacks` 加入 `onlyBuiltDependencies`）。确切行为以你所用 pnpm 版本的策略为准。
 
 ## 3. 验证安装
 

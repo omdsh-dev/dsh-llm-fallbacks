@@ -9,10 +9,10 @@
 
 Automatic provider/model fallback chains for dsh (DeepSeek Harness): when an agent's LLM requests keep failing — retries exhausted, auth errors, quota exceeded, rate limiting (429) — the plugin switches provider/model along the fallback chain for the current role, and the current step/turn continues on the target model: tasks are not interrupted by model problems.
 
-Install with a single command:
+Install with a single command (pnpm ≥ 10 needs one build-allow step — see [Install](#install)):
 
 ```sh
-dsh plugin --profile web add https://github.com/dsh-external/dsh-llm-fallbacks.git
+dsh plugin --profile web add github:dsh-external/dsh-llm-fallbacks   # pin a commit with #<sha>
 ```
 
 ## Features
@@ -27,11 +27,13 @@ dsh plugin --profile web add https://github.com/dsh-external/dsh-llm-fallbacks.g
 
 ## Install
 
-### One-line URL install
+### One-line git install
 
 ```sh
-dsh plugin --profile web add https://github.com/dsh-external/dsh-llm-fallbacks.git
+dsh plugin --profile web add github:dsh-external/dsh-llm-fallbacks   # pin a commit with #<sha>
 ```
+
+A git install fetches **sources, not built artifacts**, so the bundle builds itself on install (`prepare` self-build, then the `postinstall` host-patch autopatch). pnpm ≥ 10 blocks a git dependency's `prepare` by default: the first `add` fails with `ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`, and pnpm prints the exact package key. Allow the build in the profile's `pnpm-workspace.yaml` (`onlyBuiltDependencies: [dsh-llm-fallbacks]`, or run `dsh plugin --profile web approve-builds`), then re-run the `add`. Treat that allowance as permission to execute the package's code on your machine at install time, and pin a commit (`github:dsh-external/dsh-llm-fallbacks#<sha>`) so a later push cannot silently change what runs. The full URL form works equivalently: `dsh plugin --profile web add https://github.com/dsh-external/dsh-llm-fallbacks.git`.
 
 ### Local directory install (recommended for development / verification)
 
