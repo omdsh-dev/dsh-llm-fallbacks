@@ -241,6 +241,10 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
       chains = normalizeChains(source().chains, logger)
       hasChains = Object.keys(chains).length > 0
     },
+    // The `fallbacks` namespace joins the configuration-client boundary: the
+    // web settings RPC can describe/update/replace it (dsh-settings +
+    // dsh-host-apiproxy patch, registration-level opt-in).
+    exposeToWebClients: true,
   })
 
   const states = new FallbackStateStore()

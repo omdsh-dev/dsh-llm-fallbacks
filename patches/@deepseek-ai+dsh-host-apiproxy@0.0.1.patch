@@ -1,0 +1,19 @@
+diff --git a/packages/host/apiproxy/src/api-proxy.ts b/packages/host/apiproxy/src/api-proxy.ts
+index 331b0716ba61da51881da244a5f78c5c0984f026..29b3ce5f78faef1dc84343327a7b1b2637f43458 100644
+@@ -1719,6 +1719,16 @@
+     const exposed = modelProviderNamespaces()
+     for (const ns of WEB_SETTINGS_NAMESPACES) exposed.add(ns)
+     for (const ns of PRODUCT_SETTINGS_NAMESPACES) exposed.add(ns)
++    // Registration-level opt-in: a namespace whose owner declared
++    // `exposeToWebClients` joins the configuration-client boundary. Read
++    // through the seam's own describe so the flag can never drift from the
++    // registrant's declaration; without a settings service nothing is added.
++    const settings = ctx.get('settings')
++    if (settings !== undefined) {
++      for (const descriptor of settings.describe({ redactSecrets: true })) {
++        if (descriptor.exposed === true) exposed.add(String(descriptor.ns))
++      }
++    }
+     return exposed
+   }
+ 

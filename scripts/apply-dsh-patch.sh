@@ -35,10 +35,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 PATCHES_DIR="${REPO_ROOT}/patches"
 
-# 本任务交付的两个 pnpm 格式 patch（文件名即 pnpm 惯例 @scope+pkg@version.patch）
+# 本仓库交付的 pnpm 格式 patch（文件名即 pnpm 惯例 @scope+pkg@version.patch）
 PATCH_FILES=(
   "@deepseek-ai+dsh-agent@0.0.1.patch"
   "@deepseek-ai+dsh-tool-subagent@0.0.1.patch"
+  "@deepseek-ai+dsh-settings@0.0.1.patch"
+  "@deepseek-ai+dsh-host-apiproxy@0.0.1.patch"
 )
 
 usage() {
@@ -88,21 +90,21 @@ patch_status() {
   fi
 }
 
-# 重建受影响包：tsc -b 增量（两个包及其引用）→ tsdown host 打包（产出 lib/ 运行产物）。
+# 重建受影响包：tsc -b 增量（全部被 patch 的包及其引用）→ tsdown host 打包（产出 lib/ 运行产物）。
 # dsh monorepo 无每包 build 脚本，这是与仓库一致的增量构建入口。
 build_affected() {
   if ! command -v pnpm >/dev/null 2>&1; then
     echo "WARN: PATH 中找不到 pnpm；patch 已应用但构建已跳过。" >&2
-    echo "      请手动重建: cd \"\$DSH_SOURCE_DIR\" && pnpm install && pnpm exec tsc -b packages/core/agent packages/subagent/tool-subagent && pnpm exec tsdown --env.DSH_BUILD_FACE host" >&2
+    echo "      请手动重建: cd \"\$DSH_SOURCE_DIR\" && pnpm install && pnpm exec tsc -b packages/core/agent packages/subagent/tool-subagent packages/settings/settings packages/host/apiproxy && pnpm exec tsdown --env.DSH_BUILD_FACE host" >&2
     return 1
   fi
   if [[ ! -d "$TARGET/node_modules" ]]; then
     echo "WARN: 目标树缺少 node_modules（非 pnpm 工作区安装）；patch 已应用但构建已跳过。" >&2
-    echo "      请手动重建: cd \"\$DSH_SOURCE_DIR\" && pnpm install && pnpm exec tsc -b packages/core/agent packages/subagent/tool-subagent && pnpm exec tsdown --env.DSH_BUILD_FACE host" >&2
+    echo "      请手动重建: cd \"\$DSH_SOURCE_DIR\" && pnpm install && pnpm exec tsc -b packages/core/agent packages/subagent/tool-subagent packages/settings/settings packages/host/apiproxy && pnpm exec tsdown --env.DSH_BUILD_FACE host" >&2
     return 1
   fi
   echo "== 重建受影响包（tsc -b 增量 + tsdown host 打包）"
-  if ! ( cd "$TARGET" && pnpm exec tsc -b packages/core/agent packages/subagent/tool-subagent ); then
+  if ! ( cd "$TARGET" && pnpm exec tsc -b packages/core/agent packages/subagent/tool-subagent packages/settings/settings packages/host/apiproxy ); then
     echo "ERROR: tsc 增量构建失败（见上方输出）。" >&2
     return 1
   fi
