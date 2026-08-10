@@ -19,6 +19,15 @@ dsh plugin --profile web add .
 
 `dsh plugin` 会把参数转发给该 profile 目录下的 pnpm（`add`、`remove`、`why` 等均可用），并将 `dsh-llm-fallbacks` 追加到 profile 的 bundle 层列表（`dsh.profile.bundles`）。
 
+> **自动 patch（本地 link 安装不触发）**：`add .` 走 pnpm 的 `link:` 依赖（node_modules 内为符号链接），**pnpm 不会为 `link:` 依赖运行 prepare/postinstall 生命周期脚本**（已实证）——因此安装期自动 patch（见 [docs/dsh-patch.md](docs/dsh-patch.md)「自动应用」）不会在此路径触发。若本机 dsh 源码树（`$DSH_SOURCE_DIR` / `${DSH_HOME}/source/current`）需要 role patch，安装后手动执行一次：
+
+```sh
+bash scripts/autopatch-install.sh    # 幂等：已应用/已原生支持则跳过；失败仅 warn
+# 或显式手动应用：scripts/apply-dsh-patch.sh && scripts/verify-dsh-patch.sh
+```
+
+如需完全禁用自动 patch（例如 git/tarball 安装时不想动 dsh 源码树），设环境变量 `DSH_LLM_FALLBACKS_AUTOPATCH=0` 再安装。
+
 ### bundle 层顺序（硬性要求）
 
 dsh 的 profile 由有序 bundle 层组合而成：`@deepseek-ai/dsh-base`（内含 llm-retry 插件）→ `@deepseek-ai/dsh-web-app` → `@mstar-harness/dsh` →（`add` 追加的）`dsh-llm-fallbacks`。
@@ -37,7 +46,8 @@ dsh plugin --profile web add https://github.com/<owner>/dsh-llm-fallbacks.git
 git 安装注意：
 
 - **prepare 自建**：pnpm 在安装 git 依赖时会执行包的 `prepare` 脚本（`bun run build`）自构建，安装机需要具备 bun；构建失败会导致装入未构建的包。
-- **allowBuilds（构建脚本放行）**：pnpm ≥ 10 默认不执行依赖的构建脚本。若安装被策略拦截、或装入后 `--dump-config` 看不到 `llm-fallbacks` 层 / 设置页不出现，请放行本包构建（如 `dsh plugin --profile web approve-builds`，或在该 profile 的 pnpm 配置中把 `dsh-llm-fallbacks` 加入 `onlyBuiltDependencies`）。确切行为以你所用 pnpm 版本的策略为准。
+- **自动 patch**：git 安装会执行 `prepare`（构建）并随后触发 `postinstall`——两处都会调用 `scripts/autopatch-install.sh` 自动检测并幂等应用 dsh 本体 role patch（目标 = `$DSH_SOURCE_DIR`，缺省 `${DSH_HOME}/source/current`；缺失/非 git 树则跳过；失败仅 warn 不中断安装）。可用 `DSH_LLM_FALLBACKS_AUTOPATCH=0` 禁用。详见 [docs/dsh-patch.md](docs/dsh-patch.md)「自动应用」。
+- **allowBuilds（构建脚本放行）**：pnpm ≥ 10 默认不执行依赖的构建脚本（含 `postinstall`）。若安装被策略拦截、或装入后 `--dump-config` 看不到 `llm-fallbacks` 层 / 设置页不出现 / 自动 patch 未触发，请放行本包构建（如 `dsh plugin --profile web approve-builds`，或在该 profile 的 pnpm 配置中把 `dsh-llm-fallbacks` 加入 `onlyBuiltDependencies`）。确切行为以你所用 pnpm 版本的策略为准。
 
 ## 3. 验证安装
 
