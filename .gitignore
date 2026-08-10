@@ -16,3 +16,4 @@
 node_modules/
 dist/
 .pnpm-store/
+.mstar/agent-flow.jsonl
