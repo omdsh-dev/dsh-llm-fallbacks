@@ -95,13 +95,57 @@ function styleInjectionContents(cssText: string, tagId: string): string {
 }
 
 /**
+ * Rewrite css-module class tokens (`.local` -> `._<8hex>_<local>`) in
+ * **selector position only** — the text between the previous `}`/start and
+ * each `{`, at every nesting depth. Declaration values (data-uris, decimals,
+ * `content:` strings) are copied verbatim, so a `url("…www.w3.org…")` never
+ * gets its dots rewritten into spurious class tokens (the data-uri
+ * corruption class). Same brace-walking shape as `collectCssSelectors` —
+ * and the same documented limitation: a literal `{` inside a string/url
+ * value would mis-walk; the current css keeps all braces out of strings.
+ */
+function hashSelectorTokens(cssText: string, classMap: Record<string, string>): string {
+  let out = ''
+  let i = 0
+  let selectorStart = 0
+  while (i < cssText.length) {
+    if (cssText[i] === '{') {
+      out += cssText.slice(selectorStart, i).replace(/\.[A-Za-z_][A-Za-z0-9_-]*/g, (match) => {
+        const local = match.slice(1)
+        const hashed = hashClass(local)
+        classMap[local] = hashed
+        return `.${hashed}`
+      })
+      let depth = 1
+      const blockStart = i + 1
+      i++
+      while (i < cssText.length && depth > 0) {
+        if (cssText[i] === '{') depth++
+        else if (cssText[i] === '}') depth--
+        i++
+      }
+      const blockEnd = depth === 0 ? i - 1 : i
+      out += `{${hashSelectorTokens(cssText.slice(blockStart, blockEnd), classMap)}}`
+      selectorStart = i
+    } else {
+      i++
+    }
+  }
+  out += cssText.slice(selectorStart)
+  return out
+}
+
+/**
  * Compile one `*.module.css` file into a JS module: the css text (comments
  * stripped, class tokens hashed) plus a `<style data-plugin>` injection that
  * runs at factory materialization, and the hashed class map as the default
  * export (mirror of the dsh CSS plugin). Class tokens hash to
  * `_<8hex>_<local>` — legal CSS identifiers, mirroring the host bundle's
  * `_1zfRHq_section` shape (see `hashClass`). The class map and the rewritten
- * css text come from this single transform, so they can never drift.
+ * css text come from this single transform, so they can never drift. The
+ * rewrite is selector-aware (see `hashSelectorTokens`): declaration values —
+ * including `url()` data-uris — pass through byte-identical, so the emitted
+ * chevron SVG keeps `www.w3.org/2000/svg` intact.
  *
  * simplify: the css text is emitted as-is (comment-stripped, not minified);
  * the dsh recipe runs lightningcss. If bundle size ever matters, switch the
@@ -110,12 +154,7 @@ function styleInjectionContents(cssText: string, tagId: string): string {
 function cssModuleContents(fileId: string): string {
   const source = readFileSync(fileId, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '')
   const classMap: Record<string, string> = {}
-  const css = source.replace(/\.[A-Za-z_][A-Za-z0-9_-]*/g, (match) => {
-    const local = match.slice(1)
-    const hashed = hashClass(local)
-    classMap[local] = hashed
-    return `.${hashed}`
-  })
+  const css = hashSelectorTokens(source, classMap)
   const tagId = `${ID}/${basename(fileId)}`
   return [
     styleInjectionContents(css, tagId),
@@ -260,6 +299,20 @@ for (const match of injectedCssMatches) {
       if (!/^\.[A-Za-z_]/.test(token[0])) {
         throw new Error(`client bundle contract: class selector ${token[0]} starts with a non-identifier char — hashClass must emit _<8hex>_<local> (mirror the host _1zfRHq_section shape)`)
       }
+    }
+  }
+  // Declaration-position contract: a hashed class token (`_<8hex>_`) inside
+  // a `url(...)` means the css-module transform leaked into a declaration
+  // value — the data-uri corruption class (`www.w3.org` -> 
+  // `www._0e4734df_w3._9c1df059_org`). The transform rewrites selector
+  // position only, so this must never fire; it guards against a future
+  // regression to a naive global replace. The matcher accepts quoted urls
+  // whose content contains the other quote type (the chevron data uri is
+  // double-quoted and full of `xmlns='...'`), or bare unquoted urls.
+  for (const urlMatch of cssText.matchAll(/url\(\s*(?:"([^"]*)"|'([^']*)'|([^"'()\s]+))\s*\)/g)) {
+    const urlContent = urlMatch[1] ?? urlMatch[2] ?? urlMatch[3]
+    if (/_[0-9a-fA-F]{8}_/.test(urlContent)) {
+      throw new Error(`client bundle contract: hashed class token leaked into url() declaration value: ${urlContent} — the css-module transform must rewrite selector position only`)
     }
   }
 }

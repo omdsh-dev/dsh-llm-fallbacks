@@ -144,10 +144,13 @@ function catalogOf(state: FallbacksSettingsState): CatalogLookup | undefined {
  *
  * `disabled` mirrors the read-only/loading suppression of the surrounding
  * controls: the bubble is suppressed, the badge drops out of the tab order
- * (and its `:disabled` style dims it). The click handler only cancels the
- * label-activation default action for badges nested inside a `<label>`
- * (the number fields / the enabled row), so clicking the badge never
- * toggles or focuses the field's control.
+ * (and its `:disabled` style dims it).
+ *
+ * Placement contract (QC W-2 fix): the badge is always a **sibling** of the
+ * label-text element — never nested inside a `<label>` or an
+ * `aria-labelledby`-referenced node — so its aria-label can never leak into
+ * a control/group accessible name. A click on the badge therefore has no
+ * label-activation default action to cancel.
  */
 function InfoHint({ label, disabled = false }: { label: string; disabled?: boolean }): ReactNode {
   return (
@@ -157,7 +160,6 @@ function InfoHint({ label, disabled = false }: { label: string; disabled?: boole
         role="img"
         aria-label={label}
         tabIndex={disabled ? -1 : 0}
-        onClick={event => { event.preventDefault() }}
       >
         !
       </span>
@@ -494,13 +496,13 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
          * primitive, and the checkbox semantics are the behavior the spec
          * pins. */}
         <div className={css.checkboxRow}>
-          <label htmlFor="fallbacks-enabled" className={css.checkLabel}>
+          <div className={css.checkLabel}>
             <span className={css.checkLabelTitle}>
-              {t('enabled.label')}
+              <label htmlFor="fallbacks-enabled">{t('enabled.label')}</label>
               <InfoHint label={t('enabled.tooltip')} disabled={!writable} />
             </span>
             <span className={css.checkLabelDesc}>{t('enabled.hint')}</span>
-          </label>
+          </div>
           <input
             id="fallbacks-enabled"
             type="checkbox"
@@ -527,8 +529,8 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
          * per-group legends provided via role="group" + aria-labelledby. */
         <fieldset className={css.fieldset} disabled={!writable}>
           <div className={css.field} role="group" aria-labelledby="fallbacks-trigger-codes">
-            <span id="fallbacks-trigger-codes" className={css.fieldLabel}>
-              {t('triggerCodes.label')}
+            <span className={css.fieldLabel}>
+              <span id="fallbacks-trigger-codes">{t('triggerCodes.label')}</span>
               <InfoHint label={t('triggerCodes.tooltip')} disabled={!writable} />
             </span>
             <span className={css.hint}>{t('triggerCodes.hint')}</span>
@@ -550,8 +552,8 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
           </div>
 
           <div className={css.field} role="group" aria-labelledby="fallbacks-revert-policy">
-            <span id="fallbacks-revert-policy" className={css.fieldLabel}>
-              {t('revertPolicy.label')}
+            <span className={css.fieldLabel}>
+              <span id="fallbacks-revert-policy">{t('revertPolicy.label')}</span>
               <InfoHint label={t('revertPolicy.tooltip')} disabled={!writable} />
             </span>
             <span className={css.hint}>{t('revertPolicy.hint')}</span>
@@ -571,13 +573,14 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
           {/* The three short numeric fields sit side by side, each keeping a
            * full-width field of its own grid column. */}
           <div className={css.numberFields}>
-            <label className={css.field}>
+            <div className={css.field}>
               <span className={css.fieldLabel}>
-                {t('cooldownMs.label')}
+                <label htmlFor="fallbacks-cooldown-ms">{t('cooldownMs.label')}</label>
                 <InfoHint label={t('cooldownMs.tooltip')} disabled={!writable} />
                 <span className={css.defaultNote}>{t('defaults.prefix')}: {state.config.cooldownMs}</span>
               </span>
               <input
+                id="fallbacks-cooldown-ms"
                 className={css.input}
                 type="number"
                 min={0}
@@ -586,15 +589,16 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
                 onChange={event => { updateScalars(draft => { draft.cooldownMs = parseCount(event.target.value) }) }}
               />
               <span className={css.hint}>{t('cooldownMs.hint')}</span>
-            </label>
+            </div>
 
-            <label className={css.field}>
+            <div className={css.field}>
               <span className={css.fieldLabel}>
-                {t('maxSwitchesPerStep.label')}
+                <label htmlFor="fallbacks-max-switches">{t('maxSwitchesPerStep.label')}</label>
                 <InfoHint label={t('maxSwitchesPerStep.tooltip')} disabled={!writable} />
                 <span className={css.defaultNote}>{t('defaults.prefix')}: {state.config.maxSwitchesPerStep}</span>
               </span>
               <input
+                id="fallbacks-max-switches"
                 className={css.input}
                 type="number"
                 min={0}
@@ -603,15 +607,16 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
                 onChange={event => { updateScalars(draft => { draft.maxSwitchesPerStep = parseCount(event.target.value) }) }}
               />
               <span className={css.hint}>{t('maxSwitchesPerStep.hint')}</span>
-            </label>
+            </div>
 
-            <label className={css.field}>
+            <div className={css.field}>
               <span className={css.fieldLabel}>
-                {t('alwaysModeRetryCap.label')}
+                <label htmlFor="fallbacks-always-cap">{t('alwaysModeRetryCap.label')}</label>
                 <InfoHint label={t('alwaysModeRetryCap.tooltip')} disabled={!writable} />
                 <span className={css.defaultNote}>{t('defaults.prefix')}: {state.config.alwaysModeRetryCap}</span>
               </span>
               <input
+                id="fallbacks-always-cap"
                 className={css.input}
                 type="number"
                 min={0}
@@ -620,12 +625,12 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
                 onChange={event => { updateScalars(draft => { draft.alwaysModeRetryCap = parseCount(event.target.value) }) }}
               />
               <span className={css.hint}>{t('alwaysModeRetryCap.hint')}</span>
-            </label>
+            </div>
           </div>
 
           <div className={css.field} role="group" aria-labelledby="fallbacks-chains">
-            <span id="fallbacks-chains" className={css.fieldLabel}>
-              {t('chains.label')}
+            <span className={css.fieldLabel}>
+              <span id="fallbacks-chains">{t('chains.label')}</span>
               <InfoHint label={t('chains.tooltip')} disabled={!writable} />
             </span>
             <span className={css.hint}>{t('chains.hint')}</span>
@@ -712,8 +717,8 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
           </div>
 
           <div className={css.field} role="group" aria-labelledby="fallbacks-roles">
-            <span id="fallbacks-roles" className={css.fieldLabel}>
-              {t('roles.label')}
+            <span className={css.fieldLabel}>
+              <span id="fallbacks-roles">{t('roles.label')}</span>
               <InfoHint label={t('roles.tooltip')} disabled={!writable} />
             </span>
             <span className={css.hint}>{t('roles.hint')}</span>
