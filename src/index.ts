@@ -237,7 +237,7 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   // Guide §7 (plan llm-fallbacks-settings-gateway): the setSource hook is
   // wired into the FallbacksSettingsBridge the gateway consumes — the SAME
   // live source the runtime reads (schema defaults → plugin-row base →
-  // The existing onChange re-derives the chain map.
+  // settings user layer). The existing onChange re-derives the chain map.
   // No settings-exposure opt-in here: upstream dsh has no such
   // registration-level option (it existed only via a local patch, now
   // removed) — web clients reach the config through the gateway channel

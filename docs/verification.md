@@ -180,7 +180,7 @@ dsh --profile web --dump-config   # 组合树末尾应出现 # == dsh-llm-fallba
    但该步的路由可能被外层 model-selection 监听器重新套用（web 前端手动选择的模型在切换后
    重新应用）——这是去掉本地 patch 标记协调后的**宿主原生行为**，设置页含一行降级说明
    （`status.selectionNote`，zh/en）。request-error 触发链不受影响；无活跃 selection 时路由
-   到链目标。规格与 guides 记录见 `guides/role-and-model-selection-exploration.md`
+   到链目标。规格与 guides 记录见 `.mstar/iterations/iter-20260811-fallbacks-mount-only/guides/role-and-model-selection-exploration.md`
    （Model-selection 节）。
 4. **状态块条目（AC-7）**：设置页状态块出现该切换条目（from/to/role/reason/时间，
    「最近切换」列表、最新在前）；「当前生效模型」为**推导值**（配置 + 最近切换），
