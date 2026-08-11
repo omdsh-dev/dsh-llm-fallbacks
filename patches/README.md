@@ -2,14 +2,16 @@
 
 本目录交付 dsh 本体的**最小改动 git patch** + 配套脚本
 （`scripts/apply-dsh-patch.sh` / `revert-dsh-patch.sh` / `verify-dsh-patch.sh`），把改动
-应用到**本机的 dsh 源码树**（本仓库不携带 dsh 源码）。共两组：
+应用到**本机的 dsh 源码树**（本仓库不携带 dsh 源码）。当前只有一组：
 
 1. **subagent 显式角色**（`dsh-agent` + `dsh-tool-subagent`）：`agent.options.role`
    作为 fallback 链角色解析的最高优先级来源（spec §3：`options.role` →
    `roles.rules` → `roles.default`）。
-2. **设置命名空间 web 暴露机制**（`dsh-settings` + `dsh-host-apiproxy`）：通用
-   opt-in 暴露注册选项 `exposeToWebClients`，让插件的 `fallbacks` 命名空间进入 web
-   设置 RPC（describe/update/replace）的暴露集合。
+
+> **设置读写不再需要任何 patch**：`fallbacks` 设置命名空间的读/写/重置走**插件自有
+> gateway 通道**（`/api/fallbacks/get|set|reset`），不再依赖 dsh 本体的设置暴露机制
+> （注册表 opt-in / apiproxy 查询）。`dsh-settings` 与 `dsh-host-apiproxy`
+> 两个暴露 patch 已随 gateway 上线移除。
 
 ## Patch 清单
 
@@ -17,11 +19,9 @@
 |------|--------|------|
 | `@deepseek-ai+dsh-agent@0.0.1.patch` | `@deepseek-ai/dsh-agent` | `AgentOptions`（merge-extensible 创建选项接口，`packages/core/agent/src/runtime-types.ts`）追加可选 `role?: string` + JSDoc，与既有 `provider`/`model`/`maxTokens` 同形 |
 | `@deepseek-ai+dsh-tool-subagent@0.0.1.patch` | `@deepseek-ai/dsh-tool-subagent` | `Config.agentOptions` schema（`packages/subagent/tool-subagent/src/index.ts`，`z.object({provider, model, maxTokens}).default(undefined)`）追加 `role: z.string()`（可选字段），并将 `.default(undefined)` 的 cast 类型同步补 `role: string`（与 schema 输出全等，见下文） |
-| `@deepseek-ai+dsh-settings@0.0.1.patch` | `@deepseek-ai/dsh-settings` | `SettingsRegisterOptions` 追加可选 `exposeToWebClients?: boolean`（默认 false）+ 内部 `SettingsRegistration.exposed` + `SettingsDescriptor.exposed` + `SettingsSectionHooks`/`installSettingsSection` 透传（`packages/settings/settings/src/index.ts` 一个文件，7 处 hunk） |
-| `@deepseek-ai+dsh-host-apiproxy@0.0.1.patch` | `@deepseek-ai/dsh-host-apiproxy` | `exposedNamespaces()`（`packages/host/apiproxy/src/api-proxy.ts`）在 `modelProviderNamespaces() ∪ WEB ∪ PRODUCT` 并集之上，并入 `settings.describe({ redactSecrets: true })` 中 `descriptor.exposed === true` 的命名空间（`ctx.get('settings')` 缺失时跳过） |
 
 > 文件名为 pnpm `patchedDependencies` 惯例 `@scope+pkg@version.patch`（版本 0.0.1
-> 与四个包 `package.json` 一致）。本仓库通过 `scripts/*.sh` 直接对 dsh 源码树应用
+> 与两个包 `package.json` 一致）。本仓库通过 `scripts/*.sh` 直接对 dsh 源码树应用
 > 这些 patch（diff 路径为仓库根相对路径，`git -C "$DSH_SOURCE_DIR" apply` 可直接
 > 使用）；若改用 pnpm `patchedDependencies` 机制，需将 diff 路径前缀调整为包目录
 > 相对路径，本仓库不依赖该机制。
@@ -50,42 +50,15 @@
    subagentDepth}` spread 会把 `requested` 中的未知字段（含 `role`）透传到 child
    `agent.options`，因此**无需修改任何子代理逻辑**——patch 应用后
    `tool-subagent` 设置的 `agentOptions.role` 直达 subagent 的 `agent.options.role`。
-3. **`dsh-settings`（web 暴露机制）**：`SettingsRegisterOptions` 追加可选
-   `exposeToWebClients?: boolean`（**默认 false**——注册不会隐式变成远程可读可写，
-   除非 owner 显式 opt-in）；`register()` 记录 `exposed`；`describe()` 在
-   `SettingsDescriptor` 上带出 `exposed: boolean`；`SettingsSectionHooks` 与
-   `installSettingsSection` 同步追加 `exposeToWebClients?: boolean` 并透传进
-   `register` 选项。纯类型/数据面追加：缺省 false 时 `describe()` 输出与 patch 前
-   行为一致（descriptor 仅新增可选字段 `exposed`——wire 增量字段，客户端无该字段
-   容忍），零运行期行为变化。
-4. **`dsh-host-apiproxy`（查询注册表）**：`exposedNamespaces()` 在既有并集
-   （configurable model providers + Web 偏好 + 产品自有白名单）之上，通过
-   settings seam 自己的 `describe({ redactSecrets: true })` 并入
-   `descriptor.exposed === true` 的命名空间——**flag 永不与注册者声明漂移**；
-   `ctx.get('settings')` 缺失（无 settings 服务）时跳过、不多加任何命名空间。
-   防御：循环内 `typeof descriptor.ns === 'string'` 守卫 + describe 循环 try/catch
-   （单个注册 describe 抛错仅跳过、不拖垮整个并集）；`simplify:` 注明 settings 侧
-   元数据面（`exposedNamespaces()` 直读 describe）留待上游演进。
-   `settingsWrite` 的 notExposed 判定与 describe RPC 过滤**零改动**（统一经
-   `exposedNamespaces()` 判定，spec §2.5 D-2）。
 
-**为什么是通用机制而非白名单硬编码**：上游新快照（`20da39e`）已把 `'advisor'`
-移出 apiproxy 的硬编码暴露白名单，web profile 同装 dsh-advisor 同样无法被 web
-设置客户端读写——逐个往白名单补名字是坏味道且追不上上游。注册表 opt-in 是正解：
-每个命名空间的 owner 自行声明 `exposeToWebClients`（本插件的 `fallbacks` 即声明
-`exposeToWebClients: true`）。**本迭代不修 dsh-advisor**（其 opt-in 声明属上游/其它
-迭代范围）。
-
-四处都是**最小改动**：不触碰重试/路由逻辑，不改变任何既有默认行为；未设置
-`role` / `exposeToWebClients` 时与 patch 前完全一致。
+两处都是**最小改动**：不触碰重试/路由逻辑，不改变任何既有默认行为；未设置
+`role` 时与 patch 前完全一致。
 
 > 类型面说明：`@deepseek-ai/dsh-subagent` / `@deepseek-ai/dsh-tool-subagent` 的
 > role 类型面**仅由本目录的 patch 文档承载**，插件本身不直接消费（无 import、无
 > peer-stub、无 tsconfig paths），因此也不在 `package.json` peerDependencies 中
 > 声明；`agent.options.role` 的读取经 `resolveChildAgentOptions` 的 spread 贯通，
-> 类型上以 patch 后 dsh 源码树为准。`SettingsDescriptor.exposed` 类型面由
-> `dsh-settings` patch 提供、`dsh-host-apiproxy` patch 依赖——**应用顺序：
-> settings 先、apiproxy 后**（`apply-dsh-patch.sh` 的 PATCH_FILES 已按此排序）。
+> 类型上以 patch 后 dsh 源码树为准。
 
 ## 用法
 
@@ -125,7 +98,7 @@ scripts/verify-dsh-patch.sh --absent  # 断言 role 标记不出现（revert 后
 
 验证探针（存在即检查，缺失记 SKIP）：
 
-- agent：`src/runtime-types.ts` 与构建产物 `lib/types/runtime-types.d.ts` 含 `role?: string`
+- agent：`src/runtime-types.ts` 与构建产物 `lib/types/runtime-types.d.ts` 含 `role?: string`；`src/model-selection.ts` 与构建产物 `lib/types/model-selection.js` 含 `markFallbackRouted`
 - tool-subagent：`src/index.ts` 与构建产物 `lib/types/index.js` 含 `role: z.string()`
 
 > 说明：`AgentOptions` 编译到 `lib/types/runtime-types.d.ts`（而非 `index.d.ts`，

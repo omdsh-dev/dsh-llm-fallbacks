@@ -6,6 +6,8 @@
 #   - @deepseek-ai/dsh-agent:        AgentOptions 追加可选 role?: string
 #   - @deepseek-ai/dsh-tool-subagent: Config.agentOptions schema 追加 role: z.string()
 # 本脚本把这些改动以 git patch 形式应用到 dsh 源码树（本仓库不携带 dsh 源码）。
+# 设置命名空间（fallbacks）的读写不再需要任何 dsh 本体 patch——settings 读写经插件
+# 自有 gateway 通道（/api/fallbacks/get|set|reset），与宿主暴露机制解耦。
 #
 # 目标解析（运行时，脚本本身不含本地绝对路径）：
 #   $DSH_SOURCE_DIR（若设置）→ 缺省 ${DSH_HOME}/source/current
@@ -35,16 +37,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 PATCHES_DIR="${REPO_ROOT}/patches"
 
-# 本仓库交付的 pnpm 格式 patch（文件名即 pnpm 惯例 @scope+pkg@version.patch）
+# 本仓库交付的 pnpm 格式 patch（文件名即 pnpm 惯例 @scope+pkg@version.patch）。
+# 仅剩 role 组两项（Plan B 清空整组）；设置命名空间读写走插件 gateway 通道，
+# 不再需要 dsh-settings / dsh-host-apiproxy 暴露 patch。
 PATCH_FILES=(
   "@deepseek-ai+dsh-agent@0.0.1.patch"
   "@deepseek-ai+dsh-tool-subagent@0.0.1.patch"
-  "@deepseek-ai+dsh-settings@0.0.1.patch"
-  "@deepseek-ai+dsh-host-apiproxy@0.0.1.patch"
 )
 
 usage() {
-  sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'
   exit "${1:-0}"
 }
 
@@ -98,16 +100,16 @@ patch_status() {
 build_affected() {
   if ! command -v pnpm >/dev/null 2>&1; then
     echo "WARN: PATH 中找不到 pnpm；patch 已应用但构建已跳过。" >&2
-    echo "      请手动重建: cd \"\$DSH_SOURCE_DIR\" && pnpm install && pnpm exec tsc -b packages/core/agent packages/subagent/tool-subagent packages/settings/settings packages/host/apiproxy && pnpm exec tsdown --env.DSH_BUILD_FACE host" >&2
+    echo "      请手动重建: cd \"\$DSH_SOURCE_DIR\" && pnpm install && pnpm exec tsc -b packages/core/agent packages/subagent/tool-subagent && pnpm exec tsdown --env.DSH_BUILD_FACE host" >&2
     return 1
   fi
   if [[ ! -d "$TARGET/node_modules" ]]; then
     echo "WARN: 目标树缺少 node_modules（非 pnpm 工作区安装）；patch 已应用但构建已跳过。" >&2
-    echo "      请手动重建: cd \"\$DSH_SOURCE_DIR\" && pnpm install && pnpm exec tsc -b packages/core/agent packages/subagent/tool-subagent packages/settings/settings packages/host/apiproxy && pnpm exec tsdown --env.DSH_BUILD_FACE host" >&2
+    echo "      请手动重建: cd \"\$DSH_SOURCE_DIR\" && pnpm install && pnpm exec tsc -b packages/core/agent packages/subagent/tool-subagent && pnpm exec tsdown --env.DSH_BUILD_FACE host" >&2
     return 1
   fi
   echo "== 重建受影响包（tsc -b 增量 + tsdown host 打包）"
-  if ! ( cd "$TARGET" && pnpm exec tsc -b packages/core/agent packages/subagent/tool-subagent packages/settings/settings packages/host/apiproxy ); then
+  if ! ( cd "$TARGET" && pnpm exec tsc -b packages/core/agent packages/subagent/tool-subagent ); then
     echo "ERROR: tsc 增量构建失败（见上方输出）。" >&2
     return 1
   fi
