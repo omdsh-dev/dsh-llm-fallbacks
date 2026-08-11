@@ -57,6 +57,7 @@ dsh 插件 = npm 包，package.json 声明 dsh.bundle.patch（指向 bundle/cord
 
 - Config 类型 + z 类型注解的 schemastery ObjectT 输出键全 required：.default(undefined as unknown as {...}) 的 cast 类型必须与 schema 输出全等，否则 tsc -b 报 TS2345。
 - cordis 插件命名导出约定：Loader 丢弃 namespace（含 inject 元数据）当存在 default export——只用 named exports。
+- **上游清单契约会改名**（2026-08-11 实测）：client 半的 package.json 声明字段由 `dshClient` 改为 **`dsh.client`**（新 loader 只认 `dsh.client`，旧字段被忽略 → client 半在 GUI 完全不可见，无报错）。插件必须跟随：`"dsh": { "bundle": { "patch": ... }, "client": { "inject": [...], "platform": "web" } }`，且 `exports["./client"]` 必须存在（loader 校验）。升级 dsh 快照后核对 manifest 字段名 + exports。
 - 配置字段默认值跨 host/client 重复硬编码会漂移：从单一 defaultFallbacksConfig 派生。
 
 ## Why This Matters
