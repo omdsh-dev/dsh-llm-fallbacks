@@ -248,6 +248,18 @@ dsh 升级（`$DSH_HOME/source/current` 指向新 staging）会重置本体改�
 
 #### 6.5 结果记录
 
+> **验收记录（2026-08-11，用户重启后执行，双轨 in-loop 部分）**：
+>
+> - **AC-1 ✅ 全链路 PASS（RPC 直连，PID 23556 基线无重启）**：
+>   - 读：`settings.describe` 返回 `fallbacks` 命名空间（暴露机制生效；writable: true）——此前被硬编码白名单过滤。
+>   - 写：`settings.update`（expectedRevision 0→1）成功，不再 `settings-not-exposed`。
+>   - 落盘：`~/.dsh/settings.yaml` 出现 `fallbacks:` 段（enabled: true + chains）——用户反馈「开启无效果」的磁盘反证。
+>   - 读回：describe revision 1 返回服务端真值；同一 PID 无重启。
+>   - 还原：update {enabled:false}（revision 2）——验收后恢复 no-op 默认，不干扰用户会话。
+> - **AC-6 ✅**：四 patch 已应用（apply-dsh-patch.sh）+ verify 10 探针 PASS（环境准备阶段记录）。
+> - **AC-2/AC-7 运行时部分（GUI 面，待用户按 §6.3 触发）**：真实故障注入会切换当前会话路由，验收后已还原 enabled:false；如需体验：重新开启 enabled + 触发一次 AUTH/QUOTA/RATE_LIMIT 故障 → 观察 `fallbacks/switch` 事件、路由到链目标、设置页状态块条目。
+
+
 - 以表格记录：步骤 / 预期 / 实际 / 证据（日志行、`settings.yaml` 片段、截图、PID 基线）。
 - 任一步与预期不符 → 记录为 QA finding（severity + 复现步骤），如实回报，不回写
   「已验证」。
