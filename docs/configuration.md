@@ -1,6 +1,6 @@
 # 配置指南（`fallbacks` 命名空间）
 
-插件配置集中在 `fallbacks` settings 命名空间，可在 dsh 设置文档（默认 `$DSH_HOME/settings.yaml`）中编辑，也可在 web 设置 GUI 的 **Fallbacks** 页中编辑——两者读写同一命名空间。web 页的读写走**插件自有 gateway 通道**（`/api/fallbacks/get` / `/api/fallbacks/set` / `/api/fallbacks/reset`），**不依赖任何 dsh 本体暴露 patch**（`dsh-settings` + `dsh-host-apiproxy` 已随 gateway 上线移除）；`fallbacks` 命名空间不出现在宿主 describe 暴露集合属预期设计，无需设置暴露补丁。
+插件配置集中在 `fallbacks` settings 命名空间，可在 dsh 设置文档（默认 `$DSH_HOME/settings.yaml`）中编辑，也可在 web 设置 GUI 的 **Fallbacks** 页中编辑——两者读写同一命名空间。web 页的读写走**插件自有 gateway 通道**（`/api/fallbacks/get` / `/api/fallbacks/set` / `/api/fallbacks/reset`），不依赖 dsh 本体的任何设置暴露机制；`fallbacks` 命名空间不出现在宿主 describe 暴露集合属预期设计。插件对 dsh 源码树**零本地修改**（纯挂载：bundle 行插入 + client inject + 自有 gateway），dsh 升级无需重打补丁。
 
 ## 字段总览
 
@@ -9,7 +9,7 @@
 | `enabled` | boolean | `false` | 功能级总开关。默认关闭（OFF）：`false` 时插件完全不介入、设置页隐藏配置表单主体；`true` 但未配置任何链时行为与未安装插件一致（no-op） |
 | `triggerCodes` | string[] | `['AUTH', 'QUOTA', 'RATE_LIMIT']` | 命中这些失败码时进入链决策。可重试型故障（5xx / `RATE_LIMIT` 等）先由 llm-retry 退避重试，预算耗尽后同样进入决策——**无需为 5xx 额外添加 triggerCodes** |
 | `chains` | Record&lt;string, string[]&gt; | `{}` | 链键 → 有序 fallback 选择器列表。键为 `provider/model`、`provider/*` 或角色名；条目为 `provider/model` 或 `provider/*`（见下文 selector 语法） |
-| `roles.default` | string | `'default'` | 角色解析兜底：无显式 role、无规则命中时使用的角色 |
+| `roles.default` | string | `'default'` | 角色解析兜底：无规则命中时使用的角色 |
 | `roles.rules` | Array | `[]` | 角色规则：按 `origin`（`root`/`subagent`）、`provider`、`model` 模式匹配到角色，顺序匹配、首个命中即停 |
 | `cooldownMs` | number | `300000` | 冷却时长（毫秒）。被切离/失败的模型在冷却期内不再入选 |
 | `revertPolicy` | `'cooldown-expiry'` \| `'never'` | `'cooldown-expiry'` | 冷却到期后的回主策略：到期回主模型 / 会话内保持备用模型 |
@@ -50,11 +50,12 @@
 
 角色是 fallback 链的分组键，解析顺序（首个命中即停）：
 
-1. `agent.options.role` —— 显式角色（subagent 经 dsh role patch 的 `agentOptions.role` 传入，见 [docs/dsh-patch.md](docs/dsh-patch.md)）；
-2. `roles.rules` 顺序匹配（`origin` / `provider` / `model` 模式，字段省略即不约束）；
-3. `roles.default`（默认 `'default'`）。
+1. `roles.rules` 顺序匹配（`origin` / `provider` / `model` 模式，字段省略即不约束）；
+2. `roles.default`（默认 `'default'`）。
 
-root agent 与 subagent 均参与；root 走 `roles.default` 或规则。
+root agent 与 subagent 均参与；root 走 `roles.default` 或规则。角色解析为 **rules-only**：
+不存在显式角色来源（旧 dsh 补丁的显式 role 字段已随本地 patch 移除，见
+[docs/verification.md](docs/verification.md) §1 角色规则行）。
 
 ## 示例 YAML
 
@@ -102,7 +103,7 @@ fallbacks:
 - **功能级开关 `enabled`（默认 OFF）**：开关即用户配置字段 `fallbacks.enabled`，默认关闭。关闭时隐藏配置表单主体（`triggerCodes` / `chains` / `roles` / `cooldownMs` / `revertPolicy` / `maxSwitchesPerStep` / `alwaysModeRetryCap`），显示「功能未开启：打开 `enabled` 开关以显示配置界面」提示——隐藏不丢弃，编辑中的 draft 保留；打开后显示完整配置界面。拨动开关即时显隐（draft 驱动），经保存动作持久化。
 - **可读标签**：枚举型配置项显示可读标签而非原始枚举值——`RATE_LIMIT` →「限流（429）」、`QUOTA` →「配额超限」、`AUTH` →「权限/认证失败」；`cooldown-expiry` →「冷却到期后回主模型」、`never` →「保持备用模型」。数值字段旁显示默认值；其余字段展示当前生效值（未配置时即默认值）。
 - **链/角色行编辑**：`chains` 以「键 + 每行一个选择器的多行输入」编辑；`roles.rules` 以行编辑（origin/provider/model/role），空字段不参与匹配。provider/model 输入为**目录下拉**（模型目录驱动）：新行只提供目录内选项，目录外值读回时以合成选项标注保留（不被目录选择丢弃）；目录不可用/为空时下拉禁用并显示提示，不阻塞手写。
-- **model-selection 协调（AC-2）**：存在活跃 model-selection（用户在设置页 / `settings.yaml` 选择了 provider/model）时，触发码故障后的切换**同样生效**——fallback-routed 标记使外层 model-selection 监听器对当步让位，请求路由到链目标，下一步恢复用户选择（spec §2.5 D-1）。未应用 agent patch 的宿主（标记缺席）降级为分支前行为：切换仍发生，但活跃 selection 下该步路由由 selection 决定（见 [docs/dsh-patch.md](docs/dsh-patch.md)「未打补丁宿主降级」）。
+- **model-selection 协调（AC-2，文档化降级）**：存在活跃 model-selection（用户在设置页 / `settings.yaml` 选择了 provider/model）时，触发码故障后的切换**仍然决策并记录**（`fallbacks/switch` 事件、冷却；当步实际路由可能被活跃 selection 覆写，最终 provider/model 以重新套用的选择为准）——这是去掉本地 patch 标记协调后的**宿主原生行为**（T2 结论，见 [docs/verification.md](docs/verification.md) §4.3）。request-error 触发链不受影响；无活跃 selection 时路由到链目标。设置页含一行降级说明（`status.selectionNote`，zh/en）。
 - **恢复默认**：一键把该命名空间的用户配置重置为组合默认值（`enabled` 回 `false`）——经 gateway `reset`（清空 user layer，组合默认值生效）。
 - **保存与错误呈现**：保存经 gateway `set`（merge 语义）写 user layer，无 revision guard——并发/写失败时错误横幅如实呈现保存结果，骨架与 draft 保留（不静默覆盖）。
 - **只读状态块**：显示当前生效配置摘要（启用状态/默认角色/链数/触发码）+ **最近切换摘要**（来自当前会话原始 `fallbacks/switch` 事件面，最新在前，每条含 from/to/role/reason/时间）+ **当前生效模型**（由配置 + 最近切换**推导**的展示值，非实时路由探测，附非实时说明文案）。摘要随 `settings/changed` / 会话切换 / 连接重置推送刷新（无轮询）——页面打开期间发生的切换，在下一次推送或重载页面后呈现；状态块只读、不可编辑。

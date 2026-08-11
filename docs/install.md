@@ -13,7 +13,7 @@
 `@deepseek-ai/*` 是私有包，运行时由宿主 dsh 盒内 bundle 提供（`peerDependencies` 契约，tsdown 构建期外部化 `@deepseek-ai/*`）。开发期不再使用手写 `peer-stubs/`：`pnpm install`（`prepare` 前置）会调用 `scripts/setup-dsh-links.mjs`，从 dsh 源码树把**真实包**符号链接进 `node_modules/`——类型检查、测试与跳转全部走真实代码（方案经 dsh-advisor 全链路验证）。
 
 - **链接范围**：源码树 `packages/` 与 `vendor/` 下所有声明 `bin` 之外的 `@deepseek-ai/*` 包（按各自 package.json 的 name），外加 `vendor/cordis` 的 **bin-less shim**（`node_modules/cordis/` 的入口文件符号链接到 vendored cordis 的真实文件）——真实包的 `.d.ts` 引用的是 dsh 树里 vendor 的 cordis，shim 保证 `import 'cordis'` 与它们解析到同一物理文件（否则 `Context`/`Events` 类型实例不匹配，tsc 报错）。
-- **路径解析**（与 patch 脚本同一约定）：`$DSH_SOURCE_DIR` 优先 → `${DSH_HOME}/source/current` → `~/.dsh/source/current`（取第一个存在的）——不同开发者只要各自的 `$DSH_HOME` 指向自己的 dsh 安装即可，无需改任何仓库内路径。源码树缺失或 peer 包不可链接时**报错退出并给出指引**（开发期硬性要求；宿主安装路径不受影响，见下）。
+- **路径解析**：`$DSH_SOURCE_DIR` 优先 → `${DSH_HOME}/source/current` → `~/.dsh/source/current`（取第一个存在的）——不同开发者只要各自的 `$DSH_HOME` 指向自己的 dsh 安装即可，无需改任何仓库内路径。源码树缺失或 peer 包不可链接时**报错退出并给出指引**（开发期硬性要求；宿主安装路径不受影响，见下）。
 - **安全守卫**：在宿主 profile 的 pnpm store 内安装（git 依赖的 prepare/postinstall 在 `node_modules/.pnpm/` 中运行）时脚本自动跳过（exit 0），绝不把 staging 树的包链进宿主运行环境。
 - **手动操作**：`pnpm dsh:link` 重链（换 `$DSH_HOME`/`$DSH_SOURCE_DIR` 后重跑）、`pnpm dsh:link:check` 校验（`--check`：链接缺失/指向漂移/过期项均报错，可用于 CI）。
 
@@ -26,16 +26,7 @@ pnpm install        # 或显式 pnpm build
 dsh plugin --profile web add .
 ```
 
-`dsh plugin` 会把参数转发给该 profile 目录下的 pnpm（`add`、`remove`、`why` 等均可用），并将 `dsh-llm-fallbacks` 追加到 profile 的 bundle 层列表（`dsh.profile.bundles`）。
-
-> **自动 patch（本地 link 安装不触发）**：`add .` 走 pnpm 的 `link:` 依赖（node_modules 内为符号链接），**pnpm 不会为 `link:` 依赖运行 prepare/postinstall 生命周期脚本**（已实证）——因此安装期自动 patch（见 [docs/dsh-patch.md](docs/dsh-patch.md)「自动应用」）不会在此路径触发。若本机 dsh 源码树（`$DSH_SOURCE_DIR` / `${DSH_HOME}/source/current`）需要 role patch，安装后手动执行一次：
-
-```sh
-bash scripts/autopatch-install.sh    # 幂等：已应用/已原生支持则跳过；失败仅 warn
-# 或显式手动应用：scripts/apply-dsh-patch.sh && scripts/verify-dsh-patch.sh
-```
-
-如需完全禁用自动 patch（例如 git/tarball 安装时不想动 dsh 源码树），设环境变量 `DSH_LLM_FALLBACKS_AUTOPATCH=0` 再安装。
+`dsh plugin` 会把参数转发给该 profile 目录下的 pnpm（`add`、`remove`、`why` 等均可用），并将 `dsh-llm-fallbacks` 追加到 profile 的 bundle 层列表（`dsh.profile.bundles`）。插件为**纯挂载**：安装 = bundle 行插入 + client inject（`dsh.client.inject`），**对 dsh 源码树零修改、无任何补丁步骤**；dsh 升级无需重打补丁。
 
 ### bundle 层顺序（硬性要求）
 
@@ -67,9 +58,9 @@ git 安装注意：
   #   dsh-llm-fallbacks: true
   ```
 
-  然后重跑 `add`；也可交互式 `dsh plugin --profile web approve-builds` 选择放行。该放行 = 允许该包代码在安装期于你的机器上执行——建议钉 commit（`github:dsh-external/dsh-llm-fallbacks#<sha>`），防止后续 push 悄悄改变实际运行的代码。若安装未被拦截但装入后 `--dump-config` 看不到 `llm-fallbacks` 层 / 设置页不出现 / 自动 patch 未触发，同样先检查本项放行。确切行为以你所用 pnpm 版本的策略为准。
+  然后重跑 `add`；也可交互式 `dsh plugin --profile web approve-builds` 选择放行。该放行 = 允许该包代码在安装期于你的机器上执行——建议钉 commit（`github:dsh-external/dsh-llm-fallbacks#<sha>`），防止后续 push 悄悄改变实际运行的代码。若安装未被拦截但装入后 `--dump-config` 看不到 `llm-fallbacks` 层 / 设置页不出现，同样先检查本项放行。确切行为以你所用 pnpm 版本的策略为准。
 - **传输协议**：`github:` 简写由 pnpm 解析——通常优先 HTTPS，探测失败时退回 SSH（`git@github.com:...`）；显式 https URL 形式则固定 HTTPS。两种形式等价，`#<ref>` 钉版均支持。
-- **自动 patch**：git 安装会执行 `prepare`（构建）并随后触发 `postinstall`——两处都会调用 `scripts/autopatch-install.sh` 自动检测并幂等应用 dsh 本体 role patch（目标 = `$DSH_SOURCE_DIR`，缺省 `${DSH_HOME}/source/current`；缺失/非 git 树则跳过；失败仅 warn 不中断安装）。可用 `DSH_LLM_FALLBACKS_AUTOPATCH=0` 禁用。详见 [docs/dsh-patch.md](docs/dsh-patch.md)「自动应用」。
+- **纯挂载，无补丁步骤**：git 安装执行 `prepare`（构建）即完成——插件对 dsh 源码树零修改（bundle 行插入 + client inject + 自有 gateway），无需任何 apply/revert 脚本，dsh 升级后无需重打。
 
 ## 3. 验证安装
 

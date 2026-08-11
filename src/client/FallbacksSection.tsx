@@ -886,6 +886,11 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
           <span className={css.statusLineLabel}>{t('status.switches.label')}</span>
           {switchesLine}
         </p>
+        {/* Plan llm-fallbacks-runtime-depatch T2 (degradation): the marker
+         * coordination shipped with the local dsh-agent patch is removed, so
+         * a model manually selected in the web front end may be re-applied
+         * over a fallback switch. Honest one-line note (zh + en). */}
+        <p className={css.statusLine}>{t('status.selectionNote')}</p>
       </div>
 
       {/* Reset-to-defaults confirmation: the Models page's delete-confirm

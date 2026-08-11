@@ -9,7 +9,7 @@
  * `node_modules/`, so no `peer-stubs/` copies are needed and every developer
  * resolves against the same tree.
  *
- * Source-tree resolution (same convention as scripts/*-dsh-patch.sh):
+ * Source-tree resolution:
  *   1. `$DSH_SOURCE_DIR` (explicit override)
  *   2. `${DSH_HOME}/source/current`
  *   3. `${HOME}/.dsh/source/current` (the standard DSH_HOME location)
@@ -159,8 +159,12 @@ function writeCordisShim(sourceRoot) {
     throw new Error(`vendored cordis not found at ${vendorCordis} — the source tree must provide the in-box cordis framework`)
   }
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
-  if (manifest.name !== 'cordis') {
-    throw new Error(`vendored cordis at ${vendorCordis} declares name "${manifest.name}" — expected "cordis"`)
+  // The vendored cordis declares its name as either `cordis` (older dsh
+  // snapshots) or `@deepseek-ai/cordis` (renamed vendor tree) — both are the
+  // same in-box framework, only the manifest name differs. The shim always
+  // publishes as `cordis` (the peerDependency this repo declares).
+  if (manifest.name !== 'cordis' && manifest.name !== '@deepseek-ai/cordis') {
+    throw new Error(`vendored cordis at ${vendorCordis} declares name "${manifest.name}" — expected "cordis" or "@deepseek-ai/cordis"`)
   }
   rmSync(cordisShimDir, { recursive: true, force: true })
   mkdirSync(cordisShimDir, { recursive: true })
