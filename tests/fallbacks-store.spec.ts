@@ -23,6 +23,7 @@ import {
   chainsToRows,
   classifyModel,
   classifyProvider,
+  configuredProvidersOf,
   conflictDetailsOf,
   deriveEffectiveModel,
   extractRecentSwitches,
@@ -110,6 +111,23 @@ function catalogFixture(): CatalogLookup {
     ],
     groups: [
       { id: 'openai', name: 'OpenAI', models: [{ id: 'gpt-4o', name: 'GPT-4o' }, { id: 'o3', name: 'o3' }] },
+    ],
+  }
+}
+
+/** A settings namespace view for a non-fallbacks section (the configured join's other input). */
+function providerNs(ns: string, value: unknown): SettingsNamespaceView {
+  return { ns, schema: {}, value, applies: 'live', secrets: [], revision: 1 }
+}
+
+/** A directory fixture exercising every configured-join branch. */
+function configuredFixture() {
+  return {
+    providers: [
+      { provider: 'deepseek-official', displayName: 'DeepSeek Official', settingsNs: 'llm-deepseek', settingsPath: [], active: true },
+      { provider: 'openai', displayName: 'OpenAI', settingsNs: 'llm-providers', settingsPath: ['providers', 'openai'], active: true },
+      { provider: 'anthropic', displayName: 'Anthropic', settingsNs: 'llm-providers', settingsPath: ['providers', 'anthropic'], active: true },
+      { provider: 'google', displayName: 'Google', settingsNs: 'llm-providers', settingsPath: ['providers', 'google'], active: true },
     ],
   }
 }
@@ -688,6 +706,143 @@ describe('FallbacksSettingsController', () => {
     // Opened (ready) → refetches.
     refreshCatalogIfLoaded(controller)
     expect(api.llm.providers).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('configuredProviders derivation (Models-page `configured` join)', () => {
+  it('keeps a whole-section provider when its namespace exists (empty settingsPath)', () => {
+    const { providers } = configuredFixture()
+    const namespaces = new Map([['llm-deepseek', providerNs('llm-deepseek', {})]])
+    expect(configuredProvidersOf(providers, namespaces).map(entry => entry.provider)).toEqual(['deepseek-official'])
+  })
+
+  it('drops a provider whose settings namespace is missing', () => {
+    const { providers } = configuredFixture()
+    // No `llm-deepseek` namespace: even the empty-settingsPath provider is unconfigured.
+    expect(configuredProvidersOf(providers, new Map())).toEqual([])
+  })
+
+  it('keeps path-addressed providers whose profile resolves and drops the rest', () => {
+    const { providers } = configuredFixture()
+    const namespaces = new Map([['llm-providers', providerNs('llm-providers', {
+      providers: { openai: { apiKeyEnv: 'OPENAI_API_KEY' }, anthropic: {} },
+    })]])
+    const configured = configuredProvidersOf(providers, namespaces)
+    expect(configured.map(entry => entry.provider)).toEqual(['openai', 'anthropic'])
+    // `google` is in the directory but its profile does not resolve → not offered.
+    expect(configured.some(entry => entry.provider === 'google')).toBe(false)
+  })
+
+  it('derives an empty offer set when no provider is configured', () => {
+    const { providers } = configuredFixture()
+    const namespaces = new Map([['llm-providers', providerNs('llm-providers', { providers: {} })]])
+    expect(configuredProvidersOf(providers, namespaces)).toEqual([])
+  })
+
+  it('joins namespaces and catalog into configuredProviders (load then catalog)', async () => {
+    const api = makeApi()
+    api.settings.describe.mockResolvedValue(ok({
+      writable: true,
+      hasDocument: false,
+      namespaces: [
+        viewOf(),
+        providerNs('llm-deepseek', {}),
+        providerNs('llm-providers', { providers: { openai: {}, anthropic: {} } }),
+      ],
+    }))
+    api.llm.providers.mockResolvedValue(ok({ providers: configuredFixture().providers }))
+    api.llm.models.mockResolvedValue(ok({ groups: [], failures: [] }))
+    const controller = new FallbacksSettingsController(api)
+    await controller.load()
+    // Namespaces landed first; without the catalog the join stays empty.
+    expect(controller.store.getSnapshot().configuredProviders).toEqual([])
+    await controller.loadCatalog()
+    const state = controller.store.getSnapshot()
+    expect(state.configuredProviders.map(entry => entry.provider))
+      .toEqual(['deepseek-official', 'openai', 'anthropic'])
+  })
+
+  it('joins the other way: catalog landing before namespaces', async () => {
+    const api = makeApi()
+    api.settings.describe.mockResolvedValue(ok({
+      writable: true,
+      hasDocument: false,
+      namespaces: [viewOf(), providerNs('llm-deepseek', {})],
+    }))
+    api.llm.providers.mockResolvedValue(ok({ providers: configuredFixture().providers }))
+    api.llm.models.mockResolvedValue(ok({ groups: [], failures: [] }))
+    const controller = new FallbacksSettingsController(api)
+    await controller.loadCatalog()
+    expect(controller.store.getSnapshot().configuredProviders).toEqual([])
+    await controller.load()
+    expect(controller.store.getSnapshot().configuredProviders.map(entry => entry.provider))
+      .toEqual(['deepseek-official'])
+  })
+
+  it('derives the join even when the fallbacks namespace itself is missing', async () => {
+    const api = makeApi()
+    api.settings.describe.mockResolvedValue(ok({
+      writable: true,
+      hasDocument: false,
+      namespaces: [providerNs('llm-deepseek', {})],
+    }))
+    api.llm.providers.mockResolvedValue(ok({ providers: configuredFixture().providers }))
+    api.llm.models.mockResolvedValue(ok({ groups: [], failures: [] }))
+    const controller = new FallbacksSettingsController(api)
+    await controller.load()
+    await controller.loadCatalog()
+    expect(controller.store.getSnapshot().status).toBe('unavailable')
+    expect(controller.store.getSnapshot().configuredProviders.map(entry => entry.provider))
+      .toEqual(['deepseek-official'])
+  })
+
+  it('keeps out-of-catalog existing values round-tripping (the configured filter never touches rows)', async () => {
+    const api = makeApi()
+    api.settings.describe.mockResolvedValue(ok({
+      writable: true,
+      hasDocument: false,
+      namespaces: [viewOf({ value: { ...defaultFallbacksConfig, chains: { default: ['other/gpt-4o'] } } })],
+    }))
+    api.llm.providers.mockResolvedValue(ok({ providers: catalogFixture().providers }))
+    api.llm.models.mockResolvedValue(ok({ groups: catalogFixture().groups, failures: [] }))
+    const controller = new FallbacksSettingsController(api)
+    await controller.load()
+    await controller.loadCatalog()
+    const state = controller.store.getSnapshot()
+    // `other` is outside the catalog and never enters the offer set.
+    expect(state.configuredProviders.map(entry => entry.provider)).not.toContain('other')
+    // The existing chain value still round-trips through the row editor losslessly.
+    const rows = chainsToRows(state.config.chains, { providers: state.providers, groups: state.groups })
+    expect(rowsToChains(rows)).toEqual(state.config.chains)
+  })
+
+  it('round-trips in-catalog-but-unconfigured existing values (the 未配置 read-back is lossless)', async () => {
+    const api = makeApi()
+    // `google` is in the catalog directory but its `llm-providers` profile path
+    // does not resolve — the configured join keeps it out of the offer set,
+    // yet an existing chain value referencing it must still round-trip
+    // verbatim (the synthetic 未配置 option serializes back to the raw string).
+    api.settings.describe.mockResolvedValue(ok({
+      writable: true,
+      hasDocument: false,
+      namespaces: [
+        viewOf({ value: { ...defaultFallbacksConfig, chains: { default: ['google/gemini-2.0-flash'] } } }),
+        providerNs('llm-providers', { providers: { openai: { apiKeyEnv: 'OPENAI_API_KEY' }, anthropic: {} } }),
+      ],
+    }))
+    api.llm.providers.mockResolvedValue(ok({ providers: configuredFixture().providers }))
+    api.llm.models.mockResolvedValue(ok({ groups: catalogFixture().groups, failures: [] }))
+    const controller = new FallbacksSettingsController(api)
+    await controller.load()
+    await controller.loadCatalog()
+    const state = controller.store.getSnapshot()
+    // In the directory but unconfigured (profile unresolved) → never offered.
+    expect(state.configuredProviders.map(entry => entry.provider)).not.toContain('google')
+    // Classifies as a catalog selection (in the directory) and the existing
+    // value still round-trips losslessly.
+    const rows = chainsToRows(state.config.chains, { providers: state.providers, groups: state.groups })
+    expect(rows[0]!.selectors[0]!.provider).toEqual({ kind: 'catalog', id: 'google' })
+    expect(rowsToChains(rows)).toEqual(state.config.chains)
   })
 })
 

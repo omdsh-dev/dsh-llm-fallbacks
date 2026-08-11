@@ -7,7 +7,6 @@
  * (triggerCodes / revertPolicy) render readable labels, never raw enum
  * strings.
  */
-import type { FallbacksConfig } from '../config.ts'
 import { defaultFallbacksConfig } from '../config.ts'
 
 /** Simplified Chinese dictionary (the key-set source of truth). */
@@ -58,6 +57,7 @@ export const zh = {
   'roles.rule.model': 'model',
   'roles.rule.model.any': '任意',
   'roles.rule.role': '角色',
+  'roles.rule.rolePlaceholder': '角色名',
   'roles.addRule': '添加规则',
   'roles.removeRule': '删除该规则',
   'catalog.empty': '暂无可用模型：请先在模型页添加模型，添加后此处将自动可选。',
@@ -65,15 +65,15 @@ export const zh = {
   'catalog.partial': '部分 provider 模型查询失败：{message}',
   'catalog.outside.hint': '目录外：不在当前模型目录，可保留原值并保存（新增条目仅可从目录选择）。',
   'catalog.outside.short': ' （目录外）',
+  'catalog.unconfigured.short': ' （未配置）',
   'status.title': '运行状态（只读）',
-  'status.configSummary': '当前配置：已启用 {enabled}；默认角色 {role}；{chains} 条链；触发失败码 {codes}。',
-  'status.effectiveModel.label': '当前生效模型',
-  'status.effectiveModel.unavailable': 'fallbacks 未启用（或未配置）：无当前生效模型。',
-  'status.effectiveModel.note': '配置 + 最近切换推导，非实时路由探测。',
-  'status.switches.label': '最近切换',
+  'status.effectiveModel.label': '当前生效模型：',
+  'status.effectiveModel.unavailable': 'fallbacks 未启用（或未配置）',
+  'status.effectiveModel.note': '配置 + 最近切换推导，非实时路由探测',
+  'status.switches.label': '最近切换：',
   'status.switches.empty': '本会话暂无 fallback 切换。',
   'status.switches.error': '切换历史读取失败：{message}',
-  'status.switches.item': '{role} · {reason} · {time}',
+  'status.switches.compact': '最近 {count} 次 · {from} → {to}（{role} · {reason}）',
   'status.switches.reason.trigger-code': '触发失败码',
   'status.switches.reason.always-cap': 'always 模式上限',
   'defaults.prefix': '默认值',
@@ -145,6 +145,7 @@ export const en = {
   'roles.rule.model': 'model',
   'roles.rule.model.any': 'Any',
   'roles.rule.role': 'role',
+  'roles.rule.rolePlaceholder': 'Role name',
   'roles.addRule': 'Add rule',
   'roles.removeRule': 'Remove this rule',
   'catalog.empty': 'No models yet: add a model on the Models page first; options will appear here automatically.',
@@ -152,15 +153,15 @@ export const en = {
   'catalog.partial': 'Some provider model lookups failed: {message}',
   'catalog.outside.hint': 'Outside catalog: not in the current model catalog; you can keep the original value and save it (new entries are restricted to the catalog).',
   'catalog.outside.short': ' (outside catalog)',
+  'catalog.unconfigured.short': ' (not configured)',
   'status.title': 'Runtime status (read-only)',
-  'status.configSummary': 'Effective config: enabled {enabled}; default role {role}; {chains} chains; trigger codes {codes}.',
-  'status.effectiveModel.label': 'Current effective model',
-  'status.effectiveModel.unavailable': 'Fallbacks disabled (or not configured): no current effective model.',
-  'status.effectiveModel.note': 'Derived from configuration and recent switches; not real-time route probing.',
-  'status.switches.label': 'Recent switches',
+  'status.effectiveModel.label': 'Current effective model: ',
+  'status.effectiveModel.unavailable': 'Fallbacks disabled (or not configured)',
+  'status.effectiveModel.note': 'Derived from configuration and recent switches; not real-time route probing',
+  'status.switches.label': 'Recent switches: ',
   'status.switches.empty': 'No fallback switches in this session yet.',
   'status.switches.error': 'Switch history read failed: {message}',
-  'status.switches.item': '{role} · {reason} · {time}',
+  'status.switches.compact': 'last {count} · {from} → {to} ({role} · {reason})',
   'status.switches.reason.trigger-code': 'trigger code',
   'status.switches.reason.always-cap': 'always-mode cap',
   'defaults.prefix': 'Default',
@@ -212,25 +213,4 @@ export function withTriggerCode(codes: readonly string[], code: string, present:
   if (present) next.add(code)
   else next.delete(code)
   return [...next]
-}
-
-/** Render a config summary line (AC-7 read-only block). */
-export function configSummary(config: FallbacksConfig, t: (key: FallbacksKey, params?: Record<string, unknown>) => string): string {
-  return t('status.configSummary', {
-    enabled: config.enabled ? 'on' : 'off',
-    role: config.roles.default,
-    chains: String(Object.keys(config.chains).length),
-    codes: config.triggerCodes.join(', '),
-  })
-}
-
-/**
- * Render a switch event time (Unix epoch ms) for the status block as
- * `YYYY-MM-DD HH:mm` in local time — locale-neutral, so zh/en share the
- * format (the dictionaries stay the sole copy source).
- */
-export function formatSwitchTime(time: number): string {
-  const date = new Date(time)
-  const pad = (value: number): string => String(value).padStart(2, '0')
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
 }
