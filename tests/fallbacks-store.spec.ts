@@ -36,6 +36,7 @@ import {
   FallbacksSettingsController,
   parseFallbacksConfig,
   refreshCatalogIfLoaded,
+  refreshFallbacksIfLoaded,
   refreshSwitchesIfLoaded,
   rowsToChains,
   rowsToRules,
@@ -795,6 +796,21 @@ describe('FallbacksSettingsController', () => {
     // Opened (ready) → refetches.
     refreshCatalogIfLoaded(controller)
     expect(api.llm.providers).toHaveBeenCalledTimes(2)
+  })
+
+  it('refreshFallbacksIfLoaded skips an idle store and refreshes an opened one', async () => {
+    const api = makeApi()
+    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
+    const { rpc, get } = makeRpc()
+    const controller = new FallbacksSettingsController(api, rpc)
+    // Idle → no refetch (the section has never opened).
+    refreshFallbacksIfLoaded(controller)
+    expect(get).not.toHaveBeenCalled()
+    await controller.load()
+    expect(get).toHaveBeenCalledTimes(1)
+    // Opened (ready) → refetches (the settings/changed + connection/reset push).
+    refreshFallbacksIfLoaded(controller)
+    expect(get).toHaveBeenCalledTimes(2)
   })
 })
 

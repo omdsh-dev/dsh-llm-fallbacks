@@ -18,7 +18,9 @@
  *    the `in` guard (F-001, own-key membership) and never wipe the user layer.
  * ④ Containment (guide §10): a malformed stored user layer that the
  *    non-strict settings schema let through (an unknown key) never fails
- *    `get` — only schema-declared keys cross the wire.
+ *    `get` — only schema-declared keys cross the wire, and a schema key
+ *    whose composed value is `undefined` is omitted, never
+ *    present-as-undefined (readConfig wire normalization, F-002).
  * ⑤ Endpoint claims: the typertGateway SRC discovery (the same
  *    `ctx.reflect.props` + `remoteMethods` walk `claimsEndpoint` uses) claims
  *    `/api/fallbacks/get` + `/api/fallbacks/set` + `/api/fallbacks/reset`;
@@ -363,7 +365,11 @@ describe('set validation (Config schema, unknown-key rejection unchanged)', () =
     await waitRegistered(ctx)
     await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
 
-    await expect(gateway.set({ cooldownMs: 'nope' } as never)).rejects.toThrow()
+    // The matcher pins the rejecting stage: the schemastery `Config` type
+    // check (`$.cooldownMs expected number but got nope`) must be what
+    // rejects — a regression that pushed the rejection to some other stage
+    // while `validateConfigPatch` silently passed would no longer match.
+    await expect(gateway.set({ cooldownMs: 'nope' } as never)).rejects.toThrow(/cooldownMs/)
   })
 
   it('a non-object patch is rejected as malformed input', async () => {
@@ -400,6 +406,26 @@ describe('containment (malformed stored user layer)', () => {
     expect('bogus' in result.config).toBe(false)
     expect(result.config.chains).toEqual({})
     expect(result.config.cooldownMs).toBe(defaultFallbacksConfig.cooldownMs)
+  })
+
+  it('omits a schema key whose composed value is undefined (never present-as-undefined on the wire)', () => {
+    // The gateway result validator rejects undefined values, so `readConfig`
+    // must OMIT absent values instead of carrying them — a schema key whose
+    // composed value is `undefined` is dropped, it does not ride the wire as
+    // an own key with an undefined value (F-002, readConfig normalization).
+    const ctx = track(new Context())
+    const gateway = new FallbacksConfigGateway(ctx, {
+      source: (): FallbacksConfig => ({
+        ...defaultFallbacksConfig,
+        cooldownMs: undefined as unknown as number,
+      }),
+    })
+
+    const result = gateway.get()
+    expect('cooldownMs' in result.config).toBe(false)
+    // The remaining schema keys still cross the wire with their values.
+    expect(result.config.enabled).toBe(false)
+    expect(result.config.chains).toEqual({})
   })
 })
 
