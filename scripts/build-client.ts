@@ -18,10 +18,14 @@
  * - CSS Modules (`*.module.css`) are compiled to a hashed class map plus an
  *   inline `<style data-plugin>` injection that runs when the factory
  *   materializes (the loader removes plugin-owned tags on unload). The
- *   transform itself (FNV-1a `8hex_local` hash, comment-stripped css) is
- *   unchanged from the bun recipe — only the plugin API moved from bun's
- *   `onLoad` to rolldown's `resolveId`/`load` over a virtual id (the virtual
- *   id must not end in `.css` so tsdown's own css pipeline never sees it).
+ *   transform itself (FNV-1a `_<8hex>_<local>` hash, comment-stripped css)
+ *   mirrors the host bundle's `_1zfRHq_section` shape — the `_` prefix keeps
+ *   every hashed class a legal CSS identifier (a bare `8hex_local` starts
+ *   with a digit and the browser silently drops those rules) — and the
+ *   bundle-contract assertions at the bottom pin that invariant. Only the
+ *   plugin API moved from bun's `onLoad` to rolldown's `resolveId`/`load`
+ *   over a virtual id (the virtual id must not end in `.css` so tsdown's own
+ *   css pipeline never sees it).
  *
  * The `@deepseek-ai/*` purity gate stays deferred: the client half's only
  * runtime `@deepseek-ai/*` import is `@deepseek-ai/dsh-client-runtime/client`
@@ -54,9 +58,13 @@ export const CLIENT_EXTERNALS: readonly string[] = [
 
 /**
  * Deterministic CSS-module class hash: FNV-1a 32-bit over the local name →
- * `8hex_local` (mirrors the dsh recipe's `[hash]_[local]` pattern; the hash
- * only needs to be stable within the bundle — the class map and the rewritten
- * css text come from the same transform).
+ * `_<8hex>_<local>`. The `_` prefix is load-bearing: an 8-hex FNV-1a hash
+ * starts with a digit ~62.5% of the time, and `.8b697c55_fieldRow` is not a
+ * legal CSS identifier — the browser silently drops the whole rule. The
+ * underscore form mirrors the host bundle's `_1zfRHq_section` shape (the dsh
+ * recipe's `[hash]_[local]` pattern). The hash only needs to be stable within
+ * the bundle — the class map and the rewritten css text come from the same
+ * transform.
  */
 function hashClass(local: string): string {
   let h = 0x811c9dc5
@@ -64,7 +72,7 @@ function hashClass(local: string): string {
     h ^= local.charCodeAt(i)
     h = Math.imul(h, 0x01000193) >>> 0
   }
-  return `${h.toString(16).padStart(8, '0')}_${local}`
+  return `_${h.toString(16).padStart(8, '0')}_${local}`
 }
 
 /**
@@ -90,7 +98,10 @@ function styleInjectionContents(cssText: string, tagId: string): string {
  * Compile one `*.module.css` file into a JS module: the css text (comments
  * stripped, class tokens hashed) plus a `<style data-plugin>` injection that
  * runs at factory materialization, and the hashed class map as the default
- * export (mirror of the dsh CSS plugin).
+ * export (mirror of the dsh CSS plugin). Class tokens hash to
+ * `_<8hex>_<local>` — legal CSS identifiers, mirroring the host bundle's
+ * `_1zfRHq_section` shape (see `hashClass`). The class map and the rewritten
+ * css text come from this single transform, so they can never drift.
  *
  * simplify: the css text is emitted as-is (comment-stripped, not minified);
  * the dsh recipe runs lightningcss. If bundle size ever matters, switch the
@@ -179,11 +190,49 @@ if (!existsSync(outFile)) {
   throw new Error(`client bundle build: expected ${outFile} — check the tsdown config (entry/entryFileNames/outDir)`)
 }
 
+/**
+ * Collect every selector text from a css blob: the text between the previous
+ * `}`/start and each `{`, at every nesting depth (so `@media` blocks are
+ * walked too). The bundle contract uses this to check class-selector tokens
+ * in selector position only — declaration values like `opacity: 0.6`,
+ * `transition: .12s`, or the data-uri decimals never sit in a selector, so
+ * they cannot be mistaken for a `.`-prefixed class.
+ */
+function collectCssSelectors(cssText: string): string[] {
+  const selectors: string[] = []
+  const walk = (text: string) => {
+    let i = 0
+    let selectorStart = 0
+    while (i < text.length) {
+      if (text[i] === '{') {
+        selectors.push(text.slice(selectorStart, i))
+        let depth = 1
+        const blockStart = i + 1
+        i++
+        while (i < text.length && depth > 0) {
+          if (text[i] === '{') depth++
+          else if (text[i] === '}') depth--
+          i++
+        }
+        walk(text.slice(blockStart, depth === 0 ? i - 1 : i))
+        selectorStart = i
+      } else {
+        i++
+      }
+    }
+  }
+  walk(cssText)
+  return selectors
+}
+
 // Inline bundle-contract assertions: the emitted text must carry the inlined
 // css-module class map (the transform ran), must NOT contain `import.meta` /
-// ESM statements (the classic-script loader would fail to parse them), and
-// the only `@deepseek-ai/*` value import must be the documented external
-// runtime/client exemption.
+// ESM statements (the classic-script loader would fail to parse them), the
+// only `@deepseek-ai/*` value import must be the documented external
+// runtime/client exemption, and every css-module class must be a legal CSS
+// identifier — `hashClass` emits `_<8hex>_<local>` (mirroring the host
+// bundle's `_1zfRHq_section` shape) because a digit-leading hash would be a
+// valid JS key but an illegal selector the browser silently drops.
 const bundleText = readFileSync(outFile, 'utf8')
 if (!bundleText.includes('data-plugin-css')) {
   throw new Error('client bundle contract: no inlined css-module style injection found — check the dsh-css-modules-inline plugin')
@@ -195,6 +244,36 @@ const deepseekRequires = [...bundleText.matchAll(/require\(\s*["'](@deepseek-ai\
 const unexpected = deepseekRequires.filter(specifier => !CLIENT_EXTERNALS.includes(specifier))
 if (unexpected.length > 0) {
   throw new Error(`client bundle contract: non-external @deepseek-ai/* value import(s) survived: ${unexpected.join(', ')}`)
+}
+
+// CSS-identifier contract: no class selector in the injected css text starts
+// with a digit (`.\d`), and every hashed class name in the inlined class map
+// matches `^[A-Za-z_][A-Za-z0-9_-]*$`.
+const injectedCssMatches = [...bundleText.matchAll(/\bconst css = ("(?:[^"\\]|\\.)*");/g)]
+if (injectedCssMatches.length === 0) {
+  throw new Error('client bundle contract: no inlined css-module style text found — check the dsh-css-modules-inline plugin')
+}
+for (const match of injectedCssMatches) {
+  const cssText = JSON.parse(match[1]) as string
+  for (const selector of collectCssSelectors(cssText)) {
+    for (const token of selector.matchAll(/\.[A-Za-z_0-9][A-Za-z0-9_-]*/g)) {
+      if (!/^\.[A-Za-z_]/.test(token[0])) {
+        throw new Error(`client bundle contract: class selector ${token[0]} starts with a non-identifier char — hashClass must emit _<8hex>_<local> (mirror the host _1zfRHq_section shape)`)
+      }
+    }
+  }
+}
+const classMapMatches = [...bundleText.matchAll(/\b\w+_module_css_default\s*=\s*(\{[\s\S]*?\n\s*\});/g)]
+if (classMapMatches.length === 0) {
+  throw new Error('client bundle contract: no inlined css-module class map found — check the dsh-css-modules-inline plugin')
+}
+for (const mapMatch of classMapMatches) {
+  const classMap = JSON.parse(mapMatch[1]) as Record<string, string>
+  for (const [local, hashed] of Object.entries(classMap)) {
+    if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(hashed)) {
+      throw new Error(`client bundle contract: hashed class "${local}" -> "${hashed}" is not a valid CSS identifier — hashClass must emit _<8hex>_<local> (mirror the host _1zfRHq_section shape)`)
+    }
+  }
 }
 
 console.log(`build-client: ${ENTRY} -> ${outFile} (closure-factory CJS, tsdown)`)
