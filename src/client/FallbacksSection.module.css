@@ -113,7 +113,9 @@
 /* The panel has no switch primitive, so the native checkbox/radio keeps its
    geometry and semantics; the 16px box and the alias fill tint tie it to the
    theme (the RiskConfirmation checkbox convention), with the same
-   focus-visible ring. */
+   focus-visible ring. The control itself carries the pointer cursor (the
+   row-level `cursor: pointer` on `.optionRow` / `.wildcardCell` only covers
+   the label surface, not the input box). */
 .switch,
 .optionRow input,
 .wildcardCell input {
@@ -121,6 +123,7 @@
   width: 16px;
   height: 16px;
   accent-color: var(--dsw-alias-button-primary-fill);
+  cursor: pointer;
 }
 
 .switch:focus-visible,
@@ -379,13 +382,14 @@ select.input {
   margin-top: 4px;
 }
 
-/* AC-7 read-only status: an outlined card like the Models rows, so the
-   summary reads as a panel on the page rather than an editor surface. */
+/* AC-7 read-only status, compact: an outlined card like the Models rows,
+   pinned at the section bottom after the actions. Tighter padding and one
+   line per fact with ellipsis overflow — the block never dominates the page. */
 .statusBlock {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 12px 14px;
+  gap: 6px;
+  padding: 10px 12px;
   border: 1px solid var(--dsw-alias-border-l2);
   border-radius: 12px;
 }
@@ -397,82 +401,21 @@ select.input {
   color: var(--dsw-alias-label-secondary);
 }
 
-/* Block sub-label ("当前生效模型" / "最近切换") — same rhythm as the block title. */
-.statusSubTitle {
+/* One status fact (effective model / recent switches): secondary tone, a
+   single line, ellipsis overflow when the content outgrows the card. */
+.statusLine {
+  margin: 0;
   font-size: 12px;
   line-height: 18px;
+  color: var(--dsw-alias-label-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.statusLineLabel {
   font-weight: 500;
   color: var(--dsw-alias-label-secondary);
-}
-
-.statusSummary {
-  margin: 0;
-  font-size: 13px;
-  line-height: 20px;
-  color: var(--dsw-alias-label-primary);
-}
-
-/* Derived effective-model line: value + the always-appended non-probing note. */
-.statusEffective {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.statusEffectiveValue {
-  font-size: 13px;
-  line-height: 20px;
-  color: var(--dsw-alias-label-primary);
-}
-
-/* Recent-switch summary: list of route + meta lines, or the empty/error note. */
-.statusSwitches {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.statusSwitchList {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.statusSwitchItem {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-}
-
-.statusSwitchRoute {
-  font-size: 13px;
-  line-height: 20px;
-  font-variant-numeric: tabular-nums;
-  color: var(--dsw-alias-label-primary);
-}
-
-.statusSwitchMeta {
-  font-size: 12px;
-  line-height: 18px;
-  color: var(--dsw-alias-label-tertiary);
-}
-
-.statusPlaceholder {
-  margin: 0;
-  font-size: 12px;
-  line-height: 18px;
-  color: var(--dsw-alias-label-tertiary);
-}
-
-.statusHint {
-  display: block;
-  margin-top: 2px;
-  font-size: 12px;
-  line-height: 18px;
-  color: var(--dsw-alias-label-dimmed);
 }
 
 /* Enabled OFF (readme-settings spec §1.2): an empty-state card in place of

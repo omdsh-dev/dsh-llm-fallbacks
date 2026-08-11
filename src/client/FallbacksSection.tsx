@@ -19,17 +19,18 @@
  * trigger codes loaded from the descriptor that are not in the known set are
  * preserved on save.
  *
- * Read-only status block (AC-7 行为可见性): an effective-config summary, the
- * derived "current effective model" (spec §2.5 D-6 — a display value from
- * config + recent switches, never a live route probe; the non-probing note is
- * always appended), and the recent-switch summary from the current session's
- * raw `fallbacks/switch` events (spec §2.5 D-5 — read through the store's
- * `sessions.history` face, single page, newest-first, ≤ 5).
+ * Read-only status block (AC-7 行为可见性), compact and pinned at the
+ * section bottom: the derived "current effective model" (spec §2.5 D-6 — a
+ * display value from config + recent switches, never a live route probe; the
+ * non-probing note is always appended) and the most recent switch from the
+ * current session's raw `fallbacks/switch` events (spec §2.5 D-5 — read
+ * through the store's `sessions.history` face, single page, newest-first).
  */
 
 import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { useSyncExternalStore } from 'react'
+import type { ConfigurableProviderView } from '@deepseek-ai/dsh-client-connection/client'
 import {
   Button, IconPlusOutline16, IconTrashOutline16, Modal,
 } from '@deepseek-ai/dsh-client-ui-primitives'
@@ -54,8 +55,6 @@ import {
   type RoleRuleRow,
 } from './fallbacks-store.ts'
 import {
-  configSummary,
-  formatSwitchTime,
   KNOWN_TRIGGER_CODES,
   TRIGGER_CODE_LABELS,
   withTriggerCode,
@@ -135,17 +134,23 @@ function catalogOf(state: FallbacksSettingsState): CatalogLookup | undefined {
 
 /**
  * One chain entry selector row: provider select + model select (cascade) +
- * wildcard checkbox (spec §2.5 D-3). Out-of-catalog values read back from the
- * server render as a synthetic option with the short "outside catalog"
- * annotation and stay selected — keeping them saves verbatim; picking a
- * catalog option is an intentional change. New rows only offer catalog
+ * wildcard checkbox (spec §2.5 D-3). The provider options are the catalog
+ * providers **configured on the Models page** (`configuredProviders`, the
+ * Models-page `configured` join) — unconfigured directory providers never
+ * become offerable. Out-of-catalog values read back from the server render as
+ * a synthetic option with the short "outside catalog" annotation and stay
+ * selected — keeping them saves verbatim; picking a catalog option is an
+ * intentional change. A directory provider that is not configured is offered
+ * the same read-back treatment (short "not configured" annotation) so an
+ * existing value is never hidden or dropped. New rows only offer configured
  * options.
  */
 function ChainSelectorEditor({
-  selector, catalog, disabled, t, onChange, onRemove,
+  selector, catalog, configuredProviders, disabled, t, onChange, onRemove,
 }: {
   selector: ChainSelectorRow
   catalog: CatalogLookup | undefined
+  configuredProviders: readonly ConfigurableProviderView[]
   disabled: boolean
   t: FallbacksSectionProps['t']
   onChange: (patch: Partial<ChainSelectorRow>) => void
@@ -153,6 +158,12 @@ function ChainSelectorEditor({
 }): ReactNode {
   const providerRaw = selectionToRaw(selector.provider)
   const providerOutside = selector.provider?.kind === 'outside'
+  // A catalog provider that is not configured (Models-page `configured` join):
+  // keep the read-back value visible as a synthetic option — never offerable,
+  // never dropped on save.
+  const providerUnconfigured = !providerOutside && providerRaw !== ''
+    && (catalog?.providers.some(entry => entry.provider === providerRaw) ?? false)
+    && !configuredProviders.some(entry => entry.provider === providerRaw)
   const modelRaw = selectionToRaw(selector.model)
   const modelOutside = selector.model?.kind === 'outside'
   const group = catalog?.groups.find(entry => entry.id === providerRaw)
@@ -180,9 +191,12 @@ function ChainSelectorEditor({
             }}
           >
             <option value="">{t('chains.selector.providerPlaceholder')}</option>
-            {(catalog?.providers ?? []).map(entry => (
+            {configuredProviders.map(entry => (
               <option key={entry.provider} value={entry.provider}>{entry.displayName}</option>
             ))}
+            {providerUnconfigured && (
+              <option value={providerRaw}>{`${providerRaw}${t('catalog.unconfigured.short')}`}</option>
+            )}
             {providerOutside && (
               <option value={providerRaw}>{`${providerRaw}${t('catalog.outside.short')}`}</option>
             )}
@@ -301,12 +315,12 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
   const [resetting, setResetting] = useState(false)
 
   // The skeleton always renders (readme-settings spec §1.2): title, intro,
-  // banners, the read-only status block, the `enabled` switch, and the
-  // save/reset actions are visible in every store state (idle / loading /
-  // ready / saving / unavailable / error). The form body below is gated on
-  // the draft's `enabled` flag. Controls are disabled while `writable` is
-  // false (initial load, loading, or a read-only describe response), so an
-  // empty skeleton never invites edits the host would refuse.
+  // banners, the `enabled` switch, the save/reset actions, and the read-only
+  // status block pinned at the bottom are visible in every store state (idle /
+  // loading / ready / saving / unavailable / error). The form body below is
+  // gated on the draft's `enabled` flag. Controls are disabled while
+  // `writable` is false (initial load, loading, or a read-only describe
+  // response), so an empty skeleton never invites edits the host would refuse.
 
   const updateScalars = (mutator: (draft: FallbacksScalars) => void): void => {
     setScalars(prev => {
@@ -348,11 +362,34 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
 
   // R-4b: the status block's derived effective model (spec §2.5 D-6). The
   // derivation is a display value over config + recent switches — the
-  // non-probing note renders beside it unconditionally.
+  // non-probing note ⑤ renders inline after the value.
   const effectiveModel = deriveEffectiveModel(state.config, state.switches)
-  const effectiveModelText = effectiveModel.kind === 'unavailable'
+  const effectiveModelLine = effectiveModel.kind === 'unavailable'
     ? t('status.effectiveModel.unavailable')
-    : `${effectiveModel.provider}/${effectiveModel.model}`
+    : `${effectiveModel.provider}/${effectiveModel.model} · ${t('status.effectiveModel.note')}`
+
+  // The compact recent-switch line: the most recent switch (from → to +
+  // role/reason) or an honest empty/loading/error state — one line, never a
+  // list (spec §2.5 D-5 semantics unchanged; the store still caps at
+  // RECENT_SWITCH_LIMIT).
+  const latestSwitch = state.switches[0]
+  let switchesLine: string
+  if (state.switchesStatus === 'error') {
+    switchesLine = t('status.switches.error', { message: state.switchesError })
+  } else if (state.switchesStatus === 'loading') {
+    switchesLine = t('loading')
+  } else if (latestSwitch === undefined) {
+    switchesLine = t('status.switches.empty')
+  } else {
+    const reasonKey = SWITCH_REASON_KEYS[latestSwitch.reason]
+    switchesLine = t('status.switches.compact', {
+      count: String(state.switches.length),
+      from: `${latestSwitch.from.provider}/${latestSwitch.from.model}`,
+      to: `${latestSwitch.to.provider}/${latestSwitch.to.model}`,
+      role: latestSwitch.role,
+      reason: reasonKey === undefined ? latestSwitch.reason : t(reasonKey),
+    })
+  }
 
   // Catalog refresh (models/changed) re-classifies rows against the fresh
   // directory: a value that was outside when the settings seeded becomes a
@@ -408,59 +445,6 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
         // saves are attempted; failures land in the error banner above.
         <div className={css.infoBanner}>{t('unavailable')}</div>
       )}
-
-      {/* AC-7 read-only status: effective-config summary + derived "current
-       * effective model" (D-6) + the recent-switch summary from the current
-       * session's raw `fallbacks/switch` events (D-5). */}
-      <div className={css.statusBlock}>
-        <span className={css.statusTitle}>{t('status.title')}</span>
-        <p className={css.statusSummary}>{configSummary(state.config, t)}</p>
-
-        {/* R-4b: derived effective model — a display value (config + recent
-         * switches), never a live route probe; the non-probing note ⑤ is
-         * always appended (D-6 ④). */}
-        <div className={css.statusEffective}>
-          <span className={css.statusSubTitle}>{t('status.effectiveModel.label')}</span>
-          <span className={css.statusEffectiveValue}>{effectiveModelText}</span>
-          <span className={css.statusHint}>{t('status.effectiveModel.note')}</span>
-        </div>
-
-        {/* R-4a: recent-switch summary. Empty state (文案定稿 ③) replaces the
-         * old placeholder; a read failure degrades to an error note, never a
-         * crash (spec §2.4 边界). */}
-        <div className={css.statusSwitches}>
-          <span className={css.statusSubTitle}>{t('status.switches.label')}</span>
-          {state.switchesStatus === 'error' ? (
-            <p className={css.statusPlaceholder} role="alert">
-              {t('status.switches.error', { message: state.switchesError })}
-            </p>
-          ) : state.switchesStatus === 'loading' ? (
-            <p className={css.statusPlaceholder}>{t('loading')}</p>
-          ) : state.switches.length === 0 ? (
-            <p className={css.statusPlaceholder}>{t('status.switches.empty')}</p>
-          ) : (
-            <ul className={css.statusSwitchList}>
-              {state.switches.map(item => {
-                const reasonKey = SWITCH_REASON_KEYS[item.reason]
-                return (
-                  <li key={item.seq} className={css.statusSwitchItem}>
-                    <span className={css.statusSwitchRoute}>
-                      {item.from.provider}/{item.from.model} → {item.to.provider}/{item.to.model}
-                    </span>
-                    <span className={css.statusSwitchMeta}>
-                      {t('status.switches.item', {
-                        role: item.role,
-                        reason: reasonKey === undefined ? item.reason : t(reasonKey),
-                        time: formatSwitchTime(item.time),
-                      })}
-                    </span>
-                  </li>
-                )
-              })}
-            </ul>
-          )}
-        </div>
-      </div>
 
       {/* The `enabled` switch is a row-level preference (the Permission-row
        * rhythm): title + hint on the left, the native checkbox on the right
@@ -585,7 +569,7 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
         {state.catalogStatus === 'ready' && state.catalogError !== null && (
           <span className={css.hint}>{t('catalog.partial', { message: state.catalogError })}</span>
         )}
-        {state.catalogStatus === 'ready' && state.groups.length === 0 && (
+        {state.catalogStatus === 'ready' && (state.groups.length === 0 || state.configuredProviders.length === 0) && (
           <span className={css.hint}>{t('catalog.empty')}</span>
         )}
         <div className={css.list}>
@@ -604,6 +588,7 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
                     key={selectorIndex}
                     selector={selector}
                     catalog={catalogOf(state)}
+                    configuredProviders={state.configuredProviders}
                     disabled={!writable}
                     t={t}
                     onChange={patch => { updateChainSelector(index, selectorIndex, patch) }}
@@ -674,6 +659,11 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
             const providerRaw = selectionToRaw(row.provider)
             const group = catalog?.groups.find(entry => entry.id === providerRaw)
             const providerOutside = row.provider?.kind === 'outside'
+            // Same read-back treatment as the chain selector rows: a catalog
+            // provider that is not configured stays visible but unofferable.
+            const providerUnconfigured = !providerOutside && providerRaw !== ''
+              && (catalog?.providers.some(entry => entry.provider === providerRaw) ?? false)
+              && !state.configuredProviders.some(entry => entry.provider === providerRaw)
             const modelOutside = row.model?.kind === 'outside'
             return (
             <div key={index} className={css.editorCard}>
@@ -704,9 +694,12 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
                     }}
                   >
                     <option value="">{t('roles.rule.provider.any')}</option>
-                    {(catalog?.providers ?? []).map(entry => (
+                    {state.configuredProviders.map(entry => (
                       <option key={entry.provider} value={entry.provider}>{entry.displayName}</option>
                     ))}
+                    {providerUnconfigured && (
+                      <option value={providerRaw}>{`${providerRaw}${t('catalog.unconfigured.short')}`}</option>
+                    )}
                     {providerOutside && (
                       <option value={providerRaw}>{`${providerRaw}${t('catalog.outside.short')}`}</option>
                     )}
@@ -735,6 +728,7 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
                   <input
                     className={css.input}
                     value={row.role}
+                    placeholder={t('roles.rule.rolePlaceholder')}
                     onChange={event => { updateRuleRow(index, { role: event.target.value }) }}
                   />
                 </label>
@@ -785,6 +779,24 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
         <Button variant="outline" disabled={!writable || saving} onClick={() => { setConfirmingReset(true) }}>
           {t('reset')}
         </Button>
+      </div>
+
+      {/* AC-7 read-only status, compact and pinned at the section bottom
+       * (after the save/reset actions): the derived "current effective model"
+       * (D-6 — a display value from config + recent switches, never a live
+       * route probe; note ⑤ rides inline) and the most recent switch (D-5 —
+       * read through the store's `sessions.history` face). The verbose
+       * config-summary dump is gone; errors/empty still render, compact. */}
+      <div className={css.statusBlock}>
+        <span className={css.statusTitle}>{t('status.title')}</span>
+        <p className={css.statusLine}>
+          <span className={css.statusLineLabel}>{t('status.effectiveModel.label')}</span>
+          {effectiveModelLine}
+        </p>
+        <p className={css.statusLine} role={state.switchesStatus === 'error' ? 'alert' : undefined}>
+          <span className={css.statusLineLabel}>{t('status.switches.label')}</span>
+          {switchesLine}
+        </p>
       </div>
 
       {/* Reset-to-defaults confirmation: the Models page's delete-confirm

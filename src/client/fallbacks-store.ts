@@ -92,6 +92,13 @@ export interface FallbacksSettingsState {
   catalogError: string | null
   /** Configurable-provider directory (`llm.providers`). */
   providers: ConfigurableProviderView[]
+  /**
+   * The provider dropdown's offer set: catalog providers whose settings
+   * profile resolves, with the Models page's `configured` join semantics
+   * (spec §2.5 — see {@link configuredProvidersOf}). Unconfigured directory
+   * providers never appear as options.
+   */
+  configuredProviders: ConfigurableProviderView[]
   /** Model catalog groups (`llm.models`). */
   groups: ModelProviderGroup[]
   /** Bumped on every accepted catalog read; drives row re-classification. */
@@ -110,6 +117,46 @@ function messageOf(error: unknown): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/**
+ * Read a nested value by path — the `@deepseek-ai/dsh-client-schema-form`
+ * `getPath` semantics, copied locally so the provider-configured join needs no
+ * new dependency (array indexes as numeric keys, `undefined` along a missing
+ * branch).
+ */
+function getPath(value: unknown, path: readonly string[]): unknown {
+  let current = value
+  for (const key of path) {
+    if (Array.isArray(current)) {
+      current = current[Number(key)]
+      continue
+    }
+    if (typeof current !== 'object' || current === null) return undefined
+    current = (current as Record<string, unknown>)[key]
+  }
+  return current
+}
+
+/**
+ * The provider dropdown's offer set (spec §2.5 D-4): catalog providers whose
+ * settings profile resolves in the describe namespaces — the Models page's
+ * `configured` predicate (`ui-models` store.ts): a provider is configured
+ * when its settings namespace exists AND either it addresses the whole
+ * section (`settingsPath` empty) or its profile path resolves in the resolved
+ * value. Directory-only (unconfigured) providers never become options; the
+ * section still renders existing values for them (read-back + annotation) so
+ * nothing is lost on save.
+ */
+export function configuredProvidersOf(
+  providers: readonly ConfigurableProviderView[],
+  namespaces: ReadonlyMap<string, SettingsNamespaceView>,
+): ConfigurableProviderView[] {
+  return providers.filter((entry) => {
+    const namespace = namespaces.get(entry.settingsNs)
+    return namespace !== undefined
+      && (entry.settingsPath.length === 0 || getPath(namespace.value, entry.settingsPath) !== undefined)
+  })
 }
 
 /**
@@ -410,6 +457,7 @@ export class FallbacksSettingsController {
     catalogStatus: 'idle',
     catalogError: null,
     providers: [],
+    configuredProviders: [],
     groups: [],
     catalogEpoch: 0,
     switchesStatus: 'idle',
@@ -421,13 +469,18 @@ export class FallbacksSettingsController {
   private catalogGeneration = 0
   private switchesGeneration = 0
   private view: SettingsNamespaceView | undefined
+  /** Every settings namespace from the last describe, keyed by ns — the configured-provider join's other input. */
+  private namespaces: Map<string, SettingsNamespaceView> = new Map()
   private currentSession: SessionId | undefined
 
   /** @param api - Settings / Llm / Sessions wire faces (the status block reads session history). */
   constructor(private readonly api: Pick<IApiClient, 'settings' | 'llm' | 'sessions'>) {}
 
   /**
-   * Refresh the `fallbacks` descriptor. Latest request wins.
+   * Refresh the `fallbacks` descriptor. Latest request wins. The describe
+   * response also carries every registered namespace, retained as the
+   * configured-provider join's other input (re-derived into
+   * `state.configuredProviders` whenever either side lands).
    * @returns nothing; {@link store} carries success or failure.
    */
   async load(): Promise<void> {
@@ -441,6 +494,7 @@ export class FallbacksSettingsController {
       const response = await this.api.settings.describe({})
       if (generation !== this.generation) return
       if (!response.result.ok) throw response.result.error
+      this.namespaces = new Map(response.result.value.namespaces.map(entry => [entry.ns, entry]))
       const view = response.result.value.namespaces.find(entry => entry.ns === FALLBACKS_SETTINGS_NS)
       if (view === undefined) {
         // Namespace not registered (readme-settings spec §1.4-3): keep the
@@ -456,6 +510,7 @@ export class FallbacksSettingsController {
           state.config = defaultFallbacksConfig
           state.revision = 0
           state.error = null
+          state.configuredProviders = configuredProvidersOf(state.providers, this.namespaces)
         })
         return
       }
@@ -498,6 +553,7 @@ export class FallbacksSettingsController {
           ? failures.map(failure => `${failure.name}: ${failure.message}`).join('; ')
           : null
         state.providers = providers
+        state.configuredProviders = configuredProvidersOf(providers, this.namespaces)
         state.groups = groups
         state.catalogEpoch += 1
       })
@@ -647,6 +703,7 @@ export class FallbacksSettingsController {
     this.catalogGeneration += 1
     this.switchesGeneration += 1
     this.view = undefined
+    this.namespaces = new Map()
   }
 
   private accept(view: SettingsNamespaceView, writable: boolean): void {
@@ -659,6 +716,7 @@ export class FallbacksSettingsController {
       state.config = config
       state.revision = view.revision
       state.conflict = null
+      state.configuredProviders = configuredProvidersOf(state.providers, this.namespaces)
     })
   }
 
