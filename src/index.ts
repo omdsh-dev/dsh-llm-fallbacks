@@ -237,13 +237,13 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   // Guide §7 (plan llm-fallbacks-settings-gateway): the setSource hook is
   // wired into the FallbacksSettingsBridge the gateway consumes — the SAME
   // live source the runtime reads (schema defaults → plugin-row base →
-  // settings user layer). The existing onChange re-derives the chain map.
-  // No `exposeToWebClients` here: upstream dsh has no such
-  // registration-level opt-in (the option only existed via the local
-  // dsh-settings patch, removed in Task 3) — web clients reach the config
-  // through the gateway channel instead. The gateway reads `source()` live
-  // per call, so the bridge carries no change fan-out (dead machinery
-  // removed in the QC fix wave — nothing ever subscribed).
+  // The existing onChange re-derives the chain map.
+  // No settings-exposure opt-in here: upstream dsh has no such
+  // registration-level option (it existed only via a local patch, now
+  // removed) — web clients reach the config through the gateway channel
+  // instead. The gateway reads `source()` live per call, so the bridge
+  // carries no change fan-out (dead machinery removed in the QC fix wave —
+  // nothing ever subscribed).
   installSettingsSection(ctx, FALLBACKS_SETTINGS_NAMESPACE, Config, entry, {
     setSource: (current) => {
       source = current

@@ -38,7 +38,7 @@ export interface ModelSelectionRef {
 /**
  * Install the model-selection double: an `agent/request` listener that applies
  * `selection.assembled` on top of the resolved config whenever one exists —
- * unconditionally, exactly like the unpatched host listener. Under an active
+ * unconditionally, exactly like the host-native listener. Under an active
  * selection this re-apply clobbers an inner plugin's switch override (the
  * documented degradation); when the plugin's listener is outer, the plugin
  * applies its switch AFTER this listener's re-apply, so the switch wins.

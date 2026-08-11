@@ -3,8 +3,8 @@
  *
  * Covers the spec §3 / ADR-3 rules-only precedence — first matching
  * `roles.rules` entry (order matters) → `roles.default` — including
- * origin / provider / model pattern matching. `agent.options.role` is
- * intentionally absent from `AgentLike`: that field existed only via the
+ * origin / provider / model pattern matching. An explicit-role field is
+ * intentionally absent from `AgentLike`: it existed only via the
  * dsh-agent patch (removed in Plan B), so it is not part of resolution.
  */
 

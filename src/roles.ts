@@ -1,9 +1,9 @@
 /**
  * Role resolution for fallback chains (spec §3, ADR-3; plan Task 2/3).
  *
- * Rules-only (Plan B/T1): there is no explicit-role branch — `agent.options.role`
- * existed only via the dsh-agent patch, which is being removed, so resolution
- * never reads it. Precedence (first hit wins):
+ * Rules-only (Plan B/T1): there is no explicit-role branch — an explicit
+ * role existed only via the dsh-agent patch (removed), so resolution never
+ * reads one. Precedence (first hit wins):
  * 1. the first `rules` entry whose specified origin/provider/model patterns
  *    all match the agent;
  * 2. `defaultRole` (`roles.default`, itself `'default'`).
@@ -47,8 +47,8 @@ export interface AgentLike {
 
 /**
  * Resolve the fallback-chain role for an agent: first matching rule (in
- * listed order) → `defaultRole`. Rules-only — an `options.role` (dsh patch
- * field) is never consulted.
+ * listed order) → `defaultRole`. Rules-only — an explicit-role field (dsh
+ * patch, removed) is never consulted.
  */
 export function resolveRole(agent: AgentLike, rules: RoleRule[], defaultRole: string): string {
   const origin = agent.session?.header?.origin ?? 'root'

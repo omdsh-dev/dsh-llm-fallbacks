@@ -21,8 +21,7 @@
   "files": [
     "dist",
     "bundle",
-    "scripts",
-    "patches"
+    "scripts"
   ],
   "dsh": {
     "bundle": {
@@ -44,8 +43,7 @@
     "test": "vitest run",
     "dsh:link": "node scripts/setup-dsh-links.mjs",
     "dsh:link:check": "node scripts/setup-dsh-links.mjs --check",
-    "prepare": "node scripts/setup-dsh-links.mjs && pnpm run build && bash scripts/autopatch-install.sh",
-    "postinstall": "bash scripts/autopatch-install.sh"
+    "prepare": "node scripts/setup-dsh-links.mjs && pnpm run build"
   },
   "engines": {
     "node": ">=22"

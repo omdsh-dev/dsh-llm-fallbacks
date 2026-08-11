@@ -1,13 +1,13 @@
 /**
  * Host-native baseline matrix (plan llm-fallbacks-runtime-depatch T2).
  *
- * This file was `tests/unpatched-host.spec.ts` (W1): it pinned the degrade
+ * This file started as the W1 no-patch-host suite: it pinned the degrade
  * path for a host running WITHOUT the local dsh-agent patch (the
  * fallback-routing marker). T2 removes the marker runtime dependency
- * entirely — there is no "unpatched host" anymore, the patch-free plugin IS
- * the deliverable — so the suite becomes the standard host-native baseline:
- * the real `@deepseek-ai/dsh-agent` module is the only truth and no mock
- * exists anywhere in the test tree.
+ * entirely — the patch-free plugin IS the deliverable — so the suite
+ * becomes the standard host-native baseline: the real
+ * `@deepseek-ai/dsh-agent` module is the only truth and no mock exists
+ * anywhere in the test tree.
  *
  * The cases themselves were always the plugin's core contract and remain
  * valid unchanged:
