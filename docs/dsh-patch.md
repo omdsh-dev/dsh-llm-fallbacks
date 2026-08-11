@@ -94,7 +94,7 @@ dsh 升级会重置本体改动：`$DSH_HOME/source/current` 指向新的 stagin
 - **已验证**：两个 patch 对真实 dsh 源码树 `git apply --check` 通过（只读校验，树保持 untouched）；`scripts/apply-dsh-patch.sh --check` 两 patch 状态判定正确（零写入）；role 组类型正确性经真实 `tsc` 编译验证（cast 修正后 red→green，见 autopatch 计划任务 6 修复轮）；两个 patch 在沙箱拷贝的 dsh 树镜像上完整跑通 apply（顺序 agent → tool-subagent）→ `verify-dsh-patch.sh`（role 组 src 探针全 PASS）→ revert（逆序 tool-subagent → agent）→ `verify-dsh-patch.sh --absent` 全流程与幂等性。
 - **未验证**：在真实安装上执行 apply → build（QA gate 阶段按 [docs/verification.md](docs/verification.md) §6 全量执行并记录证据）。
 
-> 历史说明：早期迭代曾交付 `dsh-settings` + `dsh-host-apiproxy` 两个**设置暴露** patch（注册表 opt-in 暴露注册选项），使 `fallbacks` 命名空间进入宿主 web 设置 RPC 暴露集合。gateway 通道（`/api/fallbacks/get|set|reset`）上线后该机制不再需要，两个暴露 patch 已随本 plan 移除；`src/dsh-patch-ambient.d.ts` 中的设置暴露声明为预期死代码（TS augmentation 叠加，无害），留待 Plan B 整文件删除。
+> 历史说明：早期迭代曾交付 `dsh-settings` + `dsh-host-apiproxy` 两个**设置暴露** patch（注册表 opt-in 暴露注册选项），使 `fallbacks` 命名空间进入宿主 web 设置 RPC 暴露集合。gateway 通道（`/api/fallbacks/get|set|reset`）上线后该机制不再需要，两个暴露 patch 已随本 plan 移除；`src/dsh-patch-ambient.d.ts` 中的设置暴露声明为预期死代码（TS augmentation 叠加，无害），留待 Plan B 整文件删除。**已应用过这两个暴露 patch 的存量安装无需处理**：patch 在宿主树中保持已应用但完全惰性（无任何 `exposed` 注册残留、`exposeToWebClients` 不再传入），新脚本（`patches/` 仅剩两 patch）无法将其回滚，下次 dsh 升级重置宿主树时自然清除。
 
 **role 组验证步骤（真实宿主，QA gate 阶段执行）**：
 

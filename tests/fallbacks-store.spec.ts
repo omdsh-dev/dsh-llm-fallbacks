@@ -533,8 +533,13 @@ describe('FallbacksSettingsController', () => {
     const state = controller.store.getSnapshot()
     expect(state.status).toBe('error')
     expect(state.error).toBe('read refused')
-    // The gateway get is never attempted after the describe failure.
-    expect(call).not.toHaveBeenCalled()
+    // The gateway get ran in parallel (Promise.all) — its result is
+    // DISCARDED: the describe failure throws before accept, so the get's
+    // config never lands in the store (status stays 'error', not 'ready').
+    expect(call).toHaveBeenCalledTimes(1)
+    expect(call).toHaveBeenCalledWith('/api', 'fallbacks/get', { args: {} })
+    expect(state.present).toBe(false)
+    expect(state.config).toEqual(defaultFallbacksConfig)
   })
 
   it('never looks for the fallbacks namespace in describe (it is off the wire)', async () => {
@@ -695,7 +700,10 @@ describe('FallbacksSettingsController', () => {
     expect(state.status).not.toBe('ready')
     expect(state.present).toBe(false)
     expect(state.config).toEqual(defaultFallbacksConfig)
-    expect(call).not.toHaveBeenCalled()
+    // The parallel load issued the gateway get up front (Promise.all) — the
+    // generation guard discarded its result together with the describe's.
+    expect(call).toHaveBeenCalledTimes(1)
+    expect(call).toHaveBeenCalledWith('/api', 'fallbacks/get', { args: {} })
   })
 
   it('loads the provider directory and model groups into the catalog snapshot (D-4)', async () => {

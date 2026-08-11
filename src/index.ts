@@ -243,18 +243,16 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   // request never touches the event log when no chains are configured (AC-8).
   let hasChains = Object.keys(chains).length > 0
 
-  // Guide §7 (plan llm-fallbacks-settings-gateway): the setSource/onChange
-  // hooks are wired into the FallbacksSettingsBridge the gateway consumes —
-  // the SAME live source the runtime reads (schema defaults → plugin-row base
-  // → settings user layer). The existing onChange re-derives the chain map;
-  // it also fans out to bridge-registered listeners. No `exposeToWebClients`
-  // here: upstream dsh has no such registration-level opt-in (the option only
-  // existed via the local dsh-settings patch, removed in Task 3) — web
-  // clients reach the config through the gateway channel instead.
-  const bridgeListeners = new Set<() => void>()
-  const notifyBridge = (): void => {
-    for (const listener of [...bridgeListeners]) listener()
-  }
+  // Guide §7 (plan llm-fallbacks-settings-gateway): the setSource hook is
+  // wired into the FallbacksSettingsBridge the gateway consumes — the SAME
+  // live source the runtime reads (schema defaults → plugin-row base →
+  // settings user layer). The existing onChange re-derives the chain map.
+  // No `exposeToWebClients` here: upstream dsh has no such
+  // registration-level opt-in (the option only existed via the local
+  // dsh-settings patch, removed in Task 3) — web clients reach the config
+  // through the gateway channel instead. The gateway reads `source()` live
+  // per call, so the bridge carries no change fan-out (dead machinery
+  // removed in the QC fix wave — nothing ever subscribed).
   installSettingsSection(ctx, FALLBACKS_SETTINGS_NAMESPACE, Config, entry, {
     setSource: (current) => {
       source = current
@@ -262,14 +260,10 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     onChange: () => {
       chains = normalizeChains(source().chains, logger)
       hasChains = Object.keys(chains).length > 0
-      notifyBridge()
     },
   })
   const bridge: FallbacksSettingsBridge = {
     source: (): FallbacksConfig => source(),
-    onChange: (callback: () => void): void => {
-      bridgeListeners.add(callback)
-    },
   }
   // T1 (plan llm-fallbacks-settings-gateway): the host-side `fallbacks` config
   // gateway — the `/api/fallbacks/get` + `/api/fallbacks/set` +

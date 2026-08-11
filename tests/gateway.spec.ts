@@ -13,7 +13,9 @@
  *    it), `set` returns the new composed value, and `reset` clears the user
  *    layer so the composition defaults reapply.
  * ③ `set` with an unknown key is rejected by the `Config` schema
- *    (unknown-key rejection unchanged) and nothing is persisted.
+ *    (unknown-key rejection unchanged) and nothing is persisted — including
+ *    prototype-chain names (`__proto__`, `constructor`) that used to bypass
+ *    the `in` guard (F-001, own-key membership) and never wipe the user layer.
  * ④ Containment (guide §10): a malformed stored user layer that the
  *    non-strict settings schema let through (an unknown key) never fails
  *    `get` — only schema-declared keys cross the wire.
@@ -66,21 +68,17 @@ function entryConfig(overrides: Partial<FallbacksConfig> = {}): FallbacksConfig 
  * under test consumes this live source.
  */
 function installFallbacksBridge(ctx: Context, entry: FallbacksConfig): FallbacksSettingsBridge {
-  const listeners = new Set<() => void>()
   let source = (): FallbacksConfig => entry
   installSettingsSection(ctx, FALLBACKS_SETTINGS_NAMESPACE, Config, entry, {
     setSource: (current) => {
       source = current
     },
     onChange: () => {
-      for (const listener of [...listeners]) listener()
+      // no bridge fan-out — the gateway reads source() live per call
     },
   })
   return {
     source: (): FallbacksConfig => source(),
-    onChange: (callback: () => void): void => {
-      listeners.add(callback)
-    },
   }
 }
 
@@ -303,6 +301,59 @@ describe('set validation (Config schema, unknown-key rejection unchanged)', () =
     // Nothing was persisted: the user layer stays absent.
     const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)!
     expect(descriptor.user).toBeUndefined()
+  })
+
+  it('rejects an own __proto__ key (prototype-chain bypass of the unknown-key gate — F-001)', async () => {
+    // An object LITERAL cannot carry an own `__proto__` key (it sets the
+    // prototype instead), but JSON.parse / Object.fromEntries can — the
+    // third-party RPC caller shape. `'__proto__' in CONFIG_KEYS` is true via
+    // Object.prototype, so the old `in` guard let it through; the user layer
+    // write then corrupted the settings merge (config wipe). Own-key
+    // membership must reject it.
+    const ctx = track(new Context())
+    await ctx.plugin(MemorySettings)
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()))
+    await waitRegistered(ctx)
+    await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
+
+    const poisoned = Object.fromEntries([['__proto__', { enabled: true }]])
+    await expect(gateway.set(poisoned as never)).rejects.toThrow(/unknown config key "__proto__"/)
+    // Nothing was persisted: the user layer stays absent (no wipe, no junk).
+    const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)!
+    expect(descriptor.user).toBeUndefined()
+  })
+
+  it('rejects a constructor key (prototype-chain name, not a config key)', async () => {
+    const ctx = track(new Context())
+    await ctx.plugin(MemorySettings)
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()))
+    await waitRegistered(ctx)
+    await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
+
+    await expect(gateway.set({ constructor: { enabled: true } } as never)).rejects.toThrow(/unknown config key "constructor"/)
+    const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)!
+    expect(descriptor.user).toBeUndefined()
+  })
+
+  it('the user layer survives an attempted __proto__ wipe (F-001)', async () => {
+    const ctx = track(new Context())
+    await ctx.plugin(MemorySettings)
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()))
+    await waitRegistered(ctx)
+    await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
+
+    // A real write first: the user layer holds a legitimate config.
+    await gateway.set({ enabled: true, cooldownMs: 120_000 })
+
+    // The poisoned patch is rejected — and the pre-existing user layer is
+    // untouched (the old `in` guard would have merged it and let the
+    // settings layer wipe the section).
+    const poisoned = Object.fromEntries([['__proto__', { enabled: true }]])
+    await expect(gateway.set(poisoned as never)).rejects.toThrow(/unknown config key "__proto__"/)
+
+    const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)!
+    expect(descriptor.user).toEqual({ enabled: true, cooldownMs: 120_000 })
+    expect(gateway.get().config).toEqual({ ...entryConfig(), enabled: true, cooldownMs: 120_000 })
   })
 
   it('a patch violating the schema types is rejected', async () => {

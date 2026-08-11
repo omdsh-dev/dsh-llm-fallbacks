@@ -58,13 +58,13 @@ export const FALLBACKS_SETTINGS_NAMESPACE = settingsNamespace('fallbacks')
 /**
  * The live configuration source for the gateway (guide §7 — the same bridge
  * shape the runtime reads through). `source()` returns the live composed
- * config (schema defaults → plugin-row base → settings user layer); `onChange`
- * registers a callback that fires whenever the composed value changes
- * (attach, committed change, or detach back to the entry).
+ * config (schema defaults → plugin-row base → settings user layer). The
+ * gateway reads it LIVE on every call, so no change notification is needed
+ * (the bridge stays minimal: source + the settings write channel; the dead
+ * `onChange` fan-out was removed in the QC fix wave — nothing subscribed).
  */
 export interface FallbacksSettingsBridge {
   source(): FallbacksConfig
-  onChange(callback: () => void): void
 }
 
 /** Patch shape accepted by `fallbacks.set` — any subset of the config keys. */
@@ -132,7 +132,7 @@ export class FallbacksConfigGateway extends GatewayService {
 
   /**
    * Validate a config patch and write it to the settings USER layer (live —
-   * the runtime re-applies through the bridge `onChange`; no restart needed).
+   * the runtime re-reads the same bridge source; no restart needed).
    * @param patch - any subset of the config keys; unknown keys are rejected
    *   by the `Config` schema before anything is written.
    * @returns the NEW composed config after the write.
@@ -210,7 +210,12 @@ function validateConfigPatch(patch: unknown): void {
     throw new TypeError('dsh-llm-fallbacks: configuration patch must be a plain object')
   }
   for (const key of Object.keys(patch)) {
-    if (!(key in CONFIG_KEYS)) {
+    // Own-key membership, never `in` — `in` walks the prototype chain, so a
+    // patch with an own `__proto__`/`constructor`/`toString` key would pass
+    // the guard (F-001, qc wave): an own `__proto__` key in particular can
+    // corrupt the settings merge and wipe the user layer. Same strictness as
+    // advisor's `CONFIG_KEYS.has(key)` on a Set.
+    if (!Object.hasOwn(CONFIG_KEYS, key)) {
       throw new Error(`dsh-llm-fallbacks: unknown config key "${key}"`)
     }
   }

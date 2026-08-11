@@ -475,12 +475,13 @@ export class FallbacksSettingsController {
    * still runs — it supplies the top-level `writable` flag (host read-only
    * mode) and the namespace directory (the configured-provider join's other
    * input) — but the fallbacks config itself rides the gateway channel:
-   * `rpc.call('/api', 'fallbacks/get', { args: {} })`. The `fallbacks`
-   * namespace is NOT expected in describe anymore (it is off the apiproxy
-   * boundary post-patch); a describe failure remains a hard `error` (the
-   * form cannot render provider/model options without the directory), while
-   * a get failure is NOT a page error — `present` goes false and the
-   * section keeps the usable skeleton (KD-G5).
+   * `rpc.call('/api', 'fallbacks/get', { args: {} })`. The two reads are
+   * independent and run in PARALLEL (Promise.all — one round trip per
+   * refresh, not two). The `fallbacks` namespace is NOT expected in describe
+   * anymore (it is off the apiproxy boundary post-patch); a describe failure
+   * remains a hard `error` (the form cannot render provider/model options
+   * without the directory), while a get failure is NOT a page error —
+   * `present` goes false and the section keeps the usable skeleton (KD-G5).
    * @returns nothing; {@link store} carries success or failure.
    */
   async load(): Promise<void> {
@@ -490,28 +491,31 @@ export class FallbacksSettingsController {
       state.error = null
     })
     try {
-      const response = await this.api.settings.describe({})
+      // describe (writable + namespace directory) and the gateway get are
+      // independent reads with distinct failure semantics — run them in
+      // parallel so a refresh costs one round trip, not two (halves the
+      // latency of every `settings/changed` push after a save).
+      const [describeResult, getResult] = await Promise.all([
+        this.api.settings.describe({}),
+        // A get failure — transport down, gateway not ready, no settings
+        // service on the host — resolves to present=false (the
+        // channel-unreachable notice), never a hard load error (KD-G5). The
+        // catch keeps the get's failure OUT of Promise.all's rejection so a
+        // describe success + get failure still reaches accept(undefined).
+        this.rpc.call('/api', 'fallbacks/get', { args: {} }).catch(() => undefined),
+      ])
       if (generation !== this.generation) return
-      if (!response.result.ok) throw response.result.error
-      this.namespaces = new Map(response.result.value.namespaces.map(entry => [entry.ns, entry]))
-      const writable = response.result.value.writable
-      // The config rides the gateway channel, NOT describe (the namespace is
-      // off the apiproxy whitelist). A get failure — transport down, gateway
-      // not ready, no settings service on the host — resolves to
-      // present=false (the channel-unreachable notice), never a hard load
-      // error (KD-G5). Draft seed invariant (I-1): a failed get must not
-      // clobber the accepted config with defaults — `accept` only replaces
+      if (!describeResult.result.ok) throw describeResult.result.error
+      this.namespaces = new Map(describeResult.result.value.namespaces.map(entry => [entry.ns, entry]))
+      const writable = describeResult.result.value.writable
+      // Draft seed invariant (I-1): a failed get must not clobber the
+      // accepted config with defaults — `accept` only replaces
       // `state.config` from a REAL resolved value.
       let config: unknown
-      try {
-        const getResult = await this.rpc.call('/api', 'fallbacks/get', { args: {} })
-        if (getResult.ok && getResult.value !== null && typeof getResult.value === 'object' && 'config' in getResult.value) {
-          config = getResult.value.config
-        }
-      } catch {
-        // Unreachable channel → the same notice path (KD-G5 fallback).
+      if (getResult !== undefined && getResult.ok && getResult.value !== null
+        && typeof getResult.value === 'object' && 'config' in getResult.value) {
+        config = getResult.value.config
       }
-      if (generation !== this.generation) return
       this.accept(config, writable)
     } catch (error) {
       if (generation !== this.generation) return
