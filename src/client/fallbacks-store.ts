@@ -3,30 +3,31 @@
  * props are empty; data rides this store, per the `settings.section`
  * contract).
  *
- * Read path: `settings.describe({})` → the `fallbacks` namespace descriptor.
- * The descriptor is the **redactSecrets** face: `value` is the redacted
- * resolved layer (schema defaults → composition base → user section) and
- * secret slots only report presence. `fallbacks` declares no secret-role
- * fields today, but the store reads through the same seam.
+ * Read path: the fallbacks config rides the plugin's own gateway channel —
+ * `connection.rpc.call('/api', 'fallbacks/get', { args: {} })` — NOT the
+ * apiproxy wire: after the settings-exposure patches are gone the
+ * `fallbacks` namespace is absent from `settings.describe` on every host
+ * (like `advisor` is). `settings.describe({})` is still called, but only
+ * for the top-level `writable` flag (host read-only mode) and the namespace
+ * directory (the configured-provider join reads model-provider namespaces).
+ * A `get` that does not resolve (transport down / gateway not ready / no
+ * settings service on the host) is NOT a page error — `state.present` goes
+ * false and the section keeps the usable defaults skeleton (KD-G5).
  *
- * Write path: `settings.update({ ns, patch, expectedRevision })` merges the
- * draft into the user layer; `settings.replace({ ns, section: {},
- * expectedRevision })` resets to composition defaults. A write whose
- * `expectedRevision` is stale is refused by the host with the wire error
- * code `settings-conflict` (details carry expected/actual); the store
- * surfaces it as `state.conflict` so the form can prompt a reload instead of
- * silently overwriting a concurrent change (the `SettingsConflictError`
- * presentation contract).
- *
- * Namespace-missing writes (readme-settings spec §1.4-2): when no view has
- * ever been accepted the store still attempts `update`/`replace` with
- * `expectedRevision` omitted (no precondition) — acceptance is the host's
- * call; a refusal lands in `error` with the banner surfacing it honestly.
+ * Write path: `save(next)` → `rpc.call('/api', 'fallbacks/set', { args: {
+ * patch: next } })` (the full edited config is the patch — a merge with all
+ * keys present is a full overwrite); `resetToDefaults()` →
+ * `rpc.call('/api', 'fallbacks/reset', { args: {} })` (the host clears the
+ * user layer via `settings.replace(ns, {})` — the removal path a merge
+ * cannot express). The gateway channel has NO revision guard: any
+ * `set`/`reset` failure (business rejection or transport) surfaces its
+ * message in `state.error` for the section's error banner (KD-G3 — the old
+ * `settings-conflict` branch is gone).
  */
 
 import type {
-  ConfigurableProviderView, HistoryEntry, IApiClient, ModelProviderGroup, SessionId,
-  SettingsNamespaceView,
+  ClientConnectionRpc, ConfigurableProviderView, HistoryEntry, IApiClient,
+  ModelProviderGroup, SessionId, SettingsNamespaceView,
 } from '@deepseek-ai/dsh-client-connection/client'
 import {
   createSnapshotStore, type SnapshotStore,
@@ -37,11 +38,8 @@ import {
 import type { FallbacksSwitchEventData } from '../events.ts'
 import { parseSelector } from '../selectors.ts'
 
-/** The plugin's settings namespace on the host wire. */
+/** The plugin's settings namespace on the host wire (settings/changed filter). */
 export const FALLBACKS_SETTINGS_NS = 'fallbacks'
-
-/** Stable wire code of a refused stale-revision write (rpc.d.ts mirror). */
-export const SETTINGS_CONFLICT_CODE = 'settings-conflict'
 
 /** Single-page history read for the status block (spec §2.5 D-5: `HISTORY_PAGE_MESSAGES`-sized). */
 export const SWITCHES_HISTORY_PAGE = 50
@@ -76,16 +74,18 @@ export type EffectiveModelView =
 
 /** Fallbacks settings-row snapshot. */
 export interface FallbacksSettingsState {
-  status: 'idle' | 'loading' | 'ready' | 'saving' | 'unavailable' | 'error'
+  status: 'idle' | 'loading' | 'ready' | 'saving' | 'error'
   error: string | null
-  /** Whether the provider allows writes at all. */
+  /** Whether the provider allows writes at all (describe top-level flag). */
   writable: boolean
-  /** The resolved configuration from the descriptor. */
+  /** The resolved configuration (last accepted gateway response, or the defaults skeleton). */
   config: FallbacksConfig
-  /** The descriptor revision the loaded config was read at. */
-  revision: number
-  /** A refused write's expected/actual revisions; null when none pending. */
-  conflict: { expected: number; actual: number } | null
+  /**
+   * Whether the `fallbacks/get` gateway channel resolved on the last load.
+   * `false` = channel unreachable (transport down / gateway not ready / no
+   * settings service) → the section keeps the usable skeleton (KD-G5).
+   */
+  present: boolean
   /** Provider/model directory snapshot (spec §2.5 D-4). */
   catalogStatus: 'idle' | 'loading' | 'ready' | 'error'
   /** Catalog read diagnostic: whole-load failure or per-provider lookups. */
@@ -232,20 +232,6 @@ export function parseFallbacksConfig(value: unknown): FallbacksConfig {
     maxSwitchesPerStep: (maxSwitchesPerStep as number | undefined) ?? defaultFallbacksConfig.maxSwitchesPerStep,
     alwaysModeRetryCap: (alwaysModeRetryCap as number | undefined) ?? defaultFallbacksConfig.alwaysModeRetryCap,
   }
-}
-
-/** Whether a wire error is the stale-revision refusal (`settings-conflict`). */
-export function isSettingsConflict(error: { code?: string } | null | undefined): boolean {
-  return error?.code === SETTINGS_CONFLICT_CODE
-}
-
-/** Extract the conflict revisions from a `settings-conflict` wire error. */
-export function conflictDetailsOf(error: { code?: string; details?: unknown } | null | undefined):
-  { expected: number; actual: number } | null {
-  if (!isSettingsConflict(error)) return null
-  const details = error?.details
-  if (!isRecord(details) || typeof details.expected !== 'number' || typeof details.actual !== 'number') return null
-  return { expected: details.expected, actual: details.actual }
 }
 
 /**
@@ -454,8 +440,7 @@ export class FallbacksSettingsController {
     error: null,
     writable: false,
     config: defaultFallbacksConfig,
-    revision: 0,
-    conflict: null,
+    present: false,
     catalogStatus: 'idle',
     catalogError: null,
     providers: [],
@@ -470,19 +455,32 @@ export class FallbacksSettingsController {
   private generation = 0
   private catalogGeneration = 0
   private switchesGeneration = 0
-  private view: SettingsNamespaceView | undefined
   /** Every settings namespace from the last describe, keyed by ns — the configured-provider join's other input. */
   private namespaces: Map<string, SettingsNamespaceView> = new Map()
   private currentSession: SessionId | undefined
 
-  /** @param api - Settings / Llm / Sessions wire faces (the status block reads session history). */
-  constructor(private readonly api: Pick<IApiClient, 'settings' | 'llm' | 'sessions'>) {}
+  /**
+   * @param api - Settings / Llm / Sessions wire faces (describe `writable` +
+   *   namespace directory, provider/model catalog, session history).
+   * @param rpc - the connection's generic RPC caller for the host gateway
+   *   channel (`/api`), injected from the connection handle.
+   */
+  constructor(
+    private readonly api: Pick<IApiClient, 'settings' | 'llm' | 'sessions'>,
+    private readonly rpc: ClientConnectionRpc,
+  ) {}
 
   /**
-   * Refresh the `fallbacks` descriptor. Latest request wins. The describe
-   * response also carries every registered namespace, retained as the
-   * configured-provider join's other input (re-derived into
-   * `state.configuredProviders` whenever either side lands).
+   * Refresh the page snapshot. Latest request wins. `settings.describe`
+   * still runs — it supplies the top-level `writable` flag (host read-only
+   * mode) and the namespace directory (the configured-provider join's other
+   * input) — but the fallbacks config itself rides the gateway channel:
+   * `rpc.call('/api', 'fallbacks/get', { args: {} })`. The `fallbacks`
+   * namespace is NOT expected in describe anymore (it is off the apiproxy
+   * boundary post-patch); a describe failure remains a hard `error` (the
+   * form cannot render provider/model options without the directory), while
+   * a get failure is NOT a page error — `present` goes false and the
+   * section keeps the usable skeleton (KD-G5).
    * @returns nothing; {@link store} carries success or failure.
    */
   async load(): Promise<void> {
@@ -490,33 +488,31 @@ export class FallbacksSettingsController {
     this.store.update((state) => {
       state.status = 'loading'
       state.error = null
-      state.conflict = null
     })
     try {
       const response = await this.api.settings.describe({})
       if (generation !== this.generation) return
       if (!response.result.ok) throw response.result.error
       this.namespaces = new Map(response.result.value.namespaces.map(entry => [entry.ns, entry]))
-      const view = response.result.value.namespaces.find(entry => entry.ns === FALLBACKS_SETTINGS_NS)
-      if (view === undefined) {
-        // Namespace not registered (readme-settings spec §1.4-3): keep the
-        // 'unavailable' status — there is no server truth (no view/revision)
-        // — but seed the spec defaults and follow the describe response's
-        // writable flag instead of forcing `false`, so the page stays a
-        // usable skeleton and a first config can be attempted.
-        this.view = undefined
-        const writable = response.result.value.writable
-        this.store.update((state) => {
-          state.status = 'unavailable'
-          state.writable = writable
-          state.config = defaultFallbacksConfig
-          state.revision = 0
-          state.error = null
-          state.configuredProviders = configuredProvidersOf(state.providers, this.namespaces)
-        })
-        return
+      const writable = response.result.value.writable
+      // The config rides the gateway channel, NOT describe (the namespace is
+      // off the apiproxy whitelist). A get failure — transport down, gateway
+      // not ready, no settings service on the host — resolves to
+      // present=false (the channel-unreachable notice), never a hard load
+      // error (KD-G5). Draft seed invariant (I-1): a failed get must not
+      // clobber the accepted config with defaults — `accept` only replaces
+      // `state.config` from a REAL resolved value.
+      let config: unknown
+      try {
+        const getResult = await this.rpc.call('/api', 'fallbacks/get', { args: {} })
+        if (getResult.ok && getResult.value !== null && typeof getResult.value === 'object' && 'config' in getResult.value) {
+          config = getResult.value.config
+        }
+      } catch {
+        // Unreachable channel → the same notice path (KD-G5 fallback).
       }
-      this.accept(view, response.result.value.writable)
+      if (generation !== this.generation) return
+      this.accept(config, writable)
     } catch (error) {
       if (generation !== this.generation) return
       this.fail(error)
@@ -635,33 +631,30 @@ export class FallbacksSettingsController {
   }
 
   /**
-   * Persist the full edited configuration via `settings.update` (merge
-   * semantics). With a descriptor view the write carries `view.revision` so a
-   * stale editor is refused rather than silently overwriting a concurrent
-   * change; without a view (namespace never registered) `expectedRevision` is
-   * omitted — a precondition-less write whose acceptance is the host's call
-   * (readme-settings spec §1.4-2).
+   * Persist the full edited configuration through the gateway channel
+   * (`/api/fallbacks/set`). The full config is sent as the patch — a merge
+   * with all keys present is a full overwrite (guide §9). The gateway merge
+   * has no revision guard: any failure (business rejection or transport)
+   * surfaces its message in `state.error` for the section's error banner and
+   * the form stays editable for retry (KD-G3).
    * @param next - the complete edited configuration.
    */
   async save(next: FallbacksConfig): Promise<void> {
-    const view = this.view
     const state = this.store.getSnapshot()
     if (!state.writable || state.status === 'saving') return
     const generation = ++this.generation
     this.store.update((draft) => {
       draft.status = 'saving'
       draft.error = null
-      draft.conflict = null
     })
     try {
-      const response = await this.api.settings.update({
-        ns: FALLBACKS_SETTINGS_NS,
-        patch: next as unknown as object,
-        ...(view === undefined ? {} : { expectedRevision: view.revision }),
-      })
+      const result = await this.rpc.call('/api', 'fallbacks/set', { args: { patch: next } })
       if (generation !== this.generation) return
-      if (!response.result.ok) throw response.result.error
-      this.accept(response.result.value, true)
+      if (!result.ok) throw result.error
+      const config = result.value !== null && typeof result.value === 'object' && 'config' in result.value
+        ? result.value.config
+        : undefined
+      this.accept(config, true)
     } catch (error) {
       if (generation !== this.generation) return
       this.fail(error)
@@ -669,30 +662,27 @@ export class FallbacksSettingsController {
   }
 
   /**
-   * Reset the namespace's user section wholesale via `settings.replace`
-   * (`section: {}` resets to composition defaults — the removal path a merge
-   * cannot express). `expectedRevision` rides along when a view exists and is
-   * omitted otherwise, mirroring {@link save}'s namespace-missing policy.
+   * Reset to composition defaults through the gateway channel
+   * (`/api/fallbacks/reset` — the fallbacks-specific third method; the host
+   * clears the user layer via `settings.replace(ns, {})`, the removal path a
+   * merge cannot express). Same error handling as {@link save} (KD-G3).
    */
   async resetToDefaults(): Promise<void> {
-    const view = this.view
     const state = this.store.getSnapshot()
     if (!state.writable || state.status === 'saving') return
     const generation = ++this.generation
     this.store.update((draft) => {
       draft.status = 'saving'
       draft.error = null
-      draft.conflict = null
     })
     try {
-      const response = await this.api.settings.replace({
-        ns: FALLBACKS_SETTINGS_NS,
-        section: {},
-        ...(view === undefined ? {} : { expectedRevision: view.revision }),
-      })
+      const result = await this.rpc.call('/api', 'fallbacks/reset', { args: {} })
       if (generation !== this.generation) return
-      if (!response.result.ok) throw response.result.error
-      this.accept(response.result.value, true)
+      if (!result.ok) throw result.error
+      const config = result.value !== null && typeof result.value === 'object' && 'config' in result.value
+        ? result.value.config
+        : undefined
+      this.accept(config, true)
     } catch (error) {
       if (generation !== this.generation) return
       this.fail(error)
@@ -704,30 +694,37 @@ export class FallbacksSettingsController {
     this.generation += 1
     this.catalogGeneration += 1
     this.switchesGeneration += 1
-    this.view = undefined
     this.namespaces = new Map()
   }
 
-  private accept(view: SettingsNamespaceView, writable: boolean): void {
-    const config = parseFallbacksConfig(view.value)
-    this.view = view
+  /**
+   * Publish a settled load: `status` ready, `writable` from describe, and —
+   * only when the gateway returned a REAL config — `present` true and
+   * `state.config` replaced with the parsed value. A get that did not
+   * resolve (`config === undefined`) lands `present` false and keeps the
+   * last accepted config (the defaults skeleton on a first load) — the
+   * draft seed invariant (I-1): a transient channel-down must never seed
+   * the form with defaults over real server truth.
+   */
+  private accept(config: unknown, writable: boolean): void {
+    const parsed = config === undefined ? undefined : parseFallbacksConfig(config)
     this.store.update((state) => {
       state.status = 'ready'
       state.error = null
       state.writable = writable
-      state.config = config
-      state.revision = view.revision
-      state.conflict = null
+      state.present = parsed !== undefined
+      if (parsed !== undefined) {
+        state.config = parsed
+      }
       state.configuredProviders = configuredProvidersOf(state.providers, this.namespaces)
     })
   }
 
   private fail(error: unknown): void {
-    const wire = error as { code?: string; details?: unknown; message?: string } | null
+    const wire = error as { message?: string } | null
     this.store.update((state) => {
       state.status = 'error'
       state.error = typeof wire?.message === 'string' ? wire.message : messageOf(error)
-      state.conflict = isSettingsConflict(wire) ? conflictDetailsOf(wire) : null
     })
   }
 }
