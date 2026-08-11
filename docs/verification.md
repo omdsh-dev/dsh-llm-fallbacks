@@ -178,7 +178,8 @@ dsh 升级（`$DSH_HOME/source/current` 指向新 staging）会重置本体改�
    cd <插件仓库目录>
    scripts/apply-dsh-patch.sh --check   # 只读：两 patch 状态判定
    scripts/apply-dsh-patch.sh           # 应用 agent → tool-subagent → 增量构建
-   scripts/verify-dsh-patch.sh          # 4 探针（2 src + 2 构建产物）→「校验通过」
+   scripts/verify-dsh-patch.sh          # 6 探针（3 src + 3 构建产物：role 组两 patch——agent
+                                        #   runtime-types/model-selection 标记 + tool-subagent role 标记）→「校验通过」
    ```
 
    预期：apply 输出两 patch `[skip] 已应用`（已应用）或 `== 应用 ...`（新应用），退出 0；
@@ -258,7 +259,7 @@ dsh 升级（`$DSH_HOME/source/current` 指向新 staging）会重置本体改�
 > 时代（`settings.describe`/`update` + expectedRevision + 四 patch）的 QA gate，
 > 仅作存档。**当前状态**：设置读写经插件 gateway 通道（`/api/fallbacks/get|set|reset`），
 > 不再依赖任何暴露 patch；`apply-dsh-patch.sh` 仅剩 role 组两 patch，
-> `verify-dsh-patch.sh` 为 4 探针（见 §6.1）。
+> `verify-dsh-patch.sh` 为 6 探针（见 §6.1）。
 >
 > **验收记录（2026-08-11，用户重启后执行，双轨 in-loop 部分）**：
 >
@@ -280,7 +281,7 @@ dsh 升级（`$DSH_HOME/source/current` 指向新 staging）会重置本体改�
 
 | 面 | 未覆盖原因 | 验证归属 |
 |---|---|---|
-| web 设置 GUI 交互（页面出现、编辑保存、冲突重载） | 沙箱无法操作真实 web 会话 | 用户待执行 §2 / §6（client 半逻辑已由 T5 61 例测试覆盖） |
+| web 设置 GUI 交互（页面出现、编辑保存、冲突重载） | 沙箱无法操作真实 web 会话 | 用户待执行 §2 / §6（client 半逻辑已由 T5 69 例测试覆盖） |
 | 真实模型调用与失败注入（AUTH/QUOTA/RATE_LIMIT 触发、切换继续） | 沙箱无真实模型凭据与运行中会话 | 用户待执行 §3 / §6（决策逻辑已由 T3/T4 集成测试覆盖） |
 | 跨进程观察（日志、`fallbacks/switch` 会话事件在真实会话中的落地） | 沙箱无法运行真实 dsh 会话 | 用户待执行 §3/§4/§6 |
 | 真实安装上的 patch apply → build | 对运行中 `$DSH_HOME` 的写操作被沙箱拒绝 | 用户待执行 §4/§6（可应用性已只读 `git apply --check` + 沙箱全流程验证） |
