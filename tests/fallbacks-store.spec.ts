@@ -484,6 +484,29 @@ describe('FallbacksSettingsController', () => {
     expect(state.config).toEqual(defaultFallbacksConfig)
   })
 
+  it('preserves the accepted config when a follow-up get fails after a successful load (I-1)', async () => {
+    // Draft seed invariant (I-1): `accept(undefined, …)` keeps the last
+    // accepted config — a transient channel-down on a REFRESH must not
+    // clobber real server truth with the defaults skeleton. The second
+    // failed get lands present:false (channel-unreachable notice), never a
+    // page error, and `state.config` stays exactly as loaded.
+    const api = makeApi()
+    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
+    const { rpc, get } = makeRpc({ ...defaultFallbacksConfig, cooldownMs: 99_000 })
+    const controller = new FallbacksSettingsController(api, rpc)
+    await controller.load()
+    expect(controller.store.getSnapshot().present).toBe(true)
+    expect(controller.store.getSnapshot().config.cooldownMs).toBe(99_000)
+    // The channel drops before the next refresh's get resolves.
+    get.mockReturnValueOnce(Promise.resolve(failResult('fallbacks gateway is not ready')))
+    await controller.load()
+    const state = controller.store.getSnapshot()
+    expect(state.status).toBe('ready')
+    expect(state.present).toBe(false)
+    expect(state.error).toBeNull()
+    expect(state.config).toEqual({ ...defaultFallbacksConfig, cooldownMs: 99_000 })
+  })
+
   it('keeps a read-only environment honest: writable:false disables the controls', async () => {
     // §1.4-4: only a real read-only describe response disables the controls —
     // the always-visible skeleton must not weaken honest read-only rendering.
@@ -595,6 +618,34 @@ describe('FallbacksSettingsController', () => {
     expect(state.status).toBe('ready')
     expect(state.present).toBe(true)
     expect(state.config).toEqual(defaultFallbacksConfig)
+  })
+
+  it('surfaces a reset rejection as the error banner and leaves the store retryable (I-2)', async () => {
+    // KD-G3 symmetry: `resetToDefaults()` rides the same `fail()` path as
+    // `save()` — a refused gateway reset lands the message in `state.error`
+    // (the error banner), never leaves the store stuck in `saving`, and
+    // keeps the accepted config intact for retry.
+    const api = makeApi()
+    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
+    const { rpc, call, reset } = makeRpc({ ...defaultFallbacksConfig, cooldownMs: 99_000 })
+    const controller = new FallbacksSettingsController(api, rpc)
+    await controller.load()
+    reset.mockReturnValueOnce(Promise.resolve(failResult('reset refused')))
+    await controller.resetToDefaults()
+    expect(call).toHaveBeenLastCalledWith('/api', 'fallbacks/reset', { args: {} })
+    const state = controller.store.getSnapshot()
+    expect(state.status).toBe('error')
+    expect(state.error).toBe('reset refused')
+    // The refused reset did not corrupt the accepted config or flip present.
+    expect(state.present).toBe(true)
+    expect(state.config.cooldownMs).toBe(99_000)
+    // The store is not stuck in saving: a follow-up save still goes through
+    // (the error banner leaves the form editable for retry).
+    await controller.save({ ...defaultFallbacksConfig, cooldownMs: 55_000 })
+    const after = controller.store.getSnapshot()
+    expect(after.status).toBe('ready')
+    expect(after.error).toBeNull()
+    expect(after.config.cooldownMs).toBe(55_000)
   })
 
   it('refuses writes when the provider is not writable', async () => {
