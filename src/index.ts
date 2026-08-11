@@ -417,7 +417,8 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     const applied = state === undefined ? undefined : states.applyPending(state, turn, step)
     // The override creates a NEW spread config object (never the deep-frozen
     // LOOP seed). Host-native semantics (the marker coordination shipped with
-    // the local dsh-agent patch is removed — guides
+    // the local dsh-agent patch is removed — see
+    // .mstar/iterations/iter-20260811-fallbacks-mount-only/guides/
     // role-and-model-selection-exploration.md): whether this step's routing
     // survives a manual web model selection depends on waterfall listener
     // order. When this plugin's listener is outer (registered first, the

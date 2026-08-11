@@ -16,7 +16,8 @@
  * none. A subagent `persona` is NOT readable at the decision point:
  * `AgentOptions` is provider/model/maxTokens only, and persona is installed
  * as a scoped system-prompt section in the child's creation window — see
- * `guides/role-and-model-selection-exploration.md` (Role section).
+ * `.mstar/iterations/iter-20260811-fallbacks-mount-only/guides/
+ * role-and-model-selection-exploration.md` (Role section).
  *
  * @module dsh-llm-fallbacks/roles
  */
