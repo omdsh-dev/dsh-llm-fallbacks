@@ -72,6 +72,10 @@ dsh 的 web 设置 RPC（`dsh-host-apiproxy`）对命名空间有硬编码暴露
 - **读取**：`get` 读 `FallbacksSettingsBridge` source——与运行时同一份 live 组合配置（schema 默认 → 插件行 base → settings user layer）。
 - **写入**：`set` 先按 `Config` schema 校验 patch（未知键拒绝），再经 `ctx.settings.update` 写 user layer（进程内写不经过 wire 级 `exposedNamespaces()` 门）；`reset` 用 `ctx.settings.replace(ns, {})` 清 user layer（`set` 是 merge-only，无法表达「重置为组合默认」）。
 - **可选降级**：settings 服务可选——无 settings 服务时 `get` 仍可用（bridge source 直读），`set`/`reset` 返回明确错误（KD-G5）。
+- **冲突语义（KD-G3）**：gateway 通道是普通 RPC merge/replace、**无版本戳**——`expectedRevision`/`settings-conflict` 冲突 UX 随迁移删除，任何 `set`/`reset` 失败统一进既有错误横幅、表单保持可编辑供重试（旧冲突用例删除，新「set 拒绝 → 错误横幅」用例顶替）。
+- **Draft 播种不变量**：表单 draft 恒从真实解析配置播种（`accept(config, writable)`）；`get` 失败时骨架可以默认值展示，但**不得**用默认值播种 draft——瞬态通道故障恢复后，draft 与真实种子 diff 会送出全默认 patch，抹掉真实配置。
+
+通用模式（wire 契约、KD-G3/G5 语义、可选 settings 条件注入、写前未知键拒绝、无解析器原则、`present` 标志）→ `architecture-patterns/dsh-gateway-settings-channel.md`。
 
 ### 目录驱动 provider/model 选择（iter-20260810-fallbacks-settings-ux，spec §2.5 D-3/D-4）
 
