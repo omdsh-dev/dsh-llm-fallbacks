@@ -1,11 +1,12 @@
-/* Fallbacks settings section, aligned to the dsh-advisor settings-section
- * vocabulary (advisor-section.module.css): 16/24 title, 14/22 intro, 12/18
- * captions and hints, 32px fields with the shared select chevron, capsule
- * controls (h36 r18), one outlined card carrying the whole form, and
- * `--dsw-alias-*` tokens throughout. The chain/role row editors keep their
- * filled editorCard surface (the Models page row-editor precedent) inside
- * the card, and the compact read-only status block stays pinned at the
- * section bottom.
+/* Fallbacks settings section, aligned to the dsh web host settings
+ * vocabulary (ui-fidelity-checklist: ModelsSection.module.css primary, GR/AR
+ * rows for the enabled row, SC silent notice for the banners): 16/24 title,
+ * 14/22 intro, 12/18 captions and hints, 32px fields with the shared select
+ * chevron, capsule controls (h36 r18), one outlined card carrying the whole
+ * form, and `--dsw-alias-*` tokens throughout. The chain/role row editors
+ * keep their filled editorCard surface (the Models `.editor` precedent)
+ * inside the card, and the compact read-only status block stays pinned at
+ * the section bottom.
  *
  * Every color resolves through a `--dsw-alias-*` token. Bare `--border` /
  * `--surface` / `--text-*` names, which nothing in this app defines, would
@@ -47,12 +48,16 @@
   gap: 12px;
 }
 
-/* The enabled row: label text on the left, the native checkbox on the right
-   — no separator line (the old fieldRow hairline is gone). */
+/* The enabled row: label text on the left, the native checkbox on the right.
+   Row rhythm follows the settings rows (EnterBehaviorRow `.row`): gap 8, no
+   top padding (first row in the card), 12px bottom breathing room. No
+   hairline inside the card — the outlined card border carries the separation
+   (A3: 分隔线卡内不必须). */
 .checkboxRow {
   display: flex;
   align-items: center;
   gap: 8px;
+  padding: 0 0 12px;
 }
 
 .checkLabel {
@@ -63,7 +68,7 @@
   gap: 4px;
   font-size: 14px;
   line-height: 22px;
-  font-weight: 500;
+  font-weight: 400;
   color: var(--dsw-alias-label-primary);
   cursor: pointer;
 }
@@ -72,7 +77,7 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .checkLabelDesc {
@@ -158,7 +163,9 @@
    opens the primitives Tooltip bubble (side right, ~300ms hover delay) on
    hover/focus. The 16px geometry matches the checkbox/radio controls; the
    14px glyph is the shared caption gray. Focusable so keyboard users reach
-   the same explanation; the focus-visible ring mirrors the checkbox ring. */
+   the same explanation; the focus-visible ring mirrors the checkbox ring
+   (the 2px box-shadow ring on --dsw-alias-border-l3 used by every focusable
+   control in this file). */
 .infoHint {
   display: inline-flex;
   align-items: center;
@@ -176,8 +183,8 @@
 }
 
 .infoHint:focus-visible {
-  outline: 2px solid var(--dsw-alias-border-l3);
-  outline-offset: 2px;
+  outline: none;
+  box-shadow: 0 0 0 2px var(--dsw-alias-border-l3);
 }
 
 /* Read-only/loading suppression: dimmed and out of the tab order; the
@@ -224,8 +231,8 @@
 .checkbox:focus-visible,
 .optionRow input:focus-visible,
 .wildcardCell input:focus-visible {
-  outline: 2px solid var(--dsw-alias-border-l3);
-  outline-offset: 2px;
+  outline: none;
+  box-shadow: 0 0 0 2px var(--dsw-alias-border-l3);
 }
 
 .optionRow input:disabled,
@@ -309,7 +316,7 @@ select.input {
 .numberFields {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-  gap: 12px;
+  gap: 8px;
 }
 
 .list {
@@ -324,7 +331,7 @@ select.input {
 .editorCard {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 14px;
   padding: 14px 16px;
   border-radius: 12px;
   background: var(--dsw-alias-bg-module-platform);
@@ -338,7 +345,7 @@ select.input {
 .ruleGrid {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: 8px;
 }
 
 .ruleCell {
@@ -389,19 +396,25 @@ select.input {
   background: var(--dsw-alias-interactive-bg-hover);
 }
 
-/* Icon-only actions: the label rides `data-tip` (and aria-label) so the card
-   stays quiet until someone reaches for it (the Agent-presets pattern). */
+/* Icon-only actions: a 28×28 square with 6px radius on the Models
+   `.iconButton` geometry; the label rides `data-tip` (and aria-label) so the
+   card stays quiet until someone reaches for it. `position: relative`
+   anchors the kept data-tip tooltip above the button. */
 .iconButton {
   position: relative;
+  box-sizing: border-box;
   appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
   border: 0;
-  border-radius: 7px;
-  padding: 6px;
+  border-radius: 6px;
   background: none;
   color: var(--dsw-alias-label-tertiary);
   cursor: pointer;
-  display: inline-flex;
-  align-items: center;
 }
 
 .iconButton:disabled {
@@ -415,8 +428,8 @@ select.input {
 }
 
 .iconButton:focus-visible {
-  outline: 2px solid var(--dsw-alias-brand-primary);
-  outline-offset: -1px;
+  outline: none;
+  box-shadow: 0 0 0 2px var(--dsw-alias-border-l3);
 }
 
 .iconButton::after {
@@ -511,14 +524,15 @@ select.input {
   box-shadow: 0 0 0 2px var(--dsw-alias-border-l3);
 }
 
-/* AC-7 read-only status, compact: an outlined card like the Models rows,
-   pinned at the section bottom after the form card. Tighter padding and one
-   line per fact with ellipsis overflow — the block never dominates the page. */
+/* AC-7 read-only status, compact: an outlined card like the Models rows
+   (`.rowCard`: padding 12/14, gap 12), pinned at the section bottom after
+   the form card. One line per fact with ellipsis overflow — the block never
+   dominates the page. */
 .statusBlock {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 10px 12px;
+  gap: 12px;
+  padding: 12px 14px;
   border: 1px solid var(--dsw-alias-border-l2);
   border-radius: 12px;
 }
@@ -556,35 +570,33 @@ select.input {
   padding: 12px;
   border: 1px dashed var(--dsw-alias-border-l3);
   border-radius: 8px;
-  font-size: 13px;
-  line-height: 20px;
-  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+  text-align: center;
 }
 
+/* Transient error message (role="alert"): the host sections have no bordered
+   banner box — the Subagent catalog `.notice` silent box (padding 10/12,
+   12/18, no border) is the closest weak-visual form an alert needs. The warn
+   tone stays on the label token, so the message reads as an alert without a
+   self-drawn box. */
 .banner {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-  line-height: 20px;
-  padding: 8px 12px;
-  border: 1px solid var(--dsw-alias-state-warn-primary);
-  border-radius: 12px;
+  padding: 10px 12px;
+  font-size: 12px;
+  line-height: 18px;
   color: var(--dsw-alias-state-warn-label);
-  background: var(--dsw-alias-state-warn-tertiary);
 }
 
 /* Namespace-not-registered info banner (spec §1.4-3): informational, not a
    dead-end notice — the page shows the default-config seed and saves are
-   attempted. Uses the business (info) state tokens. */
+   attempted. Same silent-notice form as `.banner`, using the business (info)
+   state tokens. */
 .infoBanner {
-  padding: 8px 12px;
-  border: 1px solid var(--dsw-alias-state-business-primary);
-  border-radius: 12px;
-  font-size: 13px;
-  line-height: 20px;
+  padding: 10px 12px;
+  font-size: 12px;
+  line-height: 18px;
   color: var(--dsw-alias-state-business-primary);
-  background: var(--dsw-alias-state-business-tertiary);
 }
 
 /* Reset-to-defaults confirmation dialog (the Models delete-confirm width). */
