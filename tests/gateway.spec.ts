@@ -1,0 +1,631 @@
+/**
+ * T1 (plan llm-fallbacks-settings-gateway) — host-side `fallbacks` config
+ * gateway (`/api/fallbacks/get` + `/api/fallbacks/set` +
+ * `/api/fallbacks/reset` via typertGateway SRC claims).
+ *
+ * Contract under test (`FallbacksConfigGateway`, src/gateway.ts):
+ * ① No settings service (plain cordis ctx) — `get` returns the entry
+ *    composed value (schema defaults → entry base), and `set`/`reset` fail
+ *    cleanly (the settings service is unavailable — KD-G5 error path).
+ * ② With a settings service mounted — `set` writes the USER layer (visible in
+ *    `describe().user`), the composed value changes (base defaults the patch
+ *    did not touch are kept), the write is LIVE (the bridge source reflects
+ *    it), `set` returns the new composed value, and `reset` clears the user
+ *    layer so the composition defaults reapply.
+ * ③ `set` with an unknown key is rejected by the `Config` schema
+ *    (unknown-key rejection unchanged) and nothing is persisted — including
+ *    prototype-chain names (`__proto__`, `constructor`) that used to bypass
+ *    the `in` guard (F-001, own-key membership) and never wipe the user layer.
+ * ④ Containment (guide §10): a malformed stored user layer that the
+ *    non-strict settings schema let through (an unknown key) never fails
+ *    `get` — only schema-declared keys cross the wire, and a schema key
+ *    whose composed value is `undefined` is omitted, never
+ *    present-as-undefined (readConfig wire normalization, F-002).
+ * ⑤ Endpoint claims: the typertGateway SRC discovery (the same
+ *    `ctx.reflect.props` + `remoteMethods` walk `claimsEndpoint` uses) claims
+ *    `/api/fallbacks/get` + `/api/fallbacks/set` + `/api/fallbacks/reset`;
+ *    the payload contract is exactly one plain-object `args` field; dispatch
+ *    through the recorded `/api` interceptor and direct
+ *    `ctx.typertGateway.invoke` both work.
+ * ⑥ Composed end-to-end: the real plugin `apply` wires the gateway; the
+ *    typertGateway dispatches get/set/reset against the live composed config.
+ */
+
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { Context, Service } from 'cordis'
+import { installSettingsSection } from '@deepseek-ai/dsh-settings'
+import TypertGatewayService from '@deepseek-ai/dsh-api-gateway'
+import { TypertRegistry } from '@deepseek-ai/dsh-typert-registry'
+import { apply } from '../src/index.ts'
+import { Config, defaultFallbacksConfig, type FallbacksConfig } from '../src/config.ts'
+import {
+  FALLBACKS_SETTINGS_NAMESPACE,
+  FallbacksConfigGateway,
+  type FallbacksSettingsBridge,
+} from '../src/gateway.ts'
+import { MemorySettings } from './support/memory-settings.ts'
+
+/** Track every test context and dispose it after the case (settings/gateway effects hygiene). */
+const contexts = new Set<Context>()
+afterEach(async () => {
+  for (const ctx of contexts) {
+    await ctx.fiber.dispose()
+  }
+  contexts.clear()
+})
+
+function track(ctx: Context): Context {
+  contexts.add(ctx)
+  return ctx
+}
+
+/** Full entry (plugin-row) config shape, merged over the schema defaults. */
+function entryConfig(overrides: Partial<FallbacksConfig> = {}): FallbacksConfig {
+  return { ...defaultFallbacksConfig, ...overrides }
+}
+
+/**
+ * Build the `FallbacksSettingsBridge` exactly the way `apply()` wires it (the
+ * same `installSettingsSection` + setSource/onChange hooks) — the gateway
+ * under test consumes this live source.
+ */
+function installFallbacksBridge(ctx: Context, entry: FallbacksConfig): FallbacksSettingsBridge {
+  let source = (): FallbacksConfig => entry
+  installSettingsSection(ctx, FALLBACKS_SETTINGS_NAMESPACE, Config, entry, {
+    setSource: (current) => {
+      source = current
+    },
+    onChange: () => {
+      // no bridge fan-out — the gateway reads source() live per call
+    },
+  })
+  return {
+    source: (): FallbacksConfig => source(),
+  }
+}
+
+/** Read the gateway's internal settings capture (activated inject child). */
+function settingsOf(gateway: FallbacksConfigGateway): unknown {
+  return (gateway as unknown as { settings?: unknown }).settings
+}
+
+/** Wait until the conditional `ctx.inject(['settings'], ...)` child registered the namespace. */
+async function waitRegistered(ctx: Context): Promise<void> {
+  await vi.waitFor(() => {
+    expect(ctx.settings.describe().some((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)).toBe(true)
+  })
+}
+
+/**
+ * Narrow a typertGateway invoke result to its `{ config }` payload — the
+ * gateway wire contract (guide §2). Guards the shape before the single cast.
+ */
+function invokeConfig(result: unknown): FallbacksConfig {
+  if (result === null || typeof result !== 'object' || !('config' in result)) {
+    throw new TypeError('expected a typertGateway result of the shape { config }')
+  }
+  const { config } = result as { config: FallbacksConfig }
+  return config
+}
+
+// ---------------------------------------------------------------------------
+// ① no settings service → entry fallback (get works, set/reset fail cleanly)
+// ---------------------------------------------------------------------------
+
+describe('no settings service (entry fallback)', () => {
+  it('get returns the entry composed value; the gateway is a registered service', () => {
+    const ctx = track(new Context())
+    const entry = entryConfig({ enabled: true, chains: { default: ['other/gpt-4o'] }, cooldownMs: 120_000 })
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entry))
+
+    expect(ctx.reflect.props['fallbacks']).toEqual({ type: 'service' })
+    expect(gateway.get()).toEqual({ config: entry })
+  })
+
+  it('set fails cleanly when no settings service is composed (KD-G5 error path)', async () => {
+    const ctx = track(new Context())
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()))
+    await expect(gateway.set({ enabled: true })).rejects.toThrow(/settings service is unavailable/)
+  })
+
+  it('reset fails cleanly when no settings service is composed (KD-G5 error path)', async () => {
+    const ctx = track(new Context())
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()))
+    await expect(gateway.reset()).rejects.toThrow(/settings service is unavailable/)
+  })
+
+  it('a second gateway on the same context fails loud (multi-fiber dedupe relies on this)', () => {
+    const ctx = track(new Context())
+    const entry = entryConfig()
+    new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entry))
+    expect(() => new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entry)))
+      .toThrow(/has been registered/)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// ② with a settings service → set writes the user layer, reset clears it
+// ---------------------------------------------------------------------------
+
+describe('with a settings service (set writes the user layer)', () => {
+  it('set writes the user layer (describe visible), the composed value changes live, and set returns it', async () => {
+    const ctx = track(new Context())
+    await ctx.plugin(MemorySettings)
+    const entry = entryConfig({ chains: { default: ['other/gpt-4o'] }, cooldownMs: 120_000 })
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entry))
+    await waitRegistered(ctx)
+    // The gateway's own inject child must have captured the settings service.
+    await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
+
+    const result = await gateway.set({ enabled: true })
+
+    // describe exposes the raw user layer (what the UI form wrote).
+    const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)!
+    expect(descriptor.user).toEqual({ enabled: true })
+    // The composed value keeps the base defaults the patch did not override.
+    const composed: FallbacksConfig = { ...entry, enabled: true }
+    // Live: the bridge source the runtime reads reflects the write.
+    expect(gateway.get()).toEqual({ config: composed })
+    expect(result).toEqual({ config: composed })
+  })
+
+  it('a patch changing only one key leaves the other base values intact', async () => {
+    const ctx = track(new Context())
+    await ctx.plugin(MemorySettings)
+    const entry = entryConfig({ cooldownMs: 120_000, maxSwitchesPerStep: 8 })
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entry))
+    await waitRegistered(ctx)
+    await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
+
+    await gateway.set({ maxSwitchesPerStep: 3 })
+    expect(gateway.get()).toEqual({ config: { ...entry, maxSwitchesPerStep: 3 } })
+  })
+
+  it('a second set MERGES into the existing user layer (merge, not replace semantics)', async () => {
+    const ctx = track(new Context())
+    await ctx.plugin(MemorySettings)
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()))
+    await waitRegistered(ctx)
+    await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
+
+    await gateway.set({ enabled: true, cooldownMs: 120_000 })
+    await gateway.set({ maxSwitchesPerStep: 3 })
+
+    // The user layer keeps ALL keys written across the two calls — a
+    // replace-semantics write would have dropped the earlier pair.
+    const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)!
+    expect(descriptor.user).toEqual({ enabled: true, cooldownMs: 120_000, maxSwitchesPerStep: 3 })
+    expect(gateway.get().config).toEqual({
+      ...defaultFallbacksConfig,
+      enabled: true,
+      cooldownMs: 120_000,
+      maxSwitchesPerStep: 3,
+    })
+  })
+
+  it('an empty patch is a no-op: returns the current composed value without touching the user layer', async () => {
+    const ctx = track(new Context())
+    await ctx.plugin(MemorySettings)
+    const entry = entryConfig({ enabled: true, cooldownMs: 120_000 })
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entry))
+    await waitRegistered(ctx)
+    await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
+
+    const result = await gateway.set({})
+    const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)!
+    expect(descriptor.user).toBeUndefined()
+    expect(result).toEqual(gateway.get())
+    expect(result.config.enabled).toBe(true)
+  })
+
+  it('strips null-valued patch keys before the write (raw null never lands in the user layer)', async () => {
+    const ctx = track(new Context())
+    await ctx.plugin(MemorySettings)
+    const entry = entryConfig({ enabled: true, cooldownMs: 120_000 })
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entry))
+    await waitRegistered(ctx)
+    await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
+
+    await gateway.set({ cooldownMs: null, maxSwitchesPerStep: 3 } as never)
+    const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)!
+    expect(descriptor.user).toEqual({ maxSwitchesPerStep: 3 })
+    // Dropping the null did not clear the base-pinned cooldown: the composed
+    // config keeps it and the new cap.
+    expect(gateway.get().config).toEqual({ ...entry, maxSwitchesPerStep: 3 })
+  })
+
+  it('an all-null patch is a no-op: nothing written, composed value unchanged', async () => {
+    const ctx = track(new Context())
+    await ctx.plugin(MemorySettings)
+    const entry = entryConfig({ enabled: true, cooldownMs: 120_000 })
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entry))
+    await waitRegistered(ctx)
+    await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
+
+    await gateway.set({ enabled: null, cooldownMs: null } as never)
+    const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)!
+    expect(descriptor.user).toBeUndefined()
+    expect(gateway.get().config).toEqual(entry)
+  })
+
+  it('reset clears the user layer (section {}) and returns the composition-defaults config', async () => {
+    const ctx = track(new Context())
+    await ctx.plugin(MemorySettings)
+    const entry = entryConfig({ enabled: true, chains: { default: ['other/gpt-4o'] }, cooldownMs: 120_000 })
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entry))
+    await waitRegistered(ctx)
+    await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
+
+    await gateway.set({ enabled: false, maxSwitchesPerStep: 3 })
+    expect(gateway.get().config).toEqual({ ...entry, enabled: false, maxSwitchesPerStep: 3 })
+
+    const result = await gateway.reset()
+
+    // The user layer is cleared: the composed value returns to the
+    // composition base (entry), so the earlier write no longer influences it.
+    const after = ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)!
+    expect(after.user).toEqual({})
+    expect(gateway.get()).toEqual({ config: entry })
+    expect(result).toEqual({ config: entry })
+  })
+
+  it('set fails cleanly after the settings service is disposed (the inject child disposer clears the capture)', async () => {
+    // The inject child's returned disposer mirrors installSettingsSection's
+    // detach path: when the settings service goes away, the captured reference
+    // is cleared, so `set` fails with the KD-G5 error instead of holding a
+    // stale service reference (which would throw from inside the settings
+    // package after disposal).
+    const ctx = track(new Context())
+    await ctx.plugin(MemorySettings)
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()))
+    await waitRegistered(ctx)
+    await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
+
+    ctx.registry.delete(MemorySettings)
+    await vi.waitFor(() => expect(settingsOf(gateway)).toBeUndefined())
+    await expect(gateway.set({ enabled: true })).rejects.toThrow(/settings service is unavailable/)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// ③ set unknown key / schema violation → rejected (Config schema, nothing persisted)
+// ---------------------------------------------------------------------------
+
+describe('set validation (Config schema, unknown-key rejection unchanged)', () => {
+  it('an unknown key is rejected before anything is written', async () => {
+    const ctx = track(new Context())
+    await ctx.plugin(MemorySettings)
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()))
+    await waitRegistered(ctx)
+    await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
+
+    await expect(gateway.set({ bogus: 1 } as never)).rejects.toThrow(/unknown config key "bogus"/)
+    // Nothing was persisted: the user layer stays absent.
+    const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)!
+    expect(descriptor.user).toBeUndefined()
+  })
+
+  it('rejects an own __proto__ key (prototype-chain bypass of the unknown-key gate — F-001)', async () => {
+    // An object LITERAL cannot carry an own `__proto__` key (it sets the
+    // prototype instead), but JSON.parse / Object.fromEntries can — the
+    // third-party RPC caller shape. `'__proto__' in CONFIG_KEYS` is true via
+    // Object.prototype, so the old `in` guard let it through; the user layer
+    // write then corrupted the settings merge (config wipe). Own-key
+    // membership must reject it.
+    const ctx = track(new Context())
+    await ctx.plugin(MemorySettings)
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()))
+    await waitRegistered(ctx)
+    await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
+
+    const poisoned = Object.fromEntries([['__proto__', { enabled: true }]])
+    await expect(gateway.set(poisoned as never)).rejects.toThrow(/unknown config key "__proto__"/)
+    // Nothing was persisted: the user layer stays absent (no wipe, no junk).
+    const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)!
+    expect(descriptor.user).toBeUndefined()
+  })
+
+  it('rejects a constructor key (prototype-chain name, not a config key)', async () => {
+    const ctx = track(new Context())
+    await ctx.plugin(MemorySettings)
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()))
+    await waitRegistered(ctx)
+    await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
+
+    await expect(gateway.set({ constructor: { enabled: true } } as never)).rejects.toThrow(/unknown config key "constructor"/)
+    const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)!
+    expect(descriptor.user).toBeUndefined()
+  })
+
+  it('the user layer survives an attempted __proto__ wipe (F-001)', async () => {
+    const ctx = track(new Context())
+    await ctx.plugin(MemorySettings)
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()))
+    await waitRegistered(ctx)
+    await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
+
+    // A real write first: the user layer holds a legitimate config.
+    await gateway.set({ enabled: true, cooldownMs: 120_000 })
+
+    // The poisoned patch is rejected — and the pre-existing user layer is
+    // untouched (the old `in` guard would have merged it and let the
+    // settings layer wipe the section).
+    const poisoned = Object.fromEntries([['__proto__', { enabled: true }]])
+    await expect(gateway.set(poisoned as never)).rejects.toThrow(/unknown config key "__proto__"/)
+
+    const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)!
+    expect(descriptor.user).toEqual({ enabled: true, cooldownMs: 120_000 })
+    expect(gateway.get().config).toEqual({ ...entryConfig(), enabled: true, cooldownMs: 120_000 })
+  })
+
+  it('a patch violating the schema types is rejected', async () => {
+    const ctx = track(new Context())
+    await ctx.plugin(MemorySettings)
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()))
+    await waitRegistered(ctx)
+    await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
+
+    // The matcher pins the rejecting stage: the schemastery `Config` type
+    // check (`$.cooldownMs expected number but got nope`) must be what
+    // rejects — a regression that pushed the rejection to some other stage
+    // while `validateConfigPatch` silently passed would no longer match.
+    await expect(gateway.set({ cooldownMs: 'nope' } as never)).rejects.toThrow(/cooldownMs/)
+  })
+
+  it('a non-object patch is rejected as malformed input', async () => {
+    const ctx = track(new Context())
+    await ctx.plugin(MemorySettings)
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()))
+    await waitRegistered(ctx)
+    await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
+
+    await expect(gateway.set('nope' as never)).rejects.toThrow(/plain object/)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// ④ containment: a malformed stored user layer never fails get (guide §10)
+// ---------------------------------------------------------------------------
+
+describe('containment (malformed stored user layer)', () => {
+  it('a seeded unknown key survives the non-strict settings schema but never reaches the wire', async () => {
+    const ctx = track(new Context())
+    await ctx.plugin(MemorySettings)
+    // Seed BEFORE the namespace registers — the dev-time mirror of a provider
+    // whose raw document already contains the section when the plugin loads.
+    // The non-strict settings schema merges the unknown key through.
+    const settings = ctx.settings as unknown as MemorySettings
+    settings.seed(FALLBACKS_SETTINGS_NAMESPACE, { enabled: true, bogus: 1 })
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()))
+    await waitRegistered(ctx)
+
+    const result = gateway.get()
+    // get never fails on the bad user layer (no resolver to crash on it).
+    expect(result.config.enabled).toBe(true)
+    // Only schema-declared keys cross the wire — the bogus key is omitted.
+    expect('bogus' in result.config).toBe(false)
+    expect(result.config.chains).toEqual({})
+    expect(result.config.cooldownMs).toBe(defaultFallbacksConfig.cooldownMs)
+  })
+
+  it('omits a schema key whose composed value is undefined (never present-as-undefined on the wire)', () => {
+    // The gateway result validator rejects undefined values, so `readConfig`
+    // must OMIT absent values instead of carrying them — a schema key whose
+    // composed value is `undefined` is dropped, it does not ride the wire as
+    // an own key with an undefined value (F-002, readConfig normalization).
+    const ctx = track(new Context())
+    const gateway = new FallbacksConfigGateway(ctx, {
+      source: (): FallbacksConfig => ({
+        ...defaultFallbacksConfig,
+        cooldownMs: undefined as unknown as number,
+      }),
+    })
+
+    const result = gateway.get()
+    expect('cooldownMs' in result.config).toBe(false)
+    // The remaining schema keys still cross the wire with their values.
+    expect(result.config.enabled).toBe(false)
+    expect(result.config.chains).toEqual({})
+  })
+})
+
+// ---------------------------------------------------------------------------
+// ⑤ endpoint claims (typertGateway SRC discovery + payload contract)
+// ---------------------------------------------------------------------------
+
+type FakeRpcResult =
+  | { readonly ok: true; readonly value: unknown }
+  | { readonly ok: false; readonly error: { readonly code: string; readonly message: string; readonly details: object } }
+
+type FakeRpcHandler = (endpoint: string, payload: unknown, signal: AbortSignal) => Promise<FakeRpcResult>
+
+/** Records the `/api` interceptor the typertGateway mounts (advisor gateway.spec.ts pattern). */
+class FakeConnectionService extends Service {
+  channel: string | undefined
+  authority: string | undefined
+  matches: ((endpoint: string) => boolean) | undefined
+  handler: FakeRpcHandler | undefined
+
+  constructor(ctx: Context) {
+    super(ctx, 'connection')
+  }
+
+  get rpc() {
+    const owner = this.ctx
+    return {
+      intercept: (
+        channel: string,
+        matches: (endpoint: string) => boolean,
+        handler: FakeRpcHandler,
+        options: { readonly authority: string },
+      ) =>
+        owner.effect(() => {
+          this.channel = channel
+          this.authority = options.authority
+          this.matches = matches
+          this.handler = handler
+          return () => {
+            this.channel = undefined
+            this.authority = undefined
+            this.matches = undefined
+            this.handler = undefined
+          }
+        }),
+    }
+  }
+}
+
+describe('typertGateway endpoint claims + payload contract', () => {
+  async function composeGatewayHarness(seedUser?: Record<string, unknown>): Promise<{ ctx: Context; connection: FakeConnectionService }> {
+    const ctx = track(new Context())
+    await ctx.plugin(MemorySettings)
+    if (seedUser !== undefined) {
+      // Pre-seed the fallbacks user section BEFORE the namespace registers —
+      // the dev-time mirror of a file-backed provider whose raw document
+      // already contains the section when the plugin loads.
+      const settings = ctx.settings as unknown as MemorySettings
+      settings.seed(FALLBACKS_SETTINGS_NAMESPACE, seedUser)
+    }
+    await ctx.plugin(TypertRegistry)
+    await ctx.plugin(FakeConnectionService)
+    await ctx.plugin(TypertGatewayService)
+    const bridge = installFallbacksBridge(ctx, entryConfig({ cooldownMs: 120_000, maxSwitchesPerStep: 5 }))
+    new FallbacksConfigGateway(ctx, bridge)
+    await waitRegistered(ctx)
+    const connection = ctx.get('connection') as unknown as FakeConnectionService
+    await vi.waitFor(() => expect(connection.channel).toBe('/api'))
+    return { ctx, connection }
+  }
+
+  it('claims /api/fallbacks/get + set + reset through the SRC discovery (reflect.props + remoteMethods)', async () => {
+    const { ctx, connection } = await composeGatewayHarness()
+    expect(ctx.reflect.props['fallbacks']).toEqual({ type: 'service' })
+    expect(connection.authority).toBe('trusted-host')
+    expect(connection.matches!('fallbacks/get')).toBe(true)
+    expect(connection.matches!('fallbacks/set')).toBe(true)
+    expect(connection.matches!('fallbacks/reset')).toBe(true)
+    // Unrelated endpoints are NOT claimed (the interceptor falls through).
+    expect(connection.matches!('fallbacks/other')).toBe(false)
+    expect(connection.matches!('goals/create')).toBe(false)
+  })
+
+  it('dispatches get/set/reset through the /api interceptor with the { args } payload contract', async () => {
+    const { connection } = await composeGatewayHarness()
+    const signal = new AbortController().signal
+
+    const got = await connection.handler!('fallbacks/get', { args: {} }, signal)
+    expect(got).toEqual({
+      ok: true,
+      value: {
+        config: { ...defaultFallbacksConfig, cooldownMs: 120_000, maxSwitchesPerStep: 5 },
+      },
+    })
+
+    const setResult = await connection.handler!(
+      'fallbacks/set',
+      { args: { patch: { enabled: true, chains: { default: ['other/gpt-4o'] } } } },
+      signal,
+    )
+    expect(setResult.ok).toBe(true)
+    if (setResult.ok) {
+      expect(setResult.value).toMatchObject({
+        config: { enabled: true, chains: { default: ['other/gpt-4o'] }, cooldownMs: 120_000 },
+      })
+    }
+
+    // The written value is visible on the next get.
+    const gotAgain = await connection.handler!('fallbacks/get', { args: {} }, signal)
+    expect(gotAgain).toMatchObject({
+      ok: true,
+      value: { config: { enabled: true, chains: { default: ['other/gpt-4o'] } } },
+    })
+
+    // reset clears the user layer back to the composition base.
+    const resetResult = await connection.handler!('fallbacks/reset', { args: {} }, signal)
+    expect(resetResult.ok).toBe(true)
+    if (resetResult.ok) {
+      expect(resetResult.value).toMatchObject({
+        config: { enabled: false, chains: {}, cooldownMs: 120_000 },
+      })
+    }
+  })
+
+  it('enforces the payload contract: exactly one plain-object args field', async () => {
+    const { connection } = await composeGatewayHarness()
+    const signal = new AbortController().signal
+
+    const badArgs = await connection.handler!('fallbacks/set', { args: 'not-an-object' }, signal)
+    expect(badArgs.ok).toBe(false)
+    if (!badArgs.ok) expect(badArgs.error.message).toContain('plain-object args field')
+
+    const unknownWire = await connection.handler!('fallbacks/set', { args: { wrong: 1 } }, signal)
+    expect(unknownWire.ok).toBe(false)
+    if (!unknownWire.ok) expect(unknownWire.error.message).toContain('args fields do not match the descriptor')
+  })
+
+  it('invokes directly through ctx.typertGateway (same SRC descriptor path)', async () => {
+    const { ctx } = await composeGatewayHarness()
+    const result = await ctx.typertGateway.invoke({ namespace: 'fallbacks', method: 'get', args: {} })
+    expect(result).toMatchObject({ config: { enabled: false, cooldownMs: 120_000 } })
+  })
+
+  it('rejects a business-invalid patch at the wire: ok:false + unknown config key', async () => {
+    const { connection } = await composeGatewayHarness()
+    const signal = new AbortController().signal
+
+    const rejected = await connection.handler!('fallbacks/set', { args: { patch: { bogus: 1 } } }, signal)
+    expect(rejected.ok).toBe(false)
+    if (!rejected.ok) {
+      expect(rejected.error.message).toContain('unknown config key "bogus"')
+    }
+    // The rejected write persisted nothing: the composed config is unchanged.
+    const got = await connection.handler!('fallbacks/get', { args: {} }, signal)
+    expect(got).toMatchObject({ ok: true, value: { config: { enabled: false } } })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// ⑥ composed end-to-end: real plugin apply wires the gateway
+// ---------------------------------------------------------------------------
+
+describe('composed plugin (apply wires the gateway)', () => {
+  it('typertGateway dispatches get/set/reset against the live composed config', async () => {
+    const ctx = track(new Context())
+    await ctx.plugin(MemorySettings)
+    await ctx.plugin(TypertRegistry)
+    await ctx.plugin(TypertGatewayService)
+    const entry = entryConfig({ cooldownMs: 120_000 })
+    apply(ctx, entry)
+    await vi.waitFor(() => {
+      expect(ctx.reflect.props['fallbacks']).toEqual({ type: 'service' })
+    })
+    await waitRegistered(ctx)
+
+    const before = await ctx.typertGateway.invoke({ namespace: 'fallbacks', method: 'get', args: {} })
+    expect(invokeConfig(before)).toEqual(entry)
+
+    // The set child may activate a tick after the namespace registers; the
+    // waitFor retries the transient settings-unavailable failure.
+    await vi.waitFor(async () => {
+      const result = await ctx.typertGateway.invoke({
+        namespace: 'fallbacks',
+        method: 'set',
+        args: { patch: { enabled: true, chains: { default: ['other/gpt-4o'] } } },
+      })
+      expect(invokeConfig(result).enabled).toBe(true)
+      expect(invokeConfig(result).chains).toEqual({ default: ['other/gpt-4o'] })
+    })
+
+    const after = await ctx.typertGateway.invoke({ namespace: 'fallbacks', method: 'get', args: {} })
+    expect(invokeConfig(after)).toEqual({ ...entry, enabled: true, chains: { default: ['other/gpt-4o'] } })
+    // describe shows the user layer written through the gateway.
+    const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)!
+    expect(descriptor.user).toEqual({ enabled: true, chains: { default: ['other/gpt-4o'] } })
+
+    // reset through the gateway returns the composition base (entry).
+    const reset = await ctx.typertGateway.invoke({ namespace: 'fallbacks', method: 'reset', args: {} })
+    expect(invokeConfig(reset)).toEqual(entry)
+    const afterReset = ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)!
+    expect(afterReset.user).toEqual({})
+  })
+})

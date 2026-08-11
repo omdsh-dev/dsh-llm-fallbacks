@@ -89,8 +89,6 @@ export const zh = {
   'save': '保存',
   'save.saving': '保存中…',
   'save.error': '保存失败：{message}',
-  'save.conflict': '配置已被其它地方修改（期望修订 {expected}，当前 {actual}）。请重新加载后再保存。',
-  'reload': '重新加载',
   'close': '关闭',
   'reset': '恢复默认',
   'reset.confirmTitle': '恢复默认配置',
@@ -99,7 +97,7 @@ export const zh = {
   'reset.confirm.action': '恢复默认',
   'reset.saving': '恢复中…',
   'loading': '加载中…',
-  'unavailable': 'fallbacks 命名空间尚未注册：以下显示默认配置，可尝试保存；保存失败会在此处如实提示。',
+  'unavailable': 'fallbacks 配置通道暂不可达：以下显示默认配置（或上次读取值），可尝试保存；保存失败会在此处如实提示。',
   'error.generic': '出错：{message}',
 } satisfies Record<string, string>
 
@@ -186,8 +184,6 @@ export const en = {
   'save': 'Save',
   'save.saving': 'Saving…',
   'save.error': 'Save failed: {message}',
-  'save.conflict': 'The configuration changed elsewhere (expected revision {expected}, now {actual}). Reload and try again.',
-  'reload': 'Reload',
   'close': 'Close',
   'reset': 'Reset to defaults',
   'reset.confirmTitle': 'Reset to defaults',
@@ -196,7 +192,7 @@ export const en = {
   'reset.confirm.action': 'Reset',
   'reset.saving': 'Resetting…',
   'loading': 'Loading…',
-  'unavailable': 'The fallbacks namespace is not registered yet: showing the default configuration. You can try to save; failures will be reported here.',
+  'unavailable': 'The fallbacks config channel is unreachable: showing the default configuration (or the last read value). You can try to save; failures will be reported here.',
   'error.generic': 'Error: {message}',
 } satisfies Record<FallbacksKey, string>
 

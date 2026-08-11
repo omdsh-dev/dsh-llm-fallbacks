@@ -1,7 +1,9 @@
 /**
  * Unpatched-host degrade matrix (QC fix wave W1).
  *
- * The plugin ships four dsh patches (patches/); a host that runs WITHOUT
+ * The plugin ships two dsh patches (patches/; the settings-exposure patches
+ * were removed in the llm-fallbacks-settings-gateway plan — Plan B will
+ * sweep this file further); a host that runs WITHOUT
  * them — AUTOPATCH=0, a link install, or a dsh upgrade that reset the tree
  * without re-running apply-dsh-patch.sh — has NO `markFallbackRouted` export
  * on `@deepseek-ai/dsh-agent`. Before W1 the plugin value-imported it, so the

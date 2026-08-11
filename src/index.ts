@@ -29,7 +29,7 @@
  */
 
 import type { Context, Logger } from 'cordis'
-import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings'
+import { installSettingsSection } from '@deepseek-ai/dsh-settings'
 // Namespace import with optional-call guards (W1): the patched
 // @deepseek-ai/dsh-agent exports markFallbackRouted (spec §2.5 D-1), and the
 // same process module instance shares the module-level WeakSet with the
@@ -48,6 +48,7 @@ import { parseSelector, selectorKey } from './selectors.ts'
 import { resolveRole } from './roles.ts'
 import { FallbackStateStore, type AgentFallbackState, type PendingSwitch } from './state.ts'
 import type { FallbackSwitchReason } from './events.ts'
+import { FALLBACKS_SETTINGS_NAMESPACE, FallbacksConfigGateway, type FallbacksSettingsBridge } from './gateway.ts'
 
 /** The plugin row id mounted by the profile bundle patch. */
 export const name = 'llm-fallbacks'
@@ -242,7 +243,17 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   // request never touches the event log when no chains are configured (AC-8).
   let hasChains = Object.keys(chains).length > 0
 
-  installSettingsSection(ctx, settingsNamespace('fallbacks'), Config, entry, {
+  // Guide §7 (plan llm-fallbacks-settings-gateway): the setSource hook is
+  // wired into the FallbacksSettingsBridge the gateway consumes — the SAME
+  // live source the runtime reads (schema defaults → plugin-row base →
+  // settings user layer). The existing onChange re-derives the chain map.
+  // No `exposeToWebClients` here: upstream dsh has no such
+  // registration-level opt-in (the option only existed via the local
+  // dsh-settings patch, removed in Task 3) — web clients reach the config
+  // through the gateway channel instead. The gateway reads `source()` live
+  // per call, so the bridge carries no change fan-out (dead machinery
+  // removed in the QC fix wave — nothing ever subscribed).
+  installSettingsSection(ctx, FALLBACKS_SETTINGS_NAMESPACE, Config, entry, {
     setSource: (current) => {
       source = current
     },
@@ -250,11 +261,25 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
       chains = normalizeChains(source().chains, logger)
       hasChains = Object.keys(chains).length > 0
     },
-    // The `fallbacks` namespace joins the configuration-client boundary: the
-    // web settings RPC can describe/update/replace it (dsh-settings +
-    // dsh-host-apiproxy patch, registration-level opt-in).
-    exposeToWebClients: true,
   })
+  const bridge: FallbacksSettingsBridge = {
+    source: (): FallbacksConfig => source(),
+  }
+  // T1 (plan llm-fallbacks-settings-gateway): the host-side `fallbacks` config
+  // gateway — the `/api/fallbacks/get` + `/api/fallbacks/set` +
+  // `/api/fallbacks/reset` Remote endpoints (typertGateway SRC claims from
+  // `ctx.reflect.props` + `remoteMethods`). It reads the SAME bridge the
+  // runtime reads, so get/set/reset always operate on the live composed
+  // config. Mirror advisor's multi-fiber dedupe: the cordis Service
+  // registration fails loud on a duplicate key, so the catch lets the first
+  // fiber own the `fallbacks` service key while later fibers fall back (no
+  // gateway) — the typertGateway claim set dedupes, so claims never conflict.
+  try {
+    new FallbacksConfigGateway(ctx, bridge)
+  } catch (error) {
+    if (!(error instanceof Error) || !error.message.includes('has been registered')) throw error
+    ctx.logger('llm-fallbacks').debug('fallbacks gateway already registered — no gateway on this fiber (multi-fiber dedupe)')
+  }
 
   const states = new FallbackStateStore()
   stateStores.set(ctx, states)
