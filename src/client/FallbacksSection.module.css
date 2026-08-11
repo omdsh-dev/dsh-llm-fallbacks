@@ -163,7 +163,9 @@
    opens the primitives Tooltip bubble (side right, ~300ms hover delay) on
    hover/focus. The 16px geometry matches the checkbox/radio controls; the
    14px glyph is the shared caption gray. Focusable so keyboard users reach
-   the same explanation; the focus-visible ring mirrors the checkbox ring. */
+   the same explanation; the focus-visible ring mirrors the checkbox ring
+   (the 2px box-shadow ring on --dsw-alias-border-l3 used by every focusable
+   control in this file). */
 .infoHint {
   display: inline-flex;
   align-items: center;
@@ -181,8 +183,8 @@
 }
 
 .infoHint:focus-visible {
-  outline: 2px solid var(--dsw-alias-border-l3);
-  outline-offset: 2px;
+  outline: none;
+  box-shadow: 0 0 0 2px var(--dsw-alias-border-l3);
 }
 
 /* Read-only/loading suppression: dimmed and out of the tab order; the
