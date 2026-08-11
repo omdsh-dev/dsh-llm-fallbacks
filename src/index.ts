@@ -30,15 +30,6 @@
 
 import type { Context, Logger } from 'cordis'
 import { installSettingsSection } from '@deepseek-ai/dsh-settings'
-// Namespace import with optional-call guards (W1): the patched
-// @deepseek-ai/dsh-agent exports markFallbackRouted (spec §2.5 D-1), and the
-// same process module instance shares the module-level WeakSet with the
-// patched model-selection listener, so a marked config is recognized by it.
-// On an UNPATCHED host the export is absent (AUTOPATCH=0 / link install / dsh
-// upgrade without re-running apply): the optional call degrades to returning
-// the override unmarked — pre-branch semantics, the outer selection re-applies
-// on that step — and never throws (docs/dsh-patch.md「未打补丁宿主降级」).
-import * as agentNs from '@deepseek-ai/dsh-agent'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { LlmCallConfig } from '@deepseek-ai/dsh-llm'
 import type { Session } from '@deepseek-ai/dsh-session'
@@ -424,15 +415,18 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     // Apply a pending decision first (trigger-code path); a switch for this
     // request means the always-cap count of the previous provider is moot.
     const applied = state === undefined ? undefined : states.applyPending(state, turn, step)
-    // The override creates a NEW spread config object; the marker rides only on
-    // this request step's object (never the deep-frozen LOOP seed) so the
-    // patched outer model-selection listener hands the step to the chain
-    // target, and the next step reverts to the user's selection (spec §2.5 D-1).
+    // The override creates a NEW spread config object (never the deep-frozen
+    // LOOP seed). Host-native semantics (the marker coordination shipped with
+    // the local dsh-agent patch is removed — guides
+    // role-and-model-selection-exploration.md): whether this step's routing
+    // survives a manual web model selection depends on waterfall listener
+    // order. When this plugin's listener is outer (registered first, the
+    // default web-profile composition) the switch wins; when the
+    // model-selection listener is outer (e.g. headless profile, or any agent
+    // created before the plugin registered) the selection re-applies over
+    // this step — the documented degradation.
     if (applied !== undefined) {
-      const routed = overrideConfig(seed, applied.to)
-      // W1: optional call — an unpatched host has no markFallbackRouted; the
-      // unmarked override keeps pre-branch routing semantics (no throw).
-      return agentNs.markFallbackRouted?.(routed) ?? routed
+      return overrideConfig(seed, applied.to)
     }
     const config = source()
     if (
@@ -458,9 +452,8 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
         commit(agent, commitState, pending, turn, step)
         const appliedCap = states.applyPending(commitState, turn, step)
         if (appliedCap !== undefined) {
-          const routed = overrideConfig(seed, appliedCap.to)
-          // W1: same optional-call degrade as the trigger-code path.
-          return agentNs.markFallbackRouted?.(routed) ?? routed
+          // Same host-native routing as the trigger-code path above.
+          return overrideConfig(seed, appliedCap.to)
         }
       }
     }

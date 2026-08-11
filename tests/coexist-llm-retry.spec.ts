@@ -15,15 +15,13 @@
  * - the reverse registration order (fallback first) is pinned as the
  *   bundle-order risk: the fallback then owns trigger codes outright.
  *
- * > Mock trap (S-h): this file deliberately has NO `vi.mock('@deepseek-ai/
- * > dsh-agent')` — its cases only drive `agent/request-error` (the decision
- * > path), never `agent/request` (the switch-apply path), so the marker
- * > functions are never touched. If a FUTURE case adds a request dispatch
- * > (e.g. asserting routing on the switched step), it MUST sync the
- * > patched-module vi.mock from `tests/plugin.spec.ts` — otherwise the
- * > marker-handoff assertions cannot run (the linked dsh-agent is unpatched;
- * > with W1's optional-call guard the apply path degrades instead of
- * > throwing, silently skipping the marker semantics under test).
+ * > Note (plan llm-fallbacks-runtime-depatch T2): no `vi.mock('@deepseek-ai/
+ * > dsh-agent')` exists anymore — the local dsh-agent patch (and its
+ * > fallback-routing marker) is removed, so the real module is the only
+ * > truth. These cases only drive `agent/request-error` (the decision path);
+ * > a future case that dispatches `agent/request` (the switch-apply path)
+ * > must keep the host-native semantics pinned in `tests/host-native.spec.ts`
+ * > and `tests/plugin.spec.ts` in sync.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'

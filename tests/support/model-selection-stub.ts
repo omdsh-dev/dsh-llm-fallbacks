@@ -1,28 +1,23 @@
 /**
  * In-test semantic double for `installModelSelection`
- * (`@deepseek-ai/dsh-agent/model-selection`; plan Task 4 — T3 review ⚠️3
- * composition-order assertions). Mirrors the real listener's `agent/request`
- * contract (packages/core/agent/src/model-selection.ts): `await next()`, then
- * apply the assembled selection on top of the resolved config, dropping any
- * inherited `reasoningEffort` (the `withoutInheritedEffort` pattern).
- *
- * Task 2 (spec §2.5 D-1) synced the real listener: after `await next()`, a
- * config the fallback plugin marked fallback-routed (`isFallbackRouted`) is
- * returned as-is — the chain target wins that step. The double mirrors that
- * marker check; `isFallbackRouted` resolves through the vitest mock of
- * `@deepseek-ai/dsh-agent` to the SAME registry the real plugin's
- * `markFallbackRouted` writes into (the linked dsh-agent is unpatched, so
- * tests simulate the patched module — see tests/plugin.spec.ts vi.mock).
+ * (`@deepseek-ai/dsh-agent/model-selection`). Mirrors the REAL host
+ * listener's `agent/request` contract (packages/core/agent/src/model-selection.ts):
+ * `await next()`, then apply the assembled selection on top of the resolved
+ * config, dropping any inherited `reasoningEffort` (the
+ * `withoutInheritedEffort` pattern). It is the host-NATIVE double — the
+ * fallback-routing marker check that used to live here (spec §2.5 D-1,
+ * local dsh-agent patch) is gone with the patch removal (plan
+ * llm-fallbacks-runtime-depatch, T2).
  *
  * The real one registers on an agent-scoped context; the double registers on
  * the shared test context — waterfall registration order is exactly what the
- * composition tests assert, so the shared context is the right seam.
+ * composition tests assert (cordis: first-registered listener = outer =
+ * final say after `next()`), so the shared context is the right seam.
  *
  * @module tests/support/model-selection-stub
  */
 
 import type { Context } from 'cordis'
-import { isFallbackRouted } from '@deepseek-ai/dsh-agent'
 import type { LlmCallConfig, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 
 /** Complete provider, model, and optional reasoning effort selected for one live Agent. */
@@ -42,15 +37,16 @@ export interface ModelSelectionRef {
 
 /**
  * Install the model-selection double: an `agent/request` listener that applies
- * `selection.assembled` on top of the resolved config when one exists, unless
- * the resolved config was already fallback-routed (spec §2.5 D-1 — per-step
- * yield; the next step reverts to the user's selection).
+ * `selection.assembled` on top of the resolved config whenever one exists —
+ * unconditionally, exactly like the unpatched host listener. Under an active
+ * selection this re-apply clobbers an inner plugin's switch override (the
+ * documented degradation); when the plugin's listener is outer, the plugin
+ * applies its switch AFTER this listener's re-apply, so the switch wins.
  * @returns the disposer (listeners also die with the context fiber).
  */
 export function installModelSelectionStub(ctx: Context, selection: ModelSelectionRef): () => void {
   return ctx.on('agent/request', async (_payload, next): Promise<LlmCallConfig> => {
     const resolved = await next()
-    if (isFallbackRouted(resolved)) return resolved
     const selected = selection.assembled
     if (selected === undefined) return resolved
     const { reasoningEffort: _inheritedEffort, ...withoutInheritedEffort } = resolved
