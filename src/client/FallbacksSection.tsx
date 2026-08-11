@@ -485,10 +485,12 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
         /* The form body is one fieldset without a legend: the enabled toggle
          * above it is the group's question (the advisor fieldset). `disabled`
          * propagates to every control inside — read-only/loading describes
-         * keep the whole body inert. */
+         * keep the whole body inert. The multi-control groups (triggerCodes /
+         * revertPolicy / chains / roles) keep the group labels the previous
+         * per-group legends provided via role="group" + aria-labelledby. */
         <fieldset className={css.fieldset} disabled={!writable}>
-          <div className={css.field}>
-            <span className={css.fieldLabel}>{t('triggerCodes.label')}</span>
+          <div className={css.field} role="group" aria-labelledby="fallbacks-trigger-codes">
+            <span id="fallbacks-trigger-codes" className={css.fieldLabel}>{t('triggerCodes.label')}</span>
             <span className={css.hint}>{t('triggerCodes.hint')}</span>
             {KNOWN_TRIGGER_CODES.map(code => (
               <label key={code} className={css.optionRow}>
@@ -507,8 +509,8 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
             )}
           </div>
 
-          <div className={css.field}>
-            <span className={css.fieldLabel}>{t('revertPolicy.label')}</span>
+          <div className={css.field} role="group" aria-labelledby="fallbacks-revert-policy">
+            <span id="fallbacks-revert-policy" className={css.fieldLabel}>{t('revertPolicy.label')}</span>
             <span className={css.hint}>{t('revertPolicy.hint')}</span>
             {(['cooldown-expiry', 'never'] as const).map(policy => (
               <label key={policy} className={css.optionRow}>
@@ -575,8 +577,8 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
             </label>
           </div>
 
-          <div className={css.field}>
-            <span className={css.fieldLabel}>{t('chains.label')}</span>
+          <div className={css.field} role="group" aria-labelledby="fallbacks-chains">
+            <span id="fallbacks-chains" className={css.fieldLabel}>{t('chains.label')}</span>
             <span className={css.hint}>{t('chains.hint')}</span>
             {/* Catalog state is an enrichment of the dropdowns, never a blocker:
              * a failed read (or an empty directory) only adds a hint line and
@@ -660,8 +662,8 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
             </Button>
           </div>
 
-          <div className={css.field}>
-            <span className={css.fieldLabel}>{t('roles.label')}</span>
+          <div className={css.field} role="group" aria-labelledby="fallbacks-roles">
+            <span id="fallbacks-roles" className={css.fieldLabel}>{t('roles.label')}</span>
             <span className={css.hint}>{t('roles.hint')}</span>
             <label className={css.subField}>
               <span className={css.subFieldLabel}>{t('roles.default')}</span>
