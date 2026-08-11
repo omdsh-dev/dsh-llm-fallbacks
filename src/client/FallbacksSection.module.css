@@ -45,6 +45,11 @@
 }
 
 .fieldLabel {
+  /* The Models field-label form: inline-flex so an inline note (`.defaultNote`)
+     rides the same baseline with a 10px gap, instead of a margin hack. */
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
   padding: 0;
   font-size: 12px;
   line-height: 18px;
@@ -59,19 +64,27 @@
 }
 
 .defaultNote {
-  margin-left: 8px;
   font-size: 12px;
   line-height: 18px;
   font-weight: 400;
   color: var(--dsw-alias-label-tertiary);
 }
 
-/* The `enabled` switch is a row-level preference: title + hint on the left,
-   the control on the right (the Permission-row rhythm). */
+/* The `enabled` switch is a row-level preference (the Permission/Language row
+   rhythm): title + hint on the left, the control on the right, 16/0 vertical
+   padding and a hairline separator — the panel has no switch primitive, and
+   the checkbox semantics are the behavior the spec pins. */
 .fieldRow {
   display: flex;
   align-items: center;
   gap: 8px;
+  padding: 16px 0;
+  border-bottom: 1px solid var(--dsw-alias-border-l2);
+  cursor: pointer;
+}
+
+.fieldRow:has(input:disabled) {
+  cursor: default;
 }
 
 .fieldRowText {
@@ -80,34 +93,67 @@
   display: flex;
   flex-direction: column;
   gap: 4px;
+  padding-right: 48px;
 }
 
 .fieldRowTitle {
   font-size: 14px;
+  font-weight: 400;
   line-height: 22px;
   color: var(--dsw-alias-label-primary);
 }
 
 .fieldRowDesc {
   font-size: 12px;
+  font-weight: 400;
   line-height: 18px;
   color: var(--dsw-alias-label-tertiary);
 }
 
 /* The panel has no switch primitive, so the native checkbox/radio keeps its
-   geometry and semantics; the alias brand tint ties it to the theme. */
+   geometry and semantics; the 16px box and the alias fill tint tie it to the
+   theme (the RiskConfirmation checkbox convention), with the same
+   focus-visible ring. */
 .switch,
-.optionRow input {
-  accent-color: var(--dsw-alias-brand-primary);
+.optionRow input,
+.wildcardCell input {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  accent-color: var(--dsw-alias-button-primary-fill);
 }
 
+.switch:focus-visible,
+.optionRow input:focus-visible,
+.wildcardCell input:focus-visible {
+  outline: 2px solid var(--dsw-alias-border-l4);
+  outline-offset: 2px;
+}
+
+.switch:disabled,
+.optionRow input:disabled,
+.wildcardCell input:disabled {
+  cursor: default;
+}
+
+/* Checkbox/radio rows (trigger codes / revert policy): the Models fetch-list
+   candidate rows — flex gap 8, padding 6/8, pointer cursor, radius 6 — with
+   the composer option-row hover fill. `:has(input:not(:disabled))` keeps the
+   hover off a row whose own control is disabled. */
 .optionRow {
   display: flex;
   align-items: center;
   gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
   font-size: 14px;
   line-height: 22px;
   color: var(--dsw-alias-label-primary);
+  cursor: pointer;
+}
+
+.optionRow:hover:has(input:not(:disabled)) {
+  background: var(--dsw-alias-interactive-bg-hover);
 }
 
 .subField {
@@ -178,6 +224,12 @@ select.input {
   width: 180px;
 }
 
+/* Chain key: a short row identifier, not a full-width form field — capped
+   like the enum selects so the card reads as a row editor. */
+.keyInput {
+  max-width: 240px;
+}
+
 .list {
   display: flex;
   flex-direction: column;
@@ -237,13 +289,22 @@ select.input {
 }
 
 /* The wildcard cell flips the column cell to a row layout: the checkbox
-   stands beside its label, centered against the selects above it. */
+   stands beside its label, centered against the selects above it. It takes
+   the checkbox-row form (Models candidate rows: padding 6/8, pointer cursor,
+   radius 6) so it reads as a toggle, not a bare control. */
 .wildcardCell {
   flex-direction: row;
   align-items: center;
   gap: 8px;
   min-width: 200px;
   align-self: center;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.wildcardCell:hover:has(input:not(:disabled)) {
+  background: var(--dsw-alias-interactive-bg-hover);
 }
 
 /* Icon-only actions: the label rides `data-tip` (and aria-label) so the card
@@ -416,12 +477,13 @@ select.input {
 
 /* Enabled OFF (readme-settings spec §1.2): an empty-state card in place of
    the hidden form body — dashed, like every other "nothing here yet"
-   affordance on the settings pages. */
+   affordance on the settings pages (the Models empty state: radius 8,
+   padding 12). */
 .offNotice {
   margin: 0;
-  padding: 12px 14px;
+  padding: 12px;
   border: 1px dashed var(--dsw-alias-border-l3);
-  border-radius: 12px;
+  border-radius: 8px;
   font-size: 13px;
   line-height: 20px;
   color: var(--dsw-alias-label-secondary);

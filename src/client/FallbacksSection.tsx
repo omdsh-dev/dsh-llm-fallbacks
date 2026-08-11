@@ -592,7 +592,7 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
           {chainRows.map((row, index) => (
             <div key={index} className={css.editorCard}>
               <input
-                className={css.input}
+                className={`${css.input} ${css.keyInput}`}
                 value={row.key}
                 placeholder={t('chains.keyPlaceholder')}
                 aria-label={t('chains.key')}
