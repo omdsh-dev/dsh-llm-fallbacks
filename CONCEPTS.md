@@ -8,6 +8,9 @@
 一个声明 `dsh.bundle.patch` 的 npm 包：以 `cordis.patch.yml` 组合层向 profile 插入插件行。后装入的 bundle 行插在内置行（如 llm-retry）之后——waterfall 监听注册顺序依赖此。
 *Avoid:* plugin row / patch layer（口语混用时可接受，正式文档用 bundle）
 
+### dsh settings slot
+dsh web settings 的条目挂载契约（权威：dsh-private `packages/client/ui-settings/src/client/contract/slots.ts`）：`settings.section`（整页设置，list kind，按 order 排序；`fallbacks` 即经此挂载，order 30）、`settings.general.item`（General 页内单行）、`settings.action`（头部操作）、`settings.onboarding`（root 步骤）；`trigger`/`header`/`close` 是 single seat（chrome 文案位）。shell 零自有内容——**新增设置不改 shell**；唯一宿主侧触发点是 `SettingsRoot.tsx` `navIcon(id)`（仅 models/agent-presets 有专属图标，新 id 落齿轮）。挂载统一 `ctx.slots.inject`（非裸 register）。*Avoid:* 把「新设置要改 shell」当默认假设。
+
 ### dsh link farm
 dsh 私有 `@deepseek-ai/*` 包（未发布 registry）的开发期类型/测试解析方案：`scripts/setup-dsh-links.mjs` 从 dsh 源码树（`$DSH_SOURCE_DIR`，缺省 `${DSH_HOME}/source/current`，再缺省 `~/.dsh/source/current`）把真实包符号链接进 `node_modules/`（含 `vendor/cordis` 的 bin-less shim，保证 `import 'cordis'` 与真实包解析到同一物理文件）；运行时值 import 保持 external 由宿主 in-box 解析，测试用真实 `dsh-settings`（内存 provider）与真实 store 引擎。`*Avoid:* peer-stubs / tsconfig paths（历史方案，已移除）`
 

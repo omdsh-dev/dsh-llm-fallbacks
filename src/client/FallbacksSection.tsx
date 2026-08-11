@@ -4,11 +4,12 @@
  * `fallbacks`, order 30 — after the Models section at 10); owner props are
  * empty and all data flows through {@link FallbacksSettingsController}.
  *
- * Rendering follows the settings-panel design language shared with the
- * Models / Agent-presets / General pages: primitives (`Button` / `Modal` /
- * `Icon*`) for actions and dialogs, capsule controls (h36 r18; h28 r14
- * dense), h32 r8 inputs with the `.selectInput` chevron, r12 cards on the
- * `bg-module-platform` fill, and `--dsw-alias-*` tokens throughout. The
+ * Rendering follows the dsh-advisor settings-section vocabulary shared with
+ * the settings panel: title + intro + one outlined card carrying the whole
+ * form (`.checkboxRow` enabled row, 12/18 field labels, h32 r8 inputs with
+ * the `.selectInput` chevron, number grid, h36 r18 capsule actions at the
+ * card bottom), the chain/role row editors keeping their filled editorCard
+ * surface inside the card, and `--dsw-alias-*` tokens throughout. The
  * reset-to-defaults confirmation is a `Modal` (the delete-confirm pattern of
  * the Models page) — no `window.confirm`.
  *
@@ -33,7 +34,7 @@ import type { ReactNode } from 'react'
 import { useSyncExternalStore } from 'react'
 import type { ConfigurableProviderView } from '@deepseek-ai/dsh-client-connection/client'
 import {
-  Button, IconPlusOutline16, IconTrashOutline16, Modal,
+  Button, IconPlusOutline16, IconTrashOutline16, Modal, Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { FallbacksConfig, RevertPolicy } from '../config.ts'
@@ -131,6 +132,39 @@ function parseCount(raw: string): number {
 /** The catalog faces the dropdowns classify against; undefined while unready. */
 function catalogOf(state: FallbacksSettingsState): CatalogLookup | undefined {
   return state.catalogStatus === 'ready' ? { providers: state.providers, groups: state.groups } : undefined
+}
+
+/**
+ * Inline "!" info badge (T3): the detailed explanation rides a primitives
+ * Tooltip bubble (side "right", ~300ms hover delay, immediate on keyboard
+ * focus) while the short inline hint stays on the row. The badge is an
+ * exposed, focusable image — the Models page credential-status pattern
+ * (role="img" + aria-label) — so the accessible name is always available;
+ * the tooltip is a progressive enhancement on top.
+ *
+ * `disabled` mirrors the read-only/loading suppression of the surrounding
+ * controls: the bubble is suppressed, the badge drops out of the tab order
+ * (and its `:disabled` style dims it).
+ *
+ * Placement contract (QC W-2 fix): the badge is always a **sibling** of the
+ * label-text element — never nested inside a `<label>` or an
+ * `aria-labelledby`-referenced node — so its aria-label can never leak into
+ * a control/group accessible name. A click on the badge therefore has no
+ * label-activation default action to cancel.
+ */
+function InfoHint({ label, disabled = false }: { label: string; disabled?: boolean }): ReactNode {
+  return (
+    <Tooltip label={label} side="right" delayMs={300} disabled={disabled}>
+      <span
+        className={disabled ? `${css.infoHint} ${css.infoHintDisabled}` : css.infoHint}
+        role="img"
+        aria-label={label}
+        tabIndex={disabled ? -1 : 0}
+      >
+        !
+      </span>
+    </Tooltip>
+  )
 }
 
 /**
@@ -239,7 +273,10 @@ function ChainSelectorEditor({
         </label>
       </div>
       {(providerOutside || modelOutside) && (
-        <span className={css.hint}>{t('catalog.outside.hint')}</span>
+        <span className={css.hint}>
+          {t('catalog.outside.hint')}
+          <InfoHint label={t('catalog.outside.tooltip')} disabled={disabled} />
+        </span>
       )}
       <div className={css.cardFoot}>
         <button
@@ -447,343 +484,394 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
         <div className={css.infoBanner}>{t('unavailable')}</div>
       )}
 
-      {/* The `enabled` switch is a row-level preference (the Permission-row
-       * rhythm): title + hint on the left, the native checkbox on the right
-       * — the panel has no switch primitive, and the checkbox semantics are
-       * the behavior the spec pins. */}
-      <label className={css.fieldRow}>
-        <span className={css.fieldRowText}>
-          <span className={css.fieldRowTitle}>{t('enabled.label')}</span>
-          <span className={css.fieldRowDesc}>{t('enabled.hint')}</span>
-        </span>
-        <input
-          type="checkbox"
-          className={css.switch}
-          checked={scalars.enabled}
-          disabled={!writable}
-          onChange={event => { updateScalars(draft => { draft.enabled = event.target.checked }) }}
-        />
-      </label>
+      {/* One outlined card carries the whole form (the dsh-advisor settings
+       * vocabulary): the enabled row, the form body (gated on the draft's
+       * `enabled` flag), and the save/reset capsule actions. The skeleton
+       * semantics are unchanged — the card, the enabled row, the actions,
+       * and the status block render in every store state. */}
+      <div className={css.card}>
+        {/* The `enabled` switch is a row-level preference (the advisor
+         * checkboxRow rhythm): label text on the left, the native checkbox
+         * on the right, no separator line — the panel has no switch
+         * primitive, and the checkbox semantics are the behavior the spec
+         * pins. */}
+        <div className={css.checkboxRow}>
+          <div className={css.checkLabel}>
+            <span className={css.checkLabelTitle}>
+              <label htmlFor="fallbacks-enabled">{t('enabled.label')}</label>
+              <InfoHint label={t('enabled.tooltip')} disabled={!writable} />
+            </span>
+            <span className={css.checkLabelDesc}>{t('enabled.hint')}</span>
+          </div>
+          <input
+            id="fallbacks-enabled"
+            type="checkbox"
+            className={css.checkbox}
+            checked={scalars.enabled}
+            disabled={!writable}
+            onChange={event => { updateScalars(draft => { draft.enabled = event.target.checked }) }}
+          />
+        </div>
 
-      {/* Enabled OFF (readme-settings spec §1.2): the form body is hidden but
-       * never discarded — the draft stays in state and comes right back when
-       * the switch is toggled on. */}
-      {!scalars.enabled && (
-        <div className={css.offNotice}>{t('enabled.off')}</div>
-      )}
-
-      {scalars.enabled && (
-      <>
-      <fieldset className={css.field} disabled={!writable}>
-        <legend className={css.fieldLabel}>{t('triggerCodes.label')}</legend>
-        <span className={css.hint}>{t('triggerCodes.hint')}</span>
-        {KNOWN_TRIGGER_CODES.map(code => (
-          <label key={code} className={css.optionRow}>
-            <input
-              type="checkbox"
-              checked={scalars.triggerCodes.includes(code)}
-              onChange={event => {
-                updateScalars(draft => { draft.triggerCodes = withTriggerCode(draft.triggerCodes, code, event.target.checked) })
-              }}
-            />
-            {t(TRIGGER_CODE_LABELS[code])}
-          </label>
-        ))}
-        {unknownCodes.length > 0 && (
-          <span className={css.hint}>{t('triggerCodes.extra', { codes: unknownCodes.join(', ') })}</span>
+        {/* Enabled OFF (readme-settings spec §1.2): the form body is hidden but
+         * never discarded — the draft stays in state and comes right back when
+         * the switch is toggled on. */}
+        {!scalars.enabled && (
+          <p className={css.offNotice}>{t('enabled.off')}</p>
         )}
-      </fieldset>
 
-      <fieldset className={css.field} disabled={!writable}>
-        <legend className={css.fieldLabel}>{t('revertPolicy.label')}</legend>
-        <span className={css.hint}>{t('revertPolicy.hint')}</span>
-        {(['cooldown-expiry', 'never'] as const).map(policy => (
-          <label key={policy} className={css.optionRow}>
-            <input
-              type="radio"
-              name="fallbacks-revert-policy"
-              checked={scalars.revertPolicy === policy}
-              onChange={() => { updateScalars(draft => { draft.revertPolicy = policy }) }}
-            />
-            {t(`revertPolicy.${policy}`)}
-          </label>
-        ))}
-      </fieldset>
+        {scalars.enabled && (
+        /* The form body is one fieldset without a legend: the enabled toggle
+         * above it is the group's question (the advisor fieldset). `disabled`
+         * propagates to every control inside — read-only/loading describes
+         * keep the whole body inert. The multi-control groups (triggerCodes /
+         * revertPolicy / chains / roles) keep the group labels the previous
+         * per-group legends provided via role="group" + aria-labelledby. */
+        <fieldset className={css.fieldset} disabled={!writable}>
+          <div className={css.field} role="group" aria-labelledby="fallbacks-trigger-codes">
+            <span className={css.fieldLabel}>
+              <span id="fallbacks-trigger-codes">{t('triggerCodes.label')}</span>
+              <InfoHint label={t('triggerCodes.tooltip')} disabled={!writable} />
+            </span>
+            <span className={css.hint}>{t('triggerCodes.hint')}</span>
+            {KNOWN_TRIGGER_CODES.map(code => (
+              <label key={code} className={css.optionRow}>
+                <input
+                  type="checkbox"
+                  checked={scalars.triggerCodes.includes(code)}
+                  onChange={event => {
+                    updateScalars(draft => { draft.triggerCodes = withTriggerCode(draft.triggerCodes, code, event.target.checked) })
+                  }}
+                />
+                {t(TRIGGER_CODE_LABELS[code])}
+              </label>
+            ))}
+            {unknownCodes.length > 0 && (
+              <span className={css.hint}>{t('triggerCodes.extra', { codes: unknownCodes.join(', ') })}</span>
+            )}
+          </div>
 
-      <label className={css.field}>
-        <span className={css.fieldLabel}>
-          {t('cooldownMs.label')}
-          <span className={css.defaultNote}>{t('defaults.prefix')}: {state.config.cooldownMs}</span>
-        </span>
-        <input
-          className={`${css.input} ${css.numberInput}`}
-          type="number"
-          min={0}
-          value={String(scalars.cooldownMs)}
-          disabled={!writable}
-          onChange={event => { updateScalars(draft => { draft.cooldownMs = parseCount(event.target.value) }) }}
-        />
-        <span className={css.hint}>{t('cooldownMs.hint')}</span>
-      </label>
+          <div className={css.field} role="group" aria-labelledby="fallbacks-revert-policy">
+            <span className={css.fieldLabel}>
+              <span id="fallbacks-revert-policy">{t('revertPolicy.label')}</span>
+              <InfoHint label={t('revertPolicy.tooltip')} disabled={!writable} />
+            </span>
+            <span className={css.hint}>{t('revertPolicy.hint')}</span>
+            {(['cooldown-expiry', 'never'] as const).map(policy => (
+              <label key={policy} className={css.optionRow}>
+                <input
+                  type="radio"
+                  name="fallbacks-revert-policy"
+                  checked={scalars.revertPolicy === policy}
+                  onChange={() => { updateScalars(draft => { draft.revertPolicy = policy }) }}
+                />
+                {t(`revertPolicy.${policy}`)}
+              </label>
+            ))}
+          </div>
 
-      <label className={css.field}>
-        <span className={css.fieldLabel}>
-          {t('maxSwitchesPerStep.label')}
-          <span className={css.defaultNote}>{t('defaults.prefix')}: {state.config.maxSwitchesPerStep}</span>
-        </span>
-        <input
-          className={`${css.input} ${css.numberInput}`}
-          type="number"
-          min={0}
-          value={String(scalars.maxSwitchesPerStep)}
-          disabled={!writable}
-          onChange={event => { updateScalars(draft => { draft.maxSwitchesPerStep = parseCount(event.target.value) }) }}
-        />
-        <span className={css.hint}>{t('maxSwitchesPerStep.hint')}</span>
-      </label>
-
-      <label className={css.field}>
-        <span className={css.fieldLabel}>
-          {t('alwaysModeRetryCap.label')}
-          <span className={css.defaultNote}>{t('defaults.prefix')}: {state.config.alwaysModeRetryCap}</span>
-        </span>
-        <input
-          className={`${css.input} ${css.numberInput}`}
-          type="number"
-          min={0}
-          value={String(scalars.alwaysModeRetryCap)}
-          disabled={!writable}
-          onChange={event => { updateScalars(draft => { draft.alwaysModeRetryCap = parseCount(event.target.value) }) }}
-        />
-        <span className={css.hint}>{t('alwaysModeRetryCap.hint')}</span>
-      </label>
-
-      <fieldset className={css.field} disabled={!writable}>
-        <legend className={css.fieldLabel}>{t('chains.label')}</legend>
-        <span className={css.hint}>{t('chains.hint')}</span>
-        {/* Catalog state is an enrichment of the dropdowns, never a blocker:
-         * a failed read (or an empty directory) only adds a hint line and
-         * leaves every other field editable and saveable (spec §2.3 R-3a). */}
-        {state.catalogStatus === 'error' && state.catalogError !== null && (
-          <span className={css.hint}>{t('catalog.error', { message: state.catalogError })}</span>
-        )}
-        {state.catalogStatus === 'ready' && state.catalogError !== null && (
-          <span className={css.hint}>{t('catalog.partial', { message: state.catalogError })}</span>
-        )}
-        {state.catalogStatus === 'ready' && (state.groups.length === 0 || state.configuredProviders.length === 0) && (
-          <span className={css.hint}>{t('catalog.empty')}</span>
-        )}
-        <div className={css.list}>
-          {chainRows.map((row, index) => (
-            <div key={index} className={css.editorCard}>
+          {/* The three short numeric fields sit side by side, each keeping a
+           * full-width field of its own grid column. */}
+          <div className={css.numberFields}>
+            <div className={css.field}>
+              <span className={css.fieldLabel}>
+                <label htmlFor="fallbacks-cooldown-ms">{t('cooldownMs.label')}</label>
+                <InfoHint label={t('cooldownMs.tooltip')} disabled={!writable} />
+                <span className={css.defaultNote}>{t('defaults.prefix')}: {state.config.cooldownMs}</span>
+              </span>
               <input
-                className={`${css.input} ${css.keyInput}`}
-                value={row.key}
-                placeholder={t('chains.keyPlaceholder')}
-                aria-label={t('chains.key')}
-                onChange={event => { updateChainRow(index, { key: event.target.value }) }}
+                id="fallbacks-cooldown-ms"
+                className={css.input}
+                type="number"
+                min={0}
+                value={String(scalars.cooldownMs)}
+                disabled={!writable}
+                onChange={event => { updateScalars(draft => { draft.cooldownMs = parseCount(event.target.value) }) }}
               />
-              <div className={css.chainSelectors}>
-                {row.selectors.map((selector, selectorIndex) => (
-                  <ChainSelectorEditor
-                    key={selectorIndex}
-                    selector={selector}
-                    catalog={catalogOf(state)}
-                    configuredProviders={state.configuredProviders}
-                    disabled={!writable}
-                    t={t}
-                    onChange={patch => { updateChainSelector(index, selectorIndex, patch) }}
-                    onRemove={() => {
+              <span className={css.hint}>{t('cooldownMs.hint')}</span>
+            </div>
+
+            <div className={css.field}>
+              <span className={css.fieldLabel}>
+                <label htmlFor="fallbacks-max-switches">{t('maxSwitchesPerStep.label')}</label>
+                <InfoHint label={t('maxSwitchesPerStep.tooltip')} disabled={!writable} />
+                <span className={css.defaultNote}>{t('defaults.prefix')}: {state.config.maxSwitchesPerStep}</span>
+              </span>
+              <input
+                id="fallbacks-max-switches"
+                className={css.input}
+                type="number"
+                min={0}
+                value={String(scalars.maxSwitchesPerStep)}
+                disabled={!writable}
+                onChange={event => { updateScalars(draft => { draft.maxSwitchesPerStep = parseCount(event.target.value) }) }}
+              />
+              <span className={css.hint}>{t('maxSwitchesPerStep.hint')}</span>
+            </div>
+
+            <div className={css.field}>
+              <span className={css.fieldLabel}>
+                <label htmlFor="fallbacks-always-cap">{t('alwaysModeRetryCap.label')}</label>
+                <InfoHint label={t('alwaysModeRetryCap.tooltip')} disabled={!writable} />
+                <span className={css.defaultNote}>{t('defaults.prefix')}: {state.config.alwaysModeRetryCap}</span>
+              </span>
+              <input
+                id="fallbacks-always-cap"
+                className={css.input}
+                type="number"
+                min={0}
+                value={String(scalars.alwaysModeRetryCap)}
+                disabled={!writable}
+                onChange={event => { updateScalars(draft => { draft.alwaysModeRetryCap = parseCount(event.target.value) }) }}
+              />
+              <span className={css.hint}>{t('alwaysModeRetryCap.hint')}</span>
+            </div>
+          </div>
+
+          <div className={css.field} role="group" aria-labelledby="fallbacks-chains">
+            <span className={css.fieldLabel}>
+              <span id="fallbacks-chains">{t('chains.label')}</span>
+              <InfoHint label={t('chains.tooltip')} disabled={!writable} />
+            </span>
+            <span className={css.hint}>{t('chains.hint')}</span>
+            {/* Catalog state is an enrichment of the dropdowns, never a blocker:
+             * a failed read (or an empty directory) only adds a hint line and
+             * leaves every other field editable and saveable (spec §2.3 R-3a). */}
+            {state.catalogStatus === 'error' && state.catalogError !== null && (
+              <span className={css.hint}>{t('catalog.error', { message: state.catalogError })}</span>
+            )}
+            {state.catalogStatus === 'ready' && state.catalogError !== null && (
+              <span className={css.hint}>{t('catalog.partial', { message: state.catalogError })}</span>
+            )}
+            {state.catalogStatus === 'ready' && (state.groups.length === 0 || state.configuredProviders.length === 0) && (
+              <span className={css.hint}>{t('catalog.empty')}</span>
+            )}
+            <div className={css.list}>
+              {chainRows.map((row, index) => (
+                <div key={index} className={css.editorCard}>
+                  <input
+                    className={`${css.input} ${css.keyInput}`}
+                    value={row.key}
+                    placeholder={t('chains.keyPlaceholder')}
+                    aria-label={t('chains.key')}
+                    onChange={event => { updateChainRow(index, { key: event.target.value }) }}
+                  />
+                  <div className={css.chainSelectors}>
+                    {row.selectors.map((selector, selectorIndex) => (
+                      <ChainSelectorEditor
+                        key={selectorIndex}
+                        selector={selector}
+                        catalog={catalogOf(state)}
+                        configuredProviders={state.configuredProviders}
+                        disabled={!writable}
+                        t={t}
+                        onChange={patch => { updateChainSelector(index, selectorIndex, patch) }}
+                        onRemove={() => {
+                          setChainRows(rows => rows.map((entry, entryIndex) => entryIndex === index
+                            ? { ...entry, selectors: entry.selectors.filter((_, sIndex) => sIndex !== selectorIndex) }
+                            : entry))
+                        }}
+                      />
+                    ))}
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    icon={<IconPlusOutline16 size={14} />}
+                    className={css.addButton}
+                    onClick={() => {
                       setChainRows(rows => rows.map((entry, entryIndex) => entryIndex === index
-                        ? { ...entry, selectors: entry.selectors.filter((_, sIndex) => sIndex !== selectorIndex) }
+                        ? { ...entry, selectors: [...entry.selectors, { wildcard: false, provider: null, model: null }] }
                         : entry))
                     }}
-                  />
-                ))}
-              </div>
-              <Button
-                variant="outline"
-                size="sm"
-                icon={<IconPlusOutline16 size={14} />}
-                className={css.addButton}
-                onClick={() => {
-                  setChainRows(rows => rows.map((entry, entryIndex) => entryIndex === index
-                    ? { ...entry, selectors: [...entry.selectors, { wildcard: false, provider: null, model: null }] }
-                    : entry))
-                }}
-              >
-                {t('chains.selector.add')}
-              </Button>
-              <div className={css.cardFoot}>
-                <button
-                  type="button"
-                  className={`${css.iconButton} ${css.iconButtonDanger}`}
-                  data-tip={t('chains.remove')}
-                  aria-label={t('chains.remove')}
-                  onClick={() => {
-                    setChainRows(rows => rows.filter((_, rowIndex) => rowIndex !== index))
-                  }}
-                >
-                  <IconTrashOutline16 />
-                </button>
-              </div>
+                  >
+                    {t('chains.selector.add')}
+                  </Button>
+                  <div className={css.cardFoot}>
+                    <button
+                      type="button"
+                      className={`${css.iconButton} ${css.iconButtonDanger}`}
+                      data-tip={t('chains.remove')}
+                      aria-label={t('chains.remove')}
+                      onClick={() => {
+                        setChainRows(rows => rows.filter((_, rowIndex) => rowIndex !== index))
+                      }}
+                    >
+                      <IconTrashOutline16 />
+                    </button>
+                  </div>
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
-        <Button
-          variant="outline"
-          size="sm"
-          icon={<IconPlusOutline16 size={14} />}
-          className={css.addButton}
-          onClick={() => {
-            setChainRows(rows => [...rows, { key: '', selectors: [] }])
-          }}
-        >
-          {t('chains.add')}
-        </Button>
-      </fieldset>
+            <Button
+              variant="outline"
+              size="sm"
+              icon={<IconPlusOutline16 size={14} />}
+              className={css.addButton}
+              onClick={() => {
+                setChainRows(rows => [...rows, { key: '', selectors: [] }])
+              }}
+            >
+              {t('chains.add')}
+            </Button>
+          </div>
 
-      <fieldset className={css.field} disabled={!writable}>
-        <legend className={css.fieldLabel}>{t('roles.label')}</legend>
-        <span className={css.hint}>{t('roles.hint')}</span>
-        <label className={css.subField}>
-          <span className={css.subFieldLabel}>{t('roles.default')}</span>
-          <input
-            className={css.input}
-            value={scalars.defaultRole}
-            onChange={event => { updateScalars(draft => { draft.defaultRole = event.target.value }) }}
-          />
-        </label>
-        <div className={css.list}>
-          {ruleRows.map((row, index) => {
-            const catalog = catalogOf(state)
-            const providerRaw = selectionToRaw(row.provider)
-            const group = catalog?.groups.find(entry => entry.id === providerRaw)
-            const providerOutside = row.provider?.kind === 'outside'
-            // Same read-back treatment as the chain selector rows: a catalog
-            // provider that is not configured stays visible but unofferable.
-            const providerUnconfigured = !providerOutside && providerRaw !== ''
-              && (catalog?.providers.some(entry => entry.provider === providerRaw) ?? false)
-              && !state.configuredProviders.some(entry => entry.provider === providerRaw)
-            const modelOutside = row.model?.kind === 'outside'
-            return (
-            <div key={index} className={css.editorCard}>
-              <div className={css.ruleGrid}>
-                <label className={css.ruleCell}>
-                  <span className={css.ruleCellLabel}>{t('roles.rule.origin')}</span>
-                  <select
-                    className={`${css.input} ${css.selectInput}`}
-                    value={row.origin}
-                    onChange={event => { updateRuleRow(index, { origin: event.target.value }) }}
-                  >
-                    <option value="">{t('roles.rule.origin.any')}</option>
-                    <option value="root">{t('roles.rule.origin.root')}</option>
-                    <option value="subagent">{t('roles.rule.origin.subagent')}</option>
-                  </select>
-                </label>
-                <label className={css.ruleCell}>
-                  <span className={css.ruleCellLabel}>{t('roles.rule.provider')}</span>
-                  <select
-                    className={`${css.input} ${css.selectInput}`}
-                    value={providerRaw}
-                    onChange={event => {
-                      // Cascade (same D-3 rule as chains): a DIFFERENT provider
-                      // clears the model choice; re-picking the same provider
-                      // keeps the model (S-e).
-                      if (event.target.value === providerRaw) return
-                      updateRuleRow(index, { provider: classifyProvider(event.target.value, catalog), model: null })
-                    }}
-                  >
-                    <option value="">{t('roles.rule.provider.any')}</option>
-                    {state.configuredProviders.map(entry => (
-                      <option key={entry.provider} value={entry.provider}>{entry.displayName}</option>
-                    ))}
-                    {providerUnconfigured && (
-                      <option value={providerRaw}>{`${providerRaw}${t('catalog.unconfigured.short')}`}</option>
-                    )}
-                    {providerOutside && (
-                      <option value={providerRaw}>{`${providerRaw}${t('catalog.outside.short')}`}</option>
-                    )}
-                  </select>
-                </label>
-                <label className={css.ruleCell}>
-                  <span className={css.ruleCellLabel}>{t('roles.rule.model')}</span>
-                  <select
-                    className={`${css.input} ${css.selectInput}`}
-                    value={selectionToRaw(row.model)}
-                    onChange={event => {
-                      updateRuleRow(index, { model: classifyModel(providerRaw, event.target.value, catalog) })
-                    }}
-                  >
-                    <option value="">{t('roles.rule.model.any')}</option>
-                    {(group?.models ?? []).map(model => (
-                      <option key={model.id} value={model.id}>{model.name}</option>
-                    ))}
-                    {modelOutside && (
-                      <option value={selectionToRaw(row.model)}>{`${selectionToRaw(row.model)}${t('catalog.outside.short')}`}</option>
-                    )}
-                  </select>
-                </label>
-                <label className={css.ruleCell}>
-                  <span className={css.ruleCellLabel}>{t('roles.rule.role')}</span>
-                  <input
-                    className={css.input}
-                    value={row.role}
-                    placeholder={t('roles.rule.rolePlaceholder')}
-                    onChange={event => { updateRuleRow(index, { role: event.target.value }) }}
-                  />
-                </label>
-              </div>
-              {(providerOutside || modelOutside) && (
-                <span className={css.hint}>{t('catalog.outside.hint')}</span>
-              )}
-              <div className={css.cardFoot}>
-                <button
-                  type="button"
-                  className={`${css.iconButton} ${css.iconButtonDanger}`}
-                  data-tip={t('roles.removeRule')}
-                  aria-label={t('roles.removeRule')}
-                  onClick={() => {
-                    setRuleRows(rows => rows.filter((_, rowIndex) => rowIndex !== index))
-                  }}
-                >
-                  <IconTrashOutline16 />
-                </button>
-              </div>
+          <div className={css.field} role="group" aria-labelledby="fallbacks-roles">
+            <span className={css.fieldLabel}>
+              <span id="fallbacks-roles">{t('roles.label')}</span>
+              <InfoHint label={t('roles.tooltip')} disabled={!writable} />
+            </span>
+            <span className={css.hint}>{t('roles.hint')}</span>
+            <label className={css.subField}>
+              <span className={css.subFieldLabel}>{t('roles.default')}</span>
+              <input
+                className={css.input}
+                value={scalars.defaultRole}
+                onChange={event => { updateScalars(draft => { draft.defaultRole = event.target.value }) }}
+              />
+            </label>
+            <div className={css.list}>
+              {ruleRows.map((row, index) => {
+                const catalog = catalogOf(state)
+                const providerRaw = selectionToRaw(row.provider)
+                const group = catalog?.groups.find(entry => entry.id === providerRaw)
+                const providerOutside = row.provider?.kind === 'outside'
+                // Same read-back treatment as the chain selector rows: a catalog
+                // provider that is not configured stays visible but unofferable.
+                const providerUnconfigured = !providerOutside && providerRaw !== ''
+                  && (catalog?.providers.some(entry => entry.provider === providerRaw) ?? false)
+                  && !state.configuredProviders.some(entry => entry.provider === providerRaw)
+                const modelOutside = row.model?.kind === 'outside'
+                return (
+                <div key={index} className={css.editorCard}>
+                  <div className={css.ruleGrid}>
+                    <label className={css.ruleCell}>
+                      <span className={css.ruleCellLabel}>{t('roles.rule.origin')}</span>
+                      <select
+                        className={`${css.input} ${css.selectInput}`}
+                        value={row.origin}
+                        onChange={event => { updateRuleRow(index, { origin: event.target.value }) }}
+                      >
+                        <option value="">{t('roles.rule.origin.any')}</option>
+                        <option value="root">{t('roles.rule.origin.root')}</option>
+                        <option value="subagent">{t('roles.rule.origin.subagent')}</option>
+                      </select>
+                    </label>
+                    <label className={css.ruleCell}>
+                      <span className={css.ruleCellLabel}>{t('roles.rule.provider')}</span>
+                      <select
+                        className={`${css.input} ${css.selectInput}`}
+                        value={providerRaw}
+                        onChange={event => {
+                          // Cascade (same D-3 rule as chains): a DIFFERENT provider
+                          // clears the model choice; re-picking the same provider
+                          // keeps the model (S-e).
+                          if (event.target.value === providerRaw) return
+                          updateRuleRow(index, { provider: classifyProvider(event.target.value, catalog), model: null })
+                        }}
+                      >
+                        <option value="">{t('roles.rule.provider.any')}</option>
+                        {state.configuredProviders.map(entry => (
+                          <option key={entry.provider} value={entry.provider}>{entry.displayName}</option>
+                        ))}
+                        {providerUnconfigured && (
+                          <option value={providerRaw}>{`${providerRaw}${t('catalog.unconfigured.short')}`}</option>
+                        )}
+                        {providerOutside && (
+                          <option value={providerRaw}>{`${providerRaw}${t('catalog.outside.short')}`}</option>
+                        )}
+                      </select>
+                    </label>
+                    <label className={css.ruleCell}>
+                      <span className={css.ruleCellLabel}>{t('roles.rule.model')}</span>
+                      <select
+                        className={`${css.input} ${css.selectInput}`}
+                        value={selectionToRaw(row.model)}
+                        onChange={event => {
+                          updateRuleRow(index, { model: classifyModel(providerRaw, event.target.value, catalog) })
+                        }}
+                      >
+                        <option value="">{t('roles.rule.model.any')}</option>
+                        {(group?.models ?? []).map(model => (
+                          <option key={model.id} value={model.id}>{model.name}</option>
+                        ))}
+                        {modelOutside && (
+                          <option value={selectionToRaw(row.model)}>{`${selectionToRaw(row.model)}${t('catalog.outside.short')}`}</option>
+                        )}
+                      </select>
+                    </label>
+                    <label className={css.ruleCell}>
+                      <span className={css.ruleCellLabel}>{t('roles.rule.role')}</span>
+                      <input
+                        className={css.input}
+                        value={row.role}
+                        placeholder={t('roles.rule.rolePlaceholder')}
+                        onChange={event => { updateRuleRow(index, { role: event.target.value }) }}
+                      />
+                    </label>
+                  </div>
+                  {(providerOutside || modelOutside) && (
+                    <span className={css.hint}>
+                      {t('catalog.outside.hint')}
+                      <InfoHint label={t('catalog.outside.tooltip')} disabled={!writable} />
+                    </span>
+                  )}
+                  <div className={css.cardFoot}>
+                    <button
+                      type="button"
+                      className={`${css.iconButton} ${css.iconButtonDanger}`}
+                      data-tip={t('roles.removeRule')}
+                      aria-label={t('roles.removeRule')}
+                      onClick={() => {
+                        setRuleRows(rows => rows.filter((_, rowIndex) => rowIndex !== index))
+                      }}
+                    >
+                      <IconTrashOutline16 />
+                    </button>
+                  </div>
+                </div>
+                )
+              })}
             </div>
-            )
-          })}
-        </div>
-        <Button
-          variant="outline"
-          size="sm"
-          icon={<IconPlusOutline16 size={14} />}
-          className={css.addButton}
-          onClick={() => {
-            setRuleRows(rows => [...rows, { origin: '', provider: null, model: null, role: '' }])
-          }}
-        >
-          {t('roles.addRule')}
-        </Button>
-      </fieldset>
-      </>
-      )}
+            <Button
+              variant="outline"
+              size="sm"
+              icon={<IconPlusOutline16 size={14} />}
+              className={css.addButton}
+              onClick={() => {
+                setRuleRows(rows => [...rows, { origin: '', provider: null, model: null, role: '' }])
+              }}
+            >
+              {t('roles.addRule')}
+            </Button>
+          </div>
+        </fieldset>
+        )}
 
-      <div className={css.actions}>
-        <Button
-          variant="primary"
-          disabled={!writable || saving || !dirty}
-          onClick={save}
-        >
-          {saving ? t('save.saving') : t('save')}
-        </Button>
-        <Button variant="outline" disabled={!writable || saving} onClick={() => { setConfirmingReset(true) }}>
-          {t('reset')}
-        </Button>
+        {/* Save/reset: the advisor h36 r18 capsule actions, right-aligned at
+         * the card bottom. */}
+        <div className={css.editorActions}>
+          <button
+            type="button"
+            className={css.primaryButton}
+            disabled={!writable || saving || !dirty}
+            onClick={save}
+          >
+            {saving ? t('save.saving') : t('save')}
+          </button>
+          <button
+            type="button"
+            className={css.secondaryButton}
+            disabled={!writable || saving}
+            onClick={() => { setConfirmingReset(true) }}
+          >
+            {t('reset')}
+          </button>
+        </div>
       </div>
 
       {/* AC-7 read-only status, compact and pinned at the section bottom
-       * (after the save/reset actions): the derived "current effective model"
+       * (after the form card): the derived "current effective model"
        * (D-6 — a display value from config + recent switches, never a live
        * route probe; note ⑤ rides inline) and the most recent switch (D-5 —
        * read through the store's `sessions.history` face). The verbose

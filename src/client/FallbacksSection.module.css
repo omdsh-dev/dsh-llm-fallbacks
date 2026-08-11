@@ -1,8 +1,11 @@
-/* Fallbacks settings section, in the settings-panel design language — the
- * same vocabulary as the Models section and the Button/Input primitives:
- * 14/22 body, 12/18 captions, capsule controls (h36 r18; h28 r14 dense),
- * h32 r8 fields, r12 cards (outlined on the panel, `bg-module-platform` for
- * the row editors), and `border-l2` hairlines.
+/* Fallbacks settings section, aligned to the dsh-advisor settings-section
+ * vocabulary (advisor-section.module.css): 16/24 title, 14/22 intro, 12/18
+ * captions and hints, 32px fields with the shared select chevron, capsule
+ * controls (h36 r18), one outlined card carrying the whole form, and
+ * `--dsw-alias-*` tokens throughout. The chain/role row editors keep their
+ * filled editorCard surface (the Models page row-editor precedent) inside
+ * the card, and the compact read-only status block stays pinned at the
+ * section bottom.
  *
  * Every color resolves through a `--dsw-alias-*` token. Bare `--border` /
  * `--surface` / `--text-*` names, which nothing in this app defines, would
@@ -32,8 +35,85 @@
   color: var(--dsw-alias-label-tertiary);
 }
 
-/* Field grouping: legend + hint + controls. `margin: 0; border: none` keeps
-   the fieldset a pure grouping box (the inner gap is the field rhythm). */
+/* The whole form grouped as one card: outlined on the panel fill like the
+   models page's row cards, so the editing surface reads as a unit (the
+   advisor `.card`). */
+.card {
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 12px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* The enabled row: label text on the left, the native checkbox on the right
+   — no separator line (the old fieldRow hairline is gone). */
+.checkboxRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.checkLabel {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 500;
+  color: var(--dsw-alias-label-primary);
+  cursor: pointer;
+}
+
+.checkLabelTitle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 500;
+}
+
+.checkLabelDesc {
+  font-size: 12px;
+  line-height: 18px;
+  font-weight: 400;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+/* The panel has no switch primitive, so the native checkbox keeps its
+   geometry and semantics; the 16px box and the brand accent tie it to the
+   theme (the advisor `.checkbox` convention), with the same focus-visible
+   ring. */
+.checkbox {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--dsw-alias-brand-primary);
+  cursor: pointer;
+}
+
+.checkbox:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* The form body (the enabled-gated group) is one fieldset without a legend:
+   the enabled toggle above it is the group's question (the advisor
+   fieldset). `disabled` propagates to every control inside. */
+.fieldset {
+  margin: 0;
+  padding: 0;
+  border: none;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* Field grouping: label + hint + controls. `min-width: 0` keeps long option
+   rows from overflowing their grid/column. */
 .field {
   display: flex;
   flex-direction: column;
@@ -58,6 +138,10 @@
 }
 
 .hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
   font-size: 12px;
   line-height: 18px;
   color: var(--dsw-alias-label-tertiary);
@@ -70,72 +154,36 @@
   color: var(--dsw-alias-label-tertiary);
 }
 
-/* The `enabled` switch is a row-level preference (the Permission/Language row
-   rhythm): title + hint on the left, the control on the right, 16/0 vertical
-   padding and a hairline separator — the panel has no switch primitive, and
-   the checkbox semantics are the behavior the spec pins. */
-.fieldRow {
-  display: flex;
+/* The "!" info badge (T3): a quiet circular mark on the tertiary tone that
+   opens the primitives Tooltip bubble (side right, ~300ms hover delay) on
+   hover/focus. The 16px geometry matches the checkbox/radio controls; the
+   14px glyph is the shared caption gray. Focusable so keyboard users reach
+   the same explanation; the focus-visible ring mirrors the checkbox ring. */
+.infoHint {
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 16px 0;
-  border-bottom: 1px solid var(--dsw-alias-border-l2);
-  cursor: pointer;
-}
-
-.fieldRow:has(input:disabled) {
-  cursor: default;
-}
-
-.fieldRowText {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding-right: 48px;
-}
-
-.fieldRowTitle {
-  font-size: 14px;
-  font-weight: 400;
-  line-height: 22px;
-  color: var(--dsw-alias-label-primary);
-}
-
-.fieldRowDesc {
-  font-size: 12px;
-  font-weight: 400;
-  line-height: 18px;
-  color: var(--dsw-alias-label-tertiary);
-}
-
-/* The panel has no switch primitive, so the native checkbox/radio keeps its
-   geometry and semantics; the 16px box and the alias fill tint tie it to the
-   theme (the RiskConfirmation checkbox convention), with the same
-   focus-visible ring. The control itself carries the pointer cursor (the
-   row-level `cursor: pointer` on `.optionRow` / `.wildcardCell` only covers
-   the label surface, not the input box). */
-.switch,
-.optionRow input,
-.wildcardCell input {
+  justify-content: center;
   flex: none;
   width: 16px;
   height: 16px;
-  accent-color: var(--dsw-alias-button-primary-fill);
-  cursor: pointer;
+  border-radius: 50%;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--dsw-alias-label-tertiary);
+  background: var(--dsw-alias-interactive-bg-hover);
+  cursor: help;
+  user-select: none;
 }
 
-.switch:focus-visible,
-.optionRow input:focus-visible,
-.wildcardCell input:focus-visible {
-  outline: 2px solid var(--dsw-alias-border-l4);
+.infoHint:focus-visible {
+  outline: 2px solid var(--dsw-alias-border-l3);
   outline-offset: 2px;
 }
 
-.switch:disabled,
-.optionRow input:disabled,
-.wildcardCell input:disabled {
+/* Read-only/loading suppression: dimmed and out of the tab order; the
+   Tooltip bubble is suppressed by the same `disabled` flag. */
+.infoHintDisabled {
+  opacity: 0.4;
   cursor: default;
 }
 
@@ -157,6 +205,32 @@
 
 .optionRow:hover:has(input:not(:disabled)) {
   background: var(--dsw-alias-interactive-bg-hover);
+}
+
+/* Native checkbox/radio controls share the checkbox geometry: 16px box,
+   brand accent, same focus-visible ring (the enabled checkbox is the
+   advisor `.checkbox`; the option/wildcard rows follow it). */
+.checkbox,
+.optionRow input,
+.wildcardCell input {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--dsw-alias-brand-primary);
+  cursor: pointer;
+}
+
+.checkbox:focus-visible,
+.optionRow input:focus-visible,
+.wildcardCell input:focus-visible {
+  outline: 2px solid var(--dsw-alias-border-l3);
+  outline-offset: 2px;
+}
+
+.optionRow input:disabled,
+.wildcardCell input:disabled {
+  cursor: default;
 }
 
 .subField {
@@ -223,14 +297,19 @@ select.input {
   background-size: 12px 12px;
 }
 
-.numberInput {
-  width: 180px;
-}
-
 /* Chain key: a short row identifier, not a full-width form field — capped
    like the enum selects so the card reads as a row editor. */
 .keyInput {
   max-width: 240px;
+}
+
+/* The three short numeric fields (cooldown / max switches / always cap) sit
+   side by side, each keeping a full-width field of its own grid column (the
+   advisor `.numberFields`). */
+.numberFields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
 }
 
 .list {
@@ -375,15 +454,65 @@ select.input {
   align-self: flex-start;
 }
 
-.actions {
+/* Save/reset footer: right-aligned h36 r18 capsules at the card bottom — the
+   primary button carries the brand fill, reset is the outlined sibling (the
+   advisor `editorActions` vocabulary). */
+.editorActions {
   display: flex;
-  align-items: center;
+  justify-content: flex-end;
   gap: 8px;
-  margin-top: 4px;
+}
+
+.primaryButton,
+.secondaryButton {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 36px;
+  padding: 0 14px;
+  border: none;
+  border-radius: 18px;
+  font: inherit;
+  font-size: 14px;
+  line-height: 22px;
+  cursor: pointer;
+}
+
+.primaryButton {
+  background: var(--dsw-alias-button-primary-fill);
+  color: var(--dsw-alias-label-primary-foreground);
+}
+
+.primaryButton:hover:not(:disabled) {
+  background: var(--dsw-alias-button-primary-hover);
+}
+
+.secondaryButton {
+  border: 1px solid var(--dsw-alias-border-l2);
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+}
+
+.secondaryButton:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover-solid);
+}
+
+.primaryButton:disabled,
+.secondaryButton:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.primaryButton:focus-visible,
+.secondaryButton:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--dsw-alias-border-l3);
 }
 
 /* AC-7 read-only status, compact: an outlined card like the Models rows,
-   pinned at the section bottom after the actions. Tighter padding and one
+   pinned at the section bottom after the form card. Tighter padding and one
    line per fact with ellipsis overflow — the block never dominates the page. */
 .statusBlock {
   display: flex;
@@ -418,7 +547,7 @@ select.input {
   color: var(--dsw-alias-label-secondary);
 }
 
-/* Enabled OFF (readme-settings spec §1.2): an empty-state card in place of
+/* Enabled OFF (readme-settings spec §1.2): an empty-state notice in place of
    the hidden form body — dashed, like every other "nothing here yet"
    affordance on the settings pages (the Models empty state: radius 8,
    padding 12). */
