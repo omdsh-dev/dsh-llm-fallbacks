@@ -815,6 +815,35 @@ describe('configuredProviders derivation (Models-page `configured` join)', () =>
     const rows = chainsToRows(state.config.chains, { providers: state.providers, groups: state.groups })
     expect(rowsToChains(rows)).toEqual(state.config.chains)
   })
+
+  it('round-trips in-catalog-but-unconfigured existing values (the 未配置 read-back is lossless)', async () => {
+    const api = makeApi()
+    // `google` is in the catalog directory but its `llm-providers` profile path
+    // does not resolve — the configured join keeps it out of the offer set,
+    // yet an existing chain value referencing it must still round-trip
+    // verbatim (the synthetic 未配置 option serializes back to the raw string).
+    api.settings.describe.mockResolvedValue(ok({
+      writable: true,
+      hasDocument: false,
+      namespaces: [
+        viewOf({ value: { ...defaultFallbacksConfig, chains: { default: ['google/gemini-2.0-flash'] } } }),
+        providerNs('llm-providers', { providers: { openai: { apiKeyEnv: 'OPENAI_API_KEY' }, anthropic: {} } }),
+      ],
+    }))
+    api.llm.providers.mockResolvedValue(ok({ providers: configuredFixture().providers }))
+    api.llm.models.mockResolvedValue(ok({ groups: catalogFixture().groups, failures: [] }))
+    const controller = new FallbacksSettingsController(api)
+    await controller.load()
+    await controller.loadCatalog()
+    const state = controller.store.getSnapshot()
+    // In the directory but unconfigured (profile unresolved) → never offered.
+    expect(state.configuredProviders.map(entry => entry.provider)).not.toContain('google')
+    // Classifies as a catalog selection (in the directory) and the existing
+    // value still round-trips losslessly.
+    const rows = chainsToRows(state.config.chains, { providers: state.providers, groups: state.groups })
+    expect(rows[0]!.selectors[0]!.provider).toEqual({ kind: 'catalog', id: 'google' })
+    expect(rowsToChains(rows)).toEqual(state.config.chains)
+  })
 })
 
 describe('recent-switch summary (spec §2.5 D-5)', () => {

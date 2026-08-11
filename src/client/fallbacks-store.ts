@@ -336,7 +336,9 @@ function configPrimaryTarget(config: FallbacksConfig): { provider: string; model
  * Derive the status block's "current effective model" (spec §2.5 D-6): ①
  * disabled/empty chains → unavailable; ② a recent switch exists → the latest
  * one's `to`; ③ otherwise → the config's primary target. A **display value** —
- * never a live route probe (the section always appends the non-probing note).
+ * never a live route probe (the section appends the non-probing note inline
+ * right after the derived value, available case only; the unavailable 空态
+ * renders its own copy without the note).
  */
 export function deriveEffectiveModel(
   config: FallbacksConfig,

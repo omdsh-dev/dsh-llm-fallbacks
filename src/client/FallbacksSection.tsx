@@ -22,9 +22,10 @@
  * Read-only status block (AC-7 行为可见性), compact and pinned at the
  * section bottom: the derived "current effective model" (spec §2.5 D-6 — a
  * display value from config + recent switches, never a live route probe; the
- * non-probing note is always appended) and the most recent switch from the
- * current session's raw `fallbacks/switch` events (spec §2.5 D-5 — read
- * through the store's `sessions.history` face, single page, newest-first).
+ * non-probing note rides inline right after the derived value, available case
+ * only — the unavailable 空态 shows its own copy) and the most recent switch
+ * from the current session's raw `fallbacks/switch` events (spec §2.5 D-5 —
+ * read through the store's `sessions.history` face, single page, newest-first).
  */
 
 import { useEffect, useRef, useState } from 'react'
