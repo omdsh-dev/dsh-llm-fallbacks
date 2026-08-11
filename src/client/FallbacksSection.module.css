@@ -69,6 +69,9 @@
 }
 
 .checkLabelTitle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   font-weight: 500;
 }
 
@@ -135,6 +138,10 @@
 }
 
 .hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
   font-size: 12px;
   line-height: 18px;
   color: var(--dsw-alias-label-tertiary);
@@ -145,6 +152,39 @@
   line-height: 18px;
   font-weight: 400;
   color: var(--dsw-alias-label-tertiary);
+}
+
+/* The "!" info badge (T3): a quiet circular mark on the tertiary tone that
+   opens the primitives Tooltip bubble (side right, ~300ms hover delay) on
+   hover/focus. The 16px geometry matches the checkbox/radio controls; the
+   14px glyph is the shared caption gray. Focusable so keyboard users reach
+   the same explanation; the focus-visible ring mirrors the checkbox ring. */
+.infoHint {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--dsw-alias-label-tertiary);
+  background: var(--dsw-alias-interactive-bg-hover);
+  cursor: help;
+  user-select: none;
+}
+
+.infoHint:focus-visible {
+  outline: 2px solid var(--dsw-alias-border-l3);
+  outline-offset: 2px;
+}
+
+/* Read-only/loading suppression: dimmed and out of the tab order; the
+   Tooltip bubble is suppressed by the same `disabled` flag. */
+.infoHintDisabled {
+  opacity: 0.4;
+  cursor: default;
 }
 
 /* Checkbox/radio rows (trigger codes / revert policy): the Models fetch-list

@@ -34,7 +34,7 @@ import type { ReactNode } from 'react'
 import { useSyncExternalStore } from 'react'
 import type { ConfigurableProviderView } from '@deepseek-ai/dsh-client-connection/client'
 import {
-  Button, IconPlusOutline16, IconTrashOutline16, Modal,
+  Button, IconPlusOutline16, IconTrashOutline16, Modal, Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { FallbacksConfig, RevertPolicy } from '../config.ts'
@@ -132,6 +132,37 @@ function parseCount(raw: string): number {
 /** The catalog faces the dropdowns classify against; undefined while unready. */
 function catalogOf(state: FallbacksSettingsState): CatalogLookup | undefined {
   return state.catalogStatus === 'ready' ? { providers: state.providers, groups: state.groups } : undefined
+}
+
+/**
+ * Inline "!" info badge (T3): the detailed explanation rides a primitives
+ * Tooltip bubble (side "right", ~300ms hover delay, immediate on keyboard
+ * focus) while the short inline hint stays on the row. The badge is an
+ * exposed, focusable image — the Models page credential-status pattern
+ * (role="img" + aria-label) — so the accessible name is always available;
+ * the tooltip is a progressive enhancement on top.
+ *
+ * `disabled` mirrors the read-only/loading suppression of the surrounding
+ * controls: the bubble is suppressed, the badge drops out of the tab order
+ * (and its `:disabled` style dims it). The click handler only cancels the
+ * label-activation default action for badges nested inside a `<label>`
+ * (the number fields / the enabled row), so clicking the badge never
+ * toggles or focuses the field's control.
+ */
+function InfoHint({ label, disabled = false }: { label: string; disabled?: boolean }): ReactNode {
+  return (
+    <Tooltip label={label} side="right" delayMs={300} disabled={disabled}>
+      <span
+        className={disabled ? `${css.infoHint} ${css.infoHintDisabled}` : css.infoHint}
+        role="img"
+        aria-label={label}
+        tabIndex={disabled ? -1 : 0}
+        onClick={event => { event.preventDefault() }}
+      >
+        !
+      </span>
+    </Tooltip>
+  )
 }
 
 /**
@@ -240,7 +271,10 @@ function ChainSelectorEditor({
         </label>
       </div>
       {(providerOutside || modelOutside) && (
-        <span className={css.hint}>{t('catalog.outside.hint')}</span>
+        <span className={css.hint}>
+          {t('catalog.outside.hint')}
+          <InfoHint label={t('catalog.outside.tooltip')} disabled={disabled} />
+        </span>
       )}
       <div className={css.cardFoot}>
         <button
@@ -461,7 +495,10 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
          * pins. */}
         <div className={css.checkboxRow}>
           <label htmlFor="fallbacks-enabled" className={css.checkLabel}>
-            <span className={css.checkLabelTitle}>{t('enabled.label')}</span>
+            <span className={css.checkLabelTitle}>
+              {t('enabled.label')}
+              <InfoHint label={t('enabled.tooltip')} disabled={!writable} />
+            </span>
             <span className={css.checkLabelDesc}>{t('enabled.hint')}</span>
           </label>
           <input
@@ -490,7 +527,10 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
          * per-group legends provided via role="group" + aria-labelledby. */
         <fieldset className={css.fieldset} disabled={!writable}>
           <div className={css.field} role="group" aria-labelledby="fallbacks-trigger-codes">
-            <span id="fallbacks-trigger-codes" className={css.fieldLabel}>{t('triggerCodes.label')}</span>
+            <span id="fallbacks-trigger-codes" className={css.fieldLabel}>
+              {t('triggerCodes.label')}
+              <InfoHint label={t('triggerCodes.tooltip')} disabled={!writable} />
+            </span>
             <span className={css.hint}>{t('triggerCodes.hint')}</span>
             {KNOWN_TRIGGER_CODES.map(code => (
               <label key={code} className={css.optionRow}>
@@ -510,7 +550,10 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
           </div>
 
           <div className={css.field} role="group" aria-labelledby="fallbacks-revert-policy">
-            <span id="fallbacks-revert-policy" className={css.fieldLabel}>{t('revertPolicy.label')}</span>
+            <span id="fallbacks-revert-policy" className={css.fieldLabel}>
+              {t('revertPolicy.label')}
+              <InfoHint label={t('revertPolicy.tooltip')} disabled={!writable} />
+            </span>
             <span className={css.hint}>{t('revertPolicy.hint')}</span>
             {(['cooldown-expiry', 'never'] as const).map(policy => (
               <label key={policy} className={css.optionRow}>
@@ -531,6 +574,7 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
             <label className={css.field}>
               <span className={css.fieldLabel}>
                 {t('cooldownMs.label')}
+                <InfoHint label={t('cooldownMs.tooltip')} disabled={!writable} />
                 <span className={css.defaultNote}>{t('defaults.prefix')}: {state.config.cooldownMs}</span>
               </span>
               <input
@@ -547,6 +591,7 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
             <label className={css.field}>
               <span className={css.fieldLabel}>
                 {t('maxSwitchesPerStep.label')}
+                <InfoHint label={t('maxSwitchesPerStep.tooltip')} disabled={!writable} />
                 <span className={css.defaultNote}>{t('defaults.prefix')}: {state.config.maxSwitchesPerStep}</span>
               </span>
               <input
@@ -563,6 +608,7 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
             <label className={css.field}>
               <span className={css.fieldLabel}>
                 {t('alwaysModeRetryCap.label')}
+                <InfoHint label={t('alwaysModeRetryCap.tooltip')} disabled={!writable} />
                 <span className={css.defaultNote}>{t('defaults.prefix')}: {state.config.alwaysModeRetryCap}</span>
               </span>
               <input
@@ -578,7 +624,10 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
           </div>
 
           <div className={css.field} role="group" aria-labelledby="fallbacks-chains">
-            <span id="fallbacks-chains" className={css.fieldLabel}>{t('chains.label')}</span>
+            <span id="fallbacks-chains" className={css.fieldLabel}>
+              {t('chains.label')}
+              <InfoHint label={t('chains.tooltip')} disabled={!writable} />
+            </span>
             <span className={css.hint}>{t('chains.hint')}</span>
             {/* Catalog state is an enrichment of the dropdowns, never a blocker:
              * a failed read (or an empty directory) only adds a hint line and
@@ -663,7 +712,10 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
           </div>
 
           <div className={css.field} role="group" aria-labelledby="fallbacks-roles">
-            <span id="fallbacks-roles" className={css.fieldLabel}>{t('roles.label')}</span>
+            <span id="fallbacks-roles" className={css.fieldLabel}>
+              {t('roles.label')}
+              <InfoHint label={t('roles.tooltip')} disabled={!writable} />
+            </span>
             <span className={css.hint}>{t('roles.hint')}</span>
             <label className={css.subField}>
               <span className={css.subFieldLabel}>{t('roles.default')}</span>
@@ -754,7 +806,10 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
                     </label>
                   </div>
                   {(providerOutside || modelOutside) && (
-                    <span className={css.hint}>{t('catalog.outside.hint')}</span>
+                    <span className={css.hint}>
+                      {t('catalog.outside.hint')}
+                      <InfoHint label={t('catalog.outside.tooltip')} disabled={!writable} />
+                    </span>
                   )}
                   <div className={css.cardFoot}>
                     <button
