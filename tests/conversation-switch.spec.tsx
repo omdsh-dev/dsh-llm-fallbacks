@@ -22,7 +22,9 @@
  *
  * Rendered states: one compact system-style line — dim title + separator +
  * ellipsized summary (`{from} → {to} ({role} · {reason})`), role="status";
- * an unknown reason value renders raw (forward-compatible durable log).
+ * an unknown reason value renders raw (forward-compatible durable log); a
+ * malformed/partial payload degrades to the title-only line (no throw);
+ * the zh dictionary renders through the same seat (parity smoke).
  */
 
 import { cleanup, render, screen } from '@testing-library/react'
@@ -51,15 +53,22 @@ const KIND = 'fallbacks-switch'
  * own keys. The test seat performs the framework's `{name}` interpolation
  * (the real `t` synthesizes it from the dictionary's declared placeholders).
  */
-const t: ConversationFallbackSwitchProps['t'] = ((key, params) => {
-  let text: string = en[key as keyof typeof en]
-  if (params !== undefined) {
-    for (const [name, value] of Object.entries(params)) {
-      text = text.split(`{${name}}`).join(String(value))
+function makeT(dict: Record<string, string>): ConversationFallbackSwitchProps['t'] {
+  return ((key, params) => {
+    let text: string = dict[key]
+    if (params !== undefined) {
+      for (const [name, value] of Object.entries(params)) {
+        text = text.split(`{${name}}`).join(String(value))
+      }
     }
-  }
-  return text
-}) as ConversationFallbackSwitchProps['t']
+    return text
+  }) as ConversationFallbackSwitchProps['t']
+}
+
+/** English seat (primary render assertions). */
+const t = makeT(en)
+/** Simplified-Chinese seat (parity smoke, zh is the copy source of truth). */
+const tZh = makeT(zh)
 
 /**
  * A non-switch event fixture (the Definition's `match` only reads `type`;
@@ -96,10 +105,13 @@ function contextKey(seq: number): string {
 }
 
 /** Full renderer props the keyed seat would compose (the renderer only reads `node` + `t`; the standard-kit members are `as never` — same pattern as the card/row specs). */
-function switchProps(node: ChatNode<'fallbacks-switch'>): ConversationFallbackSwitchProps {
+function switchProps(
+  node: ChatNode<'fallbacks-switch'>,
+  localeT: ConversationFallbackSwitchProps['t'] = t,
+): ConversationFallbackSwitchProps {
   return {
     node,
-    t,
+    t: localeT,
     useSessions: undefined as never,
     useWorkspaces: undefined as never,
     useSession: undefined as never,
@@ -353,5 +365,28 @@ describe('ConversationFallbackSwitch rendered line', () => {
     expect(screen.getByText(
       'openai/gpt-4o → anthropic/claude-3-5-sonnet (default · future-reason)',
     )).toBeTruthy()
+  })
+
+  it('renders the zh copy through the shared dictionary (parity smoke)', () => {
+    render(<ConversationFallbackSwitch {...switchProps(nodeFor(switchEvent(4)), tZh)} />)
+    expect(screen.getByText(zh['chat.switch.title'])).toBeTruthy()
+    expect(screen.getByText(
+      'openai/gpt-4o → anthropic/claude-3-5-sonnet（default · 触发失败码）',
+    )).toBeTruthy()
+  })
+
+  it('degrades to a title-only line on a malformed payload (no throw)', () => {
+    // Version skew: the durable session log is append-only, so a node may
+    // carry a partial/corrupted payload snapshot (e.g. missing from/to).
+    // Interpolation must not throw; the slot renders a truthful title only.
+    const node = nodeFor(switchEvent(2))
+    const malformed = {
+      ...node,
+      data: { seq: 2, time: node.data.time, turn: 1, step: 1 },
+    }
+    expect(() => render(
+      <ConversationFallbackSwitch {...switchProps(malformed as ChatNode<'fallbacks-switch'>)} />,
+    )).not.toThrow()
+    expect(screen.getByText(en['chat.switch.title'])).toBeTruthy()
   })
 })

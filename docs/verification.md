@@ -11,7 +11,7 @@
 
 ## 已验证（本迭代证据汇总）
 
-### 1. 测试矩阵（单元 + 集成 + client + host gateway + 命令，19 files / 313 tests 全绿）
+### 1. 测试矩阵（单元 + 集成 + client + host gateway + 命令，19 files / 315 tests 全绿）
 
 | 范围 | 文件 | 数量 | 覆盖契约 |
 |---|---|---|---|
@@ -19,11 +19,11 @@
 | 单元（T2） | `selectors.spec.ts` / `chains.spec.ts` / `roles.spec.ts` / `cooldown.spec.ts` | 11 / 26 / 11 / 9 | selector 解析与 specificity（exact → `provider/*` → 角色 → default）、`provider/*` 条目保留模型 id 仅换 provider、角色规则顺序匹配（rules-only：origin/provider/model → default）、cooldown/revert（惰性过期、never 无限 TTL、只读快照） |
 | 单元（T3） | `state.spec.ts` / `events.spec.ts` / `config.spec.ts` / `runtime.spec.ts` | 13 / 4 / 2 / 37 | 状态机（pendingSwitch 产生→应用→清除、appliedTurnStep 防重放、step 推进重置）、`fallbacks/switch` 事件形状与 JSON 往返、`Config({})` 恒等于默认配置（no-op 基线）、小集成 Step 6 全项 |
 | 集成（T4） | `plugin.spec.ts` / `coexist-llm-retry.spec.ts` / `always-mode.spec.ts` | 19 / 4 / 5 | 端到端重集成（含 model-selection 组合的注册顺序依赖，T2）、**双插件共存顺序**（normal 先退避、预算耗尽后切换；不可重试码直切）、**always 先委托下游 + cap 在 request 边界**（ADR-2）、冷却/revert 集成、**安全阀**超限后原错误语义、组合顺序互不干扰 |
-| client（T5） | `fallbacks-store.spec.ts` / `fallbacks-card.spec.tsx` / `general-row.spec.tsx` / `conversation-switch.spec.tsx` | 74 / 15 / 9 / 9 | 卡片读写经 **gateway 通道**（`/api/fallbacks/get|set|reset` 的 rpc mock：`load` 从 `get` 取配置、`save` 走 `set`、`resetToDefaults` 走 `reset`）、`present` 标志与通道不可达骨架、describe 仅读 writable+其它命名空间（fallbacks 命名空间不再出现在 describe）、KD-G3 新错误路径（revision guard 移除后错误如实呈现）、draft 仅从真实 get 结果 seed（I-1 不变式）、chain/rule 行编辑往返、状态块最近切换提取（sessions.history 事件面）、卡片 chrome（插件配置页列表、折叠/展开、dirty/保存/丢弃）、controller 生命周期；General 页状态行（`settings.general.item` 注册形状 id `fallbacks` order 100、启用徽标 + 最近切换摘要、KD-G5 不可达不冒充 disabled、惰性首读与已读不重读）；会话切换行（`conversation.chat.node` keyed 注册 key `fallbacks-switch`、D1 定义状态机 match/start/update/buildViewNode、渲染行 `from → to（role · reason）` 未知 reason 原样、role=status） |
+| client（T5） | `fallbacks-store.spec.ts` / `fallbacks-card.spec.tsx` / `general-row.spec.tsx` / `conversation-switch.spec.tsx` | 74 / 15 / 9 / 11 | 卡片读写经 **gateway 通道**（`/api/fallbacks/get|set|reset` 的 rpc mock：`load` 从 `get` 取配置、`save` 走 `set`、`resetToDefaults` 走 `reset`）、`present` 标志与通道不可达骨架、describe 仅读 writable+其它命名空间（fallbacks 命名空间不再出现在 describe）、KD-G3 新错误路径（revision guard 移除后错误如实呈现）、draft 仅从真实 get 结果 seed（I-1 不变式）、chain/rule 行编辑往返、状态块最近切换提取（sessions.history 事件面）、卡片 chrome（插件配置页列表、折叠/展开、dirty/保存/丢弃）、controller 生命周期；General 页状态行（`settings.general.item` 注册形状 id `fallbacks` order 100、启用徽标 + 最近切换摘要、KD-G5 不可达不冒充 disabled、惰性首读与已读不重读）；会话切换行（`conversation.chat.node` keyed 注册 key `fallbacks-switch`、D1 定义状态机 match/start/update/buildViewNode、渲染行 `from → to（role · reason）` 未知 reason 原样、role=status、malformed 负载降级标题行不抛、zh 渲染 parity smoke） |
 | 命令（AC-5） | `command.spec.ts` | 24 | `/fallbacks` 注册形状（name/description/空 hint/handler、disposer 透传）、条件 `commands` 子注入（有注册表才注册；无服务静默）、快照构建（角色/链解析含 default 兜底、最近切换最新在前封顶、冷却只读快照）、输出状态（配置链 / 无链 / 切换有+无 / 冷却有+无 / never 不回主）、zh/en 渲染 smoke、真实运行状态集成（切换事件 + 冷却读自真实状态、只读不增状态） |
 | 回归 | `skeleton.spec.ts` / `host-native.spec.ts` | 3 / 3 | bundle 契约（row id、空 schema 接受、host+client apply 入口）；宿主原生行为基线（真实 `@deepseek-ai/dsh-agent` 模块：触发码切换路由到链目标、always-cap 第二返回点、no-op 不变量） |
 
-结果：**19 files / 313 tests 全绿**（`pnpm test`，vitest run）；`pnpm build`（tsdown host bundle →
+结果：**19 files / 315 tests 全绿**（`pnpm test`，vitest run）；`pnpm build`（tsdown host bundle →
 `pnpm run build-client`（tsdown client bundle）→ `tsc` 声明）全绿——dev 链接 farm 下 `tsc` 按
 真实宿主类型面驱动（`scripts/setup-dsh-links.mjs` 链接，无任何仓内类型 shim）。no-op 回归
 不变量（空链 / 未命中 / 链耗尽 / 安全阀超限 → 透传、不产生 `fallbacks/switch` 事件）由

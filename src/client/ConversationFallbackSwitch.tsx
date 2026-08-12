@@ -113,18 +113,51 @@ export type ConversationFallbackSwitchProps =
   PropsRuntime<'conversation.chat.node', 'fallbacks-switch'> & PropsLocale<'fallbacks'>
 
 /**
+ * True when `data` is a well-formed switch-node payload — the client-side
+ * mirror of the `/fallbacks` handler's shape guard (`src/commands.ts`
+ * `isFallbacksSwitchData`). The node payload is a snapshot of the durable
+ * session log, which is append-only and survives plugin/host upgrades, so a
+ * `fallbacks/switch` node may carry a stale or corrupted shape — version
+ * skew must degrade the transcript line, never crash it. The renderer only
+ * reads `from`/`to`/`role`/`reason`, so the guard checks exactly those.
+ */
+function isSwitchNodeData(data: unknown): data is FallbacksSwitchChatData {
+  if (typeof data !== 'object' || data === null) return false
+  const payload = data as Record<string, unknown>
+  if (typeof payload.role !== 'string' || typeof payload.reason !== 'string') return false
+  const from = payload.from as Record<string, unknown> | undefined
+  const to = payload.to as Record<string, unknown> | undefined
+  return (
+    typeof from?.provider === 'string' &&
+    typeof from?.model === 'string' &&
+    typeof to?.provider === 'string' &&
+    typeof to?.model === 'string'
+  )
+}
+
+/**
  * Render one fallback switch as a compact system-style transcript line.
  *
  * Geometry follows the upstream chat system rows (the compaction boundary
  * notice: dim title + separator + ellipsized summary — `chat/MessageItem
  * .module.css:38-122`); every color resolves through a `--dsw-alias-*`
  * token. A reason outside the current union renders raw (forward-compatible
- * durable log, same rule as the card/general row summaries).
+ * durable log, same rule as the card/general row summaries). A malformed or
+ * partial payload (version skew) degrades to the title-only line instead of
+ * throwing during interpolation — the transcript slot stays visible with a
+ * truthful "a switch happened" notice and no summary details.
  * @param props - composed keyed seat props.
  * @returns the switch line element tree.
  */
 export function ConversationFallbackSwitch({ node, t }: ConversationFallbackSwitchProps): ReactNode {
   const data = node.data
+  if (!isSwitchNodeData(data)) {
+    return (
+      <div className={css.switchRow} role="status">
+        <span className={css.switchTitle}>{t('chat.switch.title')}</span>
+      </div>
+    )
+  }
   const reasonKey = SWITCH_REASON_KEYS[data.reason]
   const summary = t('chat.switch.summary', {
     from: `${data.from.provider}/${data.from.model}`,

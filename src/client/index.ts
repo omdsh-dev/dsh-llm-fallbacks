@@ -83,13 +83,19 @@ export { FallbacksSettingsController, FALLBACKS_SETTINGS_NS } from './fallbacks-
 
 /**
  * Required services (cordis fiber inject); registrations wait on the slot
- * declaration. `sessions` is deliberately NOT injected (S-g): a non-web host
- * without the dsh-session client service must not hang the fiber waiting for
- * it — the wiring reads it reflectively and degrades to the switches empty
- * state when absent (`setCurrentSession` never called, `loadSwitches` ready
- * with an empty array, which the store already supports).
+ * declaration. `conversationEvents` is declared because the D1 Definition
+ * registration reads the service directly (`ctx.conversationEvents.register`
+ * at the bottom of `apply` — explicit fiber-ordering parity with the
+ * ui-workflow-run precedent, whose inject list includes it for the same
+ * direct read). The runtime would still provide the service synchronously
+ * on apply, but the declaration makes the dependency honest. `sessions` is
+ * deliberately NOT injected (S-g): a non-web host without the dsh-session
+ * client service must not hang the fiber waiting for it — the wiring reads
+ * it reflectively and degrades to the switches empty state when absent
+ * (`setCurrentSession` never called, `loadSwitches` ready with an empty
+ * array, which the store already supports).
  */
-export const inject = ['slots', 'locale', 'connection', 'remote']
+export const inject = ['slots', 'locale', 'connection', 'remote', 'conversationEvents']
 
 /**
  * Register the `fallbacks` dictionaries and the plugin-config card once the
