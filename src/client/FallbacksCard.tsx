@@ -360,7 +360,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
   // accepted real config, and the card never re-seeds identical content.
   // Controls are not gated on `ready` — a channel-down load with
   // `writable: true` leaves the switch/form body editable pre-ready
-  // (§1.4-4) — so a mid-edit push (channel recovers → settings/changed →
+  // (§1.4-4) — so a mid-edit push (channel recovers → settings/document-updated →
   // refresh → load → ready) overwrites the draft with server truth on the
   // next content-changing ready: unsaved drafts are not preserved across
   // the unreachable→ready upgrade.
@@ -463,7 +463,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
     })
   }
 
-  // Catalog refresh (models/changed) re-classifies rows against the fresh
+  // Catalog refresh (llm/adapters-updated) re-classifies rows against the fresh
   // directory: a value that was outside when the settings seeded becomes a
   // catalog option, and the empty-catalog guidance clears (R-3a). Only
   // untouched drafts are re-seeded — in-progress edits are never clobbered.

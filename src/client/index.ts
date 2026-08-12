@@ -16,14 +16,15 @@
  *   the snapshot-selector hook); the old `settings.section` registration
  *   (the Settings nav entry) is removed — deleting the section registration
  *   deletes the nav entry.
- * - Refreshes the store on pushed invalidations (`settings/changed` for the
- *   fallbacks namespace, `models/changed` for the catalog, `connection/reset`)
- *   and follows the current session (`sessions.list`) so the status block's
- *   recent-switch summary tracks the session being viewed (spec §2.5 D-5).
- *   `sessions` is an optional reflection read (S-g): a host without the
- *   session service leaves the switches face in its empty ready state.
- *   (`remote` is injected for the Task 3 event-drift rewiring but not yet
- *   consumed.)
+ * - Refreshes the store on pushed invalidations — the forwarded remote
+ *   events `settings/document-updated` (ns-filtered to the fallbacks
+ *   namespace; refetches the descriptor + recent-switch summary) and
+ *   `llm/adapters-updated` (refetches only the provider/model catalog), plus
+ *   the client `connection/reset` (refetches all three) — and follows the
+ *   current session (`sessions.list`) so the status block's recent-switch
+ *   summary tracks the session being viewed (spec §2.5 D-5). `sessions` is
+ *   an optional reflection read (S-g): a host without the session service
+ *   leaves the switches face in its empty ready state.
  *
  * @module dsh-llm-fallbacks/client
  */
@@ -38,6 +39,18 @@ import type {} from '@deepseek-ai/dsh-client-locale/client'
 // types (the ./client entry re-exports the slot-contract merge) without any
 // value import.
 import type {} from '@deepseek-ai/dsh-client-ui-plugin-config/client'
+// Type-only: the gateway's Client half declares `ctx.remote` (the typed
+// Remote service) on the cordis Context face.
+import type {} from '@deepseek-ai/dsh-api-gateway/client'
+// Type-only: the forwarded-event allowlist seat (`TypeRTRemoteEventSelection`)
+// — the `$on` key projection the invalidation subscriptions subscribe through.
+import type {} from '@deepseek-ai/dsh-api-remotes/types'
+// Type-only: the settings seam's cordis `Events` entry
+// (`settings/document-updated` with the branded `SettingsNamespace`) and the
+// llm registry's (`llm/adapters-updated` payload-free) — same pattern as
+// dsh-client-ui-settings' settings-scope (types subpath, no value import).
+import type {} from '@deepseek-ai/dsh-settings/types'
+import type {} from '@deepseek-ai/dsh-llm/types'
 import type { ConnectionHandle } from '@deepseek-ai/dsh-client-connection/client'
 import { FallbacksCard } from './FallbacksCard.tsx'
 import {
@@ -85,28 +98,51 @@ export function apply(ctx: ClientContext): void {
   // handed to the renderer through the inject face (advisor pattern).
   const useSnapshot = bindSnapshotSelector(controller.store)
 
-  // Pushed invalidations converge every open surface without polling:
-  // `settings/changed` refetches the descriptor + recent-switch summary,
-  // `models/changed` refetches only the provider/model catalog (never the
-  // form), `connection/reset` refetches all three, and a `sessions.list`
-  // current change reloads the status block's switches for the new session
-  // (spec §2.5 D-5; the subscription also covers reconnects, which re-pull
-  // the list).
+  // Pushed invalidations converge every open surface without polling. The
+  // 20260811 dsh snapshot dropped the client-side settings/catalog events;
+  // the runtime now forwards the settings seam's raw-section event and the
+  // llm registry's topology event through the `remote` service (inject list):
+  // - `settings/document-updated(ns, revision)` — ns-filtered to the
+  //   fallbacks namespace; refetches the descriptor + recent-switch summary
+  //   (never the catalog),
+  // - `llm/adapters-updated()` — payload-free; refetches only the
+  //   provider/model catalog (never the form),
+  // - `connection/reset` — client event; refetches all three, coalesced
+  //   through the advisor microtask debounce (a burst of resets = one
+  //   refetch; the IfLoaded guards keep an unopened card idle),
+  // - a `sessions.list` current change reloads the status block's switches
+  //   for the new session (spec §2.5 D-5; the subscription also covers
+  //   reconnects, which re-pull the list).
   ctx.effect(() => {
     const syncSession = (): void => {
       controller.setCurrentSession(sessions?.list.getSnapshot().current)
     }
     if (sessions !== undefined) syncSession()
+    // The `$on` listener seat is `Events['settings/document-updated']`
+    // (`(ns: SettingsNamespace, revision: number) => void`); the widened
+    // optional-string param mirrors dsh-client-ui-settings' settings-scope
+    // (`refresh` bound to the same remote event), and `undefined` ns passes
+    // the filter so the connection/reset path can share this helper.
     const refresh = (ns?: string): void => {
       if (ns !== undefined && ns !== FALLBACKS_SETTINGS_NS) return
       refreshFallbacksIfLoaded(controller)
       refreshSwitchesIfLoaded(controller)
     }
     const refreshCatalog = (): void => { refreshCatalogIfLoaded(controller) }
+    let pendingReset = false
+    const refreshAll = (): void => {
+      if (pendingReset) return
+      pendingReset = true
+      queueMicrotask(() => {
+        pendingReset = false
+        refresh()
+        refreshCatalog()
+      })
+    }
     const disposers = [
-      ctx.on('settings/changed', refresh),
-      ctx.on('models/changed', refreshCatalog),
-      ctx.on('connection/reset', () => { refresh(); refreshCatalog() }),
+      ctx.remote.$on('settings/document-updated', refresh),
+      ctx.remote.$on('llm/adapters-updated', refreshCatalog),
+      ctx.on('connection/reset', refreshAll),
       ...(sessions === undefined ? [] : [sessions.list.subscribe(syncSession)]),
     ]
     return () => {

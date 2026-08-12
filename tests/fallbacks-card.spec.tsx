@@ -227,13 +227,26 @@ function fakeRuntime() {
       return typeof disposer === 'function' ? disposer as () => void : () => {}
     },
     on: (event: string, _handler: () => void): (() => void) => {
-      // Task 1 keeps the pushed-invalidation wiring on the client events;
-      // Task 3 moves these to ctx.remote.$on. Pinning the current set here
-      // makes the swap visible when it lands.
-      if (!['settings/changed', 'models/changed', 'connection/reset'].includes(event)) {
+      // Task 3 moved the settings/catalog invalidations onto ctx.remote.$on
+      // (the 20260811 remote events); only the client `connection/reset`
+      // event remains on the context itself. Pinning the exact set here
+      // makes any future drift visible.
+      if (!['connection/reset'].includes(event)) {
         throw new Error(`test: unexpected event ${event}`)
       }
       return () => {}
+    },
+    remote: {
+      $on: (event: string, _listener: (...args: unknown[]) => void): (() => void) => {
+        // The two forwarded remote events the invalidation wiring subscribes
+        // through (settings/document-updated ns-filtered, llm/adapters-updated
+        // payload-free). The registration spec below pins them; dispatch
+        // semantics live in the store spec's remote double.
+        if (!['settings/document-updated', 'llm/adapters-updated'].includes(event)) {
+          throw new Error(`test: unexpected remote event ${event}`)
+        }
+        return () => {}
+      },
     },
   }
   return { ctx, ledger, locales }
