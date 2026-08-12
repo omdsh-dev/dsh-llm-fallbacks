@@ -58,7 +58,7 @@ git 安装注意：
   #   dsh-llm-fallbacks: true
   ```
 
-  然后重跑 `add`；也可交互式 `dsh plugin --profile web approve-builds` 选择放行。该放行 = 允许该包代码在安装期于你的机器上执行——建议钉 commit（`github:dsh-external/dsh-llm-fallbacks#<sha>`），防止后续 push 悄悄改变实际运行的代码。若安装未被拦截但装入后 `--dump-config` 看不到 `llm-fallbacks` 层 / 设置页不出现，同样先检查本项放行。确切行为以你所用 pnpm 版本的策略为准。
+  然后重跑 `add`；也可交互式 `dsh plugin --profile web approve-builds` 选择放行。该放行 = 允许该包代码在安装期于你的机器上执行——建议钉 commit（`github:dsh-external/dsh-llm-fallbacks#<sha>`），防止后续 push 悄悄改变实际运行的代码。若安装未被拦截但装入后 `--dump-config` 看不到 `llm-fallbacks` 层 / 插件配置页的 Fallbacks 卡片不出现，同样先检查本项放行。确切行为以你所用 pnpm 版本的策略为准。
 - **传输协议**：`github:` 简写由 pnpm 解析——通常优先 HTTPS，探测失败时退回 SSH（`git@github.com:...`）；显式 https URL 形式则固定 HTTPS。两种形式等价，`#<ref>` 钉版均支持。
 - **纯挂载，无补丁步骤**：git 安装执行 `prepare`（构建）即完成——插件对 dsh 源码树零修改（bundle 行插入 + client inject + 自有 gateway），无需任何 apply/revert 脚本，dsh 升级后无需重打。
 
@@ -79,10 +79,11 @@ dsh --profile web --dump-config
 
 且其**之前**的层包含 llm-retry（来自 `@deepseek-ai/dsh-base`）——层序即 waterfall 注册顺序（见上文 bundle 层顺序）。
 
-然后**重启 dsh web 会话**（`dsh web` 或重启正在运行的会话），让 host 半与 client 半（设置页）加载：
+然后**重启 dsh web 会话**（`dsh web` 或重启正在运行的会话），让 host 半与 client 半（插件配置卡）加载：
 
-- web 设置 GUI 的 Settings 中应出现 **Fallbacks** 页（位于 Models 页之后），且**始终可用**——首次打开（尚无 `fallbacks` 配置）也渲染页面骨架。
-- 页面可读、可编辑、可保存；功能级开关 `enabled` **默认 OFF**（关闭时隐藏配置表单主体），打开开关后显示完整配置表单；未配置任何链时行为 no-op（详见 [docs/configuration.md](docs/configuration.md)）。
+- web 设置 GUI 的 Settings → **插件配置** 页中应出现 **Fallbacks 卡片**，且**始终可用**——首次打开（尚无 `fallbacks` 配置）也渲染卡片骨架。
+- 卡片可读、可编辑、可保存；功能级开关 `enabled` **默认 OFF**（关闭时隐藏配置表单主体），打开开关后显示完整配置表单；未配置任何链时行为 no-op（详见 [docs/configuration.md](docs/configuration.md)）。
+- 会话内可直接键入 `/fallbacks` 查看当前会话的诊断（角色 → 链 → 最近切换 → 冷却），详见 README 的 `/fallbacks` 一节。
 
 ## 4. 卸载
 

@@ -3,7 +3,9 @@
 # Ignored (process / coordination):
 .mstar/**
 !.mstar/knowledge/
+!.mstar/knowledge/**
 !.mstar/specs/
+!.mstar/specs/**
 !.mstar/AGENTS.md
 # Tracked (results): .mstar/AGENTS.md, .mstar/knowledge/, .mstar/specs/
 

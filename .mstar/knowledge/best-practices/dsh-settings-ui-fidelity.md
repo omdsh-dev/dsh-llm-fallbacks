@@ -1,6 +1,7 @@
 ---
 module: dsh-llm-fallbacks client UI
 date: 2026-08-12
+last_updated: 2026-08-12
 problem_type: best_practice
 category: best-practices
 severity: low
@@ -8,6 +9,7 @@ plan_id: llm-fallbacks-settings-ui-fidelity
 applies_when:
   - 复刻/对齐 dsh web 设置 sections（Models/General 等）的视觉形态
   - 为 dsh 插件设置页做 CSS 保真（几何、token、控件形态）
+  - 在官方插件配置页自绘卡片 chrome（settings.plugin.item 卡，对齐上游 PluginCard）
   - 评审插件 UI 是否符合宿主 sections 同屏观感
   - 查找 dsh-private 设置 UI 参照文件
 tags:
@@ -18,12 +20,14 @@ tags:
   - design-tokens
   - dsw-alias
   - css-modules
+  - plugin-card
 ---
 
-# dsh web 设置 sections UI 保真参考（参照文件地图 + 几何/token 词表）
+# dsh web 设置 UI 保真参考（参照文件地图 + 几何/token 词表）
 
-在 dsh web 设置页做「与宿主 sections 同屏一致」的插件 UI 时，参照哪些文件、用哪些几何与
-token 词汇、如何对照与留痕（iter-20260811-fallbacks-mount-only Plan C 验证的方法）。
+在 dsh web 设置面做「与宿主同屏一致」的插件 UI 时，参照哪些文件、用哪些几何与
+token 词汇、如何对照与留痕（iter-20260811-fallbacks-mount-only Plan C 验证的方法 +
+iter-20260812 插件配置卡扩展）。
 
 ## Context
 
@@ -49,6 +53,24 @@ token 词汇、如何对照与留痕（iter-20260811-fallbacks-mount-only Plan C
 
 **已知误导**：`ui-settings/src/client/SettingsRoot.module.css` 不存在（该包仅
 contract/index/settings-scope）；外壳几何实际在 `ui-settings-general` 包内。
+
+### 插件配置卡参照（`settings.plugin.item` 卡 chrome，iter-20260812 扩展）
+
+| 代号 | 文件 | 角色 |
+|------|------|------|
+| PC.tsx | `packages/client/ui-plugin-config/src/client/PluginCard.tsx`（98 行） | 上游卡组件——chrome 契约（`<li>` 折叠列表项：header 按钮 + name/description + dirty pill + chevron + body + footer） |
+| PC.css | `…/PluginCard.module.css`（158 行） | 上游卡 CSS——**尺寸权威**（card r12 border-l2 / header padding 14 16 gap 12 / pending pill r999 / footer 等） |
+| PCS.tsx | `…/PluginConfigSection.tsx` | 卡列表渲染（section 经 `settings.section` id `plugins` order 30 挂载） |
+| SC.ts | `…/slot-contract.ts`（24 行） | `settings.plugin.item` slot 类型（owner `children?: never`——卡自绘） |
+| AC.tsx / AC.css | dsh-advisor `src/client/advisor-card.tsx` / `.module.css` | 兄弟插件自绘参考——**chrome 类与上游字节级一致**（advisor 逐字复制上游 chrome 类，仅增 body 通知/表单类）；最接近 fallbacks 需求的自绘参照 |
+| ACI.ts | dsh-advisor `src/client/index.ts` | 注册范式（inject + apply + slot.inject） |
+
+**卡 chrome 词表要点**：`--dsw-alias-border-l2`/`bg-layer-3`（卡）、`bg-layer-2`（open）、
+name 15px w600 lh1.4 label-primary、description 13px lh1.5 label-tertiary、pending pill
+r999 1px 8px bg-module-platform、chevron label-tertiary、body border-top 1px margin 0 16px
+padding-bottom 8px、footer gap 8 padding 12 0 4 border-top。折叠态 `aria-expanded` +
+`aria-label`（expand/collapse 文案）；dirty pill 骑在 header 上（折叠后仍可见）。
+
 
 ### 几何/token 词表（实测值，落地时须对照 dsh-private 复核）
 
@@ -90,8 +112,23 @@ contract/index/settings-scope）；外壳几何实际在 `ui-settings-general` �
    证明逐项一致。
 4. **用户可见差异裁决记录**：与本体无法同构的点（卡片形态、checkbox、tooltip 等）逐一
    记录差异 + 理由 + 授权口径——评审可据此区分「有意差异」与「漏对齐」。
-5. **验证**：light/dark 双主题 + 浏览器 CSSOM 规则生效检查 + 同屏截图（Fallbacks vs
-   Models）——代码级 diff 不足为凭（见 build-errors/css-modules-hash-invalid-selector.md）。
+5. **验证**：light/dark 双主题 + 浏览器 CSSOM 规则生效检查 + 同屏截图——代码级 diff 不足
+   为凭（见 build-errors/css-modules-hash-invalid-selector.md）。
+
+### 插件配置卡的已知用户可见差异（iter-20260812 裁决，评审直接引用）
+
+- **Unavailable 态**：上游 `return null`（卡消失）；fallbacks 保留 chrome + 可操作骨架
+  （表单仍可写、保存被尝试——KD-G5），与 advisor 同向但更可用（notice 在骨架**上方**）。
+- **Reset 按钮**：上游仅 Discard + Save；fallbacks 保留 Reset-to-defaults
+  （`/api/fallbacks/reset`，带确认 Modal）——第三方 gateway 方法，记录为有意扩展。
+- **Footer 按钮形态**：上游 r8 小按钮（5px 14px）vs fallbacks h36 r18 胶囊——延续
+  既有 settings 页按钮词表（brief Global Constraints）。
+- **错误面**：上游 save 失败渲染在 footer（`state.failed`）；fallbacks 单 `state.error`
+  （load + save 合并）在 body 渲染一次（`role="alert"`），仅表单惰性时给 Retry。
+- **read-only 提示门控**：上游 `!writable` 即渲染；fallbacks 加 `status==='ready'` 门控
+  ——初始加载窗不闪「只读」。
+- **状态块折叠进 body**：原 section 页底只读状态块（有效模型/最近切换）移入卡 body
+  （footer 上方），页级 chrome 随 section 删除。
 
 ## Why This Matters
 
@@ -111,8 +148,13 @@ contract/index/settings-scope）；外壳几何实际在 `ui-settings-general` �
 
 - iter-20260811-fallbacks-mount-only Plan C：A1–A14 全维度对照表 + C 节 9 条落地清单 +
   「用户可见差异」4 条裁决（卡片形态/checkbox/banner/data-tip），QA CSSOM 全生效。
-- 参照实现：`FallbacksSection.module.css`（插件侧）；本体 `ModelsSection.module.css`、
-  `GeneralSection.module.css`（dsh-private）。
+- iter-20260812 插件配置卡：`guides/card-fidelity-checklist.md` 逐维度对照表（结构/几何/
+  tokens/行为/a11y，上游 PluginCard.module.css:1-158 ↔ fallbacks card css）+ 7 条已知差异
+  裁决；light/dark 截图 + CSSOM 规则数 == 文本规则数验证。
+- 参照实现：`FallbacksCard.module.css` / `FallbacksCard.tsx`（插件侧；2026-08-12 起取代
+  整页 `FallbacksSection`）；本体 `ModelsSection.module.css`、`GeneralSection.module.css`
+  （dsh-private）。
 
-*Source: iteration iter-20260811-fallbacks-mount-only `guides/ui-fidelity-checklist.md`，
-2026-08-12 compound 提升（保留参照地图/词表/方法，剥离一次性现状快照）。*
+*Source: iteration iter-20260811-fallbacks-mount-only `guides/ui-fidelity-checklist.md` +
+iter-20260812-fallbacks-plugin-config `guides/card-fidelity-checklist.md`，2026-08-12
+compound 提升（保留参照地图/词表/方法/裁决，剥离一次性现状快照）。*

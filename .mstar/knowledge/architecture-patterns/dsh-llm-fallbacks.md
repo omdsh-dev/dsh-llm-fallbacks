@@ -77,10 +77,17 @@ dsh 的 web 设置 RPC（`dsh-host-apiproxy`）对命名空间有硬编码暴露
 
 通用模式（wire 契约、KD-G3/G5 语义、可选 settings 条件注入、写前未知键拒绝、无解析器原则、`present` 标志）→ `architecture-patterns/dsh-gateway-settings-channel.md`。
 
+**入口面（2026-08-12 起）**：设置展示挂载在官方插件配置页（`settings.plugin.item` 卡，
+替换旧 `settings.section` 独立导航，不并存）；另有三个互补表面——`/fallbacks` 会话内只读
+诊断命令（条件注入 `commands` 服务）、General 页只读状态行（`settings.general.item`，
+order 100）、会话转录切换行（`conversationEvents` + `conversation.chat.node`，纯渲染）。
+卡 = 编辑入口、行 = 状态摘要、命令 = 会话内诊断、转录行 = 恢复可见性。挂载点全表 →
+`architecture-patterns/dsh-mount-point-map.md`；会话转录模式 → `architecture-patterns/dsh-conversation-surface-mounting.md`。
+
 ### 目录驱动 provider/model 选择（iter-20260810-fallbacks-settings-ux，spec §2.5 D-3/D-4）
 
-- **数据源**：`llm.providers({})`（可配置 provider 目录）+ `llm.models({})`（`{ groups, failures }` 模型目录）；`models/changed` 客户端事件刷新。
-- **store catalog 快照**：独立 `loadCatalog()` + 独立 generation guard；`models/changed` **只**刷 catalog、`connection/reset` 全刷；failures 降级诊断不拖垮 groups；catalog 失败不阻塞表单（settings 状态零触碰）。
+- **数据源**：`llm.providers({})`（可配置 provider 目录）+ `llm.models({})`（`{ groups, failures }` 模型目录）；`llm/adapters-updated` remote 事件刷新（20260811 起；旧 `models/changed` 客户端事件已移除）。
+- **store catalog 快照**：独立 `loadCatalog()` + 独立 generation guard；`llm/adapters-updated` **只**刷 catalog、`connection/reset` 全刷；failures 降级诊断不拖垮 groups；catalog 失败不阻塞表单（settings 状态零触碰）。
 - **混合下拉**：provider select + model select 级联 + `provider/*` 通配（不依赖 models）+ 目录外合成选项（原值 + 「（目录外）」标注，value 携带原始字符串、读回默认选中）——**目录外值 round-trip 无损**，仅新增条目受限目录；行编辑态判别联合 `{kind:'catalog',id}|{kind:'outside',raw}|null`；序列化仍写原始字符串（`provider/model`、`provider/*`、链 key 自由文本语义不变）。
 
 ### 设置页只读状态块真实化（R1 关闭，spec §2.5 D-5/D-6）

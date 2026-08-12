@@ -21,7 +21,7 @@ dsh plugin --profile web add github:dsh-external/dsh-llm-fallbacks   # 钉 commi
 - **角色链**：subagent 可走独立于 root 的 fallback 链——`roles.rules` 按 origin/provider/model 顺序匹配到具体角色 → `roles.default`，首个命中即停。
 - **链 specificity**：exact `provider/model` 键 → `provider/*` 键 → 角色链 → `default` 链；`provider/*` 条目保留失败模型 id 仅换 provider。
 - **冷却与回主**：被切离/失败的模型在冷却期内不再入选；`revertPolicy: cooldown-expiry` 冷却到期后自动回主模型，`never` 会话内不回。
-- **行为可见**：每次切换追加持久化会话事件 `fallbacks/switch`（from/to/role/reason），配合 info 级日志（候选尝试顺序与跳过原因）与 web 设置页只读状态，无静默换模型。
+- **行为可见**：每次切换追加持久化会话事件 `fallbacks/switch`（from/to/role/reason），配合 info 级日志（候选尝试顺序与跳过原因）与设置 → 插件配置 → Fallbacks 卡片上的只读状态块，无静默换模型。
 - **安全阀**：每 step 的 `maxSwitchesPerStep` 超限后停止切换、保持原错误语义，防止链循环放大延迟；`mode: 'always'` 的 provider 另有重试上限（`alwaysModeRetryCap`）。
 - **无配置回归（no-op）**：`enabled` 默认关闭（`false`），空链 / 未命中触发码 / 角色解析失败时插件完全 no-op——行为与未安装时一致，不产生任何事件。
 
@@ -77,12 +77,24 @@ fallbacks:
 
 > **升级提示（行为变更）**：已有 `fallbacks:` 配置若**未显式写 `enabled` 键**，升级后解析为 `false`——请补上 `enabled: true` 以保持插件继续生效。
 
+## `/fallbacks` 命令（会话内诊断）
+
+在任意会话中键入 `/fallbacks` 即可查看当前会话的 fallback 状态，无需打开设置页：
+
+- **会话来源**（`root` / `subagent`）与**解析角色**（首个命中的 `roles.rules` 条目 → `roles.default`）；
+- 该角色的**解析链**（角色链，角色键缺失则 `default` 链兜底）——无链时显示「未配置」；
+- **最近切换**（`fallbacks/switch` 事件，最新在前，至多 5 条）：from/to provider/model、role、reason；
+- **冷却状态**：哪些 `provider/model` 处于冷却、冷却至何时（`revertPolicy: 'never'` 显示「会话内不再回主」）。
+
+命令**只读**——绝不修改 fallback 状态（不重置冷却、不写待应用切换）。它经条件 `commands` 子注入注册，仅在宿主组合了斜杠命令注册表时出现；无注册表时命令静默不可用（无顶层 inject 污染）。输出默认中文（宿主侧无会话级 locale 信号）；英文词典在同一副本表中。
+
 ## 纯挂载（零 dsh 修改）
 
 插件以**纯挂载**方式安装，**从不修改 dsh 源码树**：
 
 - **安装 = bundle 行插入 + client inject + 自有 gateway**：`bundle/cordis.patch.yml`
-  把插件行插入 profile bundle 栈，`dsh.client.inject` 挂载 web 设置页，设置读写/重置
+  把插件行插入 profile bundle 栈，`dsh.client.inject` 在设置 → 插件配置页挂载
+  Fallbacks 卡片，设置读写/重置
   走插件自有 gateway 通道（`/api/fallbacks/get|set|reset`）。
 - **无补丁、无自动打补丁**：没有 dsh 本体 patch 文件，也没有任何安装期 apply 步骤；
   一句话 git 安装即可用。
@@ -95,7 +107,7 @@ fallbacks:
 | 文档 | 内容 |
 |---|---|
 | [docs/install.md](docs/install.md) | profile 安装 / git 安装 / 卸载 / `--dump-config` 验证 |
-| [docs/configuration.md](docs/configuration.md) | `fallbacks` 命名空间全字段、selector 语法、示例 YAML、设置页使用、行为说明 |
+| [docs/configuration.md](docs/configuration.md) | `fallbacks` 命名空间全字段、selector 语法、示例 YAML、插件配置卡使用、行为说明 |
 | [docs/verification.md](docs/verification.md) | 验证记录（测试矩阵、bundle 层序、运行契约、QA gate 剧本） |
 
 ## 许可

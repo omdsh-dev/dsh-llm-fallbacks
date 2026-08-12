@@ -1,7 +1,7 @@
 /**
  * Fallbacks settings controller — the client half's own store (slot owner
- * props are empty; data rides this store, per the `settings.section`
- * contract).
+ * props are empty; data rides this store, per the `settings.plugin.item`
+ * card contract).
  *
  * Read path: the fallbacks config rides the plugin's own gateway channel —
  * `connection.rpc.call('/api', 'fallbacks/get', { args: {} })` — NOT the
@@ -38,7 +38,7 @@ import {
 import type { FallbacksSwitchEventData } from '../events.ts'
 import { parseSelector } from '../selectors.ts'
 
-/** The plugin's settings namespace on the host wire (settings/changed filter). */
+/** The plugin's settings namespace on the host wire (settings/document-updated ns filter). */
 export const FALLBACKS_SETTINGS_NS = 'fallbacks'
 
 /** Single-page history read for the status block (spec §2.5 D-5: `HISTORY_PAGE_MESSAGES`-sized). */
@@ -494,7 +494,7 @@ export class FallbacksSettingsController {
       // describe (writable + namespace directory) and the gateway get are
       // independent reads with distinct failure semantics — run them in
       // parallel so a refresh costs one round trip, not two (halves the
-      // latency of every `settings/changed` push after a save).
+      // latency of every `settings/document-updated` push after a save).
       const [describeResult, getResult] = await Promise.all([
         this.api.settings.describe({}),
         // A get failure — transport down, gateway not ready, no settings
@@ -744,8 +744,8 @@ export function refreshFallbacksIfLoaded(controller: FallbacksSettingsController
 }
 
 /**
- * Refetch the catalog after `models/changed` only when it has already been
- * opened once (the catalog twin of {@link refreshFallbacksIfLoaded}).
+ * Refetch the catalog after `llm/adapters-updated` only when it has already
+ * been opened once (the catalog twin of {@link refreshFallbacksIfLoaded}).
  * @param controller - the fallbacks settings controller.
  */
 export function refreshCatalogIfLoaded(controller: FallbacksSettingsController): void {
@@ -754,8 +754,9 @@ export function refreshCatalogIfLoaded(controller: FallbacksSettingsController):
 }
 
 /**
- * Refetch the recent-switch summary after `settings/changed` (fallbacks ns) /
- * `connection/reset` only when the status block has already been read once
+ * Refetch the recent-switch summary after `settings/document-updated`
+ * (fallbacks ns) / `connection/reset` only when the status block has already
+ * been read once
  * (the switches twin of {@link refreshFallbacksIfLoaded}).
  * @param controller - the fallbacks settings controller.
  */

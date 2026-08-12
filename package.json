@@ -30,9 +30,12 @@
     "client": {
       "inject": [
         "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-plugin-config",
         "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-conversation",
         "@deepseek-ai/dsh-client-locale",
-        "@deepseek-ai/dsh-client-connection"
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-api-remotes"
       ],
       "platform": "web"
     }
@@ -50,11 +53,16 @@
   },
   "peerDependencies": {
     "@deepseek-ai/dsh-agent": "^0.0.1",
+    "@deepseek-ai/dsh-api-gateway": "^0.0.1",
+    "@deepseek-ai/dsh-api-remotes": "^0.0.1",
     "@deepseek-ai/dsh-client-connection": "^0.0.1",
     "@deepseek-ai/dsh-client-locale": "^0.0.1",
     "@deepseek-ai/dsh-client-runtime": "^0.0.1",
+    "@deepseek-ai/dsh-client-ui-plugin-config": "^0.0.1",
     "@deepseek-ai/dsh-client-ui-settings": "^0.0.1",
+    "@deepseek-ai/dsh-client-ui-conversation": "^0.0.1",
     "@deepseek-ai/dsh-client-ui-slots": "^0.0.1",
+    "@deepseek-ai/dsh-commands": "^0.0.1",
     "@deepseek-ai/dsh-llm": "^0.0.1",
     "@deepseek-ai/dsh-settings": "^0.0.1",
     "@deepseek-ai/dsh-type-meta": "^0.0.1",
@@ -62,9 +70,12 @@
     "react": "^18.2.0"
   },
   "devDependencies": {
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/react": "^16.3.2",
     "@types/node": "^22.20.0",
     "@types/react": "~18.3.31",
-    "react": "^18.3.1",
+    "@types/react-dom": "~18.3.7",
+    "jsdom": "29.1.1",
     "schemastery": "^3.18.0",
     "tsdown": "^0.22.2",
     "tsx": "^4.22.4",

@@ -58,6 +58,36 @@ describe('CooldownStore', () => {
     store.suppress('openai/gpt-4o', Date.now() + 10_000)
     expect(store.isSuppressed('openai/gpt-4o')).toBe(true)
   })
+
+  it('snapshot filters expired entries without mutating the store (pure read)', () => {
+    const store = new CooldownStore()
+    store.suppress('openai/gpt-4o', 1000) // expired at now = 2000
+    store.suppress('anthropic/claude-3-5-sonnet', 5000)
+    expect(store.size).toBe(2)
+    const active = store.snapshot(2000)
+    expect(active).toEqual([{ key: 'anthropic/claude-3-5-sonnet', untilEpochMs: 5000 }])
+    // Pure read: the expired entry is still present after snapshot() —
+    // the lazy delete happens only on the decision path (isSuppressed).
+    expect(store.size).toBe(2)
+    expect(store.isSuppressed('openai/gpt-4o', 2000)).toBe(false)
+    expect(store.size).toBe(1)
+    expect(store.isSuppressed('anthropic/claude-3-5-sonnet', 2000)).toBe(true)
+  })
+
+  it('snapshot keeps infinite-TTL entries always active', () => {
+    const store = new CooldownStore()
+    store.suppress('openai/gpt-4o', Infinity)
+    expect(store.snapshot(0)).toEqual([{ key: 'openai/gpt-4o', untilEpochMs: Infinity }])
+    expect(store.snapshot(Number.MAX_SAFE_INTEGER)).toEqual([
+      { key: 'openai/gpt-4o', untilEpochMs: Infinity },
+    ])
+  })
+
+  it('snapshot uses Date.now() when no explicit now is given', () => {
+    const store = new CooldownStore()
+    store.suppress('openai/gpt-4o', Date.now() + 10_000)
+    expect(store.snapshot()).toEqual([{ key: 'openai/gpt-4o', untilEpochMs: expect.any(Number) }])
+  })
 })
 
 describe('StepFailureSet', () => {

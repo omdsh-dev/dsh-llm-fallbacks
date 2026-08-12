@@ -46,9 +46,23 @@ dsh 插件 = npm 包，package.json 声明 dsh.bundle.patch（指向 bundle/cord
 ### 设置与 UI
 
 - settings 命名空间：installSettingsSection(ctx, settingsNamespace(命名空间名), Config, entry, {setSource, onChange})（参照 agent-default-model）；composition entry 作 base、用户文档作覆盖层。
-- web 设置页：client 半 ctx.slots.inject('settings.section', …) 注册（name/id/order/locale-thunk label）；**数据走插件自有 gateway 通道**（client `connection.rpc.call('/api', '<ns>/<method>', { args })`，host 半 `GatewayService` + `@Remote`）——apiproxy `exposedNamespaces()` 白名单对插件命名空间关闭，wire 读写（describe/update/replace）不可行；owner props 为空。
-  - slot 挂载全契约（settings.section / general.item / action / onboarding / navIcon fallback / 新包三注册面）→ `architecture-patterns/dsh-settings-slot-contract.md`。
+- web 设置入口两形态（2026-08-12 起 fallbacks 用卡片形态）：
+  - **插件配置页卡（`settings.plugin.item`）**：`ctx.slots.inject('settings.plugin.item', generator)` 注册 `{ name, id, order, locale, inject }` + 自绘折叠卡组件（`<li>` + header + body + footer，chrome 对齐上游 `PluginCard`——组件**不可值导入**，必须 self-draw；advisor 自绘参考）。**卡替换 section 导航，不并存**（单入口）。卡内数据仍走插件自有 gateway 通道。
+  - **整页 section（`settings.section`）**：独立设置页（`ctx.slots.inject('settings.section', …)` 注册 name/id/order/label/locale）；仍适用于整页设置产品。
+  - 两种形态的**数据都走插件自有 gateway 通道**（client `connection.rpc.call('/api', '<ns>/<method>', { args })`，host 半 `GatewayService` + `@Remote`）——apiproxy `exposedNamespaces()` 白名单对插件命名空间关闭，wire 读写（describe/update/replace）不可行；owner props 为空。
+  - slot 挂载全契约（settings.section / plugin.item / general.item / action / onboarding / navIcon fallback / 新包三注册面）→ `architecture-patterns/dsh-settings-slot-contract.md`。
   - gateway 通道全契约（wire 规范化、KD-G3/G5、无 revision 守卫、set/reset 语义、draft 播种不变量、可选 settings 注入）→ `architecture-patterns/dsh-gateway-settings-channel.md`。
+- **会话内只读诊断命令（`/fallbacks` 模式）**：`commands` 服务**条件注入子**注册
+  （`ctx.inject(['commands'], (commandCtx) => registerCommands(...))`，**不入顶层
+  inject**）——commands 服务缺失时子不激活、命令静默缺席，不抛顶层注入错误；注册返回
+  disposer。只读命令不改运行时状态（快照构建走现有 store 只读面）。
+- **失效刷新走 remote 转发事件（20260811+ 宿主）**：`settings/changed` / `models/changed`
+  客户端事件已移除（订阅即死代码）。迁移到 `ctx.remote.$on`（需 `remote` 在 inject 面）：
+  `settings/document-updated(ns, rev)`（ns 精确过滤）+ `llm/adapters-updated()`（payload-free）
+  + 保留 `ctx.on('connection/reset')`（微任务合并突发）；`refresh*IfLoaded` + generation
+  guard 语义不变。**漂移检测纪律**：link farm 给真实 dsh 类型 → `pnpm build`（含 tsc）在
+  事件名删除后 TS2345 报错（死订阅无处藏）；测试 double **钉事件名集合**
+  （drift-visible，新增订阅名自动失败）；`grep settings/changed|models/changed` 零残留。
 - **设置页必须始终可用（不要死路）**：gateway `get` 失败（通道不可达）≠ 页面该显示「无法读取」通知——渲染可操作骨架（标题/介绍/只读状态块/主开关/保存动作）以默认值展示（`present=false`），`writable` 跟随 describe 顶层标志；`set`/`reset` 失败 → error 横幅如实呈现（不静默）、表单保持可编辑（KD-G3，无 revision 守卫）。通道恢复后骨架原地升级为就绪态。
 - **Draft 播种**：编辑状态从 gateway `get` 返回的**真实组合配置**初始化（`accept(config, writable)`），不用默认值播种——`get` 失败时骨架仅**展示**默认值，播种默认值会在通道恢复后 diff 出全默认 patch、抹掉真实配置。
 - **功能级开关（feature master switch）模式**：用配置字段本身（如 fallbacks 命名空间的 `enabled` 字段）作页面显隐开关——OFF 时隐藏表单主体 + 显示提示（隐藏不丢弃：draft 保留、拨动即时显隐），ON 时显示完整配置界面；开关状态 = 用户配置字段（保存持久化、重载保持），不是纯 UI 本地态。默认值如需翻转（如 enabled true→false），单点改 defaultFallbacksConfig + schema。
@@ -68,6 +82,8 @@ dsh 插件 = npm 包，package.json 声明 dsh.bundle.patch（指向 bundle/cord
 - Config 类型 + z 类型注解的 schemastery ObjectT 输出键全 required：.default(undefined as unknown as {...}) 的 cast 类型必须与 schema 输出全等，否则 tsc -b 报 TS2345。
 - cordis 插件命名导出约定：Loader 丢弃 namespace（含 inject 元数据）当存在 default export——只用 named exports。
 - **上游清单契约会改名**（2026-08-11 实测）：client 半的 package.json 声明字段由 `dshClient` 改为 **`dsh.client`**（新 loader 只认 `dsh.client`，旧字段被忽略 → client 半在 GUI 完全不可见，无报错）。插件必须跟随：`"dsh": { "bundle": { "patch": ... }, "client": { "inject": [...], "platform": "web" } }`，且 `exports["./client"]` 必须存在（loader 校验）。升级 dsh 快照后核对 manifest 字段名 + exports。
+- **Purity 门必须建在模块图面（resolveId），不是 require 文本面**：`deps.alwaysBundle` 会把表外依赖**静默内联**——值导入对等包不产生 require，require-only 断言失明（实测 94.37 kB 内联产物零 require 通过旧门）。双层：resolveId 插件抛错 + emitted-surface token 扫描（`/@deepseek-ai\/[\w./-]+/g` 超集）。每次新增 type-only 对等包后做负向探针（误值导入应红）。→ `build-errors/dsh-client-bundle-purity-gate.md`。
+- **会话转录挂载走 conversationEvents + conversation.chat.node（纯渲染）**：非 surface 插件事件默认转录不可见；双段注册（注册表决定是否渲染 + keyed 座位决定如何渲染）；**宿主引擎对节点生命周期无 try/catch——match/start 对畸形载荷必须降级绝不 throw**；type-only 引用 `dsh-client-ui-conversation`；业务数据经 `node` prop。→ `architecture-patterns/dsh-conversation-surface-mounting.md`。
 - 配置字段默认值跨 host/client 重复硬编码会漂移：从单一 defaultFallbacksConfig 派生。
 
 ## Why This Matters
