@@ -9,7 +9,7 @@
 *Avoid:* plugin row / patch layer（口语混用时可接受，正式文档用 bundle）
 
 ### dsh settings slot
-dsh web settings 的条目挂载契约（权威：dsh-private `packages/client/ui-settings/src/client/contract/slots.ts`）：`settings.section`（整页设置，list kind，按 order 排序；`fallbacks` 即经此挂载，order 30）、`settings.general.item`（General 页内单行）、`settings.action`（头部操作）、`settings.onboarding`（root 步骤）；`trigger`/`header`/`close` 是 single seat（chrome 文案位）。shell 零自有内容——**新增设置不改 shell**；唯一宿主侧触发点是 `SettingsRoot.tsx` `navIcon(id)`（仅 models/agent-presets 有专属图标，新 id 落齿轮）。挂载统一 `ctx.slots.inject`（非裸 register）。*Avoid:* 把「新设置要改 shell」当默认假设。
+dsh web settings 的条目挂载契约（权威：dsh-private `packages/client/ui-settings/src/client/contract/slots.ts`）：`settings.plugin.item`（官方**插件配置页**卡，list kind——卡自绘折叠列表项，**卡形态替换 section 导航**的单入口）、`settings.section`（整页设置，list kind，按 order 排序）、`settings.general.item`（General 页内单行）、`settings.action`（头部操作）、`settings.onboarding`（root 步骤）；`trigger`/`header`/`close` 是 single seat（chrome 文案位）。list 槽同 order 按注册先后稳定排序（order tie 可预期）。shell 零自有内容——**新增设置不改 shell**；唯一宿主侧触发点是 `SettingsRoot.tsx` `navIcon(id)`（仅 models/agent-presets 有专属图标，新 id 落齿轮）。挂载统一 `ctx.slots.inject`（非裸 register）。*Avoid:* 把「新设置要改 shell」当默认假设。
 
 ### gateway channel（插件 gateway 通道）
 插件自有配置读写通道：宿主半 `GatewayService` + `@Remote` 声明 `/api/<ns>/get|set|reset`（fallbacks 即 `/api/fallbacks/*`），client 半 `connection.rpc.call('/api', '<ns>/<method>', { args })` 读写。与 `settings slot` 正交——slot 决定页面出现，gateway 决定配置数据从哪来。apiproxy wire 的 `exposedNamespaces()` 白名单对插件命名空间关闭，gateway 是 mount-only 下 web 配置读写的唯一路径；通道无版本戳（无 revision 守卫，失败走错误横幅）。*Avoid:* 把插件配置经 `settings.describe/update/replace` 读写（patch 时代路径，已删除）
@@ -19,6 +19,9 @@ dsh web settings 的条目挂载契约（权威：dsh-private `packages/client/u
 
 ### dsh link farm
 dsh 私有 `@deepseek-ai/*` 包（未发布 registry）的开发期类型/测试解析方案：`scripts/setup-dsh-links.mjs` 从 dsh 源码树（`$DSH_SOURCE_DIR`，缺省 `${DSH_HOME}/source/current`，再缺省 `~/.dsh/source/current`）把真实包符号链接进 `node_modules/`（含 `vendor/cordis` 的 bin-less shim，保证 `import 'cordis'` 与真实包解析到同一物理文件）；运行时值 import 保持 external 由宿主 in-box 解析，测试用真实 `dsh-settings`（内存 provider）与真实 store 引擎。`*Avoid:* peer-stubs / tsconfig paths（历史方案，已移除）`
+
+### remote events（转发事件）
+host → client 的远程事件转发面：client 经 `ctx.remote.$on(key, listener)` 订阅，事件名受宿主转发白名单（`API_REMOTE_FORWARDED_EVENTS`）约束；与 client 本地事件（`ctx.on`）区分——本地事件在 client 进程内 emit，remote 事件由 host 侧转发帧推送。20260811 起 `settings/changed`、`models/changed` 客户端事件已移除，配置/目录变更通知迁移到 remote events：`settings/document-updated(ns, revision)`（订阅方按 ns 精确过滤）与 `llm/adapters-updated()`（payload-free）。*Avoid:* `settings/changed`、`models/changed`（20260811 已移除的死事件名）
 
 ## LLM fallbacks
 
@@ -34,7 +37,20 @@ dsh 私有 `@deepseek-ai/*` 包（未发布 registry）的开发期类型/测试
 ### documented degradation（文档化降级）
 被接受的功能落差必须「非静默」呈现：替代方案有测试证明，**或**降级说明（设置页/文档）+ QA 实测证据闭环，二选一（PD-4 口径）。当前实例：model-selection 协调在 mount-only 下无可靠覆写 seam → 当步路由由监听注册顺序决定，设置页 `status.selectionNote`（zh/en）诚实标注、组合测试钉住语义。
 
+## 会话转录（conversation surface）
+
+### conversationEvents
+client 会话转录的节点注册表（`ConversationNodeDefinition` 注册，kind 唯一）：引擎把每条摄入事件（surface 与否不限）投喂给每个定义的 `match`——决定「自定义会话事件是否被渲染为转录节点」。非 surface 插件事件（如 `fallbacks/switch`）默认转录不可见，注册定义是纯挂载下使其可见的唯一路径。
+
+### conversation.chat.node
+会话转录的 keyed 渲染座位：按节点 kind 派发渲染器（未注册 kind 落 JsonBlock 兜底，非 `unknown` 渲染器）。与 conversationEvents 配合 = 「注册表决定是否渲染，座位决定如何渲染」；外部插件渲染器纯渲染、type-only 引用 `ui-conversation`，业务数据经 `node` prop 传入。
+
+### degrade-never-crash
+会话转录节点生命周期的不变式：宿主引擎对节点 `match`/`start` **无 try/catch**——插件节点代码对畸形载荷必须降级（match no-op / start 返回确定降级态）而**绝不 throw**，单节点异常会炸掉整条转录装配而非「某一行不渲染」。*Avoid:* 在节点生命周期里抛错指望引擎兜底
+
 ## 已决歧义
 
 - `QUOTA_EXCEEDED`（常见命名）→ 本插件与 dsh taxonomy 用 `QUOTA`；文档中不要混用。
 - `settings slot` vs `gateway channel`：前者是**展示挂载**（页面出现在 Settings），后者是**数据通道**（配置读写从哪来）；讨论设置页时两者分开表述，不要混用。
+- `settings/changed` / `models/changed`（20260811 已移除的客户端事件名）→ 失效刷新一律表述为 remote events（`settings/document-updated` + `llm/adapters-updated`）；不要在代码、测试或文档中恢复旧名。
+- `settings.section` vs `settings.plugin.item`：fallbacks 起 2026-08-12 用**卡形态**（plugin.item）并删除独立导航；「设置页」口语可指卡或 section，正式文档按挂载形态区分。

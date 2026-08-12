@@ -1,6 +1,7 @@
 ---
 module: dsh-plugin-gateway
 date: 2026-08-12
+last_updated: 2026-08-12
 problem_type: architecture_pattern
 category: architecture-patterns
 severity: medium
@@ -25,8 +26,6 @@ related_components:
   - dsh-llm-fallbacks client store
 ---
 
-> **Stale-pointer note**: Iteration `iter-20260812-fallbacks-plugin-config` supersedes: fallbacks 展示挂载由 `settings.section` 换为 `settings.plugin.item` 卡，且 20260811 起 `settings/changed` 已移除（失效刷新迁 `settings/document-updated` + `llm/adapters-updated`）——正文「Context」与「Store 其它要点」两处陈述将过时；knowledge refresh 归 iteration-close compound。
-
 # dsh 插件自有 settings gateway 通道（mount-only 数据面）
 
 插件命名空间经 host apiproxy wire 读写配置的替代通道模式。两个 dsh 插件（advisor、
@@ -41,8 +40,9 @@ dsh 的 web 设置 RPC（`dsh-host-apiproxy`）对命名空间有**硬编码暴�
 （`exposeToWebClients` + `exposedNamespaces()` 并集）——违反纯挂载约束。advisor 证明的
 替代路径：插件声明自己的 `GatewayService` 通道，client 经 `connection.rpc.call('/api', …)`
 读写；宿主侧写操作走进程内 `ctx.settings`（该检查只存在于 apiproxy wire 层，进程内
-update/replace 无命名空间门禁）。`settings.section` slot 注册保留——它是**展示挂载**，
-与数据通道正交（见 CONCEPTS 已决歧义）。
+update/replace 无命名空间门禁）。展示挂载与数据通道正交——fallbacks 现经
+`settings.plugin.item` 卡（2026-08-12 起，旧 `settings.section` 导航已删）展示，配置数据
+仍走本通道（见 CONCEPTS 已决歧义）。
 
 ## Guidance
 
@@ -114,7 +114,19 @@ gateway 通道是普通 RPC merge/replace，**无版本戳**。迁移时删除�
 - `describe` 仍调用：取顶层 `writable`（host 只读态）+ 其它命名空间目录（configured-provider
   并集）；插件自身命名空间将**不再出现**于 describe——停止按 ns 查找。
 - `present` 标志替代 namespace-found 检查：`get` 解析 → true；否则 false → 可操作骨架。
-- 进程内 update/replace 仍发 `settings/changed`（ns 过滤保持），推送失效刷新逻辑不变。
+- **失效刷新（20260811 起 remote events）**：进程内 update/replace **不再发**
+  `settings/changed`（该客户端事件与 `models/changed` 已于 20260811 dsh snapshot 移除，
+  订阅即死代码）。client 失效刷新迁移到 remote 转发事件（`ctx.remote.$on`，需 `remote`
+  在 inject 面）：
+  - `settings/document-updated(ns, revision)` —— ns **精确过滤**插件命名空间才刷新
+    （form + switches），他 ns 不刷新；
+  - `llm/adapters-updated()` —— payload-free，**只**刷 catalog，不碰表单；
+  - `connection/reset`（client 事件，保留）——全量刷新，微任务合并突发（burst
+    coalesce，advisor 同款 debounce）。
+  - 刷新仍走 `refresh*IfLoaded` + generation guard（只刷已读过的 store，未打开的面闲置）。
+  - 检测纪律：死事件靠 link farm 真实类型 + `tsc`（`pnpm build` 含 tsc）暴露（TS2345）；
+    测试 double 钉事件名集合（drift-visible）；`grep settings/changed|models/changed`
+    零残留。
 
 ## Why This Matters
 
