@@ -40,6 +40,7 @@ import type {
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { FallbackSwitchReason } from '../events.ts'
 import { SWITCH_REASON_KEYS } from './locales.ts'
+import { isFallbacksSwitchData } from './switch-guard.ts'
 import css from './ConversationFallbackSwitch.module.css'
 
 /** Final chat payload of one decided fallback switch (snapshot of the event). */
@@ -73,17 +74,39 @@ declare module '@deepseek-ai/dsh-client-ui-conversation/client' {
 export const fallbackSwitchDefinition: ConversationNodeDefinition<FallbacksSwitchChatData> = {
   kind: 'fallbacks-switch',
   target: 'chat',
-  match: (event) => event.type === 'fallbacks/switch'
-    ? { id: String(event.seq), role: 'start' }
-    : null,
+  // The engine feeds EVERY session event to every definition's `match`
+  // (`conversation-assembler.ts:370-382`) with no try/catch, and a matched
+  // start flows into `replayContext` → `definition.start` with no
+  // containment either (`:535-539`) — a throw here breaks the WHOLE session
+  // transcript assembly, not just this line. So `match` no-ops malformed
+  // envelopes (missing/non-integer seq would produce the id `'undefined'`
+  // and trip the engine's duplicate-start/non-appended invariants; a
+  // non-object payload cannot be snapshotted) and `start` degrades instead
+  // of throwing. Version skew must degrade the line, never crash it.
+  match: (event) =>
+    event.type === 'fallbacks/switch' &&
+    Number.isInteger(event.seq) &&
+    isFallbacksSwitchData(event.data)
+      ? { id: String(event.seq), role: 'start' }
+      : null,
   start: (_context, match) => {
     if (match.event.type !== 'fallbacks/switch') {
       throw new Error('fallbacks-switch start requires a fallbacks/switch event')
     }
+    const { seq, time } = match.event
+    if (!Number.isInteger(seq) || !isFallbacksSwitchData(match.event.data)) {
+      // Degraded snapshot — DEFINED (the engine's requireState rejects
+      // undefined, `conversation-assembler.ts:793-801`) but missing the
+      // summary fields, so the renderer's shared shape guard turns the line
+      // into the title-only notice. The cast documents that the runtime
+      // shape may intentionally deviate from the static well-formed type
+      // (the version-skew premise this file degrades for).
+      return { seq, time } as FallbacksSwitchChatData
+    }
     const { turn, step, from, to, role, reason } = match.event.data
     return {
-      seq: match.event.seq,
-      time: match.event.time,
+      seq,
+      time,
       turn,
       step,
       from,
@@ -108,32 +131,11 @@ export const fallbackSwitchDefinition: ConversationNodeDefinition<FallbacksSwitc
   },
 }
 
-/** Props delivered by the keyed chat-node seat: runtime share + the `fallbacks` locale seat. */
+/**
+ * Props delivered by the keyed chat-node seat: runtime share + the `fallbacks` locale seat.
+ */
 export type ConversationFallbackSwitchProps =
   PropsRuntime<'conversation.chat.node', 'fallbacks-switch'> & PropsLocale<'fallbacks'>
-
-/**
- * True when `data` is a well-formed switch-node payload — the client-side
- * mirror of the `/fallbacks` handler's shape guard (`src/commands.ts`
- * `isFallbacksSwitchData`). The node payload is a snapshot of the durable
- * session log, which is append-only and survives plugin/host upgrades, so a
- * `fallbacks/switch` node may carry a stale or corrupted shape — version
- * skew must degrade the transcript line, never crash it. The renderer only
- * reads `from`/`to`/`role`/`reason`, so the guard checks exactly those.
- */
-function isSwitchNodeData(data: unknown): data is FallbacksSwitchChatData {
-  if (typeof data !== 'object' || data === null) return false
-  const payload = data as Record<string, unknown>
-  if (typeof payload.role !== 'string' || typeof payload.reason !== 'string') return false
-  const from = payload.from as Record<string, unknown> | undefined
-  const to = payload.to as Record<string, unknown> | undefined
-  return (
-    typeof from?.provider === 'string' &&
-    typeof from?.model === 'string' &&
-    typeof to?.provider === 'string' &&
-    typeof to?.model === 'string'
-  )
-}
 
 /**
  * Render one fallback switch as a compact system-style transcript line.
@@ -151,7 +153,7 @@ function isSwitchNodeData(data: unknown): data is FallbacksSwitchChatData {
  */
 export function ConversationFallbackSwitch({ node, t }: ConversationFallbackSwitchProps): ReactNode {
   const data = node.data
-  if (!isSwitchNodeData(data)) {
+  if (!isFallbacksSwitchData(data)) {
     return (
       <div className={css.switchRow} role="status">
         <span className={css.switchTitle}>{t('chat.switch.title')}</span>

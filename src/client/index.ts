@@ -242,7 +242,17 @@ export function apply(ctx: ClientContext): void {
   //   by node kind (external registration shape `{ name, key, locale }` —
   //   ui-workflow-run / ui-tool / ui-goal precedent). No inject face: the
   //   node payload arrives through the keyed seat's `node` prop.
-  ctx.conversationEvents.register(fallbackSwitchDefinition)
+  // D1 (cont.): the registry's `register` returns an idempotent disposer
+  // (`event-registry.ts:19-27`); wire it into an explicit effect so plugin
+  // unload/HMR teardown is symmetric with the other subscriptions (same
+  // pattern as the dictionaries effect above). The registry ALSO auto-
+  // disposes through its own owner-effect (`definition-registry.ts:43-51`) —
+  // the disposer is idempotent, so both teardown paths are safe, no
+  // double-dispose.
+  ctx.effect(
+    () => ctx.conversationEvents.register(fallbackSwitchDefinition),
+    'llm-fallbacks: conversation node definition',
+  )
   ctx.slots.inject('conversation.chat.node', function* () {
     yield ctx.slots.register({
       name: 'conversation.chat.node',

@@ -15,10 +15,13 @@
  * general row) are untouched.
  *
  * Definition behavior: match accepts only `fallbacks/switch` (id = event
- * seq, role start), start snapshots the event payload, update is a
- * passthrough, and buildViewNode materializes the chat node at the event's
- * anchor seq — the non-surface event the `unknown-surface` fallback never
- * picked up becomes visible.
+ * seq, role start) and NO-OPs malformed envelopes (null/empty data, missing
+ * or non-integer seq — the engine feeds every event with no try/catch),
+ * start snapshots the event payload and degrades to a defined minimal state
+ * on malformed data instead of throwing (the assembler's requireState
+ * rejects undefined), update is a passthrough, and buildViewNode
+ * materializes the chat node at the event's anchor seq — the non-surface
+ * event the `unknown-surface` fallback never picked up becomes visible.
  *
  * Rendered states: one compact system-style line — dim title + separator +
  * ellipsized summary (`{from} → {to} ({role} · {reason})`), role="status";
@@ -148,6 +151,36 @@ function nodeFor(event: SessionEvent<'fallbacks/switch'>): ChatNode<'fallbacks-s
   )
   const view = fallbackSwitchDefinition.buildViewNode?.({
     key: contextKey(event.seq), kind: KIND, id: String(event.seq),
+    matches: [match], start: match, state, current: new Map(),
+  })
+  expect(view).not.toBeNull()
+  return view as ChatNode<'fallbacks-switch'>
+}
+
+/**
+ * Engine-style bare start for a malformed `fallbacks/switch` event: the
+ * assembler calls `definition.start(...)` directly on a match (no try/catch,
+ * `conversation-assembler.ts:523-539`), so the guard must return a DEFINED
+ * degraded state (requireState rejects undefined, `:793-801`) and the node
+ * must still materialize as the title-only line.
+ */
+function degradedNodeFor(event: unknown): ChatNode<'fallbacks-switch'> {
+  const match: ConversationMatch = {
+    event: event as unknown as SessionEvent<'fallbacks/switch'>,
+    view: undefined,
+    role: 'start',
+    location: { kind: 'session' },
+  }
+  const state = fallbackSwitchDefinition.start(
+    {
+      key: contextKey(1), kind: KIND, id: '1',
+      matches: [match], start: match, state: undefined, current: new Map(),
+    },
+    match,
+    {} as never,
+  )
+  const view = fallbackSwitchDefinition.buildViewNode?.({
+    key: contextKey(1), kind: KIND, id: '1',
     matches: [match], start: match, state, current: new Map(),
   })
   expect(view).not.toBeNull()
@@ -318,6 +351,62 @@ describe('fallbackSwitchDefinition (D1 node state machine)', () => {
       key: 'x', kind: KIND, id: '1',
       matches: [], start: undefined, state: undefined, current: new Map(),
     }, match as unknown as ConversationMatch, {} as never)).toThrow(/fallbacks\/switch/)
+  })
+
+  it('match no-ops malformed envelopes (null/empty data, missing seq) — never matches', () => {
+    // The engine feeds every event to `match` with no try/catch; a malformed
+    // `fallbacks/switch` envelope must not produce a match (the id
+    // `'undefined'` would trip the engine's duplicate-start invariants) and
+    // must never throw.
+    expect(fallbackSwitchDefinition.match(
+      { type: 'fallbacks/switch', seq: 1, time: 1, data: null } as unknown as SessionEvent,
+    )).toBeNull()
+    expect(fallbackSwitchDefinition.match(
+      { type: 'fallbacks/switch', seq: 1, time: 1, data: {} } as unknown as SessionEvent,
+    )).toBeNull()
+    expect(fallbackSwitchDefinition.match(
+      { type: 'fallbacks/switch', time: 1, data: { turn: 1, step: 1, from: { provider: 'a', model: 'b' }, to: { provider: 'c', model: 'd' }, role: 'default', reason: 'trigger-code' } } as unknown as SessionEvent,
+    )).toBeNull()
+    expect(fallbackSwitchDefinition.match(
+      { type: 'fallbacks/switch', seq: 2.5, time: 1, data: {} } as unknown as SessionEvent,
+    )).toBeNull()
+  })
+
+  it('start degrades on data:null — engine-style bare start never throws (title-only line)', () => {
+    // A corrupted durable event (data: null) must not crash the session
+    // assembly: `start` returns a defined degraded state, buildViewNode
+    // materializes the node, and the renderer shows the title-only notice.
+    const event = { type: 'fallbacks/switch', seq: 41, time: 1_700_000_000_041, data: null }
+    const view = degradedNodeFor(event)
+    expect(view.data).toEqual({ seq: 41, time: 1_700_000_000_041 })
+    expect(() => render(
+      <ConversationFallbackSwitch {...switchProps(view)} />,
+    )).not.toThrow()
+    expect(screen.getByText(en['chat.switch.title'])).toBeTruthy()
+  })
+
+  it('start degrades on an empty-object payload — engine-style bare start never throws', () => {
+    const event = { type: 'fallbacks/switch', seq: 42, time: 1_700_000_000_042, data: {} }
+    const view = degradedNodeFor(event)
+    expect(view.data).toEqual({ seq: 42, time: 1_700_000_000_042 })
+    expect(() => render(
+      <ConversationFallbackSwitch {...switchProps(view)} />,
+    )).not.toThrow()
+    expect(screen.getByText(en['chat.switch.title'])).toBeTruthy()
+  })
+
+  it('start degrades when seq is missing — engine-style bare start never throws', () => {
+    const event = {
+      type: 'fallbacks/switch' as const,
+      time: 1_700_000_000_043,
+      data: { turn: 1, step: 1, from: { provider: 'a', model: 'b' }, to: { provider: 'c', model: 'd' }, role: 'default', reason: 'trigger-code' },
+    }
+    const view = degradedNodeFor(event)
+    expect(view.data).toEqual({ seq: undefined, time: 1_700_000_000_043 })
+    expect(() => render(
+      <ConversationFallbackSwitch {...switchProps(view)} />,
+    )).not.toThrow()
+    expect(screen.getByText(en['chat.switch.title'])).toBeTruthy()
   })
 
   it('buildViewNode materializes the chat node at the event anchor seq', () => {
