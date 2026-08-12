@@ -1124,11 +1124,11 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
       api: { settings: { describe, update: vi.fn(), replace: vi.fn(), mutate: vi.fn() } },
       rpc: { call: vi.fn() },
     })
-    // Slots service double: run the section-registration thunk and capture the
+    // Slots service double: run the card-registration generator and capture the
     // injected controller — the seam apply() uses to hand the controller over.
     let controller: FallbacksSettingsController | undefined
     ctx.provide('slots', {
-      inject: (_name: string, thunk: () => unknown) => { thunk() },
+      inject: (_name: string, thunk: () => Iterable<unknown>) => { for (const _dispose of thunk()) { /* run the registration generator */ } },
       register: (options: { inject: () => unknown }) => {
         controller = (options.inject() as { controller: FallbacksSettingsController }).controller
         return {}
@@ -1169,7 +1169,7 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
     })
     let controller: FallbacksSettingsController | undefined
     ctx.provide('slots', {
-      inject: (_name: string, thunk: () => unknown) => { thunk() },
+      inject: (_name: string, thunk: () => Iterable<unknown>) => { for (const _dispose of thunk()) { /* run the registration generator */ } },
       register: (options: { inject: () => unknown }) => {
         controller = (options.inject() as { controller: FallbacksSettingsController }).controller
         return {}
@@ -1218,7 +1218,7 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
     })
     let controller: FallbacksSettingsController | undefined
     ctx.provide('slots', {
-      inject: (_name: string, thunk: () => unknown) => { thunk() },
+      inject: (_name: string, thunk: () => Iterable<unknown>) => { for (const _dispose of thunk()) { /* run the registration generator */ } },
       register: (options: { inject: () => unknown }) => {
         controller = (options.inject() as { controller: FallbacksSettingsController }).controller
         return {}

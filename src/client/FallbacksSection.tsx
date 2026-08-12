@@ -83,7 +83,7 @@ export interface FallbacksSectionInjected {
 
 /** Props delivered by the slot outlet: runtime share + locale seat + inject face. */
 export type FallbacksSectionProps =
-  PropsRuntime<'settings.section'> & PropsLocale<'fallbacks'> & FallbacksSectionInjected
+  PropsRuntime<'settings.plugin.item'> & PropsLocale<'fallbacks'> & FallbacksSectionInjected
 
 /** Scalar (non-row) fields of the form draft. */
 interface FallbacksScalars {
