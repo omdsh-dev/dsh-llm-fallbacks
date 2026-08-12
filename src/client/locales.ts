@@ -11,8 +11,14 @@ import { defaultFallbacksConfig } from '../config.ts'
 
 /** Simplified Chinese dictionary (the key-set source of truth). */
 export const zh = {
-  'nav': 'Fallbacks',
-  'nav.description': '模型故障自动降级',
+  'title': 'Fallbacks',
+  'intro': '模型故障自动降级',
+  'collapse': '收起设置',
+  'expand': '展开设置',
+  'unsaved': '未保存',
+  'discard': '放弃修改',
+  'retry': '重试',
+  'readOnly': '当前环境中的设置为只读。',
   'enabled.label': '启用故障降级',
   'enabled.hint': '关闭后插件完全不介入',
   'enabled.tooltip': '关闭后插件完全不介入；开启但未配置任何链时行为与未安装插件一致。',
@@ -107,8 +113,14 @@ export type FallbacksKey = keyof typeof zh
 
 /** English dictionary, checked complete against the zh key set. */
 export const en = {
-  'nav': 'Fallbacks',
-  'nav.description': 'Automatic fallback on model failures',
+  'title': 'Fallbacks',
+  'intro': 'Automatic fallback on model failures',
+  'collapse': 'Hide settings',
+  'expand': 'Show settings',
+  'unsaved': 'Unsaved',
+  'discard': 'Discard',
+  'retry': 'Retry',
+  'readOnly': 'Settings are read-only in this environment.',
   'enabled.label': 'Enable failure fallback',
   'enabled.hint': 'Plugin never intervenes when off',
   'enabled.tooltip': 'When off the plugin never intervenes; when on with no chains configured behavior is identical to an uninstalled plugin.',

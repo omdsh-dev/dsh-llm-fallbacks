@@ -45,6 +45,7 @@
  */
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -128,6 +129,27 @@ function readdirSafe(dir) {
   }
 }
 
+/**
+ * The source tree's own react / react-dom copies, resolved through the tree's
+ * packages (each package's node_modules links the shared virtual store copy
+ * the whole tree uses). node-level identity: the DOM card specs must run
+ * against ONE React instance — the linked @deepseek-ai client packages
+ * (dsh-client-web-react's selector hook, ui-primitives) import the tree's
+ * copies, so a second copy installed as a devDependency would leave the hooks
+ * dispatcher null when the selector hook runs inside a render driven by the
+ * other copy. dsh-advisor pins the same identity (its setup-dsh-links.mjs
+ * `resolveTreeReact`); this package's react / react-dom are therefore NOT
+ * devDependencies — the identity links below are the only copies.
+ */
+function resolveTreeReact(sourceRoot) {
+  const requireFrom = createRequire(join(sourceRoot, 'packages', 'client', 'web-react', 'package.json'))
+  const requireDomFrom = createRequire(join(sourceRoot, 'packages', 'client', 'ui-primitives', 'package.json'))
+  return {
+    react: dirname(requireFrom.resolve('react/package.json')),
+    'react-dom': dirname(requireDomFrom.resolve('react-dom/package.json')),
+  }
+}
+
 const linkDir = join(repo, 'node_modules', '@deepseek-ai')
 const cordisShimDir = join(repo, 'node_modules', 'cordis')
 
@@ -138,6 +160,37 @@ function linkKind() {
 function ensure(linkPath, target) {
   rmSync(linkPath, { recursive: true, force: true })
   symlinkSync(target, linkPath, linkKind())
+}
+
+/**
+ * The virtual store's react / react-dom entries (installed as transitive
+ * peers of the DOM-testing packages) must resolve to the SAME copies the
+ * identity links above point at — otherwise node's raw resolution from
+ * inside those packages (externalized by vitest) would load a SECOND React
+ * instance alongside the identity-linked one — the hooks-dispatcher split
+ * the identity links exist to prevent. pnpm recreates the entries on every
+ * install, so `dsh:link` re-pins them.
+ * @returns the pin targets as `{ name, linkPath, target }` rows.
+ */
+function virtualStoreReactLinks(sourceRoot) {
+  const identity = resolveTreeReact(sourceRoot)
+  const virtualStore = join(repo, 'node_modules', '.pnpm')
+  const links = []
+  for (const entry of readdirSafe(virtualStore)) {
+    if (!entry.startsWith('react@') && !entry.startsWith('react-dom@')) continue
+    const isDom = entry.startsWith('react-dom@')
+    const linkPath = join(virtualStore, entry, 'node_modules', isDom ? 'react-dom' : 'react')
+    if (!existsSync(linkPath)) continue
+    links.push({ name: `${entry} node_modules/${isDom ? 'react-dom' : 'react'}`, linkPath, target: isDom ? identity['react-dom'] : identity.react })
+  }
+  return links
+}
+
+/** Ensure the virtual-store react entries resolve to the tree copies. */
+function ensureVirtualStoreReactIdentity(sourceRoot) {
+  for (const { linkPath, target } of virtualStoreReactLinks(sourceRoot)) {
+    ensure(linkPath, target)
+  }
 }
 
 /**
@@ -278,9 +331,20 @@ function main() {
   }
 
   const problems = []
+  // react / react-dom identity links (see resolveTreeReact) live at the
+  // package's own node_modules root, next to the @deepseek-ai farm.
+  const identityLinks = Object.entries(resolveTreeReact(sourceRoot))
   if (CHECK) {
     for (const [name, target] of [...tree.entries()].sort()) {
       const problem = checkLink(name, join(linkDir, name.slice('@deepseek-ai/'.length)), target)
+      if (problem !== undefined) problems.push(problem)
+    }
+    for (const [name, target] of identityLinks) {
+      const problem = checkLink(name, join(repo, 'node_modules', name), target)
+      if (problem !== undefined) problems.push(problem)
+    }
+    for (const { name, linkPath, target } of virtualStoreReactLinks(sourceRoot)) {
+      const problem = checkLink(name, linkPath, target)
       if (problem !== undefined) problems.push(problem)
     }
     const cordisProblem = checkCordisShim(sourceRoot)
@@ -292,7 +356,9 @@ function main() {
       process.stderr.write(`dsh link farm check failed (source ${sourceRoot}):\n  ${problems.join('\n  ')}\n`)
       process.exit(1)
     }
-    console.log(`dsh link farm ok: ${tree.size} @deepseek-ai packages + cordis linked from ${sourceRoot}`)
+    console.log(
+      `dsh link farm ok: ${tree.size} @deepseek-ai packages + cordis + ${identityLinks.length} react identity links linked from ${sourceRoot}`,
+    )
     return
   }
 
@@ -300,6 +366,12 @@ function main() {
   for (const [name, target] of [...tree.entries()].sort()) {
     ensure(join(linkDir, name.slice('@deepseek-ai/'.length)), target)
   }
+  for (const [name, target] of identityLinks) {
+    ensure(join(repo, 'node_modules', name), target)
+  }
+  // Re-pin the virtual-store react entries (see ensureVirtualStoreReactIdentity)
+  // after every install-triggered link run.
+  ensureVirtualStoreReactIdentity(sourceRoot)
   writeCordisShim(sourceRoot)
   const removed = pruneStale(tree, false)
   console.log(

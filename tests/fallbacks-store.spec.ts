@@ -33,6 +33,7 @@ import {
   configuredProvidersOf,
   deriveEffectiveModel,
   extractRecentSwitches,
+  FALLBACKS_SETTINGS_NS,
   FallbacksSettingsController,
   parseFallbacksConfig,
   refreshCatalogIfLoaded,
@@ -113,6 +114,47 @@ function makeApi() {
     sessions: {
       history: vi.fn(),
     },
+  }
+}
+
+/**
+ * A `remote` service double for the client apply wiring: records `$on`
+ * subscriptions (returning per-event disposers, tracked for teardown
+ * assertions) and dispatches the forwarded remote events
+ * (`settings/document-updated`, `llm/adapters-updated`) through the recorded
+ * listener, mirroring the gateway's one-way delivery. One `Set` per event
+ * (qc2 S-5 / qc3 S-3): `Map.set` silently overwrote an earlier listener, so
+ * a regressed duplicate `$on` registration would pass; the Set plus the
+ * single-listener emit guard make any double subscription fail loudly.
+ */
+function makeRemote() {
+  const listeners = new Map<string, Set<(...args: unknown[]) => void>>()
+  const disposers: Array<{ invoked: boolean }> = []
+  const $on = vi.fn((event: string, listener: (...args: unknown[]) => void): (() => void) => {
+    const set = listeners.get(event) ?? new Set<(...args: unknown[]) => void>()
+    set.add(listener)
+    listeners.set(event, set)
+    const entry = { invoked: false }
+    disposers.push(entry)
+    return () => {
+      set.delete(listener)
+      entry.invoked = true
+    }
+  })
+  return {
+    remote: { $on } as { $on: typeof $on },
+    $on,
+    emit(event: string, ...args: unknown[]): void {
+      const set = listeners.get(event)
+      if (set === undefined || set.size === 0) {
+        throw new Error(`test: no listener for remote event ${event}`)
+      }
+      if (set.size !== 1) {
+        throw new Error(`test: ${set.size} listeners for remote event ${event} — duplicate $on registration`)
+      }
+      for (const listener of set) listener(...args)
+    },
+    disposers,
   }
 }
 
@@ -767,7 +809,7 @@ describe('FallbacksSettingsController', () => {
     expect(state.groups).toEqual([])
   })
 
-  it('guards catalog refreshes on load with an independent generation (models/changed)', async () => {
+  it('guards catalog refreshes on load with an independent generation (llm/adapters-updated)', async () => {
     const api = makeApi()
     api.llm.providers.mockResolvedValue(ok({ providers: catalogFixture().providers }))
     const gate = Promise.withResolvers<unknown>()
@@ -808,7 +850,7 @@ describe('FallbacksSettingsController', () => {
     expect(get).not.toHaveBeenCalled()
     await controller.load()
     expect(get).toHaveBeenCalledTimes(1)
-    // Opened (ready) → refetches (the settings/changed + connection/reset push).
+    // Opened (ready) → refetches (the settings/document-updated + connection/reset push).
     refreshFallbacksIfLoaded(controller)
     expect(get).toHaveBeenCalledTimes(2)
   })
@@ -1124,11 +1166,15 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
       api: { settings: { describe, update: vi.fn(), replace: vi.fn(), mutate: vi.fn() } },
       rpc: { call: vi.fn() },
     })
-    // Slots service double: run the section-registration thunk and capture the
+    // Remote service double: the apply wiring subscribes the pushed
+    // invalidations through `ctx.remote.$on` (20260811 remote events).
+    const { remote, disposers } = makeRemote()
+    ctx.provide('remote', remote)
+    // Slots service double: run the card-registration generator and capture the
     // injected controller — the seam apply() uses to hand the controller over.
     let controller: FallbacksSettingsController | undefined
     ctx.provide('slots', {
-      inject: (_name: string, thunk: () => unknown) => { thunk() },
+      inject: (_name: string, thunk: () => Iterable<unknown>) => { for (const _dispose of thunk()) { /* run the registration generator */ } },
       register: (options: { inject: () => unknown }) => {
         controller = (options.inject() as { controller: FallbacksSettingsController }).controller
         return {}
@@ -1140,6 +1186,11 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
     // A load is in flight when the plugin unloads (HMR / dispose).
     const loading = controller!.load()
     await ctx.fiber.dispose()
+    // Every remote `$on` disposer was invoked on teardown (qc2 S-5 / qc3
+    // S-3): the cleanup disposes all subscriptions BEFORE controller.dispose()
+    // (index.ts cleanup), so no forwarded event can reach a dead store.
+    expect(disposers).toHaveLength(2) // settings/document-updated + llm/adapters-updated
+    expect(disposers.every(entry => entry.invoked)).toBe(true)
     // The response arrives after unload: the dispose wiring must bump the
     // generation so the stale response never publishes to the dead store.
     gate.resolve(ok({ writable: true, hasDocument: false, namespaces: [] }))
@@ -1149,7 +1200,60 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
     expect(state.present).toBe(false)
   })
 
-  it('models/changed refreshes only the catalog, never the settings (D-4)', async () => {
+  it('connection/reset queued in the same tick as teardown starts no RPCs (qc3 S-2)', async () => {
+    // Locale service double: register + bind (bind returns a translate thunk).
+    ctx.provide('locale', { register: () => () => {}, bind: () => () => '' })
+    // Sessions service double: a fixed current session so switches can load.
+    ctx.provide('sessions', {
+      list: { getSnapshot: () => ({ current: 'sess-1' }), subscribe: () => () => {} },
+    })
+    const describe = vi.fn().mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
+    const providers = vi.fn()
+    const models = vi.fn()
+    const history = vi.fn().mockResolvedValue(ok({ events: [switchEntry(1)], hasMore: false }))
+    ctx.provide('connection', {
+      api: {
+        settings: { describe, update: vi.fn(), replace: vi.fn(), mutate: vi.fn() },
+        llm: { providers, models, discoverModels: vi.fn() },
+        sessions: { history },
+      },
+      rpc: makeRpc().rpc,
+    })
+    ctx.provide('remote', makeRemote().remote)
+    let controller: FallbacksSettingsController | undefined
+    ctx.provide('slots', {
+      inject: (_name: string, thunk: () => Iterable<unknown>) => { for (const _dispose of thunk()) { /* run the registration generator */ } },
+      register: (options: { inject: () => unknown }) => {
+        controller = (options.inject() as { controller: FallbacksSettingsController }).controller
+        return {}
+      },
+    })
+    applyClient(ctx as unknown as ClientContext)
+    expect(controller).toBeDefined()
+    providers.mockResolvedValue(ok({ providers: [] }))
+    models.mockResolvedValue(ok({ groups: [], failures: [] }))
+    await controller!.load()
+    await controller!.loadSwitches()
+    await controller!.loadCatalog()
+    expect(describe).toHaveBeenCalledTimes(1)
+    expect(history).toHaveBeenCalledTimes(1)
+    expect(providers).toHaveBeenCalledTimes(1)
+
+    // The plugin unload begins (fiber dispose initiated — the teardown
+    // disposers are still pending) and a connection/reset lands in the same
+    // tick: the listener is still registered, but the queued refresh
+    // microtask is drained AFTER the cleanup latch is set, so it must be
+    // skipped — no discarded RPCs start after teardown (qc3 S-2).
+    const unloading = ctx.fiber.dispose()
+    ctx.emit('connection/reset')
+    await Promise.resolve() // drain: cleanup disposers (latch set), then the refresh microtask (skipped)
+    await unloading
+    expect(describe).toHaveBeenCalledTimes(1)
+    expect(history).toHaveBeenCalledTimes(1)
+    expect(providers).toHaveBeenCalledTimes(1)
+  })
+
+  it('llm/adapters-updated refreshes only the catalog, never the settings (D-4)', async () => {
     // Locale service double: register + bind (bind returns a translate thunk).
     ctx.provide('locale', { register: () => () => {}, bind: () => () => '' })
     // Sessions service double: no current session; the wiring still subscribes.
@@ -1167,9 +1271,13 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
       },
       rpc: { call: vi.fn() },
     })
+    // Remote service double: the payload-free llm/adapters-updated event
+    // (20260811 forwarding) is dispatched through the recorded listener.
+    const { remote, emit } = makeRemote()
+    ctx.provide('remote', remote)
     let controller: FallbacksSettingsController | undefined
     ctx.provide('slots', {
-      inject: (_name: string, thunk: () => unknown) => { thunk() },
+      inject: (_name: string, thunk: () => Iterable<unknown>) => { for (const _dispose of thunk()) { /* run the registration generator */ } },
       register: (options: { inject: () => unknown }) => {
         controller = (options.inject() as { controller: FallbacksSettingsController }).controller
         return {}
@@ -1182,9 +1290,9 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
     await controller!.loadCatalog()
     expect(providers).toHaveBeenCalledTimes(1)
 
-    // A pushed models/changed refetches the catalog and leaves the settings
-    // descriptor untouched.
-    ctx.emit('models/changed' as never)
+    // A pushed llm/adapters-updated refetches the catalog and leaves the
+    // settings descriptor untouched.
+    emit('llm/adapters-updated')
     await Promise.resolve()
     expect(providers).toHaveBeenCalledTimes(2)
     expect(describe).not.toHaveBeenCalled()
@@ -1216,9 +1324,11 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
       },
       rpc: { call: vi.fn() },
     })
+    // Remote service double: the invalidation wiring subscribes through it.
+    ctx.provide('remote', makeRemote().remote)
     let controller: FallbacksSettingsController | undefined
     ctx.provide('slots', {
-      inject: (_name: string, thunk: () => unknown) => { thunk() },
+      inject: (_name: string, thunk: () => Iterable<unknown>) => { for (const _dispose of thunk()) { /* run the registration generator */ } },
       register: (options: { inject: () => unknown }) => {
         controller = (options.inject() as { controller: FallbacksSettingsController }).controller
         return {}
@@ -1238,5 +1348,153 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
     await Promise.resolve()
     expect(history).toHaveBeenCalledTimes(2)
     expect(history).toHaveBeenLastCalledWith({ sessionId: 'sess-2', maxMessages: SWITCHES_HISTORY_PAGE })
+  })
+
+  it('settings/document-updated (fallbacks ns) refreshes settings + switches, never the catalog', async () => {
+    // Locale service double: register + bind (bind returns a translate thunk).
+    ctx.provide('locale', { register: () => () => {}, bind: () => () => '' })
+    // Sessions service double: a fixed current session so switches can load.
+    ctx.provide('sessions', {
+      list: { getSnapshot: () => ({ current: 'sess-1' }), subscribe: () => () => {} },
+    })
+    // Connection service double: controllable describe + llm catalog +
+    // session history, with a scripted gateway rpc so load() succeeds.
+    const describe = vi.fn().mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
+    const providers = vi.fn()
+    const models = vi.fn()
+    const history = vi.fn().mockResolvedValue(ok({ events: [switchEntry(1)], hasMore: false }))
+    ctx.provide('connection', {
+      api: {
+        settings: { describe, update: vi.fn(), replace: vi.fn(), mutate: vi.fn() },
+        llm: { providers, models, discoverModels: vi.fn() },
+        sessions: { history },
+      },
+      rpc: makeRpc().rpc,
+    })
+    const { remote, emit } = makeRemote()
+    ctx.provide('remote', remote)
+    let controller: FallbacksSettingsController | undefined
+    ctx.provide('slots', {
+      inject: (_name: string, thunk: () => Iterable<unknown>) => { for (const _dispose of thunk()) { /* run the registration generator */ } },
+      register: (options: { inject: () => unknown }) => {
+        controller = (options.inject() as { controller: FallbacksSettingsController }).controller
+        return {}
+      },
+    })
+    applyClient(ctx as unknown as ClientContext)
+    expect(controller).toBeDefined()
+    providers.mockResolvedValue(ok({ providers: [] }))
+    models.mockResolvedValue(ok({ groups: [], failures: [] }))
+    await controller!.load()
+    await controller!.loadSwitches()
+    await controller!.loadCatalog()
+    expect(describe).toHaveBeenCalledTimes(1)
+    expect(history).toHaveBeenCalledTimes(1)
+    expect(providers).toHaveBeenCalledTimes(1)
+
+    // A pushed settings/document-updated for the fallbacks namespace
+    // refetches the descriptor + recent-switch summary and leaves the
+    // catalog untouched.
+    emit('settings/document-updated', FALLBACKS_SETTINGS_NS, 2)
+    await Promise.resolve()
+    expect(describe).toHaveBeenCalledTimes(2)
+    expect(history).toHaveBeenCalledTimes(2)
+    expect(providers).toHaveBeenCalledTimes(1)
+  })
+
+  it('settings/document-updated (foreign ns) is filtered out', async () => {
+    // Locale service double: register + bind (bind returns a translate thunk).
+    ctx.provide('locale', { register: () => () => {}, bind: () => () => '' })
+    // Sessions service double: a fixed current session so switches can load.
+    ctx.provide('sessions', {
+      list: { getSnapshot: () => ({ current: 'sess-1' }), subscribe: () => () => {} },
+    })
+    const describe = vi.fn().mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
+    const history = vi.fn().mockResolvedValue(ok({ events: [switchEntry(1)], hasMore: false }))
+    ctx.provide('connection', {
+      api: {
+        settings: { describe, update: vi.fn(), replace: vi.fn(), mutate: vi.fn() },
+        llm: { providers: vi.fn(), models: vi.fn(), discoverModels: vi.fn() },
+        sessions: { history },
+      },
+      rpc: makeRpc().rpc,
+    })
+    const { remote, emit } = makeRemote()
+    ctx.provide('remote', remote)
+    let controller: FallbacksSettingsController | undefined
+    ctx.provide('slots', {
+      inject: (_name: string, thunk: () => Iterable<unknown>) => { for (const _dispose of thunk()) { /* run the registration generator */ } },
+      register: (options: { inject: () => unknown }) => {
+        controller = (options.inject() as { controller: FallbacksSettingsController }).controller
+        return {}
+      },
+    })
+    applyClient(ctx as unknown as ClientContext)
+    expect(controller).toBeDefined()
+    await controller!.load()
+    await controller!.loadSwitches()
+    expect(describe).toHaveBeenCalledTimes(1)
+    expect(history).toHaveBeenCalledTimes(1)
+
+    // Any other namespace's section change is not this card's concern.
+    emit('settings/document-updated', 'some-other-ns', 7)
+    await Promise.resolve()
+    expect(describe).toHaveBeenCalledTimes(1)
+    expect(history).toHaveBeenCalledTimes(1)
+  })
+
+  it('connection/reset refreshes settings + switches + catalog (burst coalesces)', async () => {
+    // Locale service double: register + bind (bind returns a translate thunk).
+    ctx.provide('locale', { register: () => () => {}, bind: () => () => '' })
+    ctx.provide('sessions', {
+      list: { getSnapshot: () => ({ current: 'sess-1' }), subscribe: () => () => {} },
+    })
+    const describe = vi.fn().mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
+    const providers = vi.fn()
+    const models = vi.fn()
+    const history = vi.fn().mockResolvedValue(ok({ events: [switchEntry(1)], hasMore: false }))
+    ctx.provide('connection', {
+      api: {
+        settings: { describe, update: vi.fn(), replace: vi.fn(), mutate: vi.fn() },
+        llm: { providers, models, discoverModels: vi.fn() },
+        sessions: { history },
+      },
+      rpc: makeRpc().rpc,
+    })
+    const { remote } = makeRemote()
+    ctx.provide('remote', remote)
+    let controller: FallbacksSettingsController | undefined
+    ctx.provide('slots', {
+      inject: (_name: string, thunk: () => Iterable<unknown>) => { for (const _dispose of thunk()) { /* run the registration generator */ } },
+      register: (options: { inject: () => unknown }) => {
+        controller = (options.inject() as { controller: FallbacksSettingsController }).controller
+        return {}
+      },
+    })
+    applyClient(ctx as unknown as ClientContext)
+    expect(controller).toBeDefined()
+    providers.mockResolvedValue(ok({ providers: [] }))
+    models.mockResolvedValue(ok({ groups: [], failures: [] }))
+    await controller!.load()
+    await controller!.loadSwitches()
+    await controller!.loadCatalog()
+    expect(describe).toHaveBeenCalledTimes(1)
+    expect(history).toHaveBeenCalledTimes(1)
+    expect(providers).toHaveBeenCalledTimes(1)
+
+    // A connection/reset refetches all three surfaces.
+    ctx.emit('connection/reset')
+    await Promise.resolve()
+    expect(describe).toHaveBeenCalledTimes(2)
+    expect(history).toHaveBeenCalledTimes(2)
+    expect(providers).toHaveBeenCalledTimes(2)
+
+    // A burst of resets coalesces into a single refetch (microtask debounce).
+    ctx.emit('connection/reset')
+    ctx.emit('connection/reset')
+    await Promise.resolve()
+    expect(describe).toHaveBeenCalledTimes(3)
+    expect(history).toHaveBeenCalledTimes(3)
+    expect(providers).toHaveBeenCalledTimes(3)
   })
 })

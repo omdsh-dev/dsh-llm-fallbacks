@@ -1,41 +1,64 @@
 /**
- * dsh-llm-fallbacks client half (plan Task 5): registers the Fallbacks
- * settings page into the web settings GUI.
+ * dsh-llm-fallbacks client half: registers the Fallbacks card into the
+ * plugin-config page's `settings.plugin.item` slot (the official "插件配置"
+ * settings page — id `fallbacks`, order 30, alongside the upstream bash /
+ * agent-loop / web-search cards and the advisor card).
  *
- * Wiring (mirrors ui-settings-general / ui-models):
+ * Wiring (mirrors dsh-advisor):
  * - Registers the `fallbacks` locale dictionaries (zh/en).
- * - Constructs the section's own store over the connection: the fallbacks
+ * - Constructs the card's own store over the connection: the fallbacks
  *   config rides the plugin's gateway channel (`connection.rpc` →
  *   `/api/fallbacks/get|set|reset`), while `settings.describe` (writable +
  *   namespace directory) and the provider/model catalog stay on
  *   `connection.api` (see `fallbacks-store.ts`).
- * - Registers the `settings.section` entry `id: 'fallbacks'` (order 30, after
- *   the Models section at 10) with a locale-following nav label thunk; owner
- *   props are empty and all data flows through the store (slot contract).
- * - Refreshes the store on pushed invalidations (`settings/changed` for the
- *   fallbacks namespace, `models/changed` for the catalog, `connection/reset`)
- *   and follows the current session (`sessions.list`) so the status block's
- *   recent-switch summary tracks the session being viewed (spec §2.5 D-5).
- *   `sessions` is an optional reflection read (S-g): a host without the
- *   session service leaves the switches face in its empty ready state.
+ * - Registers the `settings.plugin.item` card `id: 'fallbacks'` (order 30)
+ *   with a business-only inject face ({@link FallbacksSettingsController} +
+ *   the snapshot-selector hook); the old Settings-nav section registration
+ *   is removed — deleting the section registration deletes the nav entry.
+ * - Refreshes the store on pushed invalidations — the forwarded remote
+ *   events `settings/document-updated` (ns-filtered to the fallbacks
+ *   namespace; refetches the descriptor + recent-switch summary) and
+ *   `llm/adapters-updated` (refetches only the provider/model catalog), plus
+ *   the client `connection/reset` (refetches all three) — and follows the
+ *   current session (`sessions.list`) so the status block's recent-switch
+ *   summary tracks the session being viewed (spec §2.5 D-5). `sessions` is
+ *   an optional reflection read (S-g): a host without the session service
+ *   leaves the switches face in its empty ready state.
  *
  * @module dsh-llm-fallbacks/client
  */
 
 import type { ClientContext, ISessions } from '@deepseek-ai/dsh-client-runtime/client'
+import { bindSnapshotSelector } from '@deepseek-ai/dsh-client-web-react'
 // Type-only: pulls the `ctx.locale` Context merge (LocaleService face).
 import type {} from '@deepseek-ai/dsh-client-locale/client'
-// Type-only: pulls the shell's `settings.section` SlotMap merge.
-import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
+// Type-only: pulls the plugin-config card slot's SlotMap merge (the
+// 'settings.plugin.item' entry — this half's registration target). Same empty
+// type-only import pattern as the old ui-settings one: it loads the module's
+// types (the ./client entry re-exports the slot-contract merge) without any
+// value import.
+import type {} from '@deepseek-ai/dsh-client-ui-plugin-config/client'
+// Type-only: the gateway's Client half declares `ctx.remote` (the typed
+// Remote service) on the cordis Context face.
+import type {} from '@deepseek-ai/dsh-api-gateway/client'
+// Type-only: the forwarded-event allowlist seat (`TypeRTRemoteEventSelection`)
+// — the `$on` key projection the invalidation subscriptions subscribe through.
+import type {} from '@deepseek-ai/dsh-api-remotes/types'
+// Type-only: the settings seam's cordis `Events` entry
+// (`settings/document-updated` with the branded `SettingsNamespace`) and the
+// llm registry's (`llm/adapters-updated` payload-free) — same pattern as
+// dsh-client-ui-settings' settings-scope (types subpath, no value import).
+import type {} from '@deepseek-ai/dsh-settings/types'
+import type {} from '@deepseek-ai/dsh-llm/types'
 import type { ConnectionHandle } from '@deepseek-ai/dsh-client-connection/client'
-import { FallbacksSection } from './FallbacksSection.tsx'
+import { FallbacksCard } from './FallbacksCard.tsx'
 import {
   FallbacksSettingsController, FALLBACKS_SETTINGS_NS,
   refreshCatalogIfLoaded, refreshFallbacksIfLoaded, refreshSwitchesIfLoaded,
 } from './fallbacks-store.ts'
 import { en, NS, zh } from './locales.ts'
 
-export type { FallbacksSectionInjected, FallbacksSectionProps } from './FallbacksSection.tsx'
+export type { FallbacksCardInjected, FallbacksCardProps } from './FallbacksCard.tsx'
 export type { FallbacksSettingsState } from './fallbacks-store.ts'
 export { FallbacksSettingsController, FALLBACKS_SETTINGS_NS } from './fallbacks-store.ts'
 
@@ -47,17 +70,16 @@ export { FallbacksSettingsController, FALLBACKS_SETTINGS_NS } from './fallbacks-
  * state when absent (`setCurrentSession` never called, `loadSwitches` ready
  * with an empty array, which the store already supports).
  */
-export const inject = ['slots', 'locale', 'connection']
+export const inject = ['slots', 'locale', 'connection', 'remote']
 
 /**
- * Register the `fallbacks` dictionaries and the settings section once the
- * `settings.section` declaration is on the ledger.
+ * Register the `fallbacks` dictionaries and the plugin-config card once the
+ * `settings.plugin.item` declaration is on the ledger.
  * @param ctx - client root context.
  */
 export function apply(ctx: ClientContext): void {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'llm-fallbacks: dictionaries')
 
-  const t = ctx.locale.bind(NS)
   const connection = ctx.get('connection') as ConnectionHandle
   // The host (`dsh-session` SessionStore) and client (`ISessions`) Context
   // merges collide in out-of-tree client programs, so read the service through
@@ -71,32 +93,68 @@ export function apply(ctx: ClientContext): void {
   // the describe `writable` + namespace directory and the provider/model
   // catalog still ride `connection.api` (guide §9).
   const controller = new FallbacksSettingsController(connection.api, connection.rpc)
+  // The card's uSES selector hook, bound once to the controller's store and
+  // handed to the renderer through the inject face (advisor pattern).
+  const useSnapshot = bindSnapshotSelector(controller.store)
 
-  // Pushed invalidations converge every open surface without polling:
-  // `settings/changed` refetches the descriptor + recent-switch summary,
-  // `models/changed` refetches only the provider/model catalog (never the
-  // form), `connection/reset` refetches all three, and a `sessions.list`
-  // current change reloads the status block's switches for the new session
-  // (spec §2.5 D-5; the subscription also covers reconnects, which re-pull
-  // the list).
+  // Pushed invalidations converge every open surface without polling. The
+  // 20260811 dsh snapshot dropped the client-side settings/catalog events;
+  // the runtime now forwards the settings seam's raw-section event and the
+  // llm registry's topology event through the `remote` service (inject list):
+  // - `settings/document-updated(ns, revision)` — ns-filtered to the
+  //   fallbacks namespace; refetches the descriptor + recent-switch summary
+  //   (never the catalog),
+  // - `llm/adapters-updated()` — payload-free; refetches only the
+  //   provider/model catalog (never the form),
+  // - `connection/reset` — client event; refetches all three, coalesced
+  //   through the advisor microtask debounce (a burst of resets = one
+  //   refetch; the IfLoaded guards keep an unopened card idle),
+  // - a `sessions.list` current change reloads the status block's switches
+  //   for the new session (spec §2.5 D-5; the subscription also covers
+  //   reconnects, which re-pull the list).
   ctx.effect(() => {
     const syncSession = (): void => {
       controller.setCurrentSession(sessions?.list.getSnapshot().current)
     }
     if (sessions !== undefined) syncSession()
+    // The `$on` listener seat is `Events['settings/document-updated']`
+    // (`(ns: SettingsNamespace, revision: number) => void`); the widened
+    // optional-string param mirrors dsh-client-ui-settings' settings-scope
+    // (`refresh` bound to the same remote event), and `undefined` ns passes
+    // the filter so the connection/reset path can share this helper.
     const refresh = (ns?: string): void => {
       if (ns !== undefined && ns !== FALLBACKS_SETTINGS_NS) return
       refreshFallbacksIfLoaded(controller)
       refreshSwitchesIfLoaded(controller)
     }
     const refreshCatalog = (): void => { refreshCatalogIfLoaded(controller) }
+    let pendingReset = false
+    // Effect-teardown latch (qc3 S-2): `connection/reset` can land in the
+    // same tick the plugin unloads (HMR / fiber dispose); the cleanup below
+    // then disposes every subscription and the controller, but the queued
+    // microtask would still run and start discarded RPCs (the generation
+    // guard only drops their responses, it does not stop the calls).
+    // `disposed` is set synchronously in the cleanup, so the queued refresh
+    // becomes a no-op.
+    let disposed = false
+    const refreshAll = (): void => {
+      if (pendingReset) return
+      pendingReset = true
+      queueMicrotask(() => {
+        pendingReset = false
+        if (disposed) return
+        refresh()
+        refreshCatalog()
+      })
+    }
     const disposers = [
-      ctx.on('settings/changed', refresh),
-      ctx.on('models/changed', refreshCatalog),
-      ctx.on('connection/reset', () => { refresh(); refreshCatalog() }),
+      ctx.remote.$on('settings/document-updated', refresh),
+      ctx.remote.$on('llm/adapters-updated', refreshCatalog),
+      ctx.on('connection/reset', refreshAll),
       ...(sessions === undefined ? [] : [sessions.list.subscribe(syncSession)]),
     ]
     return () => {
+      disposed = true
       for (const dispose of disposers) dispose()
       // F-006 / M-01: stop in-flight describe/get/set/reset/history
       // responses from publishing to the dead store once the plugin unloads
@@ -106,12 +164,22 @@ export function apply(ctx: ClientContext): void {
     }
   }, 'llm-fallbacks: pushed invalidations')
 
-  ctx.slots.inject('settings.section', () => ctx.slots.register({
-    name: 'settings.section',
-    id: 'fallbacks',
-    order: 30,
-    label: () => t('nav'),
-    locale: NS,
-    inject: () => ({ controller }),
-  }, FallbacksSection))
+  // The card registers into the plugin-config page's card slot with the
+  // upstream card shape — generator + `yield`, `locale: NS`, and an inject
+  // face carrying ONLY the business surface (controller + useSnapshot). The
+  // typed `t` seat is synthesized by the renderer from `locale: NS`
+  // (PropsLocale<'fallbacks'>), exactly like the upstream three cards and
+  // the advisor card; the old Settings-nav section registration (the
+  // "Fallbacks" nav entry) is removed — deleting the section registration
+  // deletes the nav entry. `order: 30` ties with the advisor card; ties are
+  // resolved by registration sequence (ui-slots stable sort).
+  ctx.slots.inject('settings.plugin.item', function* () {
+    yield ctx.slots.register({
+      name: 'settings.plugin.item',
+      id: 'fallbacks',
+      order: 30, // bash 0 / agent-loop 10 / web-search 20 / advisor 30 / fallbacks 30
+      locale: NS,
+      inject: () => ({ controller, useSnapshot }),
+    }, FallbacksCard)
+  })
 }

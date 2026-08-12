@@ -1,63 +1,180 @@
-/* Fallbacks settings section, aligned to the dsh web host settings
- * vocabulary (ui-fidelity-checklist: ModelsSection.module.css primary, GR/AR
- * rows for the enabled row, SC silent notice for the banners): 16/24 title,
- * 14/22 intro, 12/18 captions and hints, 32px fields with the shared select
- * chevron, capsule controls (h36 r18), one outlined card carrying the whole
- * form, and `--dsw-alias-*` tokens throughout. The chain/role row editors
- * keep their filled editorCard surface (the Models `.editor` precedent)
- * inside the card, and the compact read-only status block stays pinned at
- * the section bottom.
+/* Fallbacks settings card — chrome aligned to the upstream PluginCard
+ * (dsh-private packages/client/ui-plugin-config/src/client/PluginCard.module.css,
+ * shape re-read 2026-08-12:158), form-field styles kept from the section-era
+ * file (h32 r8 inputs / h36 r18 capsule actions). Every color resolves through
+ * a `--dsw-alias-*` token (light/dark adaptive); bare `--border` / `--surface`
+ * / `--text-*` names, which nothing in this app defines, would render the
+ * light-mode literals written as their fallbacks and stay light under the
+ * dark theme.
  *
- * Every color resolves through a `--dsw-alias-*` token. Bare `--border` /
- * `--surface` / `--text-*` names, which nothing in this app defines, would
- * render the light-mode literals written as their fallbacks and stay light
- * under the dark theme. */
+ * The card is one <li> in the plugin-config section's card list (the section
+ * owns the column width — the 720px page wrapper is gone): a bordered box
+ * whose header is a button (name over description, dirty pill, rotating
+ * chevron) and whose open state shows a divided body — divider, notices /
+ * form / status block, footer divider with Discard/Reset/Save. */
 
-.section {
+/* The card box. */
+.card {
+  list-style: none;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 12px;
+  background: var(--dsw-alias-bg-layer-3);
+  transition: border-color .16s, background .16s;
+}
+
+.card:hover {
+  border-color: var(--dsw-alias-label-dimmed);
+}
+
+/* An open card reads as the one being worked on, not merely taller. */
+.cardOpen {
+  background: var(--dsw-alias-bg-layer-2);
+  border-color: var(--dsw-alias-label-dimmed);
+}
+
+/* The disclosure header: a full-width button stacking name over description. */
+.header {
+  width: 100%;
+  appearance: none;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: 12px;
+}
+
+.header:focus-visible {
+  outline: 2px solid var(--dsw-alias-brand-primary);
+  outline-offset: -2px;
+}
+
+/* Name over description: the description is what tells two plugins apart, so
+   it gets its own line rather than trailing the name. */
+.headText {
+  flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  max-width: 720px;
+  gap: 4px;
+}
+
+.name {
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.4;
   color: var(--dsw-alias-label-primary);
 }
 
-.title {
-  margin: 0;
-  font-size: 16px;
-  line-height: 24px;
-  font-weight: 500;
-  color: var(--dsw-alias-label-primary);
-}
-
-.intro {
-  margin: 0;
-  font-size: 14px;
-  line-height: 22px;
+.description {
+  font-size: 13px;
+  line-height: 1.5;
   color: var(--dsw-alias-label-tertiary);
 }
 
-/* The whole form grouped as one card: outlined on the panel fill like the
-   models page's row cards, so the editing surface reads as a unit (the
-   advisor `.card`). */
-.card {
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 12px;
-  padding: 12px 14px;
+.chevron {
+  flex: none;
+  color: var(--dsw-alias-label-tertiary);
+  transition: transform .16s;
+}
+
+.chevronOpen {
+  transform: rotate(180deg);
+}
+
+/* The open body: a divider under the header, then the card content. */
+.body {
+  border-top: 1px solid var(--dsw-alias-border-l2);
+  margin: 0 16px;
+  padding-bottom: 8px;
+}
+
+.readOnly {
+  margin: 12px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+/* Carried on the header so a collapsed card still says it holds edits. */
+.pending {
+  flex: none;
+  border-radius: 999px;
+  padding: 1px 8px;
+  font-size: 11px;
+  line-height: 17px;
+  font-weight: 500;
+  white-space: nowrap;
+  background: var(--dsw-alias-bg-module-platform);
+  color: var(--dsw-alias-label-secondary);
+}
+
+.footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 0 4px;
+  border-top: 1px solid var(--dsw-alias-border-l2);
+}
+
+/* Body-level notices (KD-U3: degraded/error states keep the card chrome and
+   put the notice/error in the body): business (info) tone for the
+   config-channel notice — the fallbacks skeleton stays usable and saves are
+   attempted, so it reads informational, not a dead-end — error tone for the
+   load error, with an inline Retry when the form is inert. */
+.notice {
+  margin: 12px 0 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-state-business-primary);
+}
+
+.error {
+  margin: 12px 0 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-state-error-primary);
+}
+
+/* A notice row carrying the message and (error + inert form only) the Retry
+   action — the message takes the free space, the inline sm Button trails. */
+.noticeRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 0 0;
+}
+
+.noticeRow .error {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+}
+
+/* The form fields sit directly in the card body (the upstream cards stack
+   their controls in the body); the container only paces them below the
+   divider. */
+.form {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  padding: 12px 0 0;
 }
 
 /* The enabled row: label text on the left, the native checkbox on the right.
    Row rhythm follows the settings rows (EnterBehaviorRow `.row`): gap 8, no
-   top padding (first row in the card), 12px bottom breathing room. No
-   hairline inside the card — the outlined card border carries the separation
-   (A3: 分隔线卡内不必须). */
+   top padding (first row in the form), no hairline inside the card — the
+   outlined card border carries the separation (A3: 分隔线卡内不必须). */
 .checkboxRow {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 0 0 12px;
 }
 
 .checkLabel {
@@ -467,15 +584,10 @@ select.input {
   align-self: flex-start;
 }
 
-/* Save/reset footer: right-aligned h36 r18 capsules at the card bottom — the
-   primary button carries the brand fill, reset is the outlined sibling (the
-   advisor `editorActions` vocabulary). */
-.editorActions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-}
-
+/* Footer actions: right-aligned h36 r18 capsules at the card bottom — the
+   primary button carries the brand fill, discard/reset are the outlined
+   siblings (the section-era editorActions vocabulary, kept per the brief;
+   the upstream footer's small r8 buttons are a recorded divergence). */
 .primaryButton,
 .secondaryButton {
   box-sizing: border-box;
@@ -525,14 +637,15 @@ select.input {
 }
 
 /* AC-7 read-only status, compact: an outlined card like the Models rows
-   (`.rowCard`: padding 12/14, gap 12), pinned at the section bottom after
-   the form card. One line per fact with ellipsis overflow — the block never
-   dominates the page. */
+   (`.rowCard`: padding 12/14, gap 12), folded into the card body above the
+   footer. One line per fact with ellipsis overflow — the block never
+   dominates the card. */
 .statusBlock {
   display: flex;
   flex-direction: column;
   gap: 12px;
   padding: 12px 14px;
+  margin-top: 12px;
   border: 1px solid var(--dsw-alias-border-l2);
   border-radius: 12px;
 }
@@ -574,29 +687,6 @@ select.input {
   line-height: 18px;
   color: var(--dsw-alias-label-tertiary);
   text-align: center;
-}
-
-/* Transient error message (role="alert"): the host sections have no bordered
-   banner box — the Subagent catalog `.notice` silent box (padding 10/12,
-   12/18, no border) is the closest weak-visual form an alert needs. The warn
-   tone stays on the label token, so the message reads as an alert without a
-   self-drawn box. */
-.banner {
-  padding: 10px 12px;
-  font-size: 12px;
-  line-height: 18px;
-  color: var(--dsw-alias-state-warn-label);
-}
-
-/* Namespace-not-registered info banner (spec §1.4-3): informational, not a
-   dead-end notice — the page shows the default-config seed and saves are
-   attempted. Same silent-notice form as `.banner`, using the business (info)
-   state tokens. */
-.infoBanner {
-  padding: 10px 12px;
-  font-size: 12px;
-  line-height: 18px;
-  color: var(--dsw-alias-state-business-primary);
 }
 
 /* Reset-to-defaults confirmation dialog (the Models delete-confirm width). */
