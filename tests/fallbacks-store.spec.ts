@@ -119,24 +119,42 @@ function makeApi() {
 
 /**
  * A `remote` service double for the client apply wiring: records `$on`
- * subscriptions (returning per-event disposers) and dispatches the forwarded
- * remote events (`settings/document-updated`, `llm/adapters-updated`) through
- * the recorded listener, mirroring the gateway's one-way delivery.
+ * subscriptions (returning per-event disposers, tracked for teardown
+ * assertions) and dispatches the forwarded remote events
+ * (`settings/document-updated`, `llm/adapters-updated`) through the recorded
+ * listener, mirroring the gateway's one-way delivery. One `Set` per event
+ * (qc2 S-5 / qc3 S-3): `Map.set` silently overwrote an earlier listener, so
+ * a regressed duplicate `$on` registration would pass; the Set plus the
+ * single-listener emit guard make any double subscription fail loudly.
  */
 function makeRemote() {
-  const listeners = new Map<string, (...args: unknown[]) => void>()
+  const listeners = new Map<string, Set<(...args: unknown[]) => void>>()
+  const disposers: Array<{ invoked: boolean }> = []
   const $on = vi.fn((event: string, listener: (...args: unknown[]) => void): (() => void) => {
-    listeners.set(event, listener)
-    return () => { listeners.delete(event) }
+    const set = listeners.get(event) ?? new Set<(...args: unknown[]) => void>()
+    set.add(listener)
+    listeners.set(event, set)
+    const entry = { invoked: false }
+    disposers.push(entry)
+    return () => {
+      set.delete(listener)
+      entry.invoked = true
+    }
   })
   return {
     remote: { $on } as { $on: typeof $on },
     $on,
     emit(event: string, ...args: unknown[]): void {
-      const listener = listeners.get(event)
-      if (listener === undefined) throw new Error(`test: no listener for remote event ${event}`)
-      listener(...args)
+      const set = listeners.get(event)
+      if (set === undefined || set.size === 0) {
+        throw new Error(`test: no listener for remote event ${event}`)
+      }
+      if (set.size !== 1) {
+        throw new Error(`test: ${set.size} listeners for remote event ${event} — duplicate $on registration`)
+      }
+      for (const listener of set) listener(...args)
     },
+    disposers,
   }
 }
 
@@ -1150,7 +1168,8 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
     })
     // Remote service double: the apply wiring subscribes the pushed
     // invalidations through `ctx.remote.$on` (20260811 remote events).
-    ctx.provide('remote', makeRemote().remote)
+    const { remote, disposers } = makeRemote()
+    ctx.provide('remote', remote)
     // Slots service double: run the card-registration generator and capture the
     // injected controller — the seam apply() uses to hand the controller over.
     let controller: FallbacksSettingsController | undefined
@@ -1167,6 +1186,11 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
     // A load is in flight when the plugin unloads (HMR / dispose).
     const loading = controller!.load()
     await ctx.fiber.dispose()
+    // Every remote `$on` disposer was invoked on teardown (qc2 S-5 / qc3
+    // S-3): the cleanup disposes all subscriptions BEFORE controller.dispose()
+    // (index.ts cleanup), so no forwarded event can reach a dead store.
+    expect(disposers).toHaveLength(2) // settings/document-updated + llm/adapters-updated
+    expect(disposers.every(entry => entry.invoked)).toBe(true)
     // The response arrives after unload: the dispose wiring must bump the
     // generation so the stale response never publishes to the dead store.
     gate.resolve(ok({ writable: true, hasDocument: false, namespaces: [] }))
@@ -1174,6 +1198,59 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
     const state = controller!.store.getSnapshot()
     expect(state.status).not.toBe('ready')
     expect(state.present).toBe(false)
+  })
+
+  it('connection/reset queued in the same tick as teardown starts no RPCs (qc3 S-2)', async () => {
+    // Locale service double: register + bind (bind returns a translate thunk).
+    ctx.provide('locale', { register: () => () => {}, bind: () => () => '' })
+    // Sessions service double: a fixed current session so switches can load.
+    ctx.provide('sessions', {
+      list: { getSnapshot: () => ({ current: 'sess-1' }), subscribe: () => () => {} },
+    })
+    const describe = vi.fn().mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
+    const providers = vi.fn()
+    const models = vi.fn()
+    const history = vi.fn().mockResolvedValue(ok({ events: [switchEntry(1)], hasMore: false }))
+    ctx.provide('connection', {
+      api: {
+        settings: { describe, update: vi.fn(), replace: vi.fn(), mutate: vi.fn() },
+        llm: { providers, models, discoverModels: vi.fn() },
+        sessions: { history },
+      },
+      rpc: makeRpc().rpc,
+    })
+    ctx.provide('remote', makeRemote().remote)
+    let controller: FallbacksSettingsController | undefined
+    ctx.provide('slots', {
+      inject: (_name: string, thunk: () => Iterable<unknown>) => { for (const _dispose of thunk()) { /* run the registration generator */ } },
+      register: (options: { inject: () => unknown }) => {
+        controller = (options.inject() as { controller: FallbacksSettingsController }).controller
+        return {}
+      },
+    })
+    applyClient(ctx as unknown as ClientContext)
+    expect(controller).toBeDefined()
+    providers.mockResolvedValue(ok({ providers: [] }))
+    models.mockResolvedValue(ok({ groups: [], failures: [] }))
+    await controller!.load()
+    await controller!.loadSwitches()
+    await controller!.loadCatalog()
+    expect(describe).toHaveBeenCalledTimes(1)
+    expect(history).toHaveBeenCalledTimes(1)
+    expect(providers).toHaveBeenCalledTimes(1)
+
+    // The plugin unload begins (fiber dispose initiated — the teardown
+    // disposers are still pending) and a connection/reset lands in the same
+    // tick: the listener is still registered, but the queued refresh
+    // microtask is drained AFTER the cleanup latch is set, so it must be
+    // skipped — no discarded RPCs start after teardown (qc3 S-2).
+    const unloading = ctx.fiber.dispose()
+    ctx.emit('connection/reset')
+    await Promise.resolve() // drain: cleanup disposers (latch set), then the refresh microtask (skipped)
+    await unloading
+    expect(describe).toHaveBeenCalledTimes(1)
+    expect(history).toHaveBeenCalledTimes(1)
+    expect(providers).toHaveBeenCalledTimes(1)
   })
 
   it('llm/adapters-updated refreshes only the catalog, never the settings (D-4)', async () => {

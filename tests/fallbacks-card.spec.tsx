@@ -432,6 +432,123 @@ describe('FallbacksCard chrome (upstream PluginCard contract)', () => {
     await reload
   })
 
+  it('keeps the error card derived-open with the notice + Retry, and through the Retry→loading window (qc2 S-1)', async () => {
+    // An initial-load failure (describe fails) lands the hard `error` state:
+    // the card forces open with the error notice + Retry (AC-1), the header
+    // click cannot collapse the notice away, and the form is inert (the load
+    // never landed). Clicking Retry flips status to 'loading' — the latched
+    // error term must keep the body open through the window (the unlatched
+    // derivation collapsed it, hiding the error mid-flight), and when the
+    // reload fails again the notice + Retry reappear still open.
+    const scripted = scriptedApi({})
+    scripted.describe.mockResolvedValue({ result: { ok: false, error: { code: 'internal', message: 'describe exploded', details: {} } } })
+    const controller = new FallbacksSettingsController(scripted.api, scripted.rpc)
+    await controller.load()
+    expect(controller.store.getSnapshot().status).toBe('error')
+    const props = cardProps(controller, bindSnapshotSelector(controller.store))
+    const view = render(<FallbacksCard {...props} />)
+
+    // Error card is derived-open: notice + Retry, inert form, no-op header.
+    expect(headerButton(true).getAttribute('aria-expanded')).toBe('true')
+    expect(headerButton(true).getAttribute('aria-label')).toBe(`${en.collapse}: ${en.title}`)
+    expect(screen.getByRole('alert').textContent).toBe(en['error.generic']) // the test `t` does not interpolate
+    expect(screen.getByRole('button', { name: en.retry })).toBeTruthy()
+    expect((screen.getByLabelText(en['enabled.label']) as HTMLInputElement).disabled).toBe(true)
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    expect(headerButton(true).getAttribute('aria-expanded')).toBe('true')
+
+    // Retry → the S-1 loading window: the body must stay open (latched
+    // error term) even though `userOpen` is false and `state.status` is no
+    // longer 'error'.
+    fireEvent.click(screen.getByRole('button', { name: en.retry }))
+    expect(controller.store.getSnapshot().status).toBe('loading')
+    view.rerender(<FallbacksCard {...props} />)
+    expect(headerButton(true).getAttribute('aria-expanded')).toBe('true')
+    expect(screen.getByLabelText(en['enabled.label'])).toBeTruthy() // body still rendered
+
+    // The reload fails again → the error notice + Retry reappear, still open.
+    await waitFor(() => expect(controller.store.getSnapshot().status).toBe('error'))
+    view.rerender(<FallbacksCard {...props} />)
+    expect(headerButton(true).getAttribute('aria-expanded')).toBe('true')
+    expect(screen.getByRole('alert')).toBeTruthy()
+    expect(screen.getByRole('button', { name: en.retry })).toBeTruthy()
+  })
+
+  it('releases the error latch on a successful reload (recovered card collapses)', async () => {
+    // The latch holds only until a successful state transition: once Retry
+    // lands ready, the error term unlatches and the healthy card collapses
+    // like any never-opened card.
+    const scripted = scriptedApi({})
+    scripted.describe.mockResolvedValueOnce({ result: { ok: false, error: { code: 'internal', message: 'describe exploded', details: {} } } })
+    const controller = new FallbacksSettingsController(scripted.api, scripted.rpc)
+    await controller.load()
+    expect(controller.store.getSnapshot().status).toBe('error')
+    const props = cardProps(controller, bindSnapshotSelector(controller.store))
+    const view = render(<FallbacksCard {...props} />)
+    expect(headerButton(true).getAttribute('aria-expanded')).toBe('true')
+
+    fireEvent.click(screen.getByRole('button', { name: en.retry }))
+    await waitFor(() => expect(controller.store.getSnapshot().status).toBe('ready'))
+    view.rerender(<FallbacksCard {...props} />)
+    expect(headerButton(false).getAttribute('aria-expanded')).toBe('false')
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.queryByLabelText(en['enabled.label'])).toBeNull()
+  })
+
+  it('a failed save shows the error notice and keeps the form editable (qc2 S-4)', async () => {
+    const { view, props, controller, scripted } = await mountCard({ config: ENABLED_CONFIG })
+    toggleCard()
+    fireEvent.change(screen.getByLabelText(en['cooldownMs.label']), { target: { value: '5000' } })
+    view.rerender(<FallbacksCard {...props} />)
+    // The gateway rejects the write: the error notice surfaces the message
+    // (KD-G3) and the form stays editable for retry — no Retry button (the
+    // form itself is the retry surface when writable).
+    scripted.set.mockResolvedValueOnce(failResult('rejected by gateway'))
+    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    await waitFor(() => expect(controller.store.getSnapshot().status).toBe('error'))
+    view.rerender(<FallbacksCard {...props} />)
+    expect(screen.getByRole('alert').textContent).toBe(en['error.generic']) // the test `t` does not interpolate
+    expect((screen.getByLabelText(en['enabled.label']) as HTMLInputElement).disabled).toBe(false)
+    expect((screen.getByRole('button', { name: en.save }) as HTMLButtonElement).disabled).toBe(false)
+    expect(screen.queryByRole('button', { name: en.retry })).toBeNull()
+    // A follow-up save succeeds (the mock default folded the write): the
+    // accepted config re-seeds the draft → clean again, pill gone.
+    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    await waitFor(() => expect(controller.store.getSnapshot().status).toBe('ready'))
+    view.rerender(<FallbacksCard {...props} />)
+    expect(screen.queryByText(en.unsaved)).toBeNull()
+    expect((screen.getByRole('button', { name: en.save }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('reset asks for confirmation in the Modal and only resets on confirm (qc2 S-4)', async () => {
+    const { view, props, controller, scripted } = await mountCard({ config: ENABLED_CONFIG })
+    toggleCard()
+    // Reset opens the confirmation dialog (portal to document.body).
+    fireEvent.click(screen.getByRole('button', { name: en.reset }))
+    const dialog = screen.getByRole('dialog', { name: en['reset.confirmTitle'] })
+    expect(dialog).toBeTruthy()
+    expect(within(dialog).getByText(en['reset.confirm'])).toBeTruthy()
+    // Cancel closes the dialog without touching the gateway.
+    fireEvent.click(within(dialog).getByRole('button', { name: en['reset.confirm.cancel'] }))
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(scripted.reset).not.toHaveBeenCalled()
+    // Confirm runs the reset through the store face and closes the dialog.
+    fireEvent.click(screen.getByRole('button', { name: en.reset }))
+    fireEvent.click(screen.getByRole('button', { name: en['reset.confirm.action'] }))
+    await waitFor(() => {
+      expect(scripted.call).toHaveBeenCalledWith('/api', 'fallbacks/reset', { args: {} })
+    })
+    await waitFor(() => expect(controller.store.getSnapshot().status).toBe('ready'))
+    view.rerender(<FallbacksCard {...props} />)
+    expect(screen.queryByRole('dialog')).toBeNull()
+    // The draft re-seeded from the reset defaults: the switch flips back to
+    // off (default enabled: false → the off-notice body replaces the form).
+    const toggle = screen.getByLabelText(en['enabled.label']) as HTMLInputElement
+    expect(toggle.checked).toBe(false)
+    expect(screen.getByText(en['enabled.off'])).toBeTruthy()
+  })
+
   it('shows the read-only notice only once a settled describe reports read-only', async () => {
     const { view, props } = await mountCard({ writable: false })
     toggleCard()

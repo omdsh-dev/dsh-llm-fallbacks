@@ -45,16 +45,27 @@ const ENTRY = 'src/client/index.ts'
 const OUT_DIR = 'dist/client'
 const OUT_FILE = 'index.js'
 
-/** Loader module table (dsh mechanism-guide): platform seed entries plus the documented runtime/client exemption. */
+/**
+ * Frozen loader module table (dsh mechanism-guide): the plan-documented
+ * composition = PLATFORM_MODULES (10 entries, `web/src/platform.ts:8-15`)
+ * + the RUNTIME_STORE_EXEMPTION (`@deepseek-ai/dsh-client-runtime/client`,
+ * `tsdown.client.ts:62-65`). `cordis` is this repo's shim package name for
+ * the host's `@deepseek-ai/cordis` — the client graph resolves cordis
+ * through the generated shim, so both names stay on the table: the bare
+ * shim name for the bundler (neverBundle/alwaysBundle), the host name for
+ * the frozen-composition claim (both are real loader-table specifiers).
+ */
 export const CLIENT_EXTERNALS: readonly string[] = [
   'react',
   'react/jsx-runtime',
   'react-dom',
   'react-dom/client',
   'cordis',
+  '@deepseek-ai/cordis',
   '@deepseek-ai/dsh-client-ui-slots',
   '@deepseek-ai/dsh-client-web-react',
   '@deepseek-ai/dsh-client-ui-primitives',
+  '@deepseek-ai/dsh-client-ui-attachment',
   '@deepseek-ai/dsh-client-schema-form',
   '@deepseek-ai/dsh-client-runtime/client',
 ]

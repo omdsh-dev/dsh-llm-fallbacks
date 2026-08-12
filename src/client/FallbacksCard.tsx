@@ -524,11 +524,26 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
   // The latch update is a deterministic render-time write: it only runs on
   // the settled `ready` snapshot and stores the same value every render of
   // that snapshot.
+  // The error term gets the same latch treatment (qc2 S-1): a settled
+  // `error` (initial-load failure, save rejection) forces the card open
+  // with the error notice; the latch keeps the body open through the
+  // Retry→loading window — an unlatched `state.status === 'error'` term
+  // would collapse the body the moment Retry flips status to 'loading' (the
+  // user never opened the card, so `userOpen` is false) and hide the error
+  // notice mid-flight. It releases on the next settled `ready` — the
+  // successful state transition — so a recovered card collapses like any
+  // healthy card.
   const [userOpen, setUserOpen] = useState(false)
   const degradedLatch = useRef(false)
-  if (state.status === 'ready') degradedLatch.current = !state.present
+  const errorLatch = useRef(false)
+  if (state.status === 'ready') {
+    degradedLatch.current = !state.present
+    errorLatch.current = false
+  } else if (state.status === 'error') {
+    errorLatch.current = true
+  }
   const degraded = state.status === 'ready' ? !state.present : degradedLatch.current
-  const open = userOpen || state.status === 'error' || degraded
+  const open = userOpen || errorLatch.current || degraded
 
   const title = t('title')
   const header = (

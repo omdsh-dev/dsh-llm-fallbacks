@@ -129,11 +129,20 @@ export function apply(ctx: ClientContext): void {
     }
     const refreshCatalog = (): void => { refreshCatalogIfLoaded(controller) }
     let pendingReset = false
+    // Effect-teardown latch (qc3 S-2): `connection/reset` can land in the
+    // same tick the plugin unloads (HMR / fiber dispose); the cleanup below
+    // then disposes every subscription and the controller, but the queued
+    // microtask would still run and start discarded RPCs (the generation
+    // guard only drops their responses, it does not stop the calls).
+    // `disposed` is set synchronously in the cleanup, so the queued refresh
+    // becomes a no-op.
+    let disposed = false
     const refreshAll = (): void => {
       if (pendingReset) return
       pendingReset = true
       queueMicrotask(() => {
         pendingReset = false
+        if (disposed) return
         refresh()
         refreshCatalog()
       })
@@ -145,6 +154,7 @@ export function apply(ctx: ClientContext): void {
       ...(sessions === undefined ? [] : [sessions.list.subscribe(syncSession)]),
     ]
     return () => {
+      disposed = true
       for (const dispose of disposers) dispose()
       // F-006 / M-01: stop in-flight describe/get/set/reset/history
       // responses from publishing to the dead store once the plugin unloads
