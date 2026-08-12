@@ -4,9 +4,11 @@
  *
  * Wiring (mirrors ui-settings-general / ui-models):
  * - Registers the `fallbacks` locale dictionaries (zh/en).
- * - Constructs the section's own store over the settings loopback API
- *   (`settings.describe` read + `settings.update`/`replace` writes with
- *   `expectedRevision`; see `fallbacks-store.ts`).
+ * - Constructs the section's own store over the connection: the fallbacks
+ *   config rides the plugin's gateway channel (`connection.rpc` →
+ *   `/api/fallbacks/get|set|reset`), while `settings.describe` (writable +
+ *   namespace directory) and the provider/model catalog stay on
+ *   `connection.api` (see `fallbacks-store.ts`).
  * - Registers the `settings.section` entry `id: 'fallbacks'` (order 30, after
  *   the Models section at 10) with a locale-following nav label thunk; owner
  *   props are empty and all data flows through the store (slot contract).
@@ -64,7 +66,11 @@ export function apply(ctx: ClientContext): void {
   // tsconfig programs; a third program sees both). `sessions` is optional
   // (S-g): absent on a non-web host → the switches face stays empty.
   const sessions = ctx.get('sessions') as unknown as ISessions | undefined
-  const controller = new FallbacksSettingsController(connection.api)
+  // The store reads/writes the fallbacks config over the connection's
+  // generic RPC channel (the host gateway `/api/fallbacks/get|set|reset`);
+  // the describe `writable` + namespace directory and the provider/model
+  // catalog still ride `connection.api` (guide §9).
+  const controller = new FallbacksSettingsController(connection.api, connection.rpc)
 
   // Pushed invalidations converge every open surface without polling:
   // `settings/changed` refetches the descriptor + recent-switch summary,
@@ -92,7 +98,7 @@ export function apply(ctx: ClientContext): void {
     ]
     return () => {
       for (const dispose of disposers) dispose()
-      // F-006 / M-01: stop in-flight describe/update/replace/history
+      // F-006 / M-01: stop in-flight describe/get/set/reset/history
       // responses from publishing to the dead store once the plugin unloads
       // (HMR/dispose) — the generation guard only helps when it is actually
       // bumped here.

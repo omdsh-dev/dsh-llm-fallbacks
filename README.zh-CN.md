@@ -18,7 +18,7 @@ dsh plugin --profile web add github:dsh-external/dsh-llm-fallbacks   # 钉 commi
 ## 能力一览
 
 - **root / subagent 自动降级**：任意 agent 在模型故障下按链切换到下一个可用 provider/model，无需手动换模型。
-- **角色链**：subagent 可走独立于 root 的 fallback 链——显式 `agent.options.role`（需 dsh role patch）→ `roles.rules` 顺序匹配 → `roles.default`，首个命中即停。
+- **角色链**：subagent 可走独立于 root 的 fallback 链——`roles.rules` 按 origin/provider/model 顺序匹配到具体角色 → `roles.default`，首个命中即停。
 - **链 specificity**：exact `provider/model` 键 → `provider/*` 键 → 角色链 → `default` 链；`provider/*` 条目保留失败模型 id 仅换 provider。
 - **冷却与回主**：被切离/失败的模型在冷却期内不再入选；`revertPolicy: cooldown-expiry` 冷却到期后自动回主模型，`never` 会话内不回。
 - **行为可见**：每次切换追加持久化会话事件 `fallbacks/switch`（from/to/role/reason），配合 info 级日志（候选尝试顺序与跳过原因）与 web 设置页只读状态，无静默换模型。
@@ -33,7 +33,7 @@ dsh plugin --profile web add github:dsh-external/dsh-llm-fallbacks   # 钉 commi
 dsh plugin --profile web add github:dsh-external/dsh-llm-fallbacks   # 钉 commit：加 #<sha>
 ```
 
-git 安装拉取的是**源码而非构建产物**，安装时由包自行构建（`prepare` 自构建，随后 `postinstall` 触发宿主 patch 自动应用）。pnpm ≥ 10 默认不执行 git 依赖的 `prepare`：第一次 `add` 会失败并打印 `ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`，同时给出精确的包 key。在该 profile 的 `pnpm-workspace.yaml` 中放行构建（`onlyBuiltDependencies: [dsh-llm-fallbacks]`，或运行 `dsh plugin --profile web approve-builds`），然后重跑 `add`。请把这次放行当作它本来的样子：允许该包代码在安装期于你的机器上执行——建议钉 commit（`github:dsh-external/dsh-llm-fallbacks#<sha>`），防止后续 push 悄悄改变实际运行的代码。完整 URL 形式等价：`dsh plugin --profile web add https://github.com/dsh-external/dsh-llm-fallbacks.git`。
+git 安装拉取的是**源码而非构建产物**，安装时由包自行构建（`prepare` 自构建）。插件为**纯挂载**：对 dsh 源码树零修改，无任何补丁 / postinstall 步骤——dsh 升级无需重打。pnpm ≥ 10 默认不执行 git 依赖的 `prepare`：第一次 `add` 会失败并打印 `ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`，同时给出精确的包 key。在该 profile 的 `pnpm-workspace.yaml` 中放行构建（`onlyBuiltDependencies: [dsh-llm-fallbacks]`，或运行 `dsh plugin --profile web approve-builds`），然后重跑 `add`。请把这次放行当作它本来的样子：允许该包代码在安装期于你的机器上执行——建议钉 commit（`github:dsh-external/dsh-llm-fallbacks#<sha>`），防止后续 push 悄悄改变实际运行的代码。完整 URL 形式等价：`dsh plugin --profile web add https://github.com/dsh-external/dsh-llm-fallbacks.git`。
 
 ### 本地目录安装（开发/验证推荐）
 
@@ -71,11 +71,24 @@ fallbacks:
         role: reviewer
 ```
 
-角色是链的分组键：`roles.default` 为兜底角色，`roles.rules` 按 origin/provider/model 顺序匹配到具体角色（首个命中即停）；显式 `agent.options.role`（subagent 经 `agentOptions.role` 传入，需 dsh role patch，见 [docs/dsh-patch.md](docs/dsh-patch.md)）优先级最高——配置了 `reviewer` 链后，归属该角色的 agent 走独立 fallback 链。
+角色是链的分组键：`roles.default` 为兜底角色，`roles.rules` 按 origin/provider/model 顺序匹配到具体角色（首个命中即停）——角色解析为 **rules-only**（不存在显式角色字段；提供该字段的旧 dsh 补丁已移除）。配置了 `reviewer` 链后，归属该角色的 agent 走独立 fallback 链。
 
 保存并重启 web 会话后生效。功能级开关 `fallbacks.enabled` **默认关闭（`false`）**——打开开关后插件才会介入；`triggerCodes` 默认覆盖 `AUTH` / `QUOTA` / `RATE_LIMIT`；**未配置任何链时行为与未安装插件完全一致**。更多示例（角色链、provider 通配键、roles 规则）见 [docs/configuration.md](docs/configuration.md)。
 
 > **升级提示（行为变更）**：已有 `fallbacks:` 配置若**未显式写 `enabled` 键**，升级后解析为 `false`——请补上 `enabled: true` 以保持插件继续生效。
+
+## 纯挂载（零 dsh 修改）
+
+插件以**纯挂载**方式安装，**从不修改 dsh 源码树**：
+
+- **安装 = bundle 行插入 + client inject + 自有 gateway**：`bundle/cordis.patch.yml`
+  把插件行插入 profile bundle 栈，`dsh.client.inject` 挂载 web 设置页，设置读写/重置
+  走插件自有 gateway 通道（`/api/fallbacks/get|set|reset`）。
+- **无补丁、无自动打补丁**：没有 dsh 本体 patch 文件，也没有任何安装期 apply 步骤；
+  一句话 git 安装即可用。
+- **dsh 升级永不需重打**：dsh 升级重置源码树对本插件无影响——无需任何重打步骤。
+- **残留旧补丁无害**：插件不依赖任何补丁导出（角色解析 rules-only；model-selection
+  标记协调已移除）——已打过旧补丁的 dsh 树可原样保留或手动回滚，均非必需。
 
 ## 文档
 
@@ -83,8 +96,7 @@ fallbacks:
 |---|---|
 | [docs/install.md](docs/install.md) | profile 安装 / git 安装 / 卸载 / `--dump-config` 验证 |
 | [docs/configuration.md](docs/configuration.md) | `fallbacks` 命名空间全字段、selector 语法、示例 YAML、设置页使用、行为说明 |
-| [docs/dsh-patch.md](docs/dsh-patch.md) | subagent 显式角色 patch 的动机、应用/回滚/验证、dsh 升级后重跑 |
-| [patches/README.md](patches/README.md) | patch 清单与原理（与 docs/dsh-patch.md 配套） |
+| [docs/verification.md](docs/verification.md) | 验证记录（测试矩阵、bundle 层序、运行契约、QA gate 剧本） |
 
 ## 许可
 

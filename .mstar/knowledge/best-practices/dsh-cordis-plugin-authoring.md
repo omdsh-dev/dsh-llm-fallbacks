@@ -1,7 +1,7 @@
 ---
 module: dsh-plugin-authoring
 date: 2026-08-10
-last_updated: 2026-08-10
+last_updated: 2026-08-12
 problem_type: best_practice
 category: best-practices
 severity: low
@@ -21,7 +21,7 @@ tags:
 
 # dsh 第三方 cordis 插件创作模式（已验证 playbook）
 
-dsh-llm-fallbacks 迭代验证的 dsh 插件创作全流程（bundle 组合层 → host 半 → client 半 → 类型访问 → patch 交付）。
+dsh-llm-fallbacks 迭代验证的 dsh 插件创作全流程（bundle 组合层 → host 半 → client 半 → 类型访问 → 纯挂载交付）。
 
 ## Context
 
@@ -46,13 +46,22 @@ dsh 插件 = npm 包，package.json 声明 dsh.bundle.patch（指向 bundle/cord
 ### 设置与 UI
 
 - settings 命名空间：installSettingsSection(ctx, settingsNamespace(命名空间名), Config, entry, {setSource, onChange})（参照 agent-default-model）；composition entry 作 base、用户文档作覆盖层。
-- web 设置页：client 半 ctx.slots.inject('settings.section', …) 注册（name/id/order/locale-thunk label）；数据走自有 store（settings.describe/update/replace loopback + expectedRevision 冲突语义）；owner props 为空。
+- web 设置页：client 半 ctx.slots.inject('settings.section', …) 注册（name/id/order/locale-thunk label）；**数据走插件自有 gateway 通道**（client `connection.rpc.call('/api', '<ns>/<method>', { args })`，host 半 `GatewayService` + `@Remote`）——apiproxy `exposedNamespaces()` 白名单对插件命名空间关闭，wire 读写（describe/update/replace）不可行；owner props 为空。
   - slot 挂载全契约（settings.section / general.item / action / onboarding / navIcon fallback / 新包三注册面）→ `architecture-patterns/dsh-settings-slot-contract.md`。
-- **设置页必须始终可用（不要死路）**：settings 的 describe 响应中 namespaces 缺失该命名空间 ≠ 页面该显示「无法读取」通知——首开无配置/命名空间未注册时也应渲染可操作骨架（标题/介绍/只读状态块/主开关/保存动作），以默认值种子展示，`writable` 跟随 describe 响应（不因缺失强制 false）。保存/恢复默认在无 view 时**省略 expectedRevision** 尝试写入（wire 契约该字段可选），host 接受→ready、拒绝→error 横幅如实呈现（不静默）。缺失状态可保留（语义为「未注册」，非死路），host 随后注册经 settings/changed 推送 → 重 describe → ready 原地升级。
-- **挂载即播种 + 首个 ready 重播种**：编辑状态从 defaultFallbacksConfig 初始化（不等待 ready），`seededRevision` 保持 null 直至首个 ready 描述符以服务端真值重播种；ready 之前控件可用性由 `writable` 驱动。注意：命名空间缺失但 `writable: true` 时用户可 pre-ready 编辑，中途推送升级会用服务端真值覆盖未保存 draft——这是设计的「骨架原地升级」，注释需如实说明，勿写「ready 前不可编辑」这类过期前提。
+  - gateway 通道全契约（wire 规范化、KD-G3/G5、无 revision 守卫、set/reset 语义、draft 播种不变量、可选 settings 注入）→ `architecture-patterns/dsh-gateway-settings-channel.md`。
+- **设置页必须始终可用（不要死路）**：gateway `get` 失败（通道不可达）≠ 页面该显示「无法读取」通知——渲染可操作骨架（标题/介绍/只读状态块/主开关/保存动作）以默认值展示（`present=false`），`writable` 跟随 describe 顶层标志；`set`/`reset` 失败 → error 横幅如实呈现（不静默）、表单保持可编辑（KD-G3，无 revision 守卫）。通道恢复后骨架原地升级为就绪态。
+- **Draft 播种**：编辑状态从 gateway `get` 返回的**真实组合配置**初始化（`accept(config, writable)`），不用默认值播种——`get` 失败时骨架仅**展示**默认值，播种默认值会在通道恢复后 diff 出全默认 patch、抹掉真实配置。
 - **功能级开关（feature master switch）模式**：用配置字段本身（如 fallbacks 命名空间的 `enabled` 字段）作页面显隐开关——OFF 时隐藏表单主体 + 显示提示（隐藏不丢弃：draft 保留、拨动即时显隐），ON 时显示完整配置界面；开关状态 = 用户配置字段（保存持久化、重载保持），不是纯 UI 本地态。默认值如需翻转（如 enabled true→false），单点改 defaultFallbacksConfig + schema。
-- **配置默认值翻转的测试基准**：翻转默认值会连带破坏所有走共享 cfg() 基准的用例——把测试基准显式钉到活跃态（cfg() = { ...defaults, enabled: true, ...overrides }），只翻转显式断言默认值的用例（config.spec），并新增「默认配置 → no-op」专项用例锁定回归不变量；store 单测的缺失命名空间用例按新语义拆分（writable 跟随 / 拒绝 / 无前置写入成功 / host 拒绝）。
+- **配置默认值翻转的测试基准**：翻转默认值会连带破坏所有走共享 cfg() 基准的用例——把测试基准显式钉到活跃态（cfg() = { ...defaults, enabled: true, ...overrides }），只翻转显式断言默认值的用例（config.spec），并新增「默认配置 → no-op」专项用例锁定回归不变量；store 单测按 gateway 语义拆分（get 失败 → present=false 骨架、draft 不播种默认值、describe 仍调用但不再读 fallbacks ns）。
 - **测试矩阵文档会漂移**：docs/verification.md 的用例计数在迭代中反复过期（153→163→168）——更新文档时顺手校准，或以 grep 计数为准。
+
+### 事件监听组合顺序与运行时面可读性（waterfall 内外层）
+
+- **FIRST-registered listener is OUTER and has the final say**（cordis `events.ts` `waterfall`：按 `_hooks[name]` 注册序 first→outer 组合；`dispatch` 按 scope carrier 过滤但**不重排**）。同 ctx 两个 listener，先注册者的 post-`next()` 覆写赢。插件做 `agent/request` 类 override 前，先问「谁先注册」，不要按配置意图猜。
+- **`agent/created` 是 post-publish，经它注册必为 inner**：`agents.create` 工厂先 `await setup`（`installModelSelection` 等在此注册）再 insert/announce；`agent/created` 里注册的 listener 严格内层，其 post-`next()` 改动会被外层 listener 重套覆写（clobber）。
+- **注册时机不由插件控制**：bundle 行序（`cordis.patch.yml` 插行）与 agent 创建时机归宿主——headless profile 中 agent 在宿主 runner 插件 apply 内创建，晚挂载的兄弟插件天然 inner；web profile 中插件随 bundle 加载先注册、model-selection 随 agent 创建后注册（插件 outer）。结论必须按 profile 分述。
+- **把预判转证实**：对「无挂载替代」类结论，写组合测试钉住注册序 × 行为矩阵（同 ctx 两 listener / 先外后内 / `agent/created` seam / headless 序），把 architect 预判变 proven（iter-20260811 Plan B T2 范式，证据见该迭代 `guides/role-and-model-selection-exploration.md`）。
+- **persona 运行时不可读**（2026-08-11 源码验证）：`AgentOptions` 原生仅 `{ provider, model, maxTokens }`（注释明确 "Persona belongs to system-prompt sections"）；persona 是 subagent provider 能力，在 `agents.create` 未发布 setup 窗口以**作用域 system-prompt section**（`deployment:persona`）安装（spawn/fork provider 才有该能力），live `Agent` handle 与 child `SessionHeader` 均无 persona 字段。插件决策点（`agent/request-error` 只持 `Agent`）读不到 persona；hook `system-prompt/assemble` 捕获是 provider-scoped 内部装配面且值为 prompt 文本（非可作规则键的标识）——脆弱，不做。若 dsh 未来把 persona 上提为 `AgentOptions`/session header 字段，映射才可行（schema 向后兼容扩展）。
 
 ### 关键坑
 

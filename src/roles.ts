@@ -1,19 +1,23 @@
 /**
  * Role resolution for fallback chains (spec §3, ADR-3; plan Task 2/3).
  *
- * Precedence (first hit wins):
- * 1. `agent.options.role` — the explicit role (dsh patch, Task 6);
- * 2. the first `rules` entry whose specified origin/provider/model patterns
+ * Rules-only (Plan B/T1): there is no explicit-role branch — an explicit
+ * role existed only via the dsh-agent patch (removed), so resolution never
+ * reads one. Precedence (first hit wins):
+ * 1. the first `rules` entry whose specified origin/provider/model patterns
  *    all match the agent;
- * 3. `defaultRole` (`roles.default`, itself `'default'`).
+ * 2. `defaultRole` (`roles.default`, itself `'default'`).
  *
  * A missing agent origin is treated as `'root'`. Origin is read from
- * `session.header.origin` — the durable `SessionHeader` field the store folds
+ * `session.header.origin` — a native `SessionHeader` field the store folds
  * from `CreateSessionOptions.meta.origin` (`packages/core/session/src/
- * index.ts:899`); subagent children set it via `childSessionMeta`
- * (`packages/subagent/subagent/src/child-agent.ts:93`), root agents carry
- * none. (Task 3 contract refinement: the live `Session` exposes `header`, not
- * a `meta` field.)
+ * index.ts:884`); subagent children set it via `childSessionMeta`
+ * (`packages/subagent/subagent/src/child-agent.ts:115`), root agents carry
+ * none. A subagent `persona` is NOT readable at the decision point:
+ * `AgentOptions` is provider/model/maxTokens only, and persona is installed
+ * as a scoped system-prompt section in the child's creation window — see
+ * `.mstar/iterations/iter-20260811-fallbacks-mount-only/guides/
+ * role-and-model-selection-exploration.md` (Role section).
  *
  * @module dsh-llm-fallbacks/roles
  */
@@ -32,7 +36,6 @@ export interface RoleRule {
 /** Loose agent shape sufficient for role resolution (spec §3 / brief). */
 export interface AgentLike {
   options?: {
-    role?: string
     provider?: string
     model?: string
   }
@@ -44,11 +47,11 @@ export interface AgentLike {
 }
 
 /**
- * Resolve the fallback-chain role for an agent: explicit `options.role` →
- * first matching rule (in listed order) → `defaultRole`.
+ * Resolve the fallback-chain role for an agent: first matching rule (in
+ * listed order) → `defaultRole`. Rules-only — an explicit-role field (dsh
+ * patch, removed) is never consulted.
  */
 export function resolveRole(agent: AgentLike, rules: RoleRule[], defaultRole: string): string {
-  if (agent.options?.role) return agent.options.role
   const origin = agent.session?.header?.origin ?? 'root'
   for (const rule of rules) {
     if (rule.origin && rule.origin !== origin) continue

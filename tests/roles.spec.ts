@@ -1,9 +1,11 @@
 /**
- * Role resolution unit tests (Task 2).
+ * Role resolution unit tests (Plan B / T1).
  *
- * Covers the spec §3 / ADR-3 precedence — `agent.options.role` (explicit,
- * after the dsh patch) → first matching `roles.rules` entry (order matters)
- * → `roles.default` — including origin / provider / model pattern matching.
+ * Covers the spec §3 / ADR-3 rules-only precedence — first matching
+ * `roles.rules` entry (order matters) → `roles.default` — including
+ * origin / provider / model pattern matching. An explicit-role field is
+ * intentionally absent from `AgentLike`: it existed only via the
+ * dsh-agent patch (removed in Plan B), so it is not part of resolution.
  */
 
 import { describe, expect, it } from 'vitest'
@@ -18,20 +20,18 @@ const RULES: RoleRule[] = [
 ]
 
 describe('resolveRole', () => {
-  it('prefers the explicit agent.options.role over rules and default', () => {
-    const agent: AgentLike = {
-      options: { role: 'explicit-role', provider: 'openai', model: 'gpt-4o' },
-      session: { header: { origin: 'root' } },
-    }
-    expect(resolveRole(agent, RULES, 'default')).toBe('explicit-role')
-  })
-
-  it('matches the first rule in listed order for a subagent', () => {
+  it('matches an origin-only rule for a subagent', () => {
     const agent: AgentLike = {
       options: { provider: 'openai', model: 'gpt-4o' },
       session: { header: { origin: 'subagent' } },
     }
     expect(resolveRole(agent, RULES, 'default')).toBe('code-review')
+  })
+
+  it('treats a missing origin as root (root agents carry no origin)', () => {
+    const rules: RoleRule[] = [{ origin: 'root', role: 'root-chain' }]
+    const agent: AgentLike = { options: { provider: 'openai', model: 'gpt-4o' } }
+    expect(resolveRole(agent, rules, 'default')).toBe('root-chain')
   })
 
   it('matches an origin+provider rule for a root agent', () => {
@@ -57,10 +57,27 @@ describe('resolveRole', () => {
     expect(resolveRole(agent, RULES, 'default')).toBe('gpt4o-only')
   })
 
-  it('treats a missing origin as root (root agents carry no origin)', () => {
-    const rules: RoleRule[] = [{ origin: 'root', role: 'root-chain' }]
-    const agent: AgentLike = { options: { provider: 'openai', model: 'gpt-4o' } }
-    expect(resolveRole(agent, rules, 'default')).toBe('root-chain')
+  it('matches an origin+provider+model combo rule when all patterns fit', () => {
+    const rules: RoleRule[] = [
+      { origin: 'subagent', provider: 'openai', model: 'gpt-4o', role: 'subagent-openai-gpt4o' },
+    ]
+    const agent: AgentLike = {
+      options: { provider: 'openai', model: 'gpt-4o' },
+      session: { header: { origin: 'subagent' } },
+    }
+    expect(resolveRole(agent, rules, 'default')).toBe('subagent-openai-gpt4o')
+  })
+
+  it('skips a combo rule when any one pattern differs', () => {
+    const rules: RoleRule[] = [
+      { origin: 'subagent', provider: 'openai', model: 'gpt-4o', role: 'subagent-openai-gpt4o' },
+    ]
+    // provider differs → no rule matches → default.
+    const agent: AgentLike = {
+      options: { provider: 'anthropic', model: 'gpt-4o' },
+      session: { header: { origin: 'subagent' } },
+    }
+    expect(resolveRole(agent, rules, 'default')).toBe('default')
   })
 
   it('returns the default role when nothing matches', () => {

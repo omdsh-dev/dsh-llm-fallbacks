@@ -18,7 +18,7 @@ dsh plugin --profile web add github:dsh-external/dsh-llm-fallbacks   # pin a com
 ## Features
 
 - **Automatic fallback for root and subagents**: any agent switches down the chain to the next available provider/model on model failure — no manual model switching.
-- **Role-based chains**: subagents can use their own fallback chain, independent of the root agent — explicit `agent.options.role` (requires the dsh role patch) → `roles.rules` matching in order → `roles.default`; first match wins.
+- **Role-based chains**: subagents can use their own fallback chain, independent of the root agent — `roles.rules` match origin/provider/model in order to a concrete role → `roles.default`; first match wins.
 - **Chain specificity**: exact `provider/model` keys → `provider/*` keys → role chains → `default` chain; `provider/*` entries keep the failed model id and only switch provider.
 - **Cooldown and revert**: models that were switched away from / failed are not re-selected during the cooldown period; `revertPolicy: cooldown-expiry` automatically returns to the primary model when the cooldown expires, while `never` does not return within the session.
 - **Visible behavior**: every switch appends a persisted session event `fallbacks/switch` (from/to/role/reason), alongside info-level logs (candidate attempt order and skip reasons) and the read-only status block on the web settings page — no silent model switching.
@@ -33,7 +33,7 @@ dsh plugin --profile web add github:dsh-external/dsh-llm-fallbacks   # pin a com
 dsh plugin --profile web add github:dsh-external/dsh-llm-fallbacks   # pin a commit with #<sha>
 ```
 
-A git install fetches **sources, not built artifacts**, so the bundle builds itself on install (`prepare` self-build, then the `postinstall` host-patch autopatch). pnpm ≥ 10 blocks a git dependency's `prepare` by default: the first `add` fails with `ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`, and pnpm prints the exact package key. Allow the build in the profile's `pnpm-workspace.yaml` (`onlyBuiltDependencies: [dsh-llm-fallbacks]`, or run `dsh plugin --profile web approve-builds`), then re-run the `add`. Treat that allowance as permission to execute the package's code on your machine at install time, and pin a commit (`github:dsh-external/dsh-llm-fallbacks#<sha>`) so a later push cannot silently change what runs. The full URL form works equivalently: `dsh plugin --profile web add https://github.com/dsh-external/dsh-llm-fallbacks.git`.
+A git install fetches **sources, not built artifacts**, so the bundle builds itself on install (`prepare` self-build). The plugin is **mount-only**: it never modifies the dsh source tree, and no patch / postinstall step exists — dsh upgrades never require re-patching. pnpm ≥ 10 blocks a git dependency's `prepare` by default: the first `add` fails with `ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`, and pnpm prints the exact package key. Allow the build in the profile's `pnpm-workspace.yaml` (`onlyBuiltDependencies: [dsh-llm-fallbacks]`, or run `dsh plugin --profile web approve-builds`), then re-run the `add`. Treat that allowance as permission to execute the package's code on your machine at install time, and pin a commit (`github:dsh-external/dsh-llm-fallbacks#<sha>`) so a later push cannot silently change what runs. The full URL form works equivalently: `dsh plugin --profile web add https://github.com/dsh-external/dsh-llm-fallbacks.git`.
 
 ### Local directory install (recommended for development / verification)
 
@@ -74,11 +74,28 @@ fallbacks:
         role: reviewer
 ```
 
-Roles are the grouping key for chains: `roles.default` is the fallback role; `roles.rules` match origin/provider/model in order to a concrete role (first match wins); an explicit `agent.options.role` (subagents via `agentOptions.role`, requires the dsh role patch, see [docs/dsh-patch.md](docs/dsh-patch.md)) has the highest priority — once a `reviewer` chain is configured, agents in that role use their own fallback chain.
+Roles are the grouping key for chains: `roles.default` is the fallback role; `roles.rules` match origin/provider/model in order to a concrete role (first match wins) — resolution is **rules-only** (no explicit-role field exists; the old dsh patch that provided one has been removed). Once a `reviewer` chain is configured, agents in that role use their own fallback chain.
 
 Save and restart the web session for the changes to take effect. The feature switch `fallbacks.enabled` **defaults to off (`false`)** — the plugin only engages once it is turned on; `triggerCodes` defaults to `AUTH` / `QUOTA` / `RATE_LIMIT`; and with **no chains configured the behavior is identical to not having the plugin installed**. More examples (role chains, provider wildcard keys, roles rules) → [docs/configuration.md](docs/configuration.md).
 
 > **Upgrade note (behavior change)**: an existing `fallbacks:` section **without an explicit `enabled` key** now resolves to `false` after upgrading — add `enabled: true` to keep the plugin active.
+
+## Mount-only (no dsh modification)
+
+The plugin installs as a **pure mount** — it never modifies the dsh source tree:
+
+- **Install = bundle insert + client inject + own gateway**: `bundle/cordis.patch.yml`
+  inserts the plugin row over the profile bundle stack, `dsh.client.inject` mounts
+  the web settings page, and settings read/write/reset go through the plugin's own
+  gateway channel (`/api/fallbacks/get|set|reset`).
+- **No patches, no auto-apply step**: there are no dsh-body patch files and no install
+  lifecycle step that applies one. A one-line git install works as-is.
+- **dsh upgrades never require re-patching**: a dsh upgrade that resets the source
+  tree changes nothing for this plugin — it keeps working without any re-apply step.
+- **Stale leftover patches are harmless**: the plugin never depends on a patch
+  export (role resolution is rules-only; the model-selection marker coordination
+  was removed), so a previously patched dsh tree can be left as-is or manually
+  reverted — neither is required.
 
 ## Documentation
 
@@ -86,8 +103,7 @@ Save and restart the web session for the changes to take effect. The feature swi
 |---|---|
 | [docs/install.md](docs/install.md) | profile install / git install / uninstall / `--dump-config` verification |
 | [docs/configuration.md](docs/configuration.md) | full `fallbacks` namespace reference, selector syntax, example YAML, settings page usage, behavior notes |
-| [docs/dsh-patch.md](docs/dsh-patch.md) | motivation for the subagent explicit-role patch, apply / revert / verify, re-running after dsh upgrades |
-| [patches/README.md](patches/README.md) | patch inventory and rationale (companion to docs/dsh-patch.md) |
+| [docs/verification.md](docs/verification.md) | verification records (test matrix, bundle layer order, runtime contracts, QA gate script) |
 
 ## License
 

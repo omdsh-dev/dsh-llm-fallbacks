@@ -322,28 +322,34 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
 
   // Editors seed from `defaultFallbacksConfig` on mount (readme-settings spec
   // §1.4-1): the skeleton is always visible — even before any descriptor
-  // arrives (idle/loading) or when the namespace is missing (unavailable).
-  // The mount seed is only a placeholder: `seededRevision` stays null until
-  // the first ready descriptor, and every later ready (a refresh re-load)
-  // re-seeds with server truth. Controls are not gated on `ready` — a missing
-  // namespace with `writable: true` leaves the switch/form body editable
-  // pre-ready (§1.4-4) — so a mid-edit push (host registers the namespace →
-  // settings/changed → refresh → load → ready) overwrites the draft with
-  // server truth on the next ready: unsaved drafts are not preserved across
-  // the unavailable→ready upgrade.
+  // arrives (idle/loading) or while the gateway channel is unreachable
+  // (`present: false`). The mount seed is only a placeholder:
+  // `seededConfigKey` stays null until the first ready state, and every
+  // later ready whose config CONTENT differs (a refresh re-load that landed
+  // new server truth) re-seeds — the gateway has no revision stamp, so the
+  // config itself is the freshness signal. The draft seed invariant (I-1)
+  // holds on both sides: the store never publishes defaults over an
+  // accepted real config, and the section never re-seeds identical content.
+  // Controls are not gated on `ready` — a channel-down load with
+  // `writable: true` leaves the switch/form body editable pre-ready
+  // (§1.4-4) — so a mid-edit push (channel recovers → settings/changed →
+  // refresh → load → ready) overwrites the draft with server truth on the
+  // next content-changing ready: unsaved drafts are not preserved across
+  // the unreachable→ready upgrade.
   const [scalars, setScalars] = useState<FallbacksScalars>(() => scalarsOf(defaultFallbacksConfig))
   const [chainRows, setChainRows] = useState<ChainRow[]>(() => chainsToRows(defaultFallbacksConfig.chains))
   const [ruleRows, setRuleRows] = useState<RoleRuleRow[]>(() => rulesToRows(defaultFallbacksConfig.roles.rules))
-  const seededRevision = useRef<number | null>(null)
+  const seededConfigKey = useRef<string | null>(null)
 
   useEffect(() => {
     if (state.status !== 'ready') return
-    if (seededRevision.current === state.revision) return
-    seededRevision.current = state.revision
+    const key = JSON.stringify(state.config)
+    if (seededConfigKey.current === key) return
+    seededConfigKey.current = key
     setScalars(scalarsOf(state.config))
     setChainRows(chainsToRows(state.config.chains, catalogOf(state)))
     setRuleRows(rulesToRows(state.config.roles.rules, catalogOf(state)))
-  }, [state.status, state.revision, state.config])
+  }, [state.status, state.config])
 
   // Reset-to-defaults confirmation (replaces `window.confirm`): the dialog
   // stays open while the replace is in flight — the Models page's
@@ -355,7 +361,7 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
   // The skeleton always renders (readme-settings spec §1.2): title, intro,
   // banners, the `enabled` switch, the save/reset actions, and the read-only
   // status block pinned at the bottom are visible in every store state (idle /
-  // loading / ready / saving / unavailable / error). The form body below is
+  // loading / ready / saving / error). The form body below is
   // gated on the draft's `enabled` flag. Controls are disabled while
   // `writable` is false (initial load, loading, or a read-only describe
   // response), so an empty skeleton never invites edits the host would refuse.
@@ -395,7 +401,7 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
 
   const dirty = JSON.stringify(assembleConfig(scalars, chainRows, ruleRows)) !== JSON.stringify(state.config)
   const saving = state.status === 'saving'
-  const writable = state.writable && state.conflict === null
+  const writable = state.writable
   const unknownCodes = scalars.triggerCodes.filter(code => !KNOWN_TRIGGER_CODES.includes(code))
 
   // R-4b: the status block's derived effective model (spec §2.5 D-6). The
@@ -466,21 +472,15 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
       <h2 className={css.title}>{t('nav')}</h2>
       <p className={css.intro}>{t('nav.description')}</p>
 
-      {state.conflict !== null && (
-        <div className={css.banner} role="alert">
-          {t('save.conflict', { expected: state.conflict.expected, actual: state.conflict.actual })}
-          <Button variant="ghost" size="sm" onClick={() => { void controller.load() }}>
-            {t('reload')}
-          </Button>
-        </div>
-      )}
-      {state.error !== null && state.conflict === null && (
+      {state.error !== null && (
         <div className={css.banner} role="alert">{t('error.generic', { message: state.error })}</div>
       )}
-      {state.status === 'unavailable' && (
-        // Namespace not registered (readme-settings spec §1.4-3): an
-        // informational banner — the page shows the default-config seed and
-        // saves are attempted; failures land in the error banner above.
+      {state.status === 'ready' && !state.present && (
+        // Gateway channel unreachable (KD-G5 — the fallbacks config rides
+        // the plugin gateway, not describe): an informational banner — the
+        // page stays the usable skeleton (last accepted config, or the
+        // defaults on a first load) and saves are attempted; failures land
+        // in the error banner above.
         <div className={css.infoBanner}>{t('unavailable')}</div>
       )}
 
@@ -886,6 +886,11 @@ export function FallbacksSection({ controller, t }: FallbacksSectionProps): Reac
           <span className={css.statusLineLabel}>{t('status.switches.label')}</span>
           {switchesLine}
         </p>
+        {/* Plan llm-fallbacks-runtime-depatch T2 (degradation): the marker
+         * coordination shipped with the local dsh-agent patch is removed, so
+         * a model manually selected in the web front end may be re-applied
+         * over a fallback switch. Honest one-line note (zh + en). */}
+        <p className={css.statusLine}>{t('status.selectionNote')}</p>
       </div>
 
       {/* Reset-to-defaults confirmation: the Models page's delete-confirm
