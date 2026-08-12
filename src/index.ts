@@ -506,6 +506,9 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     },
   }
   ctx.inject(['commands'], (commandCtx) => {
-    registerFallbacksCommands(commandCtx.commands, fallbacksCommandController)
+    // Return the registry disposer: cordis collects the inject child's
+    // returned function and runs it on unload, making the documented
+    // lifetime contract (registerFallbacksCommands' @returns) true.
+    return registerFallbacksCommands(commandCtx.commands, fallbacksCommandController)
   })
 }

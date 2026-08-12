@@ -84,6 +84,7 @@ export interface FallbacksCommandController {
 export const FALLBACKS_COMMAND_LOCALES = {
   zh: {
     title: '当前会话 fallback 诊断（只读）',
+    description: '查看当前会话的降级链、最近切换与冷却状态（只读）',
     origin: '会话来源',
     role: '角色',
     chain: '链',
@@ -103,6 +104,7 @@ export const FALLBACKS_COMMAND_LOCALES = {
   },
   en: {
     title: 'Session fallback diagnostics (read-only)',
+    description: 'Inspect fallback chain, recent switches, and cooldown for this session (read-only)',
     origin: 'Session origin',
     role: 'Role',
     chain: 'Chain',
@@ -133,16 +135,39 @@ type FallbacksCommandCopy = (typeof FALLBACKS_COMMAND_LOCALES)[FallbacksCommandL
 // ---------------------------------------------------------------------------
 
 /**
+ * True when `data` is a well-formed `fallbacks/switch` payload (the durable
+ * session log is append-only and survives plugin/host upgrades, so a
+ * `fallbacks/switch` entry may carry a stale or corrupted shape — version
+ * skew must not crash the diagnostic).
+ */
+function isFallbacksSwitchData(data: unknown): data is FallbacksSwitchEventData {
+  if (typeof data !== 'object' || data === null) return false
+  const payload = data as Record<string, unknown>
+  if (typeof payload.turn !== 'number' || typeof payload.step !== 'number') return false
+  if (typeof payload.role !== 'string' || typeof payload.reason !== 'string') return false
+  const from = payload.from as Record<string, unknown> | undefined
+  const to = payload.to as Record<string, unknown> | undefined
+  return (
+    typeof from?.provider === 'string' &&
+    typeof from?.model === 'string' &&
+    typeof to?.provider === 'string' &&
+    typeof to?.model === 'string'
+  )
+}
+
+/**
  * The newest `limit` `fallbacks/switch` events from a session's raw event
- * log, newest first. Unknown event shapes are skipped defensively (a session
- * log may carry any `SessionEventMap` type).
+ * log, newest first. Unknown event shapes and malformed `fallbacks/switch`
+ * payloads are skipped defensively (a session log may carry any
+ * `SessionEventMap` type, and the durable log can outlive schema versions).
  */
 export function recentFallbacksSwitches(events: readonly unknown[], limit: number): FallbacksSwitchEventData[] {
   const found: FallbacksSwitchEventData[] = []
   for (let index = events.length - 1; index >= 0 && found.length < limit; index -= 1) {
     const event = events[index] as { readonly type?: unknown; readonly data?: unknown } | undefined
-    if (event === undefined || event.type !== 'fallbacks/switch') continue
-    found.push(event.data as FallbacksSwitchEventData)
+    if (event?.type !== 'fallbacks/switch') continue
+    if (!isFallbacksSwitchData(event.data)) continue
+    found.push(event.data)
   }
   return found
 }
@@ -174,7 +199,8 @@ function formatSwitch(entry: FallbacksSwitchEventData, t: FallbacksCommandCopy):
     .replace('{from}', from)
     .replace('{to}', to)
     .replace('{role}', entry.role)
-    .replace('{reason}', t.reason[entry.reason])
+    // Unknown future reasons render the raw reason string, never "undefined".
+    .replace('{reason}', t.reason[entry.reason] ?? entry.reason)
 }
 
 /** Render one cooldown entry as one text line (`Infinity` = never reverts). */
@@ -251,7 +277,7 @@ export function registerFallbacksCommands(
 ): () => void {
   return registry.register({
     name: 'fallbacks',
-    description: 'Inspect fallback chain, recent switches, and cooldown for this session（查看当前会话的降级链、最近切换与冷却状态）',
+    description: FALLBACKS_COMMAND_LOCALES[locale].description,
     input: { hint: '' },
     handler: createFallbacksCommandHandler(controller, locale),
   })

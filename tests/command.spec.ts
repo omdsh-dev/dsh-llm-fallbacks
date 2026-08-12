@@ -82,6 +82,15 @@ describe('registerFallbacksCommands — registration shape', () => {
     expect(result).toBe(disposer)
     expect(disposer).toHaveBeenCalledTimes(0)
   })
+
+  it('localizes the description to the registration locale', () => {
+    const zh = captureRegistration({ getSnapshot: () => snapshot() })
+    expect(zh.definition.description).toBe('查看当前会话的降级链、最近切换与冷却状态（只读）')
+    const en = captureRegistration({ getSnapshot: () => snapshot() }, 'en')
+    expect(en.definition.description).toBe(
+      'Inspect fallback chain, recent switches, and cooldown for this session (read-only)',
+    )
+  })
 })
 
 describe('snapshot building helpers', () => {
@@ -109,21 +118,36 @@ describe('snapshot building helpers', () => {
   it('recentFallbacksSwitches filters the event log, newest first, capped at the limit', () => {
     const events = [
       { type: 'llm/retry', data: {} },
-      { type: 'fallbacks/switch', data: { turn: 1, from: 'a', to: 'b' } },
-      { type: 'fallbacks/switch', data: { turn: 2, from: 'c', to: 'd' } },
+      { type: 'fallbacks/switch', data: { turn: 1, step: 1, from: { provider: 'a', model: 'm1' }, to: { provider: 'b', model: 'm2' }, role: 'default', reason: 'trigger-code' } },
+      { type: 'fallbacks/switch', data: { turn: 2, step: 1, from: { provider: 'c', model: 'm3' }, to: { provider: 'd', model: 'm4' }, role: 'default', reason: 'always-cap' } },
       { type: 'message/user', data: {} },
     ]
     const found = recentFallbacksSwitches(events, RECENT_SWITCHES_LIMIT)
     expect(found).toHaveLength(2)
     // newest first: turn 2 before turn 1
-    expect(found[0]).toEqual({ turn: 2, from: 'c', to: 'd' })
-    expect(found[1]).toEqual({ turn: 1, from: 'a', to: 'b' })
+    expect(found[0]).toEqual({ turn: 2, step: 1, from: { provider: 'c', model: 'm3' }, to: { provider: 'd', model: 'm4' }, role: 'default', reason: 'always-cap' })
+    expect(found[1]).toEqual({ turn: 1, step: 1, from: { provider: 'a', model: 'm1' }, to: { provider: 'b', model: 'm2' }, role: 'default', reason: 'trigger-code' })
   })
 
-  it('recentFallbacksSwitches caps at the limit and tolerates unknown shapes', () => {
-    const events = [1, 'x', null, { type: 'fallbacks/switch', data: { n: 1 } }, { type: 'fallbacks/switch', data: { n: 2 } }]
-    expect(recentFallbacksSwitches(events, 1)).toEqual([{ n: 2 }])
+  it('recentFallbacksSwitches caps at the limit and skips unknown shapes', () => {
+    const events = [1, 'x', null, { type: 'llm/retry', data: {} }, { type: 'message/user', data: {} }]
+    expect(recentFallbacksSwitches(events, 1)).toEqual([])
     expect(recentFallbacksSwitches([], 5)).toEqual([])
+  })
+
+  it('recentFallbacksSwitches skips malformed fallbacks/switch payloads without throwing', () => {
+    const events = [
+      { type: 'fallbacks/switch', data: { n: 1 } },
+      { type: 'fallbacks/switch', data: { turn: 1, step: 1, from: { provider: 'a' }, to: { provider: 'b', model: 'm' }, role: 'default', reason: 'trigger-code' } }, // from.model missing
+      { type: 'fallbacks/switch', data: null },
+      { type: 'fallbacks/switch', data: { turn: 1, step: 1, from: { provider: 'deepseek', model: 'deepseek-chat' }, to: { provider: 'anthropic', model: 'claude-3-5-sonnet' }, role: 'default', reason: 'trigger-code' } },
+    ]
+    const found = recentFallbacksSwitches(events, RECENT_SWITCHES_LIMIT)
+    expect(found).toEqual([
+      { turn: 1, step: 1, from: { provider: 'deepseek', model: 'deepseek-chat' }, to: { provider: 'anthropic', model: 'claude-3-5-sonnet' }, role: 'default', reason: 'trigger-code' },
+    ])
+    // Malformed entries must not crash the builder even when nothing is valid.
+    expect(recentFallbacksSwitches([{ type: 'fallbacks/switch', data: { n: 1 } }], 5)).toEqual([])
   })
 })
 
@@ -343,11 +367,51 @@ describe('apply() wiring — conditional commands child', () => {
     expect(text).toContain('冷却: 无活跃冷却')
   })
 
-  it('top-level inject list is unchanged (commands stays conditional)', () => {
+  it('degrades gracefully when the session log carries malformed fallbacks/switch entries', async () => {
+    const registered: CommandDefinition[] = []
+    ctx.provide('commands', {
+      register: (def: CommandDefinition) => {
+        registered.push(def)
+        return () => {}
+      },
+    } as never)
+    apply(ctx, cfg())
+    await vi.waitFor(() => expect(registered).toHaveLength(1))
+
+    const { agent } = makeAgent('cmd-malformed', { provider: 'mock', model: 'gpt-4o' })
+    // Durable session log with stale/corrupted shapes (version skew).
+    const log = agent.session.events as unknown as Array<{ type: string; data: Record<string, unknown> }>
+    log.push(
+      { type: 'fallbacks/switch', data: { n: 1 } },
+      { type: 'fallbacks/switch', data: { turn: 1, step: 1, from: { provider: 'a' }, to: { provider: 'b', model: 'm' }, role: 'default', reason: 'trigger-code' } },
+    )
+    const result = registered[0]!.handler({
+      commandId: 'x',
+      agent,
+      rawInput: '',
+      signal: new AbortController().signal,
+    } as unknown as CommandInvocation)
+    // Never throws to the host runner; malformed entries are skipped.
+    expect(result.kind).toBe('success')
+    const text = (result as { text?: string }).text ?? ''
+    expect(text).toContain('最近切换: 本会话暂无 fallback 切换')
+  })
+
+  it('top-level inject list is unchanged (commands stays conditional)', async () => {
     // The conditional child must not pollute the top-level inject: apply()
     // without a composed commands service completes without registering or
-    // throwing.
+    // throwing, and a registry composed later activates the child exactly
+    // once — never eagerly at apply time, never twice.
+    const registered: CommandDefinition[] = []
     apply(ctx, cfg())
-    expect(true).toBe(true)
+    expect(registered).toHaveLength(0)
+    ctx.provide('commands', {
+      register: (def: CommandDefinition) => {
+        registered.push(def)
+        return () => {}
+      },
+    } as never)
+    await vi.waitFor(() => expect(registered).toHaveLength(1))
+    expect(registered[0]?.name).toBe('fallbacks')
   })
 })
