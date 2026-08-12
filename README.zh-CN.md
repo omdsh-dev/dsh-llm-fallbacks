@@ -77,6 +77,17 @@ fallbacks:
 
 > **升级提示（行为变更）**：已有 `fallbacks:` 配置若**未显式写 `enabled` 键**，升级后解析为 `false`——请补上 `enabled: true` 以保持插件继续生效。
 
+## `/fallbacks` 命令（会话内诊断）
+
+在任意会话中键入 `/fallbacks` 即可查看当前会话的 fallback 状态，无需打开设置页：
+
+- **会话来源**（`root` / `subagent`）与**解析角色**（首个命中的 `roles.rules` 条目 → `roles.default`）；
+- 该角色的**解析链**（角色链，角色键缺失则 `default` 链兜底）——无链时显示「未配置」；
+- **最近切换**（`fallbacks/switch` 事件，最新在前，至多 5 条）：from/to provider/model、role、reason；
+- **冷却状态**：哪些 `provider/model` 处于冷却、冷却至何时（`revertPolicy: 'never'` 显示「会话内不再回主」）。
+
+命令**只读**——绝不修改 fallback 状态（不重置冷却、不写待应用切换）。它经条件 `commands` 子注入注册，仅在宿主组合了斜杠命令注册表时出现；无注册表时命令静默不可用（无顶层 inject 污染）。输出默认中文（宿主侧无会话级 locale 信号）；英文词典在同一副本表中。
+
 ## 纯挂载（零 dsh 修改）
 
 插件以**纯挂载**方式安装，**从不修改 dsh 源码树**：
@@ -96,7 +107,7 @@ fallbacks:
 | 文档 | 内容 |
 |---|---|
 | [docs/install.md](docs/install.md) | profile 安装 / git 安装 / 卸载 / `--dump-config` 验证 |
-| [docs/configuration.md](docs/configuration.md) | `fallbacks` 命名空间全字段、selector 语法、示例 YAML、设置页使用、行为说明 |
+| [docs/configuration.md](docs/configuration.md) | `fallbacks` 命名空间全字段、selector 语法、示例 YAML、插件配置卡使用、行为说明 |
 | [docs/verification.md](docs/verification.md) | 验证记录（测试矩阵、bundle 层序、运行契约、QA gate 剧本） |
 
 ## 许可

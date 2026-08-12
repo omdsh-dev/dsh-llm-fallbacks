@@ -40,6 +40,15 @@ import { resolveRole } from './roles.ts'
 import { FallbackStateStore, type AgentFallbackState, type PendingSwitch } from './state.ts'
 import type { FallbackSwitchReason } from './events.ts'
 import { FALLBACKS_SETTINGS_NAMESPACE, FallbacksConfigGateway, type FallbacksSettingsBridge } from './gateway.ts'
+import {
+  RECENT_SWITCHES_LIMIT,
+  hasModelSpecificChainKeys,
+  recentFallbacksSwitches,
+  registerFallbacksCommands,
+  resolveChainForDiagnostic,
+  type FallbacksCommandController,
+  type FallbacksCommandSnapshot,
+} from './commands.ts'
 
 /** The plugin row id mounted by the profile bundle patch. */
 export const name = 'llm-fallbacks'
@@ -474,4 +483,34 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   ctx.effect(() => () => {
     states.clear()
   }, 'llm-fallbacks: clear per-agent state')
+
+  // AC-5: /fallbacks — session-scoped read-only diagnostics. Conditional
+  // inject child (commands must NOT join the top-level inject list —
+  // advisor T1 fix): the child activates only when a command registry is
+  // composed, so an absent commands service leaves the command silently
+  // unavailable with no top-level error. The handler reads live state
+  // through the SAME `source()` / `chains` / `states` the runtime uses and
+  // never mutates fallback state (read-only; no cooldown reset, no pending
+  // writes).
+  const fallbacksCommandController: FallbacksCommandController = {
+    getSnapshot(agent): FallbacksCommandSnapshot {
+      const config = source()
+      const role = resolveRole(agent, config.roles.rules, config.roles.default)
+      const state = states.peek(agent.id)
+      return {
+        origin: agent.session.header?.origin ?? 'root',
+        role,
+        ...resolveChainForDiagnostic(chains, role),
+        chainKeysModelSpecific: hasModelSpecificChainKeys(chains),
+        switches: recentFallbacksSwitches(agent.session.events, RECENT_SWITCHES_LIMIT),
+        cooldown: state === undefined ? [] : state.cooldown.snapshot(),
+      }
+    },
+  }
+  ctx.inject(['commands'], (commandCtx) => {
+    // Return the registry disposer: cordis collects the inject child's
+    // returned function and runs it on unload, making the documented
+    // lifetime contract (registerFallbacksCommands' @returns) true.
+    return registerFallbacksCommands(commandCtx.commands, fallbacksCommandController)
+  })
 }

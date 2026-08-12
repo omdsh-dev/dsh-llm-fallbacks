@@ -1,12 +1,12 @@
 # 配置指南（`fallbacks` 命名空间）
 
-插件配置集中在 `fallbacks` settings 命名空间，可在 dsh 设置文档（默认 `$DSH_HOME/settings.yaml`）中编辑，也可在 web 设置 GUI 的 **Fallbacks** 页中编辑——两者读写同一命名空间。web 页的读写走**插件自有 gateway 通道**（`/api/fallbacks/get` / `/api/fallbacks/set` / `/api/fallbacks/reset`），不依赖 dsh 本体的任何设置暴露机制；`fallbacks` 命名空间不出现在宿主 describe 暴露集合属预期设计。插件对 dsh 源码树**零本地修改**（纯挂载：bundle 行插入 + client inject + 自有 gateway），dsh 升级无需重打补丁。
+插件配置集中在 `fallbacks` settings 命名空间，可在 dsh 设置文档（默认 `$DSH_HOME/settings.yaml`）中编辑，也可在 web 设置 GUI 的 **插件配置 → Fallbacks 卡片**中编辑——两者读写同一命名空间。卡片的读写走**插件自有 gateway 通道**（`/api/fallbacks/get` / `/api/fallbacks/set` / `/api/fallbacks/reset`），不依赖 dsh 本体的任何设置暴露机制；`fallbacks` 命名空间不出现在宿主 describe 暴露集合属预期设计。插件对 dsh 源码树**零本地修改**（纯挂载：bundle 行插入 + client inject + 自有 gateway），dsh 升级无需重打补丁。
 
 ## 字段总览
 
 | 字段 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
-| `enabled` | boolean | `false` | 功能级总开关。默认关闭（OFF）：`false` 时插件完全不介入、设置页隐藏配置表单主体；`true` 但未配置任何链时行为与未安装插件一致（no-op） |
+| `enabled` | boolean | `false` | 功能级总开关。默认关闭（OFF）：`false` 时插件完全不介入、卡片隐藏配置表单主体；`true` 但未配置任何链时行为与未安装插件一致（no-op） |
 | `triggerCodes` | string[] | `['AUTH', 'QUOTA', 'RATE_LIMIT']` | 命中这些失败码时进入链决策。可重试型故障（5xx / `RATE_LIMIT` 等）先由 llm-retry 退避重试，预算耗尽后同样进入决策——**无需为 5xx 额外添加 triggerCodes** |
 | `chains` | Record&lt;string, string[]&gt; | `{}` | 链键 → 有序 fallback 选择器列表。键为 `provider/model`、`provider/*` 或角色名；条目为 `provider/model` 或 `provider/*`（见下文 selector 语法） |
 | `roles.default` | string | `'default'` | 角色解析兜底：无规则命中时使用的角色 |
@@ -16,7 +16,7 @@
 | `maxSwitchesPerStep` | number | `8` | 单步安全阀：每 step 切换次数上限，超限停止切换、保持原错误语义，防止链循环放大延迟 |
 | `alwaysModeRetryCap` | number | `5` | always 模式重试上限：`retryPolicy.mode === 'always'` 的 provider 在同一请求内重试达到该次数后切换；`0` 禁用 |
 
-> 默认值以本迭代 readme-settings spec §1.2 为准（`enabled` 默认 `false`），与 `src/config.ts` 的 schema 默认值一致；设置页对数值字段（`cooldownMs` / `maxSwitchesPerStep` / `alwaysModeRetryCap`）旁显示默认值，其余字段展示当前生效值（未配置时即默认值）。
+> 默认值以本迭代 readme-settings spec §1.2 为准（`enabled` 默认 `false`），与 `src/config.ts` 的 schema 默认值一致；卡片对数值字段（`cooldownMs` / `maxSwitchesPerStep` / `alwaysModeRetryCap`）旁显示默认值，其余字段展示当前生效值（未配置时即默认值）。
 
 ## Selector 语法
 
@@ -91,22 +91,22 @@ fallbacks:
 
 要点：
 
-- 示例显式设置 `enabled: true`——功能级开关默认 `false`，未显式打开时插件不介入、设置页隐藏配置表单主体。
+- 示例显式设置 `enabled: true`——功能级开关默认 `false`，未显式打开时插件不介入、卡片隐藏配置表单主体。
 - 链首条目即主模型之后的第一个降级目标；链内条目即优先级。
 - 切换只改变后续请求的 provider/model 路由，不重置会话上下文与工具状态。
 - 链目标模型需各自已配置密钥与配额（不同 provider 之间成本/额度可能不同）。
 
-## web 设置页使用说明
+## web 插件配置卡使用说明
 
-- **入口**：web 设置 GUI → Settings → **Fallbacks**（位于 Models 页之后）。
-- **始终可用（骨架恒渲染）**：无论首次打开、loading、error 等任意状态，页面都渲染骨架——`nav` 标题、介绍、只读状态块、功能级开关 `enabled`、保存/恢复默认动作。配置来自 gateway 通道 `get`（成功则 `present`）；`get` 失败/通道不可达时显示可操作骨架而非死页，保存动作可用（失败会如实提示，见下）。
+- **入口**：web 设置 GUI → Settings → **插件配置** 页 → **Fallbacks 卡片**（与 bash / agent-loop / web-search / advisor 卡同列表，order 30；卡片取代了旧的独立 Settings 导航页）。
+- **始终可用（骨架恒渲染）**：无论首次打开、loading、error 等任意状态，卡片都渲染骨架——卡片头（名称/描述）、只读状态块、功能级开关 `enabled`、保存/恢复默认动作。配置来自 gateway 通道 `get`（成功则 `present`）；`get` 失败/通道不可达时显示可操作骨架而非死卡，保存动作可用（失败会如实提示，见下）。
 - **功能级开关 `enabled`（默认 OFF）**：开关即用户配置字段 `fallbacks.enabled`，默认关闭。关闭时隐藏配置表单主体（`triggerCodes` / `chains` / `roles` / `cooldownMs` / `revertPolicy` / `maxSwitchesPerStep` / `alwaysModeRetryCap`），显示「功能未开启：打开 `enabled` 开关以显示配置界面」提示——隐藏不丢弃，编辑中的 draft 保留；打开后显示完整配置界面。拨动开关即时显隐（draft 驱动），经保存动作持久化。
 - **可读标签**：枚举型配置项显示可读标签而非原始枚举值——`RATE_LIMIT` →「限流（429）」、`QUOTA` →「配额超限」、`AUTH` →「权限/认证失败」；`cooldown-expiry` →「冷却到期后回主模型」、`never` →「保持备用模型」。数值字段旁显示默认值；其余字段展示当前生效值（未配置时即默认值）。
 - **链/角色行编辑**：`chains` 以「键 + 每行一个选择器的多行输入」编辑；`roles.rules` 以行编辑（origin/provider/model/role），空字段不参与匹配。provider/model 输入为**目录下拉**（模型目录驱动）：新行只提供目录内选项，目录外值读回时以合成选项标注保留（不被目录选择丢弃）；目录不可用/为空时下拉禁用并显示提示，不阻塞手写。
-- **model-selection 协调（AC-2，文档化降级）**：存在活跃 model-selection（用户在设置页 / `settings.yaml` 选择了 provider/model）时，触发码故障后的切换**仍然决策并记录**（`fallbacks/switch` 事件、冷却；当步实际路由可能被活跃 selection 覆写，最终 provider/model 以重新套用的选择为准）——这是去掉本地 patch 标记协调后的**宿主原生行为**（T2 结论，见 [docs/verification.md](docs/verification.md) §4.3）。request-error 触发链不受影响；无活跃 selection 时路由到链目标。设置页含一行降级说明（`status.selectionNote`，zh/en）。
+- **model-selection 协调（AC-2，文档化降级）**：存在活跃 model-selection（用户在设置页 / `settings.yaml` 选择了 provider/model）时，触发码故障后的切换**仍然决策并记录**（`fallbacks/switch` 事件、冷却；当步实际路由可能被活跃 selection 覆写，最终 provider/model 以重新套用的选择为准）——这是去掉本地 patch 标记协调后的**宿主原生行为**（T2 结论，见 [docs/verification.md](docs/verification.md) §4.3）。request-error 触发链不受影响；无活跃 selection 时路由到链目标。卡片含一行降级说明（`status.selectionNote`，zh/en）。
 - **恢复默认**：一键把该命名空间的用户配置重置为组合默认值（`enabled` 回 `false`）——经 gateway `reset`（清空 user layer，组合默认值生效）。
 - **保存与错误呈现**：保存经 gateway `set`（merge 语义）写 user layer，无 revision guard——并发/写失败时错误横幅如实呈现保存结果，骨架与 draft 保留（不静默覆盖）。
-- **只读状态块**：显示当前生效配置摘要（启用状态/默认角色/链数/触发码）+ **最近切换摘要**（来自当前会话原始 `fallbacks/switch` 事件面，最新在前，每条含 from/to/role/reason/时间）+ **当前生效模型**（由配置 + 最近切换**推导**的展示值，非实时路由探测，附非实时说明文案）。摘要随 `settings/changed` / 会话切换 / 连接重置推送刷新（无轮询）——页面打开期间发生的切换，在下一次推送或重载页面后呈现；状态块只读、不可编辑。
+- **只读状态块**：显示当前生效配置摘要（启用状态/默认角色/链数/触发码）+ **最近切换摘要**（来自当前会话原始 `fallbacks/switch` 事件面，最新在前，每条含 from/to/role/reason/时间）+ **当前生效模型**（由配置 + 最近切换**推导**的展示值，非实时路由探测，附非实时说明文案）。摘要随 `settings/document-updated`（fallbacks 命名空间）/ `llm/adapters-updated`（仅目录）/ 会话切换 / 连接重置推送刷新（无轮询）——页面打开期间发生的切换，在下一次推送或重载页面后呈现；状态块只读、不可编辑。会话内的同款诊断也可用 `/fallbacks` 命令查看（见 README）。
 
 ## 行为说明
 

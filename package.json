@@ -60,6 +60,7 @@
     "@deepseek-ai/dsh-client-ui-plugin-config": "^0.0.1",
     "@deepseek-ai/dsh-client-ui-settings": "^0.0.1",
     "@deepseek-ai/dsh-client-ui-slots": "^0.0.1",
+    "@deepseek-ai/dsh-commands": "^0.0.1",
     "@deepseek-ai/dsh-llm": "^0.0.1",
     "@deepseek-ai/dsh-settings": "^0.0.1",
     "@deepseek-ai/dsh-type-meta": "^0.0.1",
