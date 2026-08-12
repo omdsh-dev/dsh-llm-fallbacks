@@ -1,7 +1,7 @@
 /**
  * Fallbacks settings controller — the client half's own store (slot owner
- * props are empty; data rides this store, per the `settings.section`
- * contract).
+ * props are empty; data rides this store, per the `settings.plugin.item`
+ * card contract).
  *
  * Read path: the fallbacks config rides the plugin's own gateway channel —
  * `connection.rpc.call('/api', 'fallbacks/get', { args: {} })` — NOT the

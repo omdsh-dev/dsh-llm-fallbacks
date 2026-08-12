@@ -39,14 +39,14 @@ import type {} from '@deepseek-ai/dsh-client-locale/client'
 // value import.
 import type {} from '@deepseek-ai/dsh-client-ui-plugin-config/client'
 import type { ConnectionHandle } from '@deepseek-ai/dsh-client-connection/client'
-import { FallbacksSection as FallbacksCard } from './FallbacksSection.tsx'
+import { FallbacksCard } from './FallbacksCard.tsx'
 import {
   FallbacksSettingsController, FALLBACKS_SETTINGS_NS,
   refreshCatalogIfLoaded, refreshFallbacksIfLoaded, refreshSwitchesIfLoaded,
 } from './fallbacks-store.ts'
 import { en, NS, zh } from './locales.ts'
 
-export type { FallbacksSectionInjected, FallbacksSectionProps } from './FallbacksSection.tsx'
+export type { FallbacksCardInjected, FallbacksCardProps } from './FallbacksCard.tsx'
 export type { FallbacksSettingsState } from './fallbacks-store.ts'
 export { FallbacksSettingsController, FALLBACKS_SETTINGS_NS } from './fallbacks-store.ts'
 
