@@ -25,6 +25,8 @@ related_components:
   - dsh-llm-fallbacks client store
 ---
 
+> **Stale-pointer note**: Iteration `iter-20260812-fallbacks-plugin-config` supersedes: fallbacks 展示挂载由 `settings.section` 换为 `settings.plugin.item` 卡，且 20260811 起 `settings/changed` 已移除（失效刷新迁 `settings/document-updated` + `llm/adapters-updated`）——正文「Context」与「Store 其它要点」两处陈述将过时；knowledge refresh 归 iteration-close compound。
+
 # dsh 插件自有 settings gateway 通道（mount-only 数据面）
 
 插件命名空间经 host apiproxy wire 读写配置的替代通道模式。两个 dsh 插件（advisor、

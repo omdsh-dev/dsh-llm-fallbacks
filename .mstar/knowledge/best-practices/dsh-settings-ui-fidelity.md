@@ -20,6 +20,8 @@ tags:
   - css-modules
 ---
 
+> **Stale-pointer note**: Iteration `iter-20260812-fallbacks-plugin-config` supersedes: fallbacks 设置 UI 由整页 `FallbacksSection` 重构为插件配置页 `FallbacksCard`（「参照实现」示例文件将改名；对照方法本身不变）——knowledge refresh 归 iteration-close compound。
+
 # dsh web 设置 sections UI 保真参考（参照文件地图 + 几何/token 词表）
 
 在 dsh web 设置页做「与宿主 sections 同屏一致」的插件 UI 时，参照哪些文件、用哪些几何与

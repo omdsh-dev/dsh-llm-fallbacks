@@ -9,6 +9,8 @@ applies_when: ["为 dsh web 添加新设置页/设置条目/头部操作", "判�
 tags: [dsh, settings, slots, ui-settings, plugin, shell, navIcon]
 ---
 
+> **Stale-pointer note**: Iteration `iter-20260812-fallbacks-plugin-config` supersedes: fallbacks 设置入口由 `settings.section`（id `fallbacks`，order 30）迁至官方插件配置页 `settings.plugin.item` 卡（见迭代 package `specs/fallbacks-plugin-config-spec.md`）；正文「Context」与「现有注册者」两处 fallbacks 示例将在执行期后过时 —— knowledge refresh 归 iteration-close compound。
+
 # dsh Web Settings slot 契约（挂载新设置条目，不改 shell）
 
 ## Context

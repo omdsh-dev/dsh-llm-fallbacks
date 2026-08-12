@@ -23,6 +23,8 @@ tags:
   - mount-only
 ---
 
+> **Stale-pointer note**: Iteration `iter-20260812-fallbacks-plugin-config` supersedes: 20260811 起 `models/changed` / `settings/changed` 客户端事件已移除，client 失效刷新迁 `llm/adapters-updated` + `settings/document-updated`（ns 过滤）——正文「目录驱动 provider/model 选择」节陈述将过时；knowledge refresh 归 iteration-close compound。
+
 # dsh LLM fallback 架构：双 waterfall 恢复模式 + 设置面/路由协调
 
 将 omp 的 retry.modelFallback / retry.fallbackChains 语义移植到 dsh 时的已验证架构（iter-20260810-llm-fallbacks 产物，随实现验证），以及后续迭代验证的设置页暴露、model-selection 协调、目录驱动选择与状态块真实化（iter-20260810-fallbacks-settings-ux / iter-20260810-fallbacks-settings-gateway）与纯挂载化（iter-20260811-fallbacks-mount-only：role rules-only、marker 移除、patch/autopatch 体系删除——本文件 2026-08-12 由 patch 时代刷新为 mount-only 现实）。

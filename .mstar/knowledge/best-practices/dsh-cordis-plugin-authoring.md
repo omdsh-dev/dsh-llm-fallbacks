@@ -19,6 +19,8 @@ tags:
   - settings
 ---
 
+> **Stale-pointer note**: Iteration `iter-20260812-fallbacks-plugin-config` supersedes: fallbacks 设置面由 `settings.section` 整页迁至 `settings.plugin.item` 卡（advisor 同款）；playbook 的 section 路径仍适用于整页设置，但 fallbacks 实例不再走该路径——knowledge refresh 归 iteration-close compound。
+
 # dsh 第三方 cordis 插件创作模式（已验证 playbook）
 
 dsh-llm-fallbacks 迭代验证的 dsh 插件创作全流程（bundle 组合层 → host 半 → client 半 → 类型访问 → 纯挂载交付）。
