@@ -80,6 +80,17 @@ Save and restart the web session for the changes to take effect. The feature swi
 
 > **Upgrade note (behavior change)**: an existing `fallbacks:` section **without an explicit `enabled` key** now resolves to `false` after upgrading — add `enabled: true` to keep the plugin active.
 
+## `/fallbacks` command (in-session diagnostics)
+
+Type `/fallbacks` in any session to inspect this session's fallback state — no need to open the settings page:
+
+- **Session origin** (`root` / `subagent`) and the **resolved role** (first matching `roles.rules` entry → `roles.default`);
+- the **resolved chain** for that role (the role's chain, else the `default` chain) — `not configured` when none exists;
+- the **recent switches** (`fallbacks/switch` events, newest first, up to 5): from/to provider/model, role, reason;
+- the **cooldown status**: which `provider/model` keys are currently suppressed and until when.
+
+The command is **read-only** — it never mutates fallback state (no cooldown reset, no pending-switch writes). It registers through a conditional `commands` child, so it appears only when the host composes the slash-command registry — with no registry the command is silently unavailable (no top-level inject pollution). Output is zh by default (the host carries no per-session locale signal); the en dictionary lives in the same copy table.
+
 ## Mount-only (no dsh modification)
 
 The plugin installs as a **pure mount** — it never modifies the dsh source tree:
@@ -102,7 +113,7 @@ The plugin installs as a **pure mount** — it never modifies the dsh source tre
 | Doc | Content |
 |---|---|
 | [docs/install.md](docs/install.md) | profile install / git install / uninstall / `--dump-config` verification |
-| [docs/configuration.md](docs/configuration.md) | full `fallbacks` namespace reference, selector syntax, example YAML, settings page usage, behavior notes |
+| [docs/configuration.md](docs/configuration.md) | full `fallbacks` namespace reference, selector syntax, example YAML, plugin-config card usage, behavior notes |
 | [docs/verification.md](docs/verification.md) | verification records (test matrix, bundle layer order, runtime contracts, QA gate script) |
 
 ## License

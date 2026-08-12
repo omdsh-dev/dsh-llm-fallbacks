@@ -40,6 +40,24 @@ export class CooldownStore {
     }
     return true
   }
+
+  /**
+   * Read-only snapshot of the active (non-expired) entries, insertion order.
+   * Expired entries are dropped lazily on read (same semantics as
+   * {@link isSuppressed}); `Infinity` entries are always active. Consumed by
+   * the `/fallbacks` command's cooldown display — never mutates state.
+   */
+  snapshot(now: number = Date.now()): Array<{ key: string; untilEpochMs: number }> {
+    const active: Array<{ key: string; untilEpochMs: number }> = []
+    for (const [key, until] of this.entries) {
+      if (until <= now) {
+        this.entries.delete(key)
+        continue
+      }
+      active.push({ key, untilEpochMs: until })
+    }
+    return active
+  }
 }
 
 /**

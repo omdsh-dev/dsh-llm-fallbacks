@@ -1,4 +1,4 @@
-# 验证记录（profile 安装与设置页运行期验证）
+# 验证记录（profile 安装与插件配置卡运行期验证）
 
 本文记录 `dsh-llm-fallbacks` 在**本仓库验证环境（沙箱兼容的 scratch 环境）**下已完成
 的安装/运行契约验证，以及**需要在用户真实 dsh 环境执行**的验证步骤与预期结果。
@@ -11,18 +11,19 @@
 
 ## 已验证（本迭代证据汇总）
 
-### 1. 测试矩阵（单元 + 集成 + client + host gateway，15 files / 243 tests 全绿）
+### 1. 测试矩阵（单元 + 集成 + client + host gateway + 命令，17 files / 286 tests 全绿）
 
 | 范围 | 文件 | 数量 | 覆盖契约 |
 |---|---|---|---|
 | host 单测（T1） | `gateway.spec.ts` | 26 | `/api/fallbacks/get|set|reset` 三端点：`get` 返回 composed（JSON 归一化省略 undefined、无 resolver）；`set` 未知键拒绝、合法 patch 写 user layer 返回新值、空/null patch no-op；`reset` 清空 user layer 返回默认 composed；无 settings 服务时 `get` 仍成功、`set`/`reset` 报清晰错误（KD-G5） |
-| 单元（T2） | `selectors.spec.ts` / `chains.spec.ts` / `roles.spec.ts` / `cooldown.spec.ts` | 11 / 26 / 11 / 9 | selector 解析与 specificity（exact → `provider/*` → 角色 → default）、`provider/*` 条目保留模型 id 仅换 provider、角色规则顺序匹配（rules-only：origin/provider/model → default）、cooldown/revert（惰性过期、never 无限 TTL） |
+| 单元（T2） | `selectors.spec.ts` / `chains.spec.ts` / `roles.spec.ts` / `cooldown.spec.ts` | 11 / 26 / 11 / 9 | selector 解析与 specificity（exact → `provider/*` → 角色 → default）、`provider/*` 条目保留模型 id 仅换 provider、角色规则顺序匹配（rules-only：origin/provider/model → default）、cooldown/revert（惰性过期、never 无限 TTL、只读快照） |
 | 单元（T3） | `state.spec.ts` / `events.spec.ts` / `config.spec.ts` / `runtime.spec.ts` | 13 / 4 / 2 / 37 | 状态机（pendingSwitch 产生→应用→清除、appliedTurnStep 防重放、step 推进重置）、`fallbacks/switch` 事件形状与 JSON 往返、`Config({})` 恒等于默认配置（no-op 基线）、小集成 Step 6 全项 |
 | 集成（T4） | `plugin.spec.ts` / `coexist-llm-retry.spec.ts` / `always-mode.spec.ts` | 19 / 4 / 5 | 端到端重集成（含 model-selection 组合的注册顺序依赖，T2）、**双插件共存顺序**（normal 先退避、预算耗尽后切换；不可重试码直切）、**always 先委托下游 + cap 在 request 边界**（ADR-2）、冷却/revert 集成、**安全阀**超限后原错误语义、组合顺序互不干扰 |
-| client（T5） | `fallbacks-store.spec.ts` | 70 | 设置页读写经 **gateway 通道**（`/api/fallbacks/get|set|reset` 的 rpc mock：`load` 从 `get` 取配置、`save` 走 `set`、`resetToDefaults` 走 `reset`）、`present` 标志与通道不可达骨架、describe 仅读 writable+其它命名空间（fallbacks 命名空间不再出现在 describe）、KD-G3 新错误路径（revision guard 移除后错误如实呈现）、draft 仅从真实 get 结果 seed（I-1 不变式）、chain/rule 行编辑往返、状态块最近切换提取（sessions.history 事件面）、controller 生命周期 |
+| client（T5） | `fallbacks-store.spec.ts` / `fallbacks-card.spec.tsx` | 74 / 15 | 卡片读写经 **gateway 通道**（`/api/fallbacks/get|set|reset` 的 rpc mock：`load` 从 `get` 取配置、`save` 走 `set`、`resetToDefaults` 走 `reset`）、`present` 标志与通道不可达骨架、describe 仅读 writable+其它命名空间（fallbacks 命名空间不再出现在 describe）、KD-G3 新错误路径（revision guard 移除后错误如实呈现）、draft 仅从真实 get 结果 seed（I-1 不变式）、chain/rule 行编辑往返、状态块最近切换提取（sessions.history 事件面）、卡片 chrome（插件配置页列表、折叠/展开、dirty/保存/丢弃）、controller 生命周期 |
+| 命令（AC-5） | `command.spec.ts` | 24 | `/fallbacks` 注册形状（name/description/空 hint/handler、disposer 透传）、条件 `commands` 子注入（有注册表才注册；无服务静默）、快照构建（角色/链解析含 default 兜底、最近切换最新在前封顶、冷却只读快照）、输出状态（配置链 / 无链 / 切换有+无 / 冷却有+无 / never 不回主）、zh/en 渲染 smoke、真实运行状态集成（切换事件 + 冷却读自真实状态、只读不增状态） |
 | 回归 | `skeleton.spec.ts` / `host-native.spec.ts` | 3 / 3 | bundle 契约（row id、空 schema 接受、host+client apply 入口）；宿主原生行为基线（真实 `@deepseek-ai/dsh-agent` 模块：触发码切换路由到链目标、always-cap 第二返回点、no-op 不变量） |
 
-结果：**15 files / 243 tests 全绿**（`pnpm test`，vitest run）；`pnpm build`（tsdown host bundle →
+结果：**17 files / 286 tests 全绿**（`pnpm test`，vitest run）；`pnpm build`（tsdown host bundle →
 `pnpm run build-client`（tsdown client bundle）→ `tsc` 声明）全绿——dev 链接 farm 下 `tsc` 按
 真实宿主类型面驱动（`scripts/setup-dsh-links.mjs` 链接，无任何仓内类型 shim）。no-op 回归
 不变量（空链 / 未命中 / 链耗尽 / 安全阀超限 → 透传、不产生 `fallbacks/switch` 事件）由
@@ -88,12 +89,12 @@ dsh --profile web --dump-config   # 组合树末尾应出现 # == dsh-llm-fallba
 之后）；`--dump-config` 中 `llm-fallbacks` 层出现在含 `llm-retry` 的 dsh-base 层之后。
 然后重启 dsh web 会话使 host 半与 client 半加载。
 
-### 2. web 设置页验证
+### 2. web 插件配置卡验证
 
-1. 打开 web 设置 GUI → Settings，确认出现 **Fallbacks** 页（位于 Models 页之后）。
-2. **首次打开（尚无 `fallbacks` 配置）**：页面显示骨架（`nav` 标题 / 介绍 / 只读状态块 /
+1. 打开 web 设置 GUI → Settings → 插件配置，确认出现 **Fallbacks 卡片**（与 bash / agent-loop / web-search / advisor 卡同列表）。
+2. **首次打开（尚无 `fallbacks` 配置）**：卡片显示骨架（卡片头 / 介绍 / 只读状态块 /
    功能级开关 / 保存 / 恢复默认），功能级开关 `enabled` **默认 OFF**，配置表单主体隐藏、
-   显示「功能未开启」提示——页面始终可用，不因命名空间缺失而空白。
+   显示「功能未开启」提示——卡片始终可用，不因命名空间缺失而空白。
 3. 打开 `enabled` 开关 → 配置表单主体出现（`triggerCodes` / `chains` / `roles` /
    `cooldownMs` / `revertPolicy` / `maxSwitchesPerStep` / `alwaysModeRetryCap`）。
 4. 编辑任一字段（如把 `cooldownMs` 改为 `600000`）并保存。
@@ -117,7 +118,7 @@ dsh --profile web --dump-config   # 组合树末尾应出现 # == dsh-llm-fallba
 4. 可重试码路径（`RATE_LIMIT` / 5xx）：配置 `triggerCodes` 含 `RATE_LIMIT`，观察
    llm-retry 先退避、预算耗尽后进入链决策——确认层序正确（fallback 未抢占退避）。
 
-### 4. QA gate 端到端验证剧本（设置页读写闭环 + 保存即生效 + 切换路由 + 状态块）
+### 4. QA gate 端到端验证剧本（插件配置卡读写闭环 + 保存即生效 + 切换路由 + 状态块）
 
 > 本节为 QA gate 阶段的 **mandatory 输入**：在真实 dsh 环境（`$DSH_HOME` 安装、web
 > profile、可操作 web 设置 GUI、可发起真实模型调用）按步骤执行并记录结果。路径一律
@@ -138,10 +139,10 @@ dsh --profile web --dump-config   # 组合树末尾应出现 # == dsh-llm-fallba
    **PID + 启动时间**作为 4.2「不重启 host」对照锚点；同时记录 `$DSH_HOME/settings.yaml`
    当前 `fallbacks:` 段状态（应为无该段，或 `enabled: false`）。
 
-#### 4.2 设置页读写闭环（保存即生效，AC-1）
+#### 4.2 插件配置卡读写闭环（保存即生效，AC-1）
 
-1. 打开 web 设置 GUI → Settings → **Fallbacks**（位于 Models 页之后）。
-2. **预期①（gateway 通道生效）**：页面渲染骨架（nav / 介绍 / 只读状态块 /
+1. 打开 web 设置 GUI → Settings → **插件配置** → **Fallbacks 卡片**。
+2. **预期①（gateway 通道生效）**：卡片渲染骨架（卡片头 / 介绍 / 只读状态块 /
    `enabled` 开关 / 保存 / 恢复默认）——配置读写经插件 gateway 通道
    （`/api/fallbacks/get|set|reset`），不依赖 dsh 本体的任何设置暴露机制（`fallbacks`
    命名空间不出现在 describe 暴露集合属预期设计）；`get` 成功则 `present`，
@@ -178,14 +179,18 @@ dsh --profile web --dump-config   # 组合树末尾应出现 # == dsh-llm-fallba
 3. **活跃 model-selection 下（文档化降级，T2 结论）**：存在活跃 model-selection（用户在
    设置页 / `settings.yaml` 选择了 provider/model）时，触发码故障后的切换**仍然发生并记录**；
    但该步的路由可能被外层 model-selection 监听器重新套用（web 前端手动选择的模型在切换后
-   重新应用）——这是去掉本地 patch 标记协调后的**宿主原生行为**，设置页含一行降级说明
+   重新应用）——这是去掉本地 patch 标记协调后的**宿主原生行为**，插件配置卡含一行降级说明
    （`status.selectionNote`，zh/en）。request-error 触发链不受影响；无活跃 selection 时路由
    到链目标。规格与 guides 记录见 `.mstar/iterations/iter-20260811-fallbacks-mount-only/guides/role-and-model-selection-exploration.md`
    （Model-selection 节）。
-4. **状态块条目（AC-7）**：设置页状态块出现该切换条目（from/to/role/reason/时间，
+4. **状态块条目（AC-7）**：插件配置卡状态块出现该切换条目（from/to/role/reason/时间，
    「最近切换」列表、最新在前）；「当前生效模型」为**推导值**（配置 + 最近切换），
-   附非实时探测说明文案。摘要随 `settings/changed` / 会话切换 / 连接重置推送刷新——
-   切换发生在页面打开期间时，经重载页面（或下一次推送）后呈现，无需重启 host。
+   附非实时探测说明文案。摘要随 `settings/document-updated`（fallbacks 命名空间）/
+   `llm/adapters-updated`（仅目录）/ 会话切换 / 连接重置推送刷新——切换发生在页面打开期间时，
+   经重载页面（或下一次推送）后呈现，无需重启 host。
+5. **会话内诊断（AC-5）**：在同一会话键入 `/fallbacks`，输出应含会话来源（root/subagent）、
+   解析角色、解析链（含 default 兜底标注）、最近切换（最新在前，from/to/role/reason）与冷却
+   状态；命令只读，不改变任何 fallback 状态。
 
 #### 4.4 无回归抽查
 
@@ -207,7 +212,8 @@ dsh --profile web --dump-config   # 组合树末尾应出现 # == dsh-llm-fallba
 
 | 面 | 未覆盖原因 | 验证归属 |
 |---|---|---|
-| web 设置 GUI 交互（页面出现、编辑保存、冲突重载） | 沙箱无法操作真实 web 会话 | 用户待执行 §2 / §4（client 半逻辑已由 T5 70 例测试覆盖） |
+| web 设置 GUI 交互（卡片出现、编辑保存、冲突重载） | 沙箱无法操作真实 web 会话 | 用户待执行 §2 / §4（client 半逻辑已由 T5 89 例测试覆盖） |
 | 真实模型调用与失败注入（AUTH/QUOTA/RATE_LIMIT 触发、切换继续） | 沙箱无真实模型凭据与运行中会话 | 用户待执行 §3 / §4（决策逻辑已由 T3/T4 集成测试覆盖） |
 | 跨进程观察（日志、`fallbacks/switch` 会话事件在真实会话中的落地） | 沙箱无法运行真实 dsh 会话 | 用户待执行 §3/§4 |
+| `/fallbacks` 命令在真实会话中的输入输出 | 沙箱无法运行真实 dsh 会话与命令注册表 | 用户待执行 §4.3 步骤 5（命令逻辑已由 command.spec.ts 覆盖） |
 | 活跃 model-selection 下的真实路由复写（文档化降级） | 沙箱无真实 web 会话与模型选择 | 用户待执行 §4.3（组合顺序已由 T4 集成测试覆盖） |
