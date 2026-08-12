@@ -22,7 +22,7 @@
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { existsSync } from 'node:fs'
-import { defineConfig } from 'vitest/config'
+import { defaultExclude, defineConfig } from 'vitest/config'
 import ts from 'typescript'
 
 /**
@@ -82,6 +82,13 @@ function standardDecoratorPlugin() {
 
 export default defineConfig({
   plugins: [standardDecoratorPlugin()],
+  test: {
+    // Feature worktrees under `.worktrees/` carry duplicate copies of
+    // tests/; the default include glob picks them up (gitignore does not
+    // filter it), which makes `pnpm test` counts non-deterministic and
+    // drifts from the documented 19-file/319-test baseline.
+    exclude: [...defaultExclude, '**/.worktrees/**'],
+  },
   resolve: {
     alias: sourceRoot
       ? [

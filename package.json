@@ -41,7 +41,7 @@
     }
   },
   "scripts": {
-    "build": "tsdown && pnpm run build-client && tsc",
+    "build": "tsc -p tsconfig.build.json && tsdown && pnpm run build-client && tsc && node scripts/verify-dist.mjs",
     "build-client": "tsx scripts/build-client.ts",
     "test": "vitest run",
     "dsh:link": "node scripts/setup-dsh-links.mjs",

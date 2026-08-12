@@ -23,8 +23,8 @@
 | 命令（AC-5） | `command.spec.ts` | 30 | `/fallbacks` 注册形状（name/description/空 hint/handler、disposer 透传）、条件 `commands` 子注入（有注册表才注册；无服务静默）、快照构建（角色/链解析含 default 兜底、最近切换最新在前封顶、冷却只读快照）、输出状态（配置链 / 无链 / 切换有+无 / 冷却有+无 / never 不回主）、zh/en 渲染 smoke、真实运行状态集成（切换事件 + 冷却读自真实状态、只读不增状态） |
 | 回归 | `skeleton.spec.ts` / `host-native.spec.ts` | 3 / 3 | bundle 契约（row id、空 schema 接受、host+client apply 入口）；宿主原生行为基线（真实 `@deepseek-ai/dsh-agent` 模块：触发码切换路由到链目标、always-cap 第二返回点、no-op 不变量） |
 
-结果：**19 files / 319 tests 全绿**（`pnpm test`，vitest run）；`pnpm build`（tsdown host bundle →
-`pnpm run build-client`（tsdown client bundle）→ `tsc` 声明）全绿——dev 链接 farm 下 `tsc` 按
+结果：**19 files / 319 tests 全绿**（`pnpm test`，vitest run）；`pnpm build`（`tsc -p tsconfig.build.json` 先发 JS（标准装饰器降级 `__esDecorate`）→ tsdown host bundle →
+`pnpm run build-client` → `tsc` 声明 → `node scripts/verify-dist.mjs` 产物解析守卫）全绿——dev 链接 farm 下 `tsc` 按
 真实宿主类型面驱动（`scripts/setup-dsh-links.mjs` 链接，无任何仓内类型 shim）。no-op 回归
 不变量（空链 / 未命中 / 链耗尽 / 安全阀超限 → 透传、不产生 `fallbacks/switch` 事件）由
 T3/T4 测试持久断言。

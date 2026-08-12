@@ -15,5 +15,6 @@
 # build artifacts
 node_modules/
 dist/
+.build/
 .pnpm-store/
 .mstar/agent-flow.jsonl
