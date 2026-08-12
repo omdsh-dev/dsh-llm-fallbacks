@@ -42,6 +42,7 @@ import type { FallbackSwitchReason } from './events.ts'
 import { FALLBACKS_SETTINGS_NAMESPACE, FallbacksConfigGateway, type FallbacksSettingsBridge } from './gateway.ts'
 import {
   RECENT_SWITCHES_LIMIT,
+  hasModelSpecificChainKeys,
   recentFallbacksSwitches,
   registerFallbacksCommands,
   resolveChainForDiagnostic,
@@ -500,6 +501,7 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
         origin: agent.session.header?.origin ?? 'root',
         role,
         ...resolveChainForDiagnostic(chains, role),
+        chainKeysModelSpecific: hasModelSpecificChainKeys(chains),
         switches: recentFallbacksSwitches(agent.session.events, RECENT_SWITCHES_LIMIT),
         cooldown: state === undefined ? [] : state.cooldown.snapshot(),
       }

@@ -60,6 +60,10 @@ export interface FallbacksCommandSnapshot {
   readonly chainRole: boolean
   /** The displayed chain entries (role chain, else `default` chain); empty = not configured. */
   readonly chain: readonly string[]
+  /** True when the session config also declares model-specific chain keys
+   * (`provider/model`, `provider/*`) that this role/default diagnostic does
+   * not render — the output caveat source (qc1 F-001). */
+  readonly chainKeysModelSpecific: boolean
   /** Recent `fallbacks/switch` events, newest first, capped at {@link RECENT_SWITCHES_LIMIT}. */
   readonly switches: readonly FallbacksSwitchEventData[]
   /** Active cooldown entries for the agent. */
@@ -90,6 +94,7 @@ export const FALLBACKS_COMMAND_LOCALES = {
     chain: '链',
     chainDefault: '（default 兜底）',
     chainNone: '未配置',
+    chainKeysCaveat: '（含模型级链键 provider/model、provider/* — 诊断仅显示 role/default 链）',
     switches: '最近切换',
     switchesNone: '本会话暂无 fallback 切换',
     switchLine: '{from} → {to}（role={role}，reason={reason}）',
@@ -110,6 +115,7 @@ export const FALLBACKS_COMMAND_LOCALES = {
     chain: 'Chain',
     chainDefault: ' (default fallback)',
     chainNone: 'not configured',
+    chainKeysCaveat: ' (model-specific chain keys provider/model, provider/* present — diagnostic shows role/default only)',
     switches: 'Recent switches',
     switchesNone: 'No fallback switches in this session',
     switchLine: '{from} → {to} (role={role}, reason={reason})',
@@ -187,6 +193,17 @@ export function resolveChainForDiagnostic(
   return { chainRole: false, chain: chains['default'] ?? [] }
 }
 
+/**
+ * True when `chains` declares model-specific keys (`provider/model` or
+ * `provider/*` — any key containing `/`) in addition to role/default keys.
+ * The `/fallbacks` diagnostic only renders role → default, while runtime
+ * `resolveChain` also consults these keys, so such configs are the drift
+ * surface qc1 F-001 flags. Pure config-shape probe — no resolution.
+ */
+export function hasModelSpecificChainKeys(chains: Record<string, readonly string[]>): boolean {
+  return Object.keys(chains).some((key) => key.includes('/'))
+}
+
 // ---------------------------------------------------------------------------
 // Rendering
 // ---------------------------------------------------------------------------
@@ -213,7 +230,8 @@ function formatCooldown(entry: FallbacksCooldownEntry, t: FallbacksCommandCopy):
 
 /**
  * Render the `/fallbacks` status surface for one snapshot. Kept minimal and
- * truthful: origin → role → chain → recent switches → cooldown.
+ * truthful: origin → role → chain (+ model-key caveat) → recent switches →
+ * cooldown.
  */
 export function fallbacksCommandText(
   snapshot: FallbacksCommandSnapshot,
@@ -228,6 +246,11 @@ export function fallbacksCommandText(
   } else {
     const suffix = snapshot.chainRole ? '' : t.chainDefault
     lines.push(`${t.chain}: ${snapshot.chain.join(' → ')}${suffix}`)
+  }
+  // qc1 F-001: model-specific keys the role/default view cannot show — one
+  // honest caveat line, presentation-only (the diagnostic stays read-only).
+  if (snapshot.chainKeysModelSpecific) {
+    lines.push(t.chainKeysCaveat)
   }
   if (snapshot.switches.length === 0) {
     lines.push(`${t.switches}: ${t.switchesNone}`)

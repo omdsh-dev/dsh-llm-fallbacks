@@ -14,6 +14,7 @@ import { cfg, dispatchRequestError, makeAgent } from './support/harness.ts'
 import { MemorySettings } from './support/memory-settings.ts'
 import {
   fallbacksCommandText,
+  hasModelSpecificChainKeys,
   RECENT_SWITCHES_LIMIT,
   recentFallbacksSwitches,
   registerFallbacksCommands,
@@ -31,6 +32,7 @@ function snapshot(overrides: Partial<FallbacksCommandSnapshot> = {}): FallbacksC
     role: 'default',
     chainRole: true,
     chain: ['anthropic/claude-3-5-sonnet', 'openai/*'],
+    chainKeysModelSpecific: false,
     switches: [
       {
         turn: 1,
@@ -115,6 +117,14 @@ describe('snapshot building helpers', () => {
     expect(resolveChainForDiagnostic({}, 'default')).toEqual({ chainRole: false, chain: [] })
   })
 
+  it('hasModelSpecificChainKeys flags provider/model and provider/* keys only', () => {
+    expect(hasModelSpecificChainKeys({ 'openai/gpt-4o': ['anthropic/claude-3-5-sonnet'] })).toBe(true)
+    expect(hasModelSpecificChainKeys({ 'openai/*': ['anthropic/claude-3-5-sonnet'] })).toBe(true)
+    expect(hasModelSpecificChainKeys({ default: ['other/gpt-4o'], reviewer: ['openai/gpt-4o-mini'] })).toBe(false)
+    expect(hasModelSpecificChainKeys({ default: ['other/gpt-4o'], 'openai/gpt-4o': ['other/gpt-4o'] })).toBe(true)
+    expect(hasModelSpecificChainKeys({})).toBe(false)
+  })
+
   it('recentFallbacksSwitches filters the event log, newest first, capped at the limit', () => {
     const events = [
       { type: 'llm/retry', data: {} },
@@ -170,6 +180,22 @@ describe('fallbacksCommandText — output states', () => {
     expect(zh).toContain('链: 未配置')
     const en = fallbacksCommandText(snapshot({ chainRole: false, chain: [] }), 'en')
     expect(en).toContain('Chain: not configured')
+  })
+
+  it('renders the model-specific-keys caveat when the config declares provider/model keys', () => {
+    const zh = fallbacksCommandText(snapshot({ chainKeysModelSpecific: true }), 'zh')
+    expect(zh).toContain('（含模型级链键 provider/model、provider/* — 诊断仅显示 role/default 链）')
+    const en = fallbacksCommandText(snapshot({ chainKeysModelSpecific: true }), 'en')
+    expect(en).toContain(
+      '(model-specific chain keys provider/model, provider/* present — diagnostic shows role/default only)',
+    )
+  })
+
+  it('omits the caveat when the config has no model-specific chain keys', () => {
+    const zh = fallbacksCommandText(snapshot(), 'zh')
+    expect(zh).not.toContain('模型级链键')
+    const en = fallbacksCommandText(snapshot(), 'en')
+    expect(en).not.toContain('model-specific chain keys')
   })
 
   it('lists recent switches newest-first with from/to/role/reason', () => {
