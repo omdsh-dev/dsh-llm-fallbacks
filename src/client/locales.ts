@@ -8,6 +8,7 @@
  * strings.
  */
 import { defaultFallbacksConfig } from '../config.ts'
+import type { FallbackSwitchReason } from '../events.ts'
 
 /** Simplified Chinese dictionary (the key-set source of truth). */
 export const zh = {
@@ -92,6 +93,14 @@ export const zh = {
   'status.switches.reason.trigger-code': '触发失败码',
   'status.switches.reason.always-cap': 'always 模式上限',
   'status.selectionNote': '说明：web 前端手动选择的模型可能在切换后重新套用（标记载体已随本地 patch 移除）。',
+  'general.title': '模型故障降级',
+  'general.enabled': '已启用',
+  'general.disabled': '未启用',
+  'general.unknown': '未知',
+  'general.unavailable': '状态通道暂不可达',
+  'general.switch': '最近切换：{from} → {to}（{role} · {reason}）',
+  'general.switch.empty': '本会话暂无切换',
+  'general.error': '状态读取失败：{message}',
   'defaults.prefix': '默认值',
   'save': '保存',
   'save.saving': '保存中…',
@@ -194,6 +203,14 @@ export const en = {
   'status.switches.reason.trigger-code': 'trigger code',
   'status.switches.reason.always-cap': 'always-mode cap',
   'status.selectionNote': 'Note: a model manually selected in the web front end may be re-applied after a switch (the marker coordination shipped with the local patch has been removed).',
+  'general.title': 'Model failover',
+  'general.enabled': 'Enabled',
+  'general.disabled': 'Disabled',
+  'general.unknown': 'Unknown',
+  'general.unavailable': 'Status channel unavailable',
+  'general.switch': 'Last switch: {from} → {to} ({role} · {reason})',
+  'general.switch.empty': 'No switches this session',
+  'general.error': 'Status read failed: {message}',
   'defaults.prefix': 'Default',
   'save': 'Save',
   'save.saving': 'Saving…',
@@ -218,6 +235,17 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
     /** This feature's settings-section copy. */
     fallbacks: FallbacksKey
   }
+}
+
+/**
+ * Reason → locale key map for switch summaries (S-c; shared by the card's
+ * status block and the General page status row). The session log is durable
+ * and forward-compatible: a reason value outside the current union (a newer
+ * plugin wrote it) renders raw instead of falling into a binary else branch.
+ */
+export const SWITCH_REASON_KEYS: Readonly<Partial<Record<FallbackSwitchReason, FallbacksKey>>> = {
+  'trigger-code': 'status.switches.reason.trigger-code',
+  'always-cap': 'status.switches.reason.always-cap',
 }
 
 /** Human-readable trigger-code labels (spec §4 用户直观性). */

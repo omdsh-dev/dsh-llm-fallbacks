@@ -38,6 +38,11 @@ import type {} from '@deepseek-ai/dsh-client-locale/client'
 // types (the ./client entry re-exports the slot-contract merge) without any
 // value import.
 import type {} from '@deepseek-ai/dsh-client-ui-plugin-config/client'
+// Type-only: the settings domain's slot-contract merge (the
+// 'settings.general.item' entry — the General page status row's registration
+// target). Same empty type-only pattern; the ui-settings package is already
+// a type-only peer (`peerDependencies`) and a manifest inject entry.
+import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 // Type-only: the gateway's Client half declares `ctx.remote` (the typed
 // Remote service) on the cordis Context face.
 import type {} from '@deepseek-ai/dsh-api-gateway/client'
@@ -52,6 +57,7 @@ import type {} from '@deepseek-ai/dsh-settings/types'
 import type {} from '@deepseek-ai/dsh-llm/types'
 import type { ConnectionHandle } from '@deepseek-ai/dsh-client-connection/client'
 import { FallbacksCard } from './FallbacksCard.tsx'
+import { GeneralFallbacksRow } from './GeneralFallbacksRow.tsx'
 import {
   FallbacksSettingsController, FALLBACKS_SETTINGS_NS,
   refreshCatalogIfLoaded, refreshFallbacksIfLoaded, refreshSwitchesIfLoaded,
@@ -59,6 +65,7 @@ import {
 import { en, NS, zh } from './locales.ts'
 
 export type { FallbacksCardInjected, FallbacksCardProps } from './FallbacksCard.tsx'
+export type { GeneralFallbacksRowInjected, GeneralFallbacksRowProps } from './GeneralFallbacksRow.tsx'
 export type { FallbacksSettingsState } from './fallbacks-store.ts'
 export { FallbacksSettingsController, FALLBACKS_SETTINGS_NS } from './fallbacks-store.ts'
 
@@ -181,5 +188,25 @@ export function apply(ctx: ClientContext): void {
       locale: NS,
       inject: () => ({ controller, useSnapshot }),
     }, FallbacksCard)
+  })
+
+  // The General settings page status row (plan fallbacks-aux-seams T1): a
+  // compact read-only row (enabled badge + recent-switch summary) in the
+  // `settings.general.item` list slot — the same registration shape as the
+  // upstream preference rows (locale language 0 / ui-theme appearance 10 /
+  // ui-conversation composer-enter 20 / ui-agent-preset agent-preset -25).
+  // id `fallbacks`, order 100: the informational row renders at the column
+  // end, after every preference row (ascending stable sort, ui-slots). The
+  // row consumes the SAME controller + useSnapshot as the card — the first
+  // mount lazy-loads (idle guards inside the row) and the pushed
+  // invalidations above keep it fresh once read; no new data path.
+  ctx.slots.inject('settings.general.item', function* () {
+    yield ctx.slots.register({
+      name: 'settings.general.item',
+      id: 'fallbacks',
+      order: 100,
+      locale: NS,
+      inject: () => ({ controller, useSnapshot }),
+    }, GeneralFallbacksRow)
   })
 }
