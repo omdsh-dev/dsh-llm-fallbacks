@@ -1,0 +1,41 @@
+/* Conversation fallback-switch line (plan fallbacks-aux-seams T2, D1+D2):
+ * a compact system-style transcript row. Geometry mirrors the upstream chat
+ * system rows — the compaction boundary notice (title + 2px separator +
+ * ellipsized tertiary summary, `chat/MessageItem.module.css:38-122`) and the
+ * retry status line's dim placement. Every color resolves through a
+ * `--dsw-alias-*` token (light/dark adaptive); bare `--border` / `--surface`
+ * / `--text-*` names, which nothing in this app defines, would render the
+ * light-mode literals and stay light under the dark theme. */
+
+.switchRow {
+  display: flex;
+  align-items: center;
+  padding: 2px 0;
+  font-size: 14px;
+  line-height: 24px;
+}
+
+/* Dim title: a boundary/system notice, not conversation content. */
+.switchTitle {
+  flex: none;
+  color: var(--dsw-alias-label-primary-dimmed);
+}
+
+.switchSep {
+  flex: none;
+  width: 2px;
+  height: 2px;
+  margin: 0 8px;
+  border-radius: 1px;
+  background: var(--dsw-alias-label-caption);
+}
+
+/* One-line summary: tertiary tone, ellipsis when it outgrows the row. */
+.switchSummary {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--dsw-alias-label-tertiary);
+}

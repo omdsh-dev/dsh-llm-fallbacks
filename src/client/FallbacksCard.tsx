@@ -66,7 +66,6 @@ import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots
 import type { SnapshotSelectorHook } from '@deepseek-ai/dsh-client-web-react'
 import type { FallbacksConfig, RevertPolicy } from '../config.ts'
 import { defaultFallbacksConfig } from '../config.ts'
-import type { FallbackSwitchReason } from '../events.ts'
 import {
   FallbacksSettingsController,
   chainsToRows,
@@ -85,22 +84,12 @@ import {
 } from './fallbacks-store.ts'
 import {
   KNOWN_TRIGGER_CODES,
+  SWITCH_REASON_KEYS,
   TRIGGER_CODE_LABELS,
   withTriggerCode,
   type FallbacksKey,
 } from './locales.ts'
 import css from './FallbacksCard.module.css'
-
-/**
- * Reason → locale key map for the status block's switch summary (S-c). The
- * session log is durable and forward-compatible: a reason value outside the
- * current union (a newer plugin wrote it) renders raw instead of falling into
- * the old binary ternary's else branch.
- */
-const SWITCH_REASON_KEYS: Readonly<Partial<Record<FallbackSwitchReason, FallbacksKey>>> = {
-  'trigger-code': 'status.switches.reason.trigger-code',
-  'always-cap': 'status.switches.reason.always-cap',
-}
 
 /** Injected dependencies of {@link FallbacksCard} (slot `inject`). */
 export interface FallbacksCardInjected {

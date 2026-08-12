@@ -38,6 +38,17 @@ import type {} from '@deepseek-ai/dsh-client-locale/client'
 // types (the ./client entry re-exports the slot-contract merge) without any
 // value import.
 import type {} from '@deepseek-ai/dsh-client-ui-plugin-config/client'
+// Type-only: the settings domain's slot-contract merge (the
+// 'settings.general.item' entry — the General page status row's registration
+// target). Same empty type-only pattern; the ui-settings package is already
+// a type-only peer (`peerDependencies`) and a manifest inject entry.
+import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
+// Type-only: the conversation domain's slot-contract merge (the
+// 'conversation.chat.node' keyed entry — the transcript switch node's
+// registration target) + the `ChatNodeDataMap` key seat. Same empty
+// type-only pattern; the ui-conversation package joins the type-only peers
+// and the manifest inject list with this registration.
+import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 // Type-only: the gateway's Client half declares `ctx.remote` (the typed
 // Remote service) on the cordis Context face.
 import type {} from '@deepseek-ai/dsh-api-gateway/client'
@@ -52,6 +63,10 @@ import type {} from '@deepseek-ai/dsh-settings/types'
 import type {} from '@deepseek-ai/dsh-llm/types'
 import type { ConnectionHandle } from '@deepseek-ai/dsh-client-connection/client'
 import { FallbacksCard } from './FallbacksCard.tsx'
+import { GeneralFallbacksRow } from './GeneralFallbacksRow.tsx'
+import {
+  ConversationFallbackSwitch, fallbackSwitchDefinition,
+} from './ConversationFallbackSwitch.tsx'
 import {
   FallbacksSettingsController, FALLBACKS_SETTINGS_NS,
   refreshCatalogIfLoaded, refreshFallbacksIfLoaded, refreshSwitchesIfLoaded,
@@ -59,18 +74,28 @@ import {
 import { en, NS, zh } from './locales.ts'
 
 export type { FallbacksCardInjected, FallbacksCardProps } from './FallbacksCard.tsx'
+export type { GeneralFallbacksRowInjected, GeneralFallbacksRowProps } from './GeneralFallbacksRow.tsx'
+export type {
+  ConversationFallbackSwitchProps, FallbacksSwitchChatData,
+} from './ConversationFallbackSwitch.tsx'
 export type { FallbacksSettingsState } from './fallbacks-store.ts'
 export { FallbacksSettingsController, FALLBACKS_SETTINGS_NS } from './fallbacks-store.ts'
 
 /**
  * Required services (cordis fiber inject); registrations wait on the slot
- * declaration. `sessions` is deliberately NOT injected (S-g): a non-web host
- * without the dsh-session client service must not hang the fiber waiting for
- * it — the wiring reads it reflectively and degrades to the switches empty
- * state when absent (`setCurrentSession` never called, `loadSwitches` ready
- * with an empty array, which the store already supports).
+ * declaration. `conversationEvents` is declared because the D1 Definition
+ * registration reads the service directly (`ctx.conversationEvents.register`
+ * at the bottom of `apply` — explicit fiber-ordering parity with the
+ * ui-workflow-run precedent, whose inject list includes it for the same
+ * direct read). The runtime would still provide the service synchronously
+ * on apply, but the declaration makes the dependency honest. `sessions` is
+ * deliberately NOT injected (S-g): a non-web host without the dsh-session
+ * client service must not hang the fiber waiting for it — the wiring reads
+ * it reflectively and degrades to the switches empty state when absent
+ * (`setCurrentSession` never called, `loadSwitches` ready with an empty
+ * array, which the store already supports).
  */
-export const inject = ['slots', 'locale', 'connection', 'remote']
+export const inject = ['slots', 'locale', 'connection', 'remote', 'conversationEvents']
 
 /**
  * Register the `fallbacks` dictionaries and the plugin-config card once the
@@ -181,5 +206,58 @@ export function apply(ctx: ClientContext): void {
       locale: NS,
       inject: () => ({ controller, useSnapshot }),
     }, FallbacksCard)
+  })
+
+  // The General settings page status row (plan fallbacks-aux-seams T1): a
+  // compact read-only row (enabled badge + recent-switch summary) in the
+  // `settings.general.item` list slot — the same registration shape as the
+  // upstream preference rows (locale language 0 / ui-theme appearance 10 /
+  // ui-conversation composer-enter 20 / ui-agent-preset agent-preset -25).
+  // id `fallbacks`, order 100: the informational row renders at the column
+  // end, after every preference row (ascending stable sort, ui-slots). The
+  // row consumes the SAME controller + useSnapshot as the card — the first
+  // mount lazy-loads (idle guards inside the row) and the pushed
+  // invalidations above keep it fresh once read; no new data path.
+  ctx.slots.inject('settings.general.item', function* () {
+    yield ctx.slots.register({
+      name: 'settings.general.item',
+      id: 'fallbacks',
+      order: 100,
+      locale: NS,
+      inject: () => ({ controller, useSnapshot }),
+    }, GeneralFallbacksRow)
+  })
+
+  // Conversation-level switch visibility (plan fallbacks-aux-seams T2,
+  // D1+D2 seam): every `fallbacks/switch` event renders as a compact
+  // system-style line in the chat transcript at its event seq — the user
+  // sees each recovery happen in place. Two registrations, both render-only
+  // (no model-context injection — C4 excluded):
+  // - D1: the conversationEvents Definition registry accepts the
+  //   `fallbacks-switch` node (kind `fallbacks-switch`, target `chat`,
+  //   match on the non-surface `fallbacks/switch` event — today the
+  //   `unknown-surface` fallback only admits append-surface events, so the
+  //   transcript showed nothing);
+  // - D2: the `conversation.chat.node` keyed seat dispatches the renderer
+  //   by node kind (external registration shape `{ name, key, locale }` —
+  //   ui-workflow-run / ui-tool / ui-goal precedent). No inject face: the
+  //   node payload arrives through the keyed seat's `node` prop.
+  // D1 (cont.): the registry's `register` returns an idempotent disposer
+  // (`event-registry.ts:19-27`); wire it into an explicit effect so plugin
+  // unload/HMR teardown is symmetric with the other subscriptions (same
+  // pattern as the dictionaries effect above). The registry ALSO auto-
+  // disposes through its own owner-effect (`definition-registry.ts:43-51`) —
+  // the disposer is idempotent, so both teardown paths are safe, no
+  // double-dispose.
+  ctx.effect(
+    () => ctx.conversationEvents.register(fallbackSwitchDefinition),
+    'llm-fallbacks: conversation node definition',
+  )
+  ctx.slots.inject('conversation.chat.node', function* () {
+    yield ctx.slots.register({
+      name: 'conversation.chat.node',
+      key: 'fallbacks-switch',
+      locale: NS,
+    }, ConversationFallbackSwitch)
   })
 }

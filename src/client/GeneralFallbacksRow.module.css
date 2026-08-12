@@ -1,0 +1,59 @@
+/* General settings status row (plan fallbacks-aux-seams T1): the upstream
+ * Setting-Cell geometry (figma 501:30011 — gap 8, pad 16/0, hairline
+ * separator; the section column strips the separator on its last child).
+ * Every color resolves through a `--dsw-alias-*` token (light/dark
+ * adaptive); bare `--border` / `--surface` / `--text-*` names, which
+ * nothing in this app defines, would render the light-mode literals and
+ * stay light under the dark theme. */
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 0;
+  border-bottom: 1px solid var(--dsw-alias-border-l2);
+}
+
+.rowText {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-right: 48px;
+}
+
+.title {
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 22px;
+  color: var(--dsw-alias-label-primary);
+}
+
+/* One-line summary: tertiary tone, ellipsis when the content outgrows the
+ * column (the card's statusLine pattern). */
+.summary {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Status pill: compact and non-interactive — the enabled badge reads in
+ * the success tone, every other state (unknown/disabled) in the tertiary
+ * tone. */
+.badge {
+  flex: none;
+  padding: 2px 10px;
+  border-radius: 9px;
+  font-size: 12px;
+  line-height: 18px;
+  background: var(--dsw-alias-bg-module-platform);
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.badgeEnabled {
+  color: var(--dsw-alias-state-success-primary);
+}
