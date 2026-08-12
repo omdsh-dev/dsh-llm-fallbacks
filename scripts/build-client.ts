@@ -27,10 +27,13 @@
  *   over a virtual id (the virtual id must not end in `.css` so tsdown's own
  *   css pipeline never sees it).
  *
- * The `@deepseek-ai/*` purity gate stays deferred: the client half's only
- * runtime `@deepseek-ai/*` import is `@deepseek-ai/dsh-client-runtime/client`
- * (a documented CLIENT_EXTERNALS platform module) — every other
- * `@deepseek-ai/*` import is type-only and erased before resolution.
+ * The `@deepseek-ai/*` purity gate (mirror of the host's
+ * `dsh-client-bundle-purity` plugin) is enforced at resolution time: any
+ * value import of an `@deepseek-ai/*` module outside CLIENT_EXTERNALS
+ * throws, so the 20260812 type-only peers (`dsh-client-ui-plugin-config`,
+ * `dsh-client-locale`, `dsh-api-remotes`, …) can never leak into the
+ * browser-loadable artifact. The emitted text may reference only
+ * CLIENT_EXTERNALS entries (asserted below).
  */
 
 import { build } from 'tsdown'
@@ -209,6 +212,27 @@ await build({
   },
   plugins: [
     {
+      // Bundle purity gate (mirror of the host's `dsh-client-bundle-purity`
+      // plugin, tsdown.client.ts:227-237): a value import of any
+      // `@deepseek-ai/*` module outside CLIENT_EXTERNALS throws at
+      // resolution time. Type-only imports are erased before the module
+      // graph is built, so reaching this hook means a real value import —
+      // which must not be inlined into the browser-loadable artifact. The
+      // emitted-surface scan below is the second line of defense; this hook
+      // closes the inlining path, where a stray value import would
+      // otherwise be bundled silently (the old require-only scan only saw
+      // externals, never inlined modules).
+      name: 'dsh-client-bundle-purity',
+      resolveId(source: string) {
+        if (source.startsWith('@deepseek-ai/') && !CLIENT_EXTERNALS.includes(source)) {
+          throw new Error(
+            `client bundle purity: value import of ${source} is not in CLIENT_EXTERNALS — type-only peers must stay type-only (use \`import type\`)`,
+          )
+        }
+        return null
+      },
+    },
+    {
       name: 'dsh-css-modules-inline',
       resolveId(source: string, importer: string | undefined) {
         if (!source.endsWith('.module.css')) return null
@@ -266,12 +290,16 @@ function collectCssSelectors(cssText: string): string[] {
 
 // Inline bundle-contract assertions: the emitted text must carry the inlined
 // css-module class map (the transform ran), must NOT contain `import.meta` /
-// ESM statements (the classic-script loader would fail to parse them), the
-// only `@deepseek-ai/*` value import must be the documented external
-// runtime/client exemption, and every css-module class must be a legal CSS
-// identifier — `hashClass` emits `_<8hex>_<local>` (mirroring the host
-// bundle's `_1zfRHq_section` shape) because a digit-leading hash would be a
-// valid JS key but an illegal selector the browser silently drops.
+// ESM statements (the classic-script loader would fail to parse them), every
+// `@deepseek-ai/*` reference in the emitted text must be a documented
+// CLIENT_EXTERNALS entry (the 20260812 type-only peers —
+// `dsh-client-ui-plugin-config` / `dsh-client-locale` / `dsh-api-remotes` and
+// the other type-only imports — must never appear at runtime, whether as
+// `require(...)` calls or as any other surviving text reference), and every
+// css-module class must be a legal CSS identifier — `hashClass` emits
+// `_<8hex>_<local>` (mirroring the host bundle's `_1zfRHq_section` shape)
+// because a digit-leading hash would be a valid JS key but an illegal
+// selector the browser silently drops.
 const bundleText = readFileSync(outFile, 'utf8')
 if (!bundleText.includes('data-plugin-css')) {
   throw new Error('client bundle contract: no inlined css-module style injection found — check the dsh-css-modules-inline plugin')
@@ -279,10 +307,15 @@ if (!bundleText.includes('data-plugin-css')) {
 if (bundleText.includes('import.meta') || /(^|\n)\s*(import|export)\s/.test(bundleText)) {
   throw new Error('client bundle contract: emitted bundle contains import.meta / ESM statements — the classic-script loader would fail to parse it')
 }
-const deepseekRequires = [...bundleText.matchAll(/require\(\s*["'](@deepseek-ai\/[^"']+)["']\s*\)/g)].map(match => match[1])
-const unexpected = deepseekRequires.filter(specifier => !CLIENT_EXTERNALS.includes(specifier))
+// Emitted-surface contract: subsumes the require-only check (externals are
+// the only legitimate `require(...)` targets) and also catches any other
+// surviving text reference to a non-external package. The resolution-time
+// purity plugin above is the structural gate; this scan pins the contract on
+// the artifact itself.
+const deepseekTokens = [...bundleText.matchAll(/@deepseek-ai\/[\w./-]+/g)].map(match => match[0])
+const unexpected = deepseekTokens.filter(specifier => !CLIENT_EXTERNALS.includes(specifier))
 if (unexpected.length > 0) {
-  throw new Error(`client bundle contract: non-external @deepseek-ai/* value import(s) survived: ${unexpected.join(', ')}`)
+  throw new Error(`client bundle contract: non-external @deepseek-ai/* reference(s) survived in the emitted bundle: ${unexpected.join(', ')}`)
 }
 
 // CSS-identifier contract: no class selector in the injected css text starts

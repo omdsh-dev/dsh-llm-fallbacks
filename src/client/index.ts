@@ -13,9 +13,8 @@
  *   `connection.api` (see `fallbacks-store.ts`).
  * - Registers the `settings.plugin.item` card `id: 'fallbacks'` (order 30)
  *   with a business-only inject face ({@link FallbacksSettingsController} +
- *   the snapshot-selector hook); the old `settings.section` registration
- *   (the Settings nav entry) is removed — deleting the section registration
- *   deletes the nav entry.
+ *   the snapshot-selector hook); the old Settings-nav section registration
+ *   is removed — deleting the section registration deletes the nav entry.
  * - Refreshes the store on pushed invalidations — the forwarded remote
  *   events `settings/document-updated` (ns-filtered to the fallbacks
  *   namespace; refetches the descriptor + recent-switch summary) and
@@ -160,8 +159,8 @@ export function apply(ctx: ClientContext): void {
   // face carrying ONLY the business surface (controller + useSnapshot). The
   // typed `t` seat is synthesized by the renderer from `locale: NS`
   // (PropsLocale<'fallbacks'>), exactly like the upstream three cards and
-  // the advisor card; the old `settings.section` registration (the Settings
-  // nav "Fallbacks" entry) is removed — deleting the section registration
+  // the advisor card; the old Settings-nav section registration (the
+  // "Fallbacks" nav entry) is removed — deleting the section registration
   // deletes the nav entry. `order: 30` ties with the advisor card; ties are
   // resolved by registration sequence (ui-slots stable sort).
   ctx.slots.inject('settings.plugin.item', function* () {
