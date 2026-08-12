@@ -43,6 +43,12 @@ import type {} from '@deepseek-ai/dsh-client-ui-plugin-config/client'
 // target). Same empty type-only pattern; the ui-settings package is already
 // a type-only peer (`peerDependencies`) and a manifest inject entry.
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
+// Type-only: the conversation domain's slot-contract merge (the
+// 'conversation.chat.node' keyed entry — the transcript switch node's
+// registration target) + the `ChatNodeDataMap` key seat. Same empty
+// type-only pattern; the ui-conversation package joins the type-only peers
+// and the manifest inject list with this registration.
+import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 // Type-only: the gateway's Client half declares `ctx.remote` (the typed
 // Remote service) on the cordis Context face.
 import type {} from '@deepseek-ai/dsh-api-gateway/client'
@@ -59,6 +65,9 @@ import type { ConnectionHandle } from '@deepseek-ai/dsh-client-connection/client
 import { FallbacksCard } from './FallbacksCard.tsx'
 import { GeneralFallbacksRow } from './GeneralFallbacksRow.tsx'
 import {
+  ConversationFallbackSwitch, fallbackSwitchDefinition,
+} from './ConversationFallbackSwitch.tsx'
+import {
   FallbacksSettingsController, FALLBACKS_SETTINGS_NS,
   refreshCatalogIfLoaded, refreshFallbacksIfLoaded, refreshSwitchesIfLoaded,
 } from './fallbacks-store.ts'
@@ -66,6 +75,9 @@ import { en, NS, zh } from './locales.ts'
 
 export type { FallbacksCardInjected, FallbacksCardProps } from './FallbacksCard.tsx'
 export type { GeneralFallbacksRowInjected, GeneralFallbacksRowProps } from './GeneralFallbacksRow.tsx'
+export type {
+  ConversationFallbackSwitchProps, FallbacksSwitchChatData,
+} from './ConversationFallbackSwitch.tsx'
 export type { FallbacksSettingsState } from './fallbacks-store.ts'
 export { FallbacksSettingsController, FALLBACKS_SETTINGS_NS } from './fallbacks-store.ts'
 
@@ -208,5 +220,28 @@ export function apply(ctx: ClientContext): void {
       locale: NS,
       inject: () => ({ controller, useSnapshot }),
     }, GeneralFallbacksRow)
+  })
+
+  // Conversation-level switch visibility (plan fallbacks-aux-seams T2,
+  // D1+D2 seam): every `fallbacks/switch` event renders as a compact
+  // system-style line in the chat transcript at its event seq — the user
+  // sees each recovery happen in place. Two registrations, both render-only
+  // (no model-context injection — C4 excluded):
+  // - D1: the conversationEvents Definition registry accepts the
+  //   `fallbacks-switch` node (kind `fallbacks-switch`, target `chat`,
+  //   match on the non-surface `fallbacks/switch` event — today the
+  //   `unknown-surface` fallback only admits append-surface events, so the
+  //   transcript showed nothing);
+  // - D2: the `conversation.chat.node` keyed seat dispatches the renderer
+  //   by node kind (external registration shape `{ name, key, locale }` —
+  //   ui-workflow-run / ui-tool / ui-goal precedent). No inject face: the
+  //   node payload arrives through the keyed seat's `node` prop.
+  ctx.conversationEvents.register(fallbackSwitchDefinition)
+  ctx.slots.inject('conversation.chat.node', function* () {
+    yield ctx.slots.register({
+      name: 'conversation.chat.node',
+      key: 'fallbacks-switch',
+      locale: NS,
+    }, ConversationFallbackSwitch)
   })
 }

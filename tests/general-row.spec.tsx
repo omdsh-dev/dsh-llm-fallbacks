@@ -197,6 +197,12 @@ function fakeRuntime() {
   }
   const ctx = {
     slots,
+    conversationEvents: {
+      // The transcript switch node Definition registry (plan 3 T2 D1):
+      // apply() registers the `fallbacks-switch` Definition; the row spec
+      // only pins that the call happens without disturbing the row/card.
+      register: (): (() => void) => () => {},
+    },
     locale: {
       register: (ns: string, dict: unknown): (() => void) => {
         locales[ns] = dict

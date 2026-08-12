@@ -1144,6 +1144,9 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
 
   beforeEach(() => {
     ctx = new Context()
+    // ConversationEvents service double: apply() registers the
+    // `fallbacks-switch` node Definition through it (plan 3 T2 D1).
+    ctx.provide('conversationEvents', { register: () => () => {}, registerFallback: () => () => {} })
   })
 
   afterEach(async () => {
@@ -1175,8 +1178,13 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
     let controller: FallbacksSettingsController | undefined
     ctx.provide('slots', {
       inject: (_name: string, thunk: () => Iterable<unknown>) => { for (const _dispose of thunk()) { /* run the registration generator */ } },
-      register: (options: { inject: () => unknown }) => {
-        controller = (options.inject() as { controller: FallbacksSettingsController }).controller
+      register: (options: { inject?: () => unknown }) => {
+        // Only the card/general-row registrations carry an inject face; the
+        // transcript node registration (plan 3 T2) is inject-less — its
+        // payload arrives through the keyed seat's `node` prop.
+        if (options.inject !== undefined) {
+          controller = (options.inject() as { controller: FallbacksSettingsController }).controller
+        }
         return {}
       },
     })
@@ -1223,8 +1231,13 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
     let controller: FallbacksSettingsController | undefined
     ctx.provide('slots', {
       inject: (_name: string, thunk: () => Iterable<unknown>) => { for (const _dispose of thunk()) { /* run the registration generator */ } },
-      register: (options: { inject: () => unknown }) => {
-        controller = (options.inject() as { controller: FallbacksSettingsController }).controller
+      register: (options: { inject?: () => unknown }) => {
+        // Only the card/general-row registrations carry an inject face; the
+        // transcript node registration (plan 3 T2) is inject-less — its
+        // payload arrives through the keyed seat's `node` prop.
+        if (options.inject !== undefined) {
+          controller = (options.inject() as { controller: FallbacksSettingsController }).controller
+        }
         return {}
       },
     })
@@ -1278,8 +1291,13 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
     let controller: FallbacksSettingsController | undefined
     ctx.provide('slots', {
       inject: (_name: string, thunk: () => Iterable<unknown>) => { for (const _dispose of thunk()) { /* run the registration generator */ } },
-      register: (options: { inject: () => unknown }) => {
-        controller = (options.inject() as { controller: FallbacksSettingsController }).controller
+      register: (options: { inject?: () => unknown }) => {
+        // Only the card/general-row registrations carry an inject face; the
+        // transcript node registration (plan 3 T2) is inject-less — its
+        // payload arrives through the keyed seat's `node` prop.
+        if (options.inject !== undefined) {
+          controller = (options.inject() as { controller: FallbacksSettingsController }).controller
+        }
         return {}
       },
     })
@@ -1329,8 +1347,13 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
     let controller: FallbacksSettingsController | undefined
     ctx.provide('slots', {
       inject: (_name: string, thunk: () => Iterable<unknown>) => { for (const _dispose of thunk()) { /* run the registration generator */ } },
-      register: (options: { inject: () => unknown }) => {
-        controller = (options.inject() as { controller: FallbacksSettingsController }).controller
+      register: (options: { inject?: () => unknown }) => {
+        // Only the card/general-row registrations carry an inject face; the
+        // transcript node registration (plan 3 T2) is inject-less — its
+        // payload arrives through the keyed seat's `node` prop.
+        if (options.inject !== undefined) {
+          controller = (options.inject() as { controller: FallbacksSettingsController }).controller
+        }
         return {}
       },
     })
@@ -1376,8 +1399,13 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
     let controller: FallbacksSettingsController | undefined
     ctx.provide('slots', {
       inject: (_name: string, thunk: () => Iterable<unknown>) => { for (const _dispose of thunk()) { /* run the registration generator */ } },
-      register: (options: { inject: () => unknown }) => {
-        controller = (options.inject() as { controller: FallbacksSettingsController }).controller
+      register: (options: { inject?: () => unknown }) => {
+        // Only the card/general-row registrations carry an inject face; the
+        // transcript node registration (plan 3 T2) is inject-less — its
+        // payload arrives through the keyed seat's `node` prop.
+        if (options.inject !== undefined) {
+          controller = (options.inject() as { controller: FallbacksSettingsController }).controller
+        }
         return {}
       },
     })
@@ -1424,8 +1452,13 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
     let controller: FallbacksSettingsController | undefined
     ctx.provide('slots', {
       inject: (_name: string, thunk: () => Iterable<unknown>) => { for (const _dispose of thunk()) { /* run the registration generator */ } },
-      register: (options: { inject: () => unknown }) => {
-        controller = (options.inject() as { controller: FallbacksSettingsController }).controller
+      register: (options: { inject?: () => unknown }) => {
+        // Only the card/general-row registrations carry an inject face; the
+        // transcript node registration (plan 3 T2) is inject-less — its
+        // payload arrives through the keyed seat's `node` prop.
+        if (options.inject !== undefined) {
+          controller = (options.inject() as { controller: FallbacksSettingsController }).controller
+        }
         return {}
       },
     })
@@ -1466,8 +1499,13 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
     let controller: FallbacksSettingsController | undefined
     ctx.provide('slots', {
       inject: (_name: string, thunk: () => Iterable<unknown>) => { for (const _dispose of thunk()) { /* run the registration generator */ } },
-      register: (options: { inject: () => unknown }) => {
-        controller = (options.inject() as { controller: FallbacksSettingsController }).controller
+      register: (options: { inject?: () => unknown }) => {
+        // Only the card/general-row registrations carry an inject face; the
+        // transcript node registration (plan 3 T2) is inject-less — its
+        // payload arrives through the keyed seat's `node` prop.
+        if (options.inject !== undefined) {
+          controller = (options.inject() as { controller: FallbacksSettingsController }).controller
+        }
         return {}
       },
     })
