@@ -1,12 +1,10 @@
 # Morning Star harness (.mstar/)
 # Principle: process stays local; results are shared with the team.
 # Ignored (process / coordination):
-.mstar/archived/
-.mstar/iterations/
-.mstar/plans/
-.mstar/sdd/
-.mstar/notes.json
-.mstar/status.json
+.mstar/**
+!.mstar/knowledge/
+!.mstar/specs/
+!.mstar/AGENTS.md
 # Tracked (results): .mstar/AGENTS.md, .mstar/knowledge/, .mstar/specs/
 
 # feature worktrees
