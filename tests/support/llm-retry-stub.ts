@@ -22,7 +22,7 @@
  * @module tests/support/llm-retry-stub
  */
 
-import type { Context } from 'cordis'
+import type { Context } from '@deepseek-ai/cordis'
 import type { Agent, RequestErrorAction } from '@deepseek-ai/dsh-agent'
 import { RetryId } from '@deepseek-ai/dsh-llm-retry'
 import type { LlmFailure, ResolvedRetryPolicy } from '@deepseek-ai/dsh-llm'

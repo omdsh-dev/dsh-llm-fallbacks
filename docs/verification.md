@@ -63,7 +63,7 @@ bundle 层顺序一节；真实 web profile 层序 `dsh-base → dsh-web-app →
 - **真实类型契约**：类型层不走手写 `peer-stubs/`——`scripts/setup-dsh-links.mjs` 从 dsh 源码树
   （`$DSH_SOURCE_DIR` → `${DSH_HOME}/source/current` → `~/.dsh/source/current`）把真实
   `@deepseek-ai/*` 包（全树，除 bin 工具包）链接进 `node_modules/`，并生成 vendored cordis 的
-  bin-less shim（`import 'cordis'` 与真实包解析到同一物理文件，`Context`/`Events` 实例一致）；
+  bin-less shim（`import '@deepseek-ai/cordis'` 与真实包解析到同一物理文件，`Context`/`Events` 实例一致）；
   `tsc` 与集成测试（`tests/support/harness.ts` + llm-retry-stub + model-selection-stub）按真实
   类型面驱动。运行时缝走真实实现：`installSettingsSection` 挂真实 `@deepseek-ai/dsh-settings`
   （内存 provider `tests/support/memory-settings.ts`，继承真实 `Settings` 基类），

@@ -28,7 +28,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { Context } from 'cordis'
+import { Context } from '@deepseek-ai/cordis'
 import type { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import { apply, stateStore } from '../src/index.ts'
 import { MemorySettings } from './support/memory-settings.ts'

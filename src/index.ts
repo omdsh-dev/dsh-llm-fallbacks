@@ -28,7 +28,7 @@
  * @module dsh-llm-fallbacks
  */
 
-import type { Context, Logger } from 'cordis'
+import type { Context, Logger } from '@deepseek-ai/cordis'
 import { installSettingsSection } from '@deepseek-ai/dsh-settings'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { LlmCallConfig } from '@deepseek-ai/dsh-llm'

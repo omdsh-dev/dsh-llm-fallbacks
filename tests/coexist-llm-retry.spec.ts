@@ -25,7 +25,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { Context } from 'cordis'
+import { Context } from '@deepseek-ai/cordis'
 import { apply } from '../src/index.ts'
 import { MemorySettings } from './support/memory-settings.ts'
 import { installLlmRetryStub } from './support/llm-retry-stub.ts'

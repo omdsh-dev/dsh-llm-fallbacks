@@ -45,7 +45,7 @@
  * @module dsh-llm-fallbacks/gateway
  */
 
-import type { Context } from 'cordis'
+import type { Context } from '@deepseek-ai/cordis'
 import type { Settings } from '@deepseek-ai/dsh-settings'
 import { settingsNamespace } from '@deepseek-ai/dsh-settings'
 import { GatewayService, Remote } from '@deepseek-ai/dsh-type-meta'
