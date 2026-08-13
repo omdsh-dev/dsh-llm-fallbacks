@@ -4,7 +4,7 @@
  *
  * Covers the testable client surface: config parsing (the gateway `config`
  * value folded against spec §4 defaults, malformed values rejected), the
- * chain/rule row editors' pure round-trips, and the controller's
+ * rootChain/role/rule row editors' pure round-trips, and the controller's
  * load/save/reset lifecycle over the plugin gateway channel — a fake
  * `connection.rpc` for `/api/fallbacks/get|set|reset` plus `api` mocks for
  * describe (writable + namespace directory) / llm catalog / session history.
@@ -27,11 +27,11 @@ import type { FallbacksSwitchEventData } from '../src/events.ts'
 import { KNOWN_TRIGGER_CODES, TRIGGER_CODE_LABELS } from '../src/client/locales.ts'
 import { apply as applyClient } from '../src/client/index.ts'
 import {
-  chainsToRows,
   classifyModel,
   classifyProvider,
   configuredProvidersOf,
   deriveEffectiveModel,
+  detectLegacyClientKeys,
   extractRecentSwitches,
   FALLBACKS_SETTINGS_NS,
   FallbacksSettingsController,
@@ -39,14 +39,20 @@ import {
   refreshCatalogIfLoaded,
   refreshFallbacksIfLoaded,
   refreshSwitchesIfLoaded,
-  rowsToChains,
+  rolesToRows,
+  rootChainToRows,
+  rowsToRoles,
+  rowsToRootChain,
   rowsToRules,
+  ruleRoleOptions,
   rulesToRows,
   selectorRowToRaw,
   RECENT_SWITCH_LIMIT,
   SWITCHES_HISTORY_PAGE,
   type CatalogLookup,
   type FallbacksSwitchSnapshot,
+  type RoleRow,
+  type RootChainRow,
 } from '../src/client/fallbacks-store.ts'
 
 /** One gateway RPC success (the channel returns the unwrapped result). */
@@ -226,8 +232,17 @@ describe('parseFallbacksConfig (descriptor read, redactSecrets face)', () => {
     const config: FallbacksConfig = {
       enabled: false,
       triggerCodes: ['AUTH'],
-      chains: { default: ['openai/gpt-4o', 'openai/*'] },
-      roles: { default: 'reviewer', rules: [{ origin: 'subagent', provider: 'openai', role: 'reviewer' }] },
+      rootChain: ['openai/gpt-4o', 'openai/*'],
+      roles: {
+        list: [{
+          id: 'reviewer',
+          label: 'Reviewer',
+          description: 'Deep review pass',
+          chain: ['anthropic/claude-3-5-sonnet'],
+          fallback: 'none',
+        }],
+        rules: [{ origin: 'subagent', provider: 'openai', role: 'reviewer' }],
+      },
       cooldownMs: 60_000,
       revertPolicy: 'never',
       maxSwitchesPerStep: 4,
@@ -256,26 +271,55 @@ describe('parseFallbacksConfig (descriptor read, redactSecrets face)', () => {
   it('rejects malformed typed fields', () => {
     expect(() => parseFallbacksConfig({ triggerCodes: 'AUTH' })).toThrow(TypeError)
     expect(() => parseFallbacksConfig({ triggerCodes: [1] })).toThrow(TypeError)
-    expect(() => parseFallbacksConfig({ chains: { default: 'gpt-4o' } })).toThrow(TypeError)
+    expect(() => parseFallbacksConfig({ rootChain: 'openai/gpt-4o' })).toThrow(TypeError)
+    expect(() => parseFallbacksConfig({ rootChain: [1] })).toThrow(TypeError)
+    expect(() => parseFallbacksConfig({ roles: { list: [{ label: 'no id' }] } })).toThrow(TypeError)
+    expect(() => parseFallbacksConfig({ roles: { list: [{ id: 'a', chain: 'openai/gpt-4o' }] } })).toThrow(TypeError)
+    expect(() => parseFallbacksConfig({ roles: { list: [{ id: 'a', fallback: 'sometimes' }] } })).toThrow(TypeError)
+    expect(() => parseFallbacksConfig({ roles: { list: [{ id: 'a', permissions: { allow: 'read' } }] } })).toThrow(TypeError)
     expect(() => parseFallbacksConfig({ roles: { rules: [{ provider: 'openai' }] } })).toThrow(TypeError)
     expect(() => parseFallbacksConfig({ roles: { rules: [{ origin: 'host', role: 'x' }] } })).toThrow(TypeError)
     expect(() => parseFallbacksConfig({ revertPolicy: 'sometimes' })).toThrow(TypeError)
     expect(() => parseFallbacksConfig({ cooldownMs: 'soon' })).toThrow(TypeError)
     expect(() => parseFallbacksConfig({ enabled: 'yes' })).toThrow(TypeError)
   })
+
+  it('preserves schema-reserved prompt/permissions fields on a read (no row editing this round)', () => {
+    const parsed = parseFallbacksConfig({
+      roles: { list: [{ id: 'architect', label: 'A', description: 'D', prompt: 'think hard', permissions: { allow: ['files.read'] } }] },
+    })
+    expect(parsed.roles.list[0]).toEqual({
+      id: 'architect',
+      label: 'A',
+      description: 'D',
+      prompt: 'think hard',
+      permissions: { allow: ['files.read'] },
+      chain: [],
+      fallback: 'inherit-root',
+    })
+  })
 })
 
-describe('chain/role row editors (pure round-trips)', () => {
-  it('round-trips chains through selector rows; empty keys drop out', () => {
-    const chains = { default: ['openai/gpt-4o', 'openai/*'], 'anthropic/*': ['anthropic/claude-3-5-sonnet'] }
-    const rows = chainsToRows(chains)
-    expect(rows).toHaveLength(2)
-    expect(rowsToChains(rows)).toEqual(chains)
-    // An empty key row (and an empty selector row) must not leak into output.
-    expect(rowsToChains([...rows, {
-      key: '   ',
-      selectors: [{ wildcard: false, provider: null, model: null }],
-    }])).toEqual(chains)
+describe('rootChain/role/rule row editors (pure round-trips)', () => {
+  it('round-trips the rootChain through one flat selector row; empty rows drop out', () => {
+    const rootChain = ['openai/gpt-4o', 'openai/*']
+    const rows = rootChainToRows(rootChain)
+    expect(rows).toHaveLength(1)
+    expect(rowsToRootChain(rows)).toEqual(rootChain)
+    // A row with no selectors (and a row whose only selector is empty) must
+    // not leak into output.
+    const emptyRows: RootChainRow[] = [
+      { selectors: [] },
+      { selectors: [{ wildcard: false, provider: null, model: null }] },
+    ]
+    expect(rowsToRootChain([...rows, ...emptyRows])).toEqual(rootChain)
+  })
+
+  it('round-trips an empty rootChain as a single empty row (add-selector affordance)', () => {
+    const rows = rootChainToRows([])
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.selectors).toEqual([])
+    expect(rowsToRootChain(rows)).toEqual([])
   })
 
   it('serializes selector rows to provider/model and provider/* wire strings', () => {
@@ -303,6 +347,76 @@ describe('chain/role row editors (pure round-trips)', () => {
       { role: 'default' },
     ])
   })
+
+  it('round-trips declared role entities through rows (id/label/description/chain/fallback)', () => {
+    const roles = [
+      {
+        id: 'reviewer',
+        label: 'Reviewer',
+        description: 'Deep review pass',
+        chain: ['openai/gpt-4o', 'openai/*'],
+        fallback: 'none' as const,
+      },
+      {
+        id: 'architect',
+        label: 'Architect',
+        description: '',
+        chain: [],
+        fallback: 'inherit-root' as const,
+      },
+    ]
+    const rows = rolesToRows(roles)
+    expect(rows).toEqual<RoleRow[]>([
+      {
+        id: 'reviewer',
+        label: 'Reviewer',
+        description: 'Deep review pass',
+        selectors: [
+          { wildcard: false, provider: { kind: 'outside', raw: 'openai' }, model: { kind: 'outside', raw: 'gpt-4o' } },
+          { wildcard: true, provider: { kind: 'outside', raw: 'openai' }, model: null },
+        ],
+        fallback: 'none',
+      },
+      { id: 'architect', label: 'Architect', description: '', selectors: [], fallback: 'inherit-root' },
+    ])
+    expect(rowsToRoles(rows)).toEqual(roles)
+  })
+
+  it('classifies a role chain against the catalog like any selector list', () => {
+    const catalog = catalogFixture()
+    const rows = rolesToRows([{ id: 'reviewer', label: 'R', description: '', chain: ['openai/gpt-4o'], fallback: 'inherit-root' }], catalog)
+    expect(rows[0]!.selectors[0]).toEqual({
+      wildcard: false,
+      provider: { kind: 'catalog', id: 'openai' },
+      model: { kind: 'catalog', id: 'gpt-4o' },
+    })
+    expect(rowsToRoles(rows)).toEqual([{ id: 'reviewer', label: 'R', description: '', chain: ['openai/gpt-4o'], fallback: 'inherit-root' }])
+  })
+
+  it('ruleRoleOptions offers the built-in inherit target plus every declared id in order', () => {
+    expect(ruleRoleOptions({ list: [] })).toEqual(['inherit'])
+    expect(ruleRoleOptions({ list: [{ id: 'reviewer', label: '', description: '' }, { id: 'architect', label: '', description: '' }] }))
+      .toEqual(['inherit', 'reviewer', 'architect'])
+    // The same page's role edits are reflected immediately (derived, never cached).
+    expect(ruleRoleOptions({ list: [{ id: 'reviewer', label: '', description: '' }, { id: 'c', label: '', description: '' }] }))
+      .toEqual(['inherit', 'reviewer', 'c'])
+  })
+
+  it('detectLegacyClientKeys flags undeclared rule role references (test fallback)', () => {
+    // Declared refs + the built-in inherit target are clean.
+    expect(detectLegacyClientKeys({
+      ...defaultFallbacksConfig,
+      roles: {
+        list: [{ id: 'reviewer', label: '', description: '', chain: [], fallback: 'inherit-root' }],
+        rules: [{ role: 'reviewer' }, { role: 'inherit' }],
+      },
+    })).toEqual([])
+    // An undeclared rule role is the only legacy leftover that survives wire normalization.
+    expect(detectLegacyClientKeys({
+      ...defaultFallbacksConfig,
+      roles: { list: [], rules: [{ role: 'reviewer' }] },
+    })).toEqual(['roles.rules[].role: reviewer'])
+  })
 })
 
 describe('catalog classification (spec §2.5 D-3)', () => {
@@ -326,29 +440,27 @@ describe('catalog classification (spec §2.5 D-3)', () => {
     expect(classifyModel('openai', 'gpt-4o', undefined)).toEqual({ kind: 'outside', raw: 'gpt-4o' })
   })
 
-  it('round-trips chains with outside values losslessly (D-3 mixed dropdown carrier)', () => {
+  it('round-trips the rootChain with outside values losslessly (D-3 mixed dropdown carrier)', () => {
     const catalog = catalogFixture()
-    const chains = {
-      default: ['other/gpt-4o', 'openai/gpt-4o', 'openai/*', 'anthropic/claude-3-5-sonnet'],
-    }
-    const rows = chainsToRows(chains, catalog)
-    const defaultSelectors = rows[0]!.selectors
+    const rootChain = ['other/gpt-4o', 'openai/gpt-4o', 'openai/*', 'anthropic/claude-3-5-sonnet']
+    const rows = rootChainToRows(rootChain, catalog)
+    const selectors = rows[0]!.selectors
     // Unknown provider → both parts outside, verbatim.
-    expect(defaultSelectors[0]).toEqual({
+    expect(selectors[0]).toEqual({
       wildcard: false,
       provider: { kind: 'outside', raw: 'other' },
       model: { kind: 'outside', raw: 'gpt-4o' },
     })
     // Known provider + known model → catalog.
-    expect(defaultSelectors[1]).toEqual({
+    expect(selectors[1]).toEqual({
       wildcard: false,
       provider: { kind: 'catalog', id: 'openai' },
       model: { kind: 'catalog', id: 'gpt-4o' },
     })
     // Wildcard entry → model null.
-    expect(defaultSelectors[2]).toEqual({ wildcard: true, provider: { kind: 'catalog', id: 'openai' }, model: null })
+    expect(selectors[2]).toEqual({ wildcard: true, provider: { kind: 'catalog', id: 'openai' }, model: null })
     // Round-trip: the original strings come back unchanged.
-    expect(rowsToChains(rows)).toEqual(chains)
+    expect(rowsToRootChain(rows)).toEqual(rootChain)
   })
 
   it('round-trips role rules with outside values losslessly', () => {
@@ -363,12 +475,12 @@ describe('catalog classification (spec §2.5 D-3)', () => {
     expect(rowsToRules(rows)).toEqual(rules)
   })
 
-  it('preserves a malformed legacy chain entry verbatim instead of dropping it', () => {
+  it('preserves a malformed entry verbatim instead of dropping it', () => {
     // A selector line that never matched `provider/model` keeps its raw text
     // as a bare outside value — the runtime config-warning path is unchanged.
-    const rows = chainsToRows({ default: ['gpt-4o'] }, catalogFixture())
+    const rows = rootChainToRows(['gpt-4o'], catalogFixture())
     expect(rows[0]!.selectors[0]).toEqual({ wildcard: false, provider: { kind: 'outside', raw: 'gpt-4o' }, model: null })
-    expect(rowsToChains(rows)).toEqual({ default: ['gpt-4o'] })
+    expect(rowsToRootChain(rows)).toEqual(['gpt-4o'])
   })
 })
 
@@ -428,7 +540,7 @@ describe('deriveEffectiveModel (spec §2.5 D-6 display value)', () => {
   const enabledConfig: FallbacksConfig = {
     ...defaultFallbacksConfig,
     enabled: true,
-    chains: { default: ['openai/gpt-4o', 'openai/*'] },
+    rootChain: ['openai/gpt-4o', 'openai/*'],
   }
 
   it('① disabled → unavailable even when switches exist', () => {
@@ -441,8 +553,8 @@ describe('deriveEffectiveModel (spec §2.5 D-6 display value)', () => {
     expect(view).toEqual({ kind: 'unavailable' })
   })
 
-  it('① enabled with no chains configured → unavailable', () => {
-    const config = { ...enabledConfig, chains: {} }
+  it('① enabled with an empty rootChain → unavailable', () => {
+    const config = { ...enabledConfig, rootChain: [] }
     expect(deriveEffectiveModel(config, [])).toEqual({ kind: 'unavailable' })
   })
 
@@ -459,7 +571,7 @@ describe('deriveEffectiveModel (spec §2.5 D-6 display value)', () => {
     })
   })
 
-  it('③ no switches → the config\'s primary target (first chain entry)', () => {
+  it('③ no switches → the config\'s primary target (first rootChain entry)', () => {
     expect(deriveEffectiveModel(enabledConfig, [])).toEqual({
       kind: 'config',
       provider: 'openai',
@@ -468,12 +580,12 @@ describe('deriveEffectiveModel (spec §2.5 D-6 display value)', () => {
   })
 
   it('③ a wildcard first entry derives as provider/*', () => {
-    const config = { ...enabledConfig, chains: { default: ['anthropic/*'] } }
+    const config = { ...enabledConfig, rootChain: ['anthropic/*'] }
     expect(deriveEffectiveModel(config, [])).toEqual({ kind: 'config', provider: 'anthropic', model: '*' })
   })
 
   it('③ a malformed first entry stays verbatim rather than mis-parsed', () => {
-    const config = { ...enabledConfig, chains: { default: ['gpt-4o'] } }
+    const config = { ...enabledConfig, rootChain: ['gpt-4o'] }
     expect(deriveEffectiveModel(config, [])).toEqual({ kind: 'config', provider: 'gpt-4o', model: '*' })
   })
 })
@@ -618,6 +730,92 @@ describe('FallbacksSettingsController', () => {
     expect(state.status).toBe('ready')
     expect(state.present).toBe(true)
     expect(state.config.cooldownMs).toBe(99_000)
+  })
+
+  it('loads legacyKeys from the gateway get response (the migration banner source)', async () => {
+    // The wire field is authoritative: the get response's legacyKeys ride
+    // through load() → accept() into state.legacyKeys for the banner.
+    const api = makeApi()
+    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
+    const { rpc, get } = makeRpc()
+    get.mockReturnValueOnce(Promise.resolve(okResult({
+      config: { ...defaultFallbacksConfig, cooldownMs: 99_000 },
+      legacyKeys: ['chains', 'roles.default'],
+    })))
+    const controller = new FallbacksSettingsController(api, rpc)
+    await controller.load()
+    const state = controller.store.getSnapshot()
+    expect(state.status).toBe('ready')
+    expect(state.present).toBe(true)
+    expect(state.config.cooldownMs).toBe(99_000)
+    expect(state.legacyKeys).toEqual(['chains', 'roles.default'])
+  })
+
+  it('guards a malformed legacyKeys wire value as [] (Array.isArray guard)', async () => {
+    const api = makeApi()
+    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
+    const { rpc, get } = makeRpc()
+    // Non-array → [] ; mixed array → string entries only.
+    get.mockReturnValueOnce(Promise.resolve(okResult({ config: defaultFallbacksConfig, legacyKeys: 'chains' })))
+    const controller = new FallbacksSettingsController(api, rpc)
+    await controller.load()
+    expect(controller.store.getSnapshot().legacyKeys).toEqual([])
+
+    get.mockReturnValueOnce(Promise.resolve(okResult({ config: defaultFallbacksConfig, legacyKeys: ['chains', 7] })))
+    await controller.load()
+    expect(controller.store.getSnapshot().legacyKeys).toEqual(['chains'])
+  })
+
+  it('a save response without legacyKeys clears the banner (full-overwrite save has no leftovers)', async () => {
+    const api = makeApi()
+    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
+    const { rpc, get } = makeRpc()
+    get.mockReturnValueOnce(Promise.resolve(okResult({
+      config: defaultFallbacksConfig,
+      legacyKeys: ['chains'],
+    })))
+    const controller = new FallbacksSettingsController(api, rpc)
+    await controller.load()
+    expect(controller.store.getSnapshot().legacyKeys).toEqual(['chains'])
+    // The gateway set returns { config } only → accept(config, true, []).
+    await controller.save({ ...defaultFallbacksConfig, cooldownMs: 55_000 })
+    const state = controller.store.getSnapshot()
+    expect(state.status).toBe('ready')
+    expect(state.config.cooldownMs).toBe(55_000)
+    expect(state.legacyKeys).toEqual([])
+  })
+
+  it('a save response carrying legacyKeys lands them in state', async () => {
+    const api = makeApi()
+    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
+    const { rpc, set } = makeRpc()
+    const controller = new FallbacksSettingsController(api, rpc)
+    await controller.load()
+    set.mockReturnValueOnce(Promise.resolve(okResult({
+      config: { ...defaultFallbacksConfig, cooldownMs: 33_000 },
+      legacyKeys: ['roles.default'],
+    })))
+    await controller.save({ ...defaultFallbacksConfig, cooldownMs: 33_000 })
+    const state = controller.store.getSnapshot()
+    expect(state.config.cooldownMs).toBe(33_000)
+    expect(state.legacyKeys).toEqual(['roles.default'])
+  })
+
+  it('a reset response without legacyKeys clears the banner too', async () => {
+    const api = makeApi()
+    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
+    const { rpc, get } = makeRpc()
+    get.mockReturnValueOnce(Promise.resolve(okResult({
+      config: { ...defaultFallbacksConfig, cooldownMs: 99_000 },
+      legacyKeys: ['roles.default'],
+    })))
+    const controller = new FallbacksSettingsController(api, rpc)
+    await controller.load()
+    expect(controller.store.getSnapshot().legacyKeys).toEqual(['roles.default'])
+    await controller.resetToDefaults()
+    const state = controller.store.getSnapshot()
+    expect(state.config).toEqual(defaultFallbacksConfig)
+    expect(state.legacyKeys).toEqual([])
   })
 
   it('surfaces a set rejection as the error banner (KD-G3 — no conflict branch)', async () => {
@@ -954,16 +1152,16 @@ describe('configuredProviders derivation (Models-page `configured` join)', () =>
     api.llm.models.mockResolvedValue(ok({ groups: catalogFixture().groups, failures: [] }))
     const controller = new FallbacksSettingsController(
       api,
-      makeRpc({ ...defaultFallbacksConfig, chains: { default: ['other/gpt-4o'] } }).rpc,
+      makeRpc({ ...defaultFallbacksConfig, rootChain: ['other/gpt-4o'] }).rpc,
     )
     await controller.load()
     await controller.loadCatalog()
     const state = controller.store.getSnapshot()
     // `other` is outside the catalog and never enters the offer set.
     expect(state.configuredProviders.map(entry => entry.provider)).not.toContain('other')
-    // The existing chain value still round-trips through the row editor losslessly.
-    const rows = chainsToRows(state.config.chains, { providers: state.providers, groups: state.groups })
-    expect(rowsToChains(rows)).toEqual(state.config.chains)
+    // The existing rootChain value still round-trips through the row editor losslessly.
+    const rows = rootChainToRows(state.config.rootChain, { providers: state.providers, groups: state.groups })
+    expect(rowsToRootChain(rows)).toEqual(state.config.rootChain)
   })
 
   it('round-trips in-catalog-but-unconfigured existing values (the 未配置 read-back is lossless)', async () => {
@@ -981,7 +1179,7 @@ describe('configuredProviders derivation (Models-page `configured` join)', () =>
     api.llm.models.mockResolvedValue(ok({ groups: catalogFixture().groups, failures: [] }))
     const controller = new FallbacksSettingsController(
       api,
-      makeRpc({ ...defaultFallbacksConfig, chains: { default: ['google/gemini-2.0-flash'] } }).rpc,
+      makeRpc({ ...defaultFallbacksConfig, rootChain: ['google/gemini-2.0-flash'] }).rpc,
     )
     await controller.load()
     await controller.loadCatalog()
@@ -990,9 +1188,9 @@ describe('configuredProviders derivation (Models-page `configured` join)', () =>
     expect(state.configuredProviders.map(entry => entry.provider)).not.toContain('google')
     // Classifies as a catalog selection (in the directory) and the existing
     // value still round-trips losslessly.
-    const rows = chainsToRows(state.config.chains, { providers: state.providers, groups: state.groups })
+    const rows = rootChainToRows(state.config.rootChain, { providers: state.providers, groups: state.groups })
     expect(rows[0]!.selectors[0]!.provider).toEqual({ kind: 'catalog', id: 'google' })
-    expect(rowsToChains(rows)).toEqual(state.config.chains)
+    expect(rowsToRootChain(rows)).toEqual(state.config.rootChain)
   })
 })
 

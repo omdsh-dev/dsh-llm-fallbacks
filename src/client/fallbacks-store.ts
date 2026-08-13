@@ -33,7 +33,9 @@ import {
   createSnapshotStore, type SnapshotStore,
 } from '@deepseek-ai/dsh-client-runtime/client'
 import {
-  defaultFallbacksConfig, type FallbacksConfig, type FallbacksRoleRule,
+  defaultFallbacksConfig, INHERIT_ROLE_ID,
+  type FallbackStrategy, type FallbacksConfig, type FallbacksRole,
+  type FallbacksRoleRule, type FallbacksRoles,
 } from '../config.ts'
 import type { FallbacksSwitchEventData } from '../events.ts'
 import { parseSelector } from '../selectors.ts'
@@ -65,7 +67,7 @@ export interface FallbacksSwitchSnapshot extends FallbacksSwitchEventData {
  * live route probe.
  */
 export type EffectiveModelView =
-  /** ① `enabled: false` or no chains configured. */
+  /** ① `enabled: false` or an empty rootChain. */
   | { kind: 'unavailable' }
   /** ② The most recent switch's target (`to`). */
   | { kind: 'switched'; provider: string; model: string }
@@ -86,6 +88,15 @@ export interface FallbacksSettingsState {
    * settings service) → the section keeps the usable skeleton (KD-G5).
    */
   present: boolean
+  /**
+   * Legacy (two-block-era) config keys the gateway detected on the composed
+   * source (`get().legacyKeys`, spec §9): non-empty → the migration banner
+   * renders. The wire field is authoritative — the client never guesses
+   * legacy status on its own (detectLegacyClientKeys is a test-only
+   * fallback). A `set`/`reset` response without the field lands `[]` — a
+   * full-overwrite save has no legacy leftovers left.
+   */
+  legacyKeys: string[]
   /** Provider/model directory snapshot (spec §2.5 D-4). */
   catalogStatus: 'idle' | 'loading' | 'ready' | 'error'
   /** Catalog read diagnostic: whole-load failure or per-provider lookups. */
@@ -172,11 +183,54 @@ export function parseFallbacksConfig(value: unknown): FallbacksConfig {
   if (triggerCodes !== undefined && (!Array.isArray(triggerCodes) || triggerCodes.some(code => typeof code !== 'string'))) {
     throw new TypeError('fallbacks descriptor triggerCodes must be a string array')
   }
-  const chains = value.chains
-  if (chains !== undefined && (!isRecord(chains) || Object.values(chains).some(entries => !Array.isArray(entries) || entries.some(e => typeof e !== 'string')))) {
-    throw new TypeError('fallbacks descriptor chains must be a string-array record')
+  const rootChain = value.rootChain
+  if (rootChain !== undefined && (!Array.isArray(rootChain) || rootChain.some(entry => typeof entry !== 'string'))) {
+    throw new TypeError('fallbacks descriptor rootChain must be a string array')
   }
   const roles = isRecord(value.roles) ? value.roles : {}
+  const list = Array.isArray(roles.list) ? roles.list : []
+  const parsedList: FallbacksRole[] = list.map((role, index) => {
+    if (!isRecord(role) || typeof role.id !== 'string') {
+      throw new TypeError(`fallbacks descriptor roles.list[${String(index)}] must have a string id`)
+    }
+    const label = role.label
+    if (label !== undefined && typeof label !== 'string') {
+      throw new TypeError(`fallbacks descriptor roles.list[${String(index)}].label must be a string`)
+    }
+    const description = role.description
+    if (description !== undefined && typeof description !== 'string') {
+      throw new TypeError(`fallbacks descriptor roles.list[${String(index)}].description must be a string`)
+    }
+    // prompt/permissions are schema-reserved for the next iteration — parsed
+    // and preserved on a read, but never edited by this round's rows.
+    const prompt = role.prompt
+    if (prompt !== undefined && typeof prompt !== 'string') {
+      throw new TypeError(`fallbacks descriptor roles.list[${String(index)}].prompt must be a string`)
+    }
+    const permissions = role.permissions
+    if (permissions !== undefined && (!isRecord(permissions)
+      || (permissions.allow !== undefined && (!Array.isArray(permissions.allow) || permissions.allow.some(item => typeof item !== 'string')))
+      || (permissions.deny !== undefined && (!Array.isArray(permissions.deny) || permissions.deny.some(item => typeof item !== 'string'))))) {
+      throw new TypeError(`fallbacks descriptor roles.list[${String(index)}].permissions must be an allow/deny string-array object`)
+    }
+    const chain = role.chain
+    if (chain !== undefined && (!Array.isArray(chain) || chain.some(entry => typeof entry !== 'string'))) {
+      throw new TypeError(`fallbacks descriptor roles.list[${String(index)}].chain must be a string array`)
+    }
+    const fallback = role.fallback
+    if (fallback !== undefined && fallback !== 'inherit-root' && fallback !== 'none') {
+      throw new TypeError(`fallbacks descriptor roles.list[${String(index)}].fallback must be inherit-root|none`)
+    }
+    return {
+      id: role.id,
+      label: label ?? '',
+      description: description ?? '',
+      ...(prompt === undefined ? {} : { prompt }),
+      ...(permissions === undefined ? {} : { permissions }),
+      chain: (chain as string[] | undefined) ?? [],
+      fallback: (fallback as FallbackStrategy | undefined) ?? 'inherit-root',
+    }
+  })
   const rules = Array.isArray(roles.rules) ? roles.rules : []
   const parsedRules: FallbacksRoleRule[] = rules.map((rule, index) => {
     if (!isRecord(rule) || typeof rule.role !== 'string') {
@@ -220,9 +274,9 @@ export function parseFallbacksConfig(value: unknown): FallbacksConfig {
   return {
     enabled: enabled ?? defaultFallbacksConfig.enabled,
     triggerCodes: (triggerCodes as string[] | undefined) ?? [...defaultFallbacksConfig.triggerCodes],
-    chains: (chains as Record<string, string[]> | undefined) ?? {},
+    rootChain: (rootChain as string[] | undefined) ?? [...defaultFallbacksConfig.rootChain],
     roles: {
-      default: typeof roles.default === 'string' ? roles.default : defaultFallbacksConfig.roles.default,
+      list: parsedList,
       rules: parsedRules,
     },
     // The field-level guards above narrowed the raw values only inside the
@@ -303,16 +357,15 @@ export function extractRecentSwitches(
   return switches.slice(0, limit)
 }
 
-/** The config's primary target: the first selector of the first chain (D-6 ③). */
+/** The config's primary target: the rootChain's first entry (D-6 ③). */
 function configPrimaryTarget(config: FallbacksConfig): { provider: string; model: string } | null {
-  const firstChain = Object.values(config.chains)[0]
-  const firstEntry = firstChain?.[0]
+  const firstEntry = config.rootChain[0]
   if (firstEntry === undefined) return null
   try {
     const selector = parseSelector(firstEntry)
     return { provider: selector.provider, model: selector.model ?? '*' }
   } catch {
-    // A malformed legacy entry (not `provider/model`): show it verbatim rather
+    // A malformed entry (not `provider/model`): show it verbatim rather
     // than mis-parsing it into a plausible-looking route.
     return { provider: firstEntry, model: '*' }
   }
@@ -320,17 +373,17 @@ function configPrimaryTarget(config: FallbacksConfig): { provider: string; model
 
 /**
  * Derive the status block's "current effective model" (spec §2.5 D-6): ①
- * disabled/empty chains → unavailable; ② a recent switch exists → the latest
- * one's `to`; ③ otherwise → the config's primary target. A **display value** —
- * never a live route probe (the section appends the non-probing note inline
- * right after the derived value, available case only; the unavailable 空态
- * renders its own copy without the note).
+ * disabled / empty rootChain → unavailable; ② a recent switch exists → the
+ * latest one's `to`; ③ otherwise → the config's primary target. A **display
+ * value** — never a live route probe (the section appends the non-probing
+ * note inline right after the derived value, available case only; the
+ * unavailable 空态 renders its own copy without the note).
  */
 export function deriveEffectiveModel(
   config: FallbacksConfig,
   switches: readonly FallbacksSwitchSnapshot[],
 ): EffectiveModelView {
-  if (!config.enabled || Object.keys(config.chains).length === 0) {
+  if (!config.enabled || config.rootChain.length === 0) {
     return { kind: 'unavailable' }
   }
   const latest = switches[0]
@@ -351,12 +404,6 @@ export interface ChainSelectorRow {
   model: CatalogSelection
 }
 
-/** One chain row in the editor: key (free text) + ordered selector rows. */
-export interface ChainRow {
-  key: string
-  selectors: ChainSelectorRow[]
-}
-
 /** Serialize one selector row to its wire string (`provider/model` | `provider/*`). */
 export function selectorRowToRaw(row: ChainSelectorRow): string {
   const provider = selectionToRaw(row.provider)
@@ -364,14 +411,6 @@ export function selectorRowToRaw(row: ChainSelectorRow): string {
   if (row.wildcard) return `${provider}/*`
   const model = selectionToRaw(row.model)
   return model === '' ? provider : `${provider}/${model}`
-}
-
-/** Project the chains record into editable rows (one selector list per key). */
-export function chainsToRows(chains: Record<string, string[]>, catalog?: CatalogLookup): ChainRow[] {
-  return Object.entries(chains).map(([key, entries]) => ({
-    key,
-    selectors: entries.map(entry => entryToSelectorRow(entry, catalog)),
-  }))
 }
 
 /** Parse one entry line into a selector row, classifying against the catalog. */
@@ -384,22 +423,103 @@ function entryToSelectorRow(entry: string, catalog: CatalogLookup | undefined): 
       model: selector.model === undefined ? null : classifyModel(selector.provider, selector.model, catalog),
     }
   } catch {
-    // A malformed legacy entry (not `provider/model`): keep it verbatim as a
+    // A malformed entry (not `provider/model`): keep it verbatim as a
     // bare outside value so a save never drops it — the runtime's
     // config-warning semantics are unchanged.
     return { wildcard: false, provider: { kind: 'outside', raw: entry.trim() }, model: null }
   }
 }
 
-/** Rebuild the chains record from edited rows; empty keys drop out. */
-export function rowsToChains(rows: readonly ChainRow[]): Record<string, string[]> {
-  const chains: Record<string, string[]> = {}
+/**
+ * One rootChain row in the editor: the root agent's single fallback chain
+ * (block 1 of the two-block model) as an ordered selector list. There is no
+ * key input — the row IS the chain.
+ */
+export interface RootChainRow {
+  selectors: ChainSelectorRow[]
+}
+
+/** Project the rootChain entries into editable rows (one flat chain row). */
+export function rootChainToRows(rootChain: readonly string[], catalog?: CatalogLookup): RootChainRow[] {
+  return [{ selectors: rootChain.map(entry => entryToSelectorRow(entry, catalog)) }]
+}
+
+/** Rebuild the rootChain from edited rows; rows with no usable selector drop out. */
+export function rowsToRootChain(rows: readonly RootChainRow[]): string[] {
+  const entries: string[] = []
   for (const row of rows) {
-    const key = row.key.trim()
-    if (key === '') continue
-    chains[key] = row.selectors.map(selectorRowToRaw).filter(entry => entry !== '')
+    if (row.selectors.length === 0) continue
+    for (const selector of row.selectors) {
+      const raw = selectorRowToRaw(selector)
+      if (raw !== '') entries.push(raw)
+    }
   }
-  return chains
+  return entries
+}
+
+/**
+ * One declared-role row in the editor (block 2 `roles.list`): identity
+ * fields + the role's own chain selector list + its append strategy.
+ * `prompt`/`permissions` are schema-reserved for the next iteration
+ * (fallbacks-explicit-role-tool) — they never enter row editing this round.
+ */
+export interface RoleRow {
+  id: string
+  label: string
+  description: string
+  selectors: ChainSelectorRow[]
+  fallback: FallbackStrategy
+}
+
+/** Project the declared roles into editable rows (chain selectors classified). */
+export function rolesToRows(roles: readonly FallbacksRole[], catalog?: CatalogLookup): RoleRow[] {
+  return roles.map(role => ({
+    id: role.id,
+    label: role.label,
+    description: role.description,
+    selectors: (role.chain ?? []).map(entry => entryToSelectorRow(entry, catalog)),
+    fallback: role.fallback ?? 'inherit-root',
+  }))
+}
+
+/** Rebuild the declared roles from edited rows; empty selectors drop out. */
+export function rowsToRoles(rows: readonly RoleRow[]): FallbacksRole[] {
+  return rows.map(row => ({
+    id: row.id.trim(),
+    label: row.label,
+    description: row.description,
+    chain: row.selectors.map(selectorRowToRaw).filter(entry => entry !== ''),
+    fallback: row.fallback,
+  }))
+}
+
+/**
+ * The `roles.rules` role dropdown's offer set — the ONLY data source for the
+ * rule rows' role selector: the built-in `'inherit'` target plus every
+ * declared `roles.list` id, in declaration order (a role added/removed on
+ * the same page is reflected immediately).
+ */
+export function ruleRoleOptions(roles: Pick<FallbacksRoles, 'list'>): string[] {
+  return [INHERIT_ROLE_ID, ...roles.list.map(role => role.id)]
+}
+
+/**
+ * Client-side legacy fallback detection (spec §9). The gateway's
+ * `legacyKeys` wire field is authoritative for the migration banner; this is
+ * a defensive fallback for configs that already passed wire normalization
+ * yet still carry a `roles.rules` reference to an undeclared role id — the
+ * only two-block-era leftover that can survive the wire (the removed
+ * `chains`/`roles.default` keys never ride it).
+ */
+export function detectLegacyClientKeys(config: FallbacksConfig): string[] {
+  const declared = new Set(config.roles.list.map(role => role.id))
+  const keys: string[] = []
+  for (const rule of config.roles.rules) {
+    if (rule.role !== INHERIT_ROLE_ID && !declared.has(rule.role)) {
+      keys.push(`roles.rules[].role: ${rule.role}`)
+    }
+  }
+  return keys
 }
 
 /** One role-rule row in the editor; empty origin means "any". */
@@ -441,6 +561,7 @@ export class FallbacksSettingsController {
     writable: false,
     config: defaultFallbacksConfig,
     present: false,
+    legacyKeys: [],
     catalogStatus: 'idle',
     catalogError: null,
     providers: [],
@@ -512,11 +633,22 @@ export class FallbacksSettingsController {
       // accepted config with defaults — `accept` only replaces
       // `state.config` from a REAL resolved value.
       let config: unknown
+      let legacyKeys: string[] = []
       if (getResult !== undefined && getResult.ok && getResult.value !== null
-        && typeof getResult.value === 'object' && 'config' in getResult.value) {
-        config = getResult.value.config
+        && typeof getResult.value === 'object') {
+        if ('config' in getResult.value) {
+          config = getResult.value.config
+        }
+        // The wire legacyKeys field is authoritative for the migration
+        // banner; an absent/malformed value means "no legacy leftovers".
+        if ('legacyKeys' in getResult.value) {
+          const wireLegacyKeys: unknown = getResult.value.legacyKeys
+          if (Array.isArray(wireLegacyKeys)) {
+            legacyKeys = wireLegacyKeys.filter((key): key is string => typeof key === 'string')
+          }
+        }
       }
-      this.accept(config, writable)
+      this.accept(config, writable, legacyKeys)
     } catch (error) {
       if (generation !== this.generation) return
       this.fail(error)
@@ -655,10 +787,18 @@ export class FallbacksSettingsController {
       const result = await this.rpc.call('/api', 'fallbacks/set', { args: { patch: next } })
       if (generation !== this.generation) return
       if (!result.ok) throw result.error
-      const config = result.value !== null && typeof result.value === 'object' && 'config' in result.value
-        ? result.value.config
+      const value: unknown = result.value
+      const config = value !== null && typeof value === 'object' && 'config' in value
+        ? value.config
         : undefined
-      this.accept(config, true)
+      let legacyKeys: string[] = []
+      if (value !== null && typeof value === 'object' && 'legacyKeys' in value) {
+        const wireLegacyKeys: unknown = value.legacyKeys
+        if (Array.isArray(wireLegacyKeys)) {
+          legacyKeys = wireLegacyKeys.filter((key): key is string => typeof key === 'string')
+        }
+      }
+      this.accept(config, true, legacyKeys)
     } catch (error) {
       if (generation !== this.generation) return
       this.fail(error)
@@ -683,10 +823,18 @@ export class FallbacksSettingsController {
       const result = await this.rpc.call('/api', 'fallbacks/reset', { args: {} })
       if (generation !== this.generation) return
       if (!result.ok) throw result.error
-      const config = result.value !== null && typeof result.value === 'object' && 'config' in result.value
-        ? result.value.config
+      const value: unknown = result.value
+      const config = value !== null && typeof value === 'object' && 'config' in value
+        ? value.config
         : undefined
-      this.accept(config, true)
+      let legacyKeys: string[] = []
+      if (value !== null && typeof value === 'object' && 'legacyKeys' in value) {
+        const wireLegacyKeys: unknown = value.legacyKeys
+        if (Array.isArray(wireLegacyKeys)) {
+          legacyKeys = wireLegacyKeys.filter((key): key is string => typeof key === 'string')
+        }
+      }
+      this.accept(config, true, legacyKeys)
     } catch (error) {
       if (generation !== this.generation) return
       this.fail(error)
@@ -708,15 +856,19 @@ export class FallbacksSettingsController {
    * resolve (`config === undefined`) lands `present` false and keeps the
    * last accepted config (the defaults skeleton on a first load) — the
    * draft seed invariant (I-1): a transient channel-down must never seed
-   * the form with defaults over real server truth.
+   * the form with defaults over real server truth. `legacyKeys` rides the
+   * same publish: the wire field drives the migration banner, and a write
+   * response without it (the `set`/`reset` shape) lands `[]` — a saved
+   * full-overwrite config has no legacy leftovers left.
    */
-  private accept(config: unknown, writable: boolean): void {
+  private accept(config: unknown, writable: boolean, legacyKeys: string[]): void {
     const parsed = config === undefined ? undefined : parseFallbacksConfig(config)
     this.store.update((state) => {
       state.status = 'ready'
       state.error = null
       state.writable = writable
       state.present = parsed !== undefined
+      state.legacyKeys = legacyKeys
       if (parsed !== undefined) {
         state.config = parsed
       }
