@@ -751,6 +751,30 @@ describe('FallbacksSettingsController', () => {
     expect(state.legacyKeys).toEqual(['chains', 'roles.default'])
   })
 
+  it('preserves legacyKeys when a follow-up get fails (the banner survives transient channel-down, T3 reviewer minor)', async () => {
+    // accept() only lets a REAL config clear/replace the wire legacyKeys: a
+    // complete get failure (config undefined) keeps the last accepted value
+    // so a transient refresh can never clear the migration banner.
+    const api = makeApi()
+    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
+    const { rpc, get } = makeRpc()
+    get.mockReturnValueOnce(Promise.resolve(okResult({
+      config: { ...defaultFallbacksConfig, cooldownMs: 99_000 },
+      legacyKeys: ['chains'],
+    })))
+    const controller = new FallbacksSettingsController(api, rpc)
+    await controller.load()
+    expect(controller.store.getSnapshot().legacyKeys).toEqual(['chains'])
+    // The channel drops before the next refresh's get resolves.
+    get.mockReturnValueOnce(Promise.resolve(failResult('fallbacks gateway is not ready')))
+    await controller.load()
+    const state = controller.store.getSnapshot()
+    expect(state.status).toBe('ready')
+    expect(state.present).toBe(false)
+    expect(state.config.cooldownMs).toBe(99_000)
+    expect(state.legacyKeys).toEqual(['chains'])
+  })
+
   it('guards a malformed legacyKeys wire value as [] (Array.isArray guard)', async () => {
     const api = makeApi()
     api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))

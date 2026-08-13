@@ -868,7 +868,12 @@ export class FallbacksSettingsController {
       state.error = null
       state.writable = writable
       state.present = parsed !== undefined
-      state.legacyKeys = legacyKeys
+      // The wire legacyKeys is authoritative only when a REAL config
+      // resolved: a complete get failure (config undefined — channel down,
+      // gateway not ready) must keep the last accepted legacyKeys so a
+      // transient refresh can never clear the migration banner (T2 reviewer
+      // minor #1).
+      state.legacyKeys = parsed === undefined ? state.legacyKeys : legacyKeys
       if (parsed !== undefined) {
         state.config = parsed
       }

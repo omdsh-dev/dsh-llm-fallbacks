@@ -95,6 +95,7 @@ interface Scripted {
 function scriptedApi(options: {
   config?: typeof defaultFallbacksConfig | null
   writable?: boolean
+  legacyKeys?: string[]
 } = {}): Scripted {
   let current = options.config === undefined ? defaultFallbacksConfig : options.config
   const describe = vi.fn(() => Promise.resolve(ok({
@@ -108,7 +109,10 @@ function scriptedApi(options: {
   const get = vi.fn(() => Promise.resolve(
     current === null
       ? failResult('fallbacks gateway is not ready')
-      : okResult({ config: current }),
+      : okResult({
+          config: current,
+          ...(options.legacyKeys === undefined ? {} : { legacyKeys: options.legacyKeys }),
+        }),
   ))
   const set = vi.fn((payload: { args: { patch: typeof defaultFallbacksConfig } }) => {
     if (current === null) throw new Error('test: set on an unavailable gateway')
@@ -155,6 +159,28 @@ async function mountCard(options: Parameters<typeof scriptedApi>[0] = {}, preloa
  * dirty-transition assertions hold.
  */
 const ENABLED_CONFIG: typeof defaultFallbacksConfig = { ...defaultFallbacksConfig, enabled: true }
+
+/**
+ * A two-block config (spec §8) exercising every new editing surface: a
+ * rootChain, two declared role entities (one with its own chain, one
+ * chain-less with `fallback: none`), and role rules referencing a declared
+ * id and the built-in `inherit`.
+ */
+const TWO_BLOCK_CONFIG: typeof defaultFallbacksConfig = {
+  ...defaultFallbacksConfig,
+  enabled: true,
+  rootChain: ['openai/gpt-4o'],
+  roles: {
+    list: [
+      { id: 'reviewer', label: 'Reviewer', description: 'Reviews code', chain: ['anthropic/claude-3-5-sonnet'], fallback: 'inherit-root' },
+      { id: 'architect', label: 'Architect', description: 'Designs systems', chain: [], fallback: 'none' },
+    ],
+    rules: [
+      { origin: 'subagent', role: 'reviewer' },
+      { role: 'inherit' },
+    ],
+  },
+}
 
 /**
  * The card's header disclosure button. The accessible name is the upstream
@@ -563,5 +589,214 @@ describe('FallbacksCard chrome (upstream PluginCard contract)', () => {
     // The form is inert in a read-only environment.
     expect((screen.getByLabelText(en['enabled.label']) as HTMLInputElement).disabled).toBe(true)
     expect((screen.getByRole('button', { name: en.save }) as HTMLButtonElement).disabled).toBe(true)
+  })
+})
+
+describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-model T3)', () => {
+  it('renders the rootChain block with selector rows and no key input', async () => {
+    const { view, props } = await mountCard({ config: TWO_BLOCK_CONFIG })
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    // Block 1: title + the "unset = no fallback" hint; the chain-key text
+    // input of the old model is gone (spec §8 无键输入).
+    expect(screen.getByText(en['rootChain.label'])).toBeTruthy()
+    expect(screen.getByText(en['rootChain.hint'])).toBeTruthy()
+    expect(screen.queryByLabelText('Key')).toBeNull()
+    // The single rootChain row renders its add-selector affordance; its
+    // selector editor renders one provider select (the read-back value).
+    const rootChainGroup = screen.getByText(en['rootChain.label']).closest('[role="group"]') as HTMLElement
+    expect(within(rootChainGroup).getByRole('button', { name: en['rootChain.selector.add'] })).toBeTruthy()
+    expect(screen.getAllByLabelText(en['roles.rule.provider']).length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('renders the declared role entity cards with id/label/description/fallback', async () => {
+    const { view, props } = await mountCard({ config: TWO_BLOCK_CONFIG })
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    expect(screen.getByText(en['roles.list.label'])).toBeTruthy()
+    const ids = screen.getAllByLabelText(en['roles.id'])
+    expect(ids).toHaveLength(2)
+    expect((ids[0] as HTMLInputElement).value).toBe('reviewer')
+    expect((ids[1] as HTMLInputElement).value).toBe('architect')
+    expect(screen.getAllByLabelText(en['roles.label'])).toHaveLength(2)
+    expect(screen.getAllByLabelText(en['roles.description'])).toHaveLength(2)
+    const fallbacks = screen.getAllByLabelText(en['roles.fallback'])
+    expect(fallbacks).toHaveLength(2)
+    expect((fallbacks[0] as HTMLSelectElement).value).toBe('inherit-root')
+    expect((fallbacks[1] as HTMLSelectElement).value).toBe('none')
+    // Each role card carries its own add-selector affordance (scoped to the
+    // roles group — the rootChain group's add button shares the label).
+    const rolesGroup = screen.getByText(en['roles.list.label']).closest('[role="group"]') as HTMLElement
+    expect(within(rolesGroup).getAllByRole('button', { name: en['roles.selector.add'] })).toHaveLength(2)
+    expect(screen.getAllByLabelText(en['roles.remove'])).toHaveLength(2)
+    expect(screen.getByRole('button', { name: en['roles.add'] })).toBeTruthy()
+  })
+
+  it('binds the rules role field to a dropdown of inherit + declared ids', async () => {
+    const { view, props } = await mountCard({ config: TWO_BLOCK_CONFIG })
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    const roleSelects = screen.getAllByLabelText(en['roles.rule.role'])
+    expect(roleSelects).toHaveLength(2)
+    const first = roleSelects[0] as HTMLSelectElement
+    expect(first.value).toBe('reviewer')
+    // The offer set: the built-in inherit target (with its label) + every
+    // declared id — no free-text role input remains.
+    expect(within(first).getByRole('option', { name: en['roles.rule.role.inherit'] })).toBeTruthy()
+    expect(within(first).getByRole('option', { name: 'reviewer' })).toBeTruthy()
+    expect(within(first).getByRole('option', { name: 'architect' })).toBeTruthy()
+    // The old free-text role input is gone (the placeholder text it used).
+    expect(screen.queryByLabelText('Role name')).toBeNull()
+    expect(screen.getByRole('button', { name: en['roles.addRule'] })).toBeTruthy()
+  })
+
+  it('reflects role add/remove in the rules role dropdown on the same page', async () => {
+    const { view, props } = await mountCard({ config: TWO_BLOCK_CONFIG })
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    const roleSelect = screen.getAllByLabelText(en['roles.rule.role'])[0] as HTMLSelectElement
+    expect(within(roleSelect).getByRole('option', { name: 'reviewer' })).toBeTruthy()
+
+    // Removing the reviewer entity drops its id from the dropdown; the
+    // referencing rule's orphaned value stays visible as a synthetic
+    // "undeclared" option (honest dangling reference — save validation
+    // flags it).
+    fireEvent.click(screen.getAllByRole('button', { name: en['roles.remove'] })[0]!)
+    view.rerender(<FallbacksCard {...props} />)
+    const updatedSelect = screen.getAllByLabelText(en['roles.rule.role'])[0] as HTMLSelectElement
+    expect(within(updatedSelect).queryByRole('option', { name: 'reviewer' })).toBeNull()
+    expect(within(updatedSelect).getByRole('option', { name: 'architect' })).toBeTruthy()
+    expect(within(updatedSelect).getByRole('option', { name: 'reviewer (undeclared)' })).toBeTruthy()
+
+    // Adding a role entity with a typed id offers it immediately.
+    fireEvent.click(screen.getByRole('button', { name: en['roles.add'] }))
+    const ids = screen.getAllByLabelText(en['roles.id'])
+    fireEvent.change(ids[ids.length - 1]!, { target: { value: 'coder' } })
+    view.rerender(<FallbacksCard {...props} />)
+    expect(within(updatedSelect).getByRole('option', { name: 'coder' })).toBeTruthy()
+  })
+
+  it('blocks save on an invalid role id: banner + inline red, no gateway write', async () => {
+    const { view, props, scripted } = await mountCard({ config: TWO_BLOCK_CONFIG })
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    fireEvent.change(screen.getAllByLabelText(en['roles.id'])[0]!, { target: { value: 'Bad ID' } })
+    view.rerender(<FallbacksCard {...props} />)
+    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    view.rerender(<FallbacksCard {...props} />)
+    // The write is intercepted: no fallbacks/set ever crosses the wire.
+    expect(scripted.set).not.toHaveBeenCalled()
+    expect(scripted.call).not.toHaveBeenCalledWith('/api', 'fallbacks/set', expect.anything())
+    // The error banner carries the blocked notice + the offending message.
+    const alert = screen.getByRole('alert')
+    expect(alert.textContent).toContain(en['validation.blocked'])
+    expect(alert.textContent).toContain(en['validation.roleIdFormat'])
+    // Only the offending id input is marked inline (aria-invalid drives the
+    // red border); the sibling role stays clean.
+    const ids = screen.getAllByLabelText(en['roles.id'])
+    expect(ids[0]!.getAttribute('aria-invalid')).toBe('true')
+    expect(ids[1]!.getAttribute('aria-invalid')).toBeNull()
+  })
+
+  it('blocks save on the reserved id "inherit" and on duplicate ids', async () => {
+    const { view, props, scripted } = await mountCard({ config: TWO_BLOCK_CONFIG })
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    // Reserved word.
+    fireEvent.change(screen.getAllByLabelText(en['roles.id'])[0]!, { target: { value: 'inherit' } })
+    view.rerender(<FallbacksCard {...props} />)
+    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    view.rerender(<FallbacksCard {...props} />)
+    expect(scripted.set).not.toHaveBeenCalled()
+    expect(screen.getByRole('alert').textContent).toContain(en['validation.roleIdReserved'])
+    // Duplicates (after fixing the reserved id to a legal one).
+    fireEvent.change(screen.getAllByLabelText(en['roles.id'])[0]!, { target: { value: 'coder' } })
+    fireEvent.change(screen.getAllByLabelText(en['roles.id'])[1]!, { target: { value: 'coder' } })
+    view.rerender(<FallbacksCard {...props} />)
+    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    view.rerender(<FallbacksCard {...props} />)
+    expect(scripted.set).not.toHaveBeenCalled()
+    expect(screen.getByRole('alert').textContent).toContain(en['validation.roleIdDuplicate'])
+    const ids = screen.getAllByLabelText(en['roles.id'])
+    expect(ids[0]!.getAttribute('aria-invalid')).toBe('true')
+    expect(ids[1]!.getAttribute('aria-invalid')).toBe('true')
+  })
+
+  it('clears the blocked-save state once the draft is valid again, then saves', async () => {
+    const { view, props, scripted } = await mountCard({ config: TWO_BLOCK_CONFIG })
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    fireEvent.change(screen.getAllByLabelText(en['roles.id'])[0]!, { target: { value: 'Bad ID' } })
+    view.rerender(<FallbacksCard {...props} />)
+    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    view.rerender(<FallbacksCard {...props} />)
+    expect(scripted.set).not.toHaveBeenCalled()
+    expect(screen.getByRole('alert').textContent).toContain(en['validation.blocked'])
+    // Fixing the offending id alone leaves the rule referencing the old id
+    // undeclared (the banner honestly stays); repairing the reference too
+    // makes the draft valid → banner + inline mark clear live, with no
+    // stale "blocked" presentation over a valid draft.
+    fireEvent.change(screen.getAllByLabelText(en['roles.id'])[0]!, { target: { value: 'coder' } })
+    fireEvent.change(screen.getAllByLabelText(en['roles.rule.role'])[0]!, { target: { value: 'coder' } })
+    view.rerender(<FallbacksCard {...props} />)
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.getAllByLabelText(en['roles.id'])[0]!.getAttribute('aria-invalid')).toBeNull()
+    // A subsequent valid save goes through.
+    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    await waitFor(() => expect(scripted.set).toHaveBeenCalled())
+  })
+
+  it('preserves schema-reserved prompt/permissions through a save (rows do not round-trip them)', async () => {
+    const config: typeof defaultFallbacksConfig = {
+      ...defaultFallbacksConfig,
+      enabled: true,
+      roles: {
+        list: [{
+          id: 'reviewer', label: '', description: '',
+          prompt: 'You review', permissions: { allow: ['read'] },
+        }],
+        rules: [],
+      },
+    }
+    const { view, props, scripted } = await mountCard({ config })
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    // The card starts CLEAN: the merged draft equals the accepted config
+    // (no unsaved pill), proving the merge participates in dirty.
+    expect(screen.queryByText(en.unsaved)).toBeNull()
+    fireEvent.change(screen.getByLabelText(en['cooldownMs.label']), { target: { value: '7000' } })
+    view.rerender(<FallbacksCard {...props} />)
+    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    await waitFor(() => {
+      expect(scripted.set).toHaveBeenCalledWith(expect.objectContaining({
+        args: { patch: expect.objectContaining({
+          cooldownMs: 7000,
+          roles: {
+            list: [expect.objectContaining({
+              id: 'reviewer', prompt: 'You review', permissions: { allow: ['read'] },
+            })],
+            rules: [],
+          },
+        }) },
+      }))
+    })
+  })
+
+  it('renders the migration banner from wire legacyKeys without blocking editing or saves', async () => {
+    const { view, props, controller, scripted } = await mountCard({
+      config: ENABLED_CONFIG,
+      legacyKeys: ['chains', 'roles.default'],
+    })
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    expect(controller.store.getSnapshot().legacyKeys).toEqual(['chains', 'roles.default'])
+    expect(screen.getByText(en['legacy.banner'])).toBeTruthy()
+    // The banner never blocks editing: the form stays writable and a save
+    // still crosses the wire (informational only, spec §8).
+    expect((screen.getByLabelText(en['enabled.label']) as HTMLInputElement).disabled).toBe(false)
+    fireEvent.change(screen.getByLabelText(en['cooldownMs.label']), { target: { value: '7000' } })
+    view.rerender(<FallbacksCard {...props} />)
+    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    await waitFor(() => expect(scripted.set).toHaveBeenCalled())
   })
 })
