@@ -2,8 +2,8 @@
 
 | Document | Source Plan | Description | Status |
 |----------|-------------|-------------|--------|
-| [architecture-patterns/dsh-llm-fallbacks.md](architecture-patterns/dsh-llm-fallbacks.md) | llm-fallbacks-plugin | dsh LLM fallback 双 waterfall 恢复架构（ADR-1..4、链解析、冷却/安全阀、always-cap、状态机、gateway 通道与 KD-G3/种子不变量、入口面、已知限制） | Active |
-| [best-practices/dsh-cordis-plugin-authoring.md](best-practices/dsh-cordis-plugin-authoring.md) | llm-fallbacks-plugin | dsh 第三方 cordis 插件创作 playbook（bundle/client/真实包链接 DSH_HOME/构建/设置入口两形态与 gateway 数据面/remote events 失效刷新/事件监听组合顺序与 persona 可读性/关键坑） | Active |
+| [architecture-patterns/dsh-llm-fallbacks.md](architecture-patterns/dsh-llm-fallbacks.md) | llm-fallbacks-plugin | dsh LLM fallback 双 waterfall 恢复架构（ADR-1..4、两块制配置模型 rootChain + roles.list/rules + inherit 语义、append-not-replace、legacy 三通道与 schemastery 未知键保留、warn-not-crash 校验、单遍历决策、冷却/安全阀、always-cap、状态机、gateway 通道与 KD-G3/种子不变量、入口面、已知限制） | Active |
+| [best-practices/dsh-cordis-plugin-authoring.md](best-practices/dsh-cordis-plugin-authoring.md) | llm-fallbacks-plugin | dsh 第三方 cordis 插件创作 playbook（bundle/client/真实包链接 DSH_HOME/构建/设置入口两形态与 gateway 数据面/remote events 失效刷新/schemastery 组合未知键保留与 schema-breaking 迁移三通道/事件监听组合顺序与 persona 可读性/关键坑） | Active |
 | [workflow-patterns/harness-sandbox-verification.md](workflow-patterns/harness-sandbox-verification.md) | llm-fallbacks-plugin | dsh 沙箱兼容验证模式（scratch DSH_HOME / 只读 git apply --check / 编译级验证） | Active |
 | [build-errors/css-modules-hash-invalid-selector.md](build-errors/css-modules-hash-invalid-selector.md) | llm-fallbacks-settings-style | CSS Modules 哈希类名数字开头 → 浏览器静默丢弃样式规则（构建根因 + 双位置契约断言 + CSSOM 验证模式） | Active |
 | [build-errors/dsh-client-bundle-purity-gate.md](build-errors/dsh-client-bundle-purity-gate.md) | fallbacks-plugin-config-card | Client bundle purity 门失明缺口：alwaysBundle 静默内联使 require-only 断言失明（94 kB 负向探针实证）；resolveId 门 + emitted-surface token 扫描双层修复 | Active |

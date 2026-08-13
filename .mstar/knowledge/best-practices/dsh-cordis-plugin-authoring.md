@@ -1,7 +1,7 @@
 ---
 module: dsh-plugin-authoring
 date: 2026-08-10
-last_updated: 2026-08-12
+last_updated: 2026-08-13
 problem_type: best_practice
 category: best-practices
 severity: low
@@ -17,6 +17,7 @@ tags:
   - bundle
   - real-code-linking
   - settings
+  - schemastery
 ---
 
 # dsh 第三方 cordis 插件创作模式（已验证 playbook）
@@ -68,6 +69,18 @@ dsh 插件 = npm 包，package.json 声明 dsh.bundle.patch（指向 bundle/cord
 - **功能级开关（feature master switch）模式**：用配置字段本身（如 fallbacks 命名空间的 `enabled` 字段）作页面显隐开关——OFF 时隐藏表单主体 + 显示提示（隐藏不丢弃：draft 保留、拨动即时显隐），ON 时显示完整配置界面；开关状态 = 用户配置字段（保存持久化、重载保持），不是纯 UI 本地态。默认值如需翻转（如 enabled true→false），单点改 defaultFallbacksConfig + schema。
 - **配置默认值翻转的测试基准**：翻转默认值会连带破坏所有走共享 cfg() 基准的用例——把测试基准显式钉到活跃态（cfg() = { ...defaults, enabled: true, ...overrides }），只翻转显式断言默认值的用例（config.spec），并新增「默认配置 → no-op」专项用例锁定回归不变量；store 单测按 gateway 语义拆分（get 失败 → present=false 骨架、draft 不播种默认值、describe 仍调用但不再读 fallbacks ns）。
 - **测试矩阵文档会漂移**：docs/verification.md 的用例计数在迭代中反复过期（153→163→168）——更新文档时顺手校准，或以 grep 计数为准。
+
+### schemastery 组合与 schema-breaking 配置迁移（未知键保留，iter-20260813 T1 实测）
+
+`schemastery` `Config()` 组合对**未知键采用保留策略（retain）**——schema 未声明的键不丢弃：顶层、嵌套对象、列表项均原值透传（实测 schemastery@3.18.0：`Object.hasOwn(out, 'chains') === true`、`roles.default` 保留、列表项 `chain` 保留）。对插件配置迁移的三点影响：
+
+- **schema-breaking 删除的旧键仍可见于组合对象**：「零残留」必须在 schema 与类型层面达成（迁移表除外）；组合对象天然携带用户层残留旧键。
+- **wire 层需显式规范化**：组合对象 ≠ 新 schema 形状——`validateConfigPatch` 按新键集 own-key membership 拒绝未知键（不受保留行为影响），`get` 响应按新键集组装。
+- **legacy 检测直接读组合对象**：`detectLegacyKeys(source())` 组合后即准确——无需 raw 入参快照 fallback 策略（fallbacks 实测：旧键随用户层写入保留在组合对象上，检测即准确）。
+
+**三通道迁移模式**（breaking 不自动迁移）：启动 `logger.warn` + gateway `legacyKeys` + UI 迁移横幅（表单保持可编辑）+ docs 迁移映射表；插件绝不自动改写配置。
+
+**组合空值填充语义**（已声明可选字段的等价默认）：`chain` 缺省 → `[]`、`permissions` 缺省 → `{ allow: [], deny: [] }`、字符串可选字段（如 `prompt`）缺省 → 不出现——「无自身链 / 无权限」语义等价，消费方 `roleDef?.chain ?? []` 不变；空组合 `Config({})` 深等于默认配置（no-op 不变式的组合侧验证）。
 
 ### 事件监听组合顺序与运行时面可读性（waterfall 内外层）
 
