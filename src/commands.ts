@@ -2,8 +2,9 @@
  * `/fallbacks` slash command (plan fallbacks-mount-map-command Task 2, AC-5).
  *
  * Session-scoped, read-only diagnostic: current session origin → resolved
- * role → resolved chain (role key, else `default`) → recent `fallbacks/switch`
- * events (newest first, capped) → cooldown status. Mirrors dsh-advisor's
+ * role → resolved chain (role chain, else rootChain — an `inherit: true`
+ * tail is annotated 「（inherit-root）」) → recent `fallbacks/switch` events
+ * (newest first, capped) → cooldown status. Mirrors dsh-advisor's
  * `/advisor` command pattern: a conditional `ctx.inject(['commands'])` child
  * in `src/index.ts` calls {@link registerFallbacksCommands} with a
  * factory-bound handler; `commands` never joins the top-level inject list, so
@@ -59,7 +60,10 @@ export interface FallbacksCommandSnapshot {
   readonly role: string
   /** True when the role's own chain is non-empty and shown; false when rootChain (or none) is shown. */
   readonly chainRole: boolean
-  /** The displayed chain entries (role chain, else rootChain); empty = not configured. */
+  /** The displayed chain entries: the role's own chain when non-empty, else
+   * rootChain — except `fallback: 'none'` with an empty own chain, which
+   * yields `[]` even when rootChain is non-empty (nothing appended, mirroring
+   * resolveChainViews' `[...[], ...[]]`); empty = not configured. */
   readonly chain: readonly string[]
   /** True when rootChain is appended as the inherit fallback tail (role's
    * `fallback` is `'inherit-root'` — or the role is unknown — and rootChain
@@ -93,9 +97,8 @@ export const FALLBACKS_COMMAND_LOCALES = {
     origin: '会话来源',
     role: '角色',
     chain: '链',
-    chainDefault: '（default 兜底）',
+    inheritRoot: '（inherit-root）',
     chainNone: '未配置',
-    chainKeysCaveat: '（含模型级链键 provider/model、provider/* — 诊断仅显示 role/default 链）',
     switches: '最近切换',
     switchesNone: '本会话暂无 fallback 切换',
     switchLine: '{from} → {to}（role={role}，reason={reason}）',
@@ -114,9 +117,8 @@ export const FALLBACKS_COMMAND_LOCALES = {
     origin: 'Session origin',
     role: 'Role',
     chain: 'Chain',
-    chainDefault: ' (default fallback)',
+    inheritRoot: ' (inherit-root)',
     chainNone: 'not configured',
-    chainKeysCaveat: ' (model-specific chain keys provider/model, provider/* present — diagnostic shows role/default only)',
     switches: 'Recent switches',
     switchesNone: 'No fallback switches in this session',
     switchLine: '{from} → {to} (role={role}, reason={reason})',
@@ -207,17 +209,6 @@ export function resolveChainForDiagnostic(
   return { chainRole: roleChain.length > 0, chain, inherit }
 }
 
-/**
- * True when `chains` declares model-specific keys (`provider/model` or
- * `provider/*` — any key containing `/`) in addition to role/default keys.
- * The `/fallbacks` diagnostic only renders role → default, while runtime
- * `resolveChain` also consults these keys, so such configs are the drift
- * surface qc1 F-001 flags. Pure config-shape probe — no resolution.
- */
-export function hasModelSpecificChainKeys(chains: Record<string, readonly string[]>): boolean {
-  return Object.keys(chains).some((key) => key.includes('/'))
-}
-
 // ---------------------------------------------------------------------------
 // Rendering
 // ---------------------------------------------------------------------------
@@ -258,7 +249,7 @@ export function fallbacksCommandText(
   if (snapshot.chain.length === 0) {
     lines.push(`${t.chain}: ${t.chainNone}`)
   } else {
-    const suffix = snapshot.chainRole ? '' : t.chainDefault
+    const suffix = snapshot.inherit ? t.inheritRoot : ''
     lines.push(`${t.chain}: ${snapshot.chain.join(' → ')}${suffix}`)
   }
   if (snapshot.switches.length === 0) {

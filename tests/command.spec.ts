@@ -1,9 +1,10 @@
 /**
  * `/fallbacks` slash command tests (plan fallbacks-mount-map-command Task 2,
  * AC-5 / AC-7): registration shape, snapshot building (role/chain
- * resolution, recent switches, cooldown), zh/en rendering smoke, the
- * factory-bound handler, and the wiring's conditional `commands` child
- * against real runtime state (no top-level inject pollution).
+ * resolution incl. the inherit-root tail, recent switches, cooldown),
+ * zh/en rendering smoke, the factory-bound handler, and the wiring's
+ * conditional `commands` child against real runtime state (no top-level
+ * inject pollution).
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -14,7 +15,6 @@ import { cfg, dispatchRequestError, makeAgent } from './support/harness.ts'
 import { MemorySettings } from './support/memory-settings.ts'
 import {
   fallbacksCommandText,
-  hasModelSpecificChainKeys,
   RECENT_SWITCHES_LIMIT,
   recentFallbacksSwitches,
   registerFallbacksCommands,
@@ -32,7 +32,7 @@ function snapshot(overrides: Partial<FallbacksCommandSnapshot> = {}): FallbacksC
     role: 'default',
     chainRole: true,
     chain: ['anthropic/claude-3-5-sonnet', 'openai/*'],
-    chainKeysModelSpecific: false,
+    inherit: false,
     switches: [
       {
         turn: 1,
@@ -96,33 +96,50 @@ describe('registerFallbacksCommands — registration shape', () => {
 })
 
 describe('snapshot building helpers', () => {
-  it('resolveChainForDiagnostic prefers the role key and falls back to default', () => {
-    const chains = { reviewer: ['openai/gpt-4o-mini'], default: ['other/gpt-4o'] }
-    expect(resolveChainForDiagnostic(chains, 'reviewer')).toEqual({
+  it('resolveChainForDiagnostic prefers the declared role chain and marks the inherit-root tail', () => {
+    const roles = [{ id: 'reviewer', label: '', description: '', chain: ['openai/gpt-4o-mini'] }]
+    // Own chain shown; a non-empty rootChain is appended as the inherit tail.
+    expect(resolveChainForDiagnostic(roles, ['other/gpt-4o'], 'reviewer')).toEqual({
       chainRole: true,
       chain: ['openai/gpt-4o-mini'],
+      inherit: true,
     })
-    expect(resolveChainForDiagnostic(chains, 'default')).toEqual({
+    // No rootChain → no inherit tail to annotate.
+    expect(resolveChainForDiagnostic(roles, [], 'reviewer')).toEqual({
       chainRole: true,
-      chain: ['other/gpt-4o'],
+      chain: ['openai/gpt-4o-mini'],
+      inherit: false,
     })
-    // role key missing → default chain, marked as fallback
-    expect(resolveChainForDiagnostic(chains, 'unknown-role')).toEqual({
+  })
+
+  it('resolveChainForDiagnostic defers an empty own chain and unknown roles to rootChain', () => {
+    const roles = [{ id: 'reviewer', label: '', description: '', chain: [] }]
+    const rootChain = ['other/gpt-4o']
+    expect(resolveChainForDiagnostic(roles, rootChain, 'reviewer')).toEqual({
       chainRole: false,
       chain: ['other/gpt-4o'],
+      inherit: true,
+    })
+    // Undeclared role id → rootChain + inherit tail (defensive, no crash).
+    expect(resolveChainForDiagnostic(roles, rootChain, 'unknown-role')).toEqual({
+      chainRole: false,
+      chain: ['other/gpt-4o'],
+      inherit: true,
     })
   })
 
   it('resolveChainForDiagnostic reports an unconfigured chain as empty', () => {
-    expect(resolveChainForDiagnostic({}, 'default')).toEqual({ chainRole: false, chain: [] })
+    expect(resolveChainForDiagnostic([], [], 'default')).toEqual({ chainRole: false, chain: [], inherit: false })
   })
 
-  it('hasModelSpecificChainKeys flags provider/model and provider/* keys only', () => {
-    expect(hasModelSpecificChainKeys({ 'openai/gpt-4o': ['anthropic/claude-3-5-sonnet'] })).toBe(true)
-    expect(hasModelSpecificChainKeys({ 'openai/*': ['anthropic/claude-3-5-sonnet'] })).toBe(true)
-    expect(hasModelSpecificChainKeys({ default: ['other/gpt-4o'], reviewer: ['openai/gpt-4o-mini'] })).toBe(false)
-    expect(hasModelSpecificChainKeys({ default: ['other/gpt-4o'], 'openai/gpt-4o': ['other/gpt-4o'] })).toBe(true)
-    expect(hasModelSpecificChainKeys({})).toBe(false)
+  it('resolveChainForDiagnostic yields [] for fallback none with an empty own chain even when rootChain is non-empty', () => {
+    const roles = [{ id: 'reviewer', label: '', description: '', chain: [], fallback: 'none' }]
+    // Mirror resolveChainViews' `[...[], ...[]]` exactly — nothing appended.
+    expect(resolveChainForDiagnostic(roles, ['other/gpt-4o'], 'reviewer')).toEqual({
+      chainRole: false,
+      chain: [],
+      inherit: false,
+    })
   })
 
   it('recentFallbacksSwitches filters the event log, newest first, capped at the limit', () => {
@@ -162,40 +179,39 @@ describe('snapshot building helpers', () => {
 })
 
 describe('fallbacksCommandText — output states', () => {
-  it('renders origin, role, and a configured role chain', () => {
+  it('renders origin, role, and a configured role chain without an inherit annotation', () => {
     const text = fallbacksCommandText(snapshot(), 'zh')
     expect(text).toContain('会话来源: root')
     expect(text).toContain('角色: default')
     expect(text).toContain('链: anthropic/claude-3-5-sonnet → openai/*')
-    expect(text).not.toContain('兜底')
+    expect(text).not.toContain('inherit-root')
   })
 
-  it('renders the default-chain fallback marker when the role key is missing', () => {
-    const text = fallbacksCommandText(snapshot({ chainRole: false, chain: ['other/gpt-4o'] }), 'zh')
-    expect(text).toContain('链: other/gpt-4o（default 兜底）')
+  it('appends the inherit-root annotation when the chain inherits rootChain (inherit: true)', () => {
+    const zh = fallbacksCommandText(snapshot({ chainRole: true, chain: ['openai/gpt-4o-mini'], inherit: true }), 'zh')
+    expect(zh).toContain('链: openai/gpt-4o-mini（inherit-root）')
+    const en = fallbacksCommandText(snapshot({ chainRole: false, chain: ['other/gpt-4o'], inherit: true }), 'en')
+    expect(en).toContain('Chain: other/gpt-4o (inherit-root)')
   })
 
   it('renders "not configured" when no chain exists', () => {
-    const zh = fallbacksCommandText(snapshot({ chainRole: false, chain: [] }), 'zh')
+    const zh = fallbacksCommandText(snapshot({ chainRole: false, chain: [], inherit: false }), 'zh')
     expect(zh).toContain('链: 未配置')
-    const en = fallbacksCommandText(snapshot({ chainRole: false, chain: [] }), 'en')
+    const en = fallbacksCommandText(snapshot({ chainRole: false, chain: [], inherit: false }), 'en')
     expect(en).toContain('Chain: not configured')
   })
 
-  it('renders the model-specific-keys caveat when the config declares provider/model keys', () => {
-    const zh = fallbacksCommandText(snapshot({ chainKeysModelSpecific: true }), 'zh')
-    expect(zh).toContain('（含模型级链键 provider/model、provider/* — 诊断仅显示 role/default 链）')
-    const en = fallbacksCommandText(snapshot({ chainKeysModelSpecific: true }), 'en')
-    expect(en).toContain(
-      '(model-specific chain keys provider/model, provider/* present — diagnostic shows role/default only)',
+  it('renders "not configured" for a fallback-none role with an empty own chain despite a rootChain', () => {
+    // Full path: resolution (none + empty → []) feeds the renderer → 未配置.
+    const { chain, inherit } = resolveChainForDiagnostic(
+      [{ id: 'reviewer', label: '', description: '', chain: [], fallback: 'none' }],
+      ['other/gpt-4o'],
+      'reviewer',
     )
-  })
-
-  it('omits the caveat when the config has no model-specific chain keys', () => {
-    const zh = fallbacksCommandText(snapshot(), 'zh')
-    expect(zh).not.toContain('模型级链键')
-    const en = fallbacksCommandText(snapshot(), 'en')
-    expect(en).not.toContain('model-specific chain keys')
+    expect(chain).toEqual([])
+    expect(inherit).toBe(false)
+    const zh = fallbacksCommandText(snapshot({ chainRole: false, chain, inherit }), 'zh')
+    expect(zh).toContain('链: 未配置')
   })
 
   it('lists recent switches newest-first with from/to/role/reason', () => {
@@ -327,7 +343,7 @@ describe('apply() wiring — conditional commands child', () => {
         return () => {}
       },
     } as never)
-    apply(ctx, cfg({ chains: { default: ['other/gpt-4o'] } }))
+    apply(ctx, cfg({ rootChain: ['other/gpt-4o'] }))
     await vi.waitFor(() => expect(registered).toHaveLength(1))
     expect(registered[0]?.name).toBe('fallbacks')
   })
@@ -340,7 +356,7 @@ describe('apply() wiring — conditional commands child', () => {
         return () => {}
       },
     } as never)
-    apply(ctx, cfg({ chains: { default: ['other/gpt-4o'] } }))
+    apply(ctx, cfg({ rootChain: ['other/gpt-4o'] }))
     await vi.waitFor(() => expect(registered).toHaveLength(1))
 
     const { agent } = makeAgent('cmd-agent', { provider: 'mock', model: 'gpt-4o' })
@@ -357,8 +373,9 @@ describe('apply() wiring — conditional commands child', () => {
     expect(result.kind).toBe('success')
     const text = (result as { text?: string }).text ?? ''
     expect(text).toContain('会话来源: root')
-    expect(text).toContain('角色: default')
-    expect(text).toContain('链: other/gpt-4o')
+    // No rules match → the built-in 'inherit' role → rootChain + inherit tail.
+    expect(text).toContain('角色: inherit')
+    expect(text).toContain('链: other/gpt-4o（inherit-root）')
     expect(text).toContain('mock/gpt-4o → other/gpt-4o')
     expect(text).toContain('reason=触发码')
     expect(text).toContain('冷却 (1):')
