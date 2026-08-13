@@ -95,7 +95,7 @@
 
 候选过滤（命中即跳过）：与当前模型相同、处于冷却期、本 step 已失败、`provider/*` 条目目标 provider 无此模型 id。
 
-> **运行时落地说明**：上述角色解析 / 链拼接的**新语义运行时消费落地在 Plan 2（fallbacks-role-runtime）**；本轮（iter-20260813）**配置形状已生效**——schema、校验、UI 编辑面与 legacy 检测均按新模型工作，运行时决策暂经最小过渡适配读取旧形状（源码标注 `TODO(plan fallbacks-role-runtime T2)`），决策行为不变。
+> **运行时落地说明**：上述角色解析 / 链拼接的新语义已由运行时（`src/roles.ts` / `src/chains.ts` / `src/index.ts`，fallbacks-role-runtime Plan 2）消费；旧形状字段（`chains` / `roles.default` / 未声明角色引用）启动时经 `detectLegacyKeys` 告警提示迁移（见下方迁移映射表），决策行为按新模型工作。
 
 ## 示例 YAML
 
@@ -169,7 +169,7 @@ fallbacks:
 旧格式配置升级后经**三通道**提示，不静默丢失、**不自动改文件**：
 
 1. **UI 横幅**（本轮已生效）：Fallbacks 卡片主体顶部渲染迁移提示（`get` / `set` / `reset` 响应 `legacyKeys` 非空时）——「检测到旧格式配置字段（…）：已按新模型展示，请按 docs/configuration.md 迁移表手工改写；插件不会自动改写配置。」不阻断编辑、不改磁盘；**保存不删除旧格式键**（`set` 为合并语义，旧 `chains` / `roles.default` 会保留在 user layer）——清理请手动编辑 YAML，或用「恢复默认」重置该命名空间。
-2. **启动 warn**（日志文案落地在 Plan 2 `apply()`）：插件启动/配置读取时以 `logger.warn` 提示检测到的 legacy 字段。本轮已产出检测能力（`detectLegacyKeys` / `legacyKeys` 管道），启动告警文案随 Plan 2 运行时切换一并落地；三通道在 Plan 1 + Plan 2 均 Done 后闭合。
+2. **启动 warn**（已落地）：插件启动/配置读取时以 `logger.warn` 提示检测到的 legacy 字段——`apply()` 经 `detectLegacyKeys` 检测，`legacyKeys` 管道同步报告；三通道已闭合。
 3. **本文档迁移表**：上节「迁移映射表」为手工改写依据。
 
 ## web 插件配置卡使用说明
@@ -186,7 +186,7 @@ fallbacks:
 - **model-selection 协调（AC-2，文档化降级）**：存在活跃 model-selection（用户在设置页 / `settings.yaml` 选择了 provider/model）时，触发码故障后的切换**仍然决策并记录**（`fallbacks/switch` 事件、冷却；当步实际路由可能被活跃 selection 覆写，最终 provider/model 以重新套用的选择为准）——这是去掉本地 patch 标记协调后的**宿主原生行为**（T2 结论，见 [docs/verification.md](docs/verification.md) §4.3）。request-error 触发链不受影响；无活跃 selection 时路由到链目标。卡片含一行降级说明（`status.selectionNote`，zh/en）。
 - **恢复默认**：一键把该命名空间的用户配置重置为组合默认值（`enabled` 回 `false`）——经 gateway `reset`（清空 user layer，组合默认值生效）。
 - **保存与错误呈现**：保存经 gateway `set`（merge 语义）写 user layer，无 revision guard——并发/写失败时错误横幅如实呈现保存结果，骨架与 draft 保留（不静默覆盖）。
-- **只读状态块**：显示**当前生效模型**（由配置 + 最近切换**推导**的展示值——无切换时取 `rootChain` 首项；未启用或 `rootChain` 未配置时显示「fallbacks 未启用（或 rootChain 未配置）」；非实时路由探测，附非实时说明文案）+ **最近切换摘要**（来自当前会话原始 `fallbacks/switch` 事件面，最新在前，每条含 from/to/role/reason/时间）。摘要随 `settings/document-updated`（fallbacks 命名空间）/ `llm/adapters-updated`（仅目录）/ 会话切换 / 连接重置推送刷新（无轮询）——页面打开期间发生的切换，在下一次推送或重载页面后呈现；状态块只读、不可编辑。会话内的同款诊断也可用 `/fallbacks` 命令查看（见 README）。**Legacy 注意**：仅配旧格式 `chains`（未迁移、无 `rootChain`）的用户，状态块按新形状推导会显示「未启用（或 rootChain 未配置）」，但运行时在 Plan 2 切换前仍按旧 `chains` 降级——此阶段以卡片顶部的**迁移横幅**为迁移信号（见「三通道 legacy 提示」）。
+- **只读状态块**：显示**当前生效模型**（由配置 + 最近切换**推导**的展示值——无切换时取 `rootChain` 首项；未启用或 `rootChain` 未配置时显示「fallbacks 未启用（或 rootChain 未配置）」；非实时路由探测，附非实时说明文案）+ **最近切换摘要**（来自当前会话原始 `fallbacks/switch` 事件面，最新在前，每条含 from/to/role/reason/时间）。摘要随 `settings/document-updated`（fallbacks 命名空间）/ `llm/adapters-updated`（仅目录）/ 会话切换 / 连接重置推送刷新（无轮询）——页面打开期间发生的切换，在下一次推送或重载页面后呈现；状态块只读、不可编辑。会话内的同款诊断也可用 `/fallbacks` 命令查看（见 README；显示**角色自身链条目**，rootChain 兜底时以「（inherit-root）」标注、不逐条渲染 rootChain 条目；角色无自身链时才完整显示 rootChain 条目，与运行时拼接顺序一致）。**Legacy 注意**：仅配旧格式 `chains`（未迁移、无 `rootChain`）的用户，状态块按新形状推导会显示「未启用（或 rootChain 未配置）」——运行时**不再读取**旧 `chains` 键（决策只按新形状工作，仅配旧字段时表现为 no-op 透传），迁移信号以启动 warn 与卡片顶部**迁移横幅**为准（见「三通道 legacy 提示」）。
 
 ## 行为说明
 

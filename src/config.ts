@@ -8,9 +8,8 @@
  * `roles.rules` enum references into the declared ids (or the built-in
  * `'inherit'` role). The legacy `chains` / `roles.default` keys are gone
  * from the schema and type (zero residual, migration table excepted); the
- * runtime still reads them through minimal transition adapters in
- * `src/index.ts` (each tagged `TODO(plan fallbacks-role-runtime T2)`) until
- * Plan 2 switches the decision path.
+ * runtime consumes the new shape directly and flags surviving legacy keys
+ * at startup via `detectLegacyKeys` (see `src/index.ts` apply()).
  *
  * Spec §4 is authoritative for field names and default values — notably
  * `triggerCodes` defaults to dsh's stable failure codes `['AUTH', 'QUOTA',
@@ -235,8 +234,9 @@ function isRecordLike(value: unknown): value is Record<string, unknown> {
  * Object fields are optional by default in schemastery; `.default()` fills
  * the spec defaults, `.required()` keeps mandatory fields. Unknown keys are
  * RETAINED by the composition (verified plan Task 1 Step 1) — that is what
- * lets the T1 transition adapters read the legacy `chains`/`roles.default`
- * off the composed object until Plan 2 removes them.
+ * lets `detectLegacyKeys` flag two-block-era leftovers (`chains` /
+ * `roles.default`) on the composed object at startup (warn + gateway
+ * `legacyKeys`, see `src/index.ts` apply()).
  */
 export const Config = z.object({
   enabled: z.boolean().default(false),

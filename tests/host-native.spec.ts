@@ -49,7 +49,7 @@ afterEach(async () => {
 describe('host-native baseline (patch-free plugin)', () => {
   it('switches on a trigger code and routes the next request to the chain target', async () => {
     const { agent } = makeAgent('native-trigger', { provider: 'mock', model: 'gpt-4o' })
-    apply(ctx, cfg({ chains: { default: ['other/gpt-4o'] } }))
+    apply(ctx, cfg({ rootChain: ['other/gpt-4o'] }))
 
     // The decision path (request-error) and the switch apply (request) both
     // run against the real dsh-agent module — no marker, no patch, no mock.
@@ -61,7 +61,7 @@ describe('host-native baseline (patch-free plugin)', () => {
 
   it('applies the always-cap switch (second return point)', async () => {
     const { agent } = makeAgent('native-cap', { provider: 'mock', model: 'gpt-4o' })
-    apply(ctx, cfg({ chains: { default: ['other/gpt-4o'] }, alwaysModeRetryCap: 1 }))
+    apply(ctx, cfg({ rootChain: ['other/gpt-4o'], alwaysModeRetryCap: 1 }))
 
     appendLlmRetry(agent, { turn: 1, step: 1, provider: 'mock', mode: 'always', retry: 1 })
     const config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })

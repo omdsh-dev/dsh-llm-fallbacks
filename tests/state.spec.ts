@@ -14,7 +14,7 @@ import { StepFailureSet } from '../src/cooldown.ts'
 const pending = (overrides: Partial<PendingSwitch> = {}): PendingSwitch => ({
   from: { provider: 'mock', model: 'gpt-4o' },
   to: { provider: 'other', model: 'gpt-4o' },
-  role: 'default',
+  role: 'inherit',
   reason: 'trigger-code',
   ...overrides,
 })

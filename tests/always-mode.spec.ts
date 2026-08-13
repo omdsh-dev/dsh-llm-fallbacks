@@ -47,7 +47,7 @@ afterEach(async () => {
 describe('always-mode cap at the agent/request boundary (spec §2 clause 5 / ADR-2)', () => {
   it('switches only once always-mode retries reach the cap; below the cap the request passes unchanged and request-error is not preempted', async () => {
     const { agent } = makeAgent('cap-gate', { provider: 'mock', model: 'gpt-4o' })
-    apply(ctx, cfg({ chains: { default: ['other/gpt-4o'] }, alwaysModeRetryCap: 3 }))
+    apply(ctx, cfg({ rootChain: ['other/gpt-4o'], alwaysModeRetryCap: 3 }))
 
     // Below the cap (2 always retries): the request passes unchanged, effort
     // and all; a non-trigger request-error (the always backoff path) is NOT
@@ -85,7 +85,7 @@ describe('always-mode cap at the agent/request boundary (spec §2 clause 5 / ADR
 
   it('counts only always-mode events under the real llm/retry event shape (T3 fix review ⚠️2)', async () => {
     const { agent } = makeAgent('cap-shape', { provider: 'mock', model: 'gpt-4o' })
-    apply(ctx, cfg({ chains: { default: ['other/gpt-4o'] }, alwaysModeRetryCap: 3 }))
+    apply(ctx, cfg({ rootChain: ['other/gpt-4o'], alwaysModeRetryCap: 3 }))
 
     // Full-shape normal-mode retries (a bounded RATE_LIMIT budget): they
     // belong to llm-retry and must never count toward the cap.
@@ -113,7 +113,7 @@ describe('always-mode cap at the agent/request boundary (spec §2 clause 5 / ADR
 
   it('scopes the count to the current (turn, step, provider)', async () => {
     const { agent } = makeAgent('cap-scope', { provider: 'mock', model: 'gpt-4o' })
-    apply(ctx, cfg({ chains: { default: ['other/gpt-4o'] }, alwaysModeRetryCap: 3 }))
+    apply(ctx, cfg({ rootChain: ['other/gpt-4o'], alwaysModeRetryCap: 3 }))
 
     // Retries for other (turn, step) pairs and other providers must not trip
     // the cap at (1, 1, mock) — appended in chronological order (older first).
@@ -129,7 +129,7 @@ describe('always-mode cap at the agent/request boundary (spec §2 clause 5 / ADR
 
   it('disables the mechanism when alwaysModeRetryCap is 0', async () => {
     const { agent } = makeAgent('cap-zero', { provider: 'mock', model: 'gpt-4o' })
-    apply(ctx, cfg({ chains: { default: ['other/gpt-4o'] }, alwaysModeRetryCap: 0 }))
+    apply(ctx, cfg({ rootChain: ['other/gpt-4o'], alwaysModeRetryCap: 0 }))
 
     for (let retry = 1; retry <= 5; retry += 1) {
       appendLlmRetry(agent, { turn: 1, step: 1, provider: 'mock', mode: 'always', retry })
@@ -146,7 +146,7 @@ describe('always-mode cap at the agent/request boundary (spec §2 clause 5 / ADR
     // the next buildRequest — then the switch applies and the step succeeds.
     installLlmRetryStub(ctx)
     const { agent, setRoute } = makeAgent('cap-e2e', { provider: 'mock', model: 'gpt-4o' })
-    apply(ctx, cfg({ chains: { default: ['other/gpt-4o'] }, alwaysModeRetryCap: 3 }))
+    apply(ctx, cfg({ rootChain: ['other/gpt-4o'], alwaysModeRetryCap: 3 }))
 
     const result = await runAgentStep(ctx, { agent, setRoute }, [
       { message: 'busy', code: 'SERVER' },
