@@ -13,7 +13,7 @@
 `@deepseek-ai/*` 是私有包，运行时由宿主 dsh 盒内 bundle 提供（`peerDependencies` 契约，tsdown 构建期外部化 `@deepseek-ai/*`）。开发期从 npm registry 解析真实包（`0.1.0-rc.3`）：`pnpm-workspace.yaml` 的 `autoInstallPeers: true` + 用户级 `~/.npmrc` 的认证令牌，`pnpm install` 时自动装齐 peer 依赖——类型检查、测试与跳转全部走真实代码（无本地 link farm）。
 
 - **认证（pnpm 11）**：pnpm 11 起项目级 `.npmrc` 的凭据**不再展开环境变量**（`${NPM_TOKEN}` 失效并告警）。令牌须放**用户级** `~/.npmrc`：`@deepseek-ai:registry=https://registry.npmjs.org/` + `//registry.npmjs.org/:_authToken=<token>`（或 `pnpm config set "//registry.npmjs.org/:_authToken" <token>`）；`NPM_TOKEN` 仍为受限 scope 的只读令牌来源。
-- **版本**：`peerDependencies` 钉 `^0.1.0-rc.3`（与 dlx 宿主 rc.3 对齐）；dsh 升级后同步 bump peer 版本与插件版本（2026-08-13 升级 peer 至 rc.3 的同时插件版本 bump 至 `0.1.0`）。
+- **版本**：`peerDependencies` 钉 `^0.1.0-rc.3`（与 dlx 宿主 rc.3 对齐）；dsh 升级后同步 bump peer 版本与插件版本（2026-08-13 升级 peer 至 rc.3 的同时插件版本 bump 至 `0.1.0-alpha.1`）。
 - **pnpm 版本**：pnpm 11.21+（本项目栈）。11.21 起默认启用 minimum-release-age 供应链门禁，`pnpm-workspace.yaml` 的 `minimumReleaseAgeExclude` 是 **pnpm 自动维护**的豁免表——rc.3 整线（及 cordis 4.0.1）发布于当日，自动列入；**不要手动删除该块**：已解析锁文件在无豁免时会硬失败（`ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION`，需 `pnpm clean --lockfile` 重新解析）。
 - **客户端运行时缝**：registry 包的 `dsh-client-runtime` `./client` 入口是浏览器 loader artifact（非 node 可导入），测试用本地 node-safe 双（`tests/support/snapshot-store.ts`，vitest alias）。
 
