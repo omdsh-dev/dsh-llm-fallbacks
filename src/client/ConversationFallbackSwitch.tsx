@@ -36,7 +36,7 @@ import type {
 } from '@deepseek-ai/dsh-client-runtime/client'
 // Type-only: pulls the `conversation.chat.node` SlotMap entry + the
 // `ChatNodeDataMap` merge seat (the keyed dispatch key domain). Same empty
-// type-only pattern as the ui-settings / ui-plugin-config merges in index.ts.
+// type-only pattern as the ui-settings / ui-settings-plugins merges in index.ts.
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { FallbackSwitchReason } from '../events.ts'
 import { SWITCH_REASON_KEYS } from './locales.ts'

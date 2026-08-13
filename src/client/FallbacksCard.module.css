@@ -1,5 +1,5 @@
 /* Fallbacks settings card — chrome aligned to the upstream PluginCard
- * (dsh-private packages/client/ui-plugin-config/src/client/PluginCard.module.css,
+ * (dsh-private packages/client/ui-settings-plugins/src/client/PluginCard.module.css,
  * shape re-read 2026-08-12:158), form-field styles kept from the section-era
  * file (h32 r8 inputs / h36 r18 capsule actions). Every color resolves through
  * a `--dsw-alias-*` token (light/dark adaptive); bare `--border` / `--surface`

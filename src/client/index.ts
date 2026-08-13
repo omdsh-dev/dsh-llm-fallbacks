@@ -37,7 +37,7 @@ import type {} from '@deepseek-ai/dsh-client-locale/client'
 // type-only import pattern as the old ui-settings one: it loads the module's
 // types (the ./client entry re-exports the slot-contract merge) without any
 // value import.
-import type {} from '@deepseek-ai/dsh-client-ui-plugin-config/client'
+import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
 // Type-only: the settings domain's slot-contract merge (the
 // 'settings.general.item' entry — the General page status row's registration
 // target). Same empty type-only pattern; the ui-settings package is already
@@ -52,7 +52,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 // Type-only: the gateway's Client half declares `ctx.remote` (the typed
 // Remote service) on the cordis Context face.
 import type {} from '@deepseek-ai/dsh-api-gateway/client'
-// Type-only: the forwarded-event allowlist seat (`TypeRTRemoteEventSelection`)
+// Type-only: the forwarded-event allowlist seat (`TypertRemoteEventSelection`)
 // — the `$on` key projection the invalidation subscriptions subscribe through.
 import type {} from '@deepseek-ai/dsh-api-remotes/types'
 // Type-only: the settings seam's cordis `Events` entry

@@ -6,7 +6,7 @@
  * Transport: the typertGateway `/api` interceptor is the single host-wide RPC
  * slot (a plugin must NOT `connection.rpc.intercept('/api')` again — it would
  * throw). Instead this service declares a typertGateway binding (via the
- * `GatewayService` base) plus `@Remote` method markers; the gateway's SRC
+ * `TypertRemoteService` base) plus `@Remote` method markers; the gateway's SRC
  * discovery (`claimsEndpoint` — `ctx.reflect.props` + `remoteMethods`) claims
  * `/api/fallbacks/<method>`, and the payload contract is exactly one
  * plain-object `args` field whose keys are the method parameter names
@@ -46,9 +46,9 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
-import type { Settings } from '@deepseek-ai/dsh-settings'
+import type { SettingsProvider } from '@deepseek-ai/dsh-settings'
 import { settingsNamespace } from '@deepseek-ai/dsh-settings'
-import { GatewayService, Remote } from '@deepseek-ai/dsh-type-meta'
+import { TypertRemoteService, Remote } from '@deepseek-ai/dsh-typert-protocol'
 import { Config } from './config'
 import type { FallbacksConfig } from './config'
 
@@ -92,10 +92,10 @@ const CONFIG_KEYS: Record<string, true> = {
  * service key `'fallbacks'` (namespace defaults to the service key), so the
  * typertGateway SRC discovery claims the `fallbacks/<method>` endpoints.
  */
-export class FallbacksConfigGateway extends GatewayService {
+export class FallbacksConfigGateway extends TypertRemoteService {
   private readonly bridge: FallbacksSettingsBridge
   /** The live settings service once the optional inject child activates. */
-  private settings: Settings | undefined
+  private settings: SettingsProvider | undefined
 
   /**
    * @param ctx - owning context (the plugin fiber's ctx inside `apply`).
