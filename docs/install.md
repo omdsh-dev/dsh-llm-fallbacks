@@ -4,16 +4,16 @@
 
 ## 前置条件
 
-- 可用的 dsh 运行环境（`$DSH_HOME`，默认 `~/.dsh`）；开发期类型检查与测试从 npm registry 解析 `@deepseek-ai/*@0.0.1-rc.5` peer 依赖（`${NPM_TOKEN}` 认证，见下文）。
+- 可用的 dsh 运行环境（`$DSH_HOME`，默认 `~/.dsh`）；开发期类型检查与测试从 npm registry 解析 `@deepseek-ai/*@0.1.0-rc.2` peer 依赖（`${NPM_TOKEN}` 认证，见下文）。
 - 构建需要 **node**（`>= 22`）与 **pnpm**（`>= 10`）——插件的 `prepare` 脚本自构建（`pnpm run build`，tsdown + tsc，pnpm 栈无 bun）。
 - 目标 profile（如 `web`）可读写，安装后需要重启 dsh 会话。
 
 ## 开发期 `@deepseek-ai/*` peer 解析（npm registry）
 
-`@deepseek-ai/*` 是私有包，运行时由宿主 dsh 盒内 bundle 提供（`peerDependencies` 契约，tsdown 构建期外部化 `@deepseek-ai/*`）。开发期从 npm registry 解析真实包（`0.0.1-rc.5`）：`pnpm-workspace.yaml` 的 `autoInstallPeers: true` + `.npmrc` 的 `${NPM_TOKEN}` 认证令牌，`pnpm install` 时自动装齐 peer 依赖——类型检查、测试与跳转全部走真实代码（无本地 link farm）。
+`@deepseek-ai/*` 是私有包，运行时由宿主 dsh 盒内 bundle 提供（`peerDependencies` 契约，tsdown 构建期外部化 `@deepseek-ai/*`）。开发期从 npm registry 解析真实包（`0.1.0-rc.2`）：`pnpm-workspace.yaml` 的 `autoInstallPeers: true` + `.npmrc` 的 `${NPM_TOKEN}` 认证令牌，`pnpm install` 时自动装齐 peer 依赖——类型检查、测试与跳转全部走真实代码（无本地 link farm）。
 
 - **认证**：`.npmrc` 已配置 `@deepseek-ai:registry` 与 `//registry.npmjs.org/:_authToken=${NPM_TOKEN}`；安装前需在环境里设置 `NPM_TOKEN`（受限 scope 的只读令牌）。
-- **版本**：`peerDependencies` 钉 `^0.0.1-rc.5`；dsh 升级后同步 bump 插件版本与 peer 版本。
+- **版本**：`peerDependencies` 钉 `0.1.0-rc.2`（精确）；dsh 升级后同步 bump peer 版本（本次仅 peer 对齐，插件 semver 不变）。
 - **客户端运行时缝**：registry 包的 `dsh-client-runtime` `./client` 入口是浏览器 loader artifact（非 node 可导入），测试用本地 node-safe 双（`tests/support/snapshot-store.ts`，vitest alias）。
 
 ## 1. 本地目录安装（推荐）

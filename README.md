@@ -46,7 +46,7 @@ dsh plugin --profile web add .
 
 > **Development prerequisite**: type-checking and tests resolve the real
 > `@deepseek-ai/*` packages (peer deps, host-provided at runtime) from the npm
-> registry at `0.0.1-rc.5` — `autoInstallPeers` + the `${NPM_TOKEN}` auth
+> registry at `0.1.0-rc.2` — `autoInstallPeers` + the `${NPM_TOKEN}` auth
 > token in `.npmrc`, no local link farm.
 
 > Both methods, uninstall, and `--dump-config` verification — including the bundle-layer ordering requirements — are covered in [docs/install.md](docs/install.md).
