@@ -80,7 +80,7 @@ Verdict（implement-now / gated / map-only + 理由）。
 
 | Seam | 契约要点 | 可行性 | 成本 | Verdict |
 |------|----------|--------|------|---------|
-| 插件自有 gateway 通道（B1） | `GatewayService` + `@Remote`；`/api/<ns>/<method>`；wire `{ok,value}`/`{ok:false,error}` | ✅ | S | implement-now；多命名空间经第二个 `GatewayService` + `{namespace}` 选项 |
+| 插件自有 gateway 通道（B1） | `TypertRemoteService` 绑定 + 显式 `ctx.typert.register(contribution)`（2026-08-13 起；`@Remote` SRC 标记对 link 插件失效）；`/api/<ns>/<method>`；wire `{ok,value}`/`{ok:false,error}` | ✅ | S | implement-now；多命名空间经第二个 `GatewayService` + `{namespace}` 选项 |
 | `connection.api` 目录面（B2） | settings.describe / llm.providers / llm.models / sessions.history | ✅ | S | implement-now（目录、切换历史、writable） |
 | apiproxy `exposedNamespaces()`（B3） | 白名单外写请求拒绝 | ❌ 负 seam | — | map-only（替代 = B1 gateway） |
 | `ctx.settings` 进程内（B4） | register/update(MERGE)/replace(reset) | ✅ host 半 | S | implement-now；schema 非严格 → 写前必须拒绝未知键 |

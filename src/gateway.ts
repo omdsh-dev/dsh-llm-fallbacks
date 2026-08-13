@@ -1,16 +1,25 @@
 /**
  * T1 (plan llm-fallbacks-settings-gateway) — host-side `fallbacks` config
  * gateway: the `/api/fallbacks/get` + `/api/fallbacks/set` +
- * `/api/fallbacks/reset` Remote endpoints.
+ * `/api/fallbacks/reset` endpoints.
  *
  * Transport: the typertGateway `/api` interceptor is the single host-wide RPC
  * slot (a plugin must NOT `connection.rpc.intercept('/api')` again — it would
- * throw). Instead this service declares a typertGateway binding (via the
- * `TypertRemoteService` base) plus `@Remote` method markers; the gateway's SRC
- * discovery (`claimsEndpoint` — `ctx.reflect.props` + `remoteMethods`) claims
- * `/api/fallbacks/<method>`, and the payload contract is exactly one
- * plain-object `args` field whose keys are the method parameter names
- * (`get()` → `{ args: {} }`; `set(patch)` → `{ args: { patch } }`;
+ * throw). The service declares a typertGateway binding (via the
+ * `TypertRemoteService` base — kept ONLY for its `typertRemote` binding, which
+ * dispatch's `validateBinding` requires on the live service) and the
+ * endpoints are registered EXPLICITLY through
+ * `ctx.typert.register(fallbacksTypertContribution())` (see `apply` in
+ * `src/index.ts`) — NOT via `@Remote` SRC markers: SRC discovery reads
+ * `remoteMethods()`, a module-private WeakMap in `@deepseek-ai/dsh-typert-protocol`,
+ * so a locally-linked plugin whose peers resolve outside the host
+ * installation never shares that table with the host typertGateway (zero
+ * claimed endpoints, `/api/fallbacks/*` 404). The explicit
+ * `TypertRegistry.register` path writes the invocation descriptors into
+ * `ctx.typert.local`, which `claimsEndpoint` checks FIRST, so claim +
+ * dispatch work regardless of module identity. The payload contract is
+ * exactly one plain-object `args` field whose keys are the method parameter
+ * names (`get()` → `{ args: {} }`; `set(patch)` → `{ args: { patch } }`;
  * `reset()` → `{ args: {} }`).
  *
  * Data: `get` reads the `FallbacksSettingsBridge` source — the same live
@@ -48,7 +57,8 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { SettingsProvider } from '@deepseek-ai/dsh-settings'
 import { settingsNamespace } from '@deepseek-ai/dsh-settings'
-import { TypertRemoteService, Remote } from '@deepseek-ai/dsh-typert-protocol'
+import { TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
+import type { TypertContribution } from '@deepseek-ai/dsh-typert-registry'
 import { Config, detectLegacyKeys } from './config'
 import type { FallbacksConfig } from './config'
 
@@ -95,8 +105,14 @@ const ROLES_KEYS: Record<string, true> = {
 /**
  * The host-side `fallbacks` config gateway (`/api/fallbacks/get` +
  * `/api/fallbacks/set` + `/api/fallbacks/reset`). Registered as the cordis
- * service key `'fallbacks'` (namespace defaults to the service key), so the
- * typertGateway SRC discovery claims the `fallbacks/<method>` endpoints.
+ * service key `'fallbacks'` (namespace defaults to the service key). The
+ * `TypertRemoteService` base is kept ONLY for its `typertRemote` binding —
+ * the typertGateway's dispatch `validateBinding` requires the visible binding
+ * on the live service (a pure instance property, no module-private state).
+ * Endpoints are registered EXPLICITLY through
+ * `ctx.typert.register(fallbacksTypertContribution())` (see `apply` in
+ * `src/index.ts`) instead of `@Remote` SRC markers (see the module docblock
+ * for why).
  */
 export class FallbacksConfigGateway extends TypertRemoteService {
   private readonly bridge: FallbacksSettingsBridge
@@ -135,7 +151,6 @@ export class FallbacksConfigGateway extends TypertRemoteService {
    *   plan Task 1 Step 1), so the client can show a migration banner (spec
    *   §9, incremental field — old clients ignore it).
    */
-  @Remote('get')
   get(): { config: FallbacksConfig; legacyKeys: string[] } {
     return this.readResult()
   }
@@ -153,7 +168,6 @@ export class FallbacksConfigGateway extends TypertRemoteService {
    * @throws when the patch fails `Config` validation, or when no settings
    *   service is composed (KD-G5: the write channel is unavailable).
    */
-  @Remote('set')
   async set(patch: FallbacksConfigPatch): Promise<{ config: FallbacksConfig; legacyKeys: string[] }> {
     // Unknown-key rejection + type validation. The settings service schema is
     // non-strict (unknown keys merge through), so the explicit reject happens
@@ -187,7 +201,6 @@ export class FallbacksConfigGateway extends TypertRemoteService {
    * @throws when no settings service is composed (KD-G5: the write channel
    *   is unavailable).
    */
-  @Remote('reset')
   async reset(): Promise<{ config: FallbacksConfig; legacyKeys: string[] }> {
     const settings = this.settings
     if (settings === undefined) {
@@ -293,4 +306,55 @@ function validateConfigPatch(patch: unknown): void {
   // is treated as missing by defaulted fields, so it validates and is dropped
   // by the caller's wire normalization).
   Config(patch as unknown as FallbacksConfig)
+}
+
+/**
+ * The explicit typert contribution for the `fallbacks` gateway endpoints —
+ * registered via `ctx.typert.register(...)` (see `apply` in `src/index.ts`).
+ * The descriptors mirror exactly what the former SRC discovery derived from
+ * the `@Remote` markers (`src:<ns>#<endpoint>` identity shape, direct
+ * receiver, JSON wire params with `src-json` codec), so the host
+ * typertGateway claim + dispatch behavior is the same — the only difference
+ * is the registration does not depend on the module-private `remoteMethods`
+ * marker table, which a locally-linked plugin can never share with the host
+ * installation (see the module docblock).
+ */
+export function fallbacksTypertContribution(): TypertContribution {
+  return {
+    package: 'dsh-llm-fallbacks',
+    face: 'host',
+    schemas: [],
+    model: { services: [], events: [], objects: [] },
+    invocations: [
+      {
+        id: 'dsh-llm-fallbacks#fallbacks/get',
+        service: 'fallbacks',
+        namespace: 'fallbacks',
+        method: 'get',
+        invocation: { kind: 'direct' },
+        parameters: [],
+        result: { mode: 'src-json' },
+      },
+      {
+        id: 'dsh-llm-fallbacks#fallbacks/set',
+        service: 'fallbacks',
+        namespace: 'fallbacks',
+        method: 'set',
+        invocation: { kind: 'direct' },
+        parameters: [
+          { name: 'patch', wire: 'patch', source: 'json', codec: { mode: 'src-json' } },
+        ],
+        result: { mode: 'src-json' },
+      },
+      {
+        id: 'dsh-llm-fallbacks#fallbacks/reset',
+        service: 'fallbacks',
+        namespace: 'fallbacks',
+        method: 'reset',
+        invocation: { kind: 'direct' },
+        parameters: [],
+        result: { mode: 'src-json' },
+      },
+    ],
+  }
 }

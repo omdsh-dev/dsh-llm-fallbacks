@@ -1,7 +1,7 @@
 ---
 module: dsh-plugin-gateway
 date: 2026-08-12
-last_updated: 2026-08-12
+last_updated: 2026-08-13
 problem_type: architecture_pattern
 category: architecture-patterns
 severity: medium
@@ -29,8 +29,10 @@ related_components:
 # dsh 插件自有 settings gateway 通道（mount-only 数据面）
 
 插件命名空间经 host apiproxy wire 读写配置的替代通道模式。两个 dsh 插件（advisor、
-fallbacks）已验证：声明 `GatewayService` + `@Remote` 的自有通道取代「改宿主暴露白名单」，
-web 设置页照常读写，宿主源码零 diff。
+fallbacks）已验证：声明 `GatewayService` + 显式 `ctx.typert.register(contribution)` 的
+自有通道取代「改宿主暴露白名单」，web 设置页照常读写，宿主源码零 diff。2026-08-13 起
+端点注册从 `@Remote` SRC 标记迁移到显式 contribution（见「声明通道，不要拦截」——SRC
+发现对 link 插件不可靠）。
 
 ## Context
 
@@ -48,11 +50,26 @@ update/replace 无命名空间门禁）。展示挂载与数据通道正交—�
 
 ### 声明通道，不要拦截
 
-- host 半：`class XGateway extends GatewayService { @Remote('get') … }`，
-  `super(ctx, '<ns>')`。typertGateway SRC 发现（`ctx.reflect.props` + remoteMethods）自动
-  认领 `<ns>/<method>` 到 host 全局 `/api` 拦截器。
+- host 半：`class XGateway extends TypertRemoteService { … }`，`super(ctx, '<ns>')`；
+  **显式注册**端点——`ctx.typert.register(contribution())`（`TypertContribution` 来自
+  `@deepseek-ai/dsh-typert-registry`；invocation descriptor 镜像 SRC 派生形状：direct
+  receiver、JSON wire params、`src-json` codec），经条件 `ctx.inject(['typert'])` 子
+  激活（无 typert registry 的组合照常跑运行时、只是没有 /api 端点）。
+- `TypertRemoteService` 基类**仅**为 `typertRemote` 绑定保留——dispatch 的
+  `validateBinding` 要求 live service 上有可见绑定（纯实例属性，无模块私有状态）。
+- **SRC 发现限制（2026-08-13，rc.2 dlx host）**：旧路径 `@Remote` 标记靠
+  `remoteMethods()` 读 `@deepseek-ai/dsh-typert-protocol` 的**模块私有 WeakMap**。
+  `link:` 挂载的插件 peer 从真实目录解析（物理上与 dlx 宿主缓存树分离），宿主
+  typertGateway 持有一张空的标记表 → SRC 认领 **0 个端点** → `/api/<ns>/*` 404、
+  客户端报「settings gateway is not ready」，而插件本身 Mounted+Enabled 正常
+  （settings.register 成功；跨副本 schemastery 已验证健康——schema 双装不是断点）。
+  同版本 peer 必要但不充分：**模块身份**（而非版本）门控私有表。
+- **显式注册路径**：`TypertRegistry.register` 把 invocation descriptor 写入
+  `ctx.typert.local`——`claimsEndpoint`/`resolveDescriptor` **先查它**（strict path），
+  claim + dispatch 完全不碰私有表。单测里 SRC 仍能过（测试只 import 一个物理副本），
+  分裂只出现在物理分离的模块实例之间。
 - 插件**不得**自行 `connection.rpc.intercept('/api')`——该拦截槽 host 全局单点，重复注册
-  会抛错；`GatewayService` 绑定 + `@Remote` 标记是唯一受支持的注册方式。
+  会抛错；`TypertRemoteService` 绑定 + 显式 contribution 是唯一受支持的注册方式。
 - client 半：`connection.rpc.call('/api', '<ns>/<method>', { args })`。
 
 ### Wire 契约
@@ -148,11 +165,11 @@ gateway 通道是普通 RPC merge/replace，**无版本戳**。迁移时删除�
 
 ## Examples
 
-- **dsh-advisor**：`AdvisorConfigGateway`（get/set 两方法；`resolveAdvisorConfig` 有
-  enabled 解析器——fallbacks 无，见下）。
-- **dsh-llm-fallbacks**：`FallbacksConfigGateway`（get/set/reset 三方法；无解析器；
-  实例细节与 store 迁移 → `architecture-patterns/dsh-llm-fallbacks.md`「设置命名空间 web
-  暴露」节）。
+- **dsh-advisor**：`AdvisorConfigGateway` + `advisorTypertContribution()`（get/set 两
+  方法；`resolveAdvisorConfig` 有 enabled 解析器——fallbacks 无，见下）。
+- **dsh-llm-fallbacks**：`FallbacksConfigGateway` + `fallbacksTypertContribution()`
+  （get/set/reset 三方法；无解析器；实例细节与 store 迁移 →
+  `architecture-patterns/dsh-llm-fallbacks.md`「设置命名空间 web 暴露」节）。
 - 测试缝：`tests/gateway.spec.ts`（get 规范化、set 未知键拒绝/空 patch no-op、reset 走
   replace、KD-G5 无 settings 服务三分支、畸形 user layer 不崩 get）。
 - 展示挂载契约（`settings.section` slot 等）→ `architecture-patterns/dsh-settings-slot-contract.md`。
