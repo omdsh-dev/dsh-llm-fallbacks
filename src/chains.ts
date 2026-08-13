@@ -1,20 +1,27 @@
 /**
- * Fallback chain resolution (spec §2 clause 2, §4; plan Task 2).
+ * Fallback chain resolution (spec §7.2; plan fallbacks-role-runtime Task 1).
  *
  * `resolveChain` returns the ordered candidate list for a failing
- * (provider, model): specificity order exact `provider/model` key →
- * `provider/*` key → role key → `default` key, entries keeping their listed
- * order within a key. Wildcard entries (`provider/*`) are resolved against
- * the failing model — keep the model id, swap only the provider; the
- * "target provider has no such model id" skip is judged by
- * {@link resolveCandidate} (via `modelExists`) or by the caller's filter.
+ * (provider, model). Candidates come from the role's own chain plus
+ * `rootChain` appended as an inherit-root fallback — **append-not-replace**:
+ * `[...(roleDef.chain ?? []), ...(roleDef.fallback === 'none' ? [] :
+ * rootChain)]` (role entries first, rootChain entries after). An unknown
+ * role id (defense) resolves to `rootChain` alone + one warn. Chain-key
+ * specificity lookup (`exact` / `provider/*` / role / `default` keys) is
+ * deleted — the two-block config model has no chain keys.
  *
- * Cooldown / failed-set / same-as-current filtering is caller-side (Task 3);
+ * Wildcard entries (`provider/*`) are resolved against the failing model —
+ * keep the model id, swap only the provider; the "target provider has no
+ * such model id" skip is judged by {@link resolveCandidate} (via
+ * `modelExists`) or by the caller's filter.
+ *
+ * Cooldown / failed-set / same-as-current filtering is caller-side;
  * {@link createCandidateFilter} provides the ready-made predicate.
  *
  * @module dsh-llm-fallbacks/chains
  */
 
+import type { FallbacksRole } from './config.ts'
 import type { CooldownStore, StepFailureSet } from './cooldown.ts'
 import { parseSelector, resolveWildcardEntry, selectorKey, type Selector } from './selectors.ts'
 
@@ -57,18 +64,21 @@ export function resolveCandidate(
 /**
  * Ordered fallback candidates for the failing (provider, model).
  *
- * Chain keys are consulted in specificity order (exact → `provider/*` →
- * `role` → `default`); every present key contributes its entries, so the
- * result is a priority-ordered union. Wildcard entries are resolved against
- * the failing model. `filter` optionally drops candidates — the caller owns
- * cooldown/failed-set/same-model filtering (see {@link createCandidateFilter}).
- * `modelExists` is forwarded to {@link resolveCandidate}, so the
- * "target provider has no such model id" skip (spec §2 clause 2) applies to
- * `provider/*` entries only — explicitly listed exact entries are never
- * existence-filtered (T2 review Important #1: Task 3 decision path contract).
+ * Candidates are the role's concatenated entries (spec §7.2): the declared
+ * role's own `chain` followed by `rootChain` unless `fallback: 'none'`
+ * (append-not-replace — role entries first, rootChain as the tail). An
+ * undeclared/unknown `role` id resolves to `rootChain` alone and warns once
+ * (defensive — never crashes). `filter` optionally drops candidates — the
+ * caller owns cooldown/failed-set/same-model filtering (see
+ * {@link createCandidateFilter}). `modelExists` is forwarded to
+ * {@link resolveCandidate}, so the "target provider has no such model id"
+ * skip (spec §2 clause 2) applies to `provider/*` entries only — explicitly
+ * listed exact entries are never existence-filtered (T2 review Important #1:
+ * decision-path contract).
  */
 export function resolveChain(
-  chains: Record<string, string[]>,
+  roles: readonly FallbacksRole[],
+  rootChain: readonly string[],
   role: string,
   provider: string,
   model: string,
@@ -76,20 +86,50 @@ export function resolveChain(
   modelExists?: (provider: string, model: string) => boolean,
 ): Selector[] {
   const failing: FailingModel = { provider, model }
-  const keys = [selectorKey(provider, model), selectorKey(provider), role, 'default']
+  const roleDef = roles.find((declared) => declared.id === role)
+  let entries: readonly string[]
+  if (roleDef === undefined) {
+    console.warn(`llm-fallbacks: unknown role "${role}" — falling back to rootChain`)
+    entries = rootChain
+  } else {
+    entries = [...(roleDef.chain ?? []), ...(roleDef.fallback === 'none' ? [] : rootChain)]
+  }
   const candidates: Selector[] = []
-  const seenKeys = new Set<string>()
-  for (const key of keys) {
-    if (seenKeys.has(key)) continue
-    seenKeys.add(key)
-    const entries = chains[key]
-    if (!entries) continue
-    for (const entry of entries) {
-      const candidate = resolveCandidate(entry, failing, modelExists)
-      if (candidate && (!filter || filter(candidate))) candidates.push(candidate)
-    }
+  for (const entry of entries) {
+    const candidate = resolveCandidate(entry, failing, modelExists)
+    if (candidate && (!filter || filter(candidate))) candidates.push(candidate)
   }
   return candidates
+}
+
+/**
+ * Whether any entry of the role's concatenated candidates is a wildcard
+ * (`provider/*`). F-002: {@link resolveChain} resolves wildcard entries to
+ * concrete models, so the wildcard provenance is invisible on the resolved
+ * candidate list — the decision path consults the same concatenation
+ * `resolveChain` walks (`[...(roleDef?.chain ?? []), ...rootChain]`, spec
+ * §7.2) to decide whether the catalog existence probe is needed at all.
+ * Malformed entries never become candidates and are skipped. The probe
+ * deliberately includes `rootChain` even when the role's `fallback` is
+ * `'none'` — an over-approximation (never false-negative on a wildcard the
+ * resolution could reach; it only ever builds a probe that is not strictly
+ * needed).
+ */
+export function hasWildcardEntry(
+  roles: readonly FallbacksRole[],
+  rootChain: readonly string[],
+  role: string,
+): boolean {
+  const roleDef = roles.find((declared) => declared.id === role)
+  const entries = [...(roleDef?.chain ?? []), ...rootChain]
+  for (const entry of entries) {
+    try {
+      if (parseSelector(entry).model === undefined) return true
+    } catch {
+      // malformed entries never become candidates (config-warning path)
+    }
+  }
+  return false
 }
 
 /** Inputs for {@link createCandidateFilter}. */

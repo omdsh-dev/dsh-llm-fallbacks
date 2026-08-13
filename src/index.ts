@@ -34,7 +34,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { LlmCallConfig } from '@deepseek-ai/dsh-llm'
 import type { Session } from '@deepseek-ai/dsh-session'
 import { Config, defaultFallbacksConfig, type FallbacksConfig } from './config.ts'
-import { annotateCandidates, createCandidateFilter, resolveChain, type FailingModel } from './chains.ts'
+import { annotateCandidates, createCandidateFilter, hasWildcardEntry, resolveChain, type FailingModel } from './chains.ts'
 import { parseSelector, selectorKey } from './selectors.ts'
 import { resolveRole } from './roles.ts'
 import { FallbackStateStore, type AgentFallbackState, type PendingSwitch } from './state.ts'
@@ -118,39 +118,6 @@ function normalizeSelectorKey(key: string, logger: Logger): string | null {
     logger.warn(`llm-fallbacks: ignoring invalid chain key "${key}": ${(error as Error).message}`)
     return null
   }
-}
-
-/**
- * Whether any chain entry reachable for this failing (provider, model) is a
- * wildcard (`provider/*`). F-002: `resolveChain` resolves wildcard entries to
- * concrete models, so the wildcard provenance is invisible on the resolved
- * candidate list — the decision path consults the raw entries under the same
- * keys `resolveChain` walks (exact → `provider/*` → role → `default`) to
- * decide whether the catalog existence probe is needed at all. Malformed
- * entries never become candidates and are skipped.
- */
-function hasWildcardEntry(
-  chains: Record<string, string[]>,
-  role: string,
-  provider: string,
-  model: string,
-): boolean {
-  const keys = [selectorKey(provider, model), selectorKey(provider), role, 'default']
-  const seen = new Set<string>()
-  for (const key of keys) {
-    if (seen.has(key)) continue
-    seen.add(key)
-    const entries = chains[key]
-    if (!entries) continue
-    for (const entry of entries) {
-      try {
-        if (parseSelector(entry).model === undefined) return true
-      } catch {
-        // malformed entries never become candidates (config-warning path)
-      }
-    }
-  }
-  return false
 }
 
 /**
@@ -314,10 +281,8 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
       states.syncStep(state, turn, step)
       if (state.stepFailures.switchCount >= config.maxSwitchesPerStep) return null
     }
-    // TODO(plan fallbacks-role-runtime T2): legacy roles.default read —
-    // Plan 2 replaces this with the built-in 'inherit' no-match default.
-    const role = resolveRole(agent, config.roles.rules, (config.roles as unknown as { default?: string }).default ?? 'default')
-    const all = resolveChain(chains, role, current.provider, current.model)
+    const role = resolveRole(agent, config.roles.rules, new Set(config.roles.list.map((declared) => declared.id)))
+    const all = resolveChain(config.roles.list, config.rootChain, role, current.provider, current.model)
     if (all.length === 0) return null
     // T2 review Important #1 (decision-path contract): the "missing id" skip
     // stays scoped to `provider/*` entries (spec §2 clause 2 — exact entries
@@ -325,8 +290,9 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     // would over-filter them), so the probe is forwarded to
     // resolveChain/resolveCandidate while the filter deliberately does NOT
     // receive modelExists. F-002: the probe is built only when a wildcard
-    // entry is reachable — pure exact chains take zero catalog probes.
-    const modelExists = hasWildcardEntry(chains, role, current.provider, current.model)
+    // entry is reachable on the role's concatenated candidates — pure exact
+    // chains take zero catalog probes.
+    const modelExists = hasWildcardEntry(config.roles.list, config.rootChain, role)
       ? await makeModelExists(
         ctx,
         [...new Set(all.map((candidate) => candidate.provider))],
@@ -339,7 +305,7 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
       has: (key: string) => state !== undefined && state.stepFailures.failed.has(key),
     }
     const filter = createCandidateFilter({ current, cooldown, failed })
-    const surviving = resolveChain(chains, role, current.provider, current.model, filter, modelExists)
+    const surviving = resolveChain(config.roles.list, config.rootChain, role, current.provider, current.model, filter, modelExists)
     const target = surviving[0]
     if (target === undefined || target.model === undefined) return null
     logger.info(
@@ -503,9 +469,7 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   const fallbacksCommandController: FallbacksCommandController = {
     getSnapshot(agent): FallbacksCommandSnapshot {
       const config = source()
-      // TODO(plan fallbacks-role-runtime T2): legacy roles.default read —
-      // Plan 2 replaces this with the built-in 'inherit' no-match default.
-      const role = resolveRole(agent, config.roles.rules, (config.roles as unknown as { default?: string }).default ?? 'default')
+      const role = resolveRole(agent, config.roles.rules, new Set(config.roles.list.map((declared) => declared.id)))
       const state = states.peek(agent.id)
       return {
         origin: agent.session.header?.origin ?? 'root',
