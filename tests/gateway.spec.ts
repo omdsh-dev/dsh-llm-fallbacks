@@ -476,6 +476,14 @@ describe('get legacyKeys detection (two-block-era leftovers)', () => {
     // The wire config itself is the new shape — legacy keys never cross.
     expect('chains' in gateway.get().config).toBe(false)
     expect(gateway.get().config.rootChain).toEqual([])
+    // Nested legacy keys are stripped too (reviewer T1 Important #1): the
+    // wire roles object carries only its declared list/rules fields — a
+    // consumer like Task 2's parseFallbacksConfig never misreads
+    // roles.default as a live config value. Absent fields stay omitted
+    // (wire boundary rule), so the legacy `{ default, rules }` object
+    // normalizes to `{ rules }` — no `default`, and no invented `list`.
+    expect('default' in gateway.get().config.roles).toBe(false)
+    expect(Object.keys(gateway.get().config.roles)).toEqual(['rules'])
   })
 
   it('detects undeclared rule role references (roles.rules[].role)', () => {

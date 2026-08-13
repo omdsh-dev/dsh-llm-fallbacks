@@ -195,16 +195,41 @@ export class FallbacksConfigGateway extends TypertRemoteService {
    * that the non-strict settings schema let through (e.g. an unknown key)
    * must never fail the RPC — only schema-declared keys cross the wire, and
    * absent values are omitted, never present-as-undefined (the result
-   * validator rejects undefined values).
+   * validator rejects undefined values). The `roles` object is additionally
+   * normalized to its declared `list`/`rules` fields: legacy nested keys
+   * (e.g. `roles.default`) that schemastery retains on the composed source
+   * never leak past the wire boundary (reviewer finding T1 Important #1 —
+   * a consumer like Task 2's parseFallbacksConfig would misread them),
+   * even though `legacyKeys` still reports them.
    */
   private readConfig(source: FallbacksConfig = this.bridge.source()): FallbacksConfig {
     const wire: Record<string, unknown> = {}
     for (const key of Object.keys(CONFIG_KEYS)) {
       const value = (source as unknown as Record<string, unknown>)[key]
-      if (value !== undefined) wire[key] = value
+      if (value === undefined) continue
+      wire[key] = key === 'roles' ? normalizeRoles(value) : value
     }
     return wire as unknown as FallbacksConfig
   }
+}
+
+/**
+ * Keep only the declared `roles` fields (`list` + `rules`) for the wire.
+ * Legacy nested keys (e.g. `roles.default` from the two-block era) are
+ * retained on the composed source by schemastery and reported via
+ * `legacyKeys`, but must never ride the wire (reviewer finding T1 Important
+ * #1). Non-object values pass through untouched — readConfig only filters
+ * schema-declared keys, and absent fields stay omitted per the wire boundary
+ * rule above.
+ */
+function normalizeRoles(value: unknown): unknown {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return value
+  const roles: Record<string, unknown> = {}
+  for (const field of ['list', 'rules']) {
+    const member = (value as Record<string, unknown>)[field]
+    if (member !== undefined) roles[field] = member
+  }
+  return roles
 }
 
 /**
