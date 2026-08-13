@@ -95,7 +95,7 @@
 
 候选过滤（命中即跳过）：与当前模型相同、处于冷却期、本 step 已失败、`provider/*` 条目目标 provider 无此模型 id。
 
-> **运行时落地说明**：上述角色解析 / 链拼接的**新语义运行时消费落地在 Plan 2（fallbacks-role-runtime）**；本轮（iter-20260813）**配置形状已生效**——schema、校验、UI 编辑面与 legacy 检测均按新模型工作，运行时决策暂经最小过渡适配读取旧形状（源码标注 `TODO(plan fallbacks-role-runtime T2)`），决策行为不变。
+> **运行时落地说明**：上述角色解析 / 链拼接的新语义已由运行时（`src/roles.ts` / `src/chains.ts` / `src/index.ts`，fallbacks-role-runtime Plan 2）消费；旧形状字段（`chains` / `roles.default` / 未声明角色引用）启动时经 `detectLegacyKeys` 告警提示迁移（见下方迁移映射表），决策行为按新模型工作。
 
 ## 示例 YAML
 

@@ -8,9 +8,8 @@
  * `roles.rules` enum references into the declared ids (or the built-in
  * `'inherit'` role). The legacy `chains` / `roles.default` keys are gone
  * from the schema and type (zero residual, migration table excepted); the
- * runtime still reads them through minimal transition adapters in
- * `src/index.ts` (each tagged `TODO(plan fallbacks-role-runtime T2)`) until
- * Plan 2 switches the decision path.
+ * runtime consumes the new shape directly and flags surviving legacy keys
+ * at startup via `detectLegacyKeys` (see `src/index.ts` apply()).
  *
  * Spec §4 is authoritative for field names and default values — notably
  * `triggerCodes` defaults to dsh's stable failure codes `['AUTH', 'QUOTA',
