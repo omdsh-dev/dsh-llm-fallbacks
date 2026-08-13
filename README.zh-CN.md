@@ -45,8 +45,8 @@ dsh plugin --profile web add .
 ```
 
 > **开发前置**：类型检查与测试解析的是**真实** `@deepseek-ai/*` 包（peer 依赖，运行时由宿主提供），
-> 来源为 npm registry 的 `0.1.0-rc.2`（`autoInstallPeers` + `.npmrc` 的 `${NPM_TOKEN}` 认证，
-> 无本地 link farm）。
+> 来源为 npm registry 的 `0.1.0-rc.3`（`autoInstallPeers` + 用户级 `~/.npmrc` 的 registry
+> 认证令牌——pnpm 11 起项目级 `.npmrc` 不再展开 `${NPM_TOKEN}`，无本地 link farm）。
 
 > 两种安装方式、卸载与 `--dump-config` 验证（含 bundle 层顺序要求）详见 [docs/install.md](docs/install.md)。
 
