@@ -86,7 +86,7 @@ Save and restart the web session for the changes to take effect. The feature swi
 
 Type `/fallbacks` in any session to inspect this session's fallback state — no need to open the settings page:
 
-- **Session origin** (`root` / `subagent`) and the **resolved role** (first matching `roles.rules` entry → the built-in `inherit`);
+- **Session origin** (`root` / `subagent`) and the **resolved role** (the `role` of the first matching `roles.rules` entry, otherwise the built-in `inherit`);
 - the **resolved chain** for that role (the role's chain plus the inherited `rootChain` unless `fallback: none`) — `not configured` when none exists;
 - the **recent switches** (`fallbacks/switch` events, newest first, up to 5): from/to provider/model, role, reason;
 - the **cooldown status**: which `provider/model` keys are currently suppressed and until when.

@@ -85,7 +85,7 @@ fallbacks:
 
 在任意会话中键入 `/fallbacks` 即可查看当前会话的 fallback 状态，无需打开设置页：
 
-- **会话来源**（`root` / `subagent`）与**解析角色**（首个命中的 `roles.rules` 条目 → 内置 `inherit`）；
+- **会话来源**（`root` / `subagent`）与**解析角色**（首个命中规则的 `role`，未命中则内置 `inherit`）；
 - 该角色的**解析链**（角色自身链 + 继承的 `rootChain`，`fallback: none` 时仅角色链）——无链时显示「未配置」；
 - **最近切换**（`fallbacks/switch` 事件，最新在前，至多 5 条）：from/to provider/model、role、reason；
 - **冷却状态**：哪些 `provider/model` 处于冷却、冷却至何时（`revertPolicy: 'never'` 显示「会话内不再回主」）。

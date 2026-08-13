@@ -38,8 +38,8 @@
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
 | `id` | string | 是 | 角色 id：`/^[a-z0-9-]{1,32}$/`、集合内唯一；`'inherit'` 为保留字，禁止使用 |
-| `label` | string | 是 | 角色名称（自由文本，不校验） |
-| `description` | string | 是 | 角色描述（自由文本，不校验） |
+| `label` | string | 推荐填写 | 角色名称（自由文本，不校验）；schema 默认空字符串，缺失不拦截保存 |
+| `description` | string | 推荐填写 | 角色描述（自由文本，不校验）；schema 默认空字符串，缺失不拦截保存 |
 | `chain` | string[] | 否 | 角色自身的有序降级链（条目语法同 `rootChain`）；缺省空 = 该角色无自身链 |
 | `fallback` | `'inherit-root'` \| `'none'` | 否（默认 `'inherit-root'`） | 链拼接策略：`inherit-root` = 角色链走完再追加 `rootChain`；`none` = 仅用角色自身链 |
 | `prompt` / `permissions` | string / object | 否 | **预留字段**（见下节） |
@@ -125,14 +125,14 @@ fallbacks:
         chain:
           - deepseek/deepseek-chat
         fallback: none           # 仅角色链，不追加 rootChain
-    rules:                       # 顺序匹配 origin/provider/model；未命中 → inherit（root 链）
-      - origin: subagent         # 所有 subagent → reviewer 角色
-        role: reviewer
-      - provider: deepseek       # deepseek provider 的 agent → cheap 角色
-        role: cheap
-      - provider: deepseek       # 精确 provider/model → 显式指向内置 inherit（root 链）
+    rules:                       # 顺序匹配 origin/provider/model，首个命中即停；具体规则须写在宽泛规则之前
+      - provider: deepseek       # 最具体的先列：精确 provider/model → 显式指向内置 inherit（root 链）
         model: deepseek-reasoner
         role: inherit
+      - origin: subagent         # 所有 subagent → reviewer 角色
+        role: reviewer
+      - provider: deepseek       # 宽泛规则放后面：其它 deepseek provider 的 agent → cheap 角色
+        role: cheap
   cooldownMs: 300000
   revertPolicy: cooldown-expiry
   maxSwitchesPerStep: 8
@@ -156,8 +156,8 @@ fallbacks:
 |----------------------------|-----|
 | `chains: { default: [...] }` | `rootChain: [...]` |
 | `chains: { reviewer: [...] }` | `roles.list: [{ id: reviewer, chain: [...] }]`（另写一条 `roles.rules` 才能命中该角色；只声明不引用 = 永不命中，未命中走 `inherit`） |
-| `chains: { deepseek/*: [...] }` | `roles.rules: [{ provider: deepseek, role: <已声明 id> }]`（须先有对应 `roles.list` 项；或删除该键） |
-| `chains: { deepseek/deepseek-chat: [...] }` | `roles.rules: [{ provider: deepseek, model: deepseek-chat, role: <已声明 id> }]` |
+| `chains: { deepseek/*: [...] }` | `roles.rules: [{ provider: deepseek, role: <已声明 id> }]`（须先有对应 `roles.list` 项，旧链条目写入该 `roles.list[].chain`；或删除该键） |
+| `chains: { deepseek/deepseek-chat: [...] }` | `roles.rules: [{ provider: deepseek, model: deepseek-chat, role: <已声明 id> }]`（旧链条目写入对应 `roles.list[].chain`） |
 | `roles.rules[].role` 任意字符串 | 引用 `roles.list[].id` 或内置 `'inherit'`（enum）；未声明引用 → `legacyKeys` + 告警，该条不生效 |
 | `roles.default: 'default'`（或任意字符串） | **删除该字段**；无规则命中 → 内置 `'inherit'`（→ `rootChain`）。「所有子代理默认走某链」改写为一条 `{ origin: subagent, role: <id> }` |
 | 角色链无兜底 | `fallback: inherit-root`（默认）→ `[...role.chain, ...rootChain]`；`fallback: none` → 仅 `role.chain` |
