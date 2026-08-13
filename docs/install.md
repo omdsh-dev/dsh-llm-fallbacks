@@ -4,18 +4,17 @@
 
 ## 前置条件
 
-- 可用的 dsh 运行环境（`$DSH_HOME`，默认 `~/.dsh`），且其源码树在 `$DSH_SOURCE_DIR`（缺省 `${DSH_HOME}/source/current`）——**开发期类型检查与测试需要它**（见下文「真实 `@deepseek-ai/*` 链接」）。
+- 可用的 dsh 运行环境（`$DSH_HOME`，默认 `~/.dsh`）；开发期类型检查与测试从 npm registry 解析 `@deepseek-ai/*@0.0.1-rc.5` peer 依赖（`${NPM_TOKEN}` 认证，见下文）。
 - 构建需要 **node**（`>= 22`）与 **pnpm**（`>= 10`）——插件的 `prepare` 脚本自构建（`pnpm run build`，tsdown + tsc，pnpm 栈无 bun）。
 - 目标 profile（如 `web`）可读写，安装后需要重启 dsh 会话。
 
-## 真实 `@deepseek-ai/*` 链接 farm（开发期）
+## 开发期 `@deepseek-ai/*` peer 解析（npm registry）
 
-`@deepseek-ai/*` 是私有包，运行时由宿主 dsh 盒内 bundle 提供（`peerDependencies` 契约，tsdown 构建期外部化 `@deepseek-ai/*`）。开发期不再使用手写 `peer-stubs/`：`pnpm install`（`prepare` 前置）会调用 `scripts/setup-dsh-links.mjs`，从 dsh 源码树把**真实包**符号链接进 `node_modules/`——类型检查、测试与跳转全部走真实代码（方案经 dsh-advisor 全链路验证）。
+`@deepseek-ai/*` 是私有包，运行时由宿主 dsh 盒内 bundle 提供（`peerDependencies` 契约，tsdown 构建期外部化 `@deepseek-ai/*`）。开发期从 npm registry 解析真实包（`0.0.1-rc.5`）：`pnpm-workspace.yaml` 的 `autoInstallPeers: true` + `.npmrc` 的 `${NPM_TOKEN}` 认证令牌，`pnpm install` 时自动装齐 peer 依赖——类型检查、测试与跳转全部走真实代码（无本地 link farm）。
 
-- **链接范围**：源码树 `packages/` 与 `vendor/` 下所有声明 `bin` 之外的 `@deepseek-ai/*` 包（按各自 package.json 的 name），外加 `vendor/cordis` 的 **bin-less shim**（`node_modules/@deepseek-ai/cordis/` 的入口文件符号链接到 vendored cordis 的真实文件）——真实包的 `.d.ts` 引用的是 dsh 树里 vendor 的 cordis，shim 保证 `import '@deepseek-ai/cordis'` 与它们解析到同一物理文件（否则 `Context`/`Events` 类型实例不匹配，tsc 报错）。
-- **路径解析**：`$DSH_SOURCE_DIR` 优先 → `${DSH_HOME}/source/current` → `~/.dsh/source/current`（取第一个存在的）——不同开发者只要各自的 `$DSH_HOME` 指向自己的 dsh 安装即可，无需改任何仓库内路径。源码树缺失或 peer 包不可链接时**报错退出并给出指引**（开发期硬性要求；宿主安装路径不受影响，见下）。
-- **安全守卫**：在宿主 profile 的 pnpm store 内安装（git 依赖的 prepare/postinstall 在 `node_modules/.pnpm/` 中运行）时脚本自动跳过（exit 0），绝不把 staging 树的包链进宿主运行环境。
-- **手动操作**：`pnpm dsh:link` 重链（换 `$DSH_HOME`/`$DSH_SOURCE_DIR` 后重跑）、`pnpm dsh:link:check` 校验（`--check`：链接缺失/指向漂移/过期项均报错，可用于 CI）。
+- **认证**：`.npmrc` 已配置 `@deepseek-ai:registry` 与 `//registry.npmjs.org/:_authToken=${NPM_TOKEN}`；安装前需在环境里设置 `NPM_TOKEN`（受限 scope 的只读令牌）。
+- **版本**：`peerDependencies` 钉 `^0.0.1-rc.5`；dsh 升级后同步 bump 插件版本与 peer 版本。
+- **客户端运行时缝**：registry 包的 `dsh-client-runtime` `./client` 入口是浏览器 loader artifact（非 node 可导入），测试用本地 node-safe 双（`tests/support/snapshot-store.ts`，vitest alias）。
 
 ## 1. 本地目录安装（推荐）
 

@@ -45,11 +45,10 @@ dsh plugin --profile web add .
 ```
 
 > **开发前置**：类型检查与测试解析的是**真实** `@deepseek-ai/*` 包（peer 依赖，运行时由宿主提供），
-> 来源为你的 dsh 源码树——`$DSH_SOURCE_DIR`，缺省 `${DSH_HOME}/source/current`
-> （`scripts/setup-dsh-links.mjs` 在 `prepare` 时把它们链接进 `node_modules/`，含 in-box cordis
-> 的 bin-less shim）。`pnpm dsh:link` 重链（换 `$DSH_HOME` 后重跑）、`pnpm dsh:link:check` 校验。
+> 来源为 npm registry 的 `0.0.1-rc.5`（`autoInstallPeers` + `.npmrc` 的 `${NPM_TOKEN}` 认证，
+> 无本地 link farm）。
 
-> 不提供 npm registry 安装命令（本迭代未发布 npm 包）。两种安装方式、卸载与 `--dump-config` 验证（含 bundle 层顺序要求）详见 [docs/install.md](docs/install.md)。
+> 两种安装方式、卸载与 `--dump-config` 验证（含 bundle 层顺序要求）详见 [docs/install.md](docs/install.md)。
 
 ## 快速开始
 

@@ -225,7 +225,7 @@ export function alwaysPolicy(overrides: Partial<Omit<ResolvedRetryPolicy, 'mode'
 
 /**
  * Runtime double for the declared `LlmError` surface (the real
- * `@deepseek-ai/dsh-llm`, linked from the dsh source tree by the link farm),
+ * `@deepseek-ai/dsh-llm`, resolved from the npm registry as a peer dep),
  * mirroring the real class (`packages/llm/llm/src/index.ts`):
  * `(message, code, options?)` with a frozen serializable `failure`. The loop
  * constructs the terminal error as `new LlmError(failure.message,
