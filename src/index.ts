@@ -237,7 +237,11 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   // already defaulted; re-resolving keeps direct calls (tests) normalized.
   const entry = Config(config)
   let source: () => FallbacksConfig = () => entry
-  let chains = normalizeChains(entry.chains, logger)
+  // TODO(plan fallbacks-role-runtime T2): legacy chains read — schemastery
+  // retains unknown keys (verified plan Task 1 Step 1), so the composed
+  // object still carries them; Plan 2 deletes this adapter and consumes
+  // rootChain + roles.list instead.
+  let chains = normalizeChains((entry as unknown as { chains?: Record<string, string[]> }).chains ?? {}, logger)
   // F-001: an unconfigured install (empty chains) must be truly zero-cost —
   // the always-cap session scan is short-circuited on this flag, so a plain
   // request never touches the event log when no chains are configured (AC-8).
@@ -258,7 +262,9 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
       source = current
     },
     onChange: () => {
-      chains = normalizeChains(source().chains, logger)
+      // TODO(plan fallbacks-role-runtime T2): legacy chains read — same
+      // adapter as the apply init above; Plan 2 deletes it.
+      chains = normalizeChains((source() as unknown as { chains?: Record<string, string[]> }).chains ?? {}, logger)
       hasChains = Object.keys(chains).length > 0
     },
   })
@@ -308,7 +314,9 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
       states.syncStep(state, turn, step)
       if (state.stepFailures.switchCount >= config.maxSwitchesPerStep) return null
     }
-    const role = resolveRole(agent, config.roles.rules, config.roles.default)
+    // TODO(plan fallbacks-role-runtime T2): legacy roles.default read —
+    // Plan 2 replaces this with the built-in 'inherit' no-match default.
+    const role = resolveRole(agent, config.roles.rules, (config.roles as unknown as { default?: string }).default ?? 'default')
     const all = resolveChain(chains, role, current.provider, current.model)
     if (all.length === 0) return null
     // T2 review Important #1 (decision-path contract): the "missing id" skip
@@ -495,7 +503,9 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   const fallbacksCommandController: FallbacksCommandController = {
     getSnapshot(agent): FallbacksCommandSnapshot {
       const config = source()
-      const role = resolveRole(agent, config.roles.rules, config.roles.default)
+      // TODO(plan fallbacks-role-runtime T2): legacy roles.default read —
+      // Plan 2 replaces this with the built-in 'inherit' no-match default.
+      const role = resolveRole(agent, config.roles.rules, (config.roles as unknown as { default?: string }).default ?? 'default')
       const state = states.peek(agent.id)
       return {
         origin: agent.session.header?.origin ?? 'root',

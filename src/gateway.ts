@@ -49,7 +49,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { SettingsProvider } from '@deepseek-ai/dsh-settings'
 import { settingsNamespace } from '@deepseek-ai/dsh-settings'
 import { TypertRemoteService, Remote } from '@deepseek-ai/dsh-typert-protocol'
-import { Config } from './config'
+import { Config, detectLegacyKeys } from './config'
 import type { FallbacksConfig } from './config'
 
 /** The `fallbacks` settings namespace (registered when a settings service exists). */
@@ -78,7 +78,7 @@ export type FallbacksConfigPatch = Partial<FallbacksConfig>
 const CONFIG_KEYS: Record<string, true> = {
   enabled: true,
   triggerCodes: true,
-  chains: true,
+  rootChain: true,
   roles: true,
   cooldownMs: true,
   revertPolicy: true,
@@ -123,11 +123,19 @@ export class FallbacksConfigGateway extends TypertRemoteService {
    * Read the current composed config (schema defaults → entry base → settings
    * user layer). No hard-gate resolver (ADR-2): the raw composed config is
    * the wire value — `enabled` is a plain field, not a gate output.
-   * @returns the wire-normalized composed config.
+   * @returns the wire-normalized composed config plus `legacyKeys` — legacy
+   *   two-block-era fields (`chains` / `roles.default` / undeclared rule
+   *   role refs) detected on the composed source (schemastery retains them,
+   *   plan Task 1 Step 1), so the client can show a migration banner (spec
+   *   §9, incremental field — old clients ignore it).
    */
   @Remote('get')
-  get(): { config: FallbacksConfig } {
-    return { config: this.readConfig() }
+  get(): { config: FallbacksConfig; legacyKeys: string[] } {
+    const source = this.bridge.source()
+    return {
+      config: this.readConfig(source),
+      legacyKeys: detectLegacyKeys(source as unknown as Record<string, unknown>),
+    }
   }
 
   /**
@@ -189,8 +197,7 @@ export class FallbacksConfigGateway extends TypertRemoteService {
    * absent values are omitted, never present-as-undefined (the result
    * validator rejects undefined values).
    */
-  private readConfig(): FallbacksConfig {
-    const source = this.bridge.source()
+  private readConfig(source: FallbacksConfig = this.bridge.source()): FallbacksConfig {
     const wire: Record<string, unknown> = {}
     for (const key of Object.keys(CONFIG_KEYS)) {
       const value = (source as unknown as Record<string, unknown>)[key]
