@@ -34,7 +34,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { LlmCallConfig } from '@deepseek-ai/dsh-llm'
 import type { Session } from '@deepseek-ai/dsh-session'
 import { Config, defaultFallbacksConfig, type FallbacksConfig } from './config.ts'
-import { annotateCandidates, createCandidateFilter, hasWildcardEntry, resolveChain, type FailingModel } from './chains.ts'
+import { annotateCandidates, createCandidateFilter, hasWildcardEntry, resolveChainViews, selectCandidates, type FailingModel } from './chains.ts'
 import { parseSelector, selectorKey } from './selectors.ts'
 import { resolveRole } from './roles.ts'
 import { FallbackStateStore, type AgentFallbackState, type PendingSwitch } from './state.ts'
@@ -282,16 +282,22 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
       if (state.stepFailures.switchCount >= config.maxSwitchesPerStep) return null
     }
     const role = resolveRole(agent, config.roles.rules, new Set(config.roles.list.map((declared) => declared.id)))
-    const all = resolveChain(config.roles.list, config.rootChain, role, current.provider, current.model)
+    // T1 review Important #2: resolveChainViews walks the concatenated
+    // candidates ONCE — `all` (early-exit / annotation view) and the
+    // wildcard provenance come from the same pass, and `surviving` is the
+    // same list filtered in place via selectCandidates — so an unknown role
+    // warns at most once per decision (previously resolveChain ran twice:
+    // all + surviving).
+    const { all, wildcard } = resolveChainViews(config.roles.list, config.rootChain, role, current.provider, current.model)
     if (all.length === 0) return null
     // T2 review Important #1 (decision-path contract): the "missing id" skip
     // stays scoped to `provider/*` entries (spec §2 clause 2 — exact entries
     // are never existence-filtered; createCandidateFilter's own modelExists
-    // would over-filter them), so the probe is forwarded to
-    // resolveChain/resolveCandidate while the filter deliberately does NOT
-    // receive modelExists. F-002: the probe is built only when a wildcard
-    // entry is reachable on the role's concatenated candidates — pure exact
-    // chains take zero catalog probes.
+    // would over-filter them), so the probe is applied via selectCandidates
+    // to wildcard-origin candidates only while the filter deliberately does
+    // NOT receive modelExists. F-002: the probe is built only when a
+    // wildcard entry is reachable on the role's concatenated candidates —
+    // pure exact chains take zero catalog probes.
     const modelExists = hasWildcardEntry(config.roles.list, config.rootChain, role)
       ? await makeModelExists(
         ctx,
@@ -305,7 +311,7 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
       has: (key: string) => state !== undefined && state.stepFailures.failed.has(key),
     }
     const filter = createCandidateFilter({ current, cooldown, failed })
-    const surviving = resolveChain(config.roles.list, config.rootChain, role, current.provider, current.model, filter, modelExists)
+    const surviving = selectCandidates(all, wildcard, filter, modelExists)
     const target = surviving[0]
     if (target === undefined || target.model === undefined) return null
     logger.info(

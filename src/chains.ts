@@ -5,7 +5,9 @@
  * (provider, model). Candidates come from the role's own chain plus
  * `rootChain` appended as an inherit-root fallback — **append-not-replace**:
  * `[...(roleDef.chain ?? []), ...(roleDef.fallback === 'none' ? [] :
- * rootChain)]` (role entries first, rootChain entries after). An unknown
+ * rootChain)]` (role entries first, rootChain entries after). The reserved
+ * built-in `inherit` id (INHERIT_ROLE_ID) resolves to `rootChain` silently —
+ * it is the legal no-rule-match role, not a typo'd id. A truly undeclared
  * role id (defense) resolves to `rootChain` alone + one warn. Chain-key
  * specificity lookup (`exact` / `provider/*` / role / `default` keys) is
  * deleted — the two-block config model has no chain keys.
@@ -21,7 +23,7 @@
  * @module dsh-llm-fallbacks/chains
  */
 
-import type { FallbacksRole } from './config.ts'
+import { INHERIT_ROLE_ID, type FallbacksRole } from './config.ts'
 import type { CooldownStore, StepFailureSet } from './cooldown.ts'
 import { parseSelector, resolveWildcardEntry, selectorKey, type Selector } from './selectors.ts'
 
@@ -62,11 +64,87 @@ export function resolveCandidate(
 }
 
 /**
+ * Single-pass chain resolution for the decision path (T1 review Important
+ * #2). Walks the role's concatenated entries ONCE and returns the unfiltered
+ * view — `all` (every resolvable candidate, no filter and no existence
+ * probe: the caller's early-exit / annotation view) — plus the parallel
+ * `wildcard` provenance (`wildcard[i]` = candidate `all[i]` came from a
+ * `provider/*` entry). The caller builds the existence probe from `all` and
+ * then derives the surviving view with {@link selectCandidates}, so the
+ * decision path never resolves the chain twice (and an unknown role warns
+ * at most once per decision).
+ *
+ * The reserved built-in `inherit` id (INHERIT_ROLE_ID) is legal — it
+ * resolves to `rootChain` silently (the no-rule-match role, not a typo'd
+ * id). Only a truly undeclared id (∉ declared ids ∪ {'inherit'}) warns once
+ * (defensive — never crashes). Malformed entries never become candidates.
+ */
+export function resolveChainViews(
+  roles: readonly FallbacksRole[],
+  rootChain: readonly string[],
+  role: string,
+  provider: string,
+  model: string,
+): { all: Selector[]; wildcard: boolean[] } {
+  const failing: FailingModel = { provider, model }
+  const roleDef = roles.find((declared) => declared.id === role)
+  let entries: readonly string[]
+  if (role === INHERIT_ROLE_ID) {
+    entries = rootChain
+  } else if (roleDef === undefined) {
+    console.warn(`llm-fallbacks: unknown role "${role}" — falling back to rootChain`)
+    entries = rootChain
+  } else {
+    entries = [...(roleDef.chain ?? []), ...(roleDef.fallback === 'none' ? [] : rootChain)]
+  }
+  const all: Selector[] = []
+  const wildcard: boolean[] = []
+  for (const entry of entries) {
+    let selector: Selector
+    try {
+      selector = parseSelector(entry)
+    } catch {
+      continue // malformed entries never become candidates (config-warning path)
+    }
+    const candidate = resolveCandidate(entry, failing)
+    if (candidate === null) continue
+    all.push(candidate)
+    wildcard.push(selector.model === undefined)
+  }
+  return { all, wildcard }
+}
+
+/**
+ * Derive the surviving candidates from a {@link resolveChainViews} pass:
+ * the caller filter plus the wildcard-only existence probe. `modelExists`
+ * applies to `provider/*`-origin candidates only (scoped by the parallel
+ * `wildcard` provenance — T2 review Important #1: exact entries are never
+ * existence-filtered), mirroring how {@link resolveCandidate} receives it.
+ * Order and duplicates are preserved.
+ */
+export function selectCandidates(
+  all: readonly Selector[],
+  wildcard: readonly boolean[],
+  filter?: (candidate: Selector) => boolean,
+  modelExists?: (provider: string, model: string) => boolean,
+): Selector[] {
+  const surviving: Selector[] = []
+  for (let index = 0; index < all.length; index += 1) {
+    const candidate = all[index]!
+    if (filter && !filter(candidate)) continue
+    if (modelExists && wildcard[index] && !modelExists(candidate.provider, candidate.model!)) continue
+    surviving.push(candidate)
+  }
+  return surviving
+}
+
+/**
  * Ordered fallback candidates for the failing (provider, model).
  *
  * Candidates are the role's concatenated entries (spec §7.2): the declared
  * role's own `chain` followed by `rootChain` unless `fallback: 'none'`
- * (append-not-replace — role entries first, rootChain as the tail). An
+ * (append-not-replace — role entries first, rootChain as the tail). The
+ * reserved built-in `inherit` id resolves to `rootChain` silently; a truly
  * undeclared/unknown `role` id resolves to `rootChain` alone and warns once
  * (defensive — never crashes). `filter` optionally drops candidates — the
  * caller owns cooldown/failed-set/same-model filtering (see
@@ -75,6 +153,9 @@ export function resolveCandidate(
  * skip (spec §2 clause 2) applies to `provider/*` entries only — explicitly
  * listed exact entries are never existence-filtered (T2 review Important #1:
  * decision-path contract).
+ *
+ * Single-pass: delegates to {@link resolveChainViews} + {@link selectCandidates}
+ * (one concatenated-entry walk, warn at most once per call).
  */
 export function resolveChain(
   roles: readonly FallbacksRole[],
@@ -85,21 +166,8 @@ export function resolveChain(
   filter?: (candidate: Selector) => boolean,
   modelExists?: (provider: string, model: string) => boolean,
 ): Selector[] {
-  const failing: FailingModel = { provider, model }
-  const roleDef = roles.find((declared) => declared.id === role)
-  let entries: readonly string[]
-  if (roleDef === undefined) {
-    console.warn(`llm-fallbacks: unknown role "${role}" — falling back to rootChain`)
-    entries = rootChain
-  } else {
-    entries = [...(roleDef.chain ?? []), ...(roleDef.fallback === 'none' ? [] : rootChain)]
-  }
-  const candidates: Selector[] = []
-  for (const entry of entries) {
-    const candidate = resolveCandidate(entry, failing, modelExists)
-    if (candidate && (!filter || filter(candidate))) candidates.push(candidate)
-  }
-  return candidates
+  const { all, wildcard } = resolveChainViews(roles, rootChain, role, provider, model)
+  return selectCandidates(all, wildcard, filter, modelExists)
 }
 
 /**

@@ -3,8 +3,9 @@
  *
  * Covers spec §7.2 concatenation semantics — `[...role.chain,
  * ...(fallback === 'none' ? [] : rootChain)]` (append-not-replace: role
- * entries first, rootChain tail), the unknown-role defense (rootChain +
- * warn), wildcard entries (keep failing model id, swap provider only),
+ * entries first, rootChain tail), the built-in `inherit` role (rootChain,
+ * silent), the unknown-role defense (rootChain + warn), wildcard entries
+ * (keep failing model id, swap provider only),
  * entry-level skip logic (`resolveCandidate` with `modelExists`),
  * malformed-entry resilience, the caller-side candidate filter (cooldown /
  * failed-set / same-as-current / absent model id), and the
@@ -13,6 +14,7 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { FallbacksRole } from '../src/config.ts'
+import { INHERIT_ROLE_ID } from '../src/config.ts'
 import { CooldownStore, StepFailureSet } from '../src/cooldown.ts'
 import type { Selector } from '../src/selectors.ts'
 import {
@@ -112,6 +114,17 @@ describe('resolveChain — unknown role defense', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     const roles = [role('coder')]
     resolveChain(roles, ['local/*'], 'coder', 'openai', 'gpt-4o')
+    expect(warn).not.toHaveBeenCalled()
+  })
+})
+
+describe('resolveChain — built-in inherit role (T1 review Minor 1)', () => {
+  it('resolves inherit to rootChain without warning (legal built-in role, not a typo)', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const rootChain = ['local/*']
+    expect(resolveChain([], rootChain, INHERIT_ROLE_ID, 'openai', 'gpt-4o').map((c) => c.raw)).toEqual([
+      'local/gpt-4o',
+    ])
     expect(warn).not.toHaveBeenCalled()
   })
 })
