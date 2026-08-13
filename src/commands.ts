@@ -1,5 +1,5 @@
 /**
- * `/fallbacks` slash command (plan fallbacks-mount-map-command Task 2, AC-5).
+ * `/fallbacks` slash command (plan fallbacks-role-runtime T3, AC-5).
  *
  * Session-scoped, read-only diagnostic: current session origin → resolved
  * role → resolved chain (role chain, else rootChain — an `inherit: true`

@@ -54,7 +54,7 @@ describe('dual-plugin coexistence: llm-retry stub registered first (bundle order
   it('normal mode: llm-retry owns retryable codes until its budget is exhausted, then fallback switches', async () => {
     const { agent } = makeAgent('coexist-normal', { provider: 'mock', model: 'gpt-4o' })
     installLlmRetryStub(ctx)
-    apply(ctx, cfg({ chains: { default: ['other/gpt-4o'] } }))
+    apply(ctx, cfg({ rootChain: ['other/gpt-4o'] }))
     const policy = normalPolicy({ maxRetries: 2, retryableCodes: ['RATE_LIMIT', 'SERVER'] })
 
     // Retry 1 and 2: within budget → llm-retry owns recovery (durable
@@ -86,7 +86,7 @@ describe('dual-plugin coexistence: llm-retry stub registered first (bundle order
   it('never-retryable codes (AUTH/QUOTA) bypass llm-retry and switch directly', async () => {
     const { agent } = makeAgent('coexist-auth', { provider: 'mock', model: 'gpt-4o' })
     installLlmRetryStub(ctx)
-    apply(ctx, cfg({ chains: { default: ['other/gpt-4o'] } }))
+    apply(ctx, cfg({ rootChain: ['other/gpt-4o'] }))
     const policy = normalPolicy({ maxRetries: 2, retryableCodes: ['RATE_LIMIT'] })
 
     for (const code of ['AUTH', 'QUOTA'] as const) {
@@ -106,7 +106,7 @@ describe('dual-plugin coexistence: llm-retry stub registered first (bundle order
   it('always mode: llm-retry delegates downstream first — non-trigger failures backoff, trigger codes switch (ADR-2)', async () => {
     const { agent } = makeAgent('coexist-always', { provider: 'mock', model: 'gpt-4o' })
     installLlmRetryStub(ctx)
-    apply(ctx, cfg({ chains: { default: ['other/gpt-4o'] } }))
+    apply(ctx, cfg({ rootChain: ['other/gpt-4o'] }))
     const policy = alwaysPolicy()
 
     // Non-trigger failure (SERVER): the stub calls next() first → the fallback
@@ -140,7 +140,7 @@ describe('dual-plugin coexistence: llm-retry stub registered first (bundle order
     // Wrong composition order (the risk the patch insert position guards
     // against): the fallback now runs before llm-retry, so a retryable trigger
     // code reaches it first and it owns the switch — llm-retry never backoffs.
-    apply(ctx, cfg({ chains: { default: ['other/gpt-4o'] } }))
+    apply(ctx, cfg({ rootChain: ['other/gpt-4o'] }))
     installLlmRetryStub(ctx)
     const policy = normalPolicy({ maxRetries: 2, retryableCodes: ['RATE_LIMIT', 'SERVER'] })
 

@@ -234,8 +234,9 @@ function isRecordLike(value: unknown): value is Record<string, unknown> {
  * Object fields are optional by default in schemastery; `.default()` fills
  * the spec defaults, `.required()` keeps mandatory fields. Unknown keys are
  * RETAINED by the composition (verified plan Task 1 Step 1) — that is what
- * lets the T1 transition adapters read the legacy `chains`/`roles.default`
- * off the composed object until Plan 2 removes them.
+ * lets `detectLegacyKeys` flag two-block-era leftovers (`chains` /
+ * `roles.default`) on the composed object at startup (warn + gateway
+ * `legacyKeys`, see `src/index.ts` apply()).
  */
 export const Config = z.object({
   enabled: z.boolean().default(false),

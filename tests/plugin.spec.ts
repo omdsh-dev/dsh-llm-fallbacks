@@ -59,7 +59,7 @@ afterEach(async () => {
 describe('closed loop through the request boundary (real apply, ADR-4)', () => {
   it('switches on a trigger code and continues the same step on the target model', async () => {
     const { agent, setRoute } = makeAgent('loop-quota', { provider: 'mock', model: 'gpt-4o' })
-    apply(ctx, cfg({ chains: { default: ['other/gpt-4o'] } }))
+    apply(ctx, cfg({ rootChain: ['other/gpt-4o'] }))
 
     const result = await runAgentStep(ctx, { agent, setRoute }, [
       { message: 'quota exceeded', code: 'QUOTA' },
@@ -73,14 +73,14 @@ describe('closed loop through the request boundary (real apply, ADR-4)', () => {
       step: 1,
       from: { provider: 'mock', model: 'gpt-4o' },
       to: { provider: 'other', model: 'gpt-4o' },
-      role: 'default',
+      role: 'inherit',
       reason: 'trigger-code',
     })
   })
 
   it('drops an inherited reasoningEffort when applying a switch (withoutInheritedEffort pattern)', async () => {
     const { agent } = makeAgent('loop-effort', { provider: 'mock', model: 'gpt-4o' })
-    apply(ctx, cfg({ chains: { default: ['other/gpt-4o'] } }))
+    apply(ctx, cfg({ rootChain: ['other/gpt-4o'] }))
 
     expect(await dispatchRequestError(ctx, agent)).toEqual({ kind: 'retry' })
     const config = await dispatchRequest(ctx, agent, {
@@ -96,7 +96,7 @@ describe('closed loop through the request boundary (real apply, ADR-4)', () => {
 describe('per-agent state machine integration (spec §5.1)', () => {
   it('clears the pending switch after application and never replays it at the same (turn, step)', async () => {
     const { agent } = makeAgent('sm-replay', { provider: 'mock', model: 'gpt-4o' })
-    apply(ctx, cfg({ chains: { default: ['other/gpt-4o'] } }))
+    apply(ctx, cfg({ rootChain: ['other/gpt-4o'] }))
 
     expect(await dispatchRequestError(ctx, agent)).toEqual({ kind: 'retry' })
     const store = stateStore(ctx)
@@ -116,7 +116,7 @@ describe('per-agent state machine integration (spec §5.1)', () => {
 
   it('applies a chain decision B→C at the same (turn, step) after A→B (fresh decision supersedes)', async () => {
     const { agent, setRoute } = makeAgent('sm-chain', { provider: 'mock', model: 'gpt-4o' })
-    apply(ctx, cfg({ chains: { default: ['b/x', 'c/x'] } }))
+    apply(ctx, cfg({ rootChain: ['b/x', 'c/x'] }))
 
     const result = await runAgentStep(ctx, { agent, setRoute }, [
       { message: 'auth one', code: 'AUTH' },
@@ -139,7 +139,7 @@ describe('per-agent state machine integration (spec §5.1)', () => {
     const { agent, setRoute } = makeAgent('sm-step-reset', { provider: 'mock', model: 'gpt-4o' })
     // cooldownMs 0: the cooldown expires immediately, isolating the failed-set
     // reset as the deciding mechanism at the new step.
-    apply(ctx, cfg({ chains: { default: ['mock/gpt-4o', 'other/gpt-4o'] }, cooldownMs: 0 }))
+    apply(ctx, cfg({ rootChain: ['mock/gpt-4o', 'other/gpt-4o'], cooldownMs: 0 }))
 
     // Step 1: mock fails → switch to other (mock is step-failed at step 1).
     expect(await dispatchRequestError(ctx, agent, { turn: 1, step: 1 })).toEqual({ kind: 'retry' })
@@ -153,7 +153,7 @@ describe('per-agent state machine integration (spec §5.1)', () => {
 
   it('leaves no residual state after agent/disposed and plugin dispose (spec §6)', async () => {
     const { agent, setRoute } = makeAgent('sm-residual', { provider: 'mock', model: 'gpt-4o' })
-    apply(ctx, cfg({ chains: { default: ['mock/gpt-4o', 'other/gpt-4o'] } }))
+    apply(ctx, cfg({ rootChain: ['mock/gpt-4o', 'other/gpt-4o'] }))
 
     expect(await dispatchRequestError(ctx, agent)).toEqual({ kind: 'retry' })
     const store = stateStore(ctx)
@@ -175,7 +175,7 @@ describe('per-agent state machine integration (spec §5.1)', () => {
 describe('cooldown / revert integration (US-4)', () => {
   it('excludes a cooled model until its cooldown expires', async () => {
     const { agent, setRoute } = makeAgent('cooldown-cooled', { provider: 'mock', model: 'gpt-4o' })
-    apply(ctx, cfg({ chains: { default: ['mock/gpt-4o', 'other/gpt-4o'] }, cooldownMs: 60_000 }))
+    apply(ctx, cfg({ rootChain: ['mock/gpt-4o', 'other/gpt-4o'], cooldownMs: 60_000 }))
 
     // mock fails → switch to other; mock is cooled for 60s.
     expect(await dispatchRequestError(ctx, agent, { turn: 1, step: 1 })).toEqual({ kind: 'retry' })
@@ -189,7 +189,7 @@ describe('cooldown / revert integration (US-4)', () => {
   it('reverts to the main model once the cooldown expires (cooldown-expiry, positive case)', async () => {
     vi.useFakeTimers()
     const { agent, setRoute } = makeAgent('revert-expiry', { provider: 'mock', model: 'gpt-4o' })
-    apply(ctx, cfg({ chains: { default: ['mock/gpt-4o', 'other/gpt-4o'] }, cooldownMs: 10_000 }))
+    apply(ctx, cfg({ rootChain: ['mock/gpt-4o', 'other/gpt-4o'], cooldownMs: 10_000 }))
 
     // Step 1: mock fails → switch to other (mock cooled until T0 + 10s).
     expect(await dispatchRequestError(ctx, agent, { turn: 1, step: 1 })).toEqual({ kind: 'retry' })
@@ -209,7 +209,7 @@ describe('cooldown / revert integration (US-4)', () => {
     const { agent, setRoute } = makeAgent('revert-never', { provider: 'mock', model: 'gpt-4o' })
     // Even with an instantly expiring cooldown, `revertPolicy: 'never'` means
     // Infinity TTL — mock never comes back within the session.
-    apply(ctx, cfg({ chains: { default: ['mock/gpt-4o', 'other/gpt-4o'] }, revertPolicy: 'never', cooldownMs: 0 }))
+    apply(ctx, cfg({ rootChain: ['mock/gpt-4o', 'other/gpt-4o'], revertPolicy: 'never', cooldownMs: 0 }))
 
     expect(await dispatchRequestError(ctx, agent, { turn: 1, step: 1 })).toEqual({ kind: 'retry' })
     setRoute('other', 'gpt-4o')
@@ -222,7 +222,7 @@ describe('cooldown / revert integration (US-4)', () => {
 describe('safety valve (spec §2 clause 4)', () => {
   it('stops switching after maxSwitchesPerStep and keeps the original LlmError code/message', async () => {
     const { agent, setRoute } = makeAgent('valve', { provider: 'mock', model: 'gpt-4o' })
-    apply(ctx, cfg({ chains: { default: ['b/x', 'c/x', 'd/x'] }, maxSwitchesPerStep: 2 }))
+    apply(ctx, cfg({ rootChain: ['b/x', 'c/x', 'd/x'], maxSwitchesPerStep: 2 }))
 
     const result = await runAgentStep(ctx, { agent, setRoute }, [
       { message: 'quota exceeded', code: 'QUOTA' },
@@ -243,7 +243,7 @@ describe('safety valve (spec §2 clause 4)', () => {
 describe('decision-path failure defense (F-005)', () => {
   it('passes the original failure through when the decision path throws', async () => {
     const { agent } = makeAgent('defensive', { provider: 'mock', model: 'gpt-4o' })
-    apply(ctx, cfg({ chains: { default: ['other/gpt-4o'] } }))
+    apply(ctx, cfg({ rootChain: ['other/gpt-4o'] }))
 
     // The durable append inside commit() explodes: the request-error listener
     // must catch, log, and delegate — the original failure semantics (spec §6)
@@ -262,11 +262,11 @@ describe('decision-path failure defense (F-005)', () => {
 })
 
 describe('no-op regression (AC-8)', () => {
-  it('unconfigured chains: zero events, request path unchanged', async () => {
+  it('unconfigured rootChain: zero events, request path unchanged', async () => {
     const { agent } = makeAgent('noop', { provider: 'mock', model: 'gpt-4o' })
     apply(ctx, cfg())
 
-    // Failure path: no chains → no decision → passthrough, no events.
+    // Failure path: no chain candidates → no decision → passthrough, no events.
     expect(await dispatchRequestError(ctx, agent, { failure: { message: 'denied', code: 'AUTH' } })).toBeUndefined()
     expect(await dispatchRequestError(ctx, agent, { failure: { message: 'no quota', code: 'QUOTA' } })).toBeUndefined()
     expect(switchEvents(agent)).toHaveLength(0)
@@ -276,9 +276,9 @@ describe('no-op regression (AC-8)', () => {
     expect(await dispatchRequest(ctx, agent, seed)).toEqual(seed)
   })
 
-  it('disabled: zero events even with chains configured', async () => {
+  it('disabled: zero events even with a rootChain configured', async () => {
     const { agent } = makeAgent('noop-disabled', { provider: 'mock', model: 'gpt-4o' })
-    apply(ctx, cfg({ enabled: false, chains: { default: ['other/gpt-4o'] } }))
+    apply(ctx, cfg({ enabled: false, rootChain: ['other/gpt-4o'] }))
 
     expect(await dispatchRequestError(ctx, agent, { failure: { message: 'denied', code: 'AUTH' } })).toBeUndefined()
     expect(await dispatchRequestError(ctx, agent, { failure: { message: '429', code: 'RATE_LIMIT' } })).toBeUndefined()
@@ -298,7 +298,7 @@ describe('composition order with model-selection (T3 review ⚠️3)', () => {
     // selection its listener passes the resolved config through, so the
     // fallback switch must survive the composition.
     installModelSelectionStub(ctx, noSelection())
-    apply(ctx, cfg({ chains: { default: ['other/gpt-4o'] } }))
+    apply(ctx, cfg({ rootChain: ['other/gpt-4o'] }))
 
     expect(await dispatchRequestError(ctx, agent)).toEqual({ kind: 'retry' })
     const config = await dispatchRequest(ctx, agent, {
@@ -313,7 +313,7 @@ describe('composition order with model-selection (T3 review ⚠️3)', () => {
   it('keeps the always-cap path intact under the same composition (model-selection first)', async () => {
     const { agent } = makeAgent('ms-first-cap', { provider: 'mock', model: 'gpt-4o' })
     installModelSelectionStub(ctx, noSelection())
-    apply(ctx, cfg({ chains: { default: ['other/gpt-4o'] }, alwaysModeRetryCap: 1 }))
+    apply(ctx, cfg({ rootChain: ['other/gpt-4o'], alwaysModeRetryCap: 1 }))
 
     appendLlmRetry(agent, { turn: 1, step: 1, provider: 'mock', mode: 'always', retry: 1 })
     const config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
@@ -324,7 +324,7 @@ describe('composition order with model-selection (T3 review ⚠️3)', () => {
 
   it('keeps fallback switching intact when model-selection is registered after the plugin', async () => {
     const { agent } = makeAgent('ms-last', { provider: 'mock', model: 'gpt-4o' })
-    apply(ctx, cfg({ chains: { default: ['other/gpt-4o'] } }))
+    apply(ctx, cfg({ rootChain: ['other/gpt-4o'] }))
     installModelSelectionStub(ctx, noSelection())
 
     expect(await dispatchRequestError(ctx, agent)).toEqual({ kind: 'retry' })
@@ -348,7 +348,7 @@ describe('composition order with model-selection (T3 review ⚠️3)', () => {
       assembled: { provider: 'sel', model: 'm' },
     }
     installModelSelectionStub(ctx, selection)
-    apply(ctx, cfg({ chains: { default: ['other/gpt-4o'] } }))
+    apply(ctx, cfg({ rootChain: ['other/gpt-4o'] }))
 
     expect(await dispatchRequestError(ctx, agent)).toEqual({ kind: 'retry' })
     expect(switchEvents(agent)).toHaveLength(1)
@@ -363,7 +363,7 @@ describe('composition order with model-selection (T3 review ⚠️3)', () => {
       assembled: { provider: 'sel', model: 'm' },
     }
     installModelSelectionStub(ctx, selection)
-    apply(ctx, cfg({ chains: { default: ['other/gpt-4o'] } }))
+    apply(ctx, cfg({ rootChain: ['other/gpt-4o'] }))
 
     expect(await dispatchRequestError(ctx, agent)).toEqual({ kind: 'retry' })
     // Without the marker there is no per-step yield: every request under the
@@ -387,7 +387,7 @@ describe('composition order with model-selection (T3 review ⚠️3)', () => {
     // load before the agent's model-selection (the default web-profile
     // composition), the switch survives even an active selection — the
     // degradation only bites when model-selection composes outer.
-    apply(ctx, cfg({ chains: { default: ['other/gpt-4o'] } }))
+    apply(ctx, cfg({ rootChain: ['other/gpt-4o'] }))
     const selection: ModelSelectionRef = {
       current: undefined,
       assembled: { provider: 'sel', model: 'm' },
