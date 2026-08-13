@@ -90,11 +90,13 @@ export interface FallbacksSettingsState {
   present: boolean
   /**
    * Legacy (two-block-era) config keys the gateway detected on the composed
-   * source (`get().legacyKeys`, spec §9): non-empty → the migration banner
-   * renders. The wire field is authoritative — the client never guesses
-   * legacy status on its own (detectLegacyClientKeys is a test-only
-   * fallback). A `set`/`reset` response without the field lands `[]` — a
-   * full-overwrite save has no legacy leftovers left.
+   * source (`get().legacyKeys` / the post-write `set`/`reset` response,
+   * spec §9): non-empty → the migration banner renders. The wire field is
+   * authoritative — the client never guesses legacy status on its own
+   * (detectLegacyClientKeys is a test-only fallback). A `set`/`reset`
+   * response WITHOUT the field (older gateway) keeps the last accepted
+   * value — only a `get` may settle legacy truth (W-1/F-1: a save merges
+   * over the user layer, so it cannot delete legacy keys).
    */
   legacyKeys: string[]
   /** Provider/model directory snapshot (spec §2.5 D-4). */
@@ -527,7 +529,12 @@ export function mergeRoleExtras(rows: readonly RoleRow[], originalRoles: readonl
  * the same page is reflected immediately).
  */
 export function ruleRoleOptions(roles: Pick<FallbacksRoles, 'list'>): string[] {
-  return [INHERIT_ROLE_ID, ...roles.list.map(role => role.id)]
+  // Canonical ids only, deduplicated (qc3 F-3): ids are trimmed exactly like
+  // rowsToRoles/rowsToRules rebuild them, and mid-edit duplicate ids must not
+  // render duplicate <option> entries (React key collision) — the dropdown
+  // offers each declared id once; save-time validation still blocks the
+  // duplicate draft.
+  return [INHERIT_ROLE_ID, ...new Set(roles.list.map(role => role.id.trim()))]
 }
 
 /**
@@ -795,11 +802,13 @@ export class FallbacksSettingsController {
 
   /**
    * Persist the full edited configuration through the gateway channel
-   * (`/api/fallbacks/set`). The full config is sent as the patch — a merge
-   * with all keys present is a full overwrite (guide §9). The gateway merge
-   * has no revision guard: any failure (business rejection or transport)
-   * surfaces its message in `state.error` for the section's error banner and
-   * the form stays editable for retry (KD-G3).
+   * (`/api/fallbacks/set`). The full config is sent as a MERGE patch (guide
+   * §9) — keys the new schema cannot express (legacy `chains` /
+   * `roles.default` in the user layer) survive the write, which is why the
+   * gateway returns POST-WRITE `legacyKeys` and the banner stays honest
+   * (W-1/F-1). The merge has no revision guard: any failure (business
+   * rejection or transport) surfaces its message in `state.error` for the
+   * section's error banner and the form stays editable for retry (KD-G3).
    * @param next - the complete edited configuration.
    */
   async save(next: FallbacksConfig): Promise<void> {
@@ -818,7 +827,11 @@ export class FallbacksSettingsController {
       const config = value !== null && typeof value === 'object' && 'config' in value
         ? value.config
         : undefined
-      let legacyKeys: string[] = []
+      // The write response carries the post-write legacyKeys (W-1/F-1). When
+      // the field is ABSENT (an older gateway), keep the last accepted value
+      // — never clear the banner on a save the server cannot vouch for; only
+      // a `get` may settle legacy truth.
+      let legacyKeys: string[] = this.store.getSnapshot().legacyKeys
       if (value !== null && typeof value === 'object' && 'legacyKeys' in value) {
         const wireLegacyKeys: unknown = value.legacyKeys
         if (Array.isArray(wireLegacyKeys)) {
@@ -854,7 +867,10 @@ export class FallbacksSettingsController {
       const config = value !== null && typeof value === 'object' && 'config' in value
         ? value.config
         : undefined
-      let legacyKeys: string[] = []
+      // Same keep-last rule as {@link save}: the reset response carries
+      // post-write legacyKeys (entry-base leftovers are re-reported); when
+      // absent, never clear the banner on the server's silence (W-1/F-1).
+      let legacyKeys: string[] = this.store.getSnapshot().legacyKeys
       if (value !== null && typeof value === 'object' && 'legacyKeys' in value) {
         const wireLegacyKeys: unknown = value.legacyKeys
         if (Array.isArray(wireLegacyKeys)) {
@@ -884,9 +900,10 @@ export class FallbacksSettingsController {
    * last accepted config (the defaults skeleton on a first load) — the
    * draft seed invariant (I-1): a transient channel-down must never seed
    * the form with defaults over real server truth. `legacyKeys` rides the
-   * same publish: the wire field drives the migration banner, and a write
-   * response without it (the `set`/`reset` shape) lands `[]` — a saved
-   * full-overwrite config has no legacy leftovers left.
+   * same publish: the wire field drives the migration banner. save/reset
+   * pass the POST-WRITE value (W-1/F-1) — or the previous value when the
+   * response omits the field, so a write can never clear the banner
+   * against server truth; only a real `get` may.
    */
   private accept(config: unknown, writable: boolean, legacyKeys: string[]): void {
     const parsed = config === undefined ? undefined : parseFallbacksConfig(config)

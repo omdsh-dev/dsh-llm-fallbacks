@@ -135,16 +135,24 @@ export interface FallbacksConfigLogger {
 export function validateFallbacksConfig(config: FallbacksConfig, logger: FallbacksConfigLogger): void {
   const declaredIds = new Set<string>()
   for (const role of config.roles.list) {
-    if (!ROLE_ID_PATTERN.test(role.id)) {
+    // Client-canonical trim alignment (qc2 S-3): the UI rebuilds ids with
+    // `row.id.trim()` (rowsToRoles) and validates the trimmed value, so the
+    // host validator must too — a padded id in YAML resolves exactly like
+    // the UI's canonical form (format/reserved/duplicate checks + the
+    // declared-id set), never as a raw-string mismatch that would produce a
+    // duplicate/undeclared warn against a trimmed sibling. Warn messages
+    // still name the raw stored id so the user can locate it in the file.
+    const id = role.id.trim()
+    if (!ROLE_ID_PATTERN.test(id)) {
       logger.warn(`llm-fallbacks: invalid role id "${role.id}" — must match /^[a-z0-9-]{1,32}$/`)
     }
-    if (role.id === INHERIT_ROLE_ID) {
+    if (id === INHERIT_ROLE_ID) {
       logger.warn(`llm-fallbacks: role id "${role.id}" is reserved — "inherit" cannot be declared in roles.list`)
     }
-    if (declaredIds.has(role.id)) {
+    if (declaredIds.has(id)) {
       logger.warn(`llm-fallbacks: duplicate role id "${role.id}" — role ids must be unique`)
     }
-    declaredIds.add(role.id)
+    declaredIds.add(id)
     for (const entry of role.chain ?? []) {
       try {
         parseSelector(entry)
@@ -169,7 +177,10 @@ export function validateFallbacksConfig(config: FallbacksConfig, logger: Fallbac
   }
   const validTargets = new Set([...declaredIds, INHERIT_ROLE_ID])
   for (const rule of config.roles.rules) {
-    if (!validTargets.has(rule.role)) {
+    // Same canonical trim as the declared side (rowsToRules trims rule
+    // roles on the client) — a padded reference resolves against a padded
+    // declaration exactly as the UI would.
+    if (!validTargets.has(rule.role.trim())) {
       logger.warn(
         `llm-fallbacks: rule references undeclared role "${rule.role}" — expected one of roles.list ids or "inherit"`,
       )

@@ -153,6 +153,45 @@ describe('validateFallbacksConfig — role ids (format / uniqueness / reserved w
       'llm-fallbacks: role id "inherit" is reserved — "inherit" cannot be declared in roles.list',
     )
   })
+
+  it('trims role ids before validation, matching the client canonical pipeline (qc2 S-3)', () => {
+    const { logger } = warnLogger()
+    validateFallbacksConfig({
+      ...defaultFallbacksConfig,
+      roles: {
+        list: [
+          // A padded-but-valid id trims to the canonical form the UI
+          // rebuilds (row.id.trim()): no format warn, and a rule
+          // referencing the canonical id resolves — no undeclared warn.
+          role({ id: ' coder ' }),
+          // Whitespace that survives trim (internal space) is still a
+          // format violation — the raw stored id names the offending value.
+          role({ id: 'bad id' }),
+        ],
+        rules: [{ role: 'coder' }],
+      },
+    }, logger)
+    const messages = messagesOf({ warn: logger.warn })
+    // The whitespace id warns as FORMAT (not duplicate/undeclared).
+    expect(messages).toContain('llm-fallbacks: invalid role id "bad id" — must match /^[a-z0-9-]{1,32}$/')
+    expect(messages).toHaveLength(1)
+    expect(messages.some((m) => m.includes('duplicate role id'))).toBe(false)
+    expect(messages.some((m) => m.includes('undeclared role'))).toBe(false)
+  })
+
+  it('a padded id and its canonical twin are duplicates (trimmed dedup set)', () => {
+    const { logger } = warnLogger()
+    validateFallbacksConfig({
+      ...defaultFallbacksConfig,
+      roles: {
+        list: [role({ id: 'coder ' }), role({ id: 'coder' })],
+        rules: [],
+      },
+    }, logger)
+    expect(messagesOf({ warn: logger.warn })).toContain(
+      'llm-fallbacks: duplicate role id "coder" — role ids must be unique',
+    )
+  })
 })
 
 describe('validateFallbacksConfig — rule role references', () => {

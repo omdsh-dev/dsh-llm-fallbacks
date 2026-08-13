@@ -33,6 +33,10 @@
  *    empty for a clean two-block config, populated for legacy
  *    `chains`/`roles.default`/undeclared rule-role leftovers on the composed
  *    source; the wire config itself stays the new shape.
+ * ⑧ `set`/`reset` return the same `{ config, legacyKeys }` shape computed on
+ *    the POST-WRITE composed source (W-1/F-1): the settings merge retains a
+ *    legacy user layer, so a save keeps re-reporting it; reset drops the user
+ *    layer but re-reports entry-base leftovers.
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -170,7 +174,8 @@ describe('with a settings service (set writes the user layer)', () => {
     const composed: FallbacksConfig = { ...entry, enabled: true }
     // Live: the bridge source the runtime reads reflects the write.
     expect(gateway.get()).toEqual({ config: composed, legacyKeys: [] })
-    expect(result).toEqual({ config: composed })
+    // set returns the same { config, legacyKeys } shape as get (W-1/F-1).
+    expect(result).toEqual({ config: composed, legacyKeys: [] })
   })
 
   it('a patch changing only one key leaves the other base values intact', async () => {
@@ -218,9 +223,9 @@ describe('with a settings service (set writes the user layer)', () => {
     const result = await gateway.set({})
     const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)!
     expect(descriptor.user).toBeUndefined()
-    // `set` returns the plain `{ config }` (no legacyKeys — spec §9 keeps
-    // set/reset signatures unchanged), so compare the config payloads.
-    expect(result.config).toEqual(gateway.get().config)
+    // A no-op set reports the unchanged composed source exactly like get
+    // (W-1/F-1: every set/reset response carries the post-write legacyKeys).
+    expect(result).toEqual(gateway.get())
     expect(result.config.enabled).toBe(true)
   })
 
@@ -272,7 +277,8 @@ describe('with a settings service (set writes the user layer)', () => {
     const after = ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)!
     expect(after.user).toEqual({})
     expect(gateway.get()).toEqual({ config: entry, legacyKeys: [] })
-    expect(result).toEqual({ config: entry })
+    // reset returns the same { config, legacyKeys } shape as get (W-1/F-1).
+    expect(result).toEqual({ config: entry, legacyKeys: [] })
   })
 
   it('set fails cleanly after the settings service is disposed (the inject child disposer clears the capture)', async () => {
@@ -402,6 +408,44 @@ describe('set validation (Config schema, unknown-key rejection unchanged)', () =
 
     await expect(gateway.set('nope' as never)).rejects.toThrow(/plain object/)
   })
+
+  it('rejects unknown NESTED roles keys (roles.default would re-arm the legacy banner — qc2 S-1)', async () => {
+    const ctx = track(new Context())
+    await ctx.plugin(MemorySettings)
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()))
+    await waitRegistered(ctx)
+    await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
+
+    // The top-level guard does not recurse: schemastery retains unknown
+    // NESTED keys too, so a `roles.default` patch would be persisted by the
+    // settings merge and re-arm the migration banner from a write the UI
+    // never makes. The API boundary must reject it (same strictness as the
+    // top-level unknown-key guard).
+    await expect(gateway.set({ roles: { default: 'reviewer' } } as never))
+      .rejects.toThrow(/unknown config key "roles\.default"/)
+    const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)!
+    expect(descriptor.user).toBeUndefined()
+  })
+
+  it('accepts only the declared roles nested keys (list/rules patch passes)', async () => {
+    const ctx = track(new Context())
+    await ctx.plugin(MemorySettings)
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()))
+    await waitRegistered(ctx)
+    await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
+
+    await gateway.set({
+      roles: { list: [{ id: 'coder', label: 'Coder', description: 'Coding subagent' }], rules: [{ role: 'coder' }] },
+    } as never)
+    const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)!
+    expect(descriptor.user).toEqual({
+      roles: {
+        list: [{ id: 'coder', label: 'Coder', description: 'Coding subagent' }],
+        rules: [{ role: 'coder' }],
+      },
+    })
+    expect(gateway.get().legacyKeys).toEqual([])
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -494,6 +538,89 @@ describe('get legacyKeys detection (two-block-era leftovers)', () => {
     } as never
     const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, legacy))
     expect(gateway.get().legacyKeys).toEqual(['roles.rules[].role: ghost'])
+  })
+
+  it('seeded legacy user layer survives the settings merge — composed source retains the keys and get reports them (qc3 F-2b)', async () => {
+    const ctx = track(new Context())
+    await ctx.plugin(MemorySettings)
+    // Seed BEFORE the namespace registers: the dev-time mirror of a legacy
+    // user whose user layer holds the two-block-era keys (chains +
+    // roles.default) when the upgraded plugin loads. This is the settings
+    // USER-LAYER merge path — the exact path a real legacy user hits (the
+    // entry-base composition tests prove only the schema-defaults path).
+    const settings = ctx.settings as unknown as MemorySettings
+    settings.seed(FALLBACKS_SETTINGS_NAMESPACE, {
+      chains: { default: ['other/gpt-4o'] },
+      roles: { default: 'reviewer', rules: [{ role: 'reviewer' }] },
+    })
+    const bridge = installFallbacksBridge(ctx, entryConfig())
+    const gateway = new FallbacksConfigGateway(ctx, bridge)
+    await waitRegistered(ctx)
+
+    // Merge-retention path: the composed source the runtime adapters read
+    // (apply/onChange/decide/getSnapshot in src/index.ts) still carries the
+    // legacy keys through the settings merge.
+    const composed = bridge.source() as unknown as Record<string, unknown>
+    expect(Object.hasOwn(composed, 'chains')).toBe(true)
+    const roles = composed.roles as Record<string, unknown>
+    expect(Object.hasOwn(roles, 'default')).toBe(true)
+    expect(Array.isArray(roles.rules)).toBe(true)
+
+    // get() reports all three legacy classes (spec §9) — the migration
+    // banner source for a real upgraded user.
+    expect(gateway.get().legacyKeys).toEqual(['chains', 'roles.default', 'roles.rules[].role: reviewer'])
+    // The wire config stays the new shape (legacy keys never cross).
+    const wire = gateway.get().config
+    expect('chains' in wire).toBe(false)
+    expect('default' in wire.roles).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// ⑧ set/reset return post-write legacyKeys (W-1/F-1 — the merge survives)
+// ---------------------------------------------------------------------------
+
+describe('set/reset return post-write legacyKeys (W-1/F-1)', () => {
+  it('a save on a legacy user layer keeps reporting the legacy keys (merge, not overwrite)', async () => {
+    const ctx = track(new Context())
+    await ctx.plugin(MemorySettings)
+    const settings = ctx.settings as unknown as MemorySettings
+    settings.seed(FALLBACKS_SETTINGS_NAMESPACE, {
+      chains: { default: ['other/gpt-4o'] },
+      roles: { default: 'reviewer', rules: [{ role: 'reviewer' }] },
+    })
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()))
+    await waitRegistered(ctx)
+    await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
+
+    expect(gateway.get().legacyKeys).toEqual(['chains', 'roles.default', 'roles.rules[].role: reviewer'])
+
+    // A new-shape save MERGES over the user layer: the legacy keys survive
+    // the write, so the post-write response re-reports them — the client
+    // banner stays honest instead of flickering off against server truth.
+    const result = await gateway.set({ enabled: true })
+    expect(result.config.enabled).toBe(true)
+    expect(result.legacyKeys).toEqual(['chains', 'roles.default', 'roles.rules[].role: reviewer'])
+    // The next get agrees (no flicker window).
+    expect(gateway.get().legacyKeys).toEqual(['chains', 'roles.default', 'roles.rules[].role: reviewer'])
+  })
+
+  it('reset drops the user layer but re-reports legacy keys carried by the entry base', async () => {
+    const ctx = track(new Context())
+    await ctx.plugin(MemorySettings)
+    const legacy = {
+      ...entryConfig(),
+      chains: { default: ['other/gpt-4o'] },
+    } as never
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, legacy))
+    await waitRegistered(ctx)
+    await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
+
+    const result = await gateway.reset()
+    // settings.replace({}) cleared the user layer; the entry base still
+    // carries the legacy key, and the post-write source re-reports it.
+    expect(result.legacyKeys).toEqual(['chains'])
+    expect(gateway.get().legacyKeys).toEqual(['chains'])
   })
 })
 

@@ -403,6 +403,17 @@ describe('rootChain/role/rule row editors (pure round-trips)', () => {
       .toEqual(['inherit', 'reviewer', 'c'])
   })
 
+  it('ruleRoleOptions canonicalizes ids and dedupes the offer set (qc3 F-3)', () => {
+    // Mid-edit duplicate ids must not render duplicate <option> entries
+    // (React key collision): trimmed to the canonical form and offered once;
+    // save-time validation still blocks the duplicate draft.
+    expect(ruleRoleOptions({ list: [
+      { id: ' reviewer ', label: '', description: '' },
+      { id: 'reviewer', label: '', description: '' },
+      { id: 'architect', label: '', description: '' },
+    ] })).toEqual(['inherit', 'reviewer', 'architect'])
+  })
+
   it('mergeRoleExtras re-attaches prompt/permissions from the original list by (trimmed) id', () => {
     // The schema-reserved prompt/permissions never round-trip through rows;
     // the merge is what keeps them alive across a save (T2 reviewer minor
@@ -829,7 +840,7 @@ describe('FallbacksSettingsController', () => {
     expect(controller.store.getSnapshot().legacyKeys).toEqual(['chains'])
   })
 
-  it('a save response without legacyKeys clears the banner (full-overwrite save has no leftovers)', async () => {
+  it('a save response without legacyKeys KEEPS the banner (W-1/F-1: only a get may settle legacy truth)', async () => {
     const api = makeApi()
     api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
     const { rpc, get } = makeRpc()
@@ -840,12 +851,14 @@ describe('FallbacksSettingsController', () => {
     const controller = new FallbacksSettingsController(api, rpc)
     await controller.load()
     expect(controller.store.getSnapshot().legacyKeys).toEqual(['chains'])
-    // The gateway set returns { config } only → accept(config, true, []).
+    // The gateway set response omits the field (older gateway / pre-W-1):
+    // the last accepted value is kept — a save merges over the user layer,
+    // so the server's silence must never clear the banner against truth.
     await controller.save({ ...defaultFallbacksConfig, cooldownMs: 55_000 })
     const state = controller.store.getSnapshot()
     expect(state.status).toBe('ready')
     expect(state.config.cooldownMs).toBe(55_000)
-    expect(state.legacyKeys).toEqual([])
+    expect(state.legacyKeys).toEqual(['chains'])
   })
 
   it('a save response carrying legacyKeys lands them in state', async () => {
@@ -864,7 +877,7 @@ describe('FallbacksSettingsController', () => {
     expect(state.legacyKeys).toEqual(['roles.default'])
   })
 
-  it('a reset response without legacyKeys clears the banner too', async () => {
+  it('a reset response without legacyKeys keeps the banner too', async () => {
     const api = makeApi()
     api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
     const { rpc, get } = makeRpc()
@@ -878,7 +891,9 @@ describe('FallbacksSettingsController', () => {
     await controller.resetToDefaults()
     const state = controller.store.getSnapshot()
     expect(state.config).toEqual(defaultFallbacksConfig)
-    expect(state.legacyKeys).toEqual([])
+    // Same keep-last rule as save: an absent wire field never clears the
+    // banner — the next get is the only legacy-truth authority.
+    expect(state.legacyKeys).toEqual(['roles.default'])
   })
 
   it('surfaces a set rejection as the error banner (KD-G3 — no conflict branch)', async () => {

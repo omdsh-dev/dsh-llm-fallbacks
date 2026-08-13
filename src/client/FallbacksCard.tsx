@@ -212,15 +212,27 @@ function validateDraft(draft: FallbacksConfig, t: FallbacksCardProps['t']): stri
 }
 
 /**
- * Whether one role row's id is a validation failure (format / reserved word
+ * The trimmed role ids that are validation failures (format / reserved word
  * / duplicate) — drives the inline red border after a blocked save attempt.
- * Selector errors stay on the banner only (plan Task 3 inline-scope rule).
+ * Derived once per render into a Set (qc3 F-3): a duplicate scan inside the
+ * render loop would be O(N²) per row; here the whole derivation is O(N) and
+ * each row's check is a single Set lookup. Selector errors stay on the
+ * banner only (plan Task 3 inline-scope rule).
  */
-function roleRowIssue(rows: readonly RoleRow[], index: number): boolean {
-  const row = rows[index]!
-  const id = row.id.trim()
-  if (!ROLE_ID_PATTERN.test(id) || id === INHERIT_ROLE_ID) return true
-  return rows.some((other, otherIndex) => otherIndex !== index && other.id.trim() === id)
+function collectInvalidRoleIds(rows: readonly RoleRow[]): Set<string> {
+  const counts = new Map<string, number>()
+  for (const row of rows) {
+    const id = row.id.trim()
+    counts.set(id, (counts.get(id) ?? 0) + 1)
+  }
+  const invalid = new Set<string>()
+  for (const row of rows) {
+    const id = row.id.trim()
+    if (!ROLE_ID_PATTERN.test(id) || id === INHERIT_ROLE_ID || (counts.get(id) ?? 0) > 1) {
+      invalid.add(id)
+    }
+  }
+  return invalid
 }
 
 /** Parse a number input, clamped to a non-negative integer. */
@@ -552,10 +564,29 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
   // the validation gate, and save — `state.config.roles.list` supplies the
   // prompt/permissions merge so a clean draft equals the accepted config.
   const draft = assembleConfig(scalars, rootChainRows, roleRows, ruleRows, state.config.roles.list)
-  const dirty = JSON.stringify(draft) !== JSON.stringify(state.config)
+  // Empty rule rows (role still on the "select role" placeholder) never
+  // reach the assembled draft — rowsToRules drops them — so validateDraft
+  // cannot see them. Surface them as a validation error instead of
+  // silently discarding the row on save (qc3 F-4).
+  const hasEmptyRuleRows = ruleRows.some(row => row.role === '')
+  // An empty rule row makes no config difference, but it IS an unsaved UI
+  // change: count it so the unsaved pill, Discard, and Save all treat the
+  // row as pending (otherwise Save stays disabled and the row vanishes on
+  // the next successful save with no chance to explain itself).
+  const dirty = JSON.stringify(draft) !== JSON.stringify(state.config) || hasEmptyRuleRows
   const saving = state.status === 'saving'
   const writable = state.writable
   const unknownCodes = scalars.triggerCodes.filter(code => !KNOWN_TRIGGER_CODES.includes(code))
+
+  // The rules role dropdown's offer set — derived ONCE per render and shared
+  // by every rule row (qc3 F-3; previously recomputed inside the render
+  // loop): a role added/removed on the same page reflects immediately, and
+  // the store dedupes on the canonical (trimmed) ids so mid-edit duplicate
+  // ids never render duplicate options.
+  const roleOptions = ruleRoleOptions({ list: roleRows })
+  // Offending role ids after a blocked save attempt, derived once per render
+  // into a Set (qc3 F-3) — each row's inline red border is one lookup.
+  const invalidRoleIds = validationAttempted ? collectInvalidRoleIds(roleRows) : null
 
   // R-4b: the status block's derived effective model (spec §2.5 D-6). The
   // derivation is a display value over config + recent switches — the
@@ -608,6 +639,13 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
 
   const save = (): void => {
     const errors = validateDraft(draft, t)
+    // An empty rule row is invisible to validateDraft (rowsToRules dropped
+    // it from the draft) — the row would vanish on a successful save with no
+    // explanation. Block it alongside the draft violations (qc3 F-4); the
+    // row keeps its inline hint so the user sees why.
+    if (hasEmptyRuleRows) {
+      errors.push(t('validation.ruleRoleRequired'))
+    }
     if (errors.length > 0) {
       // Validation blocks the write: the draft is never sent to the gateway,
       // and the violations surface as the banner + inline red borders (spec
@@ -643,11 +681,14 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
   // dirty-gated, so the next attempt may never fire).
   useEffect(() => {
     if (!validationAttempted) return
-    if (validateDraft(draft, t).length === 0) {
+    // The empty-rule-row violation lives outside the draft (rowsToRules
+    // dropped the row), so it must clear on the ROW state, not just the
+    // assembled draft (qc3 F-4).
+    if (validateDraft(draft, t).length === 0 && !ruleRows.some(row => row.role === '')) {
       setValidationErrors([])
       setValidationAttempted(false)
     }
-  }, [validationAttempted, draft, t])
+  }, [validationAttempted, draft, ruleRows, t])
 
   const confirmReset = (): void => {
     setResetting(true)
@@ -733,8 +774,9 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
           {/* Migration banner (spec §8): the wire's legacyKeys detected
               two-block-era leftovers → an informational notice at the top of
               the card body. Never blocks editing and never touches disk —
-              the next save overwrites the composed config with the new
-              format. */}
+              a save MERGES over the user layer (W-1/F-1), so legacy keys
+              survive until manually removed; the banner stays until a get
+              reports them gone. */}
           {state.legacyKeys.length > 0 && (
             <p className={css.legacyNotice} role="status">
               {t('legacy.banner', { keys: state.legacyKeys.join(', ') })}
@@ -986,7 +1028,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                  * ids with the red border (aria-invalid). */}
                 <div className={css.list}>
                   {roleRows.map((row, index) => {
-                    const invalid = validationAttempted && roleRowIssue(roleRows, index)
+                    const invalid = invalidRoleIds?.has(row.id.trim()) ?? false
                     return (
                     <div key={index} className={css.editorCard}>
                       <div className={css.ruleGrid}>
@@ -1115,17 +1157,17 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                       && (catalog?.providers.some(entry => entry.provider === providerRaw) ?? false)
                       && !state.configuredProviders.some(entry => entry.provider === providerRaw)
                     const modelOutside = row.model?.kind === 'outside'
-                    // The role dropdown's offer set derives LIVE from the
-                    // declared role rows: a role added/removed on the same
-                    // page is reflected immediately (spec §8 同页联动). A
-                    // role deleted under a referencing rule leaves the row's
-                    // value orphaned — it stays visible as a synthetic
-                    // "undeclared" option so the dangling reference is
-                    // honest, and save()'s validation flags it. The offer
-                    // set uses the same canonical (trimmed) ids that
-                    // rowsToRoles/rowsToRules rebuild, so what the dropdown
-                    // offers is exactly what save-time validation accepts.
-                    const roleOptions = ruleRoleOptions({ list: roleRows.map(row => ({ ...row, id: row.id.trim() })) })
+                    // roleOptions is hoisted once per render (qc3 F-3): the
+                    // offer set derives LIVE from the declared role rows —
+                    // a role added/removed on the same page is reflected
+                    // immediately (spec §8 同页联动). A role deleted under
+                    // a referencing rule leaves the row's value orphaned —
+                    // it stays visible as a synthetic "undeclared" option
+                    // so the dangling reference is honest, and save()'s
+                    // validation flags it. The offer set uses the same
+                    // canonical (trimmed) ids that rowsToRoles/rowsToRules
+                    // rebuild, so what the dropdown offers is exactly what
+                    // save-time validation accepts.
                     const roleOutside = row.role !== '' && !roleOptions.includes(row.role)
                     return (
                     <div key={index} className={css.editorCard}>
@@ -1208,6 +1250,12 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                           {t('catalog.outside.hint')}
                           <InfoHint label={t('catalog.outside.tooltip')} disabled={!writable} />
                         </span>
+                      )}
+                      {row.role === '' && (
+                        // qc3 F-4: an empty role row would be dropped by
+                        // rowsToRules on assembly and vanish on save — the
+                        // inline hint explains why save is blocked.
+                        <span className={css.hint}>{t('validation.ruleRoleRequired')}</span>
                       )}
                       <div className={css.cardFoot}>
                         <button

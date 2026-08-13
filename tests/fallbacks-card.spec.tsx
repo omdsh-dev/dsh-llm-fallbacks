@@ -687,6 +687,38 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     expect(alert.textContent).toContain(en['validation.ruleRoleUndeclared'])
   })
 
+  it('blocks save on an empty rule row with a hint instead of silently dropping it (qc3 F-4)', async () => {
+    const { view, props, scripted } = await mountCard({ config: TWO_BLOCK_CONFIG })
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    // Add a fresh rule row: the role select stays on the placeholder.
+    fireEvent.click(screen.getByRole('button', { name: en['roles.addRule'] }))
+    view.rerender(<FallbacksCard {...props} />)
+    const roleSelects = screen.getAllByLabelText(en['roles.rule.role'])
+    const fresh = roleSelects[roleSelects.length - 1] as HTMLSelectElement
+    expect(fresh.value).toBe('')
+    // The inline hint explains the row before any save attempt.
+    expect(screen.getAllByText(en['validation.ruleRoleRequired'])).toHaveLength(1)
+
+    // Save is blocked: the empty row would otherwise vanish on save
+    // (rowsToRules drops role === '') with no explanation.
+    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    view.rerender(<FallbacksCard {...props} />)
+    expect(scripted.set).not.toHaveBeenCalled()
+    expect(scripted.call).not.toHaveBeenCalledWith('/api', 'fallbacks/set', expect.anything())
+    const alert = screen.getByRole('alert')
+    expect(alert.textContent).toContain(en['validation.blocked'])
+    expect(alert.textContent).toContain(en['validation.ruleRoleRequired'])
+
+    // Picking a role makes the draft valid again → the blocked
+    // presentation clears live (no stale banner over a valid draft).
+    const selectsAfterBlock = screen.getAllByLabelText(en['roles.rule.role'])
+    const last = selectsAfterBlock[selectsAfterBlock.length - 1] as HTMLSelectElement
+    fireEvent.change(last, { target: { value: 'reviewer' } })
+    view.rerender(<FallbacksCard {...props} />)
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
   it('blocks save on an invalid role id: banner + inline red, no gateway write', async () => {
     const { view, props, scripted } = await mountCard({ config: TWO_BLOCK_CONFIG })
     toggleCard()

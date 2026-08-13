@@ -168,7 +168,7 @@ fallbacks:
 
 旧格式配置升级后经**三通道**提示，不静默丢失、**不自动改文件**：
 
-1. **UI 横幅**（本轮已生效）：Fallbacks 卡片主体顶部渲染迁移提示（`get` 响应 `legacyKeys` 非空时）——「检测到旧格式配置字段（…）：已按新模型展示，请按 docs/configuration.md 迁移表手工改写；插件不会自动改写配置。」不阻断编辑、不改磁盘；下一次保存以新格式整体覆写。
+1. **UI 横幅**（本轮已生效）：Fallbacks 卡片主体顶部渲染迁移提示（`get` / `set` / `reset` 响应 `legacyKeys` 非空时）——「检测到旧格式配置字段（…）：已按新模型展示，请按 docs/configuration.md 迁移表手工改写；插件不会自动改写配置。」不阻断编辑、不改磁盘；**保存不删除旧格式键**（`set` 为合并语义，旧 `chains` / `roles.default` 会保留在 user layer）——清理请手动编辑 YAML，或用「恢复默认」重置该命名空间。
 2. **启动 warn**（日志文案落地在 Plan 2 `apply()`）：插件启动/配置读取时以 `logger.warn` 提示检测到的 legacy 字段。本轮已产出检测能力（`detectLegacyKeys` / `legacyKeys` 管道），启动告警文案随 Plan 2 运行时切换一并落地；三通道在 Plan 1 + Plan 2 均 Done 后闭合。
 3. **本文档迁移表**：上节「迁移映射表」为手工改写依据。
 
@@ -180,13 +180,13 @@ fallbacks:
 - **功能级开关 `enabled`（默认 OFF）**：开关即用户配置字段 `fallbacks.enabled`，默认关闭。关闭时隐藏配置表单主体（`triggerCodes` / `rootChain` / `roles` / `cooldownMs` / `revertPolicy` / `maxSwitchesPerStep` / `alwaysModeRetryCap`），显示「功能未开启：打开 `enabled` 开关以显示配置界面」提示——隐藏不丢弃，编辑中的 draft 保留；打开后显示完整配置界面。拨动开关即时显隐（draft 驱动），经保存动作持久化。
 - **可读标签**：枚举型配置项显示可读标签而非原始枚举值——`RATE_LIMIT` →「限流（429）」、`QUOTA` →「配额超限」、`AUTH` →「权限/认证失败」；`cooldown-expiry` →「冷却到期后回主模型」、`never` →「保持备用模型」；`inherit-root` →「继承 root（角色链后追加 rootChain）」、`none` →「仅角色链（不追加 rootChain）」。数值字段旁显示默认值；其余字段展示当前生效值（未配置时即默认值）。
 - **rootChain 区**：标题「root 主代理降级链」+ 提示「未配置 = root 不降级」；选择器行复用目录下拉（provider/model 级联 + `provider/*` 通配 + 目录外合成选项），**无键输入**。
-- **roles.list 区**：每角色一张实体卡——id（文本，格式校验：`/^[a-z0-9-]{1,32}$/`、唯一、`inherit` 保留字非法）、label（文本）、description（文本）、chain 选择器行（可折叠/追加）、fallback 下拉（`inherit-root` / `none`）、删除按钮；「添加角色」按钮。**本轮不渲染** `prompt` / `permissions`。
+- **roles.list 区**：每角色一张实体卡——id（文本，格式校验：`/^[a-z0-9-]{1,32}$/`、唯一、`inherit` 保留字非法）、label（文本，**推荐填写**）、description（文本，**推荐填写**）、chain 选择器行（可折叠/追加）、fallback 下拉（`inherit-root` / `none`）、删除按钮；「添加角色」按钮。**本轮不渲染** `prompt` / `permissions`。
 - **roles.rules 区**：行编辑 origin（root/subagent/任意）+ provider（目录下拉/任意）+ model（级联下拉/任意）+ role（**下拉**：`inherit` + 已声明角色 ids，同页联动——角色增删即时反映）；「添加规则」按钮。空字段不参与匹配。
 - **保存前校验（拦截 save）**：id 格式/唯一/保留字、rule role 引用、selector 非法 → 行内标注（红边/提示）+ 错误横幅；**校验失败拦截 `save()`**——点保存不写入、看到错误；校验通过才经 gateway `set` 写 user layer。
 - **model-selection 协调（AC-2，文档化降级）**：存在活跃 model-selection（用户在设置页 / `settings.yaml` 选择了 provider/model）时，触发码故障后的切换**仍然决策并记录**（`fallbacks/switch` 事件、冷却；当步实际路由可能被活跃 selection 覆写，最终 provider/model 以重新套用的选择为准）——这是去掉本地 patch 标记协调后的**宿主原生行为**（T2 结论，见 [docs/verification.md](docs/verification.md) §4.3）。request-error 触发链不受影响；无活跃 selection 时路由到链目标。卡片含一行降级说明（`status.selectionNote`，zh/en）。
 - **恢复默认**：一键把该命名空间的用户配置重置为组合默认值（`enabled` 回 `false`）——经 gateway `reset`（清空 user layer，组合默认值生效）。
 - **保存与错误呈现**：保存经 gateway `set`（merge 语义）写 user layer，无 revision guard——并发/写失败时错误横幅如实呈现保存结果，骨架与 draft 保留（不静默覆盖）。
-- **只读状态块**：显示**当前生效模型**（由配置 + 最近切换**推导**的展示值——无切换时取 `rootChain` 首项；未启用或 `rootChain` 未配置时显示「fallbacks 未启用（或 rootChain 未配置）」；非实时路由探测，附非实时说明文案）+ **最近切换摘要**（来自当前会话原始 `fallbacks/switch` 事件面，最新在前，每条含 from/to/role/reason/时间）。摘要随 `settings/document-updated`（fallbacks 命名空间）/ `llm/adapters-updated`（仅目录）/ 会话切换 / 连接重置推送刷新（无轮询）——页面打开期间发生的切换，在下一次推送或重载页面后呈现；状态块只读、不可编辑。会话内的同款诊断也可用 `/fallbacks` 命令查看（见 README）。
+- **只读状态块**：显示**当前生效模型**（由配置 + 最近切换**推导**的展示值——无切换时取 `rootChain` 首项；未启用或 `rootChain` 未配置时显示「fallbacks 未启用（或 rootChain 未配置）」；非实时路由探测，附非实时说明文案）+ **最近切换摘要**（来自当前会话原始 `fallbacks/switch` 事件面，最新在前，每条含 from/to/role/reason/时间）。摘要随 `settings/document-updated`（fallbacks 命名空间）/ `llm/adapters-updated`（仅目录）/ 会话切换 / 连接重置推送刷新（无轮询）——页面打开期间发生的切换，在下一次推送或重载页面后呈现；状态块只读、不可编辑。会话内的同款诊断也可用 `/fallbacks` 命令查看（见 README）。**Legacy 注意**：仅配旧格式 `chains`（未迁移、无 `rootChain`）的用户，状态块按新形状推导会显示「未启用（或 rootChain 未配置）」，但运行时在 Plan 2 切换前仍按旧 `chains` 降级——此阶段以卡片顶部的**迁移横幅**为迁移信号（见「三通道 legacy 提示」）。
 
 ## 行为说明
 

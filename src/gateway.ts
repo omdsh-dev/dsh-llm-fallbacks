@@ -86,6 +86,12 @@ const CONFIG_KEYS: Record<string, true> = {
   alwaysModeRetryCap: true,
 }
 
+/** Declared nested keys of the `roles` patch — anything else is rejected (qc2 S-1). */
+const ROLES_KEYS: Record<string, true> = {
+  list: true,
+  rules: true,
+}
+
 /**
  * The host-side `fallbacks` config gateway (`/api/fallbacks/get` +
  * `/api/fallbacks/set` + `/api/fallbacks/reset`). Registered as the cordis
@@ -131,31 +137,31 @@ export class FallbacksConfigGateway extends TypertRemoteService {
    */
   @Remote('get')
   get(): { config: FallbacksConfig; legacyKeys: string[] } {
-    const source = this.bridge.source()
-    return {
-      config: this.readConfig(source),
-      legacyKeys: detectLegacyKeys(source as unknown as Record<string, unknown>),
-    }
+    return this.readResult()
   }
 
   /**
    * Validate a config patch and write it to the settings USER layer (live —
    * the runtime re-reads the same bridge source; no restart needed).
-   * @param patch - any subset of the config keys; unknown keys are rejected
-   *   by the `Config` schema before anything is written.
-   * @returns the NEW composed config after the write.
+   * @param patch - any subset of the config keys; unknown keys (top-level
+   *   and nested under `roles`) are rejected before anything is written.
+   * @returns the NEW composed config plus `legacyKeys` detected on the
+   *   POST-WRITE composed source (W-1/F-1): `set` is a settings MERGE, so a
+   *   legacy user layer (`chains` / `roles.default`) survives a new-shape
+   *   save — the response must keep reporting it, or the client banner
+   *   would clear against server truth. Same shape as `get`.
    * @throws when the patch fails `Config` validation, or when no settings
    *   service is composed (KD-G5: the write channel is unavailable).
    */
   @Remote('set')
-  async set(patch: FallbacksConfigPatch): Promise<{ config: FallbacksConfig }> {
+  async set(patch: FallbacksConfigPatch): Promise<{ config: FallbacksConfig; legacyKeys: string[] }> {
     // Unknown-key rejection + type validation. The settings service schema is
     // non-strict (unknown keys merge through), so the explicit reject happens
     // here, before the write — same strictness as the Loader.
     validateConfigPatch(patch)
     // S2: an empty patch is a no-op — return the current composed value
     // without a pointless settings round-trip.
-    if (Object.keys(patch).length === 0) return { config: this.readConfig() }
+    if (Object.keys(patch).length === 0) return this.readResult()
     const settings = this.settings
     if (settings === undefined) {
       throw new Error('fallbacks: settings service is unavailable — configuration cannot be written')
@@ -166,27 +172,29 @@ export class FallbacksConfigGateway extends TypertRemoteService {
     const normalized = Object.fromEntries(
       Object.entries(patch).filter(([, value]) => value !== null),
     )
-    if (Object.keys(normalized).length === 0) return { config: this.readConfig() }
+    if (Object.keys(normalized).length === 0) return this.readResult()
     await settings.update(FALLBACKS_SETTINGS_NAMESPACE, normalized)
-    return { config: this.readConfig() }
+    return this.readResult()
   }
 
   /**
    * Clear the fallbacks settings USER layer so the composition defaults
    * reapply (`settings.replace(ns, {})` — the in-process removal path a
    * merge-only `set` cannot express).
-   * @returns the new composed config (composition defaults).
+   * @returns the new composed config plus `legacyKeys` on the post-write
+   *   source — `replace` drops the user layer, but legacy keys carried by
+   *   the entry base survive and are correctly re-reported (W-1/F-1).
    * @throws when no settings service is composed (KD-G5: the write channel
    *   is unavailable).
    */
   @Remote('reset')
-  async reset(): Promise<{ config: FallbacksConfig }> {
+  async reset(): Promise<{ config: FallbacksConfig; legacyKeys: string[] }> {
     const settings = this.settings
     if (settings === undefined) {
       throw new Error('fallbacks: settings service is unavailable — configuration cannot be written')
     }
     await settings.replace(FALLBACKS_SETTINGS_NAMESPACE, {})
-    return { config: this.readConfig() }
+    return this.readResult()
   }
 
   /**
@@ -210,6 +218,21 @@ export class FallbacksConfigGateway extends TypertRemoteService {
       wire[key] = key === 'roles' ? normalizeRoles(value) : value
     }
     return wire as unknown as FallbacksConfig
+  }
+
+  /**
+   * The wire response of every read (get/set/reset — W-1/F-1): the
+   * normalized config plus `legacyKeys` detected on the live composed
+   * source. set/reset must report the POST-WRITE source: the settings
+   * merge retains legacy user-layer keys, so a save cannot clear them —
+   * the honest response keeps the migration banner until a get agrees.
+   */
+  private readResult(): { config: FallbacksConfig; legacyKeys: string[] } {
+    const source = this.bridge.source()
+    return {
+      config: this.readConfig(source),
+      legacyKeys: detectLegacyKeys(source as unknown as Record<string, unknown>),
+    }
   }
 }
 
@@ -249,6 +272,21 @@ function validateConfigPatch(patch: unknown): void {
     // advisor's `CONFIG_KEYS.has(key)` on a Set.
     if (!Object.hasOwn(CONFIG_KEYS, key)) {
       throw new Error(`dsh-llm-fallbacks: unknown config key "${key}"`)
+    }
+    // qc2 S-1: the `roles` object is itself a patch boundary — schemastery
+    // retains unknown NESTED keys too, so a `roles.default` (or any other
+    // two-block-era leftover) would be persisted by the settings merge and
+    // re-arm the legacy banner. Reject non-declared nested keys here, the
+    // mirror of the top-level guard.
+    if (key === 'roles') {
+      const roles = (patch as Record<string, unknown>)[key]
+      if (roles !== null && typeof roles === 'object' && !Array.isArray(roles)) {
+        for (const nestedKey of Object.keys(roles)) {
+          if (!Object.hasOwn(ROLES_KEYS, nestedKey)) {
+            throw new Error(`dsh-llm-fallbacks: unknown config key "roles.${nestedKey}"`)
+          }
+        }
+      }
     }
   }
   // Type/bounds validation (schemastery fills defaults for absent keys; null
