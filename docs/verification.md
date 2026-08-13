@@ -66,7 +66,7 @@ bundle 层顺序一节；真实 web profile 层序 `dsh-base → dsh-web-app →
   bin-less shim（`import '@deepseek-ai/cordis'` 与真实包解析到同一物理文件，`Context`/`Events` 实例一致）；
   `tsc` 与集成测试（`tests/support/harness.ts` + llm-retry-stub + model-selection-stub）按真实
   类型面驱动。运行时缝走真实实现：`installSettingsSection` 挂真实 `@deepseek-ai/dsh-settings`
-  （内存 provider `tests/support/memory-settings.ts`，继承真实 `Settings` 基类），
+  （内存 provider `tests/support/memory-settings.ts`，继承真实 `SettingsProvider` 基类），
   `createSnapshotStore` 用真实 store 引擎（vitest alias 指向 dsh 源码树 `store.ts` 源）。
   插件对 dsh 源码树**零本地修改**——安装 = bundle 行插入（`bundle/cordis.patch.yml`）+ client
   inject（`dsh.client.inject`）+ 自有 gateway 通道；dsh 升级无需重打任何补丁（纯挂载语义）。
