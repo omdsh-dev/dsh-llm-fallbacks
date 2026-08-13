@@ -4,16 +4,17 @@
 
 ## 前置条件
 
-- 可用的 dsh 运行环境（`$DSH_HOME`，默认 `~/.dsh`）；开发期类型检查与测试从 npm registry 解析 `@deepseek-ai/*@0.1.0-rc.2` peer 依赖（`${NPM_TOKEN}` 认证，见下文）。
+- 可用的 dsh 运行环境（`$DSH_HOME`，默认 `~/.dsh`）；开发期类型检查与测试从 npm registry 解析 `@deepseek-ai/*@0.1.0-rc.3` peer 依赖（registry 认证令牌，见下文"认证（pnpm 11）"）。
 - 构建需要 **node**（`>= 22`）与 **pnpm**（`>= 10`）——插件的 `prepare` 脚本自构建（`pnpm run build`，tsdown + tsc，pnpm 栈无 bun）。
 - 目标 profile（如 `web`）可读写，安装后需要重启 dsh 会话。
 
 ## 开发期 `@deepseek-ai/*` peer 解析（npm registry）
 
-`@deepseek-ai/*` 是私有包，运行时由宿主 dsh 盒内 bundle 提供（`peerDependencies` 契约，tsdown 构建期外部化 `@deepseek-ai/*`）。开发期从 npm registry 解析真实包（`0.1.0-rc.2`）：`pnpm-workspace.yaml` 的 `autoInstallPeers: true` + `.npmrc` 的 `${NPM_TOKEN}` 认证令牌，`pnpm install` 时自动装齐 peer 依赖——类型检查、测试与跳转全部走真实代码（无本地 link farm）。
+`@deepseek-ai/*` 是私有包，运行时由宿主 dsh 盒内 bundle 提供（`peerDependencies` 契约，tsdown 构建期外部化 `@deepseek-ai/*`）。开发期从 npm registry 解析真实包（`0.1.0-rc.3`）：`pnpm-workspace.yaml` 的 `autoInstallPeers: true` + 用户级 `~/.npmrc` 的认证令牌，`pnpm install` 时自动装齐 peer 依赖——类型检查、测试与跳转全部走真实代码（无本地 link farm）。
 
-- **认证**：`.npmrc` 已配置 `@deepseek-ai:registry` 与 `//registry.npmjs.org/:_authToken=${NPM_TOKEN}`；安装前需在环境里设置 `NPM_TOKEN`（受限 scope 的只读令牌）。
-- **版本**：`peerDependencies` 钉 `0.1.0-rc.2`（精确）；dsh 升级后同步 bump peer 版本（本次仅 peer 对齐，插件 semver 不变）。
+- **认证（pnpm 11）**：pnpm 11 起项目级 `.npmrc` 的凭据**不再展开环境变量**（`${NPM_TOKEN}` 失效并告警）。令牌须放**用户级** `~/.npmrc`：`@deepseek-ai:registry=https://registry.npmjs.org/` + `//registry.npmjs.org/:_authToken=<token>`（或 `pnpm config set "//registry.npmjs.org/:_authToken" <token>`）；`NPM_TOKEN` 仍为受限 scope 的只读令牌来源。
+- **版本**：`peerDependencies` 钉 `^0.1.0-rc.3`（与 dlx 宿主 rc.3 对齐）；dsh 升级后同步 bump peer 版本与插件版本（2026-08-13 升级 peer 至 rc.3 的同时插件版本 bump 至 `0.1.0`）。
+- **pnpm 版本**：pnpm 11.21+（本项目栈）。11.21 起默认启用 minimum-release-age 供应链门禁，`pnpm-workspace.yaml` 的 `minimumReleaseAgeExclude` 是 **pnpm 自动维护**的豁免表——rc.3 整线（及 cordis 4.0.1）发布于当日，自动列入；**不要手动删除该块**：已解析锁文件在无豁免时会硬失败（`ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION`，需 `pnpm clean --lockfile` 重新解析）。
 - **客户端运行时缝**：registry 包的 `dsh-client-runtime` `./client` 入口是浏览器 loader artifact（非 node 可导入），测试用本地 node-safe 双（`tests/support/snapshot-store.ts`，vitest alias）。
 
 ## 1. 本地目录安装（推荐）

@@ -24,7 +24,7 @@ const root = JSON.parse(readFileSync(resolve(repo, 'package.json'), 'utf8')) as 
 const deepseekKeys = (field: Record<string, string> | undefined): string[] =>
   Object.keys(field ?? {}).filter((name) => name.startsWith('@deepseek-ai/')).sort()
 
-describe('registry peer contract (rc.2 from npm, no link farm)', () => {
+describe('registry peer contract (rc.3 from npm, no link farm)', () => {
   it('every @deepseek-ai/* entry is a peerDependency and appears in no other dependency field', () => {
     const peers = deepseekKeys(root.peerDependencies)
     expect(peers.length).toBeGreaterThan(0)
@@ -35,10 +35,10 @@ describe('registry peer contract (rc.2 from npm, no link farm)', () => {
     }
   })
 
-  it('every @deepseek-ai/dsh-* peer is pinned to 0.1.0-rc.2', () => {
+  it('every @deepseek-ai/dsh-* peer is pinned to ^0.1.0-rc.3', () => {
     for (const [name, range] of Object.entries(root.peerDependencies ?? {})) {
       if (name.startsWith('@deepseek-ai/dsh-')) {
-        expect(range, name).toBe('0.1.0-rc.2')
+        expect(range, name).toBe('^0.1.0-rc.3')
       }
     }
   })
