@@ -45,14 +45,11 @@ dsh plugin --profile web add .
 ```
 
 > **Development prerequisite**: type-checking and tests resolve the real
-> `@deepseek-ai/*` packages (peer deps, host-provided at runtime) from your dsh
-> source tree — `$DSH_SOURCE_DIR`, default `${DSH_HOME}/source/current`
-> (`scripts/setup-dsh-links.mjs` links them into `node_modules/` during
-> `prepare`, including a bin-less shim for the in-box cordis). Run
-> `pnpm dsh:link` to re-link after changing `$DSH_HOME`, and
-> `pnpm dsh:link:check` to verify.
+> `@deepseek-ai/*` packages (peer deps, host-provided at runtime) from the npm
+> registry at `0.0.1-rc.5` — `autoInstallPeers` + the `${NPM_TOKEN}` auth
+> token in `.npmrc`, no local link farm.
 
-> No npm registry install command is provided (this iteration does not publish to npm). Both methods, uninstall, and `--dump-config` verification — including the bundle-layer ordering requirements — are covered in [docs/install.md](docs/install.md).
+> Both methods, uninstall, and `--dump-config` verification — including the bundle-layer ordering requirements — are covered in [docs/install.md](docs/install.md).
 
 ## Quick start
 

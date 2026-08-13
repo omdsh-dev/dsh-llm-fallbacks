@@ -1,13 +1,7 @@
-# dsh profile convention: the @deepseek-ai/* and cordis peer dependencies
-# resolve from the dsh installation at runtime (in-box bundles), never from
-# the npm registry. pnpm 11+ reads non-auth settings from this file, not
-# .npmrc — autoInstallPeers=false + nodeLinker=hoisted left in .npmrc are
-# silently ignored, pnpm then resolves the private peers from the registry
-# (design invariant break) and loses the hoisted layout convention.
-# Dev-time resolution of the private packages is wired by
-# scripts/setup-dsh-links.mjs from the $DSH_SOURCE_DIR / $DSH_HOME source
-# tree (see README, Development).
-autoInstallPeers: false
+# pnpm 11+ reads all non-auth settings from pnpm-workspace.yaml (not .npmrc).
+# @deepseek-ai/* peers resolve from the npm registry via autoInstallPeers,
+# using the auth token in .npmrc. No local link farm.
+autoInstallPeers: true
 nodeLinker: hoisted
 
 # esbuild's postinstall is blocked by pnpm 10+/11 defaults unless approved;

@@ -1,7 +1,11 @@
 {
   "name": "dsh-llm-fallbacks",
   "description": "Automatic provider/model fallback chains for DeepSeek Harness agents when LLM requests keep failing (retry exhausted, auth, quota, rate limit)",
-  "version": "0.0.1",
+  "keywords": [
+    "dsh",
+    "dsh-plugin"
+  ],
+  "version": "0.0.1-rc.5",
   "private": true,
   "type": "module",
   "main": "./dist/index.js",
@@ -44,29 +48,27 @@
     "build": "tsc -p tsconfig.build.json && tsdown && pnpm run build-client && tsc && node scripts/verify-dist.mjs",
     "build-client": "tsx scripts/build-client.ts",
     "test": "vitest run",
-    "dsh:link": "node scripts/setup-dsh-links.mjs",
-    "dsh:link:check": "node scripts/setup-dsh-links.mjs --check",
-    "prepare": "node scripts/setup-dsh-links.mjs && pnpm run build"
+    "prepare": "pnpm run build"
   },
   "engines": {
     "node": ">=22"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1-rc.1",
-    "@deepseek-ai/dsh-agent": "^0.0.1-rc.2",
-    "@deepseek-ai/dsh-api-gateway": "^0.0.1-rc.2",
-    "@deepseek-ai/dsh-api-remotes": "^0.0.1-rc.2",
-    "@deepseek-ai/dsh-client-connection": "^0.0.1-rc.2",
-    "@deepseek-ai/dsh-client-locale": "^0.0.1-rc.2",
-    "@deepseek-ai/dsh-client-runtime": "^0.0.1-rc.2",
-    "@deepseek-ai/dsh-client-ui-settings-plugins": "^0.0.1-rc.2",
-    "@deepseek-ai/dsh-client-ui-settings": "^0.0.1-rc.2",
-    "@deepseek-ai/dsh-client-ui-conversation": "^0.0.1-rc.2",
-    "@deepseek-ai/dsh-client-ui-slots": "^0.0.1-rc.2",
-    "@deepseek-ai/dsh-commands": "^0.0.1-rc.2",
-    "@deepseek-ai/dsh-llm": "^0.0.1-rc.2",
-    "@deepseek-ai/dsh-settings": "^0.0.1-rc.2",
-    "@deepseek-ai/dsh-typert-protocol": "^0.0.1-rc.2",
+    "@deepseek-ai/dsh-agent": "^0.0.1-rc.5",
+    "@deepseek-ai/dsh-api-gateway": "^0.0.1-rc.5",
+    "@deepseek-ai/dsh-api-remotes": "^0.0.1-rc.5",
+    "@deepseek-ai/dsh-client-connection": "^0.0.1-rc.5",
+    "@deepseek-ai/dsh-client-locale": "^0.0.1-rc.5",
+    "@deepseek-ai/dsh-client-runtime": "^0.0.1-rc.5",
+    "@deepseek-ai/dsh-client-ui-settings-plugins": "^0.0.1-rc.5",
+    "@deepseek-ai/dsh-client-ui-settings": "^0.0.1-rc.5",
+    "@deepseek-ai/dsh-client-ui-conversation": "^0.0.1-rc.5",
+    "@deepseek-ai/dsh-client-ui-slots": "^0.0.1-rc.5",
+    "@deepseek-ai/dsh-commands": "^0.0.1-rc.5",
+    "@deepseek-ai/dsh-llm": "^0.0.1-rc.5",
+    "@deepseek-ai/dsh-settings": "^0.0.1-rc.5",
+    "@deepseek-ai/dsh-typert-protocol": "^0.0.1-rc.5",
     "react": "^18.2.0"
   },
   "devDependencies": {
@@ -76,6 +78,8 @@
     "@types/react": "~18.3.31",
     "@types/react-dom": "~18.3.7",
     "jsdom": "29.1.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
     "schemastery": "^3.18.0",
     "tsdown": "^0.22.2",
     "tsx": "^4.22.4",

@@ -24,8 +24,8 @@
 | 回归 | `skeleton.spec.ts` / `host-native.spec.ts` | 3 / 3 | bundle 契约（row id、空 schema 接受、host+client apply 入口）；宿主原生行为基线（真实 `@deepseek-ai/dsh-agent` 模块：触发码切换路由到链目标、always-cap 第二返回点、no-op 不变量） |
 
 结果：**19 files / 319 tests 全绿**（`pnpm test`，vitest run）；`pnpm build`（`tsc -p tsconfig.build.json` 先发 JS（标准装饰器降级 `__esDecorate`）→ tsdown host bundle →
-`pnpm run build-client` → `tsc` 声明 → `node scripts/verify-dist.mjs` 产物解析守卫）全绿——dev 链接 farm 下 `tsc` 按
-真实宿主类型面驱动（`scripts/setup-dsh-links.mjs` 链接，无任何仓内类型 shim）。no-op 回归
+`pnpm run build-client` → `tsc` 声明 → `node scripts/verify-dist.mjs` 产物解析守卫）全绿——`tsc` 按
+真实宿主类型面驱动（registry peer `@deepseek-ai/*@0.0.1-rc.5`，无任何仓内类型 shim）。no-op 回归
 不变量（空链 / 未命中 / 链耗尽 / 安全阀超限 → 透传、不产生 `fallbacks/switch` 事件）由
 T3/T4 测试持久断言。
 
@@ -60,21 +60,19 @@ bundle 层顺序一节；真实 web profile 层序 `dsh-base → dsh-web-app →
   → `next()` 透传，原错误码与 message 原样保留（T3/T4 断言）。
 - **卸载无残留**：`agent/disposed` 删除、`agent/status` idle 防御清理、`ctx.effect`
   dispose 清空（T3 断言）。
-- **真实类型契约**：类型层不走手写 `peer-stubs/`——`scripts/setup-dsh-links.mjs` 从 dsh 源码树
-  （`$DSH_SOURCE_DIR` → `${DSH_HOME}/source/current` → `~/.dsh/source/current`）把真实
-  `@deepseek-ai/*` 包（全树，除 bin 工具包）链接进 `node_modules/`，并生成 vendored cordis 的
-  bin-less shim（`import '@deepseek-ai/cordis'` 与真实包解析到同一物理文件，`Context`/`Events` 实例一致）；
+- **真实类型契约**：类型层不走手写 `peer-stubs/`——`autoInstallPeers` 从 npm registry 解析真实
+  `@deepseek-ai/*@0.0.1-rc.5` peer（`${NPM_TOKEN}` 认证，无本地 link farm）；
   `tsc` 与集成测试（`tests/support/harness.ts` + llm-retry-stub + model-selection-stub）按真实
   类型面驱动。运行时缝走真实实现：`installSettingsSection` 挂真实 `@deepseek-ai/dsh-settings`
   （内存 provider `tests/support/memory-settings.ts`，继承真实 `SettingsProvider` 基类），
-  `createSnapshotStore` 用真实 store 引擎（vitest alias 指向 dsh 源码树 `store.ts` 源）。
+  `createSnapshotStore` 用本地 node-safe 双（vitest alias 指向 `tests/support/snapshot-store.ts`，因 registry 包 `./client` 是浏览器 loader artifact）。
   插件对 dsh 源码树**零本地修改**——安装 = bundle 行插入（`bundle/cordis.patch.yml`）+ client
   inject（`dsh.client.inject`）+ 自有 gateway 通道；dsh 升级无需重打任何补丁（纯挂载语义）。
 
 ## 用户待执行（真实环境步骤与预期）
 
 > 以下步骤需在**真实 dsh 环境**（有 `$DSH_HOME` 安装、可操作 web GUI、可发起真实模型
-> 调用）执行；路径一律以 `$DSH_HOME` / `$DSH_SOURCE_DIR` 表达，不依赖本地绝对路径。
+> 调用）执行；路径一律以 `$DSH_HOME` 表达，不依赖本地绝对路径。
 
 ### 1. 真实 profile 装入
 
@@ -122,14 +120,13 @@ dsh --profile web --dump-config   # 组合树末尾应出现 # == dsh-llm-fallba
 
 > 本节为 QA gate 阶段的 **mandatory 输入**：在真实 dsh 环境（`$DSH_HOME` 安装、web
 > profile、可操作 web 设置 GUI、可发起真实模型调用）按步骤执行并记录结果。路径一律
-> 以 `$DSH_SOURCE_DIR` / `$DSH_HOME` 表达，不含本地绝对路径。4.2 的「保存即生效」
+> 以 `$DSH_HOME` 表达，不含本地绝对路径。4.2 的「保存即生效」
 > 以 4.1 记录的 host **PID + 启动时间基线**为锚（同 PID、同启动时间、不重载页面）。
 
 #### 4.1 环境准备（新快照基线）
 
-1. **前置核对**：`$DSH_SOURCE_DIR`（缺省 `${DSH_HOME}/source/current`）是 git 树；
-   记录 `dsh --version`（快照）。插件侧 dev 链接 farm 需指向该树——插件仓库内重跑一次
-   `pnpm dsh:link`（重链后插件的 tsc 按真实宿主类型复验）。
+1. **前置核对**：记录 `dsh --version`（快照）；插件侧 peer 依赖已从 npm registry 解析
+   （`@deepseek-ai/*@0.0.1-rc.5`，无需源码树）。
 2. **插件构建**：`cd <插件仓库目录> && pnpm build`（host bundle + client bundle + tsc
    声明）绿——纯挂载语义：不修改 dsh 源码树、无任何补丁步骤；设置读写走插件 gateway
    通道（`/api/fallbacks/get|set|reset`），安装即用。

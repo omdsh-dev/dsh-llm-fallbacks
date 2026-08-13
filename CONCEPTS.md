@@ -17,8 +17,8 @@ dsh web settings 的条目挂载契约（权威：dsh-private `packages/client/u
 ### mount-only（纯挂载）
 本插件交付约束：对 dsh 源码树**零本地修改**。安装 = bundle 插行 + client inject + 自有 gateway；无 `patches/`、无 autopatch/prepare 打补丁链路；升级 dsh 无需重打。*Avoid:* patch 交付 / 本地修改交付
 
-### dsh link farm
-dsh 私有 `@deepseek-ai/*` 包（未发布 registry）的开发期类型/测试解析方案：`scripts/setup-dsh-links.mjs` 从 dsh 源码树（`$DSH_SOURCE_DIR`，缺省 `${DSH_HOME}/source/current`，再缺省 `~/.dsh/source/current`）把真实包符号链接进 `node_modules/`（含 `vendor/cordis` 的 bin-less shim，保证 `import '@deepseek-ai/cordis'` 与真实包解析到同一物理文件）；运行时值 import 保持 external 由宿主 in-box 解析，测试用真实 `dsh-settings`（内存 provider）与真实 store 引擎。`*Avoid:* peer-stubs / tsconfig paths（历史方案，已移除）`
+### registry peers（开发期依赖解析）
+dsh 私有 `@deepseek-ai/*` 包的开发期类型/测试解析方案：`pnpm-workspace.yaml` 的 `autoInstallPeers: true` + `.npmrc` 的 `${NPM_TOKEN}` 从 npm registry 解析 `@deepseek-ai/*@0.0.1-rc.5` peer 依赖（`peerDependencies` 契约，无本地 link farm）。运行时值 import 保持 external 由宿主 in-box 解析，测试用真实 `dsh-settings`（内存 provider）与本地 node-safe store 双（`tests/support/snapshot-store.ts`，因 registry 包的 `./client` 是浏览器 loader artifact）。`*Avoid:* peer-stubs / tsconfig paths / 本地 link farm（历史方案，已移除）`
 
 ### remote events（转发事件）
 host → client 的远程事件转发面：client 经 `ctx.remote.$on(key, listener)` 订阅，事件名受宿主转发白名单（`API_REMOTE_FORWARDED_EVENTS`）约束；与 client 本地事件（`ctx.on`）区分——本地事件在 client 进程内 emit，remote 事件由 host 侧转发帧推送。20260811 起 `settings/changed`、`models/changed` 客户端事件已移除，配置/目录变更通知迁移到 remote events：`settings/document-updated(ns, revision)`（订阅方按 ns 精确过滤）与 `llm/adapters-updated()`（payload-free）。*Avoid:* `settings/changed`、`models/changed`（20260811 已移除的死事件名）
