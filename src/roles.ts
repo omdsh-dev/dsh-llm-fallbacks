@@ -12,6 +12,15 @@
  * warns and falls back to `'inherit'` (defensive; startup validation already
  * flagged the reference, spec §7.1 / AC-4).
  *
+ * Role ids are canonicalized by trim (qc2 F-001, client-canonical trim
+ * alignment — `validateFallbacksConfig` trims ids and rule references, so
+ * the runtime must too): `roleIds` maps a TRIMMED id to the DECLARED RAW
+ * id, membership compares `rule.role.trim()`, and a matched rule returns
+ * the declared raw id — so roleDef lookups in `chains.ts` / `commands.ts`
+ * match the stored `roles.list[].id` exactly and a padded YAML id
+ * (`' coder '`) with a trimmed rule reference (`'coder'`) resolves to the
+ * same role instead of silently degrading to `'inherit'`.
+ *
  * A missing agent origin is treated as `'root'`. Origin is read from
  * `session.header.origin` — a native `SessionHeader` field the store folds
  * from `CreateSessionOptions.meta.origin` (`packages/core/session/src/
@@ -49,25 +58,39 @@ export interface AgentLike {
 /**
  * Resolve the fallback-chain role for an agent: first matching rule (in
  * listed order) → the built-in `'inherit'` role. A rule targeting an id
- * outside `roleIds ∪ {'inherit'}` warns once and resolves to `'inherit'`
- * (the defensive path — `validateFallbacksConfig` already warned at startup,
- * spec §7.1).
+ * outside the declared-id set ∪ {'inherit'} warns once and resolves to
+ * `'inherit'` (the defensive path — `validateFallbacksConfig` already
+ * warned at startup, spec §7.1).
+ *
+ * `roleIds` is the canonical trimmed-id map built by the wiring
+ * (`trimmed id → declared raw id`, see `src/index.ts` apply()): a matched
+ * rule returns the declared RAW id so the roleDef lookups in
+ * `chains.ts` / `commands.ts` find the stored `roles.list[]` entry exactly
+ * (qc2 F-001 — no silent rule inertness on padded YAML ids).
+ *
+ * `warn` defaults to `console.warn` (direct-call compatibility); the
+ * decision path injects the cordis `logger.warn` so every plugin warning
+ * flows through the plugin log namespace (qc2 F-002 / qc3 S-3).
  */
 export function resolveRole(
   agent: AgentLike,
   rules: FallbacksRoleRule[],
-  roleIds: ReadonlySet<string>,
+  roleIds: ReadonlyMap<string, string>,
+  warn: (message: string) => void = console.warn,
 ): string {
   const origin = agent.session?.header?.origin ?? 'root'
   for (const rule of rules) {
     if (rule.origin && rule.origin !== origin) continue
     if (rule.provider && rule.provider !== agent.options?.provider) continue
     if (rule.model && rule.model !== agent.options?.model) continue
-    if (rule.role !== INHERIT_ROLE_ID && !roleIds.has(rule.role)) {
-      console.warn(`llm-fallbacks: rule references undeclared role "${rule.role}" — falling back to "inherit"`)
+    const target = rule.role.trim()
+    if (target === INHERIT_ROLE_ID) return INHERIT_ROLE_ID
+    const declared = roleIds.get(target)
+    if (declared === undefined) {
+      warn(`llm-fallbacks: rule references undeclared role "${rule.role}" — falling back to "inherit"`)
       return INHERIT_ROLE_ID
     }
-    return rule.role
+    return declared
   }
   return INHERIT_ROLE_ID
 }

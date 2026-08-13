@@ -29,7 +29,7 @@ import type { FallbacksSwitchEventData } from '../src/events.ts'
 function snapshot(overrides: Partial<FallbacksCommandSnapshot> = {}): FallbacksCommandSnapshot {
   return {
     origin: 'root',
-    role: 'default',
+    role: 'inherit',
     chainRole: true,
     chain: ['anthropic/claude-3-5-sonnet', 'openai/*'],
     inherit: false,
@@ -39,7 +39,7 @@ function snapshot(overrides: Partial<FallbacksCommandSnapshot> = {}): FallbacksC
         step: 1,
         from: { provider: 'deepseek', model: 'deepseek-chat' },
         to: { provider: 'anthropic', model: 'claude-3-5-sonnet' },
-        role: 'default',
+        role: 'inherit',
         reason: 'trigger-code',
       },
     ],
@@ -145,15 +145,15 @@ describe('snapshot building helpers', () => {
   it('recentFallbacksSwitches filters the event log, newest first, capped at the limit', () => {
     const events = [
       { type: 'llm/retry', data: {} },
-      { type: 'fallbacks/switch', data: { turn: 1, step: 1, from: { provider: 'a', model: 'm1' }, to: { provider: 'b', model: 'm2' }, role: 'default', reason: 'trigger-code' } },
-      { type: 'fallbacks/switch', data: { turn: 2, step: 1, from: { provider: 'c', model: 'm3' }, to: { provider: 'd', model: 'm4' }, role: 'default', reason: 'always-cap' } },
+      { type: 'fallbacks/switch', data: { turn: 1, step: 1, from: { provider: 'a', model: 'm1' }, to: { provider: 'b', model: 'm2' }, role: 'inherit', reason: 'trigger-code' } },
+      { type: 'fallbacks/switch', data: { turn: 2, step: 1, from: { provider: 'c', model: 'm3' }, to: { provider: 'd', model: 'm4' }, role: 'inherit', reason: 'always-cap' } },
       { type: 'message/user', data: {} },
     ]
     const found = recentFallbacksSwitches(events, RECENT_SWITCHES_LIMIT)
     expect(found).toHaveLength(2)
     // newest first: turn 2 before turn 1
-    expect(found[0]).toEqual({ turn: 2, step: 1, from: { provider: 'c', model: 'm3' }, to: { provider: 'd', model: 'm4' }, role: 'default', reason: 'always-cap' })
-    expect(found[1]).toEqual({ turn: 1, step: 1, from: { provider: 'a', model: 'm1' }, to: { provider: 'b', model: 'm2' }, role: 'default', reason: 'trigger-code' })
+    expect(found[0]).toEqual({ turn: 2, step: 1, from: { provider: 'c', model: 'm3' }, to: { provider: 'd', model: 'm4' }, role: 'inherit', reason: 'always-cap' })
+    expect(found[1]).toEqual({ turn: 1, step: 1, from: { provider: 'a', model: 'm1' }, to: { provider: 'b', model: 'm2' }, role: 'inherit', reason: 'trigger-code' })
   })
 
   it('recentFallbacksSwitches caps at the limit and skips unknown shapes', () => {
@@ -165,8 +165,11 @@ describe('snapshot building helpers', () => {
   it('recentFallbacksSwitches skips malformed fallbacks/switch payloads without throwing', () => {
     const events = [
       { type: 'fallbacks/switch', data: { n: 1 } },
-      { type: 'fallbacks/switch', data: { turn: 1, step: 1, from: { provider: 'a' }, to: { provider: 'b', model: 'm' }, role: 'default', reason: 'trigger-code' } }, // from.model missing
+      { type: 'fallbacks/switch', data: { turn: 1, step: 1, from: { provider: 'a' }, to: { provider: 'b', model: 'm' }, role: 'inherit', reason: 'trigger-code' } }, // from.model missing
       { type: 'fallbacks/switch', data: null },
+      // Historical old-session event: sessions written before the runtime
+      // resolved no-rule-match to 'inherit' carried role 'default'; the
+      // parser must keep reading them (version-skew tolerance, qc1 F-005).
       { type: 'fallbacks/switch', data: { turn: 1, step: 1, from: { provider: 'deepseek', model: 'deepseek-chat' }, to: { provider: 'anthropic', model: 'claude-3-5-sonnet' }, role: 'default', reason: 'trigger-code' } },
     ]
     const found = recentFallbacksSwitches(events, RECENT_SWITCHES_LIMIT)
@@ -182,7 +185,7 @@ describe('fallbacksCommandText — output states', () => {
   it('renders origin, role, and a configured role chain without an inherit annotation', () => {
     const text = fallbacksCommandText(snapshot(), 'zh')
     expect(text).toContain('会话来源: root')
-    expect(text).toContain('角色: default')
+    expect(text).toContain('角色: inherit')
     expect(text).toContain('链: anthropic/claude-3-5-sonnet → openai/*')
     expect(text).not.toContain('inherit-root')
   })
@@ -215,6 +218,9 @@ describe('fallbacksCommandText — output states', () => {
   })
 
   it('lists recent switches newest-first with from/to/role/reason', () => {
+    // Historical old-session events: sessions written before the runtime
+    // resolved no-rule-match to 'inherit' carried role 'default'; the
+    // renderer must keep displaying them verbatim (qc1 F-005).
     const switches: FallbacksSwitchEventData[] = [
       { turn: 1, step: 1, from: { provider: 'deepseek', model: 'deepseek-chat' }, to: { provider: 'anthropic', model: 'claude-3-5-sonnet' }, role: 'default', reason: 'trigger-code' },
       { turn: 2, step: 1, from: { provider: 'anthropic', model: 'claude-3-5-sonnet' }, to: { provider: 'openai', model: 'gpt-4o' }, role: 'default', reason: 'always-cap' },
@@ -262,7 +268,7 @@ describe('fallbacksCommandText — zh/en copy smoke', () => {
     const text = fallbacksCommandText(populated, 'zh')
     expect(text).toContain('当前会话 fallback 诊断（只读）')
     expect(text).toContain('会话来源: root')
-    expect(text).toContain('角色: default')
+    expect(text).toContain('角色: inherit')
     expect(text).toContain('链:')
     expect(text).toContain('最近切换 (1):')
     expect(text).toContain('冷却 (1):')
@@ -272,11 +278,11 @@ describe('fallbacksCommandText — zh/en copy smoke', () => {
     const text = fallbacksCommandText(populated, 'en')
     expect(text).toContain('Session fallback diagnostics (read-only)')
     expect(text).toContain('Session origin: root')
-    expect(text).toContain('Role: default')
+    expect(text).toContain('Role: inherit')
     expect(text).toContain('Chain:')
     expect(text).toContain('Recent switches (1):')
     expect(text).toContain('Cooldown (1):')
-    expect(text).toContain('(role=default, reason=trigger-code)')
+    expect(text).toContain('(role=inherit, reason=trigger-code)')
   })
 
   it('defaults to zh when no locale is given', () => {
@@ -426,7 +432,7 @@ describe('apply() wiring — conditional commands child', () => {
     const log = agent.session.events as unknown as Array<{ type: string; data: Record<string, unknown> }>
     log.push(
       { type: 'fallbacks/switch', data: { n: 1 } },
-      { type: 'fallbacks/switch', data: { turn: 1, step: 1, from: { provider: 'a' }, to: { provider: 'b', model: 'm' }, role: 'default', reason: 'trigger-code' } },
+      { type: 'fallbacks/switch', data: { turn: 1, step: 1, from: { provider: 'a' }, to: { provider: 'b', model: 'm' }, role: 'inherit', reason: 'trigger-code' } },
     )
     const result = registered[0]!.handler({
       commandId: 'x',

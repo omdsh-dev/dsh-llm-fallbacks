@@ -145,7 +145,7 @@ function switchEntry(seq: number, overrides: Partial<FallbacksSwitchEventData> =
         step: 1,
         from: { provider: 'openai', model: 'gpt-4o' },
         to: { provider: 'anthropic', model: 'claude-3-5-sonnet' },
-        role: 'default',
+        role: 'inherit',
         reason: 'trigger-code',
         ...overrides,
       },
@@ -284,7 +284,7 @@ describe('GeneralFallbacksRow states (compact read-only row)', () => {
     expect(screen.getByText(en['general.title'])).toBeTruthy()
     // The most recent switch (newest first): from → to (role · reason).
     expect(screen.getByText(
-      'Last switch: openai/gpt-4o → anthropic/claude-3-5-sonnet (default · trigger code)',
+      'Last switch: openai/gpt-4o → anthropic/claude-3-5-sonnet (inherit · trigger code)',
     )).toBeTruthy()
     // No error alert on a healthy row.
     expect(document.querySelector('[role="alert"]')).toBeNull()
@@ -302,7 +302,7 @@ describe('GeneralFallbacksRow states (compact read-only row)', () => {
       historyEntries: [switchEntry(2, { reason: 'future-reason' as never })],
     })
     await waitFor(() => expect(screen.getByText(
-      'Last switch: openai/gpt-4o → anthropic/claude-3-5-sonnet (default · future-reason)',
+      'Last switch: openai/gpt-4o → anthropic/claude-3-5-sonnet (inherit · future-reason)',
     )).toBeTruthy())
   })
 

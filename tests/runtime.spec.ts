@@ -165,6 +165,29 @@ describe('role resolution + chain concatenation (spec §7)', () => {
     expect(switchEvents(agent)[0]?.data.role).toBe('coder')
   })
 
+  it('canonicalizes a padded declared id: list " coder " + rule "coder" resolves to the declared role (qc2 F-001)', async () => {
+    // The startup validator accepts this config (both sides trimmed,
+    // client-canonical trim alignment); the runtime must NOT silently
+    // degrade to 'inherit' → rootChain. The declared role's chain must be
+    // used, proving the padded id resolves (declared raw id returned, roleDef
+    // lookup trim-consistent) — no silent inertness.
+    const { agent } = makeAgent('agent-padded', { provider: 'mock', model: 'gpt-4o' })
+    apply(ctx, cfg({
+      rootChain: ['third/x'],
+      roles: {
+        list: [role(' coder ', ['other/gpt-4o'])],
+        rules: [{ provider: 'mock', role: 'coder' }],
+      },
+    }))
+
+    const action = await dispatchRequestError(ctx, agent)
+    expect(action).toEqual({ kind: 'retry' })
+    // The declared chain (other/gpt-4o), not the rootChain fallback (third/x).
+    expect(switchEvents(agent)[0]?.data.to).toEqual({ provider: 'other', model: 'gpt-4o' })
+    // The event carries the declared RAW id as stored in roles.list.
+    expect(switchEvents(agent)[0]?.data.role).toBe(' coder ')
+  })
+
   it('appends rootChain after the role chain by default (inherit-root, append-not-replace)', async () => {
     // The role chain's only entry equals the current model (filtered), so
     // the appended rootChain tail must still be reachable — the switch to
@@ -219,33 +242,30 @@ describe('role resolution + chain concatenation (spec §7)', () => {
   })
 
   it('defends an undeclared role reference: warn + fall back to inherit → rootChain (no crash)', async () => {
-    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    try {
-      const logs = captureLogs()
-      const { agent } = makeAgent('agent-ghost', { provider: 'mock', model: 'gpt-4o' })
-      apply(ctx, cfg({
-        rootChain: ['other/gpt-4o'],
-        roles: { list: [], rules: [{ role: 'ghost' }] },
-      }))
+    const logs = captureLogs()
+    const { agent } = makeAgent('agent-ghost', { provider: 'mock', model: 'gpt-4o' })
+    apply(ctx, cfg({
+      rootChain: ['other/gpt-4o'],
+      roles: { list: [], rules: [{ role: 'ghost' }] },
+    }))
 
-      // Startup: validateFallbacksConfig flags the undeclared reference and
-      // detectLegacyKeys reports it as a legacy key class (US-4).
-      expect(logs.some((message) => message.type === 'warn'
-        && String(message.args[0]).includes('rule references undeclared role "ghost"'))).toBe(true)
-      expect(logs.some((message) => message.type === 'warn'
-        && String(message.args[0]).includes('legacy config keys detected'))).toBe(true)
+    // Startup: validateFallbacksConfig flags the undeclared reference and
+    // detectLegacyKeys reports it as a legacy key class (US-4).
+    expect(logs.some((message) => message.type === 'warn'
+      && String(message.args[0]).includes('rule references undeclared role "ghost"'))).toBe(true)
+    expect(logs.some((message) => message.type === 'warn'
+      && String(message.args[0]).includes('legacy config keys detected'))).toBe(true)
 
-      // Decision: resolveRole warns and resolves to 'inherit' → rootChain.
-      const action = await dispatchRequestError(ctx, agent)
-      expect(action).toEqual({ kind: 'retry' })
-      expect(switchEvents(agent)[0]?.data.to).toEqual({ provider: 'other', model: 'gpt-4o' })
-      expect(switchEvents(agent)[0]?.data.role).toBe('inherit')
-      expect(consoleWarn).toHaveBeenCalledWith(
-        expect.stringContaining('rule references undeclared role "ghost"'),
-      )
-    } finally {
-      consoleWarn.mockRestore()
-    }
+    // Decision: resolveRole warns and resolves to 'inherit' → rootChain.
+    const action = await dispatchRequestError(ctx, agent)
+    expect(action).toEqual({ kind: 'retry' })
+    expect(switchEvents(agent)[0]?.data.to).toEqual({ provider: 'other', model: 'gpt-4o' })
+    expect(switchEvents(agent)[0]?.data.role).toBe('inherit')
+    // The decision-path warn flows through the plugin logger (qc2 F-002),
+    // NOT console — the runtime message is the 'falling back' variant
+    // (distinct from the startup validator's 'expected one of ...' variant).
+    expect(logs.some((message) => message.type === 'warn'
+      && String(message.args[0]).includes('falling back to "inherit"'))).toBe(true)
   })
 })
 

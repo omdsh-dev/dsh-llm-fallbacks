@@ -177,10 +177,15 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   if (legacyKeys.length > 0) {
     logger.warn('llm-fallbacks: legacy config keys detected (chains/roles.default/undeclared role refs); see docs/configuration.md migration table — %o', legacyKeys)
   }
-  // Declared role ids rules resolve against (spec §7.1); the built-in
-  // 'inherit' is always legal and never listed. Re-derived on every settings
-  // change (onChange below) — both roleIds and hasChains follow source().
-  let roleIds = new Set(entry.roles.list.map((role) => role.id))
+  // Declared role ids rules resolve against (spec §7.1): trimmed id → the
+  // DECLARED RAW id, so a padded YAML id (' coder ') and a trimmed rule
+  // reference ('coder') resolve to the same role (client-canonical trim
+  // alignment, qc2 F-001 — validateFallbacksConfig trims both sides, and
+  // resolveRole returns the raw declared id so roleDef lookups match the
+  // stored roles.list entry exactly). The built-in 'inherit' is always
+  // legal and never listed. Re-derived on every settings change (onChange
+  // below) — both roleIds and hasChains follow source().
+  let roleIds = new Map(entry.roles.list.map((role) => [role.id.trim(), role.id] as const))
   // F-001: an unconfigured install (no chains anywhere) must be truly
   // zero-cost — the always-cap session scan is short-circuited on this flag,
   // so a plain request never touches the event log when no chains are
@@ -206,8 +211,13 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     onChange: () => {
       // A settings update can change roles.list / rootChain — roleIds and
       // hasChains re-derive from the same live source the runtime reads.
+      // Validation (validateFallbacksConfig / detectLegacyKeys) is
+      // intentionally STARTUP-ONLY: a live settings merge is already
+      // schema-validated by the settings layer, and the defensive runtime
+      // (resolveRole / resolveChainViews / roleDef lookups) tolerates bad
+      // values with warn-not-crash semantics (qc1 F-006).
       const current = source()
-      roleIds = new Set(current.roles.list.map((role) => role.id))
+      roleIds = new Map(current.roles.list.map((role) => [role.id.trim(), role.id] as const))
       hasChains = current.rootChain.length > 0 || current.roles.list.some((role) => (role.chain?.length ?? 0) > 0)
     },
   })
@@ -257,14 +267,15 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
       states.syncStep(state, turn, step)
       if (state.stepFailures.switchCount >= config.maxSwitchesPerStep) return null
     }
-    const role = resolveRole(agent, config.roles.rules, roleIds)
+    const role = resolveRole(agent, config.roles.rules, roleIds, logger.warn)
     // T1 review Important #2: resolveChainViews walks the concatenated
     // candidates ONCE — `all` (early-exit / annotation view) and the
     // wildcard provenance come from the same pass, and `surviving` is the
     // same list filtered in place via selectCandidates — so an unknown role
     // warns at most once per decision (previously resolveChain ran twice:
-    // all + surviving).
-    const { all, wildcard } = resolveChainViews(config.roles.list, config.rootChain, role, current.provider, current.model)
+    // all + surviving). Defensive warns flow through the plugin logger
+    // (qc2 F-002 — not console).
+    const { all, wildcard } = resolveChainViews(config.roles.list, config.rootChain, role, current.provider, current.model, logger.warn)
     if (all.length === 0) return null
     // T2 review Important #1 (decision-path contract): the "missing id" skip
     // stays scoped to `provider/*` entries (spec §2 clause 2 — exact entries
@@ -451,12 +462,12 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   const fallbacksCommandController: FallbacksCommandController = {
     getSnapshot(agent): FallbacksCommandSnapshot {
       const config = source()
-      const role = resolveRole(agent, config.roles.rules, roleIds)
+      const role = resolveRole(agent, config.roles.rules, roleIds, logger.warn)
       const state = states.peek(agent.id)
       return {
         origin: agent.session.header?.origin ?? 'root',
         role,
-        ...resolveChainForDiagnostic(config.roles.list, config.rootChain, role),
+        ...resolveChainForDiagnostic(config.roles.list, config.rootChain, role, logger.warn),
         switches: recentFallbacksSwitches(agent.session.events, RECENT_SWITCHES_LIMIT),
         cooldown: state === undefined ? [] : state.cooldown.snapshot(),
       }

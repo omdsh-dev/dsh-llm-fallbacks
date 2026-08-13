@@ -160,6 +160,20 @@ describe('hasWildcardEntry — probe on the concatenated candidates', () => {
     expect(hasWildcardEntry([], ['local/gemini-1.5-pro'], 'ghost')).toBe(false)
   })
 
+  it('is false for a fallback-none role with an exact-only chain even when rootChain carries a wildcard (qc2 F-003)', () => {
+    // F-003/S-1 exactness: `fallback: 'none'` excludes rootChain from the
+    // concatenation, so a wildcard that can never reach the candidate list
+    // must not build a catalog probe — the probe is exact, not an
+    // over-approximation.
+    const roles = [role('coder', { chain: ['anthropic/claude-3-5-sonnet'], fallback: 'none' })]
+    expect(hasWildcardEntry(roles, rootChain, 'coder')).toBe(false)
+  })
+
+  it('is true for a fallback-none role whose own chain carries a wildcard', () => {
+    const roles = [role('coder', { chain: ['mistral/*'], fallback: 'none' })]
+    expect(hasWildcardEntry(roles, rootChain, 'coder')).toBe(true)
+  })
+
   it('skips malformed entries without throwing', () => {
     const roles = [role('coder', { chain: ['bogus', 'mistral/*'] })]
     expect(hasWildcardEntry(roles, [], 'coder')).toBe(true)

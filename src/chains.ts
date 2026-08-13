@@ -17,6 +17,15 @@
  * such model id" skip is judged by {@link resolveCandidate} (via
  * `modelExists`) or by the caller's filter.
  *
+ * The concatenation itself lives in ONE helper — {@link buildRoleEntries}
+ * (qc1 S-3 SSOT) — shared by {@link resolveChainViews} and
+ * {@link hasWildcardEntry}, so the wildcard probe is exact (qc2 F-003:
+ * `fallback: 'none'` excludes `rootChain`) and can never diverge from the
+ * resolution. Defensive warns (unknown role / undeclared rule target) go
+ * through an injected `warn` callback — the wiring passes the cordis
+ * `logger.warn` (qc2 F-002 / qc3 S-3), with `console.warn` as the
+ * direct-call default.
+ *
  * Cooldown / failed-set / same-as-current filtering is caller-side;
  * {@link createCandidateFilter} provides the ready-made predicate.
  *
@@ -64,6 +73,29 @@ export function resolveCandidate(
 }
 
 /**
+ * The role's effective concatenated chain entries (spec §7.2) — the SINGLE
+ * concatenation SSOT (qc1 S-3): the declared role's own `chain` followed by
+ * `rootChain` unless `fallback: 'none'` (append-not-replace — role entries
+ * first, rootChain as the tail); the built-in `inherit` id and any unknown
+ * role id resolve to `rootChain` alone. {@link resolveChainViews} (candidate
+ * resolution) and {@link hasWildcardEntry} (wildcard probe) both derive
+ * their candidate source here, so the probe never diverges from the
+ * resolution (grep-verifiable: one concatenation expression). Role ids are
+ * compared by trim (qc2 F-001 — the runtime canonicalizes padded declared
+ * ids, and `resolveRole` returns the declared raw id).
+ */
+function buildRoleEntries(
+  roles: readonly FallbacksRole[],
+  rootChain: readonly string[],
+  role: string,
+): readonly string[] {
+  if (role.trim() === INHERIT_ROLE_ID) return rootChain
+  const roleDef = roles.find((declared) => declared.id.trim() === role.trim())
+  if (roleDef === undefined) return rootChain
+  return [...(roleDef.chain ?? []), ...(roleDef.fallback === 'none' ? [] : rootChain)]
+}
+
+/**
  * Single-pass chain resolution for the decision path (T1 review Important
  * #2). Walks the role's concatenated entries ONCE and returns the unfiltered
  * view — `all` (every resolvable candidate, no filter and no existence
@@ -77,7 +109,10 @@ export function resolveCandidate(
  * The reserved built-in `inherit` id (INHERIT_ROLE_ID) is legal — it
  * resolves to `rootChain` silently (the no-rule-match role, not a typo'd
  * id). Only a truly undeclared id (∉ declared ids ∪ {'inherit'}) warns once
- * (defensive — never crashes). Malformed entries never become candidates.
+ * (defensive — never crashes) through `warn` (defaults to `console.warn`
+ * for direct-call compatibility; the decision path injects the cordis
+ * `logger.warn` — qc2 F-002 / qc3 S-3). Malformed entries never become
+ * candidates.
  */
 export function resolveChainViews(
   roles: readonly FallbacksRole[],
@@ -85,17 +120,12 @@ export function resolveChainViews(
   role: string,
   provider: string,
   model: string,
+  warn: (message: string) => void = console.warn,
 ): { all: Selector[]; wildcard: boolean[] } {
   const failing: FailingModel = { provider, model }
-  const roleDef = roles.find((declared) => declared.id === role)
-  let entries: readonly string[]
-  if (role === INHERIT_ROLE_ID) {
-    entries = rootChain
-  } else if (roleDef === undefined) {
-    console.warn(`llm-fallbacks: unknown role "${role}" — falling back to rootChain`)
-    entries = rootChain
-  } else {
-    entries = [...(roleDef.chain ?? []), ...(roleDef.fallback === 'none' ? [] : rootChain)]
+  const entries = buildRoleEntries(roles, rootChain, role)
+  if (role.trim() !== INHERIT_ROLE_ID && !roles.some((declared) => declared.id.trim() === role.trim())) {
+    warn(`llm-fallbacks: unknown role "${role}" — falling back to rootChain`)
   }
   const all: Selector[] = []
   const wildcard: boolean[] = []
@@ -141,18 +171,21 @@ export function selectCandidates(
 /**
  * Ordered fallback candidates for the failing (provider, model).
  *
- * Candidates are the role's concatenated entries (spec §7.2): the declared
+ * Candidates are the role's concatenated entries (spec §7.2, see
+ * {@link buildRoleEntries} — the single concatenation SSOT): the declared
  * role's own `chain` followed by `rootChain` unless `fallback: 'none'`
  * (append-not-replace — role entries first, rootChain as the tail). The
  * reserved built-in `inherit` id resolves to `rootChain` silently; a truly
  * undeclared/unknown `role` id resolves to `rootChain` alone and warns once
  * (defensive — never crashes). `filter` optionally drops candidates — the
  * caller owns cooldown/failed-set/same-model filtering (see
- * {@link createCandidateFilter}). `modelExists` is forwarded to
- * {@link resolveCandidate}, so the "target provider has no such model id"
- * skip (spec §2 clause 2) applies to `provider/*` entries only — explicitly
- * listed exact entries are never existence-filtered (T2 review Important #1:
- * decision-path contract).
+ * {@link createCandidateFilter}). The `modelExists` existence probe is NOT
+ * applied per entry here: {@link resolveChainViews} returns the parallel
+ * `wildcard` provenance, and {@link selectCandidates} applies `modelExists`
+ * to `provider/*`-origin candidates ONLY (qc1 S-2 — exact entries are never
+ * existence-filtered, spec §2 clause 2 / T2 review Important #1
+ * decision-path contract). `warn` forwards to {@link resolveChainViews}
+ * (defaults to `console.warn`; the decision path injects `logger.warn`).
  *
  * Single-pass: delegates to {@link resolveChainViews} + {@link selectCandidates}
  * (one concatenated-entry walk, warn at most once per call).
@@ -165,8 +198,9 @@ export function resolveChain(
   model: string,
   filter?: (candidate: Selector) => boolean,
   modelExists?: (provider: string, model: string) => boolean,
+  warn: (message: string) => void = console.warn,
 ): Selector[] {
-  const { all, wildcard } = resolveChainViews(roles, rootChain, role, provider, model)
+  const { all, wildcard } = resolveChainViews(roles, rootChain, role, provider, model, warn)
   return selectCandidates(all, wildcard, filter, modelExists)
 }
 
@@ -175,21 +209,24 @@ export function resolveChain(
  * (`provider/*`). F-002: {@link resolveChain} resolves wildcard entries to
  * concrete models, so the wildcard provenance is invisible on the resolved
  * candidate list — the decision path consults the same concatenation
- * `resolveChain` walks (`[...(roleDef?.chain ?? []), ...rootChain]`, spec
- * §7.2) to decide whether the catalog existence probe is needed at all.
- * Malformed entries never become candidates and are skipped. The probe
- * deliberately includes `rootChain` even when the role's `fallback` is
- * `'none'` — an over-approximation (never false-negative on a wildcard the
- * resolution could reach; it only ever builds a probe that is not strictly
- * needed).
+ * `resolveChain` walks to decide whether the catalog existence probe is
+ * needed at all.
+ *
+ * The probe walks {@link buildRoleEntries} — the SAME concatenation
+ * {@link resolveChainViews} resolves (qc1 S-3 single SSOT) — so it is
+ * exact, never an over-approximation (qc2 F-003 / qc3 S-1): for
+ * `fallback: 'none'` roles `rootChain` is excluded, and a wildcard that can
+ * never reach the candidate list never builds a catalog probe. No
+ * false-negative is possible: any wildcard the resolution could reach is on
+ * this concatenation by construction. Malformed entries never become
+ * candidates and are skipped.
  */
 export function hasWildcardEntry(
   roles: readonly FallbacksRole[],
   rootChain: readonly string[],
   role: string,
 ): boolean {
-  const roleDef = roles.find((declared) => declared.id === role)
-  const entries = [...(roleDef?.chain ?? []), ...rootChain]
+  const entries = buildRoleEntries(roles, rootChain, role)
   for (const entry of entries) {
     try {
       if (parseSelector(entry).model === undefined) return true

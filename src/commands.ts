@@ -22,7 +22,7 @@
  */
 
 import type { CommandDefinition, CommandInvocation, CommandResult } from '@deepseek-ai/dsh-commands'
-import type { FallbacksRole } from './config.ts'
+import { INHERIT_ROLE_ID, type FallbacksRole } from './config.ts'
 import type { Origin } from './roles.ts'
 import type { FallbacksSwitchEventData } from './events.ts'
 
@@ -77,8 +77,9 @@ export interface FallbacksCommandSnapshot {
 
 /**
  * The session-scoped read-only operations the `/fallbacks` handler drives.
- * Implemented by the wiring (`src/index.ts`) against the live config source,
- * the chain map, and the per-agent state store; faked in unit tests.
+ * Implemented by the wiring (`src/index.ts`) against the live config source
+ * (`roles.list` / `rootChain` — no chain map anymore) and the per-agent
+ * state store; faked in unit tests.
  */
 export interface FallbacksCommandController {
   /** Snapshot the session's fallback diagnostics. Never mutates state. */
@@ -190,15 +191,35 @@ export function recentFallbacksSwitches(events: readonly unknown[], limit: numbe
  * role resolve to `rootChain`. `inherit: true` marks the append-not-replace
  * tail — the role's `fallback` is `'inherit-root'` (the default) or the role
  * is unknown/built-in `'inherit'`, and `rootChain` is non-empty. Mirrors
- * `resolveChainViews`'s concatenation without a failing model to resolve
- * against (the diagnostic is model-independent).
+ * `resolveChainViews`'s concatenation (see {@link buildRoleEntries} —
+ * `src/chains.ts`; the diagnostic keeps its display semantics: the role's
+ * own chain renders in full, `rootChain` only when the role has no own
+ * chain, with the inherit tail as an annotation) without a failing model to
+ * resolve against (the diagnostic is model-independent).
+ *
+ * `warn` mirrors {@link resolveChainViews}' defensive unknown-role warn
+ * (qc2 F-002 — routed through the injected logger; the `/fallbacks` path
+ * never reaches here unsanitized, as {@link resolveRole} resolves to a
+ * declared id or `'inherit'` first, so this is direct-caller parity).
  */
 export function resolveChainForDiagnostic(
   roles: readonly FallbacksRole[],
   rootChain: readonly string[],
   role: string,
+  warn: (message: string) => void = console.warn,
 ): { readonly chainRole: boolean; readonly chain: readonly string[]; readonly inherit: boolean } {
-  const roleDef = roles.find((declared) => declared.id === role)
+  // Explicit INHERIT_ROLE_ID branch (qc2 F-006): the built-in 'inherit' id
+  // resolves to rootChain silently — mirroring resolveChainViews — even if
+  // an illegal config declared a role with the reserved id (startup
+  // validation warns "reserved"; the runtime never consults it, so the
+  // diagnostic must not display it either).
+  if (role.trim() === INHERIT_ROLE_ID) {
+    return { chainRole: false, chain: rootChain, inherit: rootChain.length > 0 }
+  }
+  const roleDef = roles.find((declared) => declared.id.trim() === role.trim())
+  if (roleDef === undefined) {
+    warn(`llm-fallbacks: unknown role "${role}" — falling back to rootChain`)
+  }
   const roleChain = roleDef?.chain ?? []
   // Mirror resolveChainViews' concatenation exactly: a declared role's own
   // chain wins when non-empty; an empty own chain defers to rootChain

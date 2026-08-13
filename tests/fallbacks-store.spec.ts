@@ -177,7 +177,7 @@ function switchEntry(seq: number, overrides: Partial<FallbacksSwitchEventData> =
         step: 1,
         from: { provider: 'openai', model: 'gpt-4o' },
         to: { provider: 'anthropic', model: 'claude-3-5-sonnet' },
-        role: 'default',
+        role: 'inherit',
         reason: 'trigger-code',
         ...overrides,
       },
@@ -598,7 +598,7 @@ describe('deriveEffectiveModel (spec §2.5 D-6 display value)', () => {
       seq: 2, time: 1, turn: 1, step: 1,
       from: { provider: 'openai', model: 'gpt-4o' },
       to: { provider: 'anthropic', model: 'claude-3-5-sonnet' },
-      role: 'default', reason: 'trigger-code',
+      role: 'inherit', reason: 'trigger-code',
     }])
     expect(view).toEqual({ kind: 'unavailable' })
   })
@@ -610,8 +610,8 @@ describe('deriveEffectiveModel (spec §2.5 D-6 display value)', () => {
 
   it('② a recent switch exists → the latest one\'s target (`to`)', () => {
     const switches: FallbacksSwitchSnapshot[] = [
-      { seq: 9, time: 1, turn: 1, step: 1, from: { provider: 'openai', model: 'gpt-4o' }, to: { provider: 'google', model: 'gemini-2.0-flash' }, role: 'default', reason: 'always-cap' },
-      { seq: 3, time: 1, turn: 1, step: 1, from: { provider: 'openai', model: 'gpt-4o' }, to: { provider: 'anthropic', model: 'claude-3-5-sonnet' }, role: 'default', reason: 'trigger-code' },
+      { seq: 9, time: 1, turn: 1, step: 1, from: { provider: 'openai', model: 'gpt-4o' }, to: { provider: 'google', model: 'gemini-2.0-flash' }, role: 'inherit', reason: 'always-cap' },
+      { seq: 3, time: 1, turn: 1, step: 1, from: { provider: 'openai', model: 'gpt-4o' }, to: { provider: 'anthropic', model: 'claude-3-5-sonnet' }, role: 'inherit', reason: 'trigger-code' },
     ]
     // The store keeps switches newest-first, so [0] is the latest.
     expect(deriveEffectiveModel(enabledConfig, switches)).toEqual({
