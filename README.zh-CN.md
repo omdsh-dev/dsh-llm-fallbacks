@@ -18,12 +18,12 @@ dsh plugin --profile web add github:dsh-external/dsh-llm-fallbacks   # 钉 commi
 ## 能力一览
 
 - **root / subagent 自动降级**：任意 agent 在模型故障下按链切换到下一个可用 provider/model，无需手动换模型。
-- **角色链**：subagent 可走独立于 root 的 fallback 链——`roles.rules` 按 origin/provider/model 顺序匹配到具体角色 → `roles.default`，首个命中即停。
-- **链 specificity**：exact `provider/model` 键 → `provider/*` 键 → 角色链 → `default` 链；`provider/*` 条目保留失败模型 id 仅换 provider。
+- **两块制配置**：块 1 `rootChain`——root 主代理唯一降级链（空 = root 不降级）；块 2 声明式角色——`roles.list` 角色实体（id/label/description/chain/fallback）供 `roles.rules` 按 id 引用（或内置 `inherit`）；未命中规则 → `inherit` → `rootChain`。
+- **条目语法**：链条目为 `provider/model`（精确切换）或 `provider/*`（保留失败模型 id 仅换 provider）——旧链键命名空间（provider/model 键、角色名键）已删除。
 - **冷却与回主**：被切离/失败的模型在冷却期内不再入选；`revertPolicy: cooldown-expiry` 冷却到期后自动回主模型，`never` 会话内不回。
 - **行为可见**：每次切换追加持久化会话事件 `fallbacks/switch`（from/to/role/reason），配合 info 级日志（候选尝试顺序与跳过原因）与设置 → 插件配置 → Fallbacks 卡片上的只读状态块，无静默换模型。
 - **安全阀**：每 step 的 `maxSwitchesPerStep` 超限后停止切换、保持原错误语义，防止链循环放大延迟；`mode: 'always'` 的 provider 另有重试上限（`alwaysModeRetryCap`）。
-- **无配置回归（no-op）**：`enabled` 默认关闭（`false`），空链 / 未命中触发码 / 角色解析失败时插件完全 no-op——行为与未安装时一致，不产生任何事件。
+- **无配置回归（no-op）**：`enabled` 默认关闭（`false`），无 `rootChain`/角色链 / 未命中触发码 / 角色解析失败时插件完全 no-op——行为与未安装时一致，不产生任何事件。
 
 ## 安装
 
@@ -59,20 +59,25 @@ dsh plugin --profile web add .
 ```yaml
 fallbacks:
   enabled: true          # 功能级开关；默认关闭（false），需显式打开后生效
-  chains:
-    default:             # 角色 default 链：主模型失败后按顺序尝试
-      - anthropic/claude-3-5-sonnet
-      - openai/*
-  roles:
-    default: default
+  rootChain:             # 块 1：root 主代理降级链；主模型失败后按顺序尝试
+    - anthropic/claude-3-5-sonnet
+    - openai/*
+  roles:                 # 块 2：先声明角色，再让规则引用
+    list:
+      - id: reviewer     # 角色实体：id 唯一（/^[a-z0-9-]{1,32}$/）；inherit 为保留字
+        label: 审查者
+        description: 代码审查子代理
+        chain:
+          - openai/gpt-4o-mini
+        fallback: inherit-root   # 默认：角色链后追加 rootChain
     rules:
-      - origin: subagent   # 所有 subagent → reviewer 角色（走独立链）
+      - origin: subagent # 所有 subagent → reviewer 角色（自身链 + 继承 root）
         role: reviewer
 ```
 
-角色是链的分组键：`roles.default` 为兜底角色，`roles.rules` 按 origin/provider/model 顺序匹配到具体角色（首个命中即停）——角色解析为 **rules-only**（不存在显式角色字段；提供该字段的旧 dsh 补丁已移除）。配置了 `reviewer` 链后，归属该角色的 agent 走独立 fallback 链。
+角色是声明式实体：`roles.list` 存放角色卡（id/label/description + 可选 chain/fallback），`roles.rules` 按 origin/provider/model 顺序匹配到**已声明角色 id 或内置 `inherit`**（首个命中即停）——**未命中 → `inherit` → `rootChain`**。只声明不写规则的角色永不命中。旧链键命名空间与角色兜底字段已删除（迁移表见 [docs/configuration.md](docs/configuration.md)）。
 
-保存并重启 web 会话后生效。功能级开关 `fallbacks.enabled` **默认关闭（`false`）**——打开开关后插件才会介入；`triggerCodes` 默认覆盖 `AUTH` / `QUOTA` / `RATE_LIMIT`；**未配置任何链时行为与未安装插件完全一致**。更多示例（角色链、provider 通配键、roles 规则）见 [docs/configuration.md](docs/configuration.md)。
+保存并重启 web 会话后生效。功能级开关 `fallbacks.enabled` **默认关闭（`false`）**——打开开关后插件才会介入；`triggerCodes` 默认覆盖 `AUTH` / `QUOTA` / `RATE_LIMIT`；**未配置任何 `rootChain`/角色链时行为与未安装插件完全一致**。更多示例（角色实体、fallback 策略、引用 `inherit` 的规则）见 [docs/configuration.md](docs/configuration.md)。
 
 > **升级提示（行为变更）**：已有 `fallbacks:` 配置若**未显式写 `enabled` 键**，升级后解析为 `false`——请补上 `enabled: true` 以保持插件继续生效。
 
@@ -80,8 +85,8 @@ fallbacks:
 
 在任意会话中键入 `/fallbacks` 即可查看当前会话的 fallback 状态，无需打开设置页：
 
-- **会话来源**（`root` / `subagent`）与**解析角色**（首个命中的 `roles.rules` 条目 → `roles.default`）；
-- 该角色的**解析链**（角色链，角色键缺失则 `default` 链兜底）——无链时显示「未配置」；
+- **会话来源**（`root` / `subagent`）与**解析角色**（首个命中的 `roles.rules` 条目 → 内置 `inherit`）；
+- 该角色的**解析链**（角色自身链 + 继承的 `rootChain`，`fallback: none` 时仅角色链）——无链时显示「未配置」；
 - **最近切换**（`fallbacks/switch` 事件，最新在前，至多 5 条）：from/to provider/model、role、reason；
 - **冷却状态**：哪些 `provider/model` 处于冷却、冷却至何时（`revertPolicy: 'never'` 显示「会话内不再回主」）。
 
