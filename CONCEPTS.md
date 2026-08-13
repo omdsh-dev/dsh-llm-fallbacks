@@ -18,7 +18,7 @@ dsh web settings 的条目挂载契约（权威：dsh-private `packages/client/u
 本插件交付约束：对 dsh 源码树**零本地修改**。安装 = bundle 插行 + client inject + 自有 gateway；无 `patches/`、无 autopatch/prepare 打补丁链路；升级 dsh 无需重打。*Avoid:* patch 交付 / 本地修改交付
 
 ### registry peers（开发期依赖解析）
-dsh 私有 `@deepseek-ai/*` 包的开发期类型/测试解析方案：`pnpm-workspace.yaml` 的 `autoInstallPeers: true` + 用户级 `~/.npmrc` 的 registry 认证令牌（pnpm 11 起项目级 `.npmrc` 不再展开 `${NPM_TOKEN}`）从 npm registry 解析 `@deepseek-ai/*@0.1.0-rc.3` peer 依赖（`peerDependencies` 契约，无本地 link farm；pnpm 11 全量重解析后 lockfile 零 pre-rc.3 残留）。运行时值 import 保持 external 由宿主 in-box 解析，测试用真实 `dsh-settings`（内存 provider）与本地 node-safe store 双（`tests/support/snapshot-store.ts`，因 registry 包的 `./client` 是浏览器 loader artifact）。`*Avoid:* peer-stubs / tsconfig paths / 本地 link farm（历史方案，已移除）`
+dsh 私有 `@deepseek-ai/*` 包的开发期类型/测试解析方案：`pnpm-workspace.yaml` 的 `autoInstallPeers: true` + 用户级 `~/.npmrc` 的 registry 认证令牌（pnpm 11 起项目级 `.npmrc` 不再展开 `${NPM_TOKEN}`）从 npm registry 解析 `@deepseek-ai/*@0.1.0-rc.6` peer 依赖（`peerDependencies` 契约，无本地 link farm；pnpm 11 全量重解析后 lockfile 零 pre-rc.6 残留）。运行时值 import 保持 external 由宿主 in-box 解析，测试用真实 `dsh-settings`（内存 provider）与本地 node-safe store 双（`tests/support/snapshot-store.ts`，因 registry 包的 `./client` 是浏览器 loader artifact）。`*Avoid:* peer-stubs / tsconfig paths / 本地 link farm（历史方案，已移除）`
 
 ### remote events（转发事件）
 host → client 的远程事件转发面：client 经 `ctx.remote.$on(key, listener)` 订阅，事件名受宿主转发白名单（`API_REMOTE_FORWARDED_EVENTS`）约束；与 client 本地事件（`ctx.on`）区分——本地事件在 client 进程内 emit，remote 事件由 host 侧转发帧推送。20260811 起 `settings/changed`、`models/changed` 客户端事件已移除，配置/目录变更通知迁移到 remote events：`settings/document-updated(ns, revision)`（订阅方按 ns 精确过滤）与 `llm/adapters-updated()`（payload-free）。*Avoid:* `settings/changed`、`models/changed`（20260811 已移除的死事件名）

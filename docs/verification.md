@@ -25,7 +25,7 @@
 
 结果：**19 files / 319 tests 全绿**（`pnpm test`，vitest run）；`pnpm build`（`tsc -p tsconfig.build.json` 先发 JS（标准装饰器降级 `__esDecorate`）→ tsdown host bundle →
 `pnpm run build-client` → `tsc` 声明 → `node scripts/verify-dist.mjs` 产物解析守卫）全绿——`tsc` 按
-真实宿主类型面驱动（registry peer `@deepseek-ai/*@0.1.0-rc.3`，无任何仓内类型 shim）。no-op 回归
+真实宿主类型面驱动（registry peer `@deepseek-ai/*@0.1.0-rc.6`，无任何仓内类型 shim）。no-op 回归
 不变量（空链 / 未命中 / 链耗尽 / 安全阀超限 → 透传、不产生 `fallbacks/switch` 事件）由
 T3/T4 测试持久断言。
 
@@ -61,7 +61,7 @@ bundle 层顺序一节；真实 web profile 层序 `dsh-base → dsh-web-app →
 - **卸载无残留**：`agent/disposed` 删除、`agent/status` idle 防御清理、`ctx.effect`
   dispose 清空（T3 断言）。
 - **真实类型契约**：类型层不走手写 `peer-stubs/`——`autoInstallPeers` 从 npm registry 解析真实
-  `@deepseek-ai/*@0.1.0-rc.3` peer（用户级 ~/.npmrc 认证，无本地 link farm）；
+  `@deepseek-ai/*@0.1.0-rc.6` peer（用户级 ~/.npmrc 认证，无本地 link farm）；
   `tsc` 与集成测试（`tests/support/harness.ts` + llm-retry-stub + model-selection-stub）按真实
   类型面驱动。运行时缝走真实实现：`installSettingsSection` 挂真实 `@deepseek-ai/dsh-settings`
   （内存 provider `tests/support/memory-settings.ts`，继承真实 `SettingsProvider` 基类），
@@ -126,7 +126,7 @@ dsh --profile web --dump-config   # 组合树末尾应出现 # == dsh-llm-fallba
 #### 4.1 环境准备（新快照基线）
 
 1. **前置核对**：记录 `dsh --version`（快照）；插件侧 peer 依赖已从 npm registry 解析
-   （`@deepseek-ai/*@0.1.0-rc.3`，无需源码树）。
+   （`@deepseek-ai/*@0.1.0-rc.6`，无需源码树）。
 2. **插件构建**：`cd <插件仓库目录> && pnpm build`（host bundle + client bundle + tsc
    声明）绿——纯挂载语义：不修改 dsh 源码树、无任何补丁步骤；设置读写走插件 gateway
    通道（`/api/fallbacks/get|set|reset`），安装即用。

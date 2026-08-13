@@ -46,7 +46,7 @@ dsh plugin --profile web add .
 
 > **Development prerequisite**: type-checking and tests resolve the real
 > `@deepseek-ai/*` packages (peer deps, host-provided at runtime) from the npm
-> registry at `0.1.0-rc.3` — `autoInstallPeers` + the registry auth token in
+> registry at `0.1.0-rc.6` — `autoInstallPeers` + the registry auth token in
 > the user-level `~/.npmrc` (pnpm 11 no longer expands `${NPM_TOKEN}` from a
 > project `.npmrc`), no local link farm.
 
