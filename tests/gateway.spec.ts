@@ -1,7 +1,8 @@
 /**
  * T1 (plan llm-fallbacks-settings-gateway) — host-side `fallbacks` config
  * gateway (`/api/fallbacks/get` + `/api/fallbacks/set` +
- * `/api/fallbacks/reset` via typertGateway SRC claims).
+ * `/api/fallbacks/reset` via explicit `ctx.typert.register` contribution —
+ * `ctx.typert.local` is what the typertGateway claims first).
  *
  * Contract under test (`FallbacksConfigGateway`, src/gateway.ts):
  * ① No settings service (plain cordis ctx) — `get` returns the entry
@@ -21,8 +22,8 @@
  *    `get` — only schema-declared keys cross the wire, and a schema key
  *    whose composed value is `undefined` is omitted, never
  *    present-as-undefined (readConfig wire normalization, F-002).
- * ⑤ Endpoint claims: the typertGateway SRC discovery (the same
- *    `ctx.reflect.props` + `remoteMethods` walk `claimsEndpoint` uses) claims
+ * ⑤ Endpoint claims: the explicit typert registration (the same
+ *    `ctx.typert.local` store `claimsEndpoint` checks FIRST) claims
  *    `/api/fallbacks/get` + `/api/fallbacks/set` + `/api/fallbacks/reset`;
  *    the payload contract is exactly one plain-object `args` field; dispatch
  *    through the recorded `/api` interceptor and direct
@@ -49,6 +50,7 @@ import { Config, defaultFallbacksConfig, type FallbacksConfig } from '../src/con
 import {
   FALLBACKS_SETTINGS_NAMESPACE,
   FallbacksConfigGateway,
+  fallbacksTypertContribution,
   type FallbacksSettingsBridge,
 } from '../src/gateway.ts'
 import { MemorySettings } from './support/memory-settings.ts'
@@ -625,7 +627,7 @@ describe('set/reset return post-write legacyKeys (W-1/F-1)', () => {
 })
 
 // ---------------------------------------------------------------------------
-// ⑤ endpoint claims (typertGateway SRC discovery + payload contract)
+// ⑤ endpoint claims (explicit typert registration + payload contract)
 // ---------------------------------------------------------------------------
 
 type FakeRpcResult =
@@ -686,15 +688,22 @@ describe('typertGateway endpoint claims + payload contract', () => {
     await ctx.plugin(TypertGatewayService)
     const bridge = installFallbacksBridge(ctx, entryConfig({ cooldownMs: 120_000, maxSwitchesPerStep: 5 }))
     new FallbacksConfigGateway(ctx, bridge)
+    ctx.typert.register(fallbacksTypertContribution())
     await waitRegistered(ctx)
     const connection = ctx.get('connection') as unknown as FakeConnectionService
     await vi.waitFor(() => expect(connection.channel).toBe('/api'))
     return { ctx, connection }
   }
 
-  it('claims /api/fallbacks/get + set + reset through the SRC discovery (reflect.props + remoteMethods)', async () => {
+  it('claims /api/fallbacks/get + set + reset through the explicit typert registration (ctx.typert.local)', async () => {
     const { ctx, connection } = await composeGatewayHarness()
+    // The registration writes invocation descriptors into `ctx.typert.local`
+    // — the store `claimsEndpoint` checks FIRST — and the gateway remains a
+    // registered cordis service.
     expect(ctx.reflect.props['fallbacks']).toEqual({ type: 'service' })
+    expect(ctx.typert.local.get('fallbacks/get')).toMatchObject({ service: 'fallbacks', namespace: 'fallbacks', method: 'get' })
+    expect(ctx.typert.local.get('fallbacks/set')).toMatchObject({ service: 'fallbacks', namespace: 'fallbacks', method: 'set' })
+    expect(ctx.typert.local.get('fallbacks/reset')).toMatchObject({ service: 'fallbacks', namespace: 'fallbacks', method: 'reset' })
     expect(connection.authority).toBe('trusted-host')
     expect(connection.matches!('fallbacks/get')).toBe(true)
     expect(connection.matches!('fallbacks/set')).toBe(true)
@@ -759,7 +768,7 @@ describe('typertGateway endpoint claims + payload contract', () => {
     if (!unknownWire.ok) expect(unknownWire.error.message).toContain('args fields do not match the descriptor')
   })
 
-  it('invokes directly through ctx.typertGateway (same SRC descriptor path)', async () => {
+  it('invokes directly through ctx.typertGateway (same strict descriptor path)', async () => {
     const { ctx } = await composeGatewayHarness()
     const result = await ctx.typertGateway.invoke({ namespace: 'fallbacks', method: 'get', args: {} })
     expect(result).toMatchObject({ config: { enabled: false, cooldownMs: 120_000 } })

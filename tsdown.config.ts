@@ -3,11 +3,11 @@
  * pnpm stack, no bun).
  *
  * tsc-first pipeline (mirrors dsh-private's `build:lib:host`): `tsc -p
- * tsconfig.build.json` first emits plain JS from src/ into `.build/host/`
- * with standard decorators lowered to `__esDecorate(...)` helpers (default
- * TS 5.x behavior, no experimentalDecorators), then this pass bundles that
- * plain JS (entry `.build/host/index.js`). tsdown's transform therefore
- * never sees `@Remote(...)` decorator syntax, which Node ESM cannot parse.
+ * tsconfig.build.json` first emits plain JS from src/ into `.build/host/`,
+ * then this pass bundles that plain JS (entry `.build/host/index.js`).
+ * (The gateway endpoints are registered through explicit
+ * `ctx.typert.register` contributions — no `@Remote` decorators remain in
+ * the source, so no decorator lowering is involved.)
  *
  * Replaces the previous `bun build src/index.ts --target node --outdir dist
  * --external cordis --external '@deepseek-ai/*'`:
@@ -41,8 +41,7 @@ export default defineConfig({
   },
   dts: false,
   clean: true,
-  // Strip comments: source docblocks mention `@Remote(...)` and must not leak
-  // into the emitted ESM (the dist parse guard and grep checks flag that text).
+  // Strip comments: keeps the emitted ESM lean and free of docblock text.
   outputOptions: {
     comments: false,
   },

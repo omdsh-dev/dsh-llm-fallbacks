@@ -90,7 +90,7 @@ Map<agent.id, AgentFallbackState>：pendingSwitch（产生→应用→清除；�
 
 dsh 的 web 设置 RPC（`dsh-host-apiproxy`）对命名空间有硬编码暴露白名单，插件命名空间默认不可经 wire 读写——早期 patch 方案（`exposeToWebClients` opt-in + apiproxy `exposedNamespaces()` 并集，spec §2.5 D-2）已随 gateway 方案作废。当前形态是**插件自有 gateway 通道，零 host patch**（`src/gateway.ts`）：
 
-- **端点**：`/api/fallbacks/get` + `/api/fallbacks/set` + `/api/fallbacks/reset`（typertGateway `@Remote` SRC 声明；网关 `/api` 拦截槽是 host 全局单点，插件不得再 `connection.rpc.intercept('/api')`）。
+- **端点**：`/api/fallbacks/get` + `/api/fallbacks/set` + `/api/fallbacks/reset`（显式 `ctx.typert.register(fallbacksTypertContribution())` 注册，2026-08-13 起替代 `@Remote` SRC 声明——SRC 读模块私有 `remoteMethods()` 标记表，link 插件与 dlx 宿主物理分离时认领 0 端点；网关 `/api` 拦截槽是 host 全局单点，插件不得再 `connection.rpc.intercept('/api')`）。
 - **读取**：`get` 读 `FallbacksSettingsBridge` source——与运行时同一份 live 组合配置（schema 默认 → 插件行 base → settings user layer）。
 - **写入**：`set` 先按 `Config` schema 校验 patch（未知键拒绝），再经 `ctx.settings.update` 写 user layer（进程内写不经过 wire 级 `exposedNamespaces()` 门）；`reset` 用 `ctx.settings.replace(ns, {})` 清 user layer（`set` 是 merge-only，无法表达「重置为组合默认」）。
 - **可选降级**：settings 服务可选——无 settings 服务时 `get` 仍可用（bridge source 直读），`set`/`reset` 返回明确错误（KD-G5）。

@@ -39,7 +39,12 @@ import { selectorKey } from './selectors.ts'
 import { resolveRole } from './roles.ts'
 import { FallbackStateStore, type AgentFallbackState, type PendingSwitch } from './state.ts'
 import type { FallbackSwitchReason } from './events.ts'
-import { FALLBACKS_SETTINGS_NAMESPACE, FallbacksConfigGateway, type FallbacksSettingsBridge } from './gateway.ts'
+import {
+  FALLBACKS_SETTINGS_NAMESPACE,
+  FallbacksConfigGateway,
+  fallbacksTypertContribution,
+  type FallbacksSettingsBridge,
+} from './gateway.ts'
 import {
   RECENT_SWITCHES_LIMIT,
   recentFallbacksSwitches,
@@ -226,19 +231,40 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   }
   // T1 (plan llm-fallbacks-settings-gateway): the host-side `fallbacks` config
   // gateway — the `/api/fallbacks/get` + `/api/fallbacks/set` +
-  // `/api/fallbacks/reset` Remote endpoints (typertGateway SRC claims from
-  // `ctx.reflect.props` + `remoteMethods`). It reads the SAME bridge the
-  // runtime reads, so get/set/reset always operate on the live composed
-  // config. Mirror advisor's multi-fiber dedupe: the cordis Service
-  // registration fails loud on a duplicate key, so the catch lets the first
-  // fiber own the `fallbacks` service key while later fibers fall back (no
-  // gateway) — the typertGateway claim set dedupes, so claims never conflict.
+  // `/api/fallbacks/reset` endpoints. It reads the SAME bridge the runtime
+  // reads, so get/set/reset always operate on the live composed config.
+  // Mirror advisor's multi-fiber dedupe: the cordis Service registration
+  // fails loud on a duplicate key, so the catch lets the first fiber own the
+  // `fallbacks` service key while later fibers fall back (no gateway) — the
+  // typertGateway claim set dedupes, so claims never conflict.
   try {
     new FallbacksConfigGateway(ctx, bridge)
   } catch (error) {
     if (!(error instanceof Error) || !error.message.includes('has been registered')) throw error
     ctx.logger('llm-fallbacks').debug('fallbacks gateway already registered — no gateway on this fiber (multi-fiber dedupe)')
   }
+  // The typert endpoint registration is OPTIONAL, like the settings service:
+  // it activates through a conditional inject child, so compositions without
+  // a typert registry (headless/standalone/integration harnesses) keep the
+  // fallbacks runtime working and simply omit the /api endpoints. The
+  // endpoints are registered EXPLICITLY through `ctx.typert.register(...)`
+  // (NOT the @Remote SRC markers): the host typertGateway checks
+  // `ctx.typert.local` FIRST for claim + dispatch, while SRC discovery reads
+  // a module-private marker table that a locally-linked plugin can never
+  // share with the host installation (link plugins resolve their peers from
+  // their real directory, physically separate from the dlx host tree — the
+  // observed failure was zero claimed endpoints → `/api/fallbacks/*` 404).
+  // The child disposer is the registration's own effect disposer, so the
+  // endpoints withdraw when this fiber (or the typert service) goes away.
+  ctx.inject(['typert'], (tctx) => {
+    try {
+      return tctx.typert.register(fallbacksTypertContribution())
+    } catch (error) {
+      if (!(error instanceof Error) || !error.message.includes('already registered')) throw error
+      tctx.logger('llm-fallbacks').debug('fallbacks typert endpoints already registered — no endpoints on this fiber (multi-fiber dedupe)')
+      return () => {}
+    }
+  })
 
   const states = new FallbackStateStore()
   stateStores.set(ctx, states)
