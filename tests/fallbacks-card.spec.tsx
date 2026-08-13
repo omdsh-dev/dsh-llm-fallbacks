@@ -651,7 +651,7 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
   })
 
   it('reflects role add/remove in the rules role dropdown on the same page', async () => {
-    const { view, props } = await mountCard({ config: TWO_BLOCK_CONFIG })
+    const { view, props, scripted } = await mountCard({ config: TWO_BLOCK_CONFIG })
     toggleCard()
     view.rerender(<FallbacksCard {...props} />)
     const roleSelect = screen.getAllByLabelText(en['roles.rule.role'])[0] as HTMLSelectElement
@@ -674,6 +674,17 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     fireEvent.change(ids[ids.length - 1]!, { target: { value: 'coder' } })
     view.rerender(<FallbacksCard {...props} />)
     expect(within(updatedSelect).getByRole('option', { name: 'coder' })).toBeTruthy()
+
+    // The orphaned reference survives into the draft: a save attempt is
+    // blocked — the dangling rule keeps the write off the wire and the
+    // banner names the undeclared role (T3 fix wave Minor 2).
+    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    view.rerender(<FallbacksCard {...props} />)
+    expect(scripted.set).not.toHaveBeenCalled()
+    expect(scripted.call).not.toHaveBeenCalledWith('/api', 'fallbacks/set', expect.anything())
+    const alert = screen.getByRole('alert')
+    expect(alert.textContent).toContain(en['validation.blocked'])
+    expect(alert.textContent).toContain(en['validation.ruleRoleUndeclared'])
   })
 
   it('blocks save on an invalid role id: banner + inline red, no gateway write', async () => {
@@ -720,6 +731,28 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     const ids = screen.getAllByLabelText(en['roles.id'])
     expect(ids[0]!.getAttribute('aria-invalid')).toBe('true')
     expect(ids[1]!.getAttribute('aria-invalid')).toBe('true')
+  })
+
+  it('blocks save on an illegal selector in rootChain: banner, no gateway write', async () => {
+    // A malformed entry riding the accepted config (e.g. hand-edited YAML —
+    // the selector editor itself has no free-text input): it reads back
+    // verbatim as a synthetic outside option, so the seeded draft is clean;
+    // an unrelated edit makes it dirty, and the save attempt is blocked
+    // with the selector violation — the write never crosses the wire.
+    const config: typeof defaultFallbacksConfig = { ...TWO_BLOCK_CONFIG, rootChain: ['bad-selector'] }
+    const { view, props, scripted } = await mountCard({ config })
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    expect(screen.getByRole('option', { name: 'bad-selector (outside catalog)' })).toBeTruthy()
+    fireEvent.change(screen.getByLabelText(en['cooldownMs.label']), { target: { value: '7000' } })
+    view.rerender(<FallbacksCard {...props} />)
+    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    view.rerender(<FallbacksCard {...props} />)
+    expect(scripted.set).not.toHaveBeenCalled()
+    expect(scripted.call).not.toHaveBeenCalledWith('/api', 'fallbacks/set', expect.anything())
+    const alert = screen.getByRole('alert')
+    expect(alert.textContent).toContain(en['validation.blocked'])
+    expect(alert.textContent).toContain(en['validation.selector'])
   })
 
   it('clears the blocked-save state once the draft is valid again, then saves', async () => {

@@ -494,6 +494,33 @@ export function rowsToRoles(rows: readonly RoleRow[]): FallbacksRole[] {
 }
 
 /**
+ * Rebuild the declared roles from edited rows, re-attaching the
+ * schema-reserved `prompt`/`permissions` fields from the last accepted
+ * config by role id — they never round-trip through rows this round, so
+ * without the merge a save would silently drop them (T2 reviewer minor
+ * #2). The id trim matches {@link rowsToRoles}; a row whose id matches no
+ * original role (a freshly added one) keeps no extras. Key order mirrors
+ * `parseFallbacksConfig` so a clean draft's JSON dirty comparison never
+ * flags it.
+ */
+export function mergeRoleExtras(rows: readonly RoleRow[], originalRoles: readonly FallbacksRole[]): FallbacksRole[] {
+  const originalById = new Map(originalRoles.map(role => [role.id, role]))
+  return rowsToRoles(rows).map(role => {
+    const original = originalById.get(role.id)
+    if (original === undefined) return role
+    return {
+      id: role.id,
+      label: role.label,
+      description: role.description,
+      ...(original.prompt === undefined ? {} : { prompt: original.prompt }),
+      ...(original.permissions === undefined ? {} : { permissions: original.permissions }),
+      chain: role.chain,
+      fallback: role.fallback,
+    }
+  })
+}
+
+/**
  * The `roles.rules` role dropdown's offer set — the ONLY data source for the
  * rule rows' role selector: the built-in `'inherit'` target plus every
  * declared `roles.list` id, in declaration order (a role added/removed on

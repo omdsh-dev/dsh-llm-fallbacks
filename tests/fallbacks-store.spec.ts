@@ -33,6 +33,7 @@ import {
   deriveEffectiveModel,
   detectLegacyClientKeys,
   extractRecentSwitches,
+  mergeRoleExtras,
   FALLBACKS_SETTINGS_NS,
   FallbacksSettingsController,
   parseFallbacksConfig,
@@ -400,6 +401,44 @@ describe('rootChain/role/rule row editors (pure round-trips)', () => {
     // The same page's role edits are reflected immediately (derived, never cached).
     expect(ruleRoleOptions({ list: [{ id: 'reviewer', label: '', description: '' }, { id: 'c', label: '', description: '' }] }))
       .toEqual(['inherit', 'reviewer', 'c'])
+  })
+
+  it('mergeRoleExtras re-attaches prompt/permissions from the original list by (trimmed) id', () => {
+    // The schema-reserved prompt/permissions never round-trip through rows;
+    // the merge is what keeps them alive across a save (T2 reviewer minor
+    // #2). The reviewer row's edited id carries surrounding whitespace —
+    // the merge matches the canonical (trimmed) id, exactly like the rest
+    // of the rowsToRoles pipeline. A brand-new row has no original and
+    // keeps no extras.
+    const originalRoles = [
+      {
+        id: 'reviewer', label: 'Reviewer', description: 'Deep review pass',
+        prompt: 'You review', permissions: { allow: ['files.read'] },
+        chain: ['openai/gpt-4o'], fallback: 'inherit-root' as const,
+      },
+      {
+        id: 'architect', label: 'Architect', description: 'Designs systems',
+        chain: [], fallback: 'none' as const,
+      },
+    ]
+    const rows: RoleRow[] = [
+      {
+        id: ' reviewer ', label: 'Reviewer v2', description: 'Deep review pass',
+        selectors: [
+          { wildcard: false, provider: { kind: 'outside', raw: 'openai' }, model: { kind: 'outside', raw: 'gpt-4o' } },
+        ],
+        fallback: 'inherit-root',
+      },
+      { id: 'coder', label: 'Coder', description: '', selectors: [], fallback: 'inherit-root' },
+    ]
+    expect(mergeRoleExtras(rows, originalRoles)).toEqual([
+      {
+        id: 'reviewer', label: 'Reviewer v2', description: 'Deep review pass',
+        prompt: 'You review', permissions: { allow: ['files.read'] },
+        chain: ['openai/gpt-4o'], fallback: 'inherit-root',
+      },
+      { id: 'coder', label: 'Coder', description: '', chain: [], fallback: 'inherit-root' },
+    ])
   })
 
   it('detectLegacyClientKeys flags undeclared rule role references (test fallback)', () => {

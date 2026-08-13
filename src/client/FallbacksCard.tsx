@@ -79,9 +79,9 @@ import {
   classifyModel,
   classifyProvider,
   deriveEffectiveModel,
+  mergeRoleExtras,
   rolesToRows,
   rootChainToRows,
-  rowsToRoles,
   rowsToRootChain,
   rowsToRules,
   rulesToRows,
@@ -139,10 +139,10 @@ function scalarsOf(config: FallbacksConfig): FallbacksScalars {
 
 /**
  * Assemble the full config the row editors + scalars describe. The rebuilt
- * `roles.list` comes from the rows, but `prompt`/`permissions` do not
- * round-trip through rows (schema-reserved, no editors this round) — they
- * are merged back from the last accepted config by role id so a save never
- * silently drops them (T2 reviewer minor #2).
+ * `roles.list` comes from the rows, with the schema-reserved
+ * `prompt`/`permissions` merged back from the last accepted config by role
+ * id (see {@link mergeRoleExtras}) so a save never silently drops them
+ * (T2 reviewer minor #2).
  */
 function assembleConfig(
   scalars: FallbacksScalars,
@@ -151,23 +151,7 @@ function assembleConfig(
   ruleRows: readonly RoleRuleRow[],
   originalRoles: readonly FallbacksRole[],
 ): FallbacksConfig {
-  const originalById = new Map(originalRoles.map(role => [role.id, role]))
-  const list = rowsToRoles(roleRows).map(role => {
-    const original = originalById.get(role.id)
-    if (original === undefined) return role
-    // Key order mirrors parseFallbacksConfig ({ id, label, description,
-    // [prompt], [permissions], chain, fallback }) so the JSON.stringify
-    // dirty comparison never flags a clean draft.
-    return {
-      id: role.id,
-      label: role.label,
-      description: role.description,
-      ...(original.prompt === undefined ? {} : { prompt: original.prompt }),
-      ...(original.permissions === undefined ? {} : { permissions: original.permissions }),
-      chain: role.chain,
-      fallback: role.fallback,
-    }
-  })
+  const list = mergeRoleExtras(roleRows, originalRoles)
   return {
     enabled: scalars.enabled,
     triggerCodes: [...scalars.triggerCodes],
@@ -1137,8 +1121,11 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                     // role deleted under a referencing rule leaves the row's
                     // value orphaned — it stays visible as a synthetic
                     // "undeclared" option so the dangling reference is
-                    // honest, and save()'s validation flags it.
-                    const roleOptions = ruleRoleOptions({ list: roleRows })
+                    // honest, and save()'s validation flags it. The offer
+                    // set uses the same canonical (trimmed) ids that
+                    // rowsToRoles/rowsToRules rebuild, so what the dropdown
+                    // offers is exactly what save-time validation accepts.
+                    const roleOptions = ruleRoleOptions({ list: roleRows.map(row => ({ ...row, id: row.id.trim() })) })
                     const roleOutside = row.role !== '' && !roleOptions.includes(row.role)
                     return (
                     <div key={index} className={css.editorCard}>
