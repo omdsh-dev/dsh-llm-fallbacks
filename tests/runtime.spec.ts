@@ -32,6 +32,7 @@ import type { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import { settingsNamespace } from '@deepseek-ai/dsh-settings'
 import { apply, countRetryEvents, stateStore } from '../src/index.ts'
+import { resolveChainForDiagnostic } from '../src/commands.ts'
 import { defaultFallbacksConfig, type FallbacksConfig } from '../src/config.ts'
 import { MemorySettings } from './support/memory-settings.ts'
 import {
@@ -245,6 +246,57 @@ describe('role resolution + chain concatenation (spec §7)', () => {
     } finally {
       consoleWarn.mockRestore()
     }
+  })
+})
+
+describe('diagnostic snapshot mirrors resolveChainViews concatenation (T2 fix I1)', () => {
+  // /fallbacks shows the same chain the runtime would walk (chains.ts
+  // resolveChainViews single walk), model-independent. Regression anchor:
+  // a declared role with an EMPTY own chain under fallback 'none' resolves
+  // to [] at runtime — the diagnostic must not fall back to rootChain.
+  it('shows an empty chain for a declared role with no chain under fallback none', () => {
+    expect(resolveChainForDiagnostic([role('reviewer', [], 'none')], ['other/gpt-4o'], 'reviewer')).toEqual({
+      chainRole: false,
+      chain: [],
+      inherit: false,
+    })
+  })
+
+  it('defers an empty own chain to rootChain under the default inherit-root', () => {
+    expect(resolveChainForDiagnostic([role('reviewer', [])], ['other/gpt-4o'], 'reviewer')).toEqual({
+      chainRole: false,
+      chain: ['other/gpt-4o'],
+      inherit: true,
+    })
+  })
+
+  it('shows the declared chain and marks the appended rootChain tail as inherit', () => {
+    expect(resolveChainForDiagnostic([role('reviewer', ['a/x'])], ['other/gpt-4o'], 'reviewer')).toEqual({
+      chainRole: true,
+      chain: ['a/x'],
+      inherit: true,
+    })
+  })
+
+  it('keeps the declared chain isolated under fallback none (no inherit tail)', () => {
+    expect(resolveChainForDiagnostic([role('reviewer', ['a/x'], 'none')], ['other/gpt-4o'], 'reviewer')).toEqual({
+      chainRole: true,
+      chain: ['a/x'],
+      inherit: false,
+    })
+  })
+
+  it('resolves unknown ids and the built-in inherit role to rootChain + inherit', () => {
+    expect(resolveChainForDiagnostic([], ['other/gpt-4o'], 'ghost')).toEqual({
+      chainRole: false,
+      chain: ['other/gpt-4o'],
+      inherit: true,
+    })
+    expect(resolveChainForDiagnostic([], ['other/gpt-4o'], 'inherit')).toEqual({
+      chainRole: false,
+      chain: ['other/gpt-4o'],
+      inherit: true,
+    })
   })
 })
 

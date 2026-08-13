@@ -181,12 +181,15 @@ export function recentFallbacksSwitches(events: readonly unknown[], limit: numbe
 
 /**
  * The chain entries `/fallbacks` shows for a role (spec §7.4): the declared
- * role's own chain when non-empty (`chainRole: true`), else `rootChain`;
- * `inherit: true` marks the append-not-replace tail — the role's `fallback`
- * is `'inherit-root'` (the default) or the role is unknown/built-in
- * `'inherit'`, and `rootChain` is non-empty. Mirrors `resolveChain`'s
- * concatenation without a failing model to resolve against (the diagnostic
- * is model-independent).
+ * role's own chain when non-empty (`chainRole: true`); an empty own chain
+ * defers to `rootChain` unless `fallback: 'none'` — then nothing is appended
+ * and the display chain is empty, mirroring `resolveChainViews`'s
+ * `[...[], ...[]]` exactly; undeclared ids and the built-in `'inherit'`
+ * role resolve to `rootChain`. `inherit: true` marks the append-not-replace
+ * tail — the role's `fallback` is `'inherit-root'` (the default) or the role
+ * is unknown/built-in `'inherit'`, and `rootChain` is non-empty. Mirrors
+ * `resolveChainViews`'s concatenation without a failing model to resolve
+ * against (the diagnostic is model-independent).
  */
 export function resolveChainForDiagnostic(
   roles: readonly FallbacksRole[],
@@ -195,9 +198,11 @@ export function resolveChainForDiagnostic(
 ): { readonly chainRole: boolean; readonly chain: readonly string[]; readonly inherit: boolean } {
   const roleDef = roles.find((declared) => declared.id === role)
   const roleChain = roleDef?.chain ?? []
-  // A role with no own chain falls back to rootChain — the built-in
-  // 'inherit' role and any unknown id resolve the same way (rootChain).
-  const chain = roleChain.length > 0 ? roleChain : rootChain
+  // Mirror resolveChainViews' concatenation exactly: a declared role's own
+  // chain wins when non-empty; an empty own chain defers to rootChain
+  // UNLESS fallback is 'none' (no tail appended → empty display chain);
+  // the built-in 'inherit' role and any unknown id → rootChain.
+  const chain = roleChain.length > 0 ? roleChain : roleDef?.fallback === 'none' ? [] : rootChain
   const inherit = rootChain.length > 0 && (roleDef === undefined || roleDef.fallback !== 'none')
   return { chainRole: roleChain.length > 0, chain, inherit }
 }
