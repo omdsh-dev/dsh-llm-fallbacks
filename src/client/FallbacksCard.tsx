@@ -18,14 +18,21 @@
  * gesture, and staged edits outlive collapsing — the pill rides the header
  * (upstream rationale).
  *
- * The form body is unchanged from the section-era plan: the `enabled`
- * checkbox row, the fieldset carrying the 8 top-level configuration fields
- * (trigger codes / revert policy / three numeric fields / chains / roles —
- * spec §4 用户直观性 renders enumerable values as readable labels), and the
- * chain/role row editors keeping their filled editorCard surface inside the
- * card, with `--dsw-alias-*` tokens throughout. The reset-to-defaults
- * confirmation stays a `Modal` (the delete-confirm pattern of the Models
- * page) — no `window.confirm`.
+ * The form body is the two-block editing surface (spec §8): the `enabled`
+ * checkbox row, the 6 top-level scalar fields (trigger codes / revert
+ * policy / three numeric fields), the `rootChain` block (block 1 — the
+ * root agent's single chain, no key input), and the roles block (block 2 —
+ * declared role entity cards from `roles.list` plus the rule rows from
+ * `roles.rules`, whose role field is a dropdown bound to the declared ids
+ * + the built-in `inherit`, same-page live). Saving runs `validateDraft`
+ * first — id format/reserved word/duplicates, undeclared rule role
+ * references, and illegal selectors block the write with a validation
+ * banner + inline red borders (never touching the store error path); a
+ * non-empty `state.legacyKeys` renders the migration banner at the top of
+ * the card body. The row editors keep their filled editorCard surface
+ * inside the card, with `--dsw-alias-*` tokens throughout. The reset-
+ * to-defaults confirmation stays a `Modal` (the delete-confirm pattern of
+ * the Models page) — no `window.confirm`.
  *
  * The page-only chrome is gone (720px column wrapper, title/intro banners,
  * page-bottom status block): the AC-7 read-only status (derived effective
@@ -64,23 +71,28 @@ import {
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { SnapshotSelectorHook } from '@deepseek-ai/dsh-client-web-react'
-import type { FallbacksConfig, RevertPolicy } from '../config.ts'
-import { defaultFallbacksConfig } from '../config.ts'
+import type { FallbacksConfig, FallbacksRole, FallbackStrategy, RevertPolicy } from '../config.ts'
+import { defaultFallbacksConfig, INHERIT_ROLE_ID, ROLE_ID_PATTERN } from '../config.ts'
+import { parseSelector } from '../selectors.ts'
 import {
   FallbacksSettingsController,
-  chainsToRows,
   classifyModel,
   classifyProvider,
   deriveEffectiveModel,
-  rowsToChains,
+  mergeRoleExtras,
+  rolesToRows,
+  rootChainToRows,
+  rowsToRootChain,
   rowsToRules,
   rulesToRows,
+  ruleRoleOptions,
   selectionToRaw,
   type CatalogLookup,
-  type ChainRow,
   type ChainSelectorRow,
   type FallbacksSettingsState,
+  type RoleRow,
   type RoleRuleRow,
+  type RootChainRow,
 } from './fallbacks-store.ts'
 import {
   KNOWN_TRIGGER_CODES,
@@ -107,19 +119,17 @@ export type FallbacksCardProps =
 interface FallbacksScalars {
   enabled: boolean
   triggerCodes: string[]
-  defaultRole: string
   cooldownMs: number
   revertPolicy: RevertPolicy
   maxSwitchesPerStep: number
   alwaysModeRetryCap: number
 }
 
-/** Split scalars from the row editors (chains / role rules). */
+/** Split scalars from the row editors (rootChain / role entities / role rules). */
 function scalarsOf(config: FallbacksConfig): FallbacksScalars {
   return {
     enabled: config.enabled,
     triggerCodes: [...config.triggerCodes],
-    defaultRole: config.roles.default,
     cooldownMs: config.cooldownMs,
     revertPolicy: config.revertPolicy,
     maxSwitchesPerStep: config.maxSwitchesPerStep,
@@ -127,18 +137,102 @@ function scalarsOf(config: FallbacksConfig): FallbacksScalars {
   }
 }
 
-/** Assemble the full config the row editors + scalars describe. */
-function assembleConfig(scalars: FallbacksScalars, chainRows: ChainRow[], ruleRows: RoleRuleRow[]): FallbacksConfig {
+/**
+ * Assemble the full config the row editors + scalars describe. The rebuilt
+ * `roles.list` comes from the rows, with the schema-reserved
+ * `prompt`/`permissions` merged back from the last accepted config by role
+ * id (see {@link mergeRoleExtras}) so a save never silently drops them
+ * (T2 reviewer minor #2).
+ */
+function assembleConfig(
+  scalars: FallbacksScalars,
+  rootChainRows: readonly RootChainRow[],
+  roleRows: readonly RoleRow[],
+  ruleRows: readonly RoleRuleRow[],
+  originalRoles: readonly FallbacksRole[],
+): FallbacksConfig {
+  const list = mergeRoleExtras(roleRows, originalRoles)
   return {
     enabled: scalars.enabled,
     triggerCodes: [...scalars.triggerCodes],
-    chains: rowsToChains(chainRows),
-    roles: { default: scalars.defaultRole, rules: rowsToRules(ruleRows) },
+    rootChain: rowsToRootChain(rootChainRows),
+    roles: { list, rules: rowsToRules(ruleRows) },
     cooldownMs: scalars.cooldownMs,
     revertPolicy: scalars.revertPolicy,
     maxSwitchesPerStep: scalars.maxSwitchesPerStep,
     alwaysModeRetryCap: scalars.alwaysModeRetryCap,
   }
+}
+
+/**
+ * Pre-save validation of the assembled draft (spec §8 / plan Task 3):
+ * role id format/reserved word/duplicates, undeclared rule role references
+ * (only reachable through the synthetic outside option — the dropdown
+ * itself constrains normal edits), and illegal selector entries in
+ * rootChain and role chains. Returns one localized message per violation;
+ * a non-empty result blocks {@link save} — the draft is never written.
+ * `label`/`description` are free text and never validated.
+ */
+function validateDraft(draft: FallbacksConfig, t: FallbacksCardProps['t']): string[] {
+  const errors: string[] = []
+  const declaredIds = new Set<string>()
+  for (const role of draft.roles.list) {
+    if (!ROLE_ID_PATTERN.test(role.id)) {
+      errors.push(t('validation.roleIdFormat', { id: role.id }))
+    }
+    if (role.id === INHERIT_ROLE_ID) {
+      errors.push(t('validation.roleIdReserved'))
+    }
+    if (declaredIds.has(role.id)) {
+      errors.push(t('validation.roleIdDuplicate', { id: role.id }))
+    }
+    declaredIds.add(role.id)
+    for (const entry of role.chain ?? []) {
+      try {
+        parseSelector(entry)
+      } catch (error) {
+        errors.push(t('validation.selector', { entry, message: (error as Error).message }))
+      }
+    }
+  }
+  for (const entry of draft.rootChain) {
+    try {
+      parseSelector(entry)
+    } catch (error) {
+      errors.push(t('validation.selector', { entry, message: (error as Error).message }))
+    }
+  }
+  const validTargets = new Set([...declaredIds, INHERIT_ROLE_ID])
+  for (const rule of draft.roles.rules) {
+    if (!validTargets.has(rule.role)) {
+      errors.push(t('validation.ruleRoleUndeclared', { role: rule.role }))
+    }
+  }
+  return errors
+}
+
+/**
+ * The trimmed role ids that are validation failures (format / reserved word
+ * / duplicate) — drives the inline red border after a blocked save attempt.
+ * Derived once per render into a Set (qc3 F-3): a duplicate scan inside the
+ * render loop would be O(N²) per row; here the whole derivation is O(N) and
+ * each row's check is a single Set lookup. Selector errors stay on the
+ * banner only (plan Task 3 inline-scope rule).
+ */
+function collectInvalidRoleIds(rows: readonly RoleRow[]): Set<string> {
+  const counts = new Map<string, number>()
+  for (const row of rows) {
+    const id = row.id.trim()
+    counts.set(id, (counts.get(id) ?? 0) + 1)
+  }
+  const invalid = new Set<string>()
+  for (const row of rows) {
+    const id = row.id.trim()
+    if (!ROLE_ID_PATTERN.test(id) || id === INHERIT_ROLE_ID || (counts.get(id) ?? 0) > 1) {
+      invalid.add(id)
+    }
+  }
+  return invalid
 }
 
 /** Parse a number input, clamped to a non-negative integer. */
@@ -354,8 +448,16 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
   // next content-changing ready: unsaved drafts are not preserved across
   // the unreachable→ready upgrade.
   const [scalars, setScalars] = useState<FallbacksScalars>(() => scalarsOf(defaultFallbacksConfig))
-  const [chainRows, setChainRows] = useState<ChainRow[]>(() => chainsToRows(defaultFallbacksConfig.chains))
+  const [rootChainRows, setRootChainRows] = useState<RootChainRow[]>(() => rootChainToRows(defaultFallbacksConfig.rootChain))
+  const [roleRows, setRoleRows] = useState<RoleRow[]>(() => rolesToRows(defaultFallbacksConfig.roles.list))
   const [ruleRows, setRuleRows] = useState<RoleRuleRow[]>(() => rulesToRows(defaultFallbacksConfig.roles.rules))
+  // Pre-save validation (spec §8): save() validates the assembled draft and
+  // a blocked write leaves the messages in the banner with
+  // `validationAttempted` true so the offending role-id rows keep their
+  // inline red border. Both clear when a save passes validation or the user
+  // discards the draft.
+  const [validationErrors, setValidationErrors] = useState<string[]>([])
+  const [validationAttempted, setValidationAttempted] = useState(false)
   const seededConfigKey = useRef<string | null>(null)
 
   useEffect(() => {
@@ -364,7 +466,8 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
     if (seededConfigKey.current === key) return
     seededConfigKey.current = key
     setScalars(scalarsOf(state.config))
-    setChainRows(chainsToRows(state.config.chains, catalogOf(state)))
+    setRootChainRows(rootChainToRows(state.config.rootChain, catalogOf(state)))
+    setRoleRows(rolesToRows(state.config.roles.list, catalogOf(state)))
     setRuleRows(rulesToRows(state.config.roles.rules, catalogOf(state)))
   }, [state.status, state.config])
 
@@ -391,21 +494,62 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
     })
   }
 
-  const updateChainRow = (index: number, patch: Partial<ChainRow>): void => {
-    setChainRows(rows => {
+  // The rootChain block is ONE row holding the ordered selector list — no
+  // key input (spec §8: 无键输入). `rootChainToRows` always yields a single
+  // row, so these helpers operate on its selectors.
+  const updateRootChainSelector = (selectorIndex: number, patch: Partial<ChainSelectorRow>): void => {
+    setRootChainRows(rows => rows.map((row, index) => index === 0
+      ? { ...row, selectors: row.selectors.map((selector, sIndex) => sIndex === selectorIndex ? { ...selector, ...patch } : selector) }
+      : row))
+  }
+
+  const addRootChainSelector = (): void => {
+    setRootChainRows(rows => rows.map((row, index) => index === 0
+      ? { ...row, selectors: [...row.selectors, { wildcard: false, provider: null, model: null }] }
+      : row))
+  }
+
+  const removeRootChainSelector = (selectorIndex: number): void => {
+    setRootChainRows(rows => rows.map((row, index) => index === 0
+      ? { ...row, selectors: row.selectors.filter((_, sIndex) => sIndex !== selectorIndex) }
+      : row))
+  }
+
+  const updateRoleRow = (index: number, patch: Partial<RoleRow>): void => {
+    setRoleRows(rows => {
       const next = rows.map(row => ({ ...row }))
       next[index] = { ...next[index]!, ...patch }
       return next
     })
   }
 
-  const updateChainSelector = (chainIndex: number, selectorIndex: number, patch: Partial<ChainSelectorRow>): void => {
-    setChainRows(rows => {
+  const updateRoleSelector = (roleIndex: number, selectorIndex: number, patch: Partial<ChainSelectorRow>): void => {
+    setRoleRows(rows => {
       const next = rows.map(row => ({ ...row, selectors: row.selectors.map(selector => ({ ...selector })) }))
-      const selectors = next[chainIndex]!.selectors
+      const selectors = next[roleIndex]!.selectors
       selectors[selectorIndex] = { ...selectors[selectorIndex]!, ...patch }
       return next
     })
+  }
+
+  const addRoleSelector = (roleIndex: number): void => {
+    setRoleRows(rows => rows.map((row, index) => index === roleIndex
+      ? { ...row, selectors: [...row.selectors, { wildcard: false, provider: null, model: null }] }
+      : row))
+  }
+
+  const removeRoleSelector = (roleIndex: number, selectorIndex: number): void => {
+    setRoleRows(rows => rows.map((row, index) => index === roleIndex
+      ? { ...row, selectors: row.selectors.filter((_, sIndex) => sIndex !== selectorIndex) }
+      : row))
+  }
+
+  const addRole = (): void => {
+    setRoleRows(rows => [...rows, { id: '', label: '', description: '', selectors: [], fallback: 'inherit-root' }])
+  }
+
+  const removeRole = (index: number): void => {
+    setRoleRows(rows => rows.filter((_, rowIndex) => rowIndex !== index))
   }
 
   const updateRuleRow = (index: number, patch: Partial<RoleRuleRow>): void => {
@@ -416,10 +560,33 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
     })
   }
 
-  const dirty = JSON.stringify(assembleConfig(scalars, chainRows, ruleRows)) !== JSON.stringify(state.config)
+  // The draft is assembled once per render and reused by the dirty check,
+  // the validation gate, and save — `state.config.roles.list` supplies the
+  // prompt/permissions merge so a clean draft equals the accepted config.
+  const draft = assembleConfig(scalars, rootChainRows, roleRows, ruleRows, state.config.roles.list)
+  // Empty rule rows (role still on the "select role" placeholder) never
+  // reach the assembled draft — rowsToRules drops them — so validateDraft
+  // cannot see them. Surface them as a validation error instead of
+  // silently discarding the row on save (qc3 F-4).
+  const hasEmptyRuleRows = ruleRows.some(row => row.role === '')
+  // An empty rule row makes no config difference, but it IS an unsaved UI
+  // change: count it so the unsaved pill, Discard, and Save all treat the
+  // row as pending (otherwise Save stays disabled and the row vanishes on
+  // the next successful save with no chance to explain itself).
+  const dirty = JSON.stringify(draft) !== JSON.stringify(state.config) || hasEmptyRuleRows
   const saving = state.status === 'saving'
   const writable = state.writable
   const unknownCodes = scalars.triggerCodes.filter(code => !KNOWN_TRIGGER_CODES.includes(code))
+
+  // The rules role dropdown's offer set — derived ONCE per render and shared
+  // by every rule row (qc3 F-3; previously recomputed inside the render
+  // loop): a role added/removed on the same page reflects immediately, and
+  // the store dedupes on the canonical (trimmed) ids so mid-edit duplicate
+  // ids never render duplicate options.
+  const roleOptions = ruleRoleOptions({ list: roleRows })
+  // Offending role ids after a blocked save attempt, derived once per render
+  // into a Set (qc3 F-3) — each row's inline red border is one lookup.
+  const invalidRoleIds = validationAttempted ? collectInvalidRoleIds(roleRows) : null
 
   // R-4b: the status block's derived effective model (spec §2.5 D-6). The
   // derivation is a display value over config + recent switches — the
@@ -465,12 +632,31 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
     if (catalogSeededEpoch.current === state.catalogEpoch) return
     if (dirty) return
     catalogSeededEpoch.current = state.catalogEpoch
-    setChainRows(chainsToRows(state.config.chains, catalogOf(state)))
+    setRootChainRows(rootChainToRows(state.config.rootChain, catalogOf(state)))
+    setRoleRows(rolesToRows(state.config.roles.list, catalogOf(state)))
     setRuleRows(rulesToRows(state.config.roles.rules, catalogOf(state)))
   }, [state.catalogStatus, state.catalogEpoch, state.config, dirty])
 
   const save = (): void => {
-    void controller.save(assembleConfig(scalars, chainRows, ruleRows))
+    const errors = validateDraft(draft, t)
+    // An empty rule row is invisible to validateDraft (rowsToRules dropped
+    // it from the draft) — the row would vanish on a successful save with no
+    // explanation. Block it alongside the draft violations (qc3 F-4); the
+    // row keeps its inline hint so the user sees why.
+    if (hasEmptyRuleRows) {
+      errors.push(t('validation.ruleRoleRequired'))
+    }
+    if (errors.length > 0) {
+      // Validation blocks the write: the draft is never sent to the gateway,
+      // and the violations surface as the banner + inline red borders (spec
+      // §8 — the store's `state.error` data path stays untouched).
+      setValidationErrors(errors)
+      setValidationAttempted(true)
+      return
+    }
+    setValidationErrors([])
+    setValidationAttempted(false)
+    void controller.save(draft)
   }
 
   // Discard is a pure client-side revert to the last accepted config (no
@@ -480,9 +666,29 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
   // client-side revert is always safe).
   const discard = (): void => {
     setScalars(scalarsOf(state.config))
-    setChainRows(chainsToRows(state.config.chains, catalogOf(state)))
+    setRootChainRows(rootChainToRows(state.config.rootChain, catalogOf(state)))
+    setRoleRows(rolesToRows(state.config.roles.list, catalogOf(state)))
     setRuleRows(rulesToRows(state.config.roles.rules, catalogOf(state)))
+    // The draft reverted to the accepted config: any blocked-validation
+    // banner/inline marks no longer describe the current draft.
+    setValidationErrors([])
+    setValidationAttempted(false)
   }
+
+  // Live-clear the blocked-save presentation once the draft is valid again:
+  // a user fixing the offending field would otherwise stare at a stale
+  // "save was blocked" banner over a now-valid draft (the Save action is
+  // dirty-gated, so the next attempt may never fire).
+  useEffect(() => {
+    if (!validationAttempted) return
+    // The empty-rule-row violation lives outside the draft (rowsToRules
+    // dropped the row), so it must clear on the ROW state, not just the
+    // assembled draft (qc3 F-4).
+    if (validateDraft(draft, t).length === 0 && !ruleRows.some(row => row.role === '')) {
+      setValidationErrors([])
+      setValidationAttempted(false)
+    }
+  }, [validationAttempted, draft, ruleRows, t])
 
   const confirmReset = (): void => {
     setResetting(true)
@@ -565,6 +771,17 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
       {header}
       {open && (
         <div className={css.body}>
+          {/* Migration banner (spec §8): the wire's legacyKeys detected
+              two-block-era leftovers → an informational notice at the top of
+              the card body. Never blocks editing and never touches disk —
+              a save MERGES over the user layer (W-1/F-1), so legacy keys
+              survive until manually removed; the banner stays until a get
+              reports them gone. */}
+          {state.legacyKeys.length > 0 && (
+            <p className={css.legacyNotice} role="status">
+              {t('legacy.banner', { keys: state.legacyKeys.join(', ') })}
+            </p>
+          )}
           {state.status === 'error' && state.error !== null && (
             <div className={css.noticeRow}>
               <p className={css.error} role="alert">{t('error.generic', { message: state.error })}</p>
@@ -577,6 +794,16 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                 </Button>
               )}
             </div>
+          )}
+          {validationErrors.length > 0 && (
+            // Pre-save validation blocked the last save attempt (spec §8):
+            // the same error presentation as the store error banner, but the
+            // store's `state.error` data path stays untouched — the draft
+            // was never sent. The inline red borders on the offending role
+            // id rows ride `validationAttempted`.
+            <p className={css.error} role="alert">
+              {`${t('validation.blocked')}${validationErrors.join('; ')}`}
+            </p>
           )}
           {degraded && (
             // Gateway channel unreachable (KD-G5 — the fallbacks config rides
@@ -736,12 +963,12 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                 </div>
               </div>
 
-              <div className={css.field} role="group" aria-labelledby="fallbacks-chains">
+              <div className={css.field} role="group" aria-labelledby="fallbacks-root-chain">
                 <span className={css.fieldLabel}>
-                  <span id="fallbacks-chains">{t('chains.label')}</span>
-                  <InfoHint label={t('chains.tooltip')} disabled={!writable} />
+                  <span id="fallbacks-root-chain">{t('rootChain.label')}</span>
+                  <InfoHint label={t('rootChain.tooltip')} disabled={!writable} />
                 </span>
-                <span className={css.hint}>{t('chains.hint')}</span>
+                <span className={css.hint}>{t('rootChain.hint')}</span>
                 {/* Catalog state is an enrichment of the dropdowns, never a blocker:
                  * a failed read (or an empty directory) only adds a hint line and
                  * leaves every other field editable and saveable (spec §2.3 R-3a). */}
@@ -754,16 +981,11 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                 {state.catalogStatus === 'ready' && (state.groups.length === 0 || state.configuredProviders.length === 0) && (
                   <span className={css.hint}>{t('catalog.empty')}</span>
                 )}
+                {/* Block 1 (spec §8): ONE row holding the ordered selector
+                 * list — no key input, the row IS the chain. */}
                 <div className={css.list}>
-                  {chainRows.map((row, index) => (
-                    <div key={index} className={css.editorCard}>
-                      <input
-                        className={`${css.input} ${css.keyInput}`}
-                        value={row.key}
-                        placeholder={t('chains.keyPlaceholder')}
-                        aria-label={t('chains.key')}
-                        onChange={event => { updateChainRow(index, { key: event.target.value }) }}
-                      />
+                  {rootChainRows.map((row, rowIndex) => (
+                    <div key={rowIndex} className={css.editorCard}>
                       <div className={css.chainSelectors}>
                         {row.selectors.map((selector, selectorIndex) => (
                           <ChainSelectorEditor
@@ -773,12 +995,8 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                             configuredProviders={state.configuredProviders}
                             disabled={!writable}
                             t={t}
-                            onChange={patch => { updateChainSelector(index, selectorIndex, patch) }}
-                            onRemove={() => {
-                              setChainRows(rows => rows.map((entry, entryIndex) => entryIndex === index
-                                ? { ...entry, selectors: entry.selectors.filter((_, sIndex) => sIndex !== selectorIndex) }
-                                : entry))
-                            }}
+                            onChange={patch => { updateRootChainSelector(selectorIndex, patch) }}
+                            onRemove={() => { removeRootChainSelector(selectorIndex) }}
                           />
                         ))}
                       </div>
@@ -787,57 +1005,146 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                         size="sm"
                         icon={<IconPlusOutline16 size={14} />}
                         className={css.addButton}
-                        onClick={() => {
-                          setChainRows(rows => rows.map((entry, entryIndex) => entryIndex === index
-                            ? { ...entry, selectors: [...entry.selectors, { wildcard: false, provider: null, model: null }] }
-                            : entry))
-                        }}
+                        onClick={addRootChainSelector}
                       >
-                        {t('chains.selector.add')}
+                        {t('rootChain.selector.add')}
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className={css.field} role="group" aria-labelledby="fallbacks-roles-list">
+                <span className={css.fieldLabel}>
+                  <span id="fallbacks-roles-list">{t('roles.list.label')}</span>
+                  <InfoHint label={t('roles.list.tooltip')} disabled={!writable} />
+                </span>
+                <span className={css.hint}>{t('roles.list.hint')}</span>
+                {/* Block 2a (spec §8): declared role entities — identity text
+                 * fields, the role's own chain selectors, the append
+                 * strategy, removal. prompt/permissions are schema-reserved
+                 * and never rendered this round. The id input carries the
+                 * format hint inline; a blocked save attempt marks offending
+                 * ids with the red border (aria-invalid). */}
+                <div className={css.list}>
+                  {roleRows.map((row, index) => {
+                    const invalid = invalidRoleIds?.has(row.id.trim()) ?? false
+                    return (
+                    <div key={index} className={css.editorCard}>
+                      <div className={css.ruleGrid}>
+                        <div className={css.ruleCell}>
+                          <span className={css.ruleCellLabel}>{t('roles.id')}</span>
+                          <input
+                            className={`${css.input} ${invalid ? css.inputInvalid : ''}`}
+                            value={row.id}
+                            placeholder={t('roles.idPlaceholder')}
+                            aria-label={t('roles.id')}
+                            aria-invalid={invalid ? true : undefined}
+                            disabled={!writable}
+                            onChange={event => { updateRoleRow(index, { id: event.target.value }) }}
+                          />
+                          <span className={css.hint}>{t('roles.id.hint')}</span>
+                        </div>
+                        <div className={css.ruleCell}>
+                          <span className={css.ruleCellLabel}>{t('roles.label')}</span>
+                          <input
+                            className={css.input}
+                            value={row.label}
+                            aria-label={t('roles.label')}
+                            disabled={!writable}
+                            onChange={event => { updateRoleRow(index, { label: event.target.value }) }}
+                          />
+                        </div>
+                        <div className={css.ruleCell}>
+                          <span className={css.ruleCellLabel}>{t('roles.description')}</span>
+                          <input
+                            className={css.input}
+                            value={row.description}
+                            aria-label={t('roles.description')}
+                            disabled={!writable}
+                            onChange={event => { updateRoleRow(index, { description: event.target.value }) }}
+                          />
+                        </div>
+                      </div>
+                      <div className={css.chainSelectors}>
+                        {row.selectors.map((selector, selectorIndex) => (
+                          <ChainSelectorEditor
+                            key={selectorIndex}
+                            selector={selector}
+                            catalog={catalogOf(state)}
+                            configuredProviders={state.configuredProviders}
+                            disabled={!writable}
+                            t={t}
+                            onChange={patch => { updateRoleSelector(index, selectorIndex, patch) }}
+                            onRemove={() => { removeRoleSelector(index, selectorIndex) }}
+                          />
+                        ))}
+                      </div>
+                      <div className={css.ruleGrid}>
+                        <div className={css.ruleCell}>
+                          <span className={css.ruleCellLabel}>{t('roles.fallback')}</span>
+                          <select
+                            className={`${css.input} ${css.selectInput}`}
+                            value={row.fallback}
+                            aria-label={t('roles.fallback')}
+                            disabled={!writable}
+                            onChange={event => { updateRoleRow(index, { fallback: event.target.value as FallbackStrategy }) }}
+                          >
+                            <option value="inherit-root">{t('roles.fallback.inherit-root')}</option>
+                            <option value="none">{t('roles.fallback.none')}</option>
+                          </select>
+                        </div>
+                      </div>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        icon={<IconPlusOutline16 size={14} />}
+                        className={css.addButton}
+                        onClick={() => { addRoleSelector(index) }}
+                      >
+                        {t('roles.selector.add')}
                       </Button>
                       <div className={css.cardFoot}>
                         <button
                           type="button"
                           className={`${css.iconButton} ${css.iconButtonDanger}`}
-                          data-tip={t('chains.remove')}
-                          aria-label={t('chains.remove')}
-                          onClick={() => {
-                            setChainRows(rows => rows.filter((_, rowIndex) => rowIndex !== index))
-                          }}
+                          data-tip={t('roles.remove')}
+                          aria-label={t('roles.remove')}
+                          onClick={() => { removeRole(index) }}
                         >
                           <IconTrashOutline16 />
                         </button>
                       </div>
                     </div>
-                  ))}
+                    )
+                  })}
                 </div>
                 <Button
                   variant="outline"
                   size="sm"
                   icon={<IconPlusOutline16 size={14} />}
                   className={css.addButton}
-                  onClick={() => {
-                    setChainRows(rows => [...rows, { key: '', selectors: [] }])
-                  }}
+                  onClick={addRole}
                 >
-                  {t('chains.add')}
+                  {t('roles.add')}
                 </Button>
               </div>
 
-              <div className={css.field} role="group" aria-labelledby="fallbacks-roles">
+              <div className={css.field} role="group" aria-labelledby="fallbacks-roles-rules">
                 <span className={css.fieldLabel}>
-                  <span id="fallbacks-roles">{t('roles.label')}</span>
-                  <InfoHint label={t('roles.tooltip')} disabled={!writable} />
+                  <span id="fallbacks-roles-rules">{t('roles.rules')}</span>
+                  <InfoHint label={t('roles.rules.tooltip')} disabled={!writable} />
                 </span>
-                <span className={css.hint}>{t('roles.hint')}</span>
-                <label className={css.subField}>
-                  <span className={css.subFieldLabel}>{t('roles.default')}</span>
-                  <input
-                    className={css.input}
-                    value={scalars.defaultRole}
-                    onChange={event => { updateScalars(draft => { draft.defaultRole = event.target.value }) }}
-                  />
-                </label>
+                <span className={css.hint}>{t('roles.rules.hint')}</span>
+                {state.catalogStatus === 'error' && state.catalogError !== null && (
+                  <span className={css.hint}>{t('catalog.error', { message: state.catalogError })}</span>
+                )}
+                {state.catalogStatus === 'ready' && state.catalogError !== null && (
+                  <span className={css.hint}>{t('catalog.partial', { message: state.catalogError })}</span>
+                )}
+                {state.catalogStatus === 'ready' && (state.groups.length === 0 || state.configuredProviders.length === 0) && (
+                  <span className={css.hint}>{t('catalog.empty')}</span>
+                )}
                 <div className={css.list}>
                   {ruleRows.map((row, index) => {
                     const catalog = catalogOf(state)
@@ -850,6 +1157,18 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                       && (catalog?.providers.some(entry => entry.provider === providerRaw) ?? false)
                       && !state.configuredProviders.some(entry => entry.provider === providerRaw)
                     const modelOutside = row.model?.kind === 'outside'
+                    // roleOptions is hoisted once per render (qc3 F-3): the
+                    // offer set derives LIVE from the declared role rows —
+                    // a role added/removed on the same page is reflected
+                    // immediately (spec §8 同页联动). A role deleted under
+                    // a referencing rule leaves the row's value orphaned —
+                    // it stays visible as a synthetic "undeclared" option
+                    // so the dangling reference is honest, and save()'s
+                    // validation flags it. The offer set uses the same
+                    // canonical (trimmed) ids that rowsToRoles/rowsToRules
+                    // rebuild, so what the dropdown offers is exactly what
+                    // save-time validation accepts.
+                    const roleOutside = row.role !== '' && !roleOptions.includes(row.role)
                     return (
                     <div key={index} className={css.editorCard}>
                       <div className={css.ruleGrid}>
@@ -910,12 +1229,20 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                         </label>
                         <label className={css.ruleCell}>
                           <span className={css.ruleCellLabel}>{t('roles.rule.role')}</span>
-                          <input
-                            className={css.input}
+                          <select
+                            className={`${css.input} ${css.selectInput}`}
                             value={row.role}
-                            placeholder={t('roles.rule.rolePlaceholder')}
+                            disabled={!writable}
                             onChange={event => { updateRuleRow(index, { role: event.target.value }) }}
-                          />
+                          >
+                            <option value="">{t('roles.rule.roleSelectPlaceholder')}</option>
+                            {roleOptions.map(id => (
+                              <option key={id} value={id}>{id === INHERIT_ROLE_ID ? t('roles.rule.role.inherit') : id}</option>
+                            ))}
+                            {roleOutside && (
+                              <option value={row.role}>{`${row.role}${t('roles.rule.roleUndeclared.short')}`}</option>
+                            )}
+                          </select>
                         </label>
                       </div>
                       {(providerOutside || modelOutside) && (
@@ -923,6 +1250,12 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                           {t('catalog.outside.hint')}
                           <InfoHint label={t('catalog.outside.tooltip')} disabled={!writable} />
                         </span>
+                      )}
+                      {row.role === '' && (
+                        // qc3 F-4: an empty role row would be dropped by
+                        // rowsToRules on assembly and vanish on save — the
+                        // inline hint explains why save is blocked.
+                        <span className={css.hint}>{t('validation.ruleRoleRequired')}</span>
                       )}
                       <div className={css.cardFoot}>
                         <button

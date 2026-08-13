@@ -135,6 +135,20 @@
   color: var(--dsw-alias-state-business-primary);
 }
 
+/* Migration banner (two-block-era legacyKeys detected): a quiet filled box
+   at the top of the card body — the SC silent-box shape (padding 10/12, no
+   border, r8) on the module fill, business tone text. Informational: the
+   form stays fully editable and a save writes the new format. */
+.legacyNotice {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-module-platform);
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-state-business-primary);
+}
+
 .error {
   margin: 12px 0 0;
   font-size: 12px;
@@ -357,19 +371,6 @@
   cursor: default;
 }
 
-.subField {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin-top: 4px;
-}
-
-.subFieldLabel {
-  font-size: 12px;
-  line-height: 18px;
-  color: var(--dsw-alias-label-secondary);
-}
-
 /* Text/enum fields: h32 r8 on the layer-1 fill, brand border on focus
    (the Models `.input`). */
 .input {
@@ -400,6 +401,14 @@
   cursor: default;
 }
 
+/* Pre-save validation failure (role id format/reserved/duplicate): the
+   offending input keeps the error border even on focus — the brand focus
+   ring would otherwise mask the error state the user is trying to fix. */
+.inputInvalid,
+.inputInvalid:focus {
+  border-color: var(--dsw-alias-state-error-primary);
+}
+
 /* Enum pickers hold a handful of short options; a field-width dropdown reads
    as a text field the user is expected to fill. */
 select.input {
@@ -419,12 +428,6 @@ select.input {
   background-repeat: no-repeat;
   background-position: right 12px center;
   background-size: 12px 12px;
-}
-
-/* Chain key: a short row identifier, not a full-width form field — capped
-   like the enum selects so the card reads as a row editor. */
-.keyInput {
-  max-width: 240px;
 }
 
 /* The three short numeric fields (cooldown / max switches / always cap) sit

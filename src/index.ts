@@ -33,16 +33,15 @@ import { installSettingsSection } from '@deepseek-ai/dsh-settings'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { LlmCallConfig } from '@deepseek-ai/dsh-llm'
 import type { Session } from '@deepseek-ai/dsh-session'
-import { Config, defaultFallbacksConfig, type FallbacksConfig } from './config.ts'
-import { annotateCandidates, createCandidateFilter, resolveChain, type FailingModel } from './chains.ts'
-import { parseSelector, selectorKey } from './selectors.ts'
+import { Config, defaultFallbacksConfig, detectLegacyKeys, validateFallbacksConfig, type FallbacksConfig } from './config.ts'
+import { annotateCandidates, createCandidateFilter, hasWildcardEntry, resolveChainViews, selectCandidates, type FailingModel } from './chains.ts'
+import { selectorKey } from './selectors.ts'
 import { resolveRole } from './roles.ts'
 import { FallbackStateStore, type AgentFallbackState, type PendingSwitch } from './state.ts'
 import type { FallbackSwitchReason } from './events.ts'
 import { FALLBACKS_SETTINGS_NAMESPACE, FallbacksConfigGateway, type FallbacksSettingsBridge } from './gateway.ts'
 import {
   RECENT_SWITCHES_LIMIT,
-  hasModelSpecificChainKeys,
   recentFallbacksSwitches,
   registerFallbacksCommands,
   resolveChainForDiagnostic,
@@ -79,78 +78,6 @@ const stateStores = new WeakMap<Context, FallbackStateStore>()
  */
 export function stateStore(ctx: Context): FallbackStateStore | undefined {
   return stateStores.get(ctx)
-}
-
-/**
- * Chain-map normalization (T2 review Minor #1): keys containing `/` are
- * selector keys and are canonicalized via `parseSelector` + `selectorKey`, so
- * whitespace-padded keys match the resolved lookups; keys without `/` are
- * role names and are trimmed. Illegal keys warn and are dropped — they "do
- * not take effect" (spec §4). Entries are validated lazily at resolve time
- * (`resolveCandidate` returns null for malformed ones) after the same warning
- * is emitted here.
- *
- * Exported for direct unit testing of the config-warning path; the plugin
- * calls it at startup and on every settings change (`onChange`).
- */
-export function normalizeChains(chains: Record<string, string[]>, logger: Logger): Record<string, string[]> {
-  const normalized: Record<string, string[]> = {}
-  for (const [key, entries] of Object.entries(chains)) {
-    const roleKey = key.includes('/') ? normalizeSelectorKey(key, logger) : key.trim()
-    if (roleKey === null || roleKey === '') continue
-    for (const entry of entries) {
-      try {
-        parseSelector(entry)
-      } catch (error) {
-        logger.warn(`llm-fallbacks: ignoring invalid chain entry "${entry}" in key "${key}": ${(error as Error).message}`)
-      }
-    }
-    normalized[roleKey] = entries
-  }
-  return normalized
-}
-
-function normalizeSelectorKey(key: string, logger: Logger): string | null {
-  try {
-    const parsed = parseSelector(key)
-    return selectorKey(parsed.provider, parsed.model)
-  } catch (error) {
-    logger.warn(`llm-fallbacks: ignoring invalid chain key "${key}": ${(error as Error).message}`)
-    return null
-  }
-}
-
-/**
- * Whether any chain entry reachable for this failing (provider, model) is a
- * wildcard (`provider/*`). F-002: `resolveChain` resolves wildcard entries to
- * concrete models, so the wildcard provenance is invisible on the resolved
- * candidate list — the decision path consults the raw entries under the same
- * keys `resolveChain` walks (exact → `provider/*` → role → `default`) to
- * decide whether the catalog existence probe is needed at all. Malformed
- * entries never become candidates and are skipped.
- */
-function hasWildcardEntry(
-  chains: Record<string, string[]>,
-  role: string,
-  provider: string,
-  model: string,
-): boolean {
-  const keys = [selectorKey(provider, model), selectorKey(provider), role, 'default']
-  const seen = new Set<string>()
-  for (const key of keys) {
-    if (seen.has(key)) continue
-    seen.add(key)
-    const entries = chains[key]
-    if (!entries) continue
-    for (const entry of entries) {
-      try {
-        if (parseSelector(entry).model === undefined) return true
-      } catch {
-        // malformed entries never become candidates (config-warning path)
-      }
-    }
-  }
-  return false
 }
 
 /**
@@ -237,16 +164,40 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   // already defaulted; re-resolving keeps direct calls (tests) normalized.
   const entry = Config(config)
   let source: () => FallbacksConfig = () => entry
-  let chains = normalizeChains(entry.chains, logger)
-  // F-001: an unconfigured install (empty chains) must be truly zero-cost —
-  // the always-cap session scan is short-circuited on this flag, so a plain
-  // request never touches the event log when no chains are configured (AC-8).
-  let hasChains = Object.keys(chains).length > 0
+  // AC-4: warn-not-crash startup validation — the schema-resolved entry is
+  // checked once (invalid ids / undeclared rule references / illegal
+  // selectors / bad fallback enum); each violation warns and "does not take
+  // effect", the config stays usable (spec §4).
+  validateFallbacksConfig(entry, logger)
+  // US-4: two-block-era leftovers in the live source (schemastery retains
+  // unknown keys, verified plan Task 1 Step 1) → one startup warn pointing
+  // at the migration table; the gateway separately reports the same keys as
+  // get().legacyKeys for the UI banner. warn-only — never auto-migrates.
+  const legacyKeys = detectLegacyKeys(source() as unknown as Record<string, unknown>)
+  if (legacyKeys.length > 0) {
+    logger.warn('llm-fallbacks: legacy config keys detected (chains/roles.default/undeclared role refs); see docs/configuration.md migration table — %o', legacyKeys)
+  }
+  // Declared role ids rules resolve against (spec §7.1): trimmed id → the
+  // DECLARED RAW id, so a padded YAML id (' coder ') and a trimmed rule
+  // reference ('coder') resolve to the same role (client-canonical trim
+  // alignment, qc2 F-001 — validateFallbacksConfig trims both sides, and
+  // resolveRole returns the raw declared id so roleDef lookups match the
+  // stored roles.list entry exactly). The built-in 'inherit' is always
+  // legal and never listed. Re-derived on every settings change (onChange
+  // below) — both roleIds and hasChains follow source().
+  let roleIds = new Map(entry.roles.list.map((role) => [role.id.trim(), role.id] as const))
+  // F-001: an unconfigured install (no chains anywhere) must be truly
+  // zero-cost — the always-cap session scan is short-circuited on this flag,
+  // so a plain request never touches the event log when no chains are
+  // configured (AC-8). New-shape probe: candidates exist only via rootChain
+  // entries or a declared role's own chain (T1 review Minor 2 rewire).
+  let hasChains = entry.rootChain.length > 0 || entry.roles.list.some((role) => (role.chain?.length ?? 0) > 0)
 
   // Guide §7 (plan llm-fallbacks-settings-gateway): the setSource hook is
   // wired into the FallbacksSettingsBridge the gateway consumes — the SAME
   // live source the runtime reads (schema defaults → plugin-row base →
-  // settings user layer). The existing onChange re-derives the chain map.
+  // settings user layer). The existing onChange re-derives roleIds/hasChains
+  // from that live source (new config shape — no chain map anymore).
   // No settings-exposure opt-in here: upstream dsh has no such
   // registration-level option (it existed only via a local patch, now
   // removed) — web clients reach the config through the gateway channel
@@ -258,8 +209,16 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
       source = current
     },
     onChange: () => {
-      chains = normalizeChains(source().chains, logger)
-      hasChains = Object.keys(chains).length > 0
+      // A settings update can change roles.list / rootChain — roleIds and
+      // hasChains re-derive from the same live source the runtime reads.
+      // Validation (validateFallbacksConfig / detectLegacyKeys) is
+      // intentionally STARTUP-ONLY: a live settings merge is already
+      // schema-validated by the settings layer, and the defensive runtime
+      // (resolveRole / resolveChainViews / roleDef lookups) tolerates bad
+      // values with warn-not-crash semantics (qc1 F-006).
+      const current = source()
+      roleIds = new Map(current.roles.list.map((role) => [role.id.trim(), role.id] as const))
+      hasChains = current.rootChain.length > 0 || current.roles.list.some((role) => (role.chain?.length ?? 0) > 0)
     },
   })
   const bridge: FallbacksSettingsBridge = {
@@ -308,17 +267,25 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
       states.syncStep(state, turn, step)
       if (state.stepFailures.switchCount >= config.maxSwitchesPerStep) return null
     }
-    const role = resolveRole(agent, config.roles.rules, config.roles.default)
-    const all = resolveChain(chains, role, current.provider, current.model)
+    const role = resolveRole(agent, config.roles.rules, roleIds, logger.warn)
+    // T1 review Important #2: resolveChainViews walks the concatenated
+    // candidates ONCE — `all` (early-exit / annotation view) and the
+    // wildcard provenance come from the same pass, and `surviving` is the
+    // same list filtered in place via selectCandidates — so an unknown role
+    // warns at most once per decision (previously resolveChain ran twice:
+    // all + surviving). Defensive warns flow through the plugin logger
+    // (qc2 F-002 — not console).
+    const { all, wildcard } = resolveChainViews(config.roles.list, config.rootChain, role, current.provider, current.model, logger.warn)
     if (all.length === 0) return null
     // T2 review Important #1 (decision-path contract): the "missing id" skip
     // stays scoped to `provider/*` entries (spec §2 clause 2 — exact entries
     // are never existence-filtered; createCandidateFilter's own modelExists
-    // would over-filter them), so the probe is forwarded to
-    // resolveChain/resolveCandidate while the filter deliberately does NOT
-    // receive modelExists. F-002: the probe is built only when a wildcard
-    // entry is reachable — pure exact chains take zero catalog probes.
-    const modelExists = hasWildcardEntry(chains, role, current.provider, current.model)
+    // would over-filter them), so the probe is applied via selectCandidates
+    // to wildcard-origin candidates only while the filter deliberately does
+    // NOT receive modelExists. F-002: the probe is built only when a
+    // wildcard entry is reachable on the role's concatenated candidates —
+    // pure exact chains take zero catalog probes.
+    const modelExists = hasWildcardEntry(config.roles.list, config.rootChain, role)
       ? await makeModelExists(
         ctx,
         [...new Set(all.map((candidate) => candidate.provider))],
@@ -331,7 +298,7 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
       has: (key: string) => state !== undefined && state.stepFailures.failed.has(key),
     }
     const filter = createCandidateFilter({ current, cooldown, failed })
-    const surviving = resolveChain(chains, role, current.provider, current.model, filter, modelExists)
+    const surviving = selectCandidates(all, wildcard, filter, modelExists)
     const target = surviving[0]
     if (target === undefined || target.model === undefined) return null
     logger.info(
@@ -489,19 +456,18 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   // advisor T1 fix): the child activates only when a command registry is
   // composed, so an absent commands service leaves the command silently
   // unavailable with no top-level error. The handler reads live state
-  // through the SAME `source()` / `chains` / `states` the runtime uses and
+  // through the SAME `source()` / `roleIds` / `states` the runtime uses and
   // never mutates fallback state (read-only; no cooldown reset, no pending
   // writes).
   const fallbacksCommandController: FallbacksCommandController = {
     getSnapshot(agent): FallbacksCommandSnapshot {
       const config = source()
-      const role = resolveRole(agent, config.roles.rules, config.roles.default)
+      const role = resolveRole(agent, config.roles.rules, roleIds, logger.warn)
       const state = states.peek(agent.id)
       return {
         origin: agent.session.header?.origin ?? 'root',
         role,
-        ...resolveChainForDiagnostic(chains, role),
-        chainKeysModelSpecific: hasModelSpecificChainKeys(chains),
+        ...resolveChainForDiagnostic(config.roles.list, config.rootChain, role, logger.warn),
         switches: recentFallbacksSwitches(agent.session.events, RECENT_SWITCHES_LIMIT),
         cooldown: state === undefined ? [] : state.cooldown.snapshot(),
       }

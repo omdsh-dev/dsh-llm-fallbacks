@@ -22,12 +22,12 @@ describe('fallbacks/switch session event', () => {
       step: 2,
       from: { provider: 'mock', model: 'gpt-4o' },
       to: { provider: 'other', model: 'gpt-4o' },
-      role: 'default',
+      role: 'inherit',
       reason: 'trigger-code',
     }
     expect(data.from).toEqual({ provider: 'mock', model: 'gpt-4o' })
     expect(data.to).toEqual({ provider: 'other', model: 'gpt-4o' })
-    expect(data.role).toBe('default')
+    expect(data.role).toBe('inherit')
     expect(['trigger-code', 'always-cap']).toContain(data.reason)
   })
 

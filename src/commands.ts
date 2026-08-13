@@ -1,9 +1,10 @@
 /**
- * `/fallbacks` slash command (plan fallbacks-mount-map-command Task 2, AC-5).
+ * `/fallbacks` slash command (plan fallbacks-role-runtime T3, AC-5).
  *
  * Session-scoped, read-only diagnostic: current session origin → resolved
- * role → resolved chain (role key, else `default`) → recent `fallbacks/switch`
- * events (newest first, capped) → cooldown status. Mirrors dsh-advisor's
+ * role → resolved chain (role chain, else rootChain — an `inherit: true`
+ * tail is annotated 「（inherit-root）」) → recent `fallbacks/switch` events
+ * (newest first, capped) → cooldown status. Mirrors dsh-advisor's
  * `/advisor` command pattern: a conditional `ctx.inject(['commands'])` child
  * in `src/index.ts` calls {@link registerFallbacksCommands} with a
  * factory-bound handler; `commands` never joins the top-level inject list, so
@@ -21,6 +22,7 @@
  */
 
 import type { CommandDefinition, CommandInvocation, CommandResult } from '@deepseek-ai/dsh-commands'
+import { INHERIT_ROLE_ID, type FallbacksRole } from './config.ts'
 import type { Origin } from './roles.ts'
 import type { FallbacksSwitchEventData } from './events.ts'
 
@@ -54,16 +56,19 @@ export interface FallbacksCooldownEntry {
 export interface FallbacksCommandSnapshot {
   /** Session origin: `'root'` when the agent carries no header origin. */
   readonly origin: Origin
-  /** Resolved role (first matching `roles.rules` entry → `roles.default`). */
+  /** Resolved role (first matching `roles.rules` entry → built-in `'inherit'`, spec §7.1). */
   readonly role: string
-  /** True when the role's own chain key exists; false when `default` (or none) is shown. */
+  /** True when the role's own chain is non-empty and shown; false when rootChain (or none) is shown. */
   readonly chainRole: boolean
-  /** The displayed chain entries (role chain, else `default` chain); empty = not configured. */
+  /** The displayed chain entries: the role's own chain when non-empty, else
+   * rootChain — except `fallback: 'none'` with an empty own chain, which
+   * yields `[]` even when rootChain is non-empty (nothing appended, mirroring
+   * resolveChainViews' `[...[], ...[]]`); empty = not configured. */
   readonly chain: readonly string[]
-  /** True when the session config also declares model-specific chain keys
-   * (`provider/model`, `provider/*`) that this role/default diagnostic does
-   * not render — the output caveat source (qc1 F-001). */
-  readonly chainKeysModelSpecific: boolean
+  /** True when rootChain is appended as the inherit fallback tail (role's
+   * `fallback` is `'inherit-root'` — or the role is unknown — and rootChain
+   * is non-empty; the diagnostic annotation source, spec §7.4). */
+  readonly inherit: boolean
   /** Recent `fallbacks/switch` events, newest first, capped at {@link RECENT_SWITCHES_LIMIT}. */
   readonly switches: readonly FallbacksSwitchEventData[]
   /** Active cooldown entries for the agent. */
@@ -72,8 +77,9 @@ export interface FallbacksCommandSnapshot {
 
 /**
  * The session-scoped read-only operations the `/fallbacks` handler drives.
- * Implemented by the wiring (`src/index.ts`) against the live config source,
- * the chain map, and the per-agent state store; faked in unit tests.
+ * Implemented by the wiring (`src/index.ts`) against the live config source
+ * (`roles.list` / `rootChain` — no chain map anymore) and the per-agent
+ * state store; faked in unit tests.
  */
 export interface FallbacksCommandController {
   /** Snapshot the session's fallback diagnostics. Never mutates state. */
@@ -92,9 +98,8 @@ export const FALLBACKS_COMMAND_LOCALES = {
     origin: '会话来源',
     role: '角色',
     chain: '链',
-    chainDefault: '（default 兜底）',
+    inheritRoot: '（inherit-root）',
     chainNone: '未配置',
-    chainKeysCaveat: '（含模型级链键 provider/model、provider/* — 诊断仅显示 role/default 链）',
     switches: '最近切换',
     switchesNone: '本会话暂无 fallback 切换',
     switchLine: '{from} → {to}（role={role}，reason={reason}）',
@@ -113,9 +118,8 @@ export const FALLBACKS_COMMAND_LOCALES = {
     origin: 'Session origin',
     role: 'Role',
     chain: 'Chain',
-    chainDefault: ' (default fallback)',
+    inheritRoot: ' (inherit-root)',
     chainNone: 'not configured',
-    chainKeysCaveat: ' (model-specific chain keys provider/model, provider/* present — diagnostic shows role/default only)',
     switches: 'Recent switches',
     switchesNone: 'No fallback switches in this session',
     switchLine: '{from} → {to} (role={role}, reason={reason})',
@@ -179,29 +183,51 @@ export function recentFallbacksSwitches(events: readonly unknown[], limit: numbe
 }
 
 /**
- * The chain entries `/fallbacks` shows for a role: the role's own chain key
- * when present, else the `default` chain (mirrors `resolveChain`'s
- * role → default fallback without the model-dependent exact/provider keys —
- * the diagnostic has no failing model to resolve against).
+ * The chain entries `/fallbacks` shows for a role (spec §7.4): the declared
+ * role's own chain when non-empty (`chainRole: true`); an empty own chain
+ * defers to `rootChain` unless `fallback: 'none'` — then nothing is appended
+ * and the display chain is empty, mirroring `resolveChainViews`'s
+ * `[...[], ...[]]` exactly; undeclared ids and the built-in `'inherit'`
+ * role resolve to `rootChain`. `inherit: true` marks the append-not-replace
+ * tail — the role's `fallback` is `'inherit-root'` (the default) or the role
+ * is unknown/built-in `'inherit'`, and `rootChain` is non-empty. Mirrors
+ * `resolveChainViews`'s concatenation (see {@link buildRoleEntries} —
+ * `src/chains.ts`; the diagnostic keeps its display semantics: the role's
+ * own chain renders in full, `rootChain` only when the role has no own
+ * chain, with the inherit tail as an annotation) without a failing model to
+ * resolve against (the diagnostic is model-independent).
+ *
+ * `warn` mirrors {@link resolveChainViews}' defensive unknown-role warn
+ * (qc2 F-002 — routed through the injected logger; the `/fallbacks` path
+ * never reaches here unsanitized, as {@link resolveRole} resolves to a
+ * declared id or `'inherit'` first, so this is direct-caller parity).
  */
 export function resolveChainForDiagnostic(
-  chains: Record<string, readonly string[]>,
+  roles: readonly FallbacksRole[],
+  rootChain: readonly string[],
   role: string,
-): { readonly chainRole: boolean; readonly chain: readonly string[] } {
-  const roleChain = chains[role]
-  if (roleChain !== undefined) return { chainRole: true, chain: roleChain }
-  return { chainRole: false, chain: chains['default'] ?? [] }
-}
-
-/**
- * True when `chains` declares model-specific keys (`provider/model` or
- * `provider/*` — any key containing `/`) in addition to role/default keys.
- * The `/fallbacks` diagnostic only renders role → default, while runtime
- * `resolveChain` also consults these keys, so such configs are the drift
- * surface qc1 F-001 flags. Pure config-shape probe — no resolution.
- */
-export function hasModelSpecificChainKeys(chains: Record<string, readonly string[]>): boolean {
-  return Object.keys(chains).some((key) => key.includes('/'))
+  warn: (message: string) => void = console.warn,
+): { readonly chainRole: boolean; readonly chain: readonly string[]; readonly inherit: boolean } {
+  // Explicit INHERIT_ROLE_ID branch (qc2 F-006): the built-in 'inherit' id
+  // resolves to rootChain silently — mirroring resolveChainViews — even if
+  // an illegal config declared a role with the reserved id (startup
+  // validation warns "reserved"; the runtime never consults it, so the
+  // diagnostic must not display it either).
+  if (role.trim() === INHERIT_ROLE_ID) {
+    return { chainRole: false, chain: rootChain, inherit: rootChain.length > 0 }
+  }
+  const roleDef = roles.find((declared) => declared.id.trim() === role.trim())
+  if (roleDef === undefined) {
+    warn(`llm-fallbacks: unknown role "${role}" — falling back to rootChain`)
+  }
+  const roleChain = roleDef?.chain ?? []
+  // Mirror resolveChainViews' concatenation exactly: a declared role's own
+  // chain wins when non-empty; an empty own chain defers to rootChain
+  // UNLESS fallback is 'none' (no tail appended → empty display chain);
+  // the built-in 'inherit' role and any unknown id → rootChain.
+  const chain = roleChain.length > 0 ? roleChain : roleDef?.fallback === 'none' ? [] : rootChain
+  const inherit = rootChain.length > 0 && (roleDef === undefined || roleDef.fallback !== 'none')
+  return { chainRole: roleChain.length > 0, chain, inherit }
 }
 
 // ---------------------------------------------------------------------------
@@ -230,7 +256,7 @@ function formatCooldown(entry: FallbacksCooldownEntry, t: FallbacksCommandCopy):
 
 /**
  * Render the `/fallbacks` status surface for one snapshot. Kept minimal and
- * truthful: origin → role → chain (+ model-key caveat) → recent switches →
+ * truthful: origin → role → chain (+ inherit tail) → recent switches →
  * cooldown.
  */
 export function fallbacksCommandText(
@@ -244,13 +270,8 @@ export function fallbacksCommandText(
   if (snapshot.chain.length === 0) {
     lines.push(`${t.chain}: ${t.chainNone}`)
   } else {
-    const suffix = snapshot.chainRole ? '' : t.chainDefault
+    const suffix = snapshot.inherit ? t.inheritRoot : ''
     lines.push(`${t.chain}: ${snapshot.chain.join(' → ')}${suffix}`)
-  }
-  // qc1 F-001: model-specific keys the role/default view cannot show — one
-  // honest caveat line, presentation-only (the diagnostic stays read-only).
-  if (snapshot.chainKeysModelSpecific) {
-    lines.push(t.chainKeysCaveat)
   }
   if (snapshot.switches.length === 0) {
     lines.push(`${t.switches}: ${t.switchesNone}`)

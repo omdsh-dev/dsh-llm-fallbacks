@@ -26,7 +26,20 @@ host → client 的远程事件转发面：client 经 `ctx.remote.$on(key, liste
 ## LLM fallbacks
 
 ### fallback 链（fallback chains）
-`fallbacks.chains` 配置的键→有序 selector 列表。键 specificity：exact `provider/model` → `provider/*` → 角色链 → `default`；条目 `provider/*` 表示保留失败模型 id 仅换 provider（目标 provider 无此 id 则跳过）。
+agent 失败时的有序降级 selector 列表。两块制配置模型下链分两级：`rootChain`（root 主代理一条链）+ 声明式角色实体（`roles.list`）各自 `chain`；链拼接 **append-not-replace**：`[...role.chain, ...(fallback === 'none' ? [] : rootChain)]`（角色条目在前、rootChain 兜底在后）。条目 `provider/*` 表示保留失败模型 id 仅换 provider（目标 provider 无此 id 则跳过）。链键 specificity（exact `provider/model` 键 → 角色链 → default 键）已删除（D1）——命名空间只剩角色名。
+*Avoid:* `chains` 键→链映射（旧字段，已删除）
+
+### 两块制配置模型（two-block config model）
+fallbacks 配置的自明结构：块 1 = `rootChain`（root 主代理一条链），块 2 = 声明式角色实体 `roles.list`（id/label/description/chain/fallback）+ `roles.rules`（origin/provider/model → 角色 id 或 `inherit` 的引用）。心智模型只有两级：root 一条、角色各自一条（默认继承 root）。
+*Avoid:* `chains` 键→链映射、`roles.default`（旧模型，已删除）
+
+### inherit（内置角色 id）
+保留字角色 id：合法作 `roles.rules[].role` 目标与「无规则命中」缺省，**禁止**写入 `roles.list[].id`。解析为 `rootChain`（静默——合法缺省角色，非 typo）。
+*Avoid:* 把 inherit 当链拼接策略、或用作角色实体 id
+
+### inherit-root（链拼接策略）
+`roles.list` 实体上的 `fallback` 枚举值（默认）：角色自身 `chain` 走完后**追加** `rootChain`；`none` = 仅角色链（空链 + none → no-op 透传）。
+*Avoid:* 与 `inherit`（角色 id）混用
 
 ### fallbacks/switch 事件
 插件每次切换模型时追加的持久化会话事件（from/to/role/reason），是「行为可见」承诺的载体：无事件即无切换。
@@ -50,6 +63,7 @@ client 会话转录的节点注册表（`ConversationNodeDefinition` 注册，ki
 
 ## 已决歧义
 
+- `inherit` vs `inherit-root` vs `roles.default`：`inherit` = 内置**角色 id**（规则目标 / 未命中缺省，禁入 `roles.list`）；`inherit-root` = 角色实体上的**链拼接策略**（默认：角色链后追加 rootChain）；`roles.default` = **已删除旧字段**，不再是有效配置。三个词不混用。
 - `QUOTA_EXCEEDED`（常见命名）→ 本插件与 dsh taxonomy 用 `QUOTA`；文档中不要混用。
 - `settings slot` vs `gateway channel`：前者是**展示挂载**（页面出现在 Settings），后者是**数据通道**（配置读写从哪来）；讨论设置页时两者分开表述，不要混用。
 - `settings/changed` / `models/changed`（20260811 已移除的客户端事件名）→ 失效刷新一律表述为 remote events（`settings/document-updated` + `llm/adapters-updated`）；不要在代码、测试或文档中恢复旧名。

@@ -18,12 +18,12 @@ dsh plugin --profile web add github:dsh-external/dsh-llm-fallbacks   # pin a com
 ## Features
 
 - **Automatic fallback for root and subagents**: any agent switches down the chain to the next available provider/model on model failure — no manual model switching.
-- **Role-based chains**: subagents can use their own fallback chain, independent of the root agent — `roles.rules` match origin/provider/model in order to a concrete role → `roles.default`; first match wins.
-- **Chain specificity**: exact `provider/model` keys → `provider/*` keys → role chains → `default` chain; `provider/*` entries keep the failed model id and only switch provider.
+- **Two-block config**: block 1 `rootChain` — the root agent's single fallback chain (empty = root does not fall back); block 2 declared roles — `roles.list` role entities (id/label/description/chain/fallback) that `roles.rules` reference by id (or the built-in `inherit`); no rule match → `inherit` → `rootChain`.
+- **Entry syntax**: chain entries are `provider/model` (exact switch) or `provider/*` (keep the failed model id, switch provider only) — the old chain-key namespace (provider/model keys, role-name keys) is gone.
 - **Cooldown and revert**: models that were switched away from / failed are not re-selected during the cooldown period; `revertPolicy: cooldown-expiry` automatically returns to the primary model when the cooldown expires, while `never` does not return within the session.
 - **Visible behavior**: every switch appends a persisted session event `fallbacks/switch` (from/to/role/reason), alongside info-level logs (candidate attempt order and skip reasons) and the read-only status block on the Settings → 插件配置 → Fallbacks card — no silent model switching.
 - **Safety valves**: switching stops and the original error semantics are kept once `maxSwitchesPerStep` is exceeded for a step, preventing chain loops from amplifying latency; `mode: 'always'` providers additionally have a retry cap (`alwaysModeRetryCap`).
-- **No-config no-op**: `enabled` defaults to off (`false`); with empty chains, unmatched trigger codes, or unresolved roles the plugin is a complete no-op — identical to not being installed, and no events are emitted.
+- **No-config no-op**: `enabled` defaults to off (`false`); with no `rootChain`/role chains, unmatched trigger codes, or unresolved roles the plugin is a complete no-op — identical to not being installed, and no events are emitted.
 
 ## Install
 
@@ -60,20 +60,25 @@ Add a `fallbacks:` section to the dsh settings document (default `$DSH_HOME/sett
 ```yaml
 fallbacks:
   enabled: true            # feature switch; defaults to false — set explicitly to enable
-  chains:
-    default:               # default role chain: tried in order after the primary model fails
-      - anthropic/claude-3-5-sonnet
-      - openai/*
-  roles:
-    default: default
+  rootChain:               # block 1: root agent's chain; tried in order after the primary model fails
+    - anthropic/claude-3-5-sonnet
+    - openai/*
+  roles:                   # block 2: declare roles first, then let rules reference them
+    list:
+      - id: reviewer       # role entity: unique id (/^[a-z0-9-]{1,32}$/); "inherit" is reserved
+        label: Reviewer
+        description: Code-review subagents
+        chain:
+          - openai/gpt-4o-mini
+        fallback: inherit-root   # default: role chain, then append rootChain
     rules:
-      - origin: subagent   # all subagents → reviewer role (own chain)
+      - origin: subagent   # all subagents → reviewer role (own chain + inherited root)
         role: reviewer
 ```
 
-Roles are the grouping key for chains: `roles.default` is the fallback role; `roles.rules` match origin/provider/model in order to a concrete role (first match wins) — resolution is **rules-only** (no explicit-role field exists; the old dsh patch that provided one has been removed). Once a `reviewer` chain is configured, agents in that role use their own fallback chain.
+Roles are declared entities: `roles.list` holds role cards (id/label/description + optional chain/fallback), and `roles.rules` match origin/provider/model in order to a declared role id or the built-in `inherit` (first match wins) — **no rule match → `inherit` → `rootChain`**. A declared role is only ever hit when a rule references it. The legacy chain-key namespace and role-default field are gone (migration table: [docs/configuration.md](docs/configuration.md)).
 
-Save and restart the web session for the changes to take effect. The feature switch `fallbacks.enabled` **defaults to off (`false`)** — the plugin only engages once it is turned on; `triggerCodes` defaults to `AUTH` / `QUOTA` / `RATE_LIMIT`; and with **no chains configured the behavior is identical to not having the plugin installed**. More examples (role chains, provider wildcard keys, roles rules) → [docs/configuration.md](docs/configuration.md).
+Save and restart the web session for the changes to take effect. The feature switch `fallbacks.enabled` **defaults to off (`false`)** — the plugin only engages once it is turned on; `triggerCodes` defaults to `AUTH` / `QUOTA` / `RATE_LIMIT`; and with **no `rootChain`/role chains configured the behavior is identical to not having the plugin installed**. More examples (role entities, fallback strategies, rules referencing `inherit`) → [docs/configuration.md](docs/configuration.md).
 
 > **Upgrade note (behavior change)**: an existing `fallbacks:` section **without an explicit `enabled` key** now resolves to `false` after upgrading — add `enabled: true` to keep the plugin active.
 
@@ -81,8 +86,8 @@ Save and restart the web session for the changes to take effect. The feature swi
 
 Type `/fallbacks` in any session to inspect this session's fallback state — no need to open the settings page:
 
-- **Session origin** (`root` / `subagent`) and the **resolved role** (first matching `roles.rules` entry → `roles.default`);
-- the **resolved chain** for that role (the role's chain, else the `default` chain) — `not configured` when none exists;
+- **Session origin** (`root` / `subagent`) and the **resolved role** (the `role` of the first matching `roles.rules` entry, otherwise the built-in `inherit`);
+- the **resolved chain** for that role (the role's own chain entries, annotated `（inherit-root）` when `rootChain` is appended — `rootChain` entries render in full only when the role has no own chain; `fallback: none` with an empty own chain, or no chain at all, → `not configured`);
 - the **recent switches** (`fallbacks/switch` events, newest first, up to 5): from/to provider/model, role, reason;
 - the **cooldown status**: which `provider/model` keys are currently suppressed and until when.
 

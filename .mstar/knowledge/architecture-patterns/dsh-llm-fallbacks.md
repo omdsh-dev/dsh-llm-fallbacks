@@ -1,7 +1,7 @@
 ---
 module: dsh-llm-fallbacks
 date: 2026-08-11
-last_updated: 2026-08-12
+last_updated: 2026-08-13
 problem_type: architecture_pattern
 category: architecture-patterns
 severity: low
@@ -12,6 +12,7 @@ applies_when:
   - 需要扩展或维护 dsh-llm-fallbacks 插件
   - 插件需要把自有配置暴露给 web 设置客户端（自有 gateway 通道 /api/fallbacks/get|set|reset）
   - 需要与 dsh 的 model-selection（installModelSelection）协调路由
+  - 需要理解两块制配置模型（rootChain / roles.list / roles.rules / inherit）或迁移旧 chains / roles.default 配置
 tags:
   - dsh
   - llm-fallbacks
@@ -25,7 +26,7 @@ tags:
 
 # dsh LLM fallback 架构：双 waterfall 恢复模式 + 设置面/路由协调
 
-将 omp 的 retry.modelFallback / retry.fallbackChains 语义移植到 dsh 时的已验证架构（iter-20260810-llm-fallbacks 产物，随实现验证），以及后续迭代验证的设置页暴露、model-selection 协调、目录驱动选择与状态块真实化（iter-20260810-fallbacks-settings-ux / iter-20260810-fallbacks-settings-gateway）与纯挂载化（iter-20260811-fallbacks-mount-only：role rules-only、marker 移除、patch/autopatch 体系删除——本文件 2026-08-12 由 patch 时代刷新为 mount-only 现实）。
+将 omp 的 retry.modelFallback / retry.fallbackChains 语义移植到 dsh 时的已验证架构（iter-20260810-llm-fallbacks 产物，随实现验证），以及后续迭代验证的设置页暴露、model-selection 协调、目录驱动选择与状态块真实化（iter-20260810-fallbacks-settings-ux / iter-20260810-fallbacks-settings-gateway）与纯挂载化（iter-20260811-fallbacks-mount-only：role rules-only、marker 移除、patch/autopatch 体系删除——本文件 2026-08-12 由 patch 时代刷新为 mount-only 现实），以及配置模型「两块制」重构（iter-20260813-fallbacks-role-model：rootChain + 声明式角色实体 + rules enum 引用 + inherit-root 继承 + legacy 三通道——本文件 2026-08-13 由链键 specificity / roles.default 时代刷新为两块制现实）。
 
 ## Context
 
@@ -39,9 +40,30 @@ dsh 的 agent loop 在模型请求失败时派发 agent/request-error waterfall�
 2. agent/request 监听：await next() 后应用 pendingSwitch（provider/model 覆写、丢弃继承的 reasoningEffort——installModelSelection 的 withoutInheritedEffort 模式）并清除；appliedTurnStep 防重放。
 3. 候选过滤：当前模型 / 冷却中 / 本步已失败 / provider/* 条目目标 provider 无此模型 id（存在性探针，仅 wildcard 条目受探针约束；exact 条目永不探针过滤）。
 
-### 链解析（omp fallbackChains 语义）
+### 配置模型与链解析（两块制，iter-20260813-fallbacks-role-model 起）
 
-specificity：exact provider/model 键 → provider/* 键 → 角色链 → default 链。条目 provider/* = 保留失败模型 id 仅换 provider。角色解析（iter-20260811-fallbacks-mount-only 起 **rules-only**）：`roles.rules` 顺序匹配（origin/provider/model，均读 dsh 原生字段——`session.header.origin` 与 `AgentOptions.provider/model`；显式 `agent.options.role` 只存在于已删除的 dsh patch，mount-only 下不可读）→ `roles.default`。subagent persona 在决策点不可读（`AgentOptions` 仅 provider/model/maxTokens），persona→role 映射未实现——详见探索 guide（`.mstar/iterations/iter-20260811-fallbacks-mount-only/guides/role-and-model-selection-exploration.md`，Role 节）。
+**两块制配置模型**（用户只需记住两块，spec §2）：块 1 = `rootChain`（root 主代理的一条链，空 = root 不降级）；块 2 = 声明式角色实体 `roles.list`（id/label/description/prompt?/permissions?/chain?/fallback）+ `roles.rules`（origin/provider/model → 声明 id 或内置 `'inherit'` 的 enum 引用）。`prompt`/`permissions` 为 schema 预留（next iteration fallbacks-explicit-role-tool），本轮无消费者，YAML 写入不改变降级行为。D3：不引入 `system` 保留字——运行时「系统配置模型」= current，恒被 same-as-current 过滤，UI/文档展示「默认：当前系统模型」。
+
+**角色解析**（root 与 subagent 同构，spec §7.1）：`resolveRole` 顺序匹配 `roles.rules`（origin 读 `session.header.origin`，缺省 `'root'`；provider/model 读 `AgentOptions`——显式 `agent.options.role` 只存在于已删除的 dsh patch，mount-only 下不可读；字段省略即不约束，首个命中即停）→ 返回声明 id；命中规则但 `rule.role` ∉ 声明集 ∪ `{'inherit'}` → warn + 回退 `'inherit'`（防御，启动校验已告警）；未命中 → 内置 `'inherit'`。id 按 trim 规范化（qc2 F-001：padded YAML id + trimmed 规则引用解析到同一角色，不静默降级）。subagent persona 在决策点不可读（`AgentOptions` 仅 provider/model/maxTokens），persona→role 映射未实现——详见探索 guide（`.mstar/iterations/iter-20260811-fallbacks-mount-only/guides/role-and-model-selection-exploration.md`，Role 节）。
+
+**链解析 = append-not-replace**（spec §7.2）：`candidates = [...(roleDef?.chain ?? []), ...(roleDef?.fallback === 'none' ? [] : rootChain)]`——角色自身条目在前、`rootChain` 兜底在后；`fallback: 'none'` 仅角色链（空角色链 + none → no-op 透传）；内置 `'inherit'` 与未知角色 id 均解析为 `rootChain`（前者静默——合法的未命中角色，非 typo；后者 warn 一次，防御不崩溃）。条目语义不变：`provider/model` exact、`provider/*` 保留失败模型 id 仅换 provider（目标 provider 无此 id 则跳过）。**链键 specificity（exact provider/model 键 → provider/* 键 → 角色链 → default 键）已删除（D1）**——命名空间只剩角色名；`roles.default` 已删除（D4），「所有子代理默认 X」改写为一条 `{origin: subagent, role: X}` 规则；**root 参与 rules**（D2，`origin: root` 可命中角色——删除链键后 root 需要 provider 特异链的唯一逃生口；默认不配则走 rootChain）。
+
+**决策热路径（单遍历）**：`resolveRole` → `resolveChainViews` 一次遍历产出 `all` + wildcard 溯源（未知角色 warn **至多一次/决策**，此前 resolveChain 跑两遍 all+surviving）→ `hasWildcardEntry` 走与解析**同一拼接** `buildRoleEntries`（探针精确，`fallback:'none'` 正确排除 rootChain——qc1 S-3 单 SSOT / qc2 F-003）→ 仅 wildcard 条目可达时才构建 catalog 存在性探针（纯 exact 链零探针）→ `selectCandidates` 原位过滤（wildcard 条目受探针约束，exact 条目永不探针过滤；T2 review Important #1 决策路径契约）。防御性 warn 经注入的 `logger.warn`（qc2 F-002，非 console）。
+
+### 旧配置迁移：三通道 + schemastery 未知键保留（iter-20260813-fallbacks-role-model）
+
+**breaking（不自动迁移）**：`chains` / `roles.default` 从 schema 与类型零残留（docs 迁移表除外）。schemastery `Config()` 组合对未知键采用**保留策略（retain，实测 schemastery@3.18.0：顶层 / 嵌套对象 / 列表项均原值透传）**——旧键在组合对象上仍然可见，因此 legacy 检测直接读组合对象即准确（无需 raw 入参快照 fallback）。三通道提示，插件**绝不自动改写**配置：
+
+1. **启动告警**：`apply()` 内 `detectLegacyKeys(source())` 非空 → `logger.warn('llm-fallbacks: legacy config keys detected …; see docs/configuration.md migration table')`（warn-only，不迁移）。
+2. **gateway + UI 横幅**：`get()` 响应附 `legacyKeys: string[]`（`chains` / `roles.default` / `roles.rules[].role` 未声明值）；client 非空即渲染迁移横幅（zh/en，引用迁移表），表单保持可编辑、保存写出新格式（wire 字段权威，client 不自猜——W-1/F-1：save 是 merge，删不掉用户层旧键）。
+3. **docs/configuration.md 迁移映射表**：逐旧键 → 新写法对照（如 `roles.default` → 删除 + 一条 `{origin: subagent, role: X}` 规则；角色链无兜底 → `fallback: inherit-root` 默认；角色 id = `inherit` → 禁止写入 list）。
+
+wire 层需显式规范化：`validateConfigPatch` 按新键集 own-key membership 拒绝未知键（不受组合保留行为影响）。
+
+### 校验（warn-not-crash，双面）
+
+- **host `validateFallbacksConfig`**（纯函数，永不 throw / 不 mutate）：id 格式 `/^[a-z0-9-]{1,32}$/` + 唯一 + 保留字 `'inherit'` 禁入 `roles.list`、`roles.rules[].role` 引用 ∈ 声明集 ∪ `{'inherit'}`、`fallback` 枚举、`rootChain`/角色链 selector 合法（`parseSelector`）；`label`/`description` 自由文本不校验。每条违例一条 `llm-fallbacks:` warn，该配置「不生效」但整体仍可用（AC-4）。**启动时跑一次**（含 `detectLegacyKeys`）；live settings merge 由 settings 层 schema 校验兜底，运行时防御（resolveRole / resolveChainViews / roleDef 查找）warn-not-crash 容忍坏值（qc1 F-006，validation 不随 onChange 重跑）。
+- **client `validateDraft`**：保存前校验（同规则 + selector 合法性），违例行内红框 + 错误横幅，**拦截 save**（不触碰 gateway `set` / store error 路径）；`label`/`description` 同样不校验。
 
 ### 冷却与安全阀
 
@@ -79,7 +101,7 @@ dsh 的 web 设置 RPC（`dsh-host-apiproxy`）对命名空间有硬编码暴露
 
 **入口面（2026-08-12 起）**：设置展示挂载在官方插件配置页（`settings.plugin.item` 卡，
 替换旧 `settings.section` 独立导航，不并存）；另有三个互补表面——`/fallbacks` 会话内只读
-诊断命令（条件注入 `commands` 服务）、General 页只读状态行（`settings.general.item`，
+诊断命令（条件注入 `commands` 服务；快照 `FallbacksCommandSnapshot {origin, role, chainRole, chain, inherit}`——链显示角色自身链优先、空则 `rootChain`（`fallback:'none'` 且空链 → 空），rootChain 兜底尾部标「（inherit-root）」）、General 页只读状态行（`settings.general.item`，
 order 100）、会话转录切换行（`conversationEvents` + `conversation.chat.node`，纯渲染）。
 卡 = 编辑入口、行 = 状态摘要、命令 = 会话内诊断、转录行 = 恢复可见性。挂载点全表 →
 `architecture-patterns/dsh-mount-point-map.md`；会话转录模式 → `architecture-patterns/dsh-conversation-surface-mounting.md`。
@@ -88,12 +110,12 @@ order 100）、会话转录切换行（`conversationEvents` + `conversation.chat
 
 - **数据源**：`llm.providers({})`（可配置 provider 目录）+ `llm.models({})`（`{ groups, failures }` 模型目录）；`llm/adapters-updated` remote 事件刷新（20260811 起；旧 `models/changed` 客户端事件已移除）。
 - **store catalog 快照**：独立 `loadCatalog()` + 独立 generation guard；`llm/adapters-updated` **只**刷 catalog、`connection/reset` 全刷；failures 降级诊断不拖垮 groups；catalog 失败不阻塞表单（settings 状态零触碰）。
-- **混合下拉**：provider select + model select 级联 + `provider/*` 通配（不依赖 models）+ 目录外合成选项（原值 + 「（目录外）」标注，value 携带原始字符串、读回默认选中）——**目录外值 round-trip 无损**，仅新增条目受限目录；行编辑态判别联合 `{kind:'catalog',id}|{kind:'outside',raw}|null`；序列化仍写原始字符串（`provider/model`、`provider/*`、链 key 自由文本语义不变）。
+- **混合下拉**：provider select + model select 级联 + `provider/*` 通配（不依赖 models）+ 目录外合成选项（原值 + 「（目录外）」标注，value 携带原始字符串、读回默认选中）——**目录外值 round-trip 无损**，仅新增条目受限目录；行编辑态判别联合 `{kind:'catalog',id}|{kind:'outside',raw}|null`；序列化仍写原始字符串（`provider/model`、`provider/*` 条目语义不变；无链键——`rootChain` 行与角色链行的有序选择器列表即链本身）。
 
 ### 设置页只读状态块真实化（R1 关闭，spec §2.5 D-5/D-6）
 
 - **读取面**：`connection.api.sessions.history({ sessionId, maxMessages })` 原始事件面（`HistoryEntry.event` 含 `fallbacks/switch`）——**不用** `ctx.sessionHistory`（公开快照只含投影会话对话，无原始自定义事件）；当前会话 `ctx.sessions.list` current（注意 host/client Context merge 冲突——`ctx.get('sessions') as unknown as ISessions`，且 client fiber 的 `sessions` 注入应可选降级）；单页 50、seq 倒序取 N=5、会话切换重载、错误隔离不碰 settings 状态。
-- **展示值推导**（非实时路由探测，恒附注）：未启用/空链 → 空态；有最近切换 → 最新 `to`；无切换 → 配置摘要链首项。
+- **展示值推导**（非实时路由探测，恒附注）：未启用 / `rootChain` 未配置 → 空态；有最近切换 → 最新 `to`；无切换 → `rootChain` 首项（无角色链语境时，spec §7.4）。
 
 ### 纯挂载交付纪律（iter-20260811-fallbacks-mount-only，原 patch 交付纪律已删除）
 
@@ -117,13 +139,15 @@ order 100）、会话转录切换行（`conversationEvents` + `conversation.chat
 - dsh 内任何「失败后换模型/换路由继续」类功能（retry、fallback、模型降级、按负载分流）。
 - 需要理解 fallbacks/switch 事件、fallbacks settings 命名空间或 selector 语法时。
 - 插件需要 web 设置读写（自有 gateway 通道）或与 model-selection 协调路由时。
+- 需要理解两块制配置模型（rootChain / 声明式角色 / rules 引用 / inherit 继承语义）或迁移旧 chains / roles.default 配置时。
 - 需要理解本插件纯挂载安装语义（零 dsh 源树 diff、无 patch/autopatch、升级免重打）时。
 
 ## Examples
 
 - 链配置示例见本插件 docs/configuration.md（仓库内）。
-- 集成测试矩阵：tests/coexist-llm-retry.spec.ts、tests/always-mode.spec.ts、tests/plugin.spec.ts（含组合顺序）、tests/host-native.spec.ts（宿主原生基线，原 unpatched-host.spec.ts 更名重写）、tests/roles.spec.ts（rules-only 11 用例）。
+- 集成测试矩阵：tests/coexist-llm-retry.spec.ts、tests/always-mode.spec.ts、tests/plugin.spec.ts（含组合顺序）、tests/host-native.spec.ts（宿主原生基线，原 unpatched-host.spec.ts 更名重写）、tests/roles.spec.ts（rules-only 解析）、tests/runtime.spec.ts（新链语义）。
+- 两块制配置/校验/迁移：tests/config.spec.ts（schema + id/引用/枚举校验、「composed role entities」钉住空值填充与 no-op 默认）、tests/gateway.spec.ts（新键集 + `legacyKeys` wire 行为）、tests/fallbacks-card.spec.tsx（新编辑面 + 校验拦截 + legacy 横幅）、tests/command.spec.ts（诊断新语义——inherit 标注、`hasModelSpecificChainKeys` 删除）。
 - 设置页/目录/状态块：tests/fallbacks-store.spec.ts（61 用例）。
 - 真实宿主端到端剧本：docs/verification.md §4（QA gate）。
 
-*Source: iteration iter-20260810-llm-fallbacks（specs/llm-fallbacks-spec.md）+ iter-20260810-fallbacks-settings-ux（specs/fallbacks-settings-runtime-spec.md，D-1..D-6 提升）+ iter-20260810-fallbacks-settings-gateway + iter-20260811-fallbacks-mount-only（Plan B：role rules-only、marker 移除、patch 体系删除），随实现验证。2026-08-12 刷新：由 patch 时代更新为纯挂载现实。*
+*Source: iteration iter-20260810-llm-fallbacks（specs/llm-fallbacks-spec.md）+ iter-20260810-fallbacks-settings-ux（specs/fallbacks-settings-runtime-spec.md，D-1..D-6 提升）+ iter-20260810-fallbacks-settings-gateway + iter-20260811-fallbacks-mount-only（Plan B：role rules-only、marker 移除、patch 体系删除）+ iter-20260813-fallbacks-role-model（specs/fallbacks-role-model-spec.md：两块制配置模型、D1–D4、inherit 语义、legacy 三通道），随实现验证。2026-08-12 刷新：由 patch 时代更新为纯挂载现实。2026-08-13 刷新：由链键 specificity / roles.default 时代更新为两块制现实。*

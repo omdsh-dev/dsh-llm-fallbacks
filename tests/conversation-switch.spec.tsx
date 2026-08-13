@@ -95,7 +95,7 @@ function switchEvent(
       step: 1,
       from: { provider: 'openai', model: 'gpt-4o' },
       to: { provider: 'anthropic', model: 'claude-3-5-sonnet' },
-      role: 'default',
+      role: 'inherit',
       reason: 'trigger-code',
       ...overrides,
     },
@@ -365,7 +365,7 @@ describe('fallbackSwitchDefinition (D1 node state machine)', () => {
       { type: 'fallbacks/switch', seq: 1, time: 1, data: {} } as unknown as SessionEvent,
     )).toBeNull()
     expect(fallbackSwitchDefinition.match(
-      { type: 'fallbacks/switch', time: 1, data: { turn: 1, step: 1, from: { provider: 'a', model: 'b' }, to: { provider: 'c', model: 'd' }, role: 'default', reason: 'trigger-code' } } as unknown as SessionEvent,
+      { type: 'fallbacks/switch', time: 1, data: { turn: 1, step: 1, from: { provider: 'a', model: 'b' }, to: { provider: 'c', model: 'd' }, role: 'inherit', reason: 'trigger-code' } } as unknown as SessionEvent,
     )).toBeNull()
     expect(fallbackSwitchDefinition.match(
       { type: 'fallbacks/switch', seq: 2.5, time: 1, data: {} } as unknown as SessionEvent,
@@ -399,7 +399,7 @@ describe('fallbackSwitchDefinition (D1 node state machine)', () => {
     const event = {
       type: 'fallbacks/switch' as const,
       time: 1_700_000_000_043,
-      data: { turn: 1, step: 1, from: { provider: 'a', model: 'b' }, to: { provider: 'c', model: 'd' }, role: 'default', reason: 'trigger-code' },
+      data: { turn: 1, step: 1, from: { provider: 'a', model: 'b' }, to: { provider: 'c', model: 'd' }, role: 'inherit', reason: 'trigger-code' },
     }
     const view = degradedNodeFor(event)
     expect(view.data).toEqual({ seq: undefined, time: 1_700_000_000_043 })
@@ -436,7 +436,7 @@ describe('ConversationFallbackSwitch rendered line', () => {
     render(<ConversationFallbackSwitch {...switchProps(nodeFor(switchEvent(5)))} />)
     expect(screen.getByText(en['chat.switch.title'])).toBeTruthy()
     expect(screen.getByText(
-      'openai/gpt-4o → anthropic/claude-3-5-sonnet (default · trigger code)',
+      'openai/gpt-4o → anthropic/claude-3-5-sonnet (inherit · trigger code)',
     )).toBeTruthy()
     // The line is announced as a status row (non-interactive system notice).
     expect(document.querySelector('[role="status"]')).not.toBeNull()
@@ -445,14 +445,14 @@ describe('ConversationFallbackSwitch rendered line', () => {
   it('renders the always-cap reason through the shared reason map', () => {
     render(<ConversationFallbackSwitch {...switchProps(nodeFor(switchEvent(5, { reason: 'always-cap' })))} />)
     expect(screen.getByText(
-      'openai/gpt-4o → anthropic/claude-3-5-sonnet (default · always-mode cap)',
+      'openai/gpt-4o → anthropic/claude-3-5-sonnet (inherit · always-mode cap)',
     )).toBeTruthy()
   })
 
   it('renders an unknown reason value raw (forward-compatible log)', () => {
     render(<ConversationFallbackSwitch {...switchProps(nodeFor(switchEvent(3, { reason: 'future-reason' as never })))} />)
     expect(screen.getByText(
-      'openai/gpt-4o → anthropic/claude-3-5-sonnet (default · future-reason)',
+      'openai/gpt-4o → anthropic/claude-3-5-sonnet (inherit · future-reason)',
     )).toBeTruthy()
   })
 
@@ -460,7 +460,7 @@ describe('ConversationFallbackSwitch rendered line', () => {
     render(<ConversationFallbackSwitch {...switchProps(nodeFor(switchEvent(4)), tZh)} />)
     expect(screen.getByText(zh['chat.switch.title'])).toBeTruthy()
     expect(screen.getByText(
-      'openai/gpt-4o → anthropic/claude-3-5-sonnet（default · 触发失败码）',
+      'openai/gpt-4o → anthropic/claude-3-5-sonnet（inherit · 触发失败码）',
     )).toBeTruthy()
   })
 
