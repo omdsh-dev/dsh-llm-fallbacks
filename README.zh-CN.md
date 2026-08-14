@@ -35,6 +35,24 @@ dsh plugin --profile web add dsh-llm-fallbacks   # 钉版本：加 @<version>
 
 registry 安装拉取的是**已构建产物**（`dist/`），目标机无需构建。插件为**纯挂载**：对 dsh 源码树零修改，无任何补丁 / postinstall 步骤——dsh 升级无需重打。版本跟随 npm dist-tag（默认 `latest`）；钉精确版本：`dsh plugin --profile web add dsh-llm-fallbacks@<version>`。
 
+> **发布状态**：包**尚未发布到 npm registry**——首个版本（`0.1.0-alpha.2`）待发布（发布流水线已就绪；首次发布用一次性 `NODE_AUTH_TOKEN`，Trusted Publishing 在首次发布后配置）。本节的 registry 安装命令在首个 release PR merge 前均为**预告**；在此之前请用 [git 安装](#git-安装当前可用)。
+
+### registry 包安装（npm / pnpm）
+
+```sh
+npm install dsh-llm-fallbacks   # 或：pnpm add dsh-llm-fallbacks
+```
+
+> **预告**：`dsh-llm-fallbacks@0.1.0-alpha.2` 发布后生效。发布流程见 [docs/release.md](docs/release.md)。
+
+### git 安装（当前可用）
+
+```sh
+dsh plugin --profile web add github:omdsh-dev/dsh-llm-fallbacks   # 钉 commit：加 #<sha>
+```
+
+git 安装拉取的是**源码而非构建产物**——安装时由 `prepare` 自构建，目标机需要 node 与 pnpm。pnpm ≥ 10 默认拦截 git 依赖的 `prepare`（`ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`）；在 profile 的 `pnpm-workspace.yaml` 中放行构建后重跑 `add`（详见 [docs/install.md](docs/install.md)）。
+
 ### 本地目录安装（开发/验证推荐）
 
 ```sh
@@ -106,12 +124,23 @@ fallbacks:
 - **残留旧补丁无害**：插件不依赖任何补丁导出（角色解析 rules-only；model-selection
   标记协调已移除）——已打过旧补丁的 dsh 树可原样保留或手动回滚，均非必需。
 
+## 开发者消费面
+
+除插件挂载外，`dsh-llm-fallbacks` 还暴露可编程消费面——两个入口共享同一函数实现（单点真相，无复制逻辑）：
+
+- **库 API**：从包根直接 import 运行时函数与类型——`import { resolveRole, resolveChain, validateFallbacksConfig } from 'dsh-llm-fallbacks'`。
+- **具名 cordis service**：插件 apply 期间 `ctx.get('llm-fallbacks')` 返回纯函数服务（`{ name, version, resolveRole, resolveChain, validateFallbacksConfig, detectLegacyKeys }`），插件 dispose 后为 `undefined`。运行态（冷却、最近切换）请读 `fallbacks/switch` 事件，不走服务对象。
+
+完整契约（导出清单、最小示例、生命周期、类型说明）见 [docs/consumer-api.md](docs/consumer-api.md)。
+
 ## 文档
 
 | 文档 | 内容 |
 |---|---|
 | [docs/install.md](docs/install.md) | profile 安装 / registry 安装 / 卸载 / `--dump-config` 验证 |
+| [docs/release.md](docs/release.md) | 发布流程：Trusted Publishing 前置、Release prep SOP、fragment 格式、回滚 |
 | [docs/configuration.md](docs/configuration.md) | `fallbacks` 命名空间全字段、selector 语法、示例 YAML、插件配置卡使用、行为说明 |
+| [docs/consumer-api.md](docs/consumer-api.md) | 开发者消费契约：导出清单、最小示例、生命周期、类型说明 |
 | [docs/verification.md](docs/verification.md) | 验证记录（测试矩阵、bundle 层序、运行契约、QA gate 剧本） |
 
 ## 许可
