@@ -57,7 +57,7 @@ registry 安装注意：
 npm install dsh-llm-fallbacks   # 或：pnpm add dsh-llm-fallbacks
 ```
 
-> **预告**：`dsh-llm-fallbacks@0.1.0-alpha.2` 发布后生效。包为已构建产物（`dist/`），消费面（库函数导入等）文档随后续迭代提供。
+> **预告**：`dsh-llm-fallbacks@0.1.0-alpha.2` 发布后生效。包为已构建产物（`dist/`），消费面（库函数导入、具名 service）文档见 [docs/consumer-api.md](docs/consumer-api.md)。
 
 ## 4. git 安装（当前可用）
 

@@ -129,6 +129,15 @@ The plugin installs as a **pure mount** — it never modifies the dsh source tre
   was removed), so a previously patched dsh tree can be left as-is or manually
   reverted — neither is required.
 
+## Developer consumption
+
+Beyond the dsh plugin mount, `dsh-llm-fallbacks` exposes a programmable consumer surface — both faces share the same function implementations (single point of truth, no copied logic):
+
+- **Library API**: import the runtime functions and types from the package root — `import { resolveRole, resolveChain, validateFallbacksConfig } from 'dsh-llm-fallbacks'`.
+- **Named cordis service**: while the plugin is applied, `ctx.get('llm-fallbacks')` returns a pure-function service (`{ name, version, resolveRole, resolveChain, validateFallbacksConfig, detectLegacyKeys }`); after the plugin is disposed it is `undefined`. Runtime state stays observable via `fallbacks/switch` events, not through the service.
+
+Full contract (export inventory, minimal examples, lifecycle, typing) → [docs/consumer-api.md](docs/consumer-api.md).
+
 ## Documentation
 
 | Doc | Content |
@@ -136,6 +145,7 @@ The plugin installs as a **pure mount** — it never modifies the dsh source tre
 | [docs/install.md](docs/install.md) | profile install / registry install / uninstall / `--dump-config` verification |
 | [docs/release.md](docs/release.md) | release process: Trusted Publishing setup, Release prep SOP, fragment format, rollback |
 | [docs/configuration.md](docs/configuration.md) | full `fallbacks` namespace reference, selector syntax, example YAML, plugin-config card usage, behavior notes |
+| [docs/consumer-api.md](docs/consumer-api.md) | developer consumption contract: export inventory, minimal examples, lifecycle, typing |
 | [docs/verification.md](docs/verification.md) | verification records (test matrix, bundle layer order, runtime contracts, QA gate script) |
 
 ## License
