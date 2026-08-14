@@ -125,7 +125,7 @@ Each fragment focuses on one user-visible change.
 
 ## Release checklist
 
-- [ ] `pnpm test` all green (409 test baseline, vitest run)
+- [ ] `pnpm test` all green (460 test baseline across 23 files, vitest run)
 - [ ] `pnpm build` all green (tsc + tsdown + build-client + verify-dist)
 - [ ] `actionlint .github/workflows/*.yml` clean (ci + release-prep + release)
 - [ ] `pnpm release:validate -- v<version>` passes (local preview before releasing)
