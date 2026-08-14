@@ -88,6 +88,7 @@ import {
   rulesToRows,
   ruleRoleOptions,
   selectionToRaw,
+  selectorRowToRaw,
   type CatalogLookup,
   type ChainSelectorRow,
   type FallbacksSettingsState,
@@ -1086,12 +1087,13 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                             onRemove={() => { removeRoleSelector(index, selectorIndex) }}
                           />
                         ))}
-                        {row.selectors.length === 0 && (
-                          // A role with no chain selectors has no model
-                          // config — save is blocked (roleChainRequired);
+                        {row.selectors.every(selector => selectorRowToRaw(selector) === '') && (
+                          // A role whose chain area is empty — no selector
+                          // rows, or only blank placeholder rows — has no
+                          // model config: save is blocked (roleChainRequired);
                           // the inline hint explains why (plan
-                          // fallbacks-feedback-round T2), unconditional
-                          // while the chain area stays empty.
+                          // fallbacks-feedback-round T2), unconditional while
+                          // no row serializes to a usable chain entry.
                           <span className={css.hint}>{t('validation.roleChainRequired', { id: row.id })}</span>
                         )}
                       </div>

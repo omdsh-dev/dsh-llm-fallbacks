@@ -974,4 +974,43 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     fireEvent.click(screen.getByRole('button', { name: en.save }))
     await waitFor(() => expect(scripted.set).toHaveBeenCalled())
   })
+
+  it('keeps the chain-required hint while the chain area holds only blank selector rows (T2 M-1)', async () => {
+    // A role whose chain area holds only a blank placeholder row (added but
+    // not yet filled) still has no model config — the hint must not blink
+    // out just because a selector row exists; it shows while no row
+    // serializes to a usable chain entry (plan fallbacks-feedback-round T3,
+    // T2 M-1; mirrors the empty-chain case above).
+    const config: typeof defaultFallbacksConfig = {
+      ...defaultFallbacksConfig,
+      enabled: true,
+      roles: {
+        list: [{ id: 'coder', label: 'Coder', description: '', chain: [], fallback: 'inherit-root' }],
+        rules: [],
+      },
+    }
+    const { view, props, scripted } = await mountCard({ config })
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    // Chain area empty → inline hint shown.
+    expect(screen.getAllByText(en['validation.roleChainRequired'])).toHaveLength(1)
+    // Add ONE selector row but leave it blank (placeholder provider/model).
+    const rolesGroup = screen.getByText(en['roles.list.label']).closest('[role="group"]') as HTMLElement
+    fireEvent.click(within(rolesGroup).getByRole('button', { name: en['roles.selector.add'] }))
+    view.rerender(<FallbacksCard {...props} />)
+    // A blank placeholder row serializes to '' — the role still has no
+    // model config, so the inline hint stays (the transient gap T2 M-1).
+    expect(screen.getAllByText(en['validation.roleChainRequired'])).toHaveLength(1)
+    // Save is still blocked with only blank rows (an unrelated edit first
+    // makes the draft dirty so the save button is enabled — a blank row
+    // serializes to '' and leaves the assembled draft unchanged).
+    fireEvent.change(screen.getByLabelText(en['cooldownMs.label']), { target: { value: '7000' } })
+    view.rerender(<FallbacksCard {...props} />)
+    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    view.rerender(<FallbacksCard {...props} />)
+    expect(scripted.set).not.toHaveBeenCalled()
+    const alert = screen.getByRole('alert')
+    expect(alert.textContent).toContain(en['validation.blocked'])
+    expect(alert.textContent).toContain(en['validation.roleChainRequired'])
+  })
 })

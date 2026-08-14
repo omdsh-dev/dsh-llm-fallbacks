@@ -146,8 +146,8 @@ export type ConversationFallbackSwitchProps =
  * `--dsw-alias-*` token. A reason outside the current union renders raw (forward-compatible
  * durable log, same rule as the card/general row summaries). A malformed or
  * partial payload (version skew) degrades to the title-only line instead of
- * throwing during interpolation — the transcript slot stays visible with a
- * truthful "a switch happened" notice and no summary details.
+ * throwing during interpolation — the transcript slot stays visible with the
+ * warning-toned "model downgraded" title (T1 copy) and no summary details.
  * @param props - composed keyed seat props.
  * @returns the switch line element tree.
  */
