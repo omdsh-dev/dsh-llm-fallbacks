@@ -18,3 +18,6 @@ dist/
 .build/
 .pnpm-store/
 .mstar/agent-flow.jsonl
+
+# local dsh verify sandbox profiles (QA sandbox attempts; contains node_modules)
+.dsh-verify/

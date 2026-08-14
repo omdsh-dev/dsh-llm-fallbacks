@@ -101,8 +101,10 @@ describe('validateFallbacksConfig — role ids (format / uniqueness / reserved w
       ...defaultFallbacksConfig,
       roles: {
         list: [
-          role({ id: 'coder', label: '任意 label，含特殊字符 !@#', description: '自由文本' }),
-          role({ id: 'a1-b2', label: '', description: '' }),
+          // Roles carry a chain so the role model-config requirement (T2)
+          // does not fire — the zero-warn assertion pins id/label/description.
+          role({ id: 'coder', label: '任意 label，含特殊字符 !@#', description: '自由文本', chain: ['openai/gpt-4o'] }),
+          role({ id: 'a1-b2', label: '', description: '', chain: ['other/gpt-4o-mini'] }),
         ],
         rules: [],
       },
@@ -116,11 +118,13 @@ describe('validateFallbacksConfig — role ids (format / uniqueness / reserved w
       ...defaultFallbacksConfig,
       roles: {
         list: [
-          role({ id: 'Bad-Id' }),
-          role({ id: 'under_score' }),
-          role({ id: 'x'.repeat(33) }),
-          role({ id: '' }),
-          role({ id: 'a'.repeat(32) }), // boundary: exactly 32 chars is legal
+          // Chains ride every role so the count pins the format warns only
+          // (the role model-config warn fires on chain-less roles — T2).
+          role({ id: 'Bad-Id', chain: ['openai/gpt-4o'] }),
+          role({ id: 'under_score', chain: ['openai/gpt-4o'] }),
+          role({ id: 'x'.repeat(33), chain: ['openai/gpt-4o'] }),
+          role({ id: '', chain: ['openai/gpt-4o'] }),
+          role({ id: 'a'.repeat(32), chain: ['openai/gpt-4o'] }), // boundary: exactly 32 chars is legal
         ],
         rules: [],
       },
@@ -163,10 +167,12 @@ describe('validateFallbacksConfig — role ids (format / uniqueness / reserved w
           // A padded-but-valid id trims to the canonical form the UI
           // rebuilds (row.id.trim()): no format warn, and a rule
           // referencing the canonical id resolves — no undeclared warn.
-          role({ id: ' coder ' }),
+          // Chains ride both roles so the count pins the format warn only
+          // (the role model-config warn fires on chain-less roles — T2).
+          role({ id: ' coder ', chain: ['openai/gpt-4o'] }),
           // Whitespace that survives trim (internal space) is still a
           // format violation — the raw stored id names the offending value.
-          role({ id: 'bad id' }),
+          role({ id: 'bad id', chain: ['openai/gpt-4o'] }),
         ],
         rules: [{ role: 'coder' }],
       },
@@ -200,7 +206,9 @@ describe('validateFallbacksConfig — rule role references', () => {
     validateFallbacksConfig({
       ...defaultFallbacksConfig,
       roles: {
-        list: [role({ id: 'coder' })],
+        // A chain rides the declared role so the role model-config warn
+        // (T2) does not fire — the zero-warn pins the rule targets.
+        list: [role({ id: 'coder', chain: ['openai/gpt-4o'] })],
         rules: [{ role: 'coder' }, { role: 'inherit' }],
       },
     }, logger)
@@ -228,7 +236,12 @@ describe('validateFallbacksConfig — fallback enum', () => {
     validateFallbacksConfig({
       ...defaultFallbacksConfig,
       roles: {
-        list: [role({ id: 'a', fallback: 'inherit-root' }), role({ id: 'b', fallback: 'none' })],
+        // Chains ride both roles so the role model-config warn (T2) does
+        // not fire — the zero-warn pins the fallback enum values.
+        list: [
+          role({ id: 'a', fallback: 'inherit-root', chain: ['openai/gpt-4o'] }),
+          role({ id: 'b', fallback: 'none', chain: ['other/gpt-4o-mini'] }),
+        ],
         rules: [],
       },
     }, logger)
@@ -288,6 +301,43 @@ describe('validateFallbacksConfig — selector legality (rootChain + role chains
       },
     }, logger)).not.toThrow()
     expect(messagesOf({ warn: logger.warn }).length).toBeGreaterThan(0)
+  })
+})
+
+describe('validateFallbacksConfig — role model config (chain required semantics, plan fallbacks-feedback-round T2)', () => {
+  it('warns when a role declares no chain, naming the role, without throwing', () => {
+    const { logger } = warnLogger()
+    expect(() => validateFallbacksConfig({
+      ...defaultFallbacksConfig,
+      roles: { list: [role({ id: 'coder' })], rules: [] },
+    }, logger)).not.toThrow()
+    const messages = messagesOf({ warn: logger.warn })
+    expect(messages).toHaveLength(1)
+    expect(messages[0]).toBe(
+      'llm-fallbacks: role "coder" has no model config — declare at least one chain entry, or use the built-in "inherit" rule target instead',
+    )
+  })
+
+  it('warns on an explicit empty chain array, naming the role', () => {
+    const { logger } = warnLogger()
+    validateFallbacksConfig({
+      ...defaultFallbacksConfig,
+      roles: { list: [role({ id: 'coder', chain: [] })], rules: [] },
+    }, logger)
+    const messages = messagesOf({ warn: logger.warn })
+    expect(messages).toHaveLength(1)
+    expect(messages[0]).toBe(
+      'llm-fallbacks: role "coder" has no model config — declare at least one chain entry, or use the built-in "inherit" rule target instead',
+    )
+  })
+
+  it('does not warn when a role declares at least one chain entry', () => {
+    const { logger } = warnLogger()
+    validateFallbacksConfig({
+      ...defaultFallbacksConfig,
+      roles: { list: [role({ id: 'coder', chain: ['openai/gpt-4o'] })], rules: [] },
+    }, logger)
+    expect(messagesOf({ warn: logger.warn })).toEqual([])
   })
 })
 

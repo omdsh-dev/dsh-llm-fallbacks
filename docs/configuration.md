@@ -40,7 +40,7 @@
 | `id` | string | 是 | 角色 id：`/^[a-z0-9-]{1,32}$/`、集合内唯一；`'inherit'` 为保留字，禁止使用 |
 | `label` | string | 推荐填写 | 角色名称（自由文本，不校验）；schema 默认空字符串，缺失不拦截保存 |
 | `description` | string | 推荐填写 | 角色描述（自由文本，不校验）；schema 默认空字符串，缺失不拦截保存 |
-| `chain` | string[] | 否 | 角色自身的有序降级链（条目语法同 `rootChain`）；缺省空 = 该角色无自身链 |
+| `chain` | string[] | 否（设置卡保存强制） | 角色自身的有序降级链（条目语法同 `rootChain`）。**必填语义**：角色无 model 配置无意义——设置卡保存强制至少一条（空 chain 拦截保存 + 行内提示）；手写 YAML 缺省/空 chain 启动时告警（不崩溃）；运行时缺省仍按防御语义回退 `rootChain` |
 | `fallback` | `'inherit-root'` \| `'none'` | 否（默认 `'inherit-root'`） | 链拼接策略：`inherit-root` = 角色链走完再追加 `rootChain`；`none` = 仅用角色自身链 |
 | `prompt` / `permissions` | string / object | 否 | **预留字段**（见下节） |
 
@@ -94,6 +94,8 @@
 - 未命中规则（`inherit`）或角色未声明：候选链 = `rootChain`。
 
 候选过滤（命中即跳过）：与当前模型相同、处于冷却期、本 step 已失败、`provider/*` 条目目标 provider 无此模型 id。
+
+> **角色必填 model 配置**：声明角色无 model 配置无意义——要么为角色配置至少一条 `chain`，要么让规则直接引用内置 `inherit`。设置卡保存强制（空 chain 拦截保存 + 行内提示）；手写 YAML 缺省/空 chain 启动时 `logger.warn` 告警（不崩溃）；运行时缺省仍按防御语义回退 `rootChain`（不改变既有「缺省 → rootChain」行为）。
 
 > **运行时落地说明**：上述角色解析 / 链拼接的新语义已由运行时（`src/roles.ts` / `src/chains.ts` / `src/index.ts`，fallbacks-role-runtime Plan 2）消费；旧形状字段（`chains` / `roles.default` / 未声明角色引用）启动时经 `detectLegacyKeys` 告警提示迁移（见下方迁移映射表），决策行为按新模型工作。
 
@@ -182,7 +184,7 @@ fallbacks:
 - **rootChain 区**：标题「root 主代理降级链」+ 提示「未配置 = root 不降级」；选择器行复用目录下拉（provider/model 级联 + `provider/*` 通配 + 目录外合成选项），**无键输入**。
 - **roles.list 区**：每角色一张实体卡——id（文本，格式校验：`/^[a-z0-9-]{1,32}$/`、唯一、`inherit` 保留字非法）、label（文本，**推荐填写**）、description（文本，**推荐填写**）、chain 选择器行（可折叠/追加）、fallback 下拉（`inherit-root` / `none`）、删除按钮；「添加角色」按钮。**本轮不渲染** `prompt` / `permissions`。
 - **roles.rules 区**：行编辑 origin（root/subagent/任意）+ provider（目录下拉/任意）+ model（级联下拉/任意）+ role（**下拉**：`inherit` + 已声明角色 ids，同页联动——角色增删即时反映）；「添加规则」按钮。空字段不参与匹配。
-- **保存前校验（拦截 save）**：id 格式/唯一/保留字、rule role 引用、selector 非法 → 行内标注（红边/提示）+ 错误横幅；**校验失败拦截 `save()`**——点保存不写入、看到错误；校验通过才经 gateway `set` 写 user layer。
+- **保存前校验（拦截 save）**：id 格式/唯一/保留字、rule role 引用、selector 非法、角色 chain 为空（未配置模型）→ 行内标注（红边/提示）+ 错误横幅；**校验失败拦截 `save()`**——点保存不写入、看到错误；校验通过才经 gateway `set` 写 user layer。
 - **model-selection 协调（AC-2，文档化降级）**：存在活跃 model-selection（用户在设置页 / `settings.yaml` 选择了 provider/model）时，触发码故障后的切换**仍然决策并记录**（`fallbacks/switch` 事件、冷却；当步实际路由可能被活跃 selection 覆写，最终 provider/model 以重新套用的选择为准）——这是去掉本地 patch 标记协调后的**宿主原生行为**（T2 结论，见 [docs/verification.md](docs/verification.md) §4.3）。request-error 触发链不受影响；无活跃 selection 时路由到链目标。卡片含一行降级说明（`status.selectionNote`，zh/en）。
 - **恢复默认**：一键把该命名空间的用户配置重置为组合默认值（`enabled` 回 `false`）——经 gateway `reset`（清空 user layer，组合默认值生效）。
 - **保存与错误呈现**：保存经 gateway `set`（merge 语义）写 user layer，无 revision guard——并发/写失败时错误横幅如实呈现保存结果，骨架与 draft 保留（不静默覆盖）。

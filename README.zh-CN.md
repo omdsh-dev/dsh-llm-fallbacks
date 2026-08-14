@@ -75,7 +75,7 @@ fallbacks:
         role: reviewer
 ```
 
-角色是声明式实体：`roles.list` 存放角色卡（id/label/description + 可选 chain/fallback），`roles.rules` 按 origin/provider/model 顺序匹配到**已声明角色 id 或内置 `inherit`**（首个命中即停）——**未命中 → `inherit` → `rootChain`**。只声明不写规则的角色永不命中。旧链键命名空间与角色兜底字段已删除（迁移表见 [docs/configuration.md](docs/configuration.md)）。
+角色是声明式实体：`roles.list` 存放角色卡（id/label/description + chain/fallback），`roles.rules` 按 origin/provider/model 顺序匹配到**已声明角色 id 或内置 `inherit`**（首个命中即停）——**未命中 → `inherit` → `rootChain`**。只声明不写规则的角色永不命中。角色无 chain 无意义——设置卡拦截保存、启动时告警；请为每个声明角色配置 chain，或让规则直接引用内置 `inherit`。（手写 YAML 角色链缺省/为空不致命：`fallback: inherit-root`（默认）时空链仍按防御语义回退 `rootChain`；`fallback: none` 时空链无候选 → no-op 透传；两种情况都仅启动告警。）旧链键命名空间与角色兜底字段已删除（迁移表见 [docs/configuration.md](docs/configuration.md)）。
 
 保存并重启 web 会话后生效。功能级开关 `fallbacks.enabled` **默认关闭（`false`）**——打开开关后插件才会介入；`triggerCodes` 默认覆盖 `AUTH` / `QUOTA` / `RATE_LIMIT`；**未配置任何 `rootChain`/角色链时行为与未安装插件完全一致**。更多示例（角色实体、fallback 策略、引用 `inherit` 的规则）见 [docs/configuration.md](docs/configuration.md)。
 
