@@ -36,7 +36,7 @@ dsh-llm-fallbacks 建立 npm 发布流水线（单包），参考 mstar-harness 
 ### 坑 1：npm Trusted Publishing 只对**已存在**的包可配置（无 pre-registration）
 
 - 官方文档（docs.npmjs.com/trusted-publishers）只有 package Settings → Trusted publishing → GitHub Actions（org/repository/**workflow 文件名**/optional environment/allowed actions）路径——**包未发布时没有配置入口**。
-- 首次发布 bootstrap：一次性 granular token（repo secret `NODE_AUTH_TOKEN`，publish 步骤 optional env——absent 走 OIDC，present 走 token）→ 首版发布 → 在 npm package settings 配 TP → 删除 token secret。**文档必须写清**：TP 是后续发布的常态，token 是一次性 bootstrap。
+- 首次发布 bootstrap：一次性 granular token（repo/org secret `NODE_AUTH_TOKEN`，publish 步骤 optional env——absent 走 OIDC，present 走 token）→ 首版发布 → 在 npm package settings 配 TP → **删除 token secret + 移除 workflow env**（dsh-llm-fallbacks 2026-08-14 已完成，现为纯 OIDC；token 是历史 bootstrap 手段）。
 - 没有配置 TP 的 CLI——`npm token create --granular --workflows=...` 等 flags 不存在，文档别编造。
 
 ### 坑 2：release workflow 必须 node 24（provenance 兼容）
