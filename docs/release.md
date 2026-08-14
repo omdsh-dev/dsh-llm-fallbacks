@@ -1,117 +1,117 @@
-# 发布指南（Release Guide）
+# Release Guide
 
-本文档说明 `dsh-llm-fallbacks` 的发布流程：npm 认证（首次发布 bootstrap token → 后续 Trusted Publishing）、发布 SOP（触发 → 审查 → merge）、changelog fragment 格式、发布检查清单与回滚/重跑说明。
+This document describes the `dsh-llm-fallbacks` release process: npm authentication (first-release bootstrap token → Trusted Publishing afterwards), the release SOP (trigger → review → merge), changelog fragment format, the release checklist, and rollback / re-run instructions.
 
-## 发布模型（PR-driven）
+## Release model (PR-driven)
 
-发布是**两步制**，不是黑盒一键：
+Releases are **two-step**, not a one-click black box:
 
-1. **Release prep**（手动触发）→ 生成可审查的 `release vX.Y.Z` PR（版本 bump + 英文 changelog + fragment 归档）。
-2. **merge 该 PR 才发布** → `Release` workflow 自动 publish + tag + GitHub Release。
+1. **Release prep** (manual trigger) → generates a reviewable `release vX.Y.Z` PR (version bump + English changelog + fragment archive).
+2. **Merging that PR is what publishes** → the `Release` workflow automatically publishes + tags + creates the GitHub Release.
 
-仓库**不声明 `NPM_TOKEN`**：常规发布 npm 认证走 Trusted Publishing（OIDC `id-token` + `npm publish --provenance`，tokenless）；**首次发布例外**——npm TP 只能对已存在的包配置，首个版本用一次性 `NODE_AUTH_TOKEN` secret 发布（见「npm 认证」节）。GitHub 侧只用内置 `GITHUB_TOKEN`。**没有 `push:tags` 自动发布路径**——手动 `git tag && git push --tags` 不会发布，发布唯一入口是 merge `release vX.Y.Z` PR。
+The repository **does not declare `NPM_TOKEN`**: routine publishing authenticates to npm via Trusted Publishing (OIDC `id-token` + `npm publish --provenance`, tokenless); **the first release is the exception** — npm TP can only be configured for an existing package, so the first version is published with a one-time `NODE_AUTH_TOKEN` secret (see the "npm authentication" section). On the GitHub side only the built-in `GITHUB_TOKEN` is used. **There is no `push:tags` auto-publish path** — a manual `git tag && git push --tags` does not publish; the only publishing entry point is merging a `release vX.Y.Z` PR.
 
-相关工作流：
+Related workflows:
 
-| Workflow | 文件 | 触发 |
+| Workflow | File | Trigger |
 |---|---|---|
-| CI | `.github/workflows/ci.yml` | PR / push main / 手动 |
-| Release prep | `.github/workflows/release-prep.yml` | 手动（Actions → Release prep → Run workflow） |
-| Release | `.github/workflows/release.yml` | merge 标题为 `release v*` 的 PR |
+| CI | `.github/workflows/ci.yml` | PR / push to main / manual |
+| Release prep | `.github/workflows/release-prep.yml` | manual (Actions → Release prep → Run workflow) |
+| Release | `.github/workflows/release.yml` | merging a PR titled `release v*` |
 
-## npm 认证：首次发布 bootstrap token → 后续 Trusted Publishing（用户操作）
+## npm authentication: first-release bootstrap token → Trusted Publishing (user action)
 
-npm 的 Trusted Publishing（OIDC）只能对**已存在的包**配置——没有预注册路径，`dsh-llm-fallbacks` 尚未发布，首次发布无法走 TP（会 ENEEDAUTH/404）。因此认证分两段：
+npm Trusted Publishing (OIDC) can only be configured for an **existing package** — there is no pre-registration path, and since `dsh-llm-fallbacks` is not published yet, the first release cannot use TP (it would hit ENEEDAUTH/404). Authentication is therefore split into two phases:
 
-- **首次发布（bootstrap）**：一次性 Granular Access Token 存入 `NODE_AUTH_TOKEN` secret，发布 `0.1.0-alpha.2`。
-- **后续发布**：首次发布成功后，在 npm 包设置配置 Trusted Publisher 绑定 `release.yml`，此后发布**零 secrets**（OIDC 自动认证，token 可删除）。
+- **First release (bootstrap)**: a one-time Granular Access Token is stored in the `NODE_AUTH_TOKEN` secret to publish `0.1.0-alpha.2`.
+- **Subsequent releases**: once the first release has succeeded, configure a Trusted Publisher bound to `release.yml` in the npm package settings; afterwards publishing is **zero-secrets** (OIDC auto-authentication; the token can be deleted).
 
-> **bootstrap token 是一次性机制，不是长期方案**：TP 配置完成后应从 GitHub 删除 `NODE_AUTH_TOKEN` secret（npm 官方也建议配置 TP 后限制传统 token 的发布权限）。
+> **The bootstrap token is a one-time mechanism, not a long-term solution**: once TP is configured, delete the `NODE_AUTH_TOKEN` secret from GitHub (npm also recommends restricting traditional tokens' publish permission after configuring TP).
 >
-> 两步都只能由 npm 账号所有者（维护者）在 npm 网站上完成——仓库内无法自动配置，也不是本仓库代码能代做的。
+> Both steps can only be performed by the npm account owner (maintainer) on the npm website — they cannot be automated from the repository, and repository code cannot do them on your behalf.
 
-### 首次发布：一次性 Granular Access Token（用户操作）
+### First release: one-time Granular Access Token (user action)
 
-1. 登录 [npmjs.com](https://www.npmjs.com) → 右上角头像 → **Access Tokens** → **Generate New Token** → 类型选择 **Granular Access Token**。
-2. 填写名称（如 `dsh-llm-fallbacks-bootstrap`）；Package 选择 `dsh-llm-fallbacks`；权限选择 **Read and write**。
-   - 若包尚未发布、npm 的 package picker 列表里还没有 `dsh-llm-fallbacks`：改用 **org 级 publish scope**（如 `omdsh-dev` 下选择该包/全部包），或走「手动 token 路径」——创建 **Granular Access Token** 后**不限制 package**（或选择 Any package），发布时依赖该 token 的发布权限。
-3. 复制 token，到 GitHub 仓库 **Settings → Secrets and variables → Actions** 新建 repository secret，名称 **`NODE_AUTH_TOKEN`**，值粘贴该 token。
-4. `release.yml` 的 publish 步骤通过 `env: NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}` 自动读取（`setup-node` 的 `registry-url` 会把该值写入 `.npmrc`，npm 自动使用）；secret 不存在时该 env 为空 → 走 OIDC/provenance 路径。
+1. Sign in to [npmjs.com](https://www.npmjs.com) → avatar (top right) → **Access Tokens** → **Generate New Token** → choose **Granular Access Token** as the type.
+2. Fill in a name (e.g. `dsh-llm-fallbacks-bootstrap`); select `dsh-llm-fallbacks` as the Package; select **Read and write** as the permission.
+   - If the package is not yet published and `dsh-llm-fallbacks` is not yet in npm's package picker list: use an **org-level publish scope** instead (select that package / all packages under e.g. `omdsh-dev`), or take the "manual token path" — create a **Granular Access Token** **without restricting the package** (or select Any package) and rely on that token's publish permission at publish time.
+3. Copy the token and create a repository secret in GitHub at **Settings → Secrets and variables → Actions** named **`NODE_AUTH_TOKEN`**, pasting the token as its value.
+4. The publish step of `release.yml` reads it automatically via `env: NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}` (`setup-node`'s `registry-url` writes the value into `.npmrc`, which npm uses automatically); when the secret is absent the env is empty → the OIDC/provenance path is used.
 
-### 后续发布：在 npm 包设置配置 Trusted Publisher（用户操作，tokenless）
+### Subsequent releases: configure a Trusted Publisher in the npm package settings (user action, tokenless)
 
-首次发布成功后，包在 npm 上才有 Settings 页：
+The package only gets a Settings page on npm after the first release succeeds:
 
-1. 登录 [npmjs.com](https://www.npmjs.com) → **Packages** → `dsh-llm-fallbacks` → **Settings** → **Trusted publishing**。
-2. **Select your publisher** → 选择 **GitHub Actions**。
-3. 填写字段：
-   - **Organization or user**（必填）：`omdsh-dev`（GitHub 组织/用户名）；
-   - **Repository**（必填）：`dsh-llm-fallbacks`；
-   - **Workflow filename**（必填）：`release.yml` —— **只填文件名**，不含路径，须含 `.yml`/`.yaml` 扩展名；workflow 须存在于仓库 `.github/workflows/` 下；
-   - **Environment name**（可选）：仅当发布 job 使用 GitHub environment 保护时填写；
-   - **Allowed actions**（必填）：勾选 **`npm publish`**（本仓库直接 `npm publish --provenance`，不走 staged publish）。
-4. 保存。该配置**不创建任何 token**——npm 接受来自该 workflow 的 OIDC 发布（tokenless by design）。
+1. Sign in to [npmjs.com](https://www.npmjs.com) → **Packages** → `dsh-llm-fallbacks` → **Settings** → **Trusted publishing**.
+2. **Select your publisher** → choose **GitHub Actions**.
+3. Fill in the fields:
+   - **Organization or user** (required): `omdsh-dev` (GitHub org/user);
+   - **Repository** (required): `dsh-llm-fallbacks`;
+   - **Workflow filename** (required): `release.yml` — **the filename only**, no path, and it must include the `.yml`/`.yaml` extension; the workflow must exist under the repository's `.github/workflows/`;
+   - **Environment name** (optional): fill in only if the publish job uses GitHub environment protection;
+   - **Allowed actions** (required): check **`npm publish`** (this repository publishes directly with `npm publish --provenance`, no staged publish).
+4. Save. This configuration **creates no token** — npm accepts OIDC publishing from that workflow (tokenless by design).
 
-> 每个包同一时间只能有一个 trusted publisher 配置；可随时编辑/删除（删除后回到 token 认证）。
+> A package can only have one trusted publisher configuration at a time; it can be edited/deleted at any time (deleting returns to token authentication).
 
-### 注意事项
+### Notes
 
-- npm **provenance** 要求包为公开包（工作流中发布命令已是 `--access public`）。
-- GitHub 侧**无需额外配置**：OIDC token（`permissions: id-token: write`）由 Actions 自动签发；`contents: write` / `pull-requests: write` 已在 workflow 内声明。
-- TP 就绪后删除 `NODE_AUTH_TOKEN` secret：npm CLI 在 OIDC 环境中优先走 OIDC，token 只是 bootstrap 期的回退路径。
-- 首次发布走**显式** `0.1.0-alpha.2`（见下方 SOP）；`--patch` auto 留给后续。
+- npm **provenance** requires the package to be public (the publish command in the workflow already uses `--access public`).
+- **No extra configuration on the GitHub side**: the OIDC token (`permissions: id-token: write`) is issued by Actions automatically; `contents: write` / `pull-requests: write` are already declared in the workflow.
+- Delete the `NODE_AUTH_TOKEN` secret once TP is ready: the npm CLI prefers OIDC in an OIDC environment; the token is only the fallback path during the bootstrap period.
+- The first release uses **explicit** `0.1.0-alpha.2` (see the SOP below); `--patch` auto is left for later releases.
 
-## 发布 SOP
+## Release SOP
 
-### 1. 写 changelog fragment
+### 1. Write a changelog fragment
 
-对每个**用户可见变更**，在 `.changes/unreleased/` 下新增一个 fragment（格式见下节；**一个文件一个 category**，纯英文 bullets——`<!-- CN -->` 等非 bullet 行会被原样渲染进 CHANGELOG）。
+For every **user-visible change**, add a fragment under `.changes/unreleased/` (format in the next section; **one file, one category**, English bullets — non-bullet lines such as `<!-- CN -->` are rendered into the CHANGELOG verbatim).
 
-**必须至少有一个 fragment**：`release.yml` 在 changelog 提取为空时直接 fail（发布中止）——空版本节无法发布。首次发布前尤其检查 `.changes/unreleased/` 非空（本仓库首次发布的 fragment 已随功能提交）。
+**At least one fragment is mandatory**: `release.yml` fails outright when the changelog extraction is empty (an empty version section cannot be published). Before the first release in particular, verify that `.changes/unreleased/` is non-empty (this repository's first-release fragments were committed together with the features).
 
-### 2. 触发 Release prep
+### 2. Trigger Release prep
 
-仓库 → **Actions** → 左侧 **Release prep** → **Run workflow**：
+Repository → **Actions** → **Release prep** in the sidebar → **Run workflow**:
 
-- **版本输入**：
-  - **首次发布**：显式填 `0.1.0-alpha.2`（先验证流水线，正式版留给下一迭代）。
-  - **后续**：留空 = auto bump（`--patch`）——当前版本为 prerelease 且尾段为数字（`X.Y.Z-pre.N`）时只递增 N（`0.1.0-alpha.1` → `0.1.0-alpha.2`，**保持 prerelease 线**）；无 prerelease 时 patch+1（`0.1.0` → `0.1.1`）；prerelease 尾段非数字时报错，改用显式版本。
+- **Version input**:
+  - **First release**: fill in `0.1.0-alpha.2` explicitly (validate the pipeline first; the stable version is left for the next iteration).
+  - **Later**: leave blank = auto bump (`--patch`) — when the current version is a prerelease with a numeric tail (`X.Y.Z-pre.N`), only N is incremented (`0.1.0-alpha.1` → `0.1.0-alpha.2`, **staying on the prerelease line**); without a prerelease, patch+1 (`0.1.0` → `0.1.1`); a non-numeric prerelease tail errors out — use an explicit version instead.
 
-工作流会依次：
+The workflow then runs, in order:
 
-1. **拒绝已发布版本**：显式版本且 git tag `v<v>` 已存在 → 报错退出（已发布版本无法重跑 prep）。
-2. `pnpm release:prepare`：bump `package.json` version、把 `.changes/unreleased/` fragments 组装成 `## [<version>] - <date>` 节插入 `CHANGELOG.md`（`## [Unreleased]` 之下）、归档 fragments 到 `.changes/archive/<version>/`。
-   - **日期为 UTC**：脚本用 `new Date().toISOString().slice(0, 10)`，节日期固定为 UTC 当天；正时区深夜本地 prep 可能显示「昨天」——以 UTC 为准即可。
-3. `pnpm release:validate -- v<v>`：package.json 版本与 tag 一致 + tag 未已存在（双保险）。
-4. `pnpm build` 冒烟。
-5. 提交 `chore(release): prepare v<v>` 到 `release/v<v>` 分支并 push（force-with-lease）。
-6. 开 PR `release v<v>`（base `main`，label `release`）；**open PR 已存在则更新它**，**closed PR 已存在则先 reopen 再更新**，都没有才新建。
+1. **Rejects already-released versions**: with an explicit version and an existing git tag `v<v>` → errors and exits (a released version cannot re-run prep).
+2. `pnpm release:prepare`: bumps the `package.json` version, assembles the `.changes/unreleased/` fragments into a `## [<version>] - <date>` section inserted into `CHANGELOG.md` (below `## [Unreleased]`), and archives the fragments to `.changes/archive/<version>/`.
+   - **The date is UTC**: the script uses `new Date().toISOString().slice(0, 10)`, so the section date is fixed to the UTC day; a local prep late at night in a positive timezone may display "yesterday" — UTC is authoritative.
+3. `pnpm release:validate -- v<v>`: package.json version matches the tag + the tag does not already exist (belt and suspenders).
+4. `pnpm build` smoke test.
+5. Commits `chore(release): prepare v<v>` to the `release/v<v>` branch and pushes (force-with-lease).
+6. Opens the PR `release v<v>` (base `main`, label `release`); **updates it if an open PR already exists**, **reopens then updates a closed PR if one exists**, and only creates a new PR when neither exists.
 
-### 3. 审查 release PR
+### 3. Review the release PR
 
-merge 前核对：
+Before merging, verify:
 
-- [ ] `package.json` 的 `version` 是预期版本；
-- [ ] `CHANGELOG.md` 在 `## [Unreleased]` 下出现 `## [<version>] - <date>` 节，fragment bullet 正确、英文；
-- [ ] `.changes/unreleased/` 的 fragment 已归档到 `.changes/archive/<version>/`；
-- [ ] diff 只含版本 / changelog / 归档（外加分支上任何直接提交，如无应为三块）。
+- [ ] `package.json` `version` is the expected version;
+- [ ] `CHANGELOG.md` has a `## [<version>] - <date>` section under `## [Unreleased]` with correct, English fragment bullets;
+- [ ] the `.changes/unreleased/` fragments are archived to `.changes/archive/<version>/`;
+- [ ] the diff contains only version / changelog / archive changes (plus any direct commits on the branch; with none it should be those three blocks).
 
-### 4. Merge → 自动发布
+### 4. Merge → automatic publish
 
-merge 后 `release.yml` 触发（`pull_request: closed` + `merged == true` + 标题 `release v` 前缀）：
+After the merge, `release.yml` triggers (`pull_request: closed` + `merged == true` + title with the `release v` prefix):
 
-1. 检出 merge commit → `release:validate` → `pnpm build`；
-2. `npm publish --provenance --access public --tag latest` —— **显式 `--tag latest`**：npm ≥ 11（Node 24 自带）发布 prerelease 必须显式 `--tag`，否则 hard-throw；首个版本（`0.1.0-alpha.2`）落默认 `latest` dist-tag（`npm i dsh-llm-fallbacks` 可解析），后续稳定版 `0.1.0` 自然接棒 `latest`。npm 认证自动选择：TP 已配置 → OIDC；bootstrap 期 → `NODE_AUTH_TOKEN`（见「npm 认证」节）；
-3. 打 tag `v<v>` 并 push（已存在则跳过）；
-4. 用 changelog 节创建 GitHub Release（版本含 `-` 时 `prerelease: true`）。
+1. Checks out the merge commit → `release:validate` → `pnpm build`;
+2. `npm publish --provenance --access public --tag latest` — **explicit `--tag latest`**: npm ≥ 11 (bundled with Node 24) requires an explicit `--tag` when publishing a prerelease, otherwise it hard-throws; the first version (`0.1.0-alpha.2`) lands on the default `latest` dist-tag (`npm i dsh-llm-fallbacks` resolves), and the later stable `0.1.0` naturally takes over `latest`. npm authentication is selected automatically: TP configured → OIDC; bootstrap period → `NODE_AUTH_TOKEN` (see the "npm authentication" section);
+3. Tags `v<v>` and pushes (skipped if it exists);
+4. Creates the GitHub Release from the changelog section (`prerelease: true` when the version contains `-`).
 
-## Changelog fragment 格式
+## Changelog fragment format
 
-`.changes/unreleased/` 下每个文件是一条 fragment（`.changes/unreleased/README.md` 是说明文件，`.gitkeep` 是占位，二者都会被忽略）：
+Each file under `.changes/unreleased/` is one fragment (`.changes/unreleased/README.md` is the explainer file and `.gitkeep` is a placeholder — both are ignored):
 
-- **文件名**：任意以 `.md` 结尾的 slug（如 `add-foo.md`）。
-- **Frontmatter（可选）**：`category:` 键把该 fragment 的 bullets 归入 changelog 中的 `### <category>` 小标题（默认 `Changed`）。
-- **正文**：一行或多行英文 bullet（`- ` 前缀），原样渲染。
+- **Filename**: any slug ending in `.md` (e.g. `add-foo.md`).
+- **Frontmatter (optional)**: the `category:` key groups the fragment's bullets under a `### <category>` subheading in the changelog (default `Changed`).
+- **Body**: one or more English bullet lines (`- ` prefix), rendered verbatim.
 
 ```markdown
 ---
@@ -121,34 +121,34 @@ category: Added
 - A second bullet if needed.
 ```
 
-每条 fragment 聚焦一个用户可见变更。
+Each fragment focuses on one user-visible change.
 
-## 发布检查清单
+## Release checklist
 
-- [ ] `pnpm test` 全绿（409 测试基线，vitest run）
-- [ ] `pnpm build` 全绿（tsc + tsdown + build-client + verify-dist）
-- [ ] `actionlint .github/workflows/*.yml` 干净（ci + release-prep + release）
-- [ ] `pnpm release:validate -- v<version>` 通过（发布前本地预览）
-- [ ] 版本号与 CHANGELOG 节一致；fragments 已归档
-- [ ] npm 认证就绪：首次发布 = `NODE_AUTH_TOKEN` secret 已配置；后续发布 = Trusted Publisher 已绑定 `release.yml`（见「npm 认证」节）
+- [ ] `pnpm test` all green (460 test baseline across 23 files, vitest run)
+- [ ] `pnpm build` all green (tsc + tsdown + build-client + verify-dist)
+- [ ] `actionlint .github/workflows/*.yml` clean (ci + release-prep + release)
+- [ ] `pnpm release:validate -- v<version>` passes (local preview before releasing)
+- [ ] version matches the CHANGELOG section; fragments archived
+- [ ] npm authentication ready: first release = `NODE_AUTH_TOKEN` secret configured; later releases = Trusted Publisher bound to `release.yml` (see the "npm authentication" section)
 
-## 回滚 / 重跑
+## Rollback / re-run
 
-- **PR 阶段（未 merge）**：版本或内容不对 → 直接**关闭 PR**，或**重跑 Release prep**。重跑是幂等式的：同版本重跑会重新生成 `release/v<v>` 分支（force-with-lease push）并处理 PR——**有 open PR 则更新它**；**有 closed PR 则先 `gh pr reopen` 再更新正文**；两者都没有才新建。**永远不会原地编辑一个 closed PR**（那会让发布静默卡死）。
-- **merge 后、发布中途失败**：若 `npm publish` 已成功但 tag / GitHub Release 步骤失败——**不要直接重跑 Release workflow**：`npm publish` 会因版本已存在于 registry 而失败。修复方式：
-  - 手动补 tag 与 Release：`git tag -a -m "release v<v>" v<v> && git push origin v<v>`，再用 changelog 节手动创建 GitHub Release；或
-  - fix-forward：直接走下一版本（见下）。
-- **已发布但内容错误**：npm **不允许重发同版本**；`npm unpublish` 仅限发布后 72 小时内且无依赖方（有政策限制）。**推荐 fix-forward**：修正后 bump 下一版本（prerelease 线如 `0.1.0-alpha.3`）重新走 SOP。GitHub Release 可随时编辑/删除；tag 在确认无人依赖后可删除（`git push origin :refs/tags/v<v>`）。
-- **语义**：两步制（prep PR + merge）本身就是回滚闸门——发现不对，不 merge 即可，什么都没发生。
+- **PR stage (not merged)**: wrong version or content → simply **close the PR**, or **re-run Release prep**. Re-running is idempotent: re-running with the same version regenerates the `release/v<v>` branch (force-with-lease push) and handles the PR — **updates it if an open PR exists**; **reopens the PR with `gh pr reopen` and updates the body if a closed PR exists**; creates a new one only when neither exists. **A closed PR is never edited in place** (that would silently stall the release).
+- **Failed mid-publish after merge**: if `npm publish` succeeded but the tag / GitHub Release steps failed — **do not re-run the Release workflow directly**: `npm publish` would fail because the version already exists on the registry. Fixes:
+  - manually add the tag and Release: `git tag -a -m "release v<v>" v<v> && git push origin v<v>`, then create the GitHub Release manually from the changelog section; or
+  - fix-forward: go straight to the next version (see below).
+- **Published but wrong content**: npm **does not allow re-publishing the same version**; `npm unpublish` is only possible within 72 hours of publishing and without dependents (policy-limited). **fix-forward is recommended**: fix the content, bump to the next version (on the prerelease line, e.g. `0.1.0-alpha.3`), and re-run the SOP. The GitHub Release can be edited/deleted at any time; the tag can be deleted once you confirm no one depends on it (`git push origin :refs/tags/v<v>`).
+- **Semantics**: the two-step model (prep PR + merge) is itself the rollback gate — if something is wrong, just don't merge and nothing happens.
 
-## 相关文件
+## Related files
 
-| 文件 | 作用 |
+| File | Purpose |
 |---|---|
-| `.github/workflows/release-prep.yml` | 手动入口：bump + changelog + 开/更新 release PR |
-| `.github/workflows/release.yml` | merge 后自动 publish + tag + GitHub Release |
-| `scripts/prepare-release.ts` | 版本解析（显式 / `--patch` auto）、fragment 组装、bump、归档 |
-| `scripts/validate-release-version.ts` | 版本一致性 + tag 未存在校验 |
-| `CHANGELOG.md` | 英文 changelog（`## [Unreleased]` + 版本节） |
-| `.changes/unreleased/` | 待发布 fragments |
-| `.changes/archive/<version>/` | 已消费 fragments 归档 |
+| `.github/workflows/release-prep.yml` | manual entry: bump + changelog + open/update the release PR |
+| `.github/workflows/release.yml` | automatic publish + tag + GitHub Release after merge |
+| `scripts/prepare-release.ts` | version resolution (explicit / `--patch` auto), fragment assembly, bump, archive |
+| `scripts/validate-release-version.ts` | version consistency + tag-not-exists validation |
+| `CHANGELOG.md` | English changelog (`## [Unreleased]` + version sections) |
+| `.changes/unreleased/` | pending fragments |
+| `.changes/archive/<version>/` | consumed fragment archive |
