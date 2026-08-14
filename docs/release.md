@@ -34,6 +34,7 @@ npm 的 Trusted Publishing（OIDC）只能对**已存在的包**配置——没�
 
 1. 登录 [npmjs.com](https://www.npmjs.com) → 右上角头像 → **Access Tokens** → **Generate New Token** → 类型选择 **Granular Access Token**。
 2. 填写名称（如 `dsh-llm-fallbacks-bootstrap`）；Package 选择 `dsh-llm-fallbacks`；权限选择 **Read and write**。
+   - 若包尚未发布、npm 的 package picker 列表里还没有 `dsh-llm-fallbacks`：改用 **org 级 publish scope**（如 `omdsh-dev` 下选择该包/全部包），或走「手动 token 路径」——创建 **Granular Access Token** 后**不限制 package**（或选择 Any package），发布时依赖该 token 的发布权限。
 3. 复制 token，到 GitHub 仓库 **Settings → Secrets and variables → Actions** 新建 repository secret，名称 **`NODE_AUTH_TOKEN`**，值粘贴该 token。
 4. `release.yml` 的 publish 步骤通过 `env: NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}` 自动读取（`setup-node` 的 `registry-url` 会把该值写入 `.npmrc`，npm 自动使用）；secret 不存在时该 env 为空 → 走 OIDC/provenance 路径。
 
@@ -78,10 +79,11 @@ npm 的 Trusted Publishing（OIDC）只能对**已存在的包**配置——没�
 
 1. **拒绝已发布版本**：显式版本且 git tag `v<v>` 已存在 → 报错退出（已发布版本无法重跑 prep）。
 2. `pnpm release:prepare`：bump `package.json` version、把 `.changes/unreleased/` fragments 组装成 `## [<version>] - <date>` 节插入 `CHANGELOG.md`（`## [Unreleased]` 之下）、归档 fragments 到 `.changes/archive/<version>/`。
+   - **日期为 UTC**：脚本用 `new Date().toISOString().slice(0, 10)`，节日期固定为 UTC 当天；正时区深夜本地 prep 可能显示「昨天」——以 UTC 为准即可。
 3. `pnpm release:validate -- v<v>`：package.json 版本与 tag 一致 + tag 未已存在（双保险）。
 4. `pnpm build` 冒烟。
 5. 提交 `chore(release): prepare v<v>` 到 `release/v<v>` 分支并 push（force-with-lease）。
-6. 开 PR `release v<v>`（base `main`，label `release`）；**同版本 PR 已存在时改为更新它**（`gh pr edit` 路径）。
+6. 开 PR `release v<v>`（base `main`，label `release`）；**open PR 已存在则更新它**，**closed PR 已存在则先 reopen 再更新**，都没有才新建。
 
 ### 3. 审查 release PR
 
@@ -97,7 +99,7 @@ merge 前核对：
 merge 后 `release.yml` 触发（`pull_request: closed` + `merged == true` + 标题 `release v` 前缀）：
 
 1. 检出 merge commit → `release:validate` → `pnpm build`；
-2. `npm publish --provenance --access public` —— **不传 `--tag`**：首个版本是 registry 上唯一版本，落默认 `latest` dist-tag（`npm i dsh-llm-fallbacks` 可解析）；后续稳定版 `0.1.0` 自然接棒 `latest`。npm 认证自动选择：TP 已配置 → OIDC；bootstrap 期 → `NODE_AUTH_TOKEN`（见「npm 认证」节）；
+2. `npm publish --provenance --access public --tag latest` —— **显式 `--tag latest`**：npm ≥ 11（Node 24 自带）发布 prerelease 必须显式 `--tag`，否则 hard-throw；首个版本（`0.1.0-alpha.2`）落默认 `latest` dist-tag（`npm i dsh-llm-fallbacks` 可解析），后续稳定版 `0.1.0` 自然接棒 `latest`。npm 认证自动选择：TP 已配置 → OIDC；bootstrap 期 → `NODE_AUTH_TOKEN`（见「npm 认证」节）；
 3. 打 tag `v<v>` 并 push（已存在则跳过）；
 4. 用 changelog 节创建 GitHub Release（版本含 `-` 时 `prerelease: true`）。
 
@@ -130,7 +132,7 @@ category: Added
 
 ## 回滚 / 重跑
 
-- **PR 阶段（未 merge）**：版本或内容不对 → 直接**关闭 PR**，或**重跑 Release prep**。重跑是幂等式的：同版本重跑会重新生成 `release/v<v>` 分支（force-with-lease push）并**更新既有 PR**（`gh pr view` → `gh pr edit` 路径），PR 标题/正文/changelog 以最新一次运行为准。
+- **PR 阶段（未 merge）**：版本或内容不对 → 直接**关闭 PR**，或**重跑 Release prep**。重跑是幂等式的：同版本重跑会重新生成 `release/v<v>` 分支（force-with-lease push）并处理 PR——**有 open PR 则更新它**；**有 closed PR 则先 `gh pr reopen` 再更新正文**；两者都没有才新建。**永远不会原地编辑一个 closed PR**（那会让发布静默卡死）。
 - **merge 后、发布中途失败**：若 `npm publish` 已成功但 tag / GitHub Release 步骤失败——**不要直接重跑 Release workflow**：`npm publish` 会因版本已存在于 registry 而失败。修复方式：
   - 手动补 tag 与 Release：`git tag -a -m "release v<v>" v<v> && git push origin v<v>`，再用 changelog 节手动创建 GitHub Release；或
   - fix-forward：直接走下一版本（见下）。

@@ -36,28 +36,46 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "24.19.0"
-          registry-url: https://registry.npmjs.org
-
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
           version: 11.21.0
 
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24.19.0"
+          registry-url: https://registry.npmjs.org
+          cache: pnpm
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # Validate the input format BEFORE writing it to GITHUB_OUTPUT: a
+      # malformed (e.g. multiline) value must fail here instead of injecting
+      # extra output lines that downstream steps would read as the version.
       - name: Reject already-released version
         id: want
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
-          V="${{ inputs.version }}"
+          V="$INPUT_VERSION"
           if [ -z "$V" ]; then V="auto"; fi
-          if [ "$V" != "auto" ] && git rev-parse "v$V" >/dev/null 2>&1; then
-            echo "::error::Tag v$V already exists."
-            exit 1
+          if [ "$V" != "auto" ]; then
+            case "$V" in
+              *$'\n'*|*$'\r'*)
+                echo "::error::Invalid version \"$V\" (must be a single line)."
+                exit 1
+                ;;
+            esac
+            if ! printf '%s' "$V" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+              echo "::error::Invalid version \"$V\". Expected X.Y.Z or X.Y.Z-pre.N (e.g. 0.1.0-alpha.2)."
+              exit 1
+            fi
+            if git rev-parse "v$V" >/dev/null 2>&1; then
+              echo "::error::Tag v$V already exists."
+              exit 1
+            fi
           fi
           echo "version=$V" >> "$GITHUB_OUTPUT"
 
@@ -94,7 +112,9 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           BRANCH="release/v${{ steps.ver.outputs.version }}"
           git checkout -B "$BRANCH"
-          git add -A
+          # Explicit paths only: the release PR must contain exactly the
+          # version/changelog/fragment changes, never stray files.
+          git add package.json CHANGELOG.md .changes/
           git commit -m "chore(release): prepare v${{ steps.ver.outputs.version }}"
           git push --force-with-lease origin "$BRANCH"
 
@@ -103,6 +123,14 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh label create release --if-not-exists --color 0E8A16 || true
 
+      # State-aware PR handling. `gh pr view` also matches closed PRs, and
+      # `gh pr edit` silently keeps them closed — which would make a re-run
+      # after rollback (close PR -> re-run prep) look successful while
+      # leaving no open PR. Query state explicitly:
+      #   open PR   -> update it;
+      #   closed PR -> reopen it, then update the body;
+      #   none      -> create a new one.
+      # A closed PR is never edited in place.
       - name: Open or update release PR
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -119,10 +147,23 @@ jobs:
             echo
             cat /tmp/notes.md
           } > /tmp/pr-body.md
-          if gh pr view "$BRANCH" >/dev/null 2>&1; then
-            gh pr edit "$BRANCH" --title "$TITLE" --body-file /tmp/pr-body.md
-            echo "Updated existing release PR for $BRANCH"
+
+          OPEN_NUM="$(gh pr list --head "$BRANCH" --state open --json number -q '.[0].number' 2>/dev/null || true)"
+          if [ -n "$OPEN_NUM" ]; then
+            gh pr edit "$OPEN_NUM" --title "$TITLE" --body-file /tmp/pr-body.md
+            echo "Updated existing open release PR #${OPEN_NUM} for $BRANCH"
+            exit 0
+          fi
+
+          CLOSED_NUM="$(gh pr list --head "$BRANCH" --state closed --json number -q '.[0].number' 2>/dev/null || true)"
+          if [ -n "$CLOSED_NUM" ]; then
+            # Reopen first: `gh pr reopen` fails loudly on a merged PR instead
+            # of silently leaving the release blocked.
+            gh pr reopen "$CLOSED_NUM"
+            gh pr edit "$CLOSED_NUM" --title "$TITLE" --body-file /tmp/pr-body.md
+            echo "Reopened release PR #${CLOSED_NUM} for $BRANCH"
           else
             gh pr create --base main --head "$BRANCH" --title "$TITLE" \
               --body-file /tmp/pr-body.md --label release
+            echo "Created release PR for $BRANCH"
           fi

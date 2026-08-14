@@ -7,6 +7,9 @@
  *   pnpm release:prepare -- <version>    # explicit version, used as-is
  *   pnpm release:prepare -- --patch      # auto patch bump
  *
+ * Exactly one of the two forms is required: running with no arguments exits
+ * with a usage hint instead of silently auto-bumping.
+ *
  * Version resolution:
  *   - Explicit version must match /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/ and
  *     is used as-is (prerelease suffixes allowed, e.g. 0.1.0-alpha.2).
@@ -37,9 +40,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-
-/** Architect-approved loose semver: numeric core, optional prerelease suffix. */
-export const VERSION_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/
+import { VERSION_RE } from './release-version.ts'
 
 const CHANGES_DIR = '.changes'
 const UNRELEASED_DIR = join(CHANGES_DIR, 'unreleased')
@@ -177,6 +178,11 @@ export function archiveFragments(version: string, frags: Fragment[]): void {
 
 export function main(): void {
   const { version: explicit, autoBump } = parseArgs(process.argv)
+  if (explicit === undefined && !autoBump) {
+    console.error('Usage: pnpm release:prepare -- <version> | pnpm release:prepare -- --patch')
+    console.error('Pass an explicit <version> (e.g. 0.1.0-alpha.2) or --patch for an auto bump.')
+    process.exit(1)
+  }
   const pkg = JSON.parse(readFileSync('package.json', 'utf8')) as { version?: string }
   const current = pkg.version
   if (!current) throw new Error('package.json has no version')

@@ -25,12 +25,21 @@ permissions:
   contents: write
   id-token: write
 
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   release:
+    # Trigger only on PRs opened by the Release prep workflow (branch
+    # `release/v*`): a same-repo PR merely *titled* `release v…` must not
+    # publish. Merged check + title + head-ref prefix are all required.
     if: >
       github.event.pull_request.merged == true
       && startsWith(github.event.pull_request.title, 'release v')
+      && startsWith(github.event.pull_request.head.ref, 'release/v')
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout merge commit
         uses: actions/checkout@v4
@@ -38,16 +47,17 @@ jobs:
           ref: ${{ github.event.pull_request.merge_commit_sha }}
           fetch-depth: 0
 
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.21.0
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: "24.19.0"
           registry-url: https://registry.npmjs.org
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 11.21.0
+          cache: pnpm
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -60,6 +70,25 @@ jobs:
         id: pre
         run: echo "prerelease=$(node -p "/-/.test(require('./package.json').version)")" >> "$GITHUB_OUTPUT"
 
+      # The Release prep workflow derives the version from the PR title
+      # ("release v<version>") and bumps package.json to match. If the merged
+      # PR drifted from that contract (e.g. the version was edited inside the
+      # PR without re-running prep), publishing the drifted version would
+      # silently produce a mismatched tag and an empty GitHub Release — fail
+      # loudly instead.
+      - name: Cross-check version vs PR title
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -euo pipefail
+          TITLE_VER="${TITLE#release v}"
+          if [ "$TITLE_VER" != "$VERSION" ]; then
+            echo "::error::PR title version \"${TITLE_VER}\" does not match package.json version \"${VERSION}\". Re-run Release prep for v${VERSION} instead of hand-editing the PR."
+            exit 1
+          fi
+          echo "PR title and package.json agree on ${VERSION}"
+
       - name: Validate release version
         env:
           VERSION: ${{ steps.ver.outputs.version }}
@@ -68,9 +97,11 @@ jobs:
       - name: Build
         run: pnpm build
 
-      # No `--tag`: the first release is the only version on the registry, so
-      # it lands on the default `latest` dist-tag (npm i dsh-llm-fallbacks
-      # resolves); a later stable 0.1.0 takes over `latest` naturally.
+      # `--tag latest`: npm >= 11 (bundled with Node 24) hard-throws when
+      # publishing a prerelease without an explicit --tag. The first release
+      # (0.1.0-alpha.2) lands on the default `latest` dist-tag so
+      # `npm i dsh-llm-fallbacks` resolves; a later stable 0.1.0 takes over
+      # `latest` naturally.
       - name: Publish to npm
         env:
           # Optional bootstrap-only secret: absent once Trusted Publishing is
@@ -78,7 +109,7 @@ jobs:
           # registry-url writes it into .npmrc, so npm uses it automatically
           # for the first publish when no trusted publisher exists yet.
           NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
-        run: npm publish --provenance --access public
+        run: npm publish --provenance --access public --tag latest
 
       - name: Configure git identity
         run: |
@@ -99,17 +130,24 @@ jobs:
           git tag -a -m "release v${VERSION}" "$TAG"
           git push origin "$TAG"
 
+      # Fail when no changelog section matches the published version: an empty
+      # GitHub Release is a silent quality regression, not a recoverable one.
       - name: Extract changelog notes
         id: changelog
         env:
           VERSION: ${{ steps.ver.outputs.version }}
         run: |
+          set -euo pipefail
           NOTES_FILE="${RUNNER_TEMP}/release-notes-${VERSION}.md"
           awk -v v="$VERSION" '
             /^## \[/ { if (found) exit }
             index($0, "## [" v "]") == 1 { found = 1 }
             found { print }
           ' CHANGELOG.md > "$NOTES_FILE"
+          if [ ! -s "$NOTES_FILE" ]; then
+            echo "::error::No changelog section found for v${VERSION} in CHANGELOG.md; refusing to create an empty GitHub Release."
+            exit 1
+          fi
           echo "notes_file=${NOTES_FILE}" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
