@@ -28,13 +28,14 @@
  * @module dsh-llm-fallbacks
  */
 
+import { createRequire } from 'node:module'
 import type { Context, Logger } from '@deepseek-ai/cordis'
 import { installSettingsSection } from '@deepseek-ai/dsh-settings'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { LlmCallConfig } from '@deepseek-ai/dsh-llm'
 import type { Session } from '@deepseek-ai/dsh-session'
 import { Config, defaultFallbacksConfig, detectLegacyKeys, validateFallbacksConfig, type FallbacksConfig } from './config.ts'
-import { annotateCandidates, createCandidateFilter, hasWildcardEntry, resolveChainViews, selectCandidates, type FailingModel } from './chains.ts'
+import { annotateCandidates, createCandidateFilter, hasWildcardEntry, resolveChain, resolveChainViews, selectCandidates, type FailingModel } from './chains.ts'
 import { selectorKey } from './selectors.ts'
 import { resolveRole } from './roles.ts'
 import { FallbackStateStore, type AgentFallbackState, type PendingSwitch } from './state.ts'
@@ -56,6 +57,51 @@ import {
 
 /** The plugin row id mounted by the profile bundle patch. */
 export const name = 'llm-fallbacks'
+
+/**
+ * Declarative service metadata (cordis `Plugin.Base.provide`, read by
+ * loaders/tooling). The actual registration happens in `apply()` via
+ * `ctx.provide('llm-fallbacks', …)` — the static array never registers
+ * anything by itself.
+ */
+export const provide = ['llm-fallbacks'] as const
+
+/**
+ * The plugin's version, read once from the package manifest at module load
+ * (zero build changes): `createRequire(import.meta.url)` resolves relative
+ * to this module, so `../package.json` is the repo root under src/vitest and
+ * the package root when published (`dist/index.js` → `../package.json`, and
+ * npm `files` always ships package.json).
+ */
+const { version } = createRequire(import.meta.url)('../package.json')
+
+/**
+ * The named cordis service `ctx.get('llm-fallbacks')` exposes while the
+ * plugin is applied: the pure-function library surface + `name`/`version`
+ * metadata. Deliberately NO runtime state (no stateStore, no event
+ * emitters, no filter helpers) — state stays observable via `fallbacks/switch`
+ * events and the library API.
+ */
+export interface FallbacksService {
+  /** Matches the plugin `name`. */
+  name: 'llm-fallbacks'
+  /** Package.json version string (module-load snapshot). */
+  version: string
+  resolveRole: typeof resolveRole
+  resolveChain: typeof resolveChain
+  validateFallbacksConfig: typeof validateFallbacksConfig
+  detectLegacyKeys: typeof detectLegacyKeys
+}
+
+// Consumers importing this package get the typed `ctx.get('llm-fallbacks')`
+// surface via the cordis 4 interface-Context merge (precedent: dsh-settings
+// `settings`, dsh-agent-default-model `agentDefaultModel`).
+declare module '@deepseek-ai/cordis' {
+  interface Context {
+    /** The fallbacks service while the plugin is applied; `undefined` otherwise. */
+    'llm-fallbacks'?: FallbacksService
+  }
+}
 
 export { Config }
 /** The plugin's composition config — the `fallbacks` settings schema (spec §4). */
@@ -213,6 +259,21 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   // Cordis resolves the entry through the schema before apply, so `config` is
   // already defaulted; re-resolving keeps direct calls (tests) normalized.
   const entry = Config(config)
+  // The named service surface (responsive capability probe for consumers like
+  // mstar-harness): VALUE-form registration — cordis 4 `ReflectService.provide`
+  // stores the value directly, so a factory shape would register the function
+  // itself as the service. The object references the SAME re-exported
+  // functions (single point of truth, no copied logic). Registration is
+  // fiber-scoped via `ctx.fiber.effect` — the fiber unload on plugin dispose
+  // auto-unregisters it, so the returned disposer is ignored here.
+  ctx.provide('llm-fallbacks', {
+    name: 'llm-fallbacks',
+    version,
+    resolveRole,
+    resolveChain,
+    validateFallbacksConfig,
+    detectLegacyKeys,
+  })
   let source: () => FallbacksConfig = () => entry
   // AC-4: warn-not-crash startup validation — the schema-resolved entry is
   // checked once (invalid ids / undeclared rule references / illegal
