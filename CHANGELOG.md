@@ -6,6 +6,12 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.1.0-alpha.3] - 2026-08-14
+
+### Fixed
+
+- Published package now ships `schemastery` as a runtime dependency: the shipped `dist/*.d.ts` type declarations reference it, and consumers without `skipLibCheck` could not resolve the package types (devDependencies are not installed for consumers). Type resolution verified against a fresh consumer install.
+
 ## [0.1.0-alpha.2] - 2026-08-14
 
 ### Changed
