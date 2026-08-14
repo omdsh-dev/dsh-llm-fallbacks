@@ -25,7 +25,7 @@
  * @module dsh-llm-fallbacks/config
  */
 
-import z from 'schemastery'
+import z from '@deepseek-ai/schemastery'
 import { parseSelector } from './selectors.ts'
 
 /** How a cooled-down model comes back (spec §4). */
