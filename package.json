@@ -73,7 +73,8 @@
     "@deepseek-ai/dsh-settings": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-typert-protocol": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-typert-registry": "^0.1.0-rc.6",
-    "react": "^18.2.0"
+    "react": "^18.2.0",
+    "@deepseek-ai/schemastery": "^3.18.1"
   },
   "devDependencies": {
     "@testing-library/dom": "^10.4.1",
@@ -92,8 +93,5 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/omdsh-dev/dsh-llm-fallbacks.git"
-  },
-  "dependencies": {
-    "schemastery": "^3.18.0"
   }
 }
