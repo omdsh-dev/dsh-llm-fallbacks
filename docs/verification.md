@@ -26,15 +26,15 @@ invariants (empty chains / no match / chain exhausted / safety-valve cap exceede
 
 ### 2. Bundle layer order (proven via scratch profile `--dump-config`)
 
-On a **scratch profile inside the workspace** (`DSH_HOME=<插件仓库>/.dsh-verify`, deleted after verification):
+On a **scratch profile inside the workspace** (`DSH_HOME=<plugin-repo>/.dsh-verify`, deleted after verification):
 
 ```
-$ dsh plugin --profile verify add <插件仓库>
-  → profile 初始化；`dsh.profile.bundles` = ["@deepseek-ai/dsh-base", "dsh-llm-fallbacks"]
-    （reconcile 追加到列表末尾，符合「add 默认追加」语义）
+$ dsh plugin --profile verify add <plugin-repo>
+  → profile initialized; `dsh.profile.bundles` = ["@deepseek-ai/dsh-base", "dsh-llm-fallbacks"]
+    (reconcile appends to the end of the list, matching the "add appends by default" semantics)
 $ dsh --profile verify --dump-config
   # == @deepseek-ai/dsh-base
-  - id: llm-retry            ← llm-retry 位于 dsh-base 层内
+  - id: llm-retry            ← llm-retry lives in the dsh-base layer
   ...
   # == dsh-llm-fallbacks
   - id: llm-fallbacks
@@ -75,10 +75,10 @@ order section of [docs/install.md](docs/install.md); the real web profile's laye
 ### 1. Loading a real profile
 
 ```sh
-cd <插件仓库目录>
-pnpm install          # prepare 自构建（pnpm 工具链）
+cd <plugin-repo>
+pnpm install          # self-build via prepare (pnpm toolchain)
 dsh plugin --profile web add .
-dsh --profile web --dump-config   # 组合树末尾应出现 # == dsh-llm-fallbacks 层
+dsh --profile web --dump-config   # the composed tree should end with a # == dsh-llm-fallbacks layer
 ```
 
 **Expected**: `dsh-llm-fallbacks` is appended to the end of `dsh.profile.bundles` (after `@deepseek-ai/dsh-base`);
@@ -127,7 +127,7 @@ Then restart the dsh web session so the host half and the client half load.
 
 1. **Preflight check**: record `dsh --version` (snapshot); the plugin-side peer dependencies resolve from the npm registry
    (`@deepseek-ai/*@0.1.0-rc.6`, no source tree needed).
-2. **Plugin build**: `cd <插件仓库目录> && pnpm build` (host bundle + client bundle + tsc
+2. **Plugin build**: `cd <plugin-repo> && pnpm build` (host bundle + client bundle + tsc
    declarations) green — pure-mount semantics: no dsh source-tree modification, no patch step; settings read/write go through the plugin
    gateway channel (`/api/fallbacks/get|set|reset`), usable right after installation.
 3. **Restart `dsh web` (web profile)**: stop the old host process → start `dsh web` with the web profile

@@ -110,30 +110,30 @@ fallbacks:
     - AUTH
     - QUOTA
     - RATE_LIMIT
-  rootChain:                     # 块 1：root 主代理降级链；空 = root 不降级
+  rootChain:                     # Block 1: the root agent's fallback chain; empty = root does not fall back
     - anthropic/claude-3-5-sonnet
     - openai/*
-  roles:                         # 块 2：先声明角色，再让规则引用
+  roles:                         # Block 2: declare roles first, then let rules reference them
     list:
-      - id: reviewer             # 角色实体：id 唯一、/^[a-z0-9-]{1,32}$/；inherit 为保留字
-        label: 审查者
-        description: 代码审查子代理
-        chain:                   # 角色自身链
+      - id: reviewer             # Role entity: unique id matching /^[a-z0-9-]{1,32}$/; 'inherit' is reserved
+        label: Reviewer
+        description: Code review subagent
+        chain:                   # The role's own chain
           - openai/gpt-4o-mini
-        fallback: inherit-root   # 默认：角色链走完再追加 rootChain
+        fallback: inherit-root   # Default: append rootChain after the role's own chain
       - id: cheap
-        label: 廉价模型
-        description: 成本优先
+        label: Cheap model
+        description: Cost first
         chain:
           - deepseek/deepseek-chat
-        fallback: none           # 仅角色链，不追加 rootChain
-    rules:                       # 顺序匹配 origin/provider/model，首个命中即停；具体规则须写在宽泛规则之前
-      - provider: deepseek       # 最具体的先列：精确 provider/model → 显式指向内置 inherit（root 链）
+        fallback: none           # Role's own chain only; no rootChain appended
+    rules:                       # Match origin/provider/model in order, first hit wins; specific rules before broad ones
+      - provider: deepseek       # Most specific first: exact provider/model → explicitly targets the built-in inherit (root chain)
         model: deepseek-reasoner
         role: inherit
-      - origin: subagent         # 所有 subagent → reviewer 角色
+      - origin: subagent         # All subagents → reviewer role
         role: reviewer
-      - provider: deepseek       # 宽泛规则放后面：其它 deepseek provider 的 agent → cheap 角色
+      - provider: deepseek       # Broad rules last: other deepseek providers' agents → cheap role
         role: cheap
   cooldownMs: 300000
   revertPolicy: cooldown-expiry
@@ -158,8 +158,8 @@ Legacy-format (iter-20260812 and earlier) configuration is **not migrated automa
 |----------------------------|-----|
 | `chains: { default: [...] }` | `rootChain: [...]` |
 | `chains: { reviewer: [...] }` | `roles.list: [{ id: reviewer, chain: [...] }]` (also write a `roles.rules` entry for the role to be hit; declaring without referencing = never hit, no-match goes to `inherit`) |
-| `chains: { deepseek/*: [...] }` | `roles.rules: [{ provider: deepseek, role: <已声明 id> }]` (requires a corresponding `roles.list` entry first; move the old chain entries into that `roles.list[].chain`; or delete the key) |
-| `chains: { deepseek/deepseek-chat: [...] }` | `roles.rules: [{ provider: deepseek, model: deepseek-chat, role: <已声明 id> }]` (move the old chain entries into the corresponding `roles.list[].chain`) |
+| `chains: { deepseek/*: [...] }` | `roles.rules: [{ provider: deepseek, role: <declared id> }]` (requires a corresponding `roles.list` entry first; move the old chain entries into that `roles.list[].chain`; or delete the key) |
+| `chains: { deepseek/deepseek-chat: [...] }` | `roles.rules: [{ provider: deepseek, model: deepseek-chat, role: <declared id> }]` (move the old chain entries into the corresponding `roles.list[].chain`) |
 | `roles.rules[].role` any string | Reference `roles.list[].id` or the built-in `'inherit'` (enum); an undeclared reference → `legacyKeys` + warning, the entry does not take effect |
 | `roles.default: 'default'` (or any string) | **Delete this field**; no rule match → the built-in `'inherit'` (→ `rootChain`). Rewrite "all subagents default to some chain" as one `{ origin: subagent, role: <id> }` entry |
 | Role chain without a fallback | `fallback: inherit-root` (default) → `[...role.chain, ...rootChain]`; `fallback: none` → `role.chain` only |
