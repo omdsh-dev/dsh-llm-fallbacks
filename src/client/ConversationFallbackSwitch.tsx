@@ -141,9 +141,9 @@ export type ConversationFallbackSwitchProps =
  * Render one fallback switch as a compact system-style transcript line.
  *
  * Geometry follows the upstream chat system rows (the compaction boundary
- * notice: dim title + separator + ellipsized summary — `chat/MessageItem
- * .module.css:38-122`); every color resolves through a `--dsw-alias-*`
- * token. A reason outside the current union renders raw (forward-compatible
+ * notice: warning-toned title + separator + ellipsized summary —
+ * `chat/MessageItem .module.css:38-122`); every color resolves through a
+ * `--dsw-alias-*` token. A reason outside the current union renders raw (forward-compatible
  * durable log, same rule as the card/general row summaries). A malformed or
  * partial payload (version skew) degrades to the title-only line instead of
  * throwing during interpolation — the transcript slot stays visible with a

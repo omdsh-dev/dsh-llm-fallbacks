@@ -23,8 +23,9 @@
  * materializes the chat node at the event's anchor seq — the non-surface
  * event the `unknown-surface` fallback never picked up becomes visible.
  *
- * Rendered states: one compact system-style line — dim title + separator +
- * ellipsized summary (`{from} → {to} ({role} · {reason})`), role="status";
+ * Rendered states: one compact system-style line — warning-toned title +
+ * separator + ellipsized summary (`{from} → {to} ({role} · {reason})`),
+ * role="status";
  * an unknown reason value renders raw (forward-compatible durable log); a
  * malformed/partial payload degrades to the title-only line (no throw);
  * the zh dictionary renders through the same seat (parity smoke).
@@ -382,7 +383,7 @@ describe('fallbackSwitchDefinition (D1 node state machine)', () => {
     expect(() => render(
       <ConversationFallbackSwitch {...switchProps(view)} />,
     )).not.toThrow()
-    expect(screen.getByText(en['chat.switch.title'])).toBeTruthy()
+    expect(screen.getByText('Model downgraded')).toBeTruthy()
   })
 
   it('start degrades on an empty-object payload — engine-style bare start never throws', () => {
@@ -392,7 +393,7 @@ describe('fallbackSwitchDefinition (D1 node state machine)', () => {
     expect(() => render(
       <ConversationFallbackSwitch {...switchProps(view)} />,
     )).not.toThrow()
-    expect(screen.getByText(en['chat.switch.title'])).toBeTruthy()
+    expect(screen.getByText('Model downgraded')).toBeTruthy()
   })
 
   it('start degrades when seq is missing — engine-style bare start never throws', () => {
@@ -406,7 +407,7 @@ describe('fallbackSwitchDefinition (D1 node state machine)', () => {
     expect(() => render(
       <ConversationFallbackSwitch {...switchProps(view)} />,
     )).not.toThrow()
-    expect(screen.getByText(en['chat.switch.title'])).toBeTruthy()
+    expect(screen.getByText('Model downgraded')).toBeTruthy()
   })
 
   it('buildViewNode materializes the chat node at the event anchor seq', () => {
@@ -434,7 +435,7 @@ describe('fallbackSwitchDefinition (D1 node state machine)', () => {
 describe('ConversationFallbackSwitch rendered line', () => {
   it('renders the compact system line from a switch payload', () => {
     render(<ConversationFallbackSwitch {...switchProps(nodeFor(switchEvent(5)))} />)
-    expect(screen.getByText(en['chat.switch.title'])).toBeTruthy()
+    expect(screen.getByText('Model downgraded')).toBeTruthy()
     expect(screen.getByText(
       'openai/gpt-4o → anthropic/claude-3-5-sonnet (inherit · trigger code)',
     )).toBeTruthy()
@@ -458,7 +459,7 @@ describe('ConversationFallbackSwitch rendered line', () => {
 
   it('renders the zh copy through the shared dictionary (parity smoke)', () => {
     render(<ConversationFallbackSwitch {...switchProps(nodeFor(switchEvent(4)), tZh)} />)
-    expect(screen.getByText(zh['chat.switch.title'])).toBeTruthy()
+    expect(screen.getByText('模型已降级')).toBeTruthy()
     expect(screen.getByText(
       'openai/gpt-4o → anthropic/claude-3-5-sonnet（inherit · 触发失败码）',
     )).toBeTruthy()
@@ -476,6 +477,6 @@ describe('ConversationFallbackSwitch rendered line', () => {
     expect(() => render(
       <ConversationFallbackSwitch {...switchProps(malformed as ChatNode<'fallbacks-switch'>)} />,
     )).not.toThrow()
-    expect(screen.getByText(en['chat.switch.title'])).toBeTruthy()
+    expect(screen.getByText('Model downgraded')).toBeTruthy()
   })
 })

@@ -15,10 +15,13 @@
   line-height: 24px;
 }
 
-/* Dim title: a boundary/system notice, not conversation content. */
+/* Warning-tone title (feedback round fallbacks-feedback-round T1): the
+ * line announces a model DOWNGRADE, not a neutral switch — the host
+ * warning-state alias (--dsw-alias-state-warn-*, verified in the dsh
+ * alias set) carries the tone; geometry is unchanged. */
 .switchTitle {
   flex: none;
-  color: var(--dsw-alias-label-primary-dimmed);
+  color: var(--dsw-alias-state-warn-primary);
 }
 
 .switchSep {
