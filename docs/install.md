@@ -49,15 +49,15 @@ Registry install notes:
 - **Version**: follows the npm dist-tag (default `latest`); pinning an exact version `dsh-llm-fallbacks@<version>` prevents a later publish from silently changing the code that actually runs.
 - **Mount-only, no patch steps**: a registry install is complete as-is — the plugin makes zero modifications to the dsh source tree (bundle row insert + client inject + its own gateway), no apply/revert scripts, and nothing to re-patch after a dsh upgrade.
 
-> **Release status**: `dsh-llm-fallbacks` is **not published to the npm registry yet** — the first version `0.1.0-alpha.2` is pending (the release pipeline is in place; the first publish uses a one-time `NODE_AUTH_TOKEN`, with Trusted Publishing configured after the first release). The registry commands in this section are a **preview** until the first release PR is merged; what works today is the [git install](#4-git-install-currently-available). Release process → [docs/release.md](docs/release.md).
+> **Release status**: published as `dsh-llm-fallbacks@0.1.0-alpha.2` (latest). The first publish used a one-time `NODE_AUTH_TOKEN` bootstrap secret; Trusted Publishing is configured afterwards for tokenless releases. Release process → [docs/release.md](docs/release.md).
 
-## 3. npm / pnpm package install (preview)
+## 3. npm / pnpm package install
 
 ```sh
 npm install dsh-llm-fallbacks   # or: pnpm add dsh-llm-fallbacks
 ```
 
-> **Preview**: effective after `dsh-llm-fallbacks@0.1.0-alpha.2` is published. The package ships built artifacts (`dist/`); the consumer surface (library function imports, named service) is documented in [docs/consumer-api.md](docs/consumer-api.md).
+> The package ships built artifacts (`dist/`); the consumer surface (library function imports, named service) is documented in [docs/consumer-api.md](docs/consumer-api.md).
 
 ## 4. Git install (currently available)
 
