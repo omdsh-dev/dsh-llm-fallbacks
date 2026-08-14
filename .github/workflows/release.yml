@@ -98,13 +98,13 @@ jobs:
       # (0.1.0-alpha.2) lands on the default `latest` dist-tag so
       # `npm i dsh-llm-fallbacks` resolves; a later stable 0.1.0 takes over
       # `latest` naturally.
+      #
+      # Pure OIDC (Trusted Publishing): no NODE_AUTH_TOKEN/NPM_TOKEN anywhere.
+      # npm exchanges the GitHub OIDC id-token (setup-node registry-url +
+      # id-token: write) for a registry token against the npm-side Trusted
+      # Publisher entry; the first-publish bootstrap token mode was removed
+      # on 2026-08-14 after the npm-side publisher was configured.
       - name: Publish to npm
-        env:
-          # Optional bootstrap-only secret: absent once Trusted Publishing is
-          # configured (npm prefers OIDC when available). setup-node with
-          # registry-url writes it into .npmrc, so npm uses it automatically
-          # for the first publish when no trusted publisher exists yet.
-          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
         run: npm publish --provenance --access public --tag latest
 
       - name: Configure git identity

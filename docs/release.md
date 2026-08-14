@@ -1,6 +1,6 @@
 # Release Guide
 
-This document describes the `dsh-llm-fallbacks` release process: npm authentication (first-release bootstrap token → Trusted Publishing afterwards), the release SOP (trigger → review → merge), changelog fragment format, the release checklist, and rollback / re-run instructions.
+This document describes the `dsh-llm-fallbacks` release process: npm authentication (pure OIDC Trusted Publishing), the release SOP (trigger → review → merge), changelog fragment format, the release checklist, and rollback / re-run instructions.
 
 ## Release model (PR-driven)
 
@@ -9,7 +9,7 @@ Releases are **two-step**, not a one-click black box:
 1. **Release prep** (manual trigger) → generates a reviewable `release vX.Y.Z` PR (version bump + English changelog + fragment archive).
 2. **Merging that PR is what publishes** → the `Release` workflow automatically publishes + tags + creates the GitHub Release.
 
-The repository **does not declare `NPM_TOKEN`**: routine publishing authenticates to npm via Trusted Publishing (OIDC `id-token` + `npm publish --provenance`, tokenless); **the first release is the exception** — npm TP can only be configured for an existing package, so the first version is published with a one-time `NODE_AUTH_TOKEN` secret (see the "npm authentication" section). On the GitHub side only the built-in `GITHUB_TOKEN` is used. **There is no `push:tags` auto-publish path** — a manual `git tag && git push --tags` does not publish; the only publishing entry point is merging a `release vX.Y.Z` PR.
+The repository **does not declare `NPM_TOKEN`** and **no longer carries any token secret**: publishing authenticates to npm purely via Trusted Publishing (OIDC `id-token` + `npm publish --provenance`, tokenless). The first-publish bootstrap token mode (a one-time `NODE_AUTH_TOKEN`) was retired on 2026-08-14 after the npm-side Trusted Publisher was configured — see the "npm authentication" section for history. On the GitHub side only the built-in `GITHUB_TOKEN` is used. **There is no `push:tags` auto-publish path** — a manual `git tag && git push --tags` does not publish; the only publishing entry point is merging a `release vX.Y.Z` PR.
 
 Related workflows:
 
@@ -19,26 +19,13 @@ Related workflows:
 | Release prep | `.github/workflows/release-prep.yml` | manual (Actions → Release prep → Run workflow) |
 | Release | `.github/workflows/release.yml` | merging a PR titled `release v*` |
 
-## npm authentication: first-release bootstrap token → Trusted Publishing (user action)
+## npm authentication: Trusted Publishing (OIDC, pure tokenless)
 
-npm Trusted Publishing (OIDC) can only be configured for an **existing package** — there is no pre-registration path, and since `dsh-llm-fallbacks` is not published yet, the first release cannot use TP (it would hit ENEEDAUTH/404). Authentication is therefore split into two phases:
+npm Trusted Publishing (OIDC) can only be configured for an **existing package** — there is no pre-registration path. History: the first release (`0.1.0-alpha.2`) used a one-time bootstrap Granular Access Token (`NODE_AUTH_TOKEN` secret); after the first release, the Trusted Publisher was configured in the npm package settings and the token mode was **retired** (secret deleted, workflow env removed, 2026-08-14). Publishing is now **zero-secrets**: npm exchanges the GitHub OIDC id-token (from `setup-node`'s `registry-url` + the workflow's `id-token: write`) for registry authentication against the npm-side Trusted Publisher entry, and `--provenance` signs the build source.
 
-- **First release (bootstrap)**: a one-time Granular Access Token is stored in the `NODE_AUTH_TOKEN` secret to publish `0.1.0-alpha.2`.
-- **Subsequent releases**: once the first release has succeeded, configure a Trusted Publisher bound to `release.yml` in the npm package settings; afterwards publishing is **zero-secrets** (OIDC auto-authentication; the token can be deleted).
+> The workflow declares **no token env at all** (`NODE_AUTH_TOKEN` / `NPM_TOKEN`); if the npm-side Trusted Publisher entry is ever removed, publishing fails loudly (ENEEDAUTH) instead of silently falling back to a token.
 
-> **The bootstrap token is a one-time mechanism, not a long-term solution**: once TP is configured, delete the `NODE_AUTH_TOKEN` secret from GitHub (npm also recommends restricting traditional tokens' publish permission after configuring TP).
->
-> Both steps can only be performed by the npm account owner (maintainer) on the npm website — they cannot be automated from the repository, and repository code cannot do them on your behalf.
-
-### First release: one-time Granular Access Token (user action)
-
-1. Sign in to [npmjs.com](https://www.npmjs.com) → avatar (top right) → **Access Tokens** → **Generate New Token** → choose **Granular Access Token** as the type.
-2. Fill in a name (e.g. `dsh-llm-fallbacks-bootstrap`); select `dsh-llm-fallbacks` as the Package; select **Read and write** as the permission.
-   - If the package is not yet published and `dsh-llm-fallbacks` is not yet in npm's package picker list: use an **org-level publish scope** instead (select that package / all packages under e.g. `omdsh-dev`), or take the "manual token path" — create a **Granular Access Token** **without restricting the package** (or select Any package) and rely on that token's publish permission at publish time.
-3. Copy the token and create a repository secret in GitHub at **Settings → Secrets and variables → Actions** named **`NODE_AUTH_TOKEN`**, pasting the token as its value.
-4. The publish step of `release.yml` reads it automatically via `env: NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}` (`setup-node`'s `registry-url` writes the value into `.npmrc`, which npm uses automatically); when the secret is absent the env is empty → the OIDC/provenance path is used.
-
-### Subsequent releases: configure a Trusted Publisher in the npm package settings (user action, tokenless)
+### Configure the Trusted Publisher in the npm package settings (user action, tokenless)
 
 The package only gets a Settings page on npm after the first release succeeds:
 
@@ -58,8 +45,8 @@ The package only gets a Settings page on npm after the first release succeeds:
 
 - npm **provenance** requires the package to be public (the publish command in the workflow already uses `--access public`).
 - **No extra configuration on the GitHub side**: the OIDC token (`permissions: id-token: write`) is issued by Actions automatically; `contents: write` / `pull-requests: write` are already declared in the workflow.
-- Delete the `NODE_AUTH_TOKEN` secret once TP is ready: the npm CLI prefers OIDC in an OIDC environment; the token is only the fallback path during the bootstrap period.
-- The first release uses **explicit** `0.1.0-alpha.2` (see the SOP below); `--patch` auto is left for later releases.
+- **No token secrets exist** (the bootstrap `NODE_AUTH_TOKEN` was deleted 2026-08-14); publishing fails loudly if the npm-side Trusted Publisher entry is missing.
+- The first release used **explicit** `0.1.0-alpha.2` (see the SOP below); `--patch` auto is left for later releases.
 
 ## Release SOP
 
@@ -101,7 +88,7 @@ Before merging, verify:
 After the merge, `release.yml` triggers (`pull_request: closed` + `merged == true` + title with the `release v` prefix):
 
 1. Checks out the merge commit → `release:validate` → `pnpm build`;
-2. `npm publish --provenance --access public --tag latest` — **explicit `--tag latest`**: npm ≥ 11 (bundled with Node 24) requires an explicit `--tag` when publishing a prerelease, otherwise it hard-throws; the first version (`0.1.0-alpha.2`) lands on the default `latest` dist-tag (`npm i dsh-llm-fallbacks` resolves), and the later stable `0.1.0` naturally takes over `latest`. npm authentication is selected automatically: TP configured → OIDC; bootstrap period → `NODE_AUTH_TOKEN` (see the "npm authentication" section);
+2. `npm publish --provenance --access public --tag latest` — **explicit `--tag latest`**: npm ≥ 11 (bundled with Node 24) requires an explicit `--tag` when publishing a prerelease, otherwise it hard-throws; the first version (`0.1.0-alpha.2`) lands on the default `latest` dist-tag (`npm i dsh-llm-fallbacks` resolves), and the later stable `0.1.0` naturally takes over `latest`. npm authentication is pure OIDC (Trusted Publishing configured on the npm side; see the "npm authentication" section);
 3. Tags `v<v>` and pushes (skipped if it exists);
 4. Creates the GitHub Release from the changelog section — **always a regular release** (no Pre-release marker, user decision 2026-08-14); the npm `latest` dist-tag is the channel signal, the GitHub Release is the visible record.
 
@@ -130,7 +117,7 @@ Each fragment focuses on one user-visible change.
 - [ ] `actionlint .github/workflows/*.yml` clean (ci + release-prep + release)
 - [ ] `pnpm release:validate -- v<version>` passes (local preview before releasing)
 - [ ] version matches the CHANGELOG section; fragments archived
-- [ ] npm authentication ready: first release = `NODE_AUTH_TOKEN` secret configured; later releases = Trusted Publisher bound to `release.yml` (see the "npm authentication" section)
+- [ ] npm authentication ready: Trusted Publisher bound to `release.yml` in the npm package settings; no token secrets exist (see the "npm authentication" section)
 
 ## Rollback / re-run
 
