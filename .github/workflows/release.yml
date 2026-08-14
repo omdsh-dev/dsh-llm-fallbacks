@@ -6,11 +6,10 @@ name: Release
 # There is deliberately NO push:tags auto-publish path: a manual
 # `git tag && git push --tags` does not publish.
 #
-# No NPM_TOKEN: npm auth is Trusted Publishing (OIDC id-token + registry-url)
-# once the package exists; during first-publish bootstrap (the package is not
-# on the registry yet, so TP cannot be configured) the optional
-# NODE_AUTH_TOKEN repo secret is used instead. The tag push and GitHub
-# Release use the built-in GITHUB_TOKEN.
+# No NPM_TOKEN / NODE_AUTH_TOKEN: npm auth is pure Trusted Publishing (OIDC
+# id-token + registry-url; the npm-side Trusted Publisher entry is configured).
+# The first-publish bootstrap token mode was removed on 2026-08-14. The tag
+# push and GitHub Release use the built-in GITHUB_TOKEN.
 #
 # NOTE: Node 24 ships npm with working Trusted Publishing / provenance
 # (sigstore). Do not use Node 22 or `npm install -g npm@latest` on Node 22 —
