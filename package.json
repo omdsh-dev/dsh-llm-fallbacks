@@ -46,6 +46,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json && tsdown && pnpm run build-client && tsc && node scripts/verify-dist.mjs",
     "build-client": "tsx scripts/build-client.ts",
+    "release:prepare": "tsx scripts/prepare-release.ts",
+    "release:validate": "tsx scripts/validate-release-version.ts",
     "test": "vitest run",
     "prepare": "pnpm run build"
   },

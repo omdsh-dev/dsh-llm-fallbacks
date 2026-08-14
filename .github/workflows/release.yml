@@ -1,0 +1,160 @@
+name: Release
+
+# PR-driven publish. Merging a `release vX.Y.Z` PR (opened by the Release prep
+# workflow) runs the whole release inline on the pull_request event:
+# validate -> build -> npm publish (provenance) -> tag -> GitHub Release.
+# There is deliberately NO push:tags auto-publish path: a manual
+# `git tag && git push --tags` does not publish.
+#
+# No NPM_TOKEN: npm auth is Trusted Publishing (OIDC id-token + registry-url)
+# once the package exists; during first-publish bootstrap (the package is not
+# on the registry yet, so TP cannot be configured) the optional
+# NODE_AUTH_TOKEN repo secret is used instead. The tag push and GitHub
+# Release use the built-in GITHUB_TOKEN.
+#
+# NOTE: Node 24 ships npm with working Trusted Publishing / provenance
+# (sigstore). Do not use Node 22 or `npm install -g npm@latest` on Node 22 —
+# that breaks provenance with MODULE_NOT_FOUND: sigstore.
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+permissions:
+  contents: write
+  id-token: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    # Trigger only on PRs opened by the Release prep workflow (branch
+    # `release/v*`): a same-repo PR merely *titled* `release v…` must not
+    # publish. Merged check + title + head-ref prefix are all required.
+    if: >
+      github.event.pull_request.merged == true
+      && startsWith(github.event.pull_request.title, 'release v')
+      && startsWith(github.event.pull_request.head.ref, 'release/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout merge commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.21.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24.19.0"
+          registry-url: https://registry.npmjs.org
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Resolve version
+        id: ver
+        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Detect prerelease
+        id: pre
+        run: echo "prerelease=$(node -p "/-/.test(require('./package.json').version)")" >> "$GITHUB_OUTPUT"
+
+      # The Release prep workflow derives the version from the PR title
+      # ("release v<version>") and bumps package.json to match. If the merged
+      # PR drifted from that contract (e.g. the version was edited inside the
+      # PR without re-running prep), publishing the drifted version would
+      # silently produce a mismatched tag and an empty GitHub Release — fail
+      # loudly instead.
+      - name: Cross-check version vs PR title
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -euo pipefail
+          TITLE_VER="${TITLE#release v}"
+          if [ "$TITLE_VER" != "$VERSION" ]; then
+            echo "::error::PR title version \"${TITLE_VER}\" does not match package.json version \"${VERSION}\". Re-run Release prep for v${VERSION} instead of hand-editing the PR."
+            exit 1
+          fi
+          echo "PR title and package.json agree on ${VERSION}"
+
+      - name: Validate release version
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: pnpm release:validate -- "v${VERSION}"
+
+      - name: Build
+        run: pnpm build
+
+      # `--tag latest`: npm >= 11 (bundled with Node 24) hard-throws when
+      # publishing a prerelease without an explicit --tag. The first release
+      # (0.1.0-alpha.2) lands on the default `latest` dist-tag so
+      # `npm i dsh-llm-fallbacks` resolves; a later stable 0.1.0 takes over
+      # `latest` naturally.
+      - name: Publish to npm
+        env:
+          # Optional bootstrap-only secret: absent once Trusted Publishing is
+          # configured (npm prefers OIDC when available). setup-node with
+          # registry-url writes it into .npmrc, so npm uses it automatically
+          # for the first publish when no trusted publisher exists yet.
+          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
+        run: npm publish --provenance --access public --tag latest
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Create + push tag
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          TAG="v${VERSION}"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists; skipping tag creation."
+            exit 0
+          fi
+          # git >= 2.55 requires a message for -a tags.
+          git tag -a -m "release v${VERSION}" "$TAG"
+          git push origin "$TAG"
+
+      # Fail when no changelog section matches the published version: an empty
+      # GitHub Release is a silent quality regression, not a recoverable one.
+      - name: Extract changelog notes
+        id: changelog
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          NOTES_FILE="${RUNNER_TEMP}/release-notes-${VERSION}.md"
+          awk -v v="$VERSION" '
+            /^## \[/ { if (found) exit }
+            index($0, "## [" v "]") == 1 { found = 1 }
+            found { print }
+          ' CHANGELOG.md > "$NOTES_FILE"
+          if [ ! -s "$NOTES_FILE" ]; then
+            echo "::error::No changelog section found for v${VERSION} in CHANGELOG.md; refusing to create an empty GitHub Release."
+            exit 1
+          fi
+          echo "notes_file=${NOTES_FILE}" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.ver.outputs.version }}
+          name: v${{ steps.ver.outputs.version }}
+          body_path: ${{ steps.changelog.outputs.notes_file }}
+          draft: false
+          prerelease: ${{ steps.pre.outputs.prerelease == 'true' }}

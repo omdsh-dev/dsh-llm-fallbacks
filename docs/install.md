@@ -49,7 +49,39 @@ registry 安装注意：
 - **版本**：跟随 npm dist-tag（默认 `latest`）；钉精确版本 `dsh-llm-fallbacks@<version>` 可防止后续发布悄悄改变实际运行的代码。
 - **纯挂载，无补丁步骤**：registry 安装即完成——插件对 dsh 源码树零修改（bundle 行插入 + client inject + 自有 gateway），无需任何 apply/revert 脚本，dsh 升级后无需重打。
 
-## 3. 验证安装
+> **发布状态**：`dsh-llm-fallbacks` **尚未发布到 npm registry**——首个版本 `0.1.0-alpha.2` 待发布（发布流水线已就绪；首次发布用一次性 `NODE_AUTH_TOKEN`，Trusted Publishing 在首次发布后配置）。本节 registry 命令在首个 release PR merge 前为**预告**；当前可用的是 [git 安装](#4-git-安装当前可用)。发布流程见 [docs/release.md](docs/release.md)。
+
+## 3. npm / pnpm 包安装（预告）
+
+```sh
+npm install dsh-llm-fallbacks   # 或：pnpm add dsh-llm-fallbacks
+```
+
+> **预告**：`dsh-llm-fallbacks@0.1.0-alpha.2` 发布后生效。包为已构建产物（`dist/`），消费面（库函数导入等）文档随后续迭代提供。
+
+## 4. git 安装（当前可用）
+
+```sh
+dsh plugin --profile web add github:omdsh-dev/dsh-llm-fallbacks   # 钉 commit：加 #<sha>
+# 等价完整 URL 形式（或加 #<branch|tag|commit> 指定 ref）：
+# dsh plugin --profile web add https://github.com/omdsh-dev/dsh-llm-fallbacks.git
+```
+
+git 安装注意：
+
+- **prepare 自建**：pnpm 在安装 git 依赖时会执行包的 `prepare` 脚本（`pnpm run build`）自构建，安装机需要 node 与 pnpm；构建失败会导致装入未构建的包。
+- **pnpm ≥ 10 构建放行（第一次 add 必遇）**：pnpm ≥ 10 默认不执行 git 依赖的构建脚本（含 `prepare`/`postinstall`）。第一次 `add` 会失败并打印 `ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`，同时给出精确的包 key（`dsh-llm-fallbacks`）。把该 key 加进此 profile 的 `pnpm-workspace.yaml`：
+
+  ```yaml
+  # $DSH_HOME/profiles/web/pnpm-workspace.yaml
+  onlyBuiltDependencies:
+    - dsh-llm-fallbacks
+  ```
+
+  然后重跑 `add`；也可交互式 `dsh plugin --profile web approve-builds` 选择放行。该放行 = 允许该包代码在安装期于你的机器上执行——建议钉 commit（`github:omdsh-dev/dsh-llm-fallbacks#<sha>`），防止后续 push 悄悄改变实际运行的代码。确切行为以你所用 pnpm 版本的策略为准。
+- **纯挂载，无补丁步骤**：git 安装执行 `prepare`（构建）即完成——插件对 dsh 源码树零修改（bundle 行插入 + client inject + 自有 gateway），无需任何 apply/revert 脚本，dsh 升级后无需重打。
+
+## 5. 验证安装
 
 ```sh
 dsh --profile web --dump-config
@@ -72,7 +104,7 @@ dsh --profile web --dump-config
 - 卡片可读、可编辑、可保存；功能级开关 `enabled` **默认 OFF**（关闭时隐藏配置表单主体），打开开关后显示完整配置表单；未配置任何链时行为 no-op（详见 [docs/configuration.md](docs/configuration.md)）。
 - 会话内可直接键入 `/fallbacks` 查看当前会话的诊断（角色 → 链 → 最近切换 → 冷却），详见 README 的 `/fallbacks` 一节。
 
-## 4. 卸载
+## 6. 卸载
 
 ```sh
 dsh plugin --profile web remove dsh-llm-fallbacks
