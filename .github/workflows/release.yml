@@ -66,10 +66,6 @@ jobs:
         id: ver
         run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
 
-      - name: Detect prerelease
-        id: pre
-        run: echo "prerelease=$(node -p "/-/.test(require('./package.json').version)")" >> "$GITHUB_OUTPUT"
-
       # The Release prep workflow derives the version from the PR title
       # ("release v<version>") and bumps package.json to match. If the merged
       # PR drifted from that contract (e.g. the version was edited inside the
@@ -157,4 +153,8 @@ jobs:
           name: v${{ steps.ver.outputs.version }}
           body_path: ${{ steps.changelog.outputs.notes_file }}
           draft: false
-          prerelease: ${{ steps.pre.outputs.prerelease == 'true' }}
+          # User decision (2026-08-14): alpha versions publish as regular
+          # GitHub Releases (no Pre-release marker) — the npm dist-tag
+          # (`latest`) is the real channel signal; the GitHub Release is the
+          # visible record.
+          prerelease: false
