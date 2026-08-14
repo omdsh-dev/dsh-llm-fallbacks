@@ -35,6 +35,24 @@ dsh plugin --profile web add dsh-llm-fallbacks   # pin a version with @<version>
 
 A registry install fetches the **built package** (`dist/`) — nothing is built on the target machine. The plugin is **mount-only**: it never modifies the dsh source tree, and no patch / postinstall step exists — dsh upgrades never require re-patching. Versioning follows npm dist-tags (`latest` by default); pin an exact version with `dsh plugin --profile web add dsh-llm-fallbacks@<version>`.
 
+> **Release status**: the package is **not on the npm registry yet** — the first release (`0.1.0-alpha.2`) is pending (the release pipeline is in place; publishing awaits the Trusted Publishing authorization). All registry-based commands in this section are **preview** until the first release PR is merged; until then use the [git install](#git-install-works-today) channel.
+
+### Registry package (npm / pnpm)
+
+```sh
+npm install dsh-llm-fallbacks   # or: pnpm add dsh-llm-fallbacks
+```
+
+> **Preview**: effective after `dsh-llm-fallbacks@0.1.0-alpha.2` is published. Release process → [docs/release.md](docs/release.md).
+
+### Git install (works today)
+
+```sh
+dsh plugin --profile web add github:omdsh-dev/dsh-llm-fallbacks   # pin a commit with #<sha>
+```
+
+A git install fetches **sources, not built artifacts** — the bundle builds itself on install (`prepare` self-build), so the target machine needs node + pnpm. pnpm ≥ 10 blocks a git dependency's `prepare` by default (`ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`); allow the build in the profile's `pnpm-workspace.yaml` and re-run the `add` (details in [docs/install.md](docs/install.md)).
+
 ### Local directory install (recommended for development / verification)
 
 ```sh
@@ -116,6 +134,7 @@ The plugin installs as a **pure mount** — it never modifies the dsh source tre
 | Doc | Content |
 |---|---|
 | [docs/install.md](docs/install.md) | profile install / registry install / uninstall / `--dump-config` verification |
+| [docs/release.md](docs/release.md) | release process: Trusted Publishing setup, Release prep SOP, fragment format, rollback |
 | [docs/configuration.md](docs/configuration.md) | full `fallbacks` namespace reference, selector syntax, example YAML, plugin-config card usage, behavior notes |
 | [docs/verification.md](docs/verification.md) | verification records (test matrix, bundle layer order, runtime contracts, QA gate script) |
 
