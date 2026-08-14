@@ -88,7 +88,7 @@ PR-driven, two steps — merging the release PR is the ONLY publish path
    for an auto `--patch` bump.
 2. **Merge the PR** → `release.yml` runs on the merge commit: validate →
    build → `npm publish --provenance --access public --tag latest` →
-   tag `vX.Y.Z` → GitHub Release (prerelease when the version contains `-`).
+   tag `vX.Y.Z` → GitHub Release (always a regular release — no Pre-release marker, user decision 2026-08-14; the npm `latest` dist-tag carries the channel semantics).
 
 Secrets: **zero long-term secrets**. npm auth is Trusted Publishing (OIDC,
 tokenless) once the package exists; the one-time `NODE_AUTH_TOKEN` bootstrap

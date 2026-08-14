@@ -103,7 +103,7 @@ After the merge, `release.yml` triggers (`pull_request: closed` + `merged == tru
 1. Checks out the merge commit → `release:validate` → `pnpm build`;
 2. `npm publish --provenance --access public --tag latest` — **explicit `--tag latest`**: npm ≥ 11 (bundled with Node 24) requires an explicit `--tag` when publishing a prerelease, otherwise it hard-throws; the first version (`0.1.0-alpha.2`) lands on the default `latest` dist-tag (`npm i dsh-llm-fallbacks` resolves), and the later stable `0.1.0` naturally takes over `latest`. npm authentication is selected automatically: TP configured → OIDC; bootstrap period → `NODE_AUTH_TOKEN` (see the "npm authentication" section);
 3. Tags `v<v>` and pushes (skipped if it exists);
-4. Creates the GitHub Release from the changelog section (`prerelease: true` when the version contains `-`).
+4. Creates the GitHub Release from the changelog section — **always a regular release** (no Pre-release marker, user decision 2026-08-14); the npm `latest` dist-tag is the channel signal, the GitHub Release is the visible record.
 
 ## Changelog fragment format
 
