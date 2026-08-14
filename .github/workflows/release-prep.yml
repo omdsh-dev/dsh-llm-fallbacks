@@ -22,6 +22,10 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  # gh label create requires issues:write (labels API) — without it the
+  # ensure-label step silently fails (previously swallowed by `|| true`) and
+  # `gh pr create --label release` errors with "label 'release' not found".
+  issues: write
 
 concurrency:
   group: release-prep
@@ -121,7 +125,7 @@ jobs:
       - name: Ensure release label
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh label create release --if-not-exists --color 0E8A16 || true
+        run: gh label create release --if-not-exists --color 0E8A16
 
       # State-aware PR handling. `gh pr view` also matches closed PRs, and
       # `gh pr edit` silently keeps them closed — which would make a re-run
