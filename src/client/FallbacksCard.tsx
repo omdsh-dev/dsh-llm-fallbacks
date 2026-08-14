@@ -26,8 +26,9 @@
  * `roles.rules`, whose role field is a dropdown bound to the declared ids
  * + the built-in `inherit`, same-page live). Saving runs `validateDraft`
  * first — id format/reserved word/duplicates, undeclared rule role
- * references, and illegal selectors block the write with a validation
- * banner + inline red borders (never touching the store error path); a
+ * references, illegal selectors, and a role with no chain entries (no
+ * model config) block the write with a validation banner + inline red
+ * borders / hints (never touching the store error path); a
  * non-empty `state.legacyKeys` renders the migration banner at the top of
  * the card body. The row editors keep their filled editorCard surface
  * inside the card, with `--dsw-alias-*` tokens throughout. The reset-
@@ -193,6 +194,12 @@ function validateDraft(draft: FallbacksConfig, t: FallbacksCardProps['t']): stri
       } catch (error) {
         errors.push(t('validation.selector', { entry, message: (error as Error).message }))
       }
+    }
+    // A declared role with no model config is meaningless (plan
+    // fallbacks-feedback-round T2): no chain entries → the save is blocked
+    // with an inline hint on the role card (chain area empty).
+    if ((role.chain ?? []).length === 0) {
+      errors.push(t('validation.roleChainRequired', { id: role.id }))
     }
   }
   for (const entry of draft.rootChain) {
@@ -1079,6 +1086,14 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                             onRemove={() => { removeRoleSelector(index, selectorIndex) }}
                           />
                         ))}
+                        {row.selectors.length === 0 && (
+                          // A role with no chain selectors has no model
+                          // config — save is blocked (roleChainRequired);
+                          // the inline hint explains why (plan
+                          // fallbacks-feedback-round T2), unconditional
+                          // while the chain area stays empty.
+                          <span className={css.hint}>{t('validation.roleChainRequired', { id: row.id })}</span>
+                        )}
                       </div>
                       <div className={css.ruleGrid}>
                         <div className={css.ruleCell}>

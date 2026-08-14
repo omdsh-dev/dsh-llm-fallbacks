@@ -24,7 +24,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi, type Mock } from 'vitest'
 import type {
-  ClientConnectionRpc, IApiClient, RpcResult,
+  ClientConnectionRpc, ConfigurableProviderView, IApiClient, ModelProviderGroup, RpcResult,
 } from '@deepseek-ai/dsh-client-connection/client'
 import { bindSnapshotSelector, type SnapshotSelectorHook } from '@deepseek-ai/dsh-client-web-react'
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
@@ -90,21 +90,34 @@ interface Scripted {
  * exercise dropdown options), and the fake `rpc.call` serves the
  * `fallbacks/get` + `fallbacks/set` + `fallbacks/reset` endpoints against a
  * mutable effective config (store-spec fixture shape). `config: null` = the
- * gateway is unreachable (get fails) — the KD-G5 degraded path.
+ * gateway is unreachable (get fails) — the KD-G5 degraded path. Pass
+ * `catalog` to serve a populated provider/model directory on mount plus the
+ * `llm-providers` namespace so those providers count as configured (the
+ * join that makes the provider dropdown offer them).
  */
 function scriptedApi(options: {
   config?: typeof defaultFallbacksConfig | null
   writable?: boolean
   legacyKeys?: string[]
+  catalog?: { providers: ConfigurableProviderView[]; groups: ModelProviderGroup[] }
 } = {}): Scripted {
   let current = options.config === undefined ? defaultFallbacksConfig : options.config
   const describe = vi.fn(() => Promise.resolve(ok({
     writable: options.writable ?? true,
     hasDocument: false,
-    namespaces: [],
+    namespaces: options.catalog === undefined
+      ? []
+      : [{
+          ns: 'llm-providers',
+          schema: {},
+          value: { providers: Object.fromEntries(options.catalog.providers.map(entry => [entry.provider, {}])) },
+          applies: 'live',
+          secrets: [],
+          revision: 1,
+        }],
   })))
-  const providers = vi.fn(() => Promise.resolve(ok({ providers: [] })))
-  const models = vi.fn(() => Promise.resolve(ok({ groups: [], failures: [] })))
+  const providers = vi.fn(() => Promise.resolve(ok({ providers: options.catalog?.providers ?? [] })))
+  const models = vi.fn(() => Promise.resolve(ok({ groups: options.catalog?.groups ?? [], failures: [] })))
   const history = vi.fn(() => Promise.resolve(ok({ events: [] })))
   const get = vi.fn(() => Promise.resolve(
     current === null
@@ -162,9 +175,11 @@ const ENABLED_CONFIG: typeof defaultFallbacksConfig = { ...defaultFallbacksConfi
 
 /**
  * A two-block config (spec §8) exercising every new editing surface: a
- * rootChain, two declared role entities (one with its own chain, one
- * chain-less with `fallback: none`), and role rules referencing a declared
- * id and the built-in `inherit`.
+ * rootChain, two declared role entities (one `inherit-root`, one
+ * `fallback: none` — both with their own chains so the draft is save-valid
+ * under the role model-config rule, plan fallbacks-feedback-round T2), and
+ * role rules referencing a declared id and the built-in `inherit`. The
+ * chain-less role save-block is exercised by dedicated tests below.
  */
 const TWO_BLOCK_CONFIG: typeof defaultFallbacksConfig = {
   ...defaultFallbacksConfig,
@@ -173,13 +188,28 @@ const TWO_BLOCK_CONFIG: typeof defaultFallbacksConfig = {
   roles: {
     list: [
       { id: 'reviewer', label: 'Reviewer', description: 'Reviews code', chain: ['anthropic/claude-3-5-sonnet'], fallback: 'inherit-root' },
-      { id: 'architect', label: 'Architect', description: 'Designs systems', chain: [], fallback: 'none' },
+      { id: 'architect', label: 'Architect', description: 'Designs systems', chain: ['other/gpt-4o'], fallback: 'none' },
     ],
     rules: [
       { origin: 'subagent', role: 'reviewer' },
       { role: 'inherit' },
     ],
   },
+}
+
+/**
+ * A populated catalog for the chain-add interaction: one configured
+ * provider (openai) with advertised models. The `catalog` scriptedApi
+ * option also serves the `llm-providers` namespace so openai counts as
+ * configured and appears in the selector provider dropdown.
+ */
+const CHAIN_CATALOG = {
+  providers: [
+    { provider: 'openai', displayName: 'OpenAI', settingsNs: 'llm-providers', settingsPath: [], active: true },
+  ] as ConfigurableProviderView[],
+  groups: [
+    { id: 'openai', name: 'OpenAI', models: [{ id: 'gpt-4o', name: 'GPT-4o' }] },
+  ] as ModelProviderGroup[],
 }
 
 /**
@@ -818,6 +848,9 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
       roles: {
         list: [{
           id: 'reviewer', label: '', description: '',
+          // A chain rides the role so the save is valid under the role
+          // model-config rule (T2) — this test pins prompt/permissions.
+          chain: ['openai/gpt-4o'],
           prompt: 'You review', permissions: { allow: ['read'] },
         }],
         rules: [],
@@ -861,6 +894,83 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     expect((screen.getByLabelText(en['enabled.label']) as HTMLInputElement).disabled).toBe(false)
     fireEvent.change(screen.getByLabelText(en['cooldownMs.label']), { target: { value: '7000' } })
     view.rerender(<FallbacksCard {...props} />)
+    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    await waitFor(() => expect(scripted.set).toHaveBeenCalled())
+  })
+
+  it('blocks save on a role without a model config: banner + inline hint, no gateway write (T2)', async () => {
+    // A declared role with zero chain selectors has no model config — the
+    // draft is rejected before it reaches the wire, and the role card shows
+    // the inline hint unconditionally while its chain area is empty (plan
+    // fallbacks-feedback-round T2; `fallback: none` + empty chain is
+    // blocked too — a role without a model config is meaningless).
+    const config: typeof defaultFallbacksConfig = {
+      ...defaultFallbacksConfig,
+      enabled: true,
+      rootChain: ['openai/gpt-4o'],
+      roles: {
+        list: [{ id: 'coder', label: 'Coder', description: '', chain: [], fallback: 'none' }],
+        rules: [],
+      },
+    }
+    const { view, props, scripted } = await mountCard({ config })
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    // The inline hint explains the chain-less role before any save attempt.
+    expect(screen.getAllByText(en['validation.roleChainRequired'])).toHaveLength(1)
+    // An unrelated edit makes the draft dirty (a clean draft's save button
+    // is disabled) before the save attempt.
+    fireEvent.change(screen.getByLabelText(en['cooldownMs.label']), { target: { value: '7000' } })
+    view.rerender(<FallbacksCard {...props} />)
+    // Save is blocked: the role has no model config.
+    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    view.rerender(<FallbacksCard {...props} />)
+    expect(scripted.set).not.toHaveBeenCalled()
+    expect(scripted.call).not.toHaveBeenCalledWith('/api', 'fallbacks/set', expect.anything())
+    const alert = screen.getByRole('alert')
+    expect(alert.textContent).toContain(en['validation.blocked'])
+    expect(alert.textContent).toContain(en['validation.roleChainRequired'])
+  })
+
+  it('a role becomes saveable again once a chain entry is added: hint clears, save passes (T2)', async () => {
+    const config: typeof defaultFallbacksConfig = {
+      ...defaultFallbacksConfig,
+      enabled: true,
+      roles: {
+        list: [{ id: 'coder', label: 'Coder', description: '', chain: [], fallback: 'inherit-root' }],
+        rules: [],
+      },
+    }
+    const { view, props, controller, scripted } = await mountCard({ config, catalog: CHAIN_CATALOG })
+    // Settle the catalog explicitly so the selector dropdowns offer openai
+    // before the interaction (the mount-effect load is asynchronous).
+    await controller.loadCatalog()
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    // Chain area empty → inline hint shown; save is blocked (an unrelated
+    // edit first makes the draft dirty so the save button is enabled).
+    expect(screen.getAllByText(en['validation.roleChainRequired'])).toHaveLength(1)
+    fireEvent.change(screen.getByLabelText(en['cooldownMs.label']), { target: { value: '7000' } })
+    view.rerender(<FallbacksCard {...props} />)
+    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    view.rerender(<FallbacksCard {...props} />)
+    expect(screen.getByRole('alert').textContent).toContain(en['validation.roleChainRequired'])
+    // Add a chain entry to the role card and pick provider + model.
+    const rolesGroup = screen.getByText(en['roles.list.label']).closest('[role="group"]') as HTMLElement
+    fireEvent.click(within(rolesGroup).getByRole('button', { name: en['roles.selector.add'] }))
+    view.rerender(<FallbacksCard {...props} />)
+    const providerSelect = within(rolesGroup).getByLabelText(en['roles.rule.provider']) as HTMLSelectElement
+    fireEvent.change(providerSelect, { target: { value: 'openai' } })
+    view.rerender(<FallbacksCard {...props} />)
+    const modelSelect = within(rolesGroup).getByLabelText(en['roles.rule.model']) as HTMLSelectElement
+    fireEvent.change(modelSelect, { target: { value: 'gpt-4o' } })
+    view.rerender(<FallbacksCard {...props} />)
+    // The inline hint clears once the chain area has a selector, and the
+    // blocked-save presentation clears live (no stale banner over a valid
+    // draft).
+    expect(screen.queryByText(en['validation.roleChainRequired'])).toBeNull()
+    expect(screen.queryByRole('alert')).toBeNull()
+    // The valid draft saves through the gateway.
     fireEvent.click(screen.getByRole('button', { name: en.save }))
     await waitFor(() => expect(scripted.set).toHaveBeenCalled())
   })

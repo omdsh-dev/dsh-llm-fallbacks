@@ -125,11 +125,14 @@ export interface FallbacksConfigLogger {
 /**
  * Validate a fallbacks config (pure, warn-only — never throws, never
  * mutates): role id format/uniqueness/reserved word, rule role references
- * (declared ids + the built-in `'inherit'`), the `fallback` enum, and
- * `rootChain`/role-chain selector legality. `label`/`description` are free
- * text and are deliberately not validated. Each violation emits one
- * `llm-fallbacks: ...` warn and "does not take effect" — the config stays
- * usable (spec §4 / AC-4 warn-not-crash semantics).
+ * (declared ids + the built-in `'inherit'`), the `fallback` enum,
+ * `rootChain`/role-chain selector legality, and the role model-config
+ * requirement (a declared role with a missing/empty chain warns — a role
+ * without a model config is meaningless, plan fallbacks-feedback-round
+ * T2). `label`/`description` are free text and are deliberately not
+ * validated. Each violation emits one `llm-fallbacks: ...` warn and "does
+ * not take effect" — the config stays usable (spec §4 / AC-4
+ * warn-not-crash semantics).
  */
 export function validateFallbacksConfig(config: FallbacksConfig, logger: FallbacksConfigLogger): void {
   const declaredIds = new Set<string>()
@@ -160,6 +163,15 @@ export function validateFallbacksConfig(config: FallbacksConfig, logger: Fallbac
           `llm-fallbacks: ignoring invalid chain entry "${entry}" in role "${role.id}": ${(error as Error).message}`,
         )
       }
+    }
+    // A declared role with no model config is meaningless: the settings
+    // card blocks saving one, and hand-written YAML gets this startup warn
+    // (warn-only — never throws; the runtime still falls back to
+    // rootChain defensively, plan fallbacks-feedback-round T2).
+    if ((role.chain ?? []).length === 0) {
+      logger.warn(
+        `llm-fallbacks: role "${role.id}" has no model config — declare at least one chain entry, or use the built-in "inherit" rule target instead`,
+      )
     }
     if (role.fallback !== undefined && role.fallback !== 'inherit-root' && role.fallback !== 'none') {
       logger.warn(

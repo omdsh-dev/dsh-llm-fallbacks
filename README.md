@@ -77,7 +77,7 @@ fallbacks:
         role: reviewer
 ```
 
-Roles are declared entities: `roles.list` holds role cards (id/label/description + optional chain/fallback), and `roles.rules` match origin/provider/model in order to a declared role id or the built-in `inherit` (first match wins) — **no rule match → `inherit` → `rootChain`**. A declared role is only ever hit when a rule references it. The legacy chain-key namespace and role-default field are gone (migration table: [docs/configuration.md](docs/configuration.md)).
+Roles are declared entities: `roles.list` holds role cards (id/label/description + chain/fallback), and `roles.rules` match origin/provider/model in order to a declared role id or the built-in `inherit` (first match wins) — **no rule match → `inherit` → `rootChain`**. A declared role is only ever hit when a rule references it. A role without a chain is meaningless — the settings card blocks saving it and the host warns at startup; give every declared role a chain, or point its rules at the built-in `inherit`. The legacy chain-key namespace and role-default field are gone (migration table: [docs/configuration.md](docs/configuration.md)).
 
 Save and restart the web session for the changes to take effect. The feature switch `fallbacks.enabled` **defaults to off (`false`)** — the plugin only engages once it is turned on; `triggerCodes` defaults to `AUTH` / `QUOTA` / `RATE_LIMIT`; and with **no `rootChain`/role chains configured the behavior is identical to not having the plugin installed**. More examples (role entities, fallback strategies, rules referencing `inherit`) → [docs/configuration.md](docs/configuration.md).
 
