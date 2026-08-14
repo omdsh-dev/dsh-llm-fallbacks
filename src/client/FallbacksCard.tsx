@@ -197,8 +197,9 @@ function validateDraft(draft: FallbacksConfig, t: FallbacksCardProps['t']): stri
       }
     }
     // A declared role with no model config is meaningless (plan
-    // fallbacks-feedback-round T2): no chain entries → the save is blocked
-    // with an inline hint on the role card (chain area empty).
+    // fallbacks-feedback-round T2): the chain has no configured entries —
+    // blank selector rows serialize to nothing, so they count as empty —
+    // the save is blocked with an inline hint on the role card.
     if ((role.chain ?? []).length === 0) {
       errors.push(t('validation.roleChainRequired', { id: role.id }))
     }
