@@ -8,23 +8,61 @@
  * runtime, so they are pinned compile-time via `expectTypeOf` (no-op at
  * runtime); the emitted `dist/index.d.ts` (tsc build) is the full type
  * surface.
+ *
+ * `LIBRARY_EXPORT_KEYS` below is the SSOT for the export inventory in
+ * docs/consumer-api.md (函数导出清单 / 值导出 / 插件既有导出): the docs
+ * tables must list exactly these runtime keys (S-3 mechanical drift guard).
  */
 
 import { afterEach, describe, expect, expectTypeOf, it, vi } from 'vitest'
 import * as index from '../src/index.ts'
 
+/**
+ * SSOT for the docs/consumer-api.md export inventory — the runtime keys its
+ * 函数导出清单 / 值导出 / 插件既有导出 tables list. S-3 mechanical drift
+ * guard: the runtime existence assertions iterate over this array, and the
+ * type map below must cover exactly this set, so a docs/table/export drift
+ * fails CI instead of rotting silently.
+ */
+const LIBRARY_EXPORT_KEYS = [
+  // Pre-existing plugin surface — zero regression.
+  'name',
+  'Config',
+  'stateStore',
+  'countRetryEvents',
+  'apply',
+  // Library API functions (plan fallbacks-consumer-api T1).
+  'resolveRole',
+  'resolveCandidate',
+  'resolveChainViews',
+  'selectCandidates',
+  'resolveChain',
+  'hasWildcardEntry',
+  'createCandidateFilter',
+  'annotateCandidates',
+  'validateFallbacksConfig',
+  'detectLegacyKeys',
+  'parseSelector',
+  // Library API values — `defaultFallbacksConfig` is a T1 re-export (NOT
+  // part of the pre-existing plugin surface; S-1); `provide` is the
+  // declarative service metadata added in T2 (F-004).
+  'INHERIT_ROLE_ID',
+  'ROLE_ID_PATTERN',
+  'defaultFallbacksConfig',
+  'provide',
+  'SelectorError',
+] as const
+
 describe('export surface: runtime values', () => {
   // Export key → expected `typeof` result. `Config` (schemastery schema) and
-  // the `SelectorError` class are callable values → 'function'.
+  // the `SelectorError` class are callable values → 'function'; `provide` is
+  // a `readonly ['llm-fallbacks']` array → 'object'.
   const valueExports: Record<string, string> = {
-    // Pre-existing plugin surface — zero regression.
     name: 'string',
     Config: 'function',
-    defaultFallbacksConfig: 'object',
     stateStore: 'function',
     countRetryEvents: 'function',
     apply: 'function',
-    // Library API functions (plan fallbacks-consumer-api T1).
     resolveRole: 'function',
     resolveCandidate: 'function',
     resolveChainViews: 'function',
@@ -36,16 +74,26 @@ describe('export surface: runtime values', () => {
     validateFallbacksConfig: 'function',
     detectLegacyKeys: 'function',
     parseSelector: 'function',
-    // Library API values.
     INHERIT_ROLE_ID: 'string',
     ROLE_ID_PATTERN: 'object',
+    defaultFallbacksConfig: 'object',
+    provide: 'object',
     SelectorError: 'function',
   }
 
-  it.each(Object.entries(valueExports))('exports %s (%s)', (key, expectedType) => {
-    expect(index).toHaveProperty(key)
-    expect(typeof (index as unknown as Record<string, unknown>)[key]).toBe(expectedType)
+  // The type map and the docs-inventory SSOT must cover EXACTLY the same
+  // keys — drift in either direction is a contract change (S-3).
+  it('the type map covers exactly the docs-inventory keys (LIBRARY_EXPORT_KEYS)', () => {
+    expect(Object.keys(valueExports).sort()).toEqual([...LIBRARY_EXPORT_KEYS].sort())
   })
+
+  it.each(LIBRARY_EXPORT_KEYS.map((key) => [key, valueExports[key]] as const))(
+    'exports %s (%s)',
+    (key, expectedType) => {
+      expect(index).toHaveProperty(key)
+      expect(typeof (index as unknown as Record<string, unknown>)[key]).toBe(expectedType)
+    },
+  )
 
   it('exports the canonical value constants with their expected contents', () => {
     expect(index.name).toBe('llm-fallbacks')
@@ -93,6 +141,11 @@ describe('export surface: callable smokes', () => {
 
 describe('export surface: type exports (compile-time only)', () => {
   it('re-exports the library types from the package root', () => {
+    // DEV-TIME pin (F-001/S-2): vitest's esbuild never typechecks tests and
+    // CI runs test+build only (build `tsc` covers src), so this block is
+    // INERT in CI — it exists for local `tsc` validation (a scratch tsconfig
+    // including tests/, or in-editor diagnostics). Keep it in sync when the
+    // type surface changes; it is NOT the CI type guard.
     expectTypeOf<index.Origin>().toEqualTypeOf<'root' | 'subagent'>()
     expectTypeOf<index.AgentLike>().toMatchTypeOf<{ options?: { provider?: string } }>()
     expectTypeOf<index.Selector>().toEqualTypeOf<{ provider: string; model?: string; raw: string }>()
@@ -132,5 +185,17 @@ describe('export surface: type exports (compile-time only)', () => {
     expectTypeOf<index.AgentFallbackState>().toMatchTypeOf<{ pendingSwitch?: index.PendingSwitch }>()
     expectTypeOf<index.StepFailures>().toMatchTypeOf<{ turn: number; step: number }>()
     expectTypeOf<index.FallbackStateStore>().toMatchTypeOf<object>()
+    // Service contract (plan fallbacks-consumer-api T2): the static `provide`
+    // metadata value and the `FallbacksService` interface (the typed
+    // `ctx.get('llm-fallbacks')` surface via the cordis Context merge).
+    expectTypeOf(index.provide).toEqualTypeOf<readonly ['llm-fallbacks']>()
+    expectTypeOf<index.FallbacksService>().toEqualTypeOf<{
+      name: 'llm-fallbacks'
+      version: string
+      resolveRole: typeof index.resolveRole
+      resolveChain: typeof index.resolveChain
+      validateFallbacksConfig: typeof index.validateFallbacksConfig
+      detectLegacyKeys: typeof index.detectLegacyKeys
+    }>()
   })
 })

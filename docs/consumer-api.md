@@ -46,15 +46,18 @@ validateFallbacksConfig(config, logger)
 | `INHERIT_ROLE_ID` | 内置保留角色 id `'inherit'`（无规则命中时的回退目标）。 |
 | `ROLE_ID_PATTERN` | 角色 id 格式正则 `/^[a-z0-9-]{1,32}$/`。 |
 | `defaultFallbacksConfig` | 默认配置对象（`enabled: false`、默认 `triggerCodes`、空链）。 |
+| `provide` | 声明性服务元数据 `['llm-fallbacks'] as const`（loader/工具识别用；实际注册在 `apply()` 内——见下节具名 service）。 |
 | `SelectorError` | `parseSelector` 抛出的可捕获错误类——catch 侧类型安全依赖它。 |
 
 ### 类型导出
 
-`FallbacksConfig` / `FallbacksRole` / `FallbacksRoles` / `FallbacksRoleRule` / `FallbackStrategy` / `RevertPolicy` / `Origin` / `AgentLike` / `Selector` / `FailingModel` / `AnnotatedCandidate` / `CandidateSkipReason` / `CandidateFilterOptions` / `FallbacksConfigLogger`——均为 `export type`，仅编译期存在。
+`FallbacksConfig` / `FallbacksRole` / `FallbacksRoles` / `FallbacksRoleRule` / `FallbackStrategy` / `RevertPolicy` / `Origin` / `AgentLike` / `Selector` / `FailingModel` / `AnnotatedCandidate` / `CandidateSkipReason` / `CandidateFilterOptions` / `FallbacksConfigLogger` / `FallbacksService`——均为 `export type`，仅编译期存在。
 
 ### 插件既有导出（保持不变）
 
 `name` / `Config`（schemastery schema）/ `stateStore` / `countRetryEvents` / `apply` 及事件与状态类型（`FallbackSwitchReason` / `FallbacksSwitchEventData` / `AgentFallbackState` / `FallbackStateStore` / `PendingSwitch` / `StepFailures`）继续从包根导出，零回归。
+
+> **机械守卫（S-3）**：上方运行时导出清单（函数 / 值 / 插件既有导出）的 SSOT 是 `tests/export-surface.spec.ts` 中的 `LIBRARY_EXPORT_KEYS` —— 本清单新增或删除任何运行时键，都必须同步该数组（及同文件的 `valueExports` 类型映射），否则 CI 失败。类型导出清单由同文件 `expectTypeOf` 块 pin（dev-time 类型 pin，本地 tsc 校验）。
 
 ## 具名 service（`ctx.get('llm-fallbacks')`）
 

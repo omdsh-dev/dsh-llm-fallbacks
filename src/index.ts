@@ -266,14 +266,25 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   // functions (single point of truth, no copied logic). Registration is
   // fiber-scoped via `ctx.fiber.effect` — the fiber unload on plugin dispose
   // auto-unregisters it, so the returned disposer is ignored here.
-  ctx.provide('llm-fallbacks', {
-    name: 'llm-fallbacks',
-    version,
-    resolveRole,
-    resolveChain,
-    validateFallbacksConfig,
-    detectLegacyKeys,
-  })
+  // Multi-fiber dedupe (W-1): a later fiber applying over a shared context
+  // root hits cordis' loud duplicate-key failure (`service "llm-fallbacks"
+  // has been registered at <…>`), which would abort apply() BEFORE the
+  // dedupe-guarded gateway/typert registrations below. Mirror advisor's
+  // multi-fiber dedupe: the catch lets the FIRST fiber own the service while
+  // later fibers degrade gracefully (no service on that fiber).
+  try {
+    ctx.provide('llm-fallbacks', {
+      name: 'llm-fallbacks',
+      version,
+      resolveRole,
+      resolveChain,
+      validateFallbacksConfig,
+      detectLegacyKeys,
+    })
+  } catch (error) {
+    if (!(error instanceof Error) || !error.message.includes('has been registered')) throw error
+    ctx.logger('llm-fallbacks').debug('fallbacks service already registered — no service on this fiber (multi-fiber dedupe)')
+  }
   let source: () => FallbacksConfig = () => entry
   // AC-4: warn-not-crash startup validation — the schema-resolved entry is
   // checked once (invalid ids / undeclared rule references / illegal

@@ -140,6 +140,7 @@ fallbacks:
 | [docs/install.md](docs/install.md) | profile 安装 / registry 安装 / 卸载 / `--dump-config` 验证 |
 | [docs/release.md](docs/release.md) | 发布流程：Trusted Publishing 前置、Release prep SOP、fragment 格式、回滚 |
 | [docs/configuration.md](docs/configuration.md) | `fallbacks` 命名空间全字段、selector 语法、示例 YAML、插件配置卡使用、行为说明 |
+| [docs/consumer-api.md](docs/consumer-api.md) | 开发者消费契约：导出清单、最小示例、生命周期、类型说明 |
 | [docs/verification.md](docs/verification.md) | 验证记录（测试矩阵、bundle 层序、运行契约、QA gate 剧本） |
 
 ## 许可

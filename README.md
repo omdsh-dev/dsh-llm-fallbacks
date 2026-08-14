@@ -145,6 +145,7 @@ Full contract (export inventory, minimal examples, lifecycle, typing) → [docs/
 | [docs/install.md](docs/install.md) | profile install / registry install / uninstall / `--dump-config` verification |
 | [docs/release.md](docs/release.md) | release process: Trusted Publishing setup, Release prep SOP, fragment format, rollback |
 | [docs/configuration.md](docs/configuration.md) | full `fallbacks` namespace reference, selector syntax, example YAML, plugin-config card usage, behavior notes |
+| [docs/consumer-api.md](docs/consumer-api.md) | developer consumption contract: export inventory, minimal examples, lifecycle, typing |
 | [docs/verification.md](docs/verification.md) | verification records (test matrix, bundle layer order, runtime contracts, QA gate script) |
 
 ## License

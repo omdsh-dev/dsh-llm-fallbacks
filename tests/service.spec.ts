@@ -22,6 +22,7 @@ import { createRequire } from 'node:module'
 import { Context } from '@deepseek-ai/cordis'
 import {
   apply,
+  defaultFallbacksConfig,
   detectLegacyKeys,
   provide,
   resolveChain,
@@ -50,6 +51,10 @@ describe('llm-fallbacks named cordis service', () => {
   })
 
   it('is available through ctx.get while the plugin is applied', () => {
+    // Pre-apply lifecycle (F-003): before apply(), the strict get on the
+    // missing impl is `undefined` — the service exists only while applied.
+    expect(ctx.get('llm-fallbacks')).toBeUndefined()
+
     apply(ctx)
 
     const service = ctx.get('llm-fallbacks')
@@ -104,7 +109,11 @@ describe('llm-fallbacks named cordis service', () => {
     ).toEqual(['openai/gpt-4o'])
     // validateFallbacksConfig — a valid config warns nothing.
     const warn = vi.fn()
+    // Spread the defaults so the fixture satisfies the full FallbacksConfig
+    // shape (same pattern as tests/export-surface.spec.ts) — surfaced by the
+    // dev-time tsc validation (F-001), pre-existing latent type error.
     const validConfig: FallbacksConfig = {
+      ...defaultFallbacksConfig,
       enabled: true,
       rootChain: ['openai/gpt-4o'],
       roles: {
@@ -127,5 +136,22 @@ describe('llm-fallbacks named cordis service', () => {
     // cordis 4.0.1: the provide disposer runs on fiber unload and deletes the
     // store entry; strict `get` on the missing impl returns `undefined` (no throw).
     expect(ctx.get('llm-fallbacks')).toBeUndefined()
+  })
+
+  it('a second apply over the same context root does not throw; the first apply owns the service (multi-fiber dedupe)', () => {
+    apply(ctx)
+    const first = ctx.get('llm-fallbacks')!
+
+    // A later fiber applying over a shared context root hits cordis' loud
+    // duplicate-key failure on `provide` (`service "llm-fallbacks" has been
+    // registered at <…>`). The guard (W-1) must let it degrade gracefully
+    // instead of aborting apply() before the dedupe-guarded gateway/typert
+    // registrations below — later fibers get NO service on their fiber.
+    expect(() => apply(ctx)).not.toThrow()
+
+    // The FIRST apply's service object stays registered: same identity and
+    // same function references (no clobber by the second apply).
+    expect(ctx.get('llm-fallbacks')).toBe(first)
+    expect(first.resolveRole).toBe(resolveRole)
   })
 })
