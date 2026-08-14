@@ -6,7 +6,7 @@ This document records the installation / runtime-contract verification already c
 
 ## Verified (evidence summary for this iteration)
 
-### 1. Test matrix (unit + integration + client + host gateway + command; 20 files / 409 tests all green)
+### 1. Test matrix (unit + integration + client + host gateway + command + release/consumer tooling; 23 files / 460 tests all green)
 
 | Scope | Files | Count | Contract covered |
 |---|---|---|---|
@@ -16,9 +16,10 @@ This document records the installation / runtime-contract verification already c
 | integration (T4) | `plugin.spec.ts` / `coexist-llm-retry.spec.ts` / `always-mode.spec.ts` | 19 / 4 / 5 | end-to-end re-integration (including the registration-order dependency of the model-selection combination, T2), **two-plugin coexistence order** (normal backs off first, switches after the budget is exhausted; non-retryable codes switch directly), **always delegates downstream first + cap at the request boundary** (ADR-2), cooldown/revert integration, **safety-valve** original error semantics after the cap, combination order without mutual interference |
 | client (T5) | `fallbacks-store.spec.ts` / `fallbacks-card.spec.tsx` / `general-row.spec.tsx` / `conversation-switch.spec.tsx` | 88 / 29 / 9 / 15 | card read/write via the **gateway channel** (rpc mock of `/api/fallbacks/get|set|reset`: `load` fetches config from `get`, `save` goes through `set`, `resetToDefaults` goes through `reset`), `present` flag and unreachable-channel skeleton, describe only reads writable + other namespaces (the fallbacks namespace no longer appears in describe), KD-G3 new error path (errors surface truthfully after the revision guard was removed), draft seeded only from a real `get` result (I-1 invariant), chain/rule row-edit round trips, status-block recent-switch extraction (sessions.history event surface), card chrome (plugin-config page listing, collapse/expand, dirty/save/discard), controller lifecycle; General page status row (`settings.general.item` registration shape id `fallbacks` order 100, enabled badge + recent-switch summary, KD-G5 unreachable does not masquerade as disabled, lazy first read and no re-read once read); conversation switch row (`conversation.chat.node` keyed registration key `fallbacks-switch`, D1-defined state machine match/start/update/buildViewNode, renders `from → to (role · reason)` with unknown reasons passed through verbatim, role=status, malformed payloads degrade to the title row without throwing, zh rendering parity smoke) |
 | command (AC-5) | `command.spec.ts` | 30 | `/fallbacks` registration shape (name/description/empty hint/handler, disposer passthrough), conditional `commands` child injection (registers only when a registry exists; silent without a service), snapshot building (role/chain resolution with the default fallback, recent switches newest-first capped, cooldown read-only snapshot), output states (configured chain / no chain / switches present + absent / cooldown present + absent / `never` does not revert), zh/en rendering smoke, real runtime-state integration (switch events + cooldown read from real state; read-only, never adds state) |
+| release/consumer tooling | `service.spec.ts` / `export-surface.spec.ts` / `release-scripts.spec.ts` | 7 / 27 / 17 | the named cordis service surface (static provide metadata, `ctx.get` availability while applied, unregister on dispose, multi-fiber dedupe, same functions as the package-root re-exports); the package export surface (runtime values + callable smokes + type exports matching the docs-inventory keys); release-script gates (autoBumpPatch / insertSection / parseArgs / validateReleaseVersion / tagExists) |
 | regression | `skeleton.spec.ts` / `host-native.spec.ts` / `peer-deps.test.ts` | 3 / 3 / 5 | bundle contract (row id, empty schema accepted, host+client apply entry points); host-native behavior baseline (real `@deepseek-ai/dsh-agent` module: trigger-code switches route to the chain target, always-cap second return point, no-op invariant); registry peer contract (`@deepseek-ai/*` as peerDependencies only, dsh-* pinned to `^0.1.0-rc.6`, autoInstallPeers, no link farm) |
 
-Result: **20 files / 409 tests all green** (`pnpm test`, vitest run); `pnpm build` (`tsc -p tsconfig.build.json` emits JS first (standard decorator downgrade `__esDecorate`) → tsdown host bundle →
+Result: **23 files / 460 tests all green** (`pnpm test`, vitest run); `pnpm build` (`tsc -p tsconfig.build.json` emits JS first (standard decorator downgrade `__esDecorate`) → tsdown host bundle →
 `pnpm run build-client` → `tsc` declarations → `node scripts/verify-dist.mjs` artifact-parsing guard) all green — `tsc` is
 driven by the real host type surface (registry peer `@deepseek-ai/*@0.1.0-rc.6`, no in-repo type shims). The no-op regression
 invariants (empty chains / no match / chain exhausted / safety-valve cap exceeded → pass through without producing
@@ -91,19 +92,19 @@ Then restart the dsh web session so the host half and the client half load.
 2. **First open (no `fallbacks` config yet)**: the card shows its skeleton (card header / intro / read-only status block /
    feature switch / save / reset to defaults), the feature switch `enabled` is **OFF by default**, the configuration form body is hidden
    and the "Feature disabled" hint shows — the card is always usable and never blank just because the namespace is missing.
-3. Turn on the `enabled` switch → the configuration form body appears (`triggerCodes` / `chains` / `roles` /
+3. Turn on the `enabled` switch → the configuration form body appears (`triggerCodes` / `rootChain` / `roles` /
    `cooldownMs` / `revertPolicy` / `maxSwitchesPerStep` / `alwaysModeRetryCap`).
 4. Edit any field (e.g. change `cooldownMs` to `600000`) and save.
 5. **Expected**: the save succeeds with no conflict banner; `$DSH_HOME/settings.yaml` (or that profile's settings
    path) gets the new value written (including `enabled: true`); re-entering the page shows the saved value with the switch
-   still ON, and revision behaves normally (a concurrent modification shows a conflict banner + a "Reload" button instead
-   of a silent overwrite).
+   still ON, and a concurrent modification from another session surfaces as a truthful error banner on save — the gateway
+   `set` has no revision guard, so there is no "Reload" prompt and no silent overwrite (KD-G3).
 6. Turn off the `enabled` switch → the form body hides again (an in-progress draft is kept and still there when reopened);
    after one-click "Reset to defaults" confirm the config is back to the composed defaults (`enabled` back to `false`).
 
 ### 3. Runtime fallback verification (simulated failures)
 
-1. Configure a demo chain in the `fallbacks` namespace: point `chains.default` at a **fallback model**
+1. Configure a demo fallback chain in the `fallbacks` namespace: point `rootChain` at a **fallback model**
    (e.g. `openai/gpt-4o-mini`), misconfigure the primary model's (e.g. `deepseek/deepseek-chat`) credentials or
    point the chain at a non-existent provider, and construct a **non-retryable failure code** (`AUTH` / `QUOTA` path,
    reaching the plugin directly without backoff).
@@ -144,12 +145,12 @@ Then restart the dsh web session so the host half and the client half load.
    (`/api/fallbacks/get|set|reset`), independent of any settings-exposure mechanism of the dsh host (the `fallbacks`
    namespace not appearing in the describe exposure set is by design); a successful `get` sets `present`,
    and an unreachable channel shows an actionable skeleton rather than a dead page.
-3. Turn on the `enabled` switch → the configuration form body appears (`triggerCodes` / `chains` / `roles` /
+3. Turn on the `enabled` switch → the configuration form body appears (`triggerCodes` / `rootChain` / `roles` /
    `cooldownMs` / `revertPolicy` / `maxSwitchesPerStep` / `alwaysModeRetryCap`).
-4. **Add a chain via catalog selection**: in the `chains` row editor pick a target in the provider/model **dropdown
-   (model catalog)** to add a chain entry (e.g. a `default` chain → a fallback `provider/model` that exists in the
-   catalog); same for `roles.rules` row editing (optional). New rows only offer in-catalog options; out-of-catalog
-   values are kept, annotated as synthetic options.
+4. **Add a chain via catalog selection**: in the `rootChain` selector row pick a target in the provider/model **dropdown
+   (model catalog)** to add a chain entry (e.g. the root chain → a fallback `provider/model` that exists in the
+   catalog); same for `roles.list` role-chain rows and `roles.rules` row editing (optional). New rows only offer
+   in-catalog options; out-of-catalog values are kept, annotated as synthetic options.
 5. **Save** → UI saving → ready (`save` writes the user layer via `fallbacks/set`; `set` is
    merge-semantics with no revision guard — concurrent modifications no longer show a conflict banner; errors always
    surface truthfully in a banner).
@@ -172,7 +173,7 @@ Then restart the dsh web session so the host half and the client half load.
 
 #### 4.3 Switch routing + status block (AC-2 / AC-7)
 
-1. **Failure injection**: configure a demo chain (`chains.default` pointing at a fallback model); misconfigure the primary
+1. **Failure injection**: configure a demo fallback chain (`rootChain` pointing at a fallback model); misconfigure the primary
    model's credentials or point the chain at a non-existent provider to construct a **non-retryable failure code**
    (`AUTH` / `QUOTA`, reaching the plugin directly without backoff);
    on the retryable-code path (`RATE_LIMIT` / 5xx) observe llm-retry backing off first and the chain decision
