@@ -65,7 +65,9 @@ npm 的 Trusted Publishing（OIDC）只能对**已存在的包**配置——没�
 
 ### 1. 写 changelog fragment
 
-对每个**用户可见变更**，在 `.changes/unreleased/` 下新增一个 fragment（格式见下节）。没有 fragment 也可以发布（版本节将为空），但建议至少为每个面向用户的变更留一条。
+对每个**用户可见变更**，在 `.changes/unreleased/` 下新增一个 fragment（格式见下节；**一个文件一个 category**，纯英文 bullets——`<!-- CN -->` 等非 bullet 行会被原样渲染进 CHANGELOG）。
+
+**必须至少有一个 fragment**：`release.yml` 在 changelog 提取为空时直接 fail（发布中止）——空版本节无法发布。首次发布前尤其检查 `.changes/unreleased/` 非空（本仓库首次发布的 fragment 已随功能提交）。
 
 ### 2. 触发 Release prep
 
