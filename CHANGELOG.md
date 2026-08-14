@@ -1,5 +1,7 @@
 # Changelog
 
+<!-- release v0.1.0-alpha.2 -->
+
 All notable changes to this project are documented in this file.
 
 ## [Unreleased]
