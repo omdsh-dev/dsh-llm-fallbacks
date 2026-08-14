@@ -63,6 +63,51 @@ export type Config = FallbacksConfig
 export type { FallbackSwitchReason, FallbacksSwitchEventData } from './events.ts'
 export type { AgentFallbackState, FallbackStateStore, PendingSwitch, StepFailures } from './state.ts'
 
+// --- Library API re-exports (plan fallbacks-consumer-api T1) ---
+// The full fallback-runtime surface — role resolution, chain resolution,
+// config validation, selector parsing — re-exported from the package root so
+// consumers can `import { resolveRole } from 'dsh-llm-fallbacks'`. Each block
+// mirrors its submodule's export surface exactly; symbols also used
+// internally by apply() keep their local imports (the re-export refers to
+// the same binding — no duplicate definitions).
+export {
+  resolveRole,
+  type AgentLike,
+  type Origin,
+} from './roles.ts'
+export {
+  annotateCandidates,
+  createCandidateFilter,
+  hasWildcardEntry,
+  resolveCandidate,
+  resolveChain,
+  resolveChainViews,
+  selectCandidates,
+  type AnnotatedCandidate,
+  type CandidateFilterOptions,
+  type CandidateSkipReason,
+  type FailingModel,
+} from './chains.ts'
+export {
+  defaultFallbacksConfig,
+  detectLegacyKeys,
+  INHERIT_ROLE_ID,
+  ROLE_ID_PATTERN,
+  validateFallbacksConfig,
+  type FallbacksConfig,
+  type FallbacksConfigLogger,
+  type FallbacksRole,
+  type FallbacksRoles,
+  type FallbacksRoleRule,
+  type FallbackStrategy,
+  type RevertPolicy,
+} from './config.ts'
+export {
+  parseSelector,
+  SelectorError,
+  type Selector,
+} from './selectors.ts'
+
 /** Model-catalog service shape the wildcard existence probe reads (`ctx.llm`). */
 interface ModelCatalogService {
   listModels(provider: string): Promise<readonly { id: string }[]>
