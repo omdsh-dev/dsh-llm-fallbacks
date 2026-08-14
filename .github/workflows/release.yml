@@ -2,12 +2,15 @@ name: Release
 
 # PR-driven publish. Merging a `release vX.Y.Z` PR (opened by the Release prep
 # workflow) runs the whole release inline on the pull_request event:
-# validate -> build -> npm publish (Trusted Publishing / provenance) -> tag ->
-# GitHub Release. There is deliberately NO push:tags auto-publish path: a
-# manual `git tag && git push --tags` does not publish.
+# validate -> build -> npm publish (provenance) -> tag -> GitHub Release.
+# There is deliberately NO push:tags auto-publish path: a manual
+# `git tag && git push --tags` does not publish.
 #
-# No secrets: npm auth is Trusted Publishing (OIDC id-token + registry-url),
-# the tag push and GitHub Release use the built-in GITHUB_TOKEN.
+# No NPM_TOKEN: npm auth is Trusted Publishing (OIDC id-token + registry-url)
+# once the package exists; during first-publish bootstrap (the package is not
+# on the registry yet, so TP cannot be configured) the optional
+# NODE_AUTH_TOKEN repo secret is used instead. The tag push and GitHub
+# Release use the built-in GITHUB_TOKEN.
 #
 # NOTE: Node 24 ships npm with working Trusted Publishing / provenance
 # (sigstore). Do not use Node 22 or `npm install -g npm@latest` on Node 22 —
@@ -68,7 +71,13 @@ jobs:
       # No `--tag`: the first release is the only version on the registry, so
       # it lands on the default `latest` dist-tag (npm i dsh-llm-fallbacks
       # resolves); a later stable 0.1.0 takes over `latest` naturally.
-      - name: Publish to npm (Trusted Publishing)
+      - name: Publish to npm
+        env:
+          # Optional bootstrap-only secret: absent once Trusted Publishing is
+          # configured (npm prefers OIDC when available). setup-node with
+          # registry-url writes it into .npmrc, so npm uses it automatically
+          # for the first publish when no trusted publisher exists yet.
+          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
         run: npm publish --provenance --access public
 
       - name: Configure git identity

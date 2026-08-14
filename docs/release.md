@@ -1,6 +1,6 @@
 # 发布指南（Release Guide）
 
-本文档说明 `dsh-llm-fallbacks` 的发布流程：一次性前置（Trusted Publishing 授权）、发布 SOP（触发 → 审查 → merge）、changelog fragment 格式、发布检查清单与回滚/重跑说明。
+本文档说明 `dsh-llm-fallbacks` 的发布流程：npm 认证（首次发布 bootstrap token → 后续 Trusted Publishing）、发布 SOP（触发 → 审查 → merge）、changelog fragment 格式、发布检查清单与回滚/重跑说明。
 
 ## 发布模型（PR-driven）
 
@@ -9,7 +9,7 @@
 1. **Release prep**（手动触发）→ 生成可审查的 `release vX.Y.Z` PR（版本 bump + 英文 changelog + fragment 归档）。
 2. **merge 该 PR 才发布** → `Release` workflow 自动 publish + tag + GitHub Release。
 
-仓库内**零 secrets**：npm 认证走 Trusted Publishing（OIDC `id-token` + `npm publish --provenance`），GitHub 侧只用内置 `GITHUB_TOKEN`。**没有 `push:tags` 自动发布路径**——手动 `git tag && git push --tags` 不会发布，发布唯一入口是 merge `release vX.Y.Z` PR。
+仓库**不声明 `NPM_TOKEN`**：常规发布 npm 认证走 Trusted Publishing（OIDC `id-token` + `npm publish --provenance`，tokenless）；**首次发布例外**——npm TP 只能对已存在的包配置，首个版本用一次性 `NODE_AUTH_TOKEN` secret 发布（见「npm 认证」节）。GitHub 侧只用内置 `GITHUB_TOKEN`。**没有 `push:tags` 自动发布路径**——手动 `git tag && git push --tags` 不会发布，发布唯一入口是 merge `release vX.Y.Z` PR。
 
 相关工作流：
 
@@ -19,33 +19,46 @@
 | Release prep | `.github/workflows/release-prep.yml` | 手动（Actions → Release prep → Run workflow） |
 | Release | `.github/workflows/release.yml` | merge 标题为 `release v*` 的 PR |
 
-## 一次性前置：Trusted Publishing 授权（用户操作）
+## npm 认证：首次发布 bootstrap token → 后续 Trusted Publishing（用户操作）
 
-发布前需要把 GitHub Actions 的 `release.yml` 与 npm 账号绑定（npm 侧 OIDC 授权）。
-**该步骤只能由 npm 账号所有者（维护者）在 npm 网站上完成**——仓库内无法自动配置，也不是本仓库代码能代做的。
+npm 的 Trusted Publishing（OIDC）只能对**已存在的包**配置——没有预注册路径，`dsh-llm-fallbacks` 尚未发布，首次发布无法走 TP（会 ENEEDAUTH/404）。因此认证分两段：
 
-### Web UI 步骤（推荐）
+- **首次发布（bootstrap）**：一次性 Granular Access Token 存入 `NODE_AUTH_TOKEN` secret，发布 `0.1.0-alpha.2`。
+- **后续发布**：首次发布成功后，在 npm 包设置配置 Trusted Publisher 绑定 `release.yml`，此后发布**零 secrets**（OIDC 自动认证，token 可删除）。
 
-1. 登录 [npmjs.com](https://www.npmjs.com) → 右上角头像 → **Access Tokens**。
-2. **Generate New Token** → 类型选择 **Granular Access Token**。
-3. 填写名称（如 `dsh-llm-fallbacks-github-release`）；Package 选择 `dsh-llm-fallbacks`（或所在 scope/org）；权限选择 **Read and write**。
-4. 在 **Trusted Publishing** 区域：选择 GitHub 组织 `omdsh-dev`、仓库 `dsh-llm-fallbacks`、workflow 文件 `.github/workflows/release.yml`。
-5. 创建 token —— npm 会把该 token 绑定到该 workflow 的 OIDC 身份（subject）。此后 `release.yml` 的 `npm publish --provenance` 不再需要任何 token/secret。
+> **bootstrap token 是一次性机制，不是长期方案**：TP 配置完成后应从 GitHub 删除 `NODE_AUTH_TOKEN` secret（npm 官方也建议配置 TP 后限制传统 token 的发布权限）。
+>
+> 两步都只能由 npm 账号所有者（维护者）在 npm 网站上完成——仓库内无法自动配置，也不是本仓库代码能代做的。
 
-### CLI 等价（可选）
+### 首次发布：一次性 Granular Access Token（用户操作）
 
-```sh
-npm token create --granular --permissions=read-write \
-  --workflows=omdsh-dev/dsh-llm-fallbacks/.github/workflows/release.yml
-```
+1. 登录 [npmjs.com](https://www.npmjs.com) → 右上角头像 → **Access Tokens** → **Generate New Token** → 类型选择 **Granular Access Token**。
+2. 填写名称（如 `dsh-llm-fallbacks-bootstrap`）；Package 选择 `dsh-llm-fallbacks`；权限选择 **Read and write**。
+3. 复制 token，到 GitHub 仓库 **Settings → Secrets and variables → Actions** 新建 repository secret，名称 **`NODE_AUTH_TOKEN`**，值粘贴该 token。
+4. `release.yml` 的 publish 步骤通过 `env: NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}` 自动读取（`setup-node` 的 `registry-url` 会把该值写入 `.npmrc`，npm 自动使用）；secret 不存在时该 env 为空 → 走 OIDC/provenance 路径。
 
-确切 flag 以 `npm token create --help` 为准；Web UI 为推荐路径。
+### 后续发布：在 npm 包设置配置 Trusted Publisher（用户操作，tokenless）
+
+首次发布成功后，包在 npm 上才有 Settings 页：
+
+1. 登录 [npmjs.com](https://www.npmjs.com) → **Packages** → `dsh-llm-fallbacks` → **Settings** → **Trusted publishing**。
+2. **Select your publisher** → 选择 **GitHub Actions**。
+3. 填写字段：
+   - **Organization or user**（必填）：`omdsh-dev`（GitHub 组织/用户名）；
+   - **Repository**（必填）：`dsh-llm-fallbacks`；
+   - **Workflow filename**（必填）：`release.yml` —— **只填文件名**，不含路径，须含 `.yml`/`.yaml` 扩展名；workflow 须存在于仓库 `.github/workflows/` 下；
+   - **Environment name**（可选）：仅当发布 job 使用 GitHub environment 保护时填写；
+   - **Allowed actions**（必填）：勾选 **`npm publish`**（本仓库直接 `npm publish --provenance`，不走 staged publish）。
+4. 保存。该配置**不创建任何 token**——npm 接受来自该 workflow 的 OIDC 发布（tokenless by design）。
+
+> 每个包同一时间只能有一个 trusted publisher 配置；可随时编辑/删除（删除后回到 token 认证）。
 
 ### 注意事项
 
 - npm **provenance** 要求包为公开包（工作流中发布命令已是 `--access public`）。
 - GitHub 侧**无需额外配置**：OIDC token（`permissions: id-token: write`）由 Actions 自动签发；`contents: write` / `pull-requests: write` 已在 workflow 内声明。
-- 授权完成后，首次发布走**显式** `0.1.0-alpha.2`（见下方 SOP）；`--patch` auto 留给后续。
+- TP 就绪后删除 `NODE_AUTH_TOKEN` secret：npm CLI 在 OIDC 环境中优先走 OIDC，token 只是 bootstrap 期的回退路径。
+- 首次发布走**显式** `0.1.0-alpha.2`（见下方 SOP）；`--patch` auto 留给后续。
 
 ## 发布 SOP
 
@@ -84,7 +97,7 @@ merge 前核对：
 merge 后 `release.yml` 触发（`pull_request: closed` + `merged == true` + 标题 `release v` 前缀）：
 
 1. 检出 merge commit → `release:validate` → `pnpm build`；
-2. `npm publish --provenance --access public` —— **不传 `--tag`**：首个版本是 registry 上唯一版本，落默认 `latest` dist-tag（`npm i dsh-llm-fallbacks` 可解析）；后续稳定版 `0.1.0` 自然接棒 `latest`；
+2. `npm publish --provenance --access public` —— **不传 `--tag`**：首个版本是 registry 上唯一版本，落默认 `latest` dist-tag（`npm i dsh-llm-fallbacks` 可解析）；后续稳定版 `0.1.0` 自然接棒 `latest`。npm 认证自动选择：TP 已配置 → OIDC；bootstrap 期 → `NODE_AUTH_TOKEN`（见「npm 认证」节）；
 3. 打 tag `v<v>` 并 push（已存在则跳过）；
 4. 用 changelog 节创建 GitHub Release（版本含 `-` 时 `prerelease: true`）。
 
@@ -113,7 +126,7 @@ category: Added
 - [ ] `actionlint .github/workflows/*.yml` 干净（ci + release-prep + release）
 - [ ] `pnpm release:validate -- v<version>` 通过（发布前本地预览）
 - [ ] 版本号与 CHANGELOG 节一致；fragments 已归档
-- [ ] Trusted Publishing 授权已完成（仅首次发布需要）
+- [ ] npm 认证就绪：首次发布 = `NODE_AUTH_TOKEN` secret 已配置；后续发布 = Trusted Publisher 已绑定 `release.yml`（见「npm 认证」节）
 
 ## 回滚 / 重跑
 

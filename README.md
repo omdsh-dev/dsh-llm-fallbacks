@@ -35,7 +35,7 @@ dsh plugin --profile web add dsh-llm-fallbacks   # pin a version with @<version>
 
 A registry install fetches the **built package** (`dist/`) — nothing is built on the target machine. The plugin is **mount-only**: it never modifies the dsh source tree, and no patch / postinstall step exists — dsh upgrades never require re-patching. Versioning follows npm dist-tags (`latest` by default); pin an exact version with `dsh plugin --profile web add dsh-llm-fallbacks@<version>`.
 
-> **Release status**: the package is **not on the npm registry yet** — the first release (`0.1.0-alpha.2`) is pending (the release pipeline is in place; publishing awaits the Trusted Publishing authorization). All registry-based commands in this section are **preview** until the first release PR is merged; until then use the [git install](#git-install-works-today) channel.
+> **Release status**: the package is **not on the npm registry yet** — the first release (`0.1.0-alpha.2`) is pending (the release pipeline is in place; the first publish uses a one-time `NODE_AUTH_TOKEN` bootstrap secret, with Trusted Publishing configured afterwards for tokenless releases). All registry-based commands in this section are **preview** until the first release PR is merged; until then use the [git install](#git-install-works-today) channel.
 
 ### Registry package (npm / pnpm)
 

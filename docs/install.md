@@ -49,7 +49,7 @@ registry 安装注意：
 - **版本**：跟随 npm dist-tag（默认 `latest`）；钉精确版本 `dsh-llm-fallbacks@<version>` 可防止后续发布悄悄改变实际运行的代码。
 - **纯挂载，无补丁步骤**：registry 安装即完成——插件对 dsh 源码树零修改（bundle 行插入 + client inject + 自有 gateway），无需任何 apply/revert 脚本，dsh 升级后无需重打。
 
-> **发布状态**：`dsh-llm-fallbacks` **尚未发布到 npm registry**——首个版本 `0.1.0-alpha.2` 待发布（发布流水线已就绪，发布动作等待 Trusted Publishing 授权）。本节 registry 命令在首个 release PR merge 前为**预告**；当前可用的是 [git 安装](#4-git-安装当前可用)。发布流程见 [docs/release.md](docs/release.md)。
+> **发布状态**：`dsh-llm-fallbacks` **尚未发布到 npm registry**——首个版本 `0.1.0-alpha.2` 待发布（发布流水线已就绪；首次发布用一次性 `NODE_AUTH_TOKEN`，Trusted Publishing 在首次发布后配置）。本节 registry 命令在首个 release PR merge 前为**预告**；当前可用的是 [git 安装](#4-git-安装当前可用)。发布流程见 [docs/release.md](docs/release.md)。
 
 ## 3. npm / pnpm 包安装（预告）
 
@@ -57,7 +57,7 @@ registry 安装注意：
 npm install dsh-llm-fallbacks   # 或：pnpm add dsh-llm-fallbacks
 ```
 
-> **预告**：`dsh-llm-fallbacks@0.1.0-alpha.2` 发布后生效。包为已构建产物（`dist/`），消费面（库函数导入等）见消费面文档。
+> **预告**：`dsh-llm-fallbacks@0.1.0-alpha.2` 发布后生效。包为已构建产物（`dist/`），消费面（库函数导入等）文档随后续迭代提供。
 
 ## 4. git 安装（当前可用）
 
