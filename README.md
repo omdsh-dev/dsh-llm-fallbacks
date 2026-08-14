@@ -9,10 +9,10 @@
 
 Automatic provider/model fallback chains for dsh (DeepSeek Harness): when an agent's LLM requests keep failing — retries exhausted, auth errors, quota exceeded, rate limiting (429) — the plugin switches provider/model along the fallback chain for the current role, and the current step/turn continues on the target model: tasks are not interrupted by model problems.
 
-Install with a single command (pnpm ≥ 10 needs one build-allow step — see [Install](#install)):
+Install with a single command (see [Install](#install)):
 
 ```sh
-dsh plugin --profile web add github:btspoony/dsh-llm-fallbacks   # pin a commit with #<sha>
+dsh plugin --profile web add dsh-llm-fallbacks   # pin a version with @<version>
 ```
 
 ## Features
@@ -27,13 +27,13 @@ dsh plugin --profile web add github:btspoony/dsh-llm-fallbacks   # pin a commit 
 
 ## Install
 
-### One-line git install
+### One-line install
 
 ```sh
-dsh plugin --profile web add github:btspoony/dsh-llm-fallbacks   # pin a commit with #<sha>
+dsh plugin --profile web add dsh-llm-fallbacks   # pin a version with @<version>
 ```
 
-A git install fetches **sources, not built artifacts**, so the bundle builds itself on install (`prepare` self-build). The plugin is **mount-only**: it never modifies the dsh source tree, and no patch / postinstall step exists — dsh upgrades never require re-patching. pnpm ≥ 10 blocks a git dependency's `prepare` by default: the first `add` fails with `ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`, and pnpm prints the exact package key. Allow the build in the profile's `pnpm-workspace.yaml` (`onlyBuiltDependencies: [dsh-llm-fallbacks]`, or run `dsh plugin --profile web approve-builds`), then re-run the `add`. Treat that allowance as permission to execute the package's code on your machine at install time, and pin a commit (`github:btspoony/dsh-llm-fallbacks#<sha>`) so a later push cannot silently change what runs. The full URL form works equivalently: `dsh plugin --profile web add https://github.com/btspoony/dsh-llm-fallbacks.git`.
+A registry install fetches the **built package** (`dist/`) — nothing is built on the target machine. The plugin is **mount-only**: it never modifies the dsh source tree, and no patch / postinstall step exists — dsh upgrades never require re-patching. Versioning follows npm dist-tags (`latest` by default); pin an exact version with `dsh plugin --profile web add dsh-llm-fallbacks@<version>`.
 
 ### Local directory install (recommended for development / verification)
 
@@ -103,7 +103,7 @@ The plugin installs as a **pure mount** — it never modifies the dsh source tre
   the Fallbacks card on the Settings → 插件配置 page, and settings read/write/reset
   go through the plugin's own gateway channel (`/api/fallbacks/get|set|reset`).
 - **No patches, no auto-apply step**: there are no dsh-body patch files and no install
-  lifecycle step that applies one. A one-line git install works as-is.
+  lifecycle step that applies one. A one-line registry install works as-is.
 - **dsh upgrades never require re-patching**: a dsh upgrade that resets the source
   tree changes nothing for this plugin — it keeps working without any re-apply step.
 - **Stale leftover patches are harmless**: the plugin never depends on a patch
@@ -115,7 +115,7 @@ The plugin installs as a **pure mount** — it never modifies the dsh source tre
 
 | Doc | Content |
 |---|---|
-| [docs/install.md](docs/install.md) | profile install / git install / uninstall / `--dump-config` verification |
+| [docs/install.md](docs/install.md) | profile install / registry install / uninstall / `--dump-config` verification |
 | [docs/configuration.md](docs/configuration.md) | full `fallbacks` namespace reference, selector syntax, example YAML, plugin-config card usage, behavior notes |
 | [docs/verification.md](docs/verification.md) | verification records (test matrix, bundle layer order, runtime contracts, QA gate script) |
 

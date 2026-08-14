@@ -5,7 +5,7 @@
 ## 前置条件
 
 - 可用的 dsh 运行环境（`$DSH_HOME`，默认 `~/.dsh`）；开发期类型检查与测试从 npm registry 解析 `@deepseek-ai/*@0.1.0-rc.6` peer 依赖（registry 认证令牌，见下文"认证（pnpm 11）"）。
-- 构建需要 **node**（`>= 22`）与 **pnpm**（`>= 10`）——插件的 `prepare` 脚本自构建（`pnpm run build`，tsdown + tsc，pnpm 栈无 bun）。
+- 构建需要 **node**（`>= 22`）与 **pnpm**（`>= 10`）——仅**本地目录安装**（开发）需要：插件的 `prepare` 脚本自构建（`pnpm run build`，tsdown + tsc，pnpm 栈无 bun）；registry 安装装的是已构建产物，目标机无需构建。
 - 目标 profile（如 `web`）可读写，安装后需要重启 dsh 会话。
 
 ## 开发期 `@deepseek-ai/*` peer 解析（npm registry）
@@ -36,31 +36,18 @@ dsh 的 profile 由有序 bundle 层组合而成：`@deepseek-ai/dsh-base`（内
 
 `add` 默认追加到列表末尾即满足该顺序，无需手工改动；若手动编辑 `$DSH_HOME/profiles/web/package.json` 的 `dsh.profile.bundles`，请保持 `@deepseek-ai/dsh-base` 在本插件之前。
 
-## 2. git 安装
+## 2. registry 安装
 
 ```sh
-dsh plugin --profile web add github:btspoony/dsh-llm-fallbacks   # 钉 commit：加 #<sha>
-# 等价完整 URL 形式（或加 #<branch|tag|commit> 指定 ref）：
-# dsh plugin --profile web add https://github.com/btspoony/dsh-llm-fallbacks.git
+dsh plugin --profile web add dsh-llm-fallbacks   # 钉精确版本：加 @<version>
 ```
 
-git 安装注意：
+registry 安装注意：
 
-- **prepare 自建**：pnpm 在安装 git 依赖时会执行包的 `prepare` 脚本（`pnpm run build`）自构建，安装机需要 node 与 pnpm；构建失败会导致装入未构建的包。
-- **pnpm ≥ 10 构建放行（第一次 add 必遇）**：pnpm ≥ 10 默认不执行 git 依赖的构建脚本（含 `prepare`/`postinstall`）。第一次 `add` 会失败并打印 `ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`，同时给出精确的包 key（`dsh-llm-fallbacks`）。把该 key 加进此 profile 的 `pnpm-workspace.yaml`：
-
-  ```yaml
-  # $DSH_HOME/profiles/web/pnpm-workspace.yaml
-  onlyBuiltDependencies:
-    - dsh-llm-fallbacks
-  # pnpm ≥ 10.26 也接受 allowBuilds 形式：
-  # allowBuilds:
-  #   dsh-llm-fallbacks: true
-  ```
-
-  然后重跑 `add`；也可交互式 `dsh plugin --profile web approve-builds` 选择放行。该放行 = 允许该包代码在安装期于你的机器上执行——建议钉 commit（`github:btspoony/dsh-llm-fallbacks#<sha>`），防止后续 push 悄悄改变实际运行的代码。若安装未被拦截但装入后 `--dump-config` 看不到 `llm-fallbacks` 层 / 插件配置页的 Fallbacks 卡片不出现，同样先检查本项放行。确切行为以你所用 pnpm 版本的策略为准。
-- **传输协议**：`github:` 简写由 pnpm 解析——通常优先 HTTPS，探测失败时退回 SSH（`git@github.com:...`）；显式 https URL 形式则固定 HTTPS。两种形式等价，`#<ref>` 钉版均支持。
-- **纯挂载，无补丁步骤**：git 安装执行 `prepare`（构建）即完成——插件对 dsh 源码树零修改（bundle 行插入 + client inject + 自有 gateway），无需任何 apply/revert 脚本，dsh 升级后无需重打。
+- **构建产物，无需自建**：registry 包即已构建产物（`dist/`），目标机**不需要** node / pnpm，不存在 `prepare` 自构建。
+- **无 pnpm ≥ 10 构建放行**：构建拦截（`ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`）只针对 git 依赖；registry 包无构建脚本执行，无需 `onlyBuiltDependencies` / `approve-builds`。
+- **版本**：跟随 npm dist-tag（默认 `latest`）；钉精确版本 `dsh-llm-fallbacks@<version>` 可防止后续发布悄悄改变实际运行的代码。
+- **纯挂载，无补丁步骤**：registry 安装即完成——插件对 dsh 源码树零修改（bundle 行插入 + client inject + 自有 gateway），无需任何 apply/revert 脚本，dsh 升级后无需重打。
 
 ## 3. 验证安装
 

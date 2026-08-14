@@ -9,10 +9,10 @@
 
 dsh（DeepSeek Harness）的自动模型降级插件：当 root agent 或 subagent 的模型请求持续失败（重试耗尽、权限、配额超限、限流 429）时，按角色/模型 fallback 链自动切换 provider/model，当前 step/turn 在目标模型上继续完成——任务不因模型问题中断。
 
-一句话安装（pnpm ≥ 10 需一次构建放行，见 [安装](#安装)）：
+一句话安装（见 [安装](#安装)）：
 
 ```sh
-dsh plugin --profile web add github:btspoony/dsh-llm-fallbacks   # 钉 commit：加 #<sha>
+dsh plugin --profile web add dsh-llm-fallbacks   # 钉版本：加 @<version>
 ```
 
 ## 能力一览
@@ -27,13 +27,13 @@ dsh plugin --profile web add github:btspoony/dsh-llm-fallbacks   # 钉 commit：
 
 ## 安装
 
-### 一句话 git 安装
+### 一句话安装
 
 ```sh
-dsh plugin --profile web add github:btspoony/dsh-llm-fallbacks   # 钉 commit：加 #<sha>
+dsh plugin --profile web add dsh-llm-fallbacks   # 钉版本：加 @<version>
 ```
 
-git 安装拉取的是**源码而非构建产物**，安装时由包自行构建（`prepare` 自构建）。插件为**纯挂载**：对 dsh 源码树零修改，无任何补丁 / postinstall 步骤——dsh 升级无需重打。pnpm ≥ 10 默认不执行 git 依赖的 `prepare`：第一次 `add` 会失败并打印 `ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`，同时给出精确的包 key。在该 profile 的 `pnpm-workspace.yaml` 中放行构建（`onlyBuiltDependencies: [dsh-llm-fallbacks]`，或运行 `dsh plugin --profile web approve-builds`），然后重跑 `add`。请把这次放行当作它本来的样子：允许该包代码在安装期于你的机器上执行——建议钉 commit（`github:btspoony/dsh-llm-fallbacks#<sha>`），防止后续 push 悄悄改变实际运行的代码。完整 URL 形式等价：`dsh plugin --profile web add https://github.com/btspoony/dsh-llm-fallbacks.git`。
+registry 安装拉取的是**已构建产物**（`dist/`），目标机无需构建。插件为**纯挂载**：对 dsh 源码树零修改，无任何补丁 / postinstall 步骤——dsh 升级无需重打。版本跟随 npm dist-tag（默认 `latest`）；钉精确版本：`dsh plugin --profile web add dsh-llm-fallbacks@<version>`。
 
 ### 本地目录安装（开发/验证推荐）
 
@@ -101,7 +101,7 @@ fallbacks:
   Fallbacks 卡片，设置读写/重置
   走插件自有 gateway 通道（`/api/fallbacks/get|set|reset`）。
 - **无补丁、无自动打补丁**：没有 dsh 本体 patch 文件，也没有任何安装期 apply 步骤；
-  一句话 git 安装即可用。
+  一句话 registry 安装即可用。
 - **dsh 升级永不需重打**：dsh 升级重置源码树对本插件无影响——无需任何重打步骤。
 - **残留旧补丁无害**：插件不依赖任何补丁导出（角色解析 rules-only；model-selection
   标记协调已移除）——已打过旧补丁的 dsh 树可原样保留或手动回滚，均非必需。
@@ -110,7 +110,7 @@ fallbacks:
 
 | 文档 | 内容 |
 |---|---|
-| [docs/install.md](docs/install.md) | profile 安装 / git 安装 / 卸载 / `--dump-config` 验证 |
+| [docs/install.md](docs/install.md) | profile 安装 / registry 安装 / 卸载 / `--dump-config` 验证 |
 | [docs/configuration.md](docs/configuration.md) | `fallbacks` 命名空间全字段、selector 语法、示例 YAML、插件配置卡使用、行为说明 |
 | [docs/verification.md](docs/verification.md) | 验证记录（测试矩阵、bundle 层序、运行契约、QA gate 剧本） |
 
