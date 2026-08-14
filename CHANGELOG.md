@@ -6,6 +6,12 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.1.0-alpha.4] - 2026-08-14
+
+### Changed
+
+- npm publishing is now pure OIDC (Trusted Publishing): the bootstrap `NODE_AUTH_TOKEN` mode and the optional secret env were removed after the npm-side trusted publisher was configured; `npm publish --provenance` authenticates entirely via the GitHub OIDC id-token.
+
 ## [0.1.0-alpha.3] - 2026-08-14
 
 ### Fixed
