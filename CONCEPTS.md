@@ -68,3 +68,14 @@ client 会话转录的节点注册表（`ConversationNodeDefinition` 注册，ki
 - `settings slot` vs `gateway channel`：前者是**展示挂载**（页面出现在 Settings），后者是**数据通道**（配置读写从哪来）；讨论设置页时两者分开表述，不要混用。
 - `settings/changed` / `models/changed`（20260811 已移除的客户端事件名）→ 失效刷新一律表述为 remote events（`settings/document-updated` + `llm/adapters-updated`）；不要在代码、测试或文档中恢复旧名。
 - `settings.section` vs `settings.plugin.item`：fallbacks 起 2026-08-12 用**卡形态**（plugin.item）并删除独立导航；「设置页」口语可指卡或 section，正式文档按挂载形态区分。
+
+### PR-driven release
+npm 发布触发模型：发布动作 = merge `release vX.Y.Z` PR（release-prep 手动触发生成 PR，release.yml 在 merged 后跑 publish/tag/GitHub Release）。区别于 push:tags 自动发布——可审查、可回滚、无 secrets。Trusted Publishing 组合下零长期凭据。
+*Avoid:* 直接 `git tag && git push --tags` 自动发版（无审查面）
+
+### Trusted Publishing bootstrap
+npm 的 Trusted Publishing（OIDC provenance，无 token）**只对已存在的包可配置**——包未发布过时没有配置入口。首版 bootstrap：一次性 granular token（NODE_AUTH_TOKEN，publish 步骤 optional env）→ 发布 → npm package settings 配 TP → 删除 token。TP 是常态，token 是一次性手段。
+
+### 具名 cordis service（消费面）
+插件暴露程序化能力给其它插件的方式：`ctx.provide(name, VALUE)` 值形式注册（非 factory）+ `declare module '@deepseek-ai/cordis'` Context interface 合并——消费方 `ctx.get(name) !== undefined` 即响应式能力探测（生命周期自动就绪/撤销）。多 fiber 同 root 必须 dedupe guard（cordis 重复键 fail-loud）。
+*Avoid:* `ctx.provide(name, () => ({...}))` 工厂形式（会把函数本身注册为服务值）

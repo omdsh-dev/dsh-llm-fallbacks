@@ -1,7 +1,7 @@
 ---
 module: dsh-llm-fallbacks
 date: 2026-08-11
-last_updated: 2026-08-13
+last_updated: 2026-08-14
 problem_type: architecture_pattern
 category: architecture-patterns
 severity: low
@@ -125,6 +125,14 @@ order 100）、会话转录切换行（`conversationEvents` + `conversation.chat
 - **无 patch、无 autopatch 步骤**：一行 git 安装即用（pnpm ≥ 10 需 approve-builds 放行 `prepare` 自构建）；`prepare` = setup-dsh-links + build，无 postinstall。
 - **dsh 升级无需重打**：升级重置源树不影响本插件。
 - **残留旧 patch 无害**：插件不依赖任何 patch 导出（role rules-only；marker 已移除），已打 patch 的旧 dsh 树可留可 revert，均非必需。
+
+### 消费面：库 API re-export + 具名 cordis service（iter-20260814-fallbacks-release-usability）
+
+插件暴露程序化消费面，供其它插件（如 mstar-harness loader-probe + 决策点注入）探测与调用：
+
+- **库 API**：`src/index.ts` 统一 re-export 运行时函数（`resolveRole`/`resolveChain`/`selectCandidates`/`annotateCandidates`/`hasWildcardEntry`/`createCandidateFilter`/`resolveCandidate`/`resolveChainViews`/`parseSelector`/`validateFallbacksConfig`/`detectLegacyKeys`）+ 值（`INHERIT_ROLE_ID`/`ROLE_ID_PATTERN`/`defaultFallbacksConfig`/`SelectorError`）+ 类型——消费方 `import { resolveRole } from 'dsh-llm-fallbacks'`；导出面由 `tests/export-surface.spec.ts`（`LIBRARY_EXPORT_KEYS` SSOT + expectTypeOf dev-time pins）机械钉住。
+- **具名 service `'llm-fallbacks'`**：`ctx.get('llm-fallbacks') !== undefined` 即响应式能力探测（cordis 生命周期自动就绪/撤销）。6-key 纯函数面：`{ name, version, resolveRole, resolveChain, validateFallbacksConfig, detectLegacyKeys }`——**不暴露运行态**（store/事件）；运行态请走 `fallbacks/switch` 事件。多 fiber dedupe guard（镜像 gateway/typert 模式）+ `createRequire` 运行时读 version。注册细节 → `best-practices/dsh-cordis-plugin-authoring.md`。
+- **契约边界**：本包契约成立 ≠ 隔壁仓库已接上；消费文档 `docs/consumer-api.md` 是契约 SSOT。
 
 ### 已知限制（open residual）
 

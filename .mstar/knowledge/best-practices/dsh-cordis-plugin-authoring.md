@@ -1,7 +1,7 @@
 ---
 module: dsh-plugin-authoring
 date: 2026-08-10
-last_updated: 2026-08-13
+last_updated: 2026-08-14
 problem_type: best_practice
 category: best-practices
 severity: low
@@ -99,13 +99,26 @@ dsh 插件 = npm 包，package.json 声明 dsh.bundle.patch（指向 bundle/cord
 - **会话转录挂载走 conversationEvents + conversation.chat.node（纯渲染）**：非 surface 插件事件默认转录不可见；双段注册（注册表决定是否渲染 + keyed 座位决定如何渲染）；**宿主引擎对节点生命周期无 try/catch——match/start 对畸形载荷必须降级绝不 throw**；type-only 引用 `dsh-client-ui-conversation`；业务数据经 `node` prop。→ `architecture-patterns/dsh-conversation-surface-mounting.md`。
 - 配置字段默认值跨 host/client 重复硬编码会漂移：从单一 defaultFallbacksConfig 派生。
 
+### 具名 cordis 服务注册（消费面，iter-20260814 实测）
+
+插件暴露程序化消费面（供其它插件探测/调用）时，注册具名服务——**消费方 `ctx.get('<service>') !== undefined` 即响应式能力探测**（优于 `ctx.loader.entries()` 点读；cordis 生命周期自动就绪/撤销）：
+
+- **`ctx.provide(name, VALUE)` 是值形式**（cordis 4.0.1 `reflect.ts:277-292` 验证）：传**对象值**，不是 factory——传函数会被当作服务值本身注册（`fb.resolveRole === undefined`）。
+- **`export const provide = ['<name>'] as const` 只是声明性元数据**（loader/工具可见）；实际注册只发生在 `apply()` 内 `ctx.provide()`——registry 不自动注册（`registry.ts:106-108`），无双注册风险。
+- **多 fiber 同 root apply 必须 dedupe guard**：cordis 对重复服务键 fail-loud（`reflect.ts:289-290` throw「service X has been registered」）。镜像插件内既有 gateway/typert dedupe 模式：`try { ctx.provide(...) } catch (e) { if (e instanceof Error && e.message.includes('has been registered')) { debug('already registered — no service on this fiber (multi-fiber dedupe)') } else throw }`——第一 fiber 拥有服务、后续 fiber 优雅降级，**未加 guard 会让 apply() 中止在其它 dedupe 注册之前**。
+- **类型面**：`declare module '@deepseek-ai/cordis' { interface Context { '<name>'?: ServiceShape } }`（cordis-4 interface-Context 合并；先例 dsh-settings `settings`、dsh-agent-default-model `agentDefaultModel`）；消费方 import 后 `ctx.get` 自动带类型。
+- **严格 get 语义**：服务未注册/已撤销 → `ctx.get` 返回 `undefined`（不 throw）——消费方 `if (fb !== undefined)` 即生命周期探测。
+- **版本元信息**：运行时 `createRequire(import.meta.url)('../package.json').version`（模块级读一次）——src/vitest 与 dist/发布后（npm 恒带 package.json）均解析；不要 build-time 内联。
+- **服务面纪律**：只暴露**纯函数面**（解析/校验函数 + name/version 元信息），**不暴露运行态**（store/事件发射器）——跨插件读状态是实现细节非契约；运行态请走事件（如 `fallbacks/switch`）。
+- 单点真相：服务方法 = 直接引用 index re-export 的同一函数（`toBe` 同一性测试钉住），不复制逻辑。
+
 ## Why This Matters
 
 每条模式都踩过坑（registry 404、closure-factory 契约、schemastery cast、waterfall 注册顺序），按此 playbook 可绕过全部已知陷阱；验证证据链见迭代 review bundle。
 
 ## When to Apply
 
-新 dsh 插件（工具/设置/面板/服务）、或把现有插件从 host-only 扩展到 web client。
+新 dsh 插件（工具/设置/面板/服务）、或把现有插件从 host-only 扩展到 web client、或需要暴露程序化消费面（具名 cordis service / 库 API re-export）时。
 
 ## Examples
 
