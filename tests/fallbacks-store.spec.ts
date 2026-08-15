@@ -90,16 +90,24 @@ function makeRpc(config?: FallbacksConfig | null) {
     current = defaultFallbacksConfig
     return Promise.resolve(okResult({ config: current }))
   })
+  // The revert-seed fake keeps the effective config (no persona registry
+  // here); tests script specific post-write read results with
+  // `mockReturnValueOnce` when they exercise the accepted response.
+  const revertSeed = vi.fn((payload: { args: { id: string } }) => {
+    if (current === null) throw new Error('test: revert-seed on an unavailable gateway')
+    return Promise.resolve(okResult({ config: current }))
+  })
   const call = vi.fn((channel: string, endpoint: string, payload: unknown) => {
     if (channel !== '/api') throw new Error(`test: unexpected channel ${channel}`)
     if (endpoint === 'fallbacks/get') return get()
     if (endpoint === 'fallbacks/set') return set(payload as { args: { patch: FallbacksConfig } })
     if (endpoint === 'fallbacks/reset') return reset()
+    if (endpoint === 'fallbacks/revert-seed') return revertSeed(payload as { args: { id: string } })
     throw new Error(`test: unexpected endpoint ${endpoint}`)
   })
   return {
     rpc: { call } as unknown as ClientConnectionRpc,
-    call, get, set, reset,
+    call, get, set, reset, revertSeed,
   }
 }
 
@@ -872,6 +880,130 @@ describe('FallbacksSettingsController', () => {
     expect(state.legacyKeys).toEqual(['roles.default'])
   })
 
+  it('loads seeds from the gateway get response (the card badge source)', async () => {
+    // spec §9.4: the additive seeds field rides the get response exactly
+    // like legacyKeys — the wire value is authoritative for the badge.
+    const api = makeApi()
+    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
+    const { rpc, get } = makeRpc()
+    get.mockReturnValueOnce(Promise.resolve(okResult({
+      config: defaultFallbacksConfig,
+      seeds: [
+        { id: 'architect', overridden: false },
+        { id: 'qa-engineer', overridden: true },
+      ],
+    })))
+    const controller = new FallbacksSettingsController(api, rpc)
+    await controller.load()
+    expect(controller.store.getSnapshot().seeds).toEqual([
+      { id: 'architect', overridden: false },
+      { id: 'qa-engineer', overridden: true },
+    ])
+  })
+
+  it('guards a malformed seeds wire value as [] (Array.isArray + shape guard)', async () => {
+    // Non-array → [] ; all-malformed entries → [] ; mixed array → the
+    // well-shaped entries only (the legacyKeys element-filter precedent).
+    const api = makeApi()
+    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
+    const { rpc, get } = makeRpc()
+    get.mockReturnValueOnce(Promise.resolve(okResult({ config: defaultFallbacksConfig, seeds: 'junk' })))
+    const controller = new FallbacksSettingsController(api, rpc)
+    await controller.load()
+    expect(controller.store.getSnapshot().seeds).toEqual([])
+
+    get.mockReturnValueOnce(Promise.resolve(okResult({
+      config: defaultFallbacksConfig,
+      seeds: [{ id: 'architect' }, 'junk', 7, null],
+    })))
+    await controller.load()
+    expect(controller.store.getSnapshot().seeds).toEqual([])
+
+    get.mockReturnValueOnce(Promise.resolve(okResult({
+      config: defaultFallbacksConfig,
+      seeds: [{ id: 'architect', overridden: true }, { id: 5 }, 'junk'],
+    })))
+    await controller.load()
+    expect(controller.store.getSnapshot().seeds).toEqual([{ id: 'architect', overridden: true }])
+  })
+
+  it('preserves seeds when a follow-up get fails (the badge survives transient channel-down)', async () => {
+    // accept() only lets a REAL config replace the wire seeds: a complete
+    // get failure (config undefined) keeps the last accepted value so a
+    // transient refresh can never clear the badge.
+    const api = makeApi()
+    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
+    const { rpc, get } = makeRpc()
+    get.mockReturnValueOnce(Promise.resolve(okResult({
+      config: defaultFallbacksConfig,
+      seeds: [{ id: 'architect', overridden: false }],
+    })))
+    const controller = new FallbacksSettingsController(api, rpc)
+    await controller.load()
+    expect(controller.store.getSnapshot().seeds).toEqual([{ id: 'architect', overridden: false }])
+    // The channel drops before the next refresh's get resolves.
+    get.mockReturnValueOnce(Promise.resolve(failResult('fallbacks gateway is not ready')))
+    await controller.load()
+    const state = controller.store.getSnapshot()
+    expect(state.present).toBe(false)
+    expect(state.seeds).toEqual([{ id: 'architect', overridden: false }])
+  })
+
+  it('a save response without seeds keeps the last badge state (W-1/F-1: only a get may settle seeds truth)', async () => {
+    const api = makeApi()
+    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
+    const { rpc, get } = makeRpc()
+    get.mockReturnValueOnce(Promise.resolve(okResult({
+      config: defaultFallbacksConfig,
+      seeds: [{ id: 'architect', overridden: false }],
+    })))
+    const controller = new FallbacksSettingsController(api, rpc)
+    await controller.load()
+    expect(controller.store.getSnapshot().seeds).toEqual([{ id: 'architect', overridden: false }])
+    // The gateway set response omits the field (older gateway): keep the
+    // last accepted value — a save merges over the user layer, so the
+    // server's silence must never clear the badge against truth.
+    await controller.save({ ...defaultFallbacksConfig, cooldownMs: 55_000 })
+    const state = controller.store.getSnapshot()
+    expect(state.config.cooldownMs).toBe(55_000)
+    expect(state.seeds).toEqual([{ id: 'architect', overridden: false }])
+  })
+
+  it('a save response carrying seeds lands them in state', async () => {
+    const api = makeApi()
+    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
+    const { rpc, set } = makeRpc()
+    const controller = new FallbacksSettingsController(api, rpc)
+    await controller.load()
+    set.mockReturnValueOnce(Promise.resolve(okResult({
+      config: { ...defaultFallbacksConfig, cooldownMs: 33_000 },
+      seeds: [{ id: 'architect', overridden: true }],
+    })))
+    await controller.save({ ...defaultFallbacksConfig, cooldownMs: 33_000 })
+    const state = controller.store.getSnapshot()
+    expect(state.config.cooldownMs).toBe(33_000)
+    expect(state.seeds).toEqual([{ id: 'architect', overridden: true }])
+  })
+
+  it('a reset response without seeds keeps the last badge state too', async () => {
+    const api = makeApi()
+    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
+    const { rpc, get } = makeRpc()
+    get.mockReturnValueOnce(Promise.resolve(okResult({
+      config: { ...defaultFallbacksConfig, cooldownMs: 99_000 },
+      seeds: [{ id: 'architect', overridden: false }],
+    })))
+    const controller = new FallbacksSettingsController(api, rpc)
+    await controller.load()
+    expect(controller.store.getSnapshot().seeds).toEqual([{ id: 'architect', overridden: false }])
+    await controller.resetToDefaults()
+    const state = controller.store.getSnapshot()
+    expect(state.config).toEqual(defaultFallbacksConfig)
+    // Same keep-last rule as save: an absent wire field never clears the
+    // badge — the next get is the only seeds-truth authority.
+    expect(state.seeds).toEqual([{ id: 'architect', overridden: false }])
+  })
+
   it('a reset response without legacyKeys keeps the banner too', async () => {
     const api = makeApi()
     api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
@@ -967,6 +1099,95 @@ describe('FallbacksSettingsController', () => {
     expect(after.config.cooldownMs).toBe(55_000)
   })
 
+  it('reverts one seeded role through the gateway revert-seed endpoint and adopts the post-write result', async () => {
+    // spec §9.4: revertSeed mirrors save — the endpoint call, then accept()
+    // of the post-write read result (config + legacyKeys + seeds).
+    const api = makeApi()
+    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
+    const { rpc, call, revertSeed } = makeRpc()
+    const controller = new FallbacksSettingsController(api, rpc)
+    await controller.load()
+    revertSeed.mockReturnValueOnce(Promise.resolve(okResult({
+      config: { ...defaultFallbacksConfig, roles: { list: [{ id: 'architect', persona: 'v1' }], rules: [] } },
+      legacyKeys: [],
+      seeds: [{ id: 'architect', overridden: false }],
+      outcome: { reverted: true, persona: 'v1' },
+    })))
+    await controller.revertSeed('architect')
+    expect(call).toHaveBeenLastCalledWith('/api', 'fallbacks/revert-seed', { args: { id: 'architect' } })
+    expect(revertSeed).toHaveBeenCalledTimes(1)
+    const state = controller.store.getSnapshot()
+    expect(state.status).toBe('ready')
+    expect(state.present).toBe(true)
+    expect(state.config.roles.list).toEqual([{ id: 'architect', persona: 'v1', chain: [], fallback: 'inherit-root' }])
+    expect(state.seeds).toEqual([{ id: 'architect', overridden: false }])
+  })
+
+  it('a revert-seed response without seeds keeps the last badge state (W-1/F-1)', async () => {
+    const api = makeApi()
+    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
+    const { rpc, get } = makeRpc()
+    get.mockReturnValueOnce(Promise.resolve(okResult({
+      config: defaultFallbacksConfig,
+      seeds: [{ id: 'architect', overridden: true }],
+    })))
+    const controller = new FallbacksSettingsController(api, rpc)
+    await controller.load()
+    expect(controller.store.getSnapshot().seeds).toEqual([{ id: 'architect', overridden: true }])
+    // The gateway revert-seed response omits the field (older gateway):
+    // the last accepted badge value is kept, never cleared on silence.
+    await controller.revertSeed('architect')
+    expect(controller.store.getSnapshot().seeds).toEqual([{ id: 'architect', overridden: true }])
+  })
+
+  it('refuses a revert while a save is in flight (saving guard)', async () => {
+    const api = makeApi()
+    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
+    const { rpc, set, revertSeed } = makeRpc()
+    const controller = new FallbacksSettingsController(api, rpc)
+    await controller.load()
+    // A save hangs in flight → status is 'saving'; the revert must not
+    // start a second write on the same write generation.
+    const gate = Promise.withResolvers<unknown>()
+    set.mockReturnValueOnce(gate.promise)
+    const saving = controller.save({ ...defaultFallbacksConfig, cooldownMs: 11_000 })
+    await controller.revertSeed('architect')
+    expect(revertSeed).not.toHaveBeenCalled()
+    // Let the save finish to keep the test clean.
+    gate.resolve(okResult({ config: { ...defaultFallbacksConfig, cooldownMs: 11_000 } }))
+    await saving
+  })
+
+  it('surfaces a revert-seed rejection as the error banner (KD-G3)', async () => {
+    const api = makeApi()
+    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
+    const { rpc, call, revertSeed } = makeRpc({ ...defaultFallbacksConfig, cooldownMs: 99_000 })
+    const controller = new FallbacksSettingsController(api, rpc)
+    await controller.load()
+    revertSeed.mockReturnValueOnce(Promise.resolve(failResult('revert refused')))
+    await controller.revertSeed('architect')
+    expect(call).toHaveBeenLastCalledWith('/api', 'fallbacks/revert-seed', { args: { id: 'architect' } })
+    const state = controller.store.getSnapshot()
+    expect(state.status).toBe('error')
+    expect(state.error).toBe('revert refused')
+    // The refused revert did not corrupt the accepted config or flip present.
+    expect(state.present).toBe(true)
+    expect(state.config.cooldownMs).toBe(99_000)
+  })
+
+  it('surfaces a revert-seed transport throw as the error banner (KD-G3)', async () => {
+    const api = makeApi()
+    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
+    const { rpc, revertSeed } = makeRpc()
+    const controller = new FallbacksSettingsController(api, rpc)
+    await controller.load()
+    revertSeed.mockRejectedValueOnce(new Error('transport down'))
+    await controller.revertSeed('architect')
+    const state = controller.store.getSnapshot()
+    expect(state.status).toBe('error')
+    expect(state.error).toBe('transport down')
+  })
+
   it('refuses writes when the provider is not writable', async () => {
     const api = makeApi()
     api.settings.describe.mockResolvedValue(ok({ writable: false, hasDocument: false, namespaces: [] }))
@@ -975,7 +1196,8 @@ describe('FallbacksSettingsController', () => {
     await controller.load()
     await controller.save(defaultFallbacksConfig)
     await controller.resetToDefaults()
-    // Only the load's get crossed the channel; set/reset were never called.
+    await controller.revertSeed('architect')
+    // Only the load's get crossed the channel; set/reset/revert-seed never ran.
     expect(call).toHaveBeenCalledTimes(1)
     expect(call).toHaveBeenCalledWith('/api', 'fallbacks/get', { args: {} })
   })
