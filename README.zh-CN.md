@@ -130,7 +130,7 @@ fallbacks:
 
 - **库 API**：从包根直接 import 运行时函数与类型——`import { resolveRole, resolveChain, validateFallbacksConfig } from 'dsh-llm-fallbacks'`。
 - **具名 cordis service**：插件 apply 期间 `ctx.get('llm-fallbacks')` 返回纯函数服务（`{ name, version, resolveRole, resolveChain, validateFallbacksConfig, detectLegacyKeys, declareSeeds, getEffectiveRoles, revertSeededPersona }`），插件 dispose 后为 `undefined`。运行态（冷却、最近切换）请读 `fallbacks/switch` 事件，不走服务对象。
-- **角色 seeds（种子角色）**：伴随插件可**零手工配置**自动补全角色行——`declareSeeds([{ id, persona }])` 声明完整当前种子集（重复声明为 no-op；不匹配 `/^[a-z0-9-]{1,32}$/` 或等于保留字 `inherit` 的 id 按条跳过并告警，绝不改写），`getEffectiveRoles()` 回读哪些角色为 seeded、persona 是否被覆盖，`revertSeededPersona(id)` 恢复**当前声明**的 seed 默认 persona。设置卡显示 seed 默认 / override 徽标并带 revert 按钮；seeds 永不写 `chain` / `fallback`。
+- **角色 seeds（种子角色）**：伴随插件可**零手工配置**自动补全角色行——`declareSeeds([{ id, persona }])` 声明完整当前种子集（重复声明为 no-op；不匹配 `/^[a-z0-9-]{1,32}$/` 或等于保留字 `inherit` 的 id 按条跳过并告警，绝不改写），`getEffectiveRoles()` 回读哪些角色为 seeded、persona 是否被覆盖，`revertSeededPersona(id)` 恢复**当前声明**的 seed 默认 persona。设置卡显示 seed 默认 / override 徽标并带 revert 按钮，且将 seeded 角色的 id 渲染为禁用（不可修改）字段——任何 seed / preset 角色的 id 在设置卡中不可更改（R2）；persona、chain 与 fallback 仍可编辑。seeds 永不写 `chain` / `fallback`。
 
 完整契约（导出清单、最小示例、生命周期、类型说明）见 [docs/consumer-api.md](docs/consumer-api.md)。
 
