@@ -6,6 +6,12 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-08-15
+
+### Added
+
+- Preset roles: bundle 7 omp-style generic subagent roles (designer, librarian, reviewer, scout, security-reviewer, sonic, task) declared automatically on apply via the role-seeds surface (config `presets: 'bundled' | 'none'`, default `bundled`); `presetRoles` exported from the package root.
+
 ## [0.1.5] - 2026-08-15
 
 ### Added
