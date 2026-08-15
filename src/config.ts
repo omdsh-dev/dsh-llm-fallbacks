@@ -86,6 +86,16 @@ export interface FallbacksConfig {
   revertPolicy: RevertPolicy
   maxSwitchesPerStep: number
   alwaysModeRetryCap: number
+  /**
+   * Preset-role injection switch: `'bundled'` declares the 7 preset roles
+   * (spec §9.2) as seed rows on apply; `'none'` disables declaration.
+   * Optional on purpose — a required field would break library consumers
+   * that construct `FallbacksConfig` literals with the existing 8 keys
+   * (additive, non-breaking). The value domain is guarded by the schema
+   * (`Config` in `src/schema.ts`), NOT by `validateFallbacksConfig`, and
+   * every resolved config carries a value via the schema default.
+   */
+  presets?: 'bundled' | 'none'
 }
 
 /**
@@ -104,6 +114,7 @@ export const defaultFallbacksConfig: FallbacksConfig = {
   revertPolicy: 'cooldown-expiry',
   maxSwitchesPerStep: 8,
   alwaysModeRetryCap: 5,
+  presets: 'bundled',
 }
 
 /**

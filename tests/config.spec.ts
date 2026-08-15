@@ -90,6 +90,24 @@ describe('fallbacks Config schema (two-block model)', () => {
     expect(() => Config({ roles: { rules: [{ provider: 'openai' }] } } as unknown as FallbacksConfig))
       .toThrow(/role/)
   })
+
+  it('defaults the presets switch to bundled (spec §9.4 config key)', () => {
+    // The 9th field rides the schema default exactly like the other
+    // optional fields — `Config({})` must carry `presets: 'bundled'`.
+    const resolved = Config({} as FallbacksConfig)
+    expect(resolved.presets).toBe('bundled')
+  })
+
+  it('rejects a presets value outside the bundled|none union at schema resolve', () => {
+    // Same semantics as the revertPolicy union (spec §9.4): the value
+    // domain is guarded by the schema — NOT by validateFallbacksConfig.
+    // The matcher pins the rejecting stage AND the exact union, so a
+    // subset-list regression (e.g. a single-const union) fails here.
+    expect(() => Config({ presets: 'sometimes' } as unknown as FallbacksConfig)).toThrow(TypeError)
+    expect(() => Config({ presets: 'sometimes' } as unknown as FallbacksConfig)).toThrow(
+      /presets expected "bundled" \| "none"/,
+    )
+  })
 })
 
 describe('validateFallbacksConfig — role ids (format / uniqueness / reserved word)', () => {
