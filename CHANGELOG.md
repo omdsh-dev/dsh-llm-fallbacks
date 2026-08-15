@@ -6,6 +6,23 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-08-15
+
+### Added
+
+- Add the dshfind plugin-directory badge to the README (English and Chinese).
+
+### Fixed
+
+- Fixed the Fallbacks settings card occasionally showing stale configuration after Save when a settings refresh overlapped the write.
+
+### Changed
+
+- README release status now reflects the current package version (0.1.3).
+- Settings card: role persona is now a multiline text field.
+- Settings card: role model chains no longer offer a provider wildcard (`provider/*`) — existing wildcard entries read back with a conversion hint and become exact entries when a model is picked.
+- Settings card: the Advanced options section is collapsible and starts collapsed.
+
 ## [0.1.3] - 2026-08-15
 
 ### Fixed
