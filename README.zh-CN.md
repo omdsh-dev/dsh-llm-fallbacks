@@ -36,7 +36,7 @@ dsh plugin --profile web add dsh-llm-fallbacks   # 钉版本：加 @<version>
 
 registry 安装拉取的是**已构建产物**（`dist/`），目标机无需构建。插件为**纯挂载**：对 dsh 源码树零修改，无任何补丁 / postinstall 步骤——dsh 升级无需重打。版本跟随 npm dist-tag（默认 `latest`）；钉精确版本：`dsh plugin --profile web add dsh-llm-fallbacks@<version>`。
 
-> **发布状态**：已发布 `dsh-llm-fallbacks@0.1.0-alpha.2`（latest）。首次发布用一次性 `NODE_AUTH_TOKEN` bootstrap；Trusted Publishing 后续配置为无 token 发布。
+> **发布状态**：已发布 `dsh-llm-fallbacks@0.1.3`（latest）。首次发布用一次性 `NODE_AUTH_TOKEN` bootstrap；Trusted Publishing 后续配置为无 token 发布。
 
 ### registry 包安装（npm / pnpm）
 

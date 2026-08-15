@@ -36,7 +36,7 @@ dsh plugin --profile web add dsh-llm-fallbacks   # pin a version with @<version>
 
 A registry install fetches the **built package** (`dist/`) — nothing is built on the target machine. The plugin is **mount-only**: it never modifies the dsh source tree, and no patch / postinstall step exists — dsh upgrades never require re-patching. Versioning follows npm dist-tags (`latest` by default); pin an exact version with `dsh plugin --profile web add dsh-llm-fallbacks@<version>`.
 
-> **Release status**: published as `dsh-llm-fallbacks@0.1.0-alpha.2` (latest). The first publish used a one-time `NODE_AUTH_TOKEN` bootstrap secret; Trusted Publishing is configured afterwards for tokenless releases.
+> **Release status**: published as `dsh-llm-fallbacks@0.1.3` (latest). The first publish used a one-time `NODE_AUTH_TOKEN` bootstrap secret; Trusted Publishing is configured afterwards for tokenless releases.
 
 ### Registry package (npm / pnpm)
 

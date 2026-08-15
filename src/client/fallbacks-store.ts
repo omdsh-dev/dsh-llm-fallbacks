@@ -598,7 +598,14 @@ export class FallbacksSettingsController {
     switches: [],
   })
 
-  private generation = 0
+  /** Read guard: a newer load() supersedes an older one's publish. */
+  private readGeneration = 0
+  /**
+   * Write guard: save()/resetToDefaults() completions ALWAYS publish unless
+   * dispose() invalidated them — an overlapping read must never discard a
+   * successful write's accept() (audit F1).
+   */
+  private writeGeneration = 0
   private catalogGeneration = 0
   private switchesGeneration = 0
   /** Every settings namespace from the last describe, keyed by ns — the configured-provider join's other input. */
@@ -631,7 +638,13 @@ export class FallbacksSettingsController {
    * @returns nothing; {@link store} carries success or failure.
    */
   async load(): Promise<void> {
-    const generation = ++this.generation
+    const generation = ++this.readGeneration
+    // Mirrored race guard (F-301): capture the write generation at READ
+    // START — a load that began before a save/reset must not publish over
+    // the write's accept() when it settles afterwards (write-wins, the F1
+    // decision applied to the pre-write read). The next
+    // settings/document-updated push refetches, so dropping is safe.
+    const writeGenerationAtStart = this.writeGeneration
     this.store.update((state) => {
       state.status = 'loading'
       state.error = null
@@ -650,7 +663,11 @@ export class FallbacksSettingsController {
         // describe success + get failure still reaches accept(undefined).
         this.rpc.call('/api', 'fallbacks/get', { args: {} }).catch(() => undefined),
       ])
-      if (generation !== this.generation) return
+      if (generation !== this.readGeneration) return
+      // A write completed (or dispose() ran) while this read was in flight —
+      // the write's accept() already published; discard the stale read on
+      // both completion branches so it can never clobber the write result.
+      if (writeGenerationAtStart !== this.writeGeneration) return
       if (!describeResult.result.ok) throw describeResult.result.error
       this.namespaces = new Map(describeResult.result.value.namespaces.map(entry => [entry.ns, entry]))
       const writable = describeResult.result.value.writable
@@ -675,7 +692,8 @@ export class FallbacksSettingsController {
       }
       this.accept(config, writable, legacyKeys)
     } catch (error) {
-      if (generation !== this.generation) return
+      if (generation !== this.readGeneration) return
+      if (writeGenerationAtStart !== this.writeGeneration) return
       this.fail(error)
     }
   }
@@ -805,14 +823,14 @@ export class FallbacksSettingsController {
   async save(next: FallbacksConfig): Promise<void> {
     const state = this.store.getSnapshot()
     if (!state.writable || state.status === 'saving') return
-    const generation = ++this.generation
+    const generation = ++this.writeGeneration
     this.store.update((draft) => {
       draft.status = 'saving'
       draft.error = null
     })
     try {
       const result = await this.rpc.call('/api', 'fallbacks/set', { args: { patch: next } })
-      if (generation !== this.generation) return
+      if (generation !== this.writeGeneration) return
       if (!result.ok) throw result.error
       const value: unknown = result.value
       const config = value !== null && typeof value === 'object' && 'config' in value
@@ -831,7 +849,7 @@ export class FallbacksSettingsController {
       }
       this.accept(config, true, legacyKeys)
     } catch (error) {
-      if (generation !== this.generation) return
+      if (generation !== this.writeGeneration) return
       this.fail(error)
     }
   }
@@ -845,14 +863,14 @@ export class FallbacksSettingsController {
   async resetToDefaults(): Promise<void> {
     const state = this.store.getSnapshot()
     if (!state.writable || state.status === 'saving') return
-    const generation = ++this.generation
+    const generation = ++this.writeGeneration
     this.store.update((draft) => {
       draft.status = 'saving'
       draft.error = null
     })
     try {
       const result = await this.rpc.call('/api', 'fallbacks/reset', { args: {} })
-      if (generation !== this.generation) return
+      if (generation !== this.writeGeneration) return
       if (!result.ok) throw result.error
       const value: unknown = result.value
       const config = value !== null && typeof value === 'object' && 'config' in value
@@ -870,14 +888,15 @@ export class FallbacksSettingsController {
       }
       this.accept(config, true, legacyKeys)
     } catch (error) {
-      if (generation !== this.generation) return
+      if (generation !== this.writeGeneration) return
       this.fail(error)
     }
   }
 
   /** Stop in-flight responses from publishing after plugin disposal. */
   dispose(): void {
-    this.generation += 1
+    this.readGeneration += 1
+    this.writeGeneration += 1
     this.catalogGeneration += 1
     this.switchesGeneration += 1
     this.namespaces = new Map()

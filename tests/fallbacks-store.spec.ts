@@ -1020,6 +1020,195 @@ describe('FallbacksSettingsController', () => {
     expect(call).toHaveBeenCalledWith('/api', 'fallbacks/get', { args: {} })
   })
 
+  it('drops an in-flight save accept after dispose (write path never publishes)', async () => {
+    // F-002: the existing dispose test only covered the READ path. A write
+    // in flight at dispose time must not publish either — the stale save
+    // accept must not replace the frozen store's config with the response.
+    const api = makeApi()
+    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
+    const { rpc, set } = makeRpc({ ...defaultFallbacksConfig, cooldownMs: 99_000 })
+    const controller = new FallbacksSettingsController(api, rpc)
+    await controller.load()
+
+    const gate = Promise.withResolvers<{ ok: true; value: { config: FallbacksConfig } }>()
+    set.mockReturnValueOnce(gate.promise)
+    const saving = controller.save({ ...defaultFallbacksConfig, cooldownMs: 55_000 })
+    controller.dispose()
+    gate.resolve(okResult({ config: { ...defaultFallbacksConfig, cooldownMs: 55_000 } }))
+    await saving
+    const state = controller.store.getSnapshot()
+    // The stale write accept never published: the store stays frozen on the
+    // write's 'saving' state with the pre-save config (never replaced).
+    expect(state.status).toBe('saving')
+    expect(state.present).toBe(true)
+    expect(state.config.cooldownMs).toBe(99_000)
+  })
+
+  it('drops an in-flight save rejection after dispose (write path never publishes)', async () => {
+    const api = makeApi()
+    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
+    const { rpc, set } = makeRpc({ ...defaultFallbacksConfig, cooldownMs: 99_000 })
+    const controller = new FallbacksSettingsController(api, rpc)
+    await controller.load()
+
+    const gate = Promise.withResolvers<{ ok: true; value: { config: FallbacksConfig } }>()
+    set.mockReturnValueOnce(gate.promise)
+    const saving = controller.save({ ...defaultFallbacksConfig, cooldownMs: 55_000 })
+    controller.dispose()
+    gate.reject(new Error('transport down'))
+    await saving
+    const state = controller.store.getSnapshot()
+    // The stale write FAILURE never published either: no error banner after
+    // disposal — fail() sits under the same writeGeneration guard.
+    expect(state.status).not.toBe('error')
+    expect(state.error).toBeNull()
+    expect(state.config.cooldownMs).toBe(99_000)
+  })
+
+  it('drops an in-flight reset accept after dispose (write path never publishes)', async () => {
+    const api = makeApi()
+    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
+    const { rpc, reset } = makeRpc({ ...defaultFallbacksConfig, cooldownMs: 99_000 })
+    const controller = new FallbacksSettingsController(api, rpc)
+    await controller.load()
+
+    const gate = Promise.withResolvers<{ ok: true; value: { config: FallbacksConfig } }>()
+    reset.mockReturnValueOnce(gate.promise)
+    const resetting = controller.resetToDefaults()
+    controller.dispose()
+    gate.resolve(okResult({ config: defaultFallbacksConfig }))
+    await resetting
+    const state = controller.store.getSnapshot()
+    // Symmetric to the save case: the stale reset accept never published.
+    expect(state.status).toBe('saving')
+    expect(state.present).toBe(true)
+    expect(state.config.cooldownMs).toBe(99_000)
+  })
+
+  it('accepts the save response when an overlapping load with a failing get supersedes the read (write generation split)', async () => {
+    // Audit F1: load() and save() shared one generation counter, so the
+    // post-save refresh (settings/document-updated → load()) could bump the
+    // counter while the write was in flight and discard the save's accept().
+    // When that refresh's get fails, the UI kept the PRE-SAVE config even
+    // though the server accepted the write. The read/write generation split
+    // lets the write completion publish regardless of overlapping reads.
+    const api = makeApi()
+    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
+    const { rpc, get, set } = makeRpc({ ...defaultFallbacksConfig, cooldownMs: 99_000 })
+    const controller = new FallbacksSettingsController(api, rpc)
+    await controller.load()
+    expect(controller.store.getSnapshot().config.cooldownMs).toBe(99_000)
+
+    // The save's set stays in flight while the overlapping refresh runs.
+    const gate = Promise.withResolvers<{ ok: true; value: { config: FallbacksConfig } }>()
+    set.mockReturnValueOnce(gate.promise)
+    const saving = controller.save({ ...defaultFallbacksConfig, cooldownMs: 55_000 })
+
+    // The refresh overlaps the write and its get fails — the exact overlap
+    // where the shared counter dropped the save's accept().
+    get.mockReturnValueOnce(Promise.resolve(failResult('fallbacks gateway is not ready')))
+    await controller.load()
+    expect(controller.store.getSnapshot().present).toBe(false)
+
+    // The server accepted the write and returned the post-write config.
+    gate.resolve(okResult({ config: { ...defaultFallbacksConfig, cooldownMs: 55_000 } }))
+    await saving
+    const state = controller.store.getSnapshot()
+    expect(state.status).toBe('ready')
+    expect(state.present).toBe(true)
+    expect(state.config.cooldownMs).toBe(55_000)
+  })
+
+  it('drops a pre-write load whose get fails after a save accepted (mirrored race guard)', async () => {
+    // F-301: the mirror image of F1. A load STARTED before a write can
+    // settle AFTER the write's accept — when its get then fails, the old
+    // read's accept(undefined) would pull present back to false and leave
+    // the UI showing the pre-save config even though the server accepted
+    // the write. Write-wins: a read that observed the pre-write generation
+    // must not clobber the write's publish on EITHER branch.
+    const api = makeApi()
+    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
+    const { rpc, get, set } = makeRpc({ ...defaultFallbacksConfig, cooldownMs: 99_000 })
+    const controller = new FallbacksSettingsController(api, rpc)
+    await controller.load()
+    expect(controller.store.getSnapshot().config.cooldownMs).toBe(99_000)
+
+    // The load's get stays in flight while the write completes first.
+    const gate = Promise.withResolvers<unknown>()
+    get.mockReturnValueOnce(gate.promise)
+    const loading = controller.load()
+    set.mockReturnValueOnce(Promise.resolve(okResult({ config: { ...defaultFallbacksConfig, cooldownMs: 55_000 } })))
+    await controller.save({ ...defaultFallbacksConfig, cooldownMs: 55_000 })
+    expect(controller.store.getSnapshot().config.cooldownMs).toBe(55_000)
+
+    // The pre-write read settles LAST, with a FAILING get — without the
+    // guard its accept(undefined) clobbers the save's publish.
+    gate.resolve(failResult('fallbacks gateway is not ready'))
+    await loading
+    const state = controller.store.getSnapshot()
+    expect(state.status).toBe('ready')
+    expect(state.present).toBe(true)
+    expect(state.config.cooldownMs).toBe(55_000)
+  })
+
+  it('drops a pre-write load whose describe fails after a save accepted (mirrored race, failure branch)', async () => {
+    // The catch branch of load() is under the same guard: a describe
+    // failure settling after the write must not flip the store to 'error'
+    // over the write's published accept.
+    const api = makeApi()
+    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
+    const { rpc, set } = makeRpc({ ...defaultFallbacksConfig, cooldownMs: 99_000 })
+    const controller = new FallbacksSettingsController(api, rpc)
+    await controller.load()
+
+    // The refresh's describe stays in flight while the write completes.
+    const gate = Promise.withResolvers<unknown>()
+    api.settings.describe.mockReturnValueOnce(gate.promise)
+    const loading = controller.load()
+    set.mockReturnValueOnce(Promise.resolve(okResult({ config: { ...defaultFallbacksConfig, cooldownMs: 55_000 } })))
+    await controller.save({ ...defaultFallbacksConfig, cooldownMs: 55_000 })
+
+    // The stale read's describe fails — without the guard fail() flips the
+    // store to 'error' over the write's accept.
+    gate.resolve(error('read-refused', 'read refused'))
+    await loading
+    const state = controller.store.getSnapshot()
+    expect(state.status).toBe('ready')
+    expect(state.error).toBeNull()
+    expect(state.present).toBe(true)
+    expect(state.config.cooldownMs).toBe(55_000)
+  })
+
+  it('accepts the reset response when an overlapping load with a failing get supersedes the read (reset write generation split)', async () => {
+    // F-001/F-303: resetToDefaults() rides the same writeGeneration guard
+    // as save() — an overlapping refresh whose get fails must not discard
+    // the reset's accept of the post-reset defaults (write-wins symmetry).
+    const api = makeApi()
+    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
+    const { rpc, get, reset } = makeRpc({ ...defaultFallbacksConfig, cooldownMs: 99_000 })
+    const controller = new FallbacksSettingsController(api, rpc)
+    await controller.load()
+    expect(controller.store.getSnapshot().config.cooldownMs).toBe(99_000)
+
+    // The reset stays in flight while the overlapping refresh runs.
+    const gate = Promise.withResolvers<{ ok: true; value: { config: FallbacksConfig } }>()
+    reset.mockReturnValueOnce(gate.promise)
+    const resetting = controller.resetToDefaults()
+
+    // The refresh overlaps the write and its get fails.
+    get.mockReturnValueOnce(Promise.resolve(failResult('fallbacks gateway is not ready')))
+    await controller.load()
+    expect(controller.store.getSnapshot().present).toBe(false)
+
+    // The server accepted the reset and returned the composed defaults.
+    gate.resolve(okResult({ config: defaultFallbacksConfig }))
+    await resetting
+    const state = controller.store.getSnapshot()
+    expect(state.status).toBe('ready')
+    expect(state.present).toBe(true)
+    expect(state.config).toEqual(defaultFallbacksConfig)
+  })
+
   it('loads the provider directory and model groups into the catalog snapshot (D-4)', async () => {
     const api = makeApi()
     api.llm.providers.mockResolvedValue(ok({ providers: catalogFixture().providers }))

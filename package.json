@@ -49,6 +49,7 @@
     "release:prepare": "tsx scripts/prepare-release.ts",
     "release:validate": "tsx scripts/validate-release-version.ts",
     "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.build.json --noEmit && tsc --noEmit",
     "prepare": "pnpm run build"
   },
   "engines": {
