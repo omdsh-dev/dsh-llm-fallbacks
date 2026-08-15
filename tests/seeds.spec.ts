@@ -12,13 +12,16 @@
  */
 
 import { describe, expect, it, vi } from 'vitest'
+import { FallbacksSeedManager, type SeedsIo } from '../src/seeds.ts'
+// Config types come from `./config.ts` — the SSOT (not re-exported by
+// seeds.ts; `tsconfig` includes src only, so type-only imports here are
+// erased at runtime, but importing from the SSOT keeps the hygiene).
 import {
-  FallbacksSeedManager,
+  INHERIT_ROLE_ID,
+  defaultFallbacksConfig,
   type FallbacksConfig,
   type FallbacksRoles,
-  type SeedsIo,
-} from '../src/seeds.ts'
-import { INHERIT_ROLE_ID, defaultFallbacksConfig } from '../src/config.ts'
+} from '../src/config.ts'
 
 /** Warn-only logger double mirroring `tests/config.spec.ts` conventions. */
 function warnLogger() {
@@ -191,6 +194,39 @@ describe('FallbacksSeedManager — materialization (spec §9.2 table)', () => {
     expect(f.writes).toHaveLength(0)
   })
 
+  it('attach conflict leaves the operator row AND the rules untouched, writing nothing (AC-2 combined pin)', async () => {
+    // One end-to-end assertion of the conflict contract: the row is copied
+    // verbatim (persona/chain/prompt/permissions), the operator rules are
+    // intact, and the no-delta gate suppresses the settings write.
+    const { logger } = warnLogger()
+    const manager = new FallbacksSeedManager(logger)
+    const f = fakeIo(baseConfig({
+      list: [{
+        id: 'coder',
+        persona: 'operator-edited',
+        chain: ['op-chain'],
+        prompt: 'operator prompt',
+        permissions: { allow: ['a'] },
+      }],
+      rules: [{ role: 'coder' }],
+    }))
+    const outcome = await manager.declare([{ id: 'coder', persona: 'seed-default' }], f.io)
+
+    expect(outcome.applied).toEqual(['coder'])
+    expect(outcome.conflicts).toEqual([{ id: 'coder', kind: 'persona-source' }])
+    expect(f.writes).toHaveLength(0)
+    expect(f.io.read().roles).toEqual({
+      list: [{
+        id: 'coder',
+        persona: 'operator-edited',
+        chain: ['op-chain'],
+        prompt: 'operator prompt',
+        permissions: { allow: ['a'] },
+      }],
+      rules: [{ role: 'coder' }],
+    })
+  })
+
   it('row at the previous default tracks a companion persona update — chain preserved (R4)', async () => {
     const manager = new FallbacksSeedManager({ warn: vi.fn() })
     const f = fakeIo(baseConfig())
@@ -203,6 +239,41 @@ describe('FallbacksSeedManager — materialization (spec §9.2 table)', () => {
     expect(outcome.conflicts).toEqual([])
     expect(f.io.read().roles.list).toEqual([{ id: 'coder', persona: 'v2', chain: ['op-chain'] }])
     expect(f.writes).toHaveLength(2)
+  })
+
+  it('declare tracking-update preserves prompt/permissions/chain/fallback byte-for-byte (R4)', async () => {
+    // The `{ ...row, persona }` tracking path is pinned explicitly — not
+    // just the revert path — so a future spread change cannot silently
+    // drop the schema-reserved role fields.
+    const manager = new FallbacksSeedManager({ warn: vi.fn() })
+    const f = fakeIo(baseConfig())
+    await manager.declare([{ id: 'coder', persona: 'v1' }], f.io)
+    f.edit({
+      list: [{
+        id: 'coder',
+        persona: 'v1',
+        chain: ['openai/gpt-4o', 'other/claude'],
+        fallback: 'none',
+        prompt: 'custom prompt',
+        permissions: { allow: ['a'], deny: ['b'] },
+      }],
+      rules: [{ role: 'coder' }],
+    })
+
+    const outcome = await manager.declare([{ id: 'coder', persona: 'v2' }], f.io)
+    expect(outcome.applied).toEqual(['coder'])
+    expect(outcome.conflicts).toEqual([])
+    expect(f.io.read().roles).toEqual({
+      list: [{
+        id: 'coder',
+        persona: 'v2',
+        chain: ['openai/gpt-4o', 'other/claude'],
+        fallback: 'none',
+        prompt: 'custom prompt',
+        permissions: { allow: ['a'], deny: ['b'] },
+      }],
+      rules: [{ role: 'coder' }],
+    })
   })
 
   it('operator override preserved on re-declare; conflict iff persona differs from the incoming default', async () => {
@@ -330,6 +401,93 @@ describe('FallbacksSeedManager — idempotency (AC-1)', () => {
     await manager.declare(batch, f.io)
     expect(f.io.read().roles.list).toEqual(batch)
     expect(f.writes).toHaveLength(1)
+  })
+
+  it('double re-declare over an operator override keeps the override with zero writes (AC-1)', async () => {
+    // The AC-1 no-delta clause with an override present: re-declaring the
+    // SAME batch (not a changed default) over an operator override must
+    // leave the row overridden and issue no settings write.
+    const { logger } = warnLogger()
+    const manager = new FallbacksSeedManager(logger)
+    const f = fakeIo(baseConfig())
+    await manager.declare([{ id: 'coder', persona: 'v1' }], f.io)
+    f.edit({ list: [{ id: 'coder', persona: 'operator' }], rules: [] })
+
+    await manager.declare([{ id: 'coder', persona: 'v2' }], f.io)
+    expect(f.writes).toHaveLength(1) // only the first declare wrote
+
+    const outcome = await manager.declare([{ id: 'coder', persona: 'v2' }], f.io)
+    expect(outcome.conflicts).toEqual([{ id: 'coder', kind: 'persona-source' }])
+    expect(f.io.read().roles.list).toEqual([{ id: 'coder', persona: 'operator' }])
+    expect(f.writes).toHaveLength(1) // identical batch over the override → still zero writes
+    expect(manager.effectiveRoles(f.io).roles[0]).toMatchObject({
+      seeded: true,
+      personaOverridden: true,
+      seedPersona: 'v2',
+    })
+  })
+
+  it('retained legacy keys on the composed roles never churn a write (member-wise delta, qc2 S-2)', async () => {
+    // A transitional legacy user layer can keep `roles.default` (schemastery
+    // retains unknown keys). The no-delta check must compare only the
+    // `list`/`rules` members — otherwise every declare issues a settings
+    // write (revision churn) despite an unchanged list.
+    const manager = new FallbacksSeedManager({ warn: vi.fn() })
+    const f = fakeIo(baseConfig({
+      list: [{ id: 'coder', persona: 'v1' }],
+      rules: [],
+      default: { persona: 'legacy default' },
+    } as unknown as FallbacksRoles))
+    await manager.declare([{ id: 'coder', persona: 'v1' }], f.io)
+    expect(f.writes).toHaveLength(0) // row already matches → no delta → no write
+
+    const outcome = await manager.declare([{ id: 'coder', persona: 'v1' }], f.io)
+    expect(outcome.applied).toEqual(['coder'])
+    expect(f.writes).toHaveLength(0) // the legacy key still does not churn a write
+    expect(f.io.read().roles.list).toEqual([{ id: 'coder', persona: 'v1' }])
+  })
+})
+
+describe('FallbacksSeedManager — malformed/legacy roles containment (guide §10)', () => {
+  it('declare degrades a legacy roles shape without list to empty rows instead of throwing', async () => {
+    // Two-block-era source: `roles.default` without `roles.list` — the
+    // write path must tolerate the same shape the readbacks guard via
+    // roleRows() (no raw TypeError), degrading conservatively (qc2 S-1).
+    const manager = new FallbacksSeedManager({ warn: vi.fn() })
+    const f = fakeIo({
+      ...defaultFallbacksConfig,
+      roles: { default: { persona: 'legacy' } },
+    } as unknown as FallbacksConfig)
+
+    const outcome = await manager.declare([{ id: 'coder', persona: 'Coder' }], f.io)
+    expect(outcome.applied).toEqual(['coder'])
+    expect(outcome.conflicts).toEqual([])
+    expect(f.writes).toHaveLength(1)
+    expect(f.io.read().roles).toEqual({ list: [{ id: 'coder', persona: 'Coder' }], rules: [] })
+  })
+
+  it('revert on a non-array list degrades to row-absent instead of throwing', async () => {
+    const manager = new FallbacksSeedManager({ warn: vi.fn() })
+    const f = fakeIo(baseConfig())
+    await manager.declare([{ id: 'coder', persona: 'v1' }], f.io)
+    f.edit({ list: 'junk' } as unknown as FallbacksRoles)
+
+    const outcome = await manager.revert('coder', f.io)
+    expect(outcome).toEqual({ reverted: false, reason: 'row-absent' })
+    expect(f.writes).toHaveLength(1) // only the declare wrote
+  })
+
+  it('revert tolerates a non-array rules member (degrades to []) and still reverts the persona', async () => {
+    const manager = new FallbacksSeedManager({ warn: vi.fn() })
+    const f = fakeIo(baseConfig())
+    await manager.declare([{ id: 'coder', persona: 'v1' }], f.io)
+    f.edit({ list: [{ id: 'coder', persona: 'operator' }], rules: 'junk' } as unknown as FallbacksRoles)
+
+    const outcome = await manager.revert('coder', f.io)
+    expect(outcome).toEqual({ reverted: true, persona: 'v1' })
+    // The write payload is well-formed: degraded rules never reach the
+    // settings layer as a malformed value.
+    expect(f.io.read().roles).toEqual({ list: [{ id: 'coder', persona: 'v1' }], rules: [] })
   })
 })
 

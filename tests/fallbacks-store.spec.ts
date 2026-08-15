@@ -901,6 +901,18 @@ describe('FallbacksSettingsController', () => {
     ])
   })
 
+  it('a get WITHOUT the seeds field leaves state.seeds as [] (get-authority rule)', async () => {
+    // spec §9.4: only a real get settles seed truth; an omitted field
+    // (older gateway) means "no seeds to badge" on this fresh read —
+    // load() must leave the initial [] rather than inventing state.
+    const api = makeApi()
+    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
+    const { rpc } = makeRpc() // default get response carries { config } only — no seeds
+    const controller = new FallbacksSettingsController(api, rpc)
+    await controller.load()
+    expect(controller.store.getSnapshot().seeds).toEqual([])
+  })
+
   it('guards a malformed seeds wire value as [] (Array.isArray + shape guard)', async () => {
     // Non-array → [] ; all-malformed entries → [] ; mixed array → the
     // well-shaped entries only (the legacyKeys element-filter precedent).

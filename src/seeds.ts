@@ -33,6 +33,7 @@ import {
   type FallbacksConfig,
   type FallbacksConfigLogger,
   type FallbacksRole,
+  type FallbacksRoleRule,
   type FallbacksRoles,
 } from './config.ts'
 
@@ -164,14 +165,26 @@ export class FallbacksSeedManager {
     }
 
     const config = io.read()
-    const newList = materialize(config.roles.list, registry, this.registry, outcome.conflicts)
+    // Containment (guide §10, qc2 S-1): the write paths tolerate the same
+    // malformed/legacy `roles` shape the read paths guard against
+    // (`roleRows` / `roleRules` degrade to empty) instead of throwing a
+    // raw TypeError. Loud failure modes are unchanged — a rejected
+    // settings write still throws (retry-safe, KD-G5).
+    const currentList = roleRows(config)
+    const currentRules = roleRules(config)
+    const newList = materialize(currentList, registry, this.registry, outcome.conflicts)
     for (const conflict of outcome.conflicts) {
       this.logger.warn(
         `llm-fallbacks: seeds: persona-source conflict for seed id ${JSON.stringify(conflict.id)} — operator row persona kept (never overwritten)`,
       )
     }
-    const computed: FallbacksRoles = { list: newList, rules: config.roles.rules }
-    if (!deepEqual(computed, config.roles)) {
+    const computed: FallbacksRoles = { list: newList, rules: currentRules }
+    // AC-1 no-delta check over the `{ list, rules }` members only (qc2
+    // S-2): a composed `config.roles` may retain legacy keys
+    // (`roles.default` etc.), which must not churn a settings write on
+    // every declare for a transitional legacy user layer. Materialization
+    // never touches `rules`, so the list is the only possible delta source.
+    if (!deepEqual(newList, currentList)) {
       // A rejected write throws — the registry below is NOT committed
       // (retry-safe: the next declare re-computes from the fresh read).
       await io.writeRoles(computed)
@@ -226,11 +239,16 @@ export class FallbacksSeedManager {
     const seedId = id.trim()
     const seedPersona = this.registry.get(seedId)
     if (seedPersona === undefined) return { reverted: false, reason: 'not-seeded' }
-    const { list, rules } = io.read().roles
-    const index = list.findIndex((row) => row.id.trim() === seedId)
+    // Same containment guard as `declare` (qc2 S-1): a malformed/legacy
+    // `roles` shape degrades to empty rows instead of throwing — the id
+    // is then simply absent, and the business outcome stays a value.
+    const config = io.read()
+    const rows = roleRows(config)
+    const rules = roleRules(config)
+    const index = rows.findIndex((row) => row.id.trim() === seedId)
     if (index === -1) return { reverted: false, reason: 'row-absent' }
-    if (list[index].persona === seedPersona) return { reverted: true, persona: seedPersona }
-    const nextList = list.map((row, i) => (i === index ? { ...row, persona: seedPersona } : row))
+    if (rows[index].persona === seedPersona) return { reverted: true, persona: seedPersona }
+    const nextList = rows.map((row, i) => (i === index ? { ...row, persona: seedPersona } : row))
     await io.writeRoles({ list: nextList, rules })
     return { reverted: true, persona: seedPersona }
   }
@@ -302,12 +320,23 @@ function materialize(
  * `roles` shape (guide §10 containment): a legacy two-block-era source can
  * carry `roles.default` without `roles.list` (schemastery retains unknown
  * keys), and the non-strict settings layer can store anything — the seed
- * readbacks must never crash on it. Schema-resolved sources always have an
- * array `list`; this guard only fires on malformed/legacy input.
+ * readbacks and write paths must never crash on it. Schema-resolved
+ * sources always have an array `list`; this guard only fires on
+ * malformed/legacy input.
  */
 function roleRows(config: FallbacksConfig): FallbacksRole[] {
   const list = (config.roles as { list?: unknown } | undefined)?.list
   return Array.isArray(list) ? list : []
+}
+
+/**
+ * The materialized rule list of a composed config — the `roleRows()` twin
+ * for the `rules` member (guide §10 containment): the write paths must
+ * tolerate the same malformed/legacy `roles` shape the read paths do.
+ */
+function roleRules(config: FallbacksConfig): FallbacksRoleRule[] {
+  const rules = (config.roles as { rules?: unknown } | undefined)?.rules
+  return Array.isArray(rules) ? rules : []
 }
 
 /** Structural equality over the `{ list, rules }` shape (idempotency delta check). */

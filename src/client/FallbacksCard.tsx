@@ -735,7 +735,11 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
       setValidationErrors([])
       setValidationAttempted(false)
     }
-  }, [validationAttempted, draft, ruleRows, seededIds, t])
+    // `seededIds` is intentionally NOT a dep: it is a fresh Map per render
+    // (derived from state.seeds, spec §9.4) and `draft` already re-runs
+    // this effect on every render — listing it would only re-run the
+    // bounded validateDraft pass with zero behavioral change (qc1 S-8).
+  }, [validationAttempted, draft, ruleRows, t])
 
   const confirmReset = (): void => {
     setResetting(true)

@@ -1,6 +1,6 @@
 # Consumer Contract (Consumer API)
 
-This document defines the **consumer surface** `dsh-llm-fallbacks` exposes: (1) the package-root library API (`import { … } from 'dsh-llm-fallbacks'`); (2) the named cordis service (`ctx.get('llm-fallbacks')`). Both entry points share the same function implementations (single point of truth, no copied logic). Installation → [docs/install.md](install.md); release process → [docs/release.md](release.md).
+This document defines the **consumer surface** `dsh-llm-fallbacks` exposes: (1) the package-root library API (`import { … } from 'dsh-llm-fallbacks'`); (2) the named cordis service (`ctx.get('llm-fallbacks')`). No logic is copied between the two: the service's four legacy callables are the same function references as the library re-exports, and its three role-seed methods are per-apply closures over the same `FallbacksSeedManager` the gateway uses (single point of truth — see [Lifecycle](#lifecycle)). Installation → [docs/install.md](install.md); release process → [docs/release.md](release.md).
 
 > **Contract boundary**: this document describes **this package's** export surface and lifecycle. **A valid package contract ≠ an integrated downstream repository** — whether integration is complete must be judged by the actual wiring in the target repository.
 
@@ -61,7 +61,7 @@ validateFallbacksConfig(config, logger)
 
 ## Named service (`ctx.get('llm-fallbacks')`)
 
-After the plugin's `apply()`, a service is registered on the cordis `Context` under the name `'llm-fallbacks'`. **It is a small pure-function face sharing the same function implementations as the library API — not a second library API**: runtime state (cooldown, recent switches, etc.) is not part of the contract — cross-plugin state reads should listen to `fallbacks/switch` events instead of reading service object internals.
+After the plugin's `apply()`, a service is registered on the cordis `Context` under the name `'llm-fallbacks'`. **It is a small face over the library logic — not a second library API**: the four legacy callables are reference-identical to the library re-exports, and the three role-seed methods are per-apply closures over the seed manager (state stays behind the closure, spec §9.5) — no copied logic on either side. Runtime state (cooldown, recent switches, etc.) is not part of the contract — cross-plugin state reads should listen to `fallbacks/switch` events instead of reading service object internals.
 
 ### Shape
 
@@ -94,7 +94,7 @@ if (fb !== undefined) {
 
 ### Lifecycle
 
-- **Available after `apply`**: during plugin apply, `ctx.get('llm-fallbacks')` returns the service object; the service's methods are the same function references as the library re-exports, and `version` equals the package.json version.
+- **Available after `apply`**: during plugin apply, `ctx.get('llm-fallbacks')` returns the service object; the four legacy callables are the same function references as the library re-exports, while the three seed methods are per-apply closures over a `FallbacksSeedManager` (seed state lives behind the closure, spec §9.5 — not on the service object), and `version` equals the package.json version.
 - **Withdrawn after `dispose`**: the registration is automatically unregistered when the plugin fiber unloads (cordis 4 fiber-scoped); after plugin dispose, `ctx.get('llm-fallbacks')` is `undefined` — the strict `get` returns `undefined` for a missing implementation, never throwing.
 
 ### Type merging

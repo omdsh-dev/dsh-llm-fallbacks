@@ -247,4 +247,53 @@ describe('llm-fallbacks named cordis service', () => {
       expect.objectContaining({ id: 'architect', seeded: true, seedPersona: 'first default' }),
     ])
   })
+
+  it('declareSeeds and revertSeededPersona throw loudly when the settings inject child never activates (KD-G5)', async () => {
+    // A fiber WITHOUT a settings service: the conditional inject child never
+    // activates, so the io adapter's writeRoles stays in its loud default
+    // failure state. The manager stays retry-safe — a failed write never
+    // commits (declare) or mutates (revert) the registry.
+    const bareCtx = new Context()
+    try {
+      apply(bareCtx, {
+        ...defaultFallbacksConfig,
+        roles: {
+          list: [{ id: 'architect', persona: 'operator edit' }],
+          rules: [],
+        },
+      })
+      const fb = bareCtx.get('llm-fallbacks')!
+
+      // declareSeeds needs a settings write (delta vs the composed roles) →
+      // loud throw, and the registry is NOT committed.
+      await expect(fb.declareSeeds([{ id: 'reviewer', persona: 'new role' }]))
+        .rejects.toThrow('llm-fallbacks: seeds: settings service is unavailable — seed roles cannot be written')
+      const afterFailedDeclare = fb.getEffectiveRoles()
+      expect(afterFailedDeclare.roles).toHaveLength(1)
+      expect(afterFailedDeclare.roles[0]).toMatchObject({ id: 'architect', seeded: false, personaOverridden: false })
+
+      // Seed the registry via a NO-WRITE declare (the row already matches
+      // the composed shape → no delta, AC-1); the conflict proves the
+      // operator persona is retained.
+      await expect(fb.declareSeeds([{ id: 'architect', persona: 'v1' }])).resolves.toEqual({
+        applied: ['architect'],
+        skipped: [],
+        conflicts: [{ id: 'architect', kind: 'persona-source' }],
+      })
+
+      // revertSeededPersona needs a write (row persona ≠ seed default) →
+      // loud throw, and the registry stays unchanged (row still seeded).
+      await expect(fb.revertSeededPersona('architect'))
+        .rejects.toThrow('llm-fallbacks: seeds: settings service is unavailable — seed roles cannot be written')
+      expect(fb.getEffectiveRoles().roles[0]).toMatchObject({
+        id: 'architect',
+        persona: 'operator edit',
+        seeded: true,
+        personaOverridden: true,
+        seedPersona: 'v1',
+      })
+    } finally {
+      await bareCtx.fiber.dispose()
+    }
+  })
 })
