@@ -174,8 +174,18 @@ function assembleConfig(
  * rootChain and role chains. Returns one localized message per violation;
  * a non-empty result blocks {@link save} — the draft is never written.
  * `persona` is free text and never validated.
+ *
+ * `seededIds` is the live trimmed-id → overridden map derived from
+ * `state.seeds` (spec §9.4): the empty-chain block relaxes for seeded ids
+ * only (spec §9.6 / AC-3 — a seeded role's chain is legitimately empty by
+ * design, R4, and its persona edits must stay persistable); non-seeded
+ * behavior is byte-identical.
  */
-function validateDraft(draft: FallbacksConfig, t: FallbacksCardProps['t']): string[] {
+function validateDraft(
+  draft: FallbacksConfig,
+  t: FallbacksCardProps['t'],
+  seededIds: ReadonlyMap<string, boolean>,
+): string[] {
   const errors: string[] = []
   const declaredIds = new Set<string>()
   for (const role of draft.roles.list) {
@@ -199,8 +209,12 @@ function validateDraft(draft: FallbacksConfig, t: FallbacksCardProps['t']): stri
     // A declared role with no model config is meaningless (plan
     // fallbacks-feedback-round T2): the chain has no configured entries —
     // blank selector rows serialize to nothing, so they count as empty —
-    // the save is blocked with an inline hint on the role card.
-    if ((role.chain ?? []).length === 0) {
+    // the save is blocked with an inline hint on the role card. Seeded
+    // roles are the one exception (spec §9.6 / AC-3): seeds never invent a
+    // chain (R4), so a seeded role's chain is legitimately empty by design
+    // and the block relaxes for seeded ids only — the persona edit stays
+    // persistable. Non-seeded behavior is byte-identical.
+    if ((role.chain ?? []).length === 0 && !seededIds.has(role.id.trim())) {
       errors.push(t('validation.roleChainRequired', { id: role.id }))
     }
   }
@@ -610,6 +624,16 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
   // Offending role ids after a blocked save attempt, derived once per render
   // into a Set (qc3 F-3) — each row's inline red border is one lookup.
   const invalidRoleIds = validationAttempted ? collectInvalidRoleIds(roleRows) : null
+  // Seeded-role badge state, derived ONCE per render from the wire `seeds`
+  // (spec §9.4; the qc3 F-3 same-derivation pattern): trimmed role id →
+  // whether the persona is currently an operator override. The same map
+  // drives the badge pill, the revert affordance, and the seeded-only Save
+  // relax — each row's membership is a single lookup, and non-seeded rows
+  // are indistinguishable from a card without seeds at all.
+  const seededIds = new Map<string, boolean>()
+  for (const seed of state.seeds) {
+    seededIds.set(seed.id.trim(), seed.overridden)
+  }
 
   // R-4b: the status block's derived effective model (spec §2.5 D-6). The
   // derivation is a display value over config + recent switches — the
@@ -661,7 +685,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
   }, [state.catalogStatus, state.catalogEpoch, state.config, dirty])
 
   const save = (): void => {
-    const errors = validateDraft(draft, t)
+    const errors = validateDraft(draft, t, seededIds)
     // An empty rule row is invisible to validateDraft (rowsToRules dropped
     // it from the draft) — the row would vanish on a successful save with no
     // explanation. Block it alongside the draft violations (qc3 F-4); the
@@ -707,10 +731,14 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
     // The empty-rule-row violation lives outside the draft (rowsToRules
     // dropped the row), so it must clear on the ROW state, not just the
     // assembled draft (qc3 F-4).
-    if (validateDraft(draft, t).length === 0 && !ruleRows.some(row => row.role === '')) {
+    if (validateDraft(draft, t, seededIds).length === 0 && !ruleRows.some(row => row.role === '')) {
       setValidationErrors([])
       setValidationAttempted(false)
     }
+    // `seededIds` is intentionally NOT a dep: it is a fresh Map per render
+    // (derived from state.seeds, spec §9.4) and `draft` already re-runs
+    // this effect on every render — listing it would only re-run the
+    // bounded validateDraft pass with zero behavioral change (qc1 S-8).
   }, [validationAttempted, draft, ruleRows, t])
 
   const confirmReset = (): void => {
@@ -960,6 +988,10 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                 <div className={css.list}>
                   {roleRows.map((row, index) => {
                     const invalid = invalidRoleIds?.has(row.id.trim()) ?? false
+                    // undefined = not a currently seeded row (no badge, no
+                    // revert, no Save relax — the row is an ordinary config
+                    // row; R2: dropping a declaration keeps the row).
+                    const seed = seededIds.get(row.id.trim())
                     return (
                     <div key={index} className={css.editorCard}>
                       <div className={css.ruleGrid}>
@@ -989,6 +1021,32 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                             disabled={!writable}
                             onChange={event => { updateRoleRow(index, { persona: event.target.value }) }}
                           />
+                          {seed !== undefined && (
+                            // Seed badge + revert (spec §9.4 / AC-3 — R3, not
+                            // polish): only CURRENTLY seeded rows carry the
+                            // default-vs-override pill and the revert
+                            // affordance; dropping a seed declaration leaves
+                            // the row ordinary (R2). Revert restores the
+                            // CURRENTLY declared seed default through the
+                            // gateway, never depends on a card Save, and is
+                            // disabled while the card cannot write or a write
+                            // is in flight. The pill reuses the `pending`
+                            // pill vocabulary and the row rides the `hint`
+                            // rhythm — no new control shapes.
+                            <span className={css.hint}>
+                              <span className={css.pending}>
+                                {t(seed ? 'roles.seedOverride' : 'roles.seedDefault')}
+                              </span>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                disabled={!writable || saving}
+                                onClick={() => { void controller.revertSeed(row.id.trim()) }}
+                              >
+                                {t('roles.revertPersona')}
+                              </Button>
+                            </span>
+                          )}
                         </div>
                       </div>
                       <div className={css.chainSelectors}>
@@ -1007,11 +1065,20 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                         {row.selectors.every(selector => selectorRowToRaw(selector) === '') && (
                           // A role whose chain area is empty — no selector
                           // rows, or only blank placeholder rows — has no
-                          // model config: save is blocked (roleChainRequired);
-                          // the inline hint explains why (plan
-                          // fallbacks-feedback-round T2), unconditional while
-                          // no row serializes to a usable chain entry.
-                          <span className={css.hint}>{t('validation.roleChainRequired', { id: row.id })}</span>
+                          // model config. Non-seeded: save is blocked
+                          // (roleChainRequired) and the inline hint explains
+                          // why (plan fallbacks-feedback-round T2),
+                          // unconditional while no row serializes to a usable
+                          // chain entry. Seeded: the chain is legitimately
+                          // empty by design (R4 — seeds never invent one), so
+                          // the hint turns non-blocking (seedChainOptional)
+                          // and the Save relax persists the persona edit
+                          // (spec §9.6 / AC-3).
+                          <span className={css.hint}>
+                            {seed !== undefined
+                              ? t('roles.seedChainOptional', { id: row.id })
+                              : t('validation.roleChainRequired', { id: row.id })}
+                          </span>
                         )}
                       </div>
                       <div className={css.ruleGrid}>

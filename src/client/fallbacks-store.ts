@@ -39,6 +39,9 @@ import {
 } from '../config.ts'
 import type { FallbacksSwitchEventData } from '../events.ts'
 import { parseSelector } from '../selectors.ts'
+// Type-only — `src/seeds.ts` carries no `@deepseek-ai/*` value imports, so
+// this stays out of the client bundle (purity gate).
+import type { SeedsWireStatus } from '../seeds.ts'
 
 /** The plugin's settings namespace on the host wire (settings/document-updated ns filter). */
 export const FALLBACKS_SETTINGS_NS = 'fallbacks'
@@ -99,6 +102,13 @@ export interface FallbacksSettingsState {
    * over the user layer, so it cannot delete legacy keys).
    */
   legacyKeys: string[]
+  /**
+   * Seeded-role badge state (spec §9.4): one entry per live seed, with the
+   * gateway's override verdict. The wire field is authoritative — absent on
+   * an old response it keeps the last accepted value (the `legacyKeys`
+   * honest rule: only a `get` may settle seed truth).
+   */
+  seeds: SeedsWireStatus[]
   /** Provider/model directory snapshot (spec §2.5 D-4). */
   catalogStatus: 'idle' | 'loading' | 'ready' | 'error'
   /** Catalog read diagnostic: whole-load failure or per-provider lookups. */
@@ -149,6 +159,21 @@ function getPath(value: unknown, path: readonly string[]): unknown {
     current = (current as Record<string, unknown>)[key]
   }
   return current
+}
+
+/**
+ * Shape-guard the wire `seeds` badge field (spec §9.4): only `{ id,
+ * overridden }` entries survive — the `legacyKeys` element-filter
+ * precedent. A non-array value resolves to `[]`; malformed entries are
+ * dropped, so an all-bad array also lands `[]`. The store never trusts a
+ * misshapen badge field.
+ */
+function parseSeedsWire(value: unknown): SeedsWireStatus[] {
+  if (!Array.isArray(value)) return []
+  return value.filter((entry): entry is SeedsWireStatus => {
+    if (!isRecord(entry)) return false
+    return typeof entry.id === 'string' && typeof entry.overridden === 'boolean'
+  })
 }
 
 /**
@@ -587,6 +612,7 @@ export class FallbacksSettingsController {
     config: defaultFallbacksConfig,
     present: false,
     legacyKeys: [],
+    seeds: [],
     catalogStatus: 'idle',
     catalogError: null,
     providers: [],
@@ -676,6 +702,7 @@ export class FallbacksSettingsController {
       // `state.config` from a REAL resolved value.
       let config: unknown
       let legacyKeys: string[] = []
+      let seeds: SeedsWireStatus[] = []
       if (getResult !== undefined && getResult.ok && getResult.value !== null
         && typeof getResult.value === 'object') {
         if ('config' in getResult.value) {
@@ -689,8 +716,14 @@ export class FallbacksSettingsController {
             legacyKeys = wireLegacyKeys.filter((key): key is string => typeof key === 'string')
           }
         }
+        // Same authority rule for the seeds badge (spec §9.4): only a real
+        // get settles seed truth — an absent/malformed field means "no
+        // seeds to badge" on this fresh read.
+        if ('seeds' in getResult.value) {
+          seeds = parseSeedsWire(getResult.value.seeds)
+        }
       }
-      this.accept(config, writable, legacyKeys)
+      this.accept(config, writable, legacyKeys, seeds)
     } catch (error) {
       if (generation !== this.readGeneration) return
       if (writeGenerationAtStart !== this.writeGeneration) return
@@ -847,7 +880,18 @@ export class FallbacksSettingsController {
           legacyKeys = wireLegacyKeys.filter((key): key is string => typeof key === 'string')
         }
       }
-      this.accept(config, true, legacyKeys)
+      // The write response carries the post-write seeds badge (spec §9.4,
+      // same W-1/F-1 rule as legacyKeys): when the field is ABSENT (an
+      // older gateway), keep the last accepted value — only a `get` may
+      // settle seed truth.
+      let seeds: SeedsWireStatus[] = this.store.getSnapshot().seeds
+      if (value !== null && typeof value === 'object' && 'seeds' in value) {
+        const wireSeeds: unknown = value.seeds
+        if (Array.isArray(wireSeeds)) {
+          seeds = parseSeedsWire(wireSeeds)
+        }
+      }
+      this.accept(config, true, legacyKeys, seeds)
     } catch (error) {
       if (generation !== this.writeGeneration) return
       this.fail(error)
@@ -886,7 +930,71 @@ export class FallbacksSettingsController {
           legacyKeys = wireLegacyKeys.filter((key): key is string => typeof key === 'string')
         }
       }
-      this.accept(config, true, legacyKeys)
+      // Same keep-last rule as {@link save}: the reset response carries the
+      // post-write seeds badge (clearing the user layer also clears the
+      // materialized rows — the honest response reports the emptied state);
+      // when absent, keep the last accepted value (W-1/F-1).
+      let seeds: SeedsWireStatus[] = this.store.getSnapshot().seeds
+      if (value !== null && typeof value === 'object' && 'seeds' in value) {
+        const wireSeeds: unknown = value.seeds
+        if (Array.isArray(wireSeeds)) {
+          seeds = parseSeedsWire(wireSeeds)
+        }
+      }
+      this.accept(config, true, legacyKeys, seeds)
+    } catch (error) {
+      if (generation !== this.writeGeneration) return
+      this.fail(error)
+    }
+  }
+
+  /**
+   * Revert one seeded role to its CURRENT declared seed default (spec §9.4,
+   * AC-3) through the gateway channel (`/api/fallbacks/revert-seed`). Same
+   * write guards as {@link save} — writable / saving / write-generation —
+   * and the same KD-G3 error handling: any business rejection or transport
+   * failure surfaces its message in `state.error` for the error banner and
+   * the form stays editable for retry. A business `{ reverted: false,
+   * reason }` outcome is still a successful RPC — the post-write read
+   * result (config / legacyKeys / seeds) lands either way, and the revert
+   * button stays disabled while the write is in flight.
+   * @param id - the seeded role id; the host matches it by trimmed id
+   *   against the seed registry (spec §9.3).
+   */
+  async revertSeed(id: string): Promise<void> {
+    const state = this.store.getSnapshot()
+    if (!state.writable || state.status === 'saving') return
+    const generation = ++this.writeGeneration
+    this.store.update((draft) => {
+      draft.status = 'saving'
+      draft.error = null
+    })
+    try {
+      const result = await this.rpc.call('/api', 'fallbacks/revert-seed', { args: { id } })
+      if (generation !== this.writeGeneration) return
+      if (!result.ok) throw result.error
+      const value: unknown = result.value
+      const config = value !== null && typeof value === 'object' && 'config' in value
+        ? value.config
+        : undefined
+      // Same keep-last rules as {@link save}: the revert response carries
+      // the post-write read result (W-1/F-1); an absent legacyKeys or seeds
+      // field keeps the last accepted value — only a `get` may settle truth.
+      let legacyKeys: string[] = this.store.getSnapshot().legacyKeys
+      if (value !== null && typeof value === 'object' && 'legacyKeys' in value) {
+        const wireLegacyKeys: unknown = value.legacyKeys
+        if (Array.isArray(wireLegacyKeys)) {
+          legacyKeys = wireLegacyKeys.filter((key): key is string => typeof key === 'string')
+        }
+      }
+      let seeds: SeedsWireStatus[] = this.store.getSnapshot().seeds
+      if (value !== null && typeof value === 'object' && 'seeds' in value) {
+        const wireSeeds: unknown = value.seeds
+        if (Array.isArray(wireSeeds)) {
+          seeds = parseSeedsWire(wireSeeds)
+        }
+      }
+      this.accept(config, true, legacyKeys, seeds)
     } catch (error) {
       if (generation !== this.writeGeneration) return
       this.fail(error)
@@ -913,9 +1021,12 @@ export class FallbacksSettingsController {
    * same publish: the wire field drives the migration banner. save/reset
    * pass the POST-WRITE value (W-1/F-1) — or the previous value when the
    * response omits the field, so a write can never clear the banner
-   * against server truth; only a real `get` may.
+   * against server truth; only a real `get` may. `seeds` (spec §9.4)
+   * follows the same honest rule: the wire badge field is authoritative
+   * only when a real config resolved — a transient channel-down keeps the
+   * last accepted badge state.
    */
-  private accept(config: unknown, writable: boolean, legacyKeys: string[]): void {
+  private accept(config: unknown, writable: boolean, legacyKeys: string[], seeds: SeedsWireStatus[]): void {
     const parsed = config === undefined ? undefined : parseFallbacksConfig(config)
     this.store.update((state) => {
       state.status = 'ready'
@@ -928,6 +1039,10 @@ export class FallbacksSettingsController {
       // transient refresh can never clear the migration banner (T2 reviewer
       // minor #1).
       state.legacyKeys = parsed === undefined ? state.legacyKeys : legacyKeys
+      // Same honest rule for the seeds badge: never clear/overwrite it on a
+      // read that resolved no config (the badge is server truth, not a
+      // client guess).
+      state.seeds = parsed === undefined ? state.seeds : seeds
       if (parsed !== undefined) {
         state.config = parsed
       }

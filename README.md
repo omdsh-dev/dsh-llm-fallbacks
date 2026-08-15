@@ -134,7 +134,8 @@ The plugin installs as a **pure mount** — it never modifies the dsh source tre
 Beyond the dsh plugin mount, `dsh-llm-fallbacks` exposes a programmable consumer surface — both faces share the same function implementations (single point of truth, no copied logic):
 
 - **Library API**: import the runtime functions and types from the package root — `import { resolveRole, resolveChain, validateFallbacksConfig } from 'dsh-llm-fallbacks'`.
-- **Named cordis service**: while the plugin is applied, `ctx.get('llm-fallbacks')` returns a pure-function service (`{ name, version, resolveRole, resolveChain, validateFallbacksConfig, detectLegacyKeys }`); after the plugin is disposed it is `undefined`. Runtime state stays observable via `fallbacks/switch` events, not through the service.
+- **Named cordis service**: while the plugin is applied, `ctx.get('llm-fallbacks')` returns a pure-function service (`{ name, version, resolveRole, resolveChain, validateFallbacksConfig, detectLegacyKeys, declareSeeds, getEffectiveRoles, revertSeededPersona }`); after the plugin is disposed it is `undefined`. Runtime state stays observable via `fallbacks/switch` events, not through the service.
+- **Role seeds**: companion plugins auto-provision role rows with zero operator hand-edit — `declareSeeds([{ id, persona }])` declares the full current seed set (re-declaring is a no-op; ids failing `/^[a-z0-9-]{1,32}$/` or equal to `inherit` are skipped per-id with a warn, never coerced), `getEffectiveRoles()` reads back which roles are seeded and whether the persona is overridden, and `revertSeededPersona(id)` restores the **currently declared** seed default. The settings card shows a seed-default / override badge with a revert button; seeds never write `chain` / `fallback`.
 
 Full contract (export inventory, minimal examples, lifecycle, typing) → [docs/consumer-api.md](docs/consumer-api.md).
 

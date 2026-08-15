@@ -51,6 +51,10 @@ const LIBRARY_EXPORT_KEYS = [
   'defaultFallbacksConfig',
   'provide',
   'SelectorError',
+  // Role-seeds surface (plan fallbacks-role-seeds T2) — the seed manager
+  // class is the only runtime value among the seeds exports; the §9.1 types
+  // are compile-time only (pinned in the type-exports block below).
+  'FallbacksSeedManager',
 ] as const
 
 describe('export surface: runtime values', () => {
@@ -79,6 +83,7 @@ describe('export surface: runtime values', () => {
     defaultFallbacksConfig: 'object',
     provide: 'object',
     SelectorError: 'function',
+    FallbacksSeedManager: 'function',
   }
 
   // The type map and the docs-inventory SSOT must cover EXACTLY the same
@@ -185,9 +190,11 @@ describe('export surface: type exports (compile-time only)', () => {
     expectTypeOf<index.AgentFallbackState>().toMatchTypeOf<{ pendingSwitch?: index.PendingSwitch }>()
     expectTypeOf<index.StepFailures>().toMatchTypeOf<{ turn: number; step: number }>()
     expectTypeOf<index.FallbackStateStore>().toMatchTypeOf<object>()
-    // Service contract (plan fallbacks-consumer-api T2): the static `provide`
-    // metadata value and the `FallbacksService` interface (the typed
-    // `ctx.get('llm-fallbacks')` surface via the cordis Context merge).
+    // Service contract (plan fallbacks-consumer-api T2 + fallbacks-role-seeds
+    // T2): the static `provide` metadata value and the `FallbacksService`
+    // interface (the typed `ctx.get('llm-fallbacks')` surface via the cordis
+    // Context merge). Nine keys — the six-key face plus the three additive
+    // seed methods (D7).
     expectTypeOf(index.provide).toEqualTypeOf<readonly ['llm-fallbacks']>()
     expectTypeOf<index.FallbacksService>().toEqualTypeOf<{
       name: 'llm-fallbacks'
@@ -196,6 +203,43 @@ describe('export surface: type exports (compile-time only)', () => {
       resolveChain: typeof index.resolveChain
       validateFallbacksConfig: typeof index.validateFallbacksConfig
       detectLegacyKeys: typeof index.detectLegacyKeys
+      declareSeeds: (seeds: readonly index.SeedDeclaration[]) => Promise<index.SeedDeclareOutcome>
+      getEffectiveRoles: () => index.EffectiveRolesReadback
+      revertSeededPersona: (id: string) => Promise<index.SeedRevertOutcome>
+    }>()
+    // Role-seeds surface (plan fallbacks-role-seeds T2): the §9.1 types
+    // re-exported from the package root.
+    expectTypeOf<index.SeedDeclaration>().toEqualTypeOf<{ id: string; persona: string }>()
+    expectTypeOf<index.SeedSkipReason>().toEqualTypeOf<'invalid-id' | 'reserved-id' | 'duplicate-in-batch'>()
+    expectTypeOf<index.SeedConflict>().toEqualTypeOf<{ id: string; kind: 'persona-source' }>()
+    expectTypeOf<index.SeedDeclareOutcome>().toEqualTypeOf<{
+      applied: string[]
+      skipped: Array<{ id: string; reason: index.SeedSkipReason }>
+      conflicts: index.SeedConflict[]
+    }>()
+    expectTypeOf<index.EffectiveRole>().toMatchTypeOf<{
+      id: string
+      persona: string
+      seeded: boolean
+      personaOverridden: boolean
+      seedPersona?: string
+    }>()
+    expectTypeOf<index.EffectiveRolesReadback>().toEqualTypeOf<{ roles: index.EffectiveRole[] }>()
+    expectTypeOf<index.SeedRevertFailReason>().toEqualTypeOf<'not-seeded' | 'row-absent' | 'settings-unavailable'>()
+    expectTypeOf<index.SeedRevertOutcome>().toMatchTypeOf<{
+      reverted: boolean
+      persona?: string
+      reason?: index.SeedRevertFailReason
+    }>()
+    expectTypeOf<index.SeedsWireStatus>().toEqualTypeOf<{ id: string; overridden: boolean }>()
+    expectTypeOf<index.SeedsIo>().toEqualTypeOf<{
+      read: () => index.FallbacksConfig
+      writeRoles: (roles: index.FallbacksRoles) => Promise<void>
+    }>()
+    expectTypeOf<index.FallbacksSeedManager>().toMatchTypeOf<{
+      declare(seeds: readonly index.SeedDeclaration[], io: index.SeedsIo): Promise<index.SeedDeclareOutcome>
+      effectiveRoles(io: index.SeedsIo): index.EffectiveRolesReadback
+      revert(id: string, io: index.SeedsIo): Promise<index.SeedRevertOutcome>
     }>()
   })
 })
