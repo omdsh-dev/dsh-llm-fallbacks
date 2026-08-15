@@ -187,8 +187,8 @@ const TWO_BLOCK_CONFIG: typeof defaultFallbacksConfig = {
   rootChain: ['openai/gpt-4o'],
   roles: {
     list: [
-      { id: 'reviewer', label: 'Reviewer', description: 'Reviews code', chain: ['anthropic/claude-3-5-sonnet'], fallback: 'inherit-root' },
-      { id: 'architect', label: 'Architect', description: 'Designs systems', chain: ['other/gpt-4o'], fallback: 'none' },
+      { id: 'reviewer', persona: 'Reviews code', chain: ['anthropic/claude-3-5-sonnet'], fallback: 'inherit-root' },
+      { id: 'architect', persona: 'Designs systems', chain: ['other/gpt-4o'], fallback: 'none' },
     ],
     rules: [
       { origin: 'subagent', role: 'reviewer' },
@@ -639,7 +639,28 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     expect(screen.getAllByLabelText(en['roles.rule.provider']).length).toBeGreaterThanOrEqual(1)
   })
 
-  it('renders the declared role entity cards with id/label/description/fallback', async () => {
+  it('renders the chain/role sections before the advanced options and keeps the root chain wildcard-free', async () => {
+    const { view, props } = await mountCard({ config: TWO_BLOCK_CONFIG })
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    // Section order: root chain → role entities → role rules → advanced
+    // options (trigger codes / cooldown / switch caps) at the end.
+    const groups = [
+      screen.getByText(en['rootChain.label']).closest('[role="group"]')!,
+      screen.getByText(en['roles.list.label']).closest('[role="group"]')!,
+      screen.getByText(en['roles.rules']).closest('[role="group"]')!,
+      screen.getByText(en['advanced.label']).closest('[role="group"]')!,
+    ]
+    for (let i = 1; i < groups.length; i += 1) {
+      expect(groups[i - 1]!.compareDocumentPosition(groups[i]!)).toBe(Node.DOCUMENT_POSITION_FOLLOWING)
+    }
+    // The root agent's chain editor offers no `provider/*` wildcard checkbox
+    // (provider-any matching lives in the role rules); role chains keep it.
+    expect(within(groups[0]!).queryByLabelText(en['chains.selector.wildcard'])).toBeNull()
+    expect(within(groups[1]!).getAllByLabelText(en['chains.selector.wildcard'])).toHaveLength(2)
+  })
+
+  it('renders the declared role entity cards with id/persona/fallback', async () => {
     const { view, props } = await mountCard({ config: TWO_BLOCK_CONFIG })
     toggleCard()
     view.rerender(<FallbacksCard {...props} />)
@@ -648,8 +669,10 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     expect(ids).toHaveLength(2)
     expect((ids[0] as HTMLInputElement).value).toBe('reviewer')
     expect((ids[1] as HTMLInputElement).value).toBe('architect')
-    expect(screen.getAllByLabelText(en['roles.label'])).toHaveLength(2)
-    expect(screen.getAllByLabelText(en['roles.description'])).toHaveLength(2)
+    const personas = screen.getAllByLabelText(en['roles.persona'])
+    expect(personas).toHaveLength(2)
+    expect((personas[0] as HTMLInputElement).value).toBe('Reviews code')
+    expect((personas[1] as HTMLInputElement).value).toBe('Designs systems')
     const fallbacks = screen.getAllByLabelText(en['roles.fallback'])
     expect(fallbacks).toHaveLength(2)
     expect((fallbacks[0] as HTMLSelectElement).value).toBe('inherit-root')
@@ -847,7 +870,7 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
       enabled: true,
       roles: {
         list: [{
-          id: 'reviewer', label: '', description: '',
+          id: 'reviewer', persona: '',
           // A chain rides the role so the save is valid under the role
           // model-config rule (T2) — this test pins prompt/permissions.
           chain: ['openai/gpt-4o'],
@@ -909,7 +932,7 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
       enabled: true,
       rootChain: ['openai/gpt-4o'],
       roles: {
-        list: [{ id: 'coder', label: 'Coder', description: '', chain: [], fallback: 'none' }],
+        list: [{ id: 'coder', persona: '', chain: [], fallback: 'none' }],
         rules: [],
       },
     }
@@ -937,7 +960,7 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
       ...defaultFallbacksConfig,
       enabled: true,
       roles: {
-        list: [{ id: 'coder', label: 'Coder', description: '', chain: [], fallback: 'inherit-root' }],
+        list: [{ id: 'coder', persona: '', chain: [], fallback: 'inherit-root' }],
         rules: [],
       },
     }
@@ -985,7 +1008,7 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
       ...defaultFallbacksConfig,
       enabled: true,
       roles: {
-        list: [{ id: 'coder', label: 'Coder', description: '', chain: [], fallback: 'inherit-root' }],
+        list: [{ id: 'coder', persona: '', chain: [], fallback: 'inherit-root' }],
         rules: [],
       },
     }

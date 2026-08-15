@@ -237,8 +237,7 @@ describe('parseFallbacksConfig (descriptor read, redactSecrets face)', () => {
       roles: {
         list: [{
           id: 'reviewer',
-          label: 'Reviewer',
-          description: 'Deep review pass',
+          persona: 'Deep review pass',
           chain: ['anthropic/claude-3-5-sonnet'],
           fallback: 'none',
         }],
@@ -274,7 +273,7 @@ describe('parseFallbacksConfig (descriptor read, redactSecrets face)', () => {
     expect(() => parseFallbacksConfig({ triggerCodes: [1] })).toThrow(TypeError)
     expect(() => parseFallbacksConfig({ rootChain: 'openai/gpt-4o' })).toThrow(TypeError)
     expect(() => parseFallbacksConfig({ rootChain: [1] })).toThrow(TypeError)
-    expect(() => parseFallbacksConfig({ roles: { list: [{ label: 'no id' }] } })).toThrow(TypeError)
+    expect(() => parseFallbacksConfig({ roles: { list: [{ persona: 'no id' }] } })).toThrow(TypeError)
     expect(() => parseFallbacksConfig({ roles: { list: [{ id: 'a', chain: 'openai/gpt-4o' }] } })).toThrow(TypeError)
     expect(() => parseFallbacksConfig({ roles: { list: [{ id: 'a', fallback: 'sometimes' }] } })).toThrow(TypeError)
     expect(() => parseFallbacksConfig({ roles: { list: [{ id: 'a', permissions: { allow: 'read' } }] } })).toThrow(TypeError)
@@ -287,12 +286,11 @@ describe('parseFallbacksConfig (descriptor read, redactSecrets face)', () => {
 
   it('preserves schema-reserved prompt/permissions fields on a read (no row editing this round)', () => {
     const parsed = parseFallbacksConfig({
-      roles: { list: [{ id: 'architect', label: 'A', description: 'D', prompt: 'think hard', permissions: { allow: ['files.read'] } }] },
+      roles: { list: [{ id: 'architect', persona: 'D', prompt: 'think hard', permissions: { allow: ['files.read'] } }] },
     })
     expect(parsed.roles.list[0]).toEqual({
       id: 'architect',
-      label: 'A',
-      description: 'D',
+      persona: 'D',
       prompt: 'think hard',
       permissions: { allow: ['files.read'] },
       chain: [],
@@ -349,19 +347,17 @@ describe('rootChain/role/rule row editors (pure round-trips)', () => {
     ])
   })
 
-  it('round-trips declared role entities through rows (id/label/description/chain/fallback)', () => {
+  it('round-trips declared role entities through rows (id/persona/chain/fallback)', () => {
     const roles = [
       {
         id: 'reviewer',
-        label: 'Reviewer',
-        description: 'Deep review pass',
+        persona: 'Deep review pass',
         chain: ['openai/gpt-4o', 'openai/*'],
         fallback: 'none' as const,
       },
       {
         id: 'architect',
-        label: 'Architect',
-        description: '',
+        persona: '',
         chain: [],
         fallback: 'inherit-root' as const,
       },
@@ -370,36 +366,35 @@ describe('rootChain/role/rule row editors (pure round-trips)', () => {
     expect(rows).toEqual<RoleRow[]>([
       {
         id: 'reviewer',
-        label: 'Reviewer',
-        description: 'Deep review pass',
+        persona: 'Deep review pass',
         selectors: [
           { wildcard: false, provider: { kind: 'outside', raw: 'openai' }, model: { kind: 'outside', raw: 'gpt-4o' } },
           { wildcard: true, provider: { kind: 'outside', raw: 'openai' }, model: null },
         ],
         fallback: 'none',
       },
-      { id: 'architect', label: 'Architect', description: '', selectors: [], fallback: 'inherit-root' },
+      { id: 'architect', persona: '', selectors: [], fallback: 'inherit-root' },
     ])
     expect(rowsToRoles(rows)).toEqual(roles)
   })
 
   it('classifies a role chain against the catalog like any selector list', () => {
     const catalog = catalogFixture()
-    const rows = rolesToRows([{ id: 'reviewer', label: 'R', description: '', chain: ['openai/gpt-4o'], fallback: 'inherit-root' }], catalog)
+    const rows = rolesToRows([{ id: 'reviewer', persona: 'R', chain: ['openai/gpt-4o'], fallback: 'inherit-root' }], catalog)
     expect(rows[0]!.selectors[0]).toEqual({
       wildcard: false,
       provider: { kind: 'catalog', id: 'openai' },
       model: { kind: 'catalog', id: 'gpt-4o' },
     })
-    expect(rowsToRoles(rows)).toEqual([{ id: 'reviewer', label: 'R', description: '', chain: ['openai/gpt-4o'], fallback: 'inherit-root' }])
+    expect(rowsToRoles(rows)).toEqual([{ id: 'reviewer', persona: 'R', chain: ['openai/gpt-4o'], fallback: 'inherit-root' }])
   })
 
   it('ruleRoleOptions offers the built-in inherit target plus every declared id in order', () => {
     expect(ruleRoleOptions({ list: [] })).toEqual(['inherit'])
-    expect(ruleRoleOptions({ list: [{ id: 'reviewer', label: '', description: '' }, { id: 'architect', label: '', description: '' }] }))
+    expect(ruleRoleOptions({ list: [{ id: 'reviewer', persona: '' }, { id: 'architect', persona: '' }] }))
       .toEqual(['inherit', 'reviewer', 'architect'])
     // The same page's role edits are reflected immediately (derived, never cached).
-    expect(ruleRoleOptions({ list: [{ id: 'reviewer', label: '', description: '' }, { id: 'c', label: '', description: '' }] }))
+    expect(ruleRoleOptions({ list: [{ id: 'reviewer', persona: '' }, { id: 'c', persona: '' }] }))
       .toEqual(['inherit', 'reviewer', 'c'])
   })
 
@@ -408,9 +403,9 @@ describe('rootChain/role/rule row editors (pure round-trips)', () => {
     // (React key collision): trimmed to the canonical form and offered once;
     // save-time validation still blocks the duplicate draft.
     expect(ruleRoleOptions({ list: [
-      { id: ' reviewer ', label: '', description: '' },
-      { id: 'reviewer', label: '', description: '' },
-      { id: 'architect', label: '', description: '' },
+      { id: ' reviewer ', persona: '' },
+      { id: 'reviewer', persona: '' },
+      { id: 'architect', persona: '' },
     ] })).toEqual(['inherit', 'reviewer', 'architect'])
   })
 
@@ -423,32 +418,32 @@ describe('rootChain/role/rule row editors (pure round-trips)', () => {
     // keeps no extras.
     const originalRoles = [
       {
-        id: 'reviewer', label: 'Reviewer', description: 'Deep review pass',
+        id: 'reviewer', persona: 'Deep review pass',
         prompt: 'You review', permissions: { allow: ['files.read'] },
         chain: ['openai/gpt-4o'], fallback: 'inherit-root' as const,
       },
       {
-        id: 'architect', label: 'Architect', description: 'Designs systems',
+        id: 'architect', persona: 'Designs systems',
         chain: [], fallback: 'none' as const,
       },
     ]
     const rows: RoleRow[] = [
       {
-        id: ' reviewer ', label: 'Reviewer v2', description: 'Deep review pass',
+        id: ' reviewer ', persona: 'Deep review pass v2',
         selectors: [
           { wildcard: false, provider: { kind: 'outside', raw: 'openai' }, model: { kind: 'outside', raw: 'gpt-4o' } },
         ],
         fallback: 'inherit-root',
       },
-      { id: 'coder', label: 'Coder', description: '', selectors: [], fallback: 'inherit-root' },
+      { id: 'coder', persona: '', selectors: [], fallback: 'inherit-root' },
     ]
     expect(mergeRoleExtras(rows, originalRoles)).toEqual([
       {
-        id: 'reviewer', label: 'Reviewer v2', description: 'Deep review pass',
+        id: 'reviewer', persona: 'Deep review pass v2',
         prompt: 'You review', permissions: { allow: ['files.read'] },
         chain: ['openai/gpt-4o'], fallback: 'inherit-root',
       },
-      { id: 'coder', label: 'Coder', description: '', chain: [], fallback: 'inherit-root' },
+      { id: 'coder', persona: '', chain: [], fallback: 'inherit-root' },
     ])
   })
 
@@ -457,7 +452,7 @@ describe('rootChain/role/rule row editors (pure round-trips)', () => {
     expect(detectLegacyClientKeys({
       ...defaultFallbacksConfig,
       roles: {
-        list: [{ id: 'reviewer', label: '', description: '', chain: [], fallback: 'inherit-root' }],
+        list: [{ id: 'reviewer', persona: '', chain: [], fallback: 'inherit-root' }],
         rules: [{ role: 'reviewer' }, { role: 'inherit' }],
       },
     })).toEqual([])

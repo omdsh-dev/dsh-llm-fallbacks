@@ -1,10 +1,13 @@
 /**
- * The `fallbacks` settings namespace: plugin config schema + defaults.
+ * The `fallbacks` settings namespace: config types + defaults (the
+ * schemastery `Config` schema lives in `./schema.ts`, host-only — this
+ * module must stay free of `@deepseek-ai/*` value imports so the client
+ * bundle never reaches schemastery).
  *
  * Two-block config model (plan fallbacks-role-config-model): block 1
  * `rootChain` — the root agent's single fallback chain (empty = no
  * degradation) — plus block 2 declared role entities: `roles.list`
- * (id/label/description/prompt?/permissions?/chain?/fallback) and
+ * (id/persona/prompt?/permissions?/chain?/fallback) and
  * `roles.rules` enum references into the declared ids (or the built-in
  * `'inherit'` role). The legacy `chains` / `roles.default` keys are gone
  * from the schema and type (zero residual, migration table excepted); the
@@ -19,13 +22,12 @@
  *
  * This module is pure logic: it must not import any `@deepseek-ai/*` package
  * (types included) — `FallbacksConfig` is the plugin's own type. Task 3
- * registers this schema with `installSettingsSection` under the `fallbacks`
- * settings namespace.
+ * registers the schemastery schema (see `./schema.ts`) with
+ * `installSettingsSection` under the `fallbacks` settings namespace.
  *
  * @module dsh-llm-fallbacks/config
  */
 
-import z from '@deepseek-ai/schemastery'
 import { parseSelector } from './selectors.ts'
 
 /** How a cooled-down model comes back (spec §4). */
@@ -55,8 +57,8 @@ export type FallbackStrategy = 'inherit-root' | 'none'
  */
 export interface FallbacksRole {
   id: string
-  label: string
-  description: string
+  /** Personality hint (人格提示) — free text, never validated. */
+  persona: string
   /** Reserved for next iteration — no consumer this round. */
   prompt?: string
   /** Reserved for next iteration — no consumer this round. */
@@ -129,7 +131,7 @@ export interface FallbacksConfigLogger {
  * `rootChain`/role-chain selector legality, and the role model-config
  * requirement (a declared role with a missing/empty chain warns — a role
  * without a model config is meaningless, plan fallbacks-feedback-round
- * T2). `label`/`description` are free text and are deliberately not
+ * T2). `persona` is free text and is deliberately not
  * validated. Each violation emits one `llm-fallbacks: ...` warn and "does
  * not take effect" — the config stays usable (spec §4 / AC-4
  * warn-not-crash semantics).
@@ -202,12 +204,14 @@ export function validateFallbacksConfig(config: FallbacksConfig, logger: Fallbac
 /**
  * Detect legacy (two-block-era) leftovers in a config SOURCE — the composed
  * object `source()` returns, or a raw settings document. Recognizes the
- * removed `chains` key, the removed `roles.default` field, and
- * `roles.rules[].role` values that reference no declared `roles.list` id
- * and are not the built-in `'inherit'`. Returns descriptive key/role names;
- * the gateway attaches them as `get().legacyKeys` so the client can show a
- * migration banner (spec §9 — the source is read directly because
- * schemastery retains unknown keys, verified plan Task 1 Step 1).
+ * removed `chains` key, the removed `roles.default` field, the removed
+ * role-entity fields `roles.list[].label` / `roles.list[].description`
+ * (renamed to `persona`), and `roles.rules[].role` values that reference no
+ * declared `roles.list` id and are not the built-in `'inherit'`. Returns
+ * descriptive key/role names; the gateway attaches them as `get().legacyKeys`
+ * so the client can show a migration banner (spec §9 — the source is read
+ * directly because schemastery retains unknown keys, verified plan Task 1
+ * Step 1).
  */
 export function detectLegacyKeys(source: Record<string, unknown>): string[] {
   const keys: string[] = []
@@ -218,7 +222,10 @@ export function detectLegacyKeys(source: Record<string, unknown>): string[] {
     const declared = new Set<string>()
     if (Array.isArray(roles.list)) {
       for (const item of roles.list) {
-        if (isRecordLike(item) && typeof item.id === 'string') declared.add(item.id)
+        if (!isRecordLike(item)) continue
+        if (typeof item.id === 'string') declared.add(item.id)
+        if (Object.hasOwn(item, 'label')) keys.push('roles.list[].label')
+        if (Object.hasOwn(item, 'description')) keys.push('roles.list[].description')
       }
     }
     if (Array.isArray(roles.rules)) {
@@ -240,52 +247,3 @@ export function detectLegacyKeys(source: Record<string, unknown>): string[] {
 function isRecordLike(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
-
-/**
- * Plugin Config schema (schemastery), mirroring {@link FallbacksConfig}.
- * Object fields are optional by default in schemastery; `.default()` fills
- * the spec defaults, `.required()` keeps mandatory fields. Unknown keys are
- * RETAINED by the composition (verified plan Task 1 Step 1) — that is what
- * lets `detectLegacyKeys` flag two-block-era leftovers (`chains` /
- * `roles.default`) on the composed object at startup (warn + gateway
- * `legacyKeys`, see `src/index.ts` apply()).
- */
-export const Config = z.object({
-  enabled: z.boolean().default(false),
-  triggerCodes: z.array(z.string()).default(['AUTH', 'QUOTA', 'RATE_LIMIT']),
-  rootChain: z.array(z.string()).default([]),
-  roles: z
-    .object({
-      list: z
-        .array(
-          z.object({
-            id: z.string().required(),
-            label: z.string().default(''),
-            description: z.string().default(''),
-            prompt: z.string(),
-            permissions: z.object({
-              allow: z.array(z.string()),
-              deny: z.array(z.string()),
-            }),
-            chain: z.array(z.string()),
-            fallback: z.union([z.const('inherit-root'), z.const('none')]).default('inherit-root'),
-          }),
-        )
-        .default([]),
-      rules: z
-        .array(
-          z.object({
-            origin: z.union([z.const('root'), z.const('subagent')]),
-            provider: z.string(),
-            model: z.string(),
-            role: z.string().required(),
-          }),
-        )
-        .default([]),
-    })
-    .default({ list: [], rules: [] }),
-  cooldownMs: z.number().default(300_000),
-  revertPolicy: z.union([z.const('cooldown-expiry'), z.const('never')]).default('cooldown-expiry'),
-  maxSwitchesPerStep: z.number().default(8),
-  alwaysModeRetryCap: z.number().default(5),
-}) as unknown as z<FallbacksConfig>

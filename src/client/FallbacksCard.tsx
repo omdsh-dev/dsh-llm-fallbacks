@@ -173,7 +173,7 @@ function assembleConfig(
  * itself constrains normal edits), and illegal selector entries in
  * rootChain and role chains. Returns one localized message per violation;
  * a non-empty result blocks {@link save} — the draft is never written.
- * `label`/`description` are free text and never validated.
+ * `persona` is free text and never validated.
  */
 function validateDraft(draft: FallbacksConfig, t: FallbacksCardProps['t']): string[] {
   const errors: string[] = []
@@ -290,7 +290,10 @@ function InfoHint({ label, disabled = false }: { label: string; disabled?: boole
 
 /**
  * One chain entry selector row: provider select + model select (cascade) +
- * wildcard checkbox (spec §2.5 D-3). The provider options are the catalog
+ * wildcard checkbox (spec §2.5 D-3). `allowWildcard` gates the `provider/*`
+ * checkbox — the root agent's chain editor passes false (the main agent's
+ * chain stays provider/model lines; provider-any matching lives in the role
+ * rules), role chain editors keep it. The provider options are the catalog
  * providers **configured on the Models page** (`configuredProviders`, the
  * Models-page `configured` join) — unconfigured directory providers never
  * become offerable. Out-of-catalog values read back from the server render as
@@ -302,7 +305,7 @@ function InfoHint({ label, disabled = false }: { label: string; disabled?: boole
  * options.
  */
 function ChainSelectorEditor({
-  selector, catalog, configuredProviders, disabled, t, onChange, onRemove,
+  selector, catalog, configuredProviders, disabled, t, onChange, onRemove, allowWildcard = true,
 }: {
   selector: ChainSelectorRow
   catalog: CatalogLookup | undefined
@@ -311,6 +314,7 @@ function ChainSelectorEditor({
   t: FallbacksCardProps['t']
   onChange: (patch: Partial<ChainSelectorRow>) => void
   onRemove: () => void
+  allowWildcard?: boolean
 }): ReactNode {
   const providerRaw = selectionToRaw(selector.provider)
   const providerOutside = selector.provider?.kind === 'outside'
@@ -324,8 +328,8 @@ function ChainSelectorEditor({
   const modelOutside = selector.model?.kind === 'outside'
   const group = catalog?.groups.find(entry => entry.id === providerRaw)
   // Catalog provider with no successful model listing: model select disabled
-  // with a hint (D-4); the wildcard stays available (D-4: never depends on
-  // the models).
+  // with a hint (D-4); the wildcard stays available where the checkbox is
+  // offered (D-4: never depends on the models).
   const groupMissing = providerRaw !== '' && !providerOutside && !selector.wildcard && group === undefined
   // Nothing selectable: outside provider with no outside model to keep.
   const modelDisabled = disabled || selector.wildcard || providerRaw === '' || groupMissing || (providerOutside && modelRaw === '')
@@ -376,22 +380,26 @@ function ChainSelectorEditor({
               <option value={modelRaw}>{`${modelRaw}${t('catalog.outside.short')}`}</option>
             )}
           </select>
-          {groupMissing && <span className={css.hint}>{t('chains.selector.noModels')}</span>}
+          {groupMissing && (
+            <span className={css.hint}>{t(allowWildcard ? 'chains.selector.noModels' : 'chains.selector.noModelsStrict')}</span>
+          )}
         </label>
-        <label className={`${css.ruleCell} ${css.wildcardCell}`}>
-          <input
-            type="checkbox"
-            checked={selector.wildcard}
-            disabled={disabled || providerRaw === ''}
-            onChange={event => {
-              onChange({
-                wildcard: event.target.checked,
-                ...(event.target.checked ? { model: null } : {}),
-              })
-            }}
-          />
-          {t('chains.selector.wildcard')}
-        </label>
+        {allowWildcard && (
+          <label className={`${css.ruleCell} ${css.wildcardCell}`}>
+            <input
+              type="checkbox"
+              checked={selector.wildcard}
+              disabled={disabled || providerRaw === ''}
+              onChange={event => {
+                onChange({
+                  wildcard: event.target.checked,
+                  ...(event.target.checked ? { model: null } : {}),
+                })
+              }}
+            />
+            {t('chains.selector.wildcard')}
+          </label>
+        )}
       </div>
       {(providerOutside || modelOutside) && (
         <span className={css.hint}>
@@ -554,7 +562,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
   }
 
   const addRole = (): void => {
-    setRoleRows(rows => [...rows, { id: '', label: '', description: '', selectors: [], fallback: 'inherit-root' }])
+    setRoleRows(rows => [...rows, { id: '', persona: '', selectors: [], fallback: 'inherit-root' }])
   }
 
   const removeRole = (index: number): void => {
@@ -872,106 +880,6 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
              * labels the previous per-group legends provided via role="group" +
              * aria-labelledby. */
             <fieldset className={css.fieldset} disabled={!writable}>
-              <div className={css.field} role="group" aria-labelledby="fallbacks-trigger-codes">
-                <span className={css.fieldLabel}>
-                  <span id="fallbacks-trigger-codes">{t('triggerCodes.label')}</span>
-                  <InfoHint label={t('triggerCodes.tooltip')} disabled={!writable} />
-                </span>
-                <span className={css.hint}>{t('triggerCodes.hint')}</span>
-                {KNOWN_TRIGGER_CODES.map(code => (
-                  <label key={code} className={css.optionRow}>
-                    <input
-                      type="checkbox"
-                      checked={scalars.triggerCodes.includes(code)}
-                      onChange={event => {
-                        updateScalars(draft => { draft.triggerCodes = withTriggerCode(draft.triggerCodes, code, event.target.checked) })
-                      }}
-                    />
-                    {t(TRIGGER_CODE_LABELS[code])}
-                  </label>
-                ))}
-                {unknownCodes.length > 0 && (
-                  <span className={css.hint}>{t('triggerCodes.extra', { codes: unknownCodes.join(', ') })}</span>
-                )}
-              </div>
-
-              <div className={css.field} role="group" aria-labelledby="fallbacks-revert-policy">
-                <span className={css.fieldLabel}>
-                  <span id="fallbacks-revert-policy">{t('revertPolicy.label')}</span>
-                  <InfoHint label={t('revertPolicy.tooltip')} disabled={!writable} />
-                </span>
-                <span className={css.hint}>{t('revertPolicy.hint')}</span>
-                {(['cooldown-expiry', 'never'] as const).map(policy => (
-                  <label key={policy} className={css.optionRow}>
-                    <input
-                      type="radio"
-                      name="fallbacks-revert-policy"
-                      checked={scalars.revertPolicy === policy}
-                      onChange={() => { updateScalars(draft => { draft.revertPolicy = policy }) }}
-                    />
-                    {t(`revertPolicy.${policy}`)}
-                  </label>
-                ))}
-              </div>
-
-              {/* The three short numeric fields sit side by side, each keeping a
-               * full-width field of its own grid column. */}
-              <div className={css.numberFields}>
-                <div className={css.field}>
-                  <span className={css.fieldLabel}>
-                    <label htmlFor="fallbacks-cooldown-ms">{t('cooldownMs.label')}</label>
-                    <InfoHint label={t('cooldownMs.tooltip')} disabled={!writable} />
-                    <span className={css.defaultNote}>{t('defaults.prefix')}: {state.config.cooldownMs}</span>
-                  </span>
-                  <input
-                    id="fallbacks-cooldown-ms"
-                    className={css.input}
-                    type="number"
-                    min={0}
-                    value={String(scalars.cooldownMs)}
-                    disabled={!writable}
-                    onChange={event => { updateScalars(draft => { draft.cooldownMs = parseCount(event.target.value) }) }}
-                  />
-                  <span className={css.hint}>{t('cooldownMs.hint')}</span>
-                </div>
-
-                <div className={css.field}>
-                  <span className={css.fieldLabel}>
-                    <label htmlFor="fallbacks-max-switches">{t('maxSwitchesPerStep.label')}</label>
-                    <InfoHint label={t('maxSwitchesPerStep.tooltip')} disabled={!writable} />
-                    <span className={css.defaultNote}>{t('defaults.prefix')}: {state.config.maxSwitchesPerStep}</span>
-                  </span>
-                  <input
-                    id="fallbacks-max-switches"
-                    className={css.input}
-                    type="number"
-                    min={0}
-                    value={String(scalars.maxSwitchesPerStep)}
-                    disabled={!writable}
-                    onChange={event => { updateScalars(draft => { draft.maxSwitchesPerStep = parseCount(event.target.value) }) }}
-                  />
-                  <span className={css.hint}>{t('maxSwitchesPerStep.hint')}</span>
-                </div>
-
-                <div className={css.field}>
-                  <span className={css.fieldLabel}>
-                    <label htmlFor="fallbacks-always-cap">{t('alwaysModeRetryCap.label')}</label>
-                    <InfoHint label={t('alwaysModeRetryCap.tooltip')} disabled={!writable} />
-                    <span className={css.defaultNote}>{t('defaults.prefix')}: {state.config.alwaysModeRetryCap}</span>
-                  </span>
-                  <input
-                    id="fallbacks-always-cap"
-                    className={css.input}
-                    type="number"
-                    min={0}
-                    value={String(scalars.alwaysModeRetryCap)}
-                    disabled={!writable}
-                    onChange={event => { updateScalars(draft => { draft.alwaysModeRetryCap = parseCount(event.target.value) }) }}
-                  />
-                  <span className={css.hint}>{t('alwaysModeRetryCap.hint')}</span>
-                </div>
-              </div>
-
               <div className={css.field} role="group" aria-labelledby="fallbacks-root-chain">
                 <span className={css.fieldLabel}>
                   <span id="fallbacks-root-chain">{t('rootChain.label')}</span>
@@ -1004,6 +912,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                             configuredProviders={state.configuredProviders}
                             disabled={!writable}
                             t={t}
+                            allowWildcard={false}
                             onChange={patch => { updateRootChainSelector(selectorIndex, patch) }}
                             onRemove={() => { removeRootChainSelector(selectorIndex) }}
                           />
@@ -1054,24 +963,17 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                           />
                           <span className={css.hint}>{t('roles.id.hint')}</span>
                         </div>
+                      </div>
+                      <div className={css.ruleGrid}>
                         <div className={css.ruleCell}>
-                          <span className={css.ruleCellLabel}>{t('roles.label')}</span>
+                          <span className={css.ruleCellLabel}>{t('roles.persona')}</span>
                           <input
                             className={css.input}
-                            value={row.label}
-                            aria-label={t('roles.label')}
+                            value={row.persona}
+                            placeholder={t('roles.personaPlaceholder')}
+                            aria-label={t('roles.persona')}
                             disabled={!writable}
-                            onChange={event => { updateRoleRow(index, { label: event.target.value }) }}
-                          />
-                        </div>
-                        <div className={css.ruleCell}>
-                          <span className={css.ruleCellLabel}>{t('roles.description')}</span>
-                          <input
-                            className={css.input}
-                            value={row.description}
-                            aria-label={t('roles.description')}
-                            disabled={!writable}
-                            onChange={event => { updateRoleRow(index, { description: event.target.value }) }}
+                            onChange={event => { updateRoleRow(index, { persona: event.target.value }) }}
                           />
                         </div>
                       </div>
@@ -1303,6 +1205,110 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                 >
                   {t('roles.addRule')}
                 </Button>
+              </div>
+              <div className={css.field} role="group" aria-labelledby="fallbacks-advanced">
+                <span className={css.fieldLabel}>
+                  <span id="fallbacks-advanced">{t('advanced.label')}</span>
+                </span>
+                <div className={css.field} role="group" aria-labelledby="fallbacks-trigger-codes">
+                  <span className={css.fieldLabel}>
+                    <span id="fallbacks-trigger-codes">{t('triggerCodes.label')}</span>
+                    <InfoHint label={t('triggerCodes.tooltip')} disabled={!writable} />
+                  </span>
+                  <span className={css.hint}>{t('triggerCodes.hint')}</span>
+                  {KNOWN_TRIGGER_CODES.map(code => (
+                    <label key={code} className={css.optionRow}>
+                      <input
+                        type="checkbox"
+                        checked={scalars.triggerCodes.includes(code)}
+                        onChange={event => {
+                          updateScalars(draft => { draft.triggerCodes = withTriggerCode(draft.triggerCodes, code, event.target.checked) })
+                        }}
+                      />
+                      {t(TRIGGER_CODE_LABELS[code])}
+                    </label>
+                  ))}
+                  {unknownCodes.length > 0 && (
+                    <span className={css.hint}>{t('triggerCodes.extra', { codes: unknownCodes.join(', ') })}</span>
+                  )}
+                </div>
+
+                <div className={css.field} role="group" aria-labelledby="fallbacks-revert-policy">
+                  <span className={css.fieldLabel}>
+                    <span id="fallbacks-revert-policy">{t('revertPolicy.label')}</span>
+                    <InfoHint label={t('revertPolicy.tooltip')} disabled={!writable} />
+                  </span>
+                  <span className={css.hint}>{t('revertPolicy.hint')}</span>
+                  {(['cooldown-expiry', 'never'] as const).map(policy => (
+                    <label key={policy} className={css.optionRow}>
+                      <input
+                        type="radio"
+                        name="fallbacks-revert-policy"
+                        checked={scalars.revertPolicy === policy}
+                        onChange={() => { updateScalars(draft => { draft.revertPolicy = policy }) }}
+                      />
+                      {t(`revertPolicy.${policy}`)}
+                    </label>
+                  ))}
+                </div>
+
+                {/* The three short numeric fields sit side by side, each keeping a
+                 * full-width field of its own grid column. */}
+                <div className={css.numberFields}>
+                  <div className={css.field}>
+                    <span className={css.fieldLabel}>
+                      <label htmlFor="fallbacks-cooldown-ms">{t('cooldownMs.label')}</label>
+                      <InfoHint label={t('cooldownMs.tooltip')} disabled={!writable} />
+                      <span className={css.defaultNote}>{t('defaults.prefix')}: {state.config.cooldownMs}</span>
+                    </span>
+                    <input
+                      id="fallbacks-cooldown-ms"
+                      className={css.input}
+                      type="number"
+                      min={0}
+                      value={String(scalars.cooldownMs)}
+                      disabled={!writable}
+                      onChange={event => { updateScalars(draft => { draft.cooldownMs = parseCount(event.target.value) }) }}
+                    />
+                    <span className={css.hint}>{t('cooldownMs.hint')}</span>
+                  </div>
+
+                  <div className={css.field}>
+                    <span className={css.fieldLabel}>
+                      <label htmlFor="fallbacks-max-switches">{t('maxSwitchesPerStep.label')}</label>
+                      <InfoHint label={t('maxSwitchesPerStep.tooltip')} disabled={!writable} />
+                      <span className={css.defaultNote}>{t('defaults.prefix')}: {state.config.maxSwitchesPerStep}</span>
+                    </span>
+                    <input
+                      id="fallbacks-max-switches"
+                      className={css.input}
+                      type="number"
+                      min={0}
+                      value={String(scalars.maxSwitchesPerStep)}
+                      disabled={!writable}
+                      onChange={event => { updateScalars(draft => { draft.maxSwitchesPerStep = parseCount(event.target.value) }) }}
+                    />
+                    <span className={css.hint}>{t('maxSwitchesPerStep.hint')}</span>
+                  </div>
+
+                  <div className={css.field}>
+                    <span className={css.fieldLabel}>
+                      <label htmlFor="fallbacks-always-cap">{t('alwaysModeRetryCap.label')}</label>
+                      <InfoHint label={t('alwaysModeRetryCap.tooltip')} disabled={!writable} />
+                      <span className={css.defaultNote}>{t('defaults.prefix')}: {state.config.alwaysModeRetryCap}</span>
+                    </span>
+                    <input
+                      id="fallbacks-always-cap"
+                      className={css.input}
+                      type="number"
+                      min={0}
+                      value={String(scalars.alwaysModeRetryCap)}
+                      disabled={!writable}
+                      onChange={event => { updateScalars(draft => { draft.alwaysModeRetryCap = parseCount(event.target.value) }) }}
+                    />
+                    <span className={css.hint}>{t('alwaysModeRetryCap.hint')}</span>
+                  </div>
+                </div>
               </div>
             </fieldset>
             )}

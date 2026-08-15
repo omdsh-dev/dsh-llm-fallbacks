@@ -46,7 +46,8 @@ import { installSettingsSection } from '@deepseek-ai/dsh-settings'
 import TypertGatewayService from '@deepseek-ai/dsh-api-gateway'
 import { TypertRegistry } from '@deepseek-ai/dsh-typert-registry'
 import { apply } from '../src/index.ts'
-import { Config, defaultFallbacksConfig, type FallbacksConfig } from '../src/config.ts'
+import { Config } from '../src/schema.ts'
+import { defaultFallbacksConfig, type FallbacksConfig } from '../src/config.ts'
 import {
   FALLBACKS_SETTINGS_NAMESPACE,
   FallbacksConfigGateway,
@@ -437,12 +438,12 @@ describe('set validation (Config schema, unknown-key rejection unchanged)', () =
     await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
 
     await gateway.set({
-      roles: { list: [{ id: 'coder', label: 'Coder', description: 'Coding subagent' }], rules: [{ role: 'coder' }] },
+      roles: { list: [{ id: 'coder', persona: 'Coding subagent' }], rules: [{ role: 'coder' }] },
     } as never)
     const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)!
     expect(descriptor.user).toEqual({
       roles: {
-        list: [{ id: 'coder', label: 'Coder', description: 'Coding subagent' }],
+        list: [{ id: 'coder', persona: 'Coding subagent' }],
         rules: [{ role: 'coder' }],
       },
     })

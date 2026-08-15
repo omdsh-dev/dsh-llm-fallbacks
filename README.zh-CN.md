@@ -18,7 +18,7 @@ dsh plugin --profile web add dsh-llm-fallbacks   # 钉版本：加 @<version>
 ## 能力一览
 
 - **root / subagent 自动降级**：任意 agent 在模型故障下按链切换到下一个可用 provider/model，无需手动换模型。
-- **两块制配置**：块 1 `rootChain`——root 主代理唯一降级链（空 = root 不降级）；块 2 声明式角色——`roles.list` 角色实体（id/label/description/chain/fallback）供 `roles.rules` 按 id 引用（或内置 `inherit`）；未命中规则 → `inherit` → `rootChain`。
+- **两块制配置**：块 1 `rootChain`——root 主代理唯一降级链（空 = root 不降级）；块 2 声明式角色——`roles.list` 角色实体（id/persona/chain/fallback）供 `roles.rules` 按 id 引用（或内置 `inherit`）；未命中规则 → `inherit` → `rootChain`。
 - **条目语法**：链条目为 `provider/model`（精确切换）或 `provider/*`（保留失败模型 id 仅换 provider）——旧链键命名空间（provider/model 键、角色名键）已删除。
 - **冷却与回主**：被切离/失败的模型在冷却期内不再入选；`revertPolicy: cooldown-expiry` 冷却到期后自动回主模型，`never` 会话内不回。
 - **行为可见**：每次切换追加持久化会话事件 `fallbacks/switch`（from/to/role/reason），配合 info 级日志（候选尝试顺序与跳过原因）与设置 → 插件配置 → Fallbacks 卡片上的只读状态块，无静默换模型。
@@ -83,8 +83,7 @@ fallbacks:
   roles:                 # 块 2：先声明角色，再让规则引用
     list:
       - id: reviewer     # 角色实体：id 唯一（/^[a-z0-9-]{1,32}$/）；inherit 为保留字
-        label: 审查者
-        description: 代码审查子代理
+        persona: 代码审查子代理
         chain:
           - openai/gpt-4o-mini
         fallback: inherit-root   # 默认：角色链后追加 rootChain
@@ -93,7 +92,7 @@ fallbacks:
         role: reviewer
 ```
 
-角色是声明式实体：`roles.list` 存放角色卡（id/label/description + chain/fallback），`roles.rules` 按 origin/provider/model 顺序匹配到**已声明角色 id 或内置 `inherit`**（首个命中即停）——**未命中 → `inherit` → `rootChain`**。只声明不写规则的角色永不命中。角色无 chain 无意义——设置卡拦截保存、启动时告警；请为每个声明角色配置 chain，或让规则直接引用内置 `inherit`。（手写 YAML 角色链缺省/为空不致命：`fallback: inherit-root`（默认）时空链仍按防御语义回退 `rootChain`；`fallback: none` 时空链无候选 → no-op 透传；两种情况都仅启动告警。）旧链键命名空间与角色兜底字段已删除（迁移表见 [docs/configuration.md](docs/configuration.md)）。
+角色是声明式实体：`roles.list` 存放角色卡（id/persona + chain/fallback），`roles.rules` 按 origin/provider/model 顺序匹配到**已声明角色 id 或内置 `inherit`**（首个命中即停）——**未命中 → `inherit` → `rootChain`**。只声明不写规则的角色永不命中。角色无 chain 无意义——设置卡拦截保存、启动时告警；请为每个声明角色配置 chain，或让规则直接引用内置 `inherit`。（手写 YAML 角色链缺省/为空不致命：`fallback: inherit-root`（默认）时空链仍按防御语义回退 `rootChain`；`fallback: none` 时空链无候选 → no-op 透传；两种情况都仅启动告警。）旧链键命名空间与角色兜底字段已删除（迁移表见 [docs/configuration.md](docs/configuration.md)）。
 
 保存并重启 web 会话后生效。功能级开关 `fallbacks.enabled` **默认关闭（`false`）**——打开开关后插件才会介入；`triggerCodes` 默认覆盖 `AUTH` / `QUOTA` / `RATE_LIMIT`；**未配置任何 `rootChain`/角色链时行为与未安装插件完全一致**。更多示例（角色实体、fallback 策略、引用 `inherit` 的规则）见 [docs/configuration.md](docs/configuration.md)。
 

@@ -24,7 +24,7 @@ Since iter-20260813 the configuration follows a **two-block model** — you only
 | `enabled` | boolean | `false` | Feature-level master switch. Defaults to off (`false`): when `false` the plugin never intervenes and the card hides the configuration form body; when `true` but with no chains configured, the behavior is identical to an uninstalled plugin (no-op) |
 | `triggerCodes` | string[] | `['AUTH', 'QUOTA', 'RATE_LIMIT']` | Failures with these codes enter chain decision. Retryable failures (5xx / `RATE_LIMIT` etc.) are first retried with backoff by llm-retry and enter the decision the same way once its budget is exhausted — **no extra `triggerCodes` entries are needed for 5xx** |
 | `rootChain` | string[] | `[]` | **Block 1**. The root agent's ordered fallback chain; entries are `provider/model` or `provider/*` (see entry syntax below). Empty = root does not fall back (no-op pass-through) |
-| `roles.list` | Array | `[]` | **Block 2**. Declarative role-entity collection (id/label/description + optional chain/fallback; entry fields in the table below). The id must match `/^[a-z0-9-]{1,32}$/` and be unique within the collection; `'inherit'` is a reserved word and **must not** be used as an id |
+| `roles.list` | Array | `[]` | **Block 2**. Declarative role-entity collection (id/persona + optional chain/fallback; entry fields in the table below). The id must match `/^[a-z0-9-]{1,32}$/` and be unique within the collection; `'inherit'` is a reserved word and **must not** be used as an id |
 | `roles.rules` | Array | `[]` | **Block 2**. Role rules: match to a role in order by `origin` (`root`/`subagent`), `provider`, `model` patterns (omitted fields are unconstrained; first match wins); `role` may only reference `roles.list[].id` or the built-in `'inherit'` |
 | `cooldownMs` | number | `300000` | Cooldown duration (milliseconds). Switched-away / failed models are not re-selected during the cooldown period |
 | `revertPolicy` | `'cooldown-expiry'` \| `'never'` | `'cooldown-expiry'` | Primary-return policy after cooldown expiry: return to the primary model on expiry / keep the fallback model for the session |
@@ -38,8 +38,7 @@ Since iter-20260813 the configuration follows a **two-block model** — you only
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `id` | string | Yes | Role id: `/^[a-z0-9-]{1,32}$/`, unique within the collection; `'inherit'` is reserved and forbidden |
-| `label` | string | Recommended | Role name (free text, not validated); schema default is the empty string, absence does not block saving |
-| `description` | string | Recommended | Role description (free text, not validated); schema default is the empty string, absence does not block saving |
+| `persona` | string | Recommended | Personality hint (free text, not validated); schema default is the empty string, absence does not block saving |
 | `chain` | string[] | No (enforced by the settings card on save) | The role's own ordered fallback chain (entry syntax same as `rootChain`). **Required semantics**: a role without model config is meaningless — the settings card enforces at least one entry on save (an empty chain blocks the save + inline hint); a hand-written YAML with a missing/empty chain warns at startup (no crash); at runtime a missing chain still falls back to `rootChain` defensively |
 | `fallback` | `'inherit-root'` \| `'none'` | No (default `'inherit-root'`) | Chain-append policy: `inherit-root` = append `rootChain` after the role chain; `none` = the role's own chain only |
 | `prompt` / `permissions` | string / object | No | **Reserved fields** (see next section) |
@@ -68,7 +67,7 @@ Since iter-20260813 the configuration follows a **two-block model** — you only
 - `provider/model` — exact switch: switch to the specified model;
 - `provider/*` — keep the failed model id and switch the provider only; when the target provider lacks this model id the candidate is skipped (fuzzy near-match resolution is out of scope for this iteration).
 
-> **The chain-key namespace is removed**: the three key semantics of the old `chains` key (`provider/model` exact, `provider/*` wildcard, role-name keys) no longer exist — model-specific routing on failure is now approximated by `roles.rules` (matching to a role by provider/model pattern), and role membership is expressed by declared entities. The entry-side `provider/*` wildcard is kept.
+> **The chain-key namespace is removed**: the three key semantics of the old `chains` key (`provider/model` exact, `provider/*` wildcard, role-name keys) no longer exist — model-specific routing on failure is now approximated by `roles.rules` (matching to a role by provider/model pattern), and role membership is expressed by declared entities. The entry-side `provider/*` wildcard stays a valid YAML entry everywhere (role chains and `rootChain`); the settings GUI offers the wildcard checkbox **only in role chain editors** — the root agent's chain editor keeps provider/model lines, with provider-any matching expressed through `roles.rules` instead.
 
 Whitespace padding: whitespace padding in a selector (e.g. `other/ gpt-4o`) is **preserved as-is** on save (the GUI does not rewrite user input); runtime parsing normalizes it (`parseSelector` tolerates whitespace), so the semantics are identical to the unpadded form.
 
@@ -116,14 +115,12 @@ fallbacks:
   roles:                         # Block 2: declare roles first, then let rules reference them
     list:
       - id: reviewer             # Role entity: unique id matching /^[a-z0-9-]{1,32}$/; 'inherit' is reserved
-        label: Reviewer
-        description: Code review subagent
+        persona: Code review subagent   # Personality hint (free text)
         chain:                   # The role's own chain
           - openai/gpt-4o-mini
         fallback: inherit-root   # Default: append rootChain after the role's own chain
       - id: cheap
-        label: Cheap model
-        description: Cost first
+        persona: Cost first
         chain:
           - deepseek/deepseek-chat
         fallback: none           # Role's own chain only; no rootChain appended
@@ -164,6 +161,8 @@ Legacy-format (iter-20260812 and earlier) configuration is **not migrated automa
 | `roles.default: 'default'` (or any string) | **Delete this field**; no rule match → the built-in `'inherit'` (→ `rootChain`). Rewrite "all subagents default to some chain" as one `{ origin: subagent, role: <id> }` entry |
 | Role chain without a fallback | `fallback: inherit-root` (default) → `[...role.chain, ...rootChain]`; `fallback: none` → `role.chain` only |
 | (no old counterpart) `prompt` / `permissions` | schema **reserved**; no UI and no runtime consumption this round; writing them in YAML does not change this round's fallback behavior |
+| `roles.list[].label` | **Delete this field** — the role id serves as the name |
+| `roles.list[].description` | Rename to `roles.list[].persona` (personality hint); the old key stays inert (flagged via `legacyKeys` + warning) until removed |
 | (no old counterpart) role id = `inherit` | **forbidden** in `roles.list`; `inherit` serves only as a rule target / no-match default |
 
 ## Three-channel legacy notice
@@ -181,8 +180,8 @@ After an upgrade, legacy-format configuration is flagged through **three channel
 - **Legacy banner**: a non-empty `legacyKeys` in the `get` response → a migration banner (zh/en) renders at the top of the card body, pointing at this document's migration table; it does not block editing or touch disk.
 - **Feature switch `enabled` (default OFF)**: the switch is the user-config field `fallbacks.enabled`, off by default. When off, the configuration form body is hidden (`triggerCodes` / `rootChain` / `roles` / `cooldownMs` / `revertPolicy` / `maxSwitchesPerStep` / `alwaysModeRetryCap`) and the hint "Feature disabled: turn on the enabled switch to show the configuration interface." is shown — hiding does not discard anything; an in-progress draft is kept. Turning the switch on reveals the full configuration interface. Toggling shows/hides immediately (draft-driven) and persists via the save action.
 - **Readable labels**: enumerable config items show readable labels instead of raw enum values — `RATE_LIMIT` → "Rate limit (429)", `QUOTA` → "Quota exceeded", `AUTH` → "Auth / permission failure"; `cooldown-expiry` → "Return to the primary model", `never` → "Keep the fallback model (until session end)"; `inherit-root` → "Inherit root (append rootChain after the role chain)", `none` → "Role chain only (no rootChain)". Numeric fields show the default value beside them; other fields show the currently effective value (the default when unset).
-- **rootChain area**: title "Root agent fallback chain" + hint "Unset = root does not fall back"; selector rows reuse the catalog dropdown (provider/model cascade + `provider/*` wildcard + synthetic options for values outside the catalog), **no key input**.
-- **roles.list area**: one entity card per role — id (text, format-validated: `/^[a-z0-9-]{1,32}$/`, unique, the `inherit` reserved word is invalid), label (text, **recommended**), description (text, **recommended**), chain selector rows (collapsible / appendable), fallback dropdown (`inherit-root` / `none`), and a delete button; an "Add role" button. `prompt` / `permissions` are **not rendered this round**.
+- **rootChain area**: title "Root agent fallback chain" + hint "Unset = root does not fall back"; selector rows reuse the catalog dropdown (provider/model cascade, **no wildcard checkbox** — the main agent's chain stays provider/model lines; provider-any matching lives in the role rules) + synthetic options for values outside the catalog, **no key input**.
+- **roles.list area**: one entity card per role — id (text, format-validated: `/^[a-z0-9-]{1,32}$/`, unique, the `inherit` reserved word is invalid), persona (personality hint, text, **recommended**, on its own line below the id), chain selector rows (collapsible / appendable), fallback dropdown (`inherit-root` / `none`), and a delete button; an "Add role" button. `prompt` / `permissions` are **not rendered this round**.
 - **roles.rules area**: per-row editing of origin (root/subagent/any) + provider (catalog dropdown/any) + model (cascade dropdown/any) + role (**dropdown**: `inherit` + declared role ids, linked within the page — role add/remove reflects immediately); an "Add rule" button. Empty fields do not participate in matching.
 - **Pre-save validation (blocks save)**: id format/uniqueness/reserved word, rule role references, invalid selectors, empty role chain (no model config) → inline annotation (red border/hint) + error banner; **a failed validation blocks `save()`** — clicking save writes nothing and shows the error; only a passing validation writes the user layer via the gateway `set`.
 - **model-selection coordination (AC-2, documented degradation)**: with an active model-selection (the user picked a provider/model in the settings page or `settings.yaml`), a switch after a trigger-code failure is **still decided and recorded** (`fallbacks/switch` event, cooldown; the step's actual routing may be overridden by the active selection, with the final provider/model following the re-applied selection) — this is **host-native behavior** after removing the local patch-marker coordination (T2 conclusion, see [docs/verification.md](docs/verification.md) §4.3). request-error-triggered chains are unaffected; without an active selection the request routes to the chain target. The card carries a one-line degradation note (`status.selectionNote`, zh/en).

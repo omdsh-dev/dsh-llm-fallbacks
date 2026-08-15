@@ -97,7 +97,7 @@ describe('registerFallbacksCommands — registration shape', () => {
 
 describe('snapshot building helpers', () => {
   it('resolveChainForDiagnostic prefers the declared role chain and marks the inherit-root tail', () => {
-    const roles = [{ id: 'reviewer', label: '', description: '', chain: ['openai/gpt-4o-mini'] }]
+    const roles = [{ id: 'reviewer', persona: '', chain: ['openai/gpt-4o-mini'] }]
     // Own chain shown; a non-empty rootChain is appended as the inherit tail.
     expect(resolveChainForDiagnostic(roles, ['other/gpt-4o'], 'reviewer')).toEqual({
       chainRole: true,
@@ -113,7 +113,7 @@ describe('snapshot building helpers', () => {
   })
 
   it('resolveChainForDiagnostic defers an empty own chain and unknown roles to rootChain', () => {
-    const roles = [{ id: 'reviewer', label: '', description: '', chain: [] }]
+    const roles = [{ id: 'reviewer', persona: '', chain: [] }]
     const rootChain = ['other/gpt-4o']
     expect(resolveChainForDiagnostic(roles, rootChain, 'reviewer')).toEqual({
       chainRole: false,
@@ -133,7 +133,7 @@ describe('snapshot building helpers', () => {
   })
 
   it('resolveChainForDiagnostic yields [] for fallback none with an empty own chain even when rootChain is non-empty', () => {
-    const roles = [{ id: 'reviewer', label: '', description: '', chain: [], fallback: 'none' }]
+    const roles = [{ id: 'reviewer', persona: '', chain: [], fallback: 'none' }]
     // Mirror resolveChainViews' `[...[], ...[]]` exactly — nothing appended.
     expect(resolveChainForDiagnostic(roles, ['other/gpt-4o'], 'reviewer')).toEqual({
       chainRole: false,
@@ -207,7 +207,7 @@ describe('fallbacksCommandText — output states', () => {
   it('renders "not configured" for a fallback-none role with an empty own chain despite a rootChain', () => {
     // Full path: resolution (none + empty → []) feeds the renderer → 未配置.
     const { chain, inherit } = resolveChainForDiagnostic(
-      [{ id: 'reviewer', label: '', description: '', chain: [], fallback: 'none' }],
+      [{ id: 'reviewer', persona: '', chain: [], fallback: 'none' }],
       ['other/gpt-4o'],
       'reviewer',
     )

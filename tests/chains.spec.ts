@@ -31,7 +31,7 @@ afterEach(() => {
 
 /** Declared-role fixture: defaults fill the required FallbacksRole fields. */
 function role(id: string, overrides: Omit<Partial<FallbacksRole>, 'id'> = {}): FallbacksRole {
-  return { id, label: '', description: '', ...overrides }
+  return { id, persona: '', ...overrides }
 }
 
 describe('resolveChain — concatenation semantics (spec §7.2)', () => {
