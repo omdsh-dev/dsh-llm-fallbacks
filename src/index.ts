@@ -55,6 +55,14 @@ import {
   type FallbacksCommandController,
   type FallbacksCommandSnapshot,
 } from './commands.ts'
+import {
+  FallbacksSeedManager,
+  type EffectiveRolesReadback,
+  type SeedDeclaration,
+  type SeedDeclareOutcome,
+  type SeedRevertOutcome,
+  type SeedsIo,
+} from './seeds.ts'
 
 /** The plugin row id mounted by the profile bundle patch. */
 export const name = 'llm-fallbacks'
@@ -79,9 +87,11 @@ const { version } = createRequire(import.meta.url)('../package.json')
 /**
  * The named cordis service `ctx.get('llm-fallbacks')` exposes while the
  * plugin is applied: the pure-function library surface + `name`/`version`
- * metadata. Deliberately NO runtime state (no stateStore, no event
- * emitters, no filter helpers) — state stays observable via `fallbacks/switch`
- * events and the library API.
+ * metadata, plus the three ADDITIVE role-seed methods (spec §9.1, plan
+ * fallbacks-role-seeds T2). Deliberately no state BEARING FIELDS (no
+ * stateStore, no event emitters, no filter helpers) — the seed methods are
+ * closures over the per-apply `FallbacksSeedManager`, so state stays behind
+ * the closure and dies with the fiber (spec §9.5).
  */
 export interface FallbacksService {
   /** Matches the plugin `name`. */
@@ -92,6 +102,12 @@ export interface FallbacksService {
   resolveChain: typeof resolveChain
   validateFallbacksConfig: typeof validateFallbacksConfig
   detectLegacyKeys: typeof detectLegacyKeys
+  /** (a) Declare the companion's FULL current seed set (replacement semantics, spec §9.1). */
+  declareSeeds(seeds: readonly SeedDeclaration[]): Promise<SeedDeclareOutcome>
+  /** (b) Sync readback — effective taxonomy with seed annotations. */
+  getEffectiveRoles(): EffectiveRolesReadback
+  /** (c) Revert one id to the CURRENT declared seed default. */
+  revertSeededPersona(id: string): Promise<SeedRevertOutcome>
 }
 
 // Consumers importing this package get the typed `ctx.get('llm-fallbacks')`
@@ -154,6 +170,23 @@ export {
   SelectorError,
   type Selector,
 } from './selectors.ts'
+// --- Role-seeds surface (plan fallbacks-role-seeds T2) ---
+// The seed declaration domain re-exported from the package root: the
+// FallbacksSeedManager class plus every §9.1 supporting type. The service
+// methods in apply() delegate to this same module (single point of truth).
+export {
+  FallbacksSeedManager,
+  type EffectiveRole,
+  type EffectiveRolesReadback,
+  type SeedConflict,
+  type SeedDeclaration,
+  type SeedDeclareOutcome,
+  type SeedRevertFailReason,
+  type SeedRevertOutcome,
+  type SeedSkipReason,
+  type SeedsIo,
+  type SeedsWireStatus,
+} from './seeds.ts'
 
 /** Model-catalog service shape the wildcard existence probe reads (`ctx.llm`). */
 interface ModelCatalogService {
@@ -260,6 +293,37 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   // Cordis resolves the entry through the schema before apply, so `config` is
   // already defaulted; re-resolving keeps direct calls (tests) normalized.
   const entry = Config(config)
+  // Role-seeds (plan fallbacks-role-seeds T2): the per-apply seed manager
+  // and its io adapter are constructed BEFORE the service provide block so
+  // the service value closes over them (spec §9.5 — one registry per plugin
+  // instance, no module-level global). `read` walks the SAME live `source`
+  // the runtime/gateway read (setSource reassignment included — the bridge
+  // shape); `writeRoles` mirrors the gateway's OPTIONAL settings channel: a
+  // conditional inject child that leaves the adapter in a loud KD-G5-style
+  // failure state when no settings service is composed. The manager commits
+  // its registry only after a successful write (compute → write → commit),
+  // so a failed materialization throws and never leaves a half-applied
+  // registry behind (retry-safe).
+  const seeds = new FallbacksSeedManager(logger)
+  const seedsSettingsUnavailable = 'llm-fallbacks: seeds: settings service is unavailable — seed roles cannot be written'
+  let writeRoles: SeedsIo['writeRoles'] = () => {
+    throw new Error(seedsSettingsUnavailable)
+  }
+  ctx.inject(['settings'], (sctx) => {
+    writeRoles = (roles) => sctx.settings.update(FALLBACKS_SETTINGS_NAMESPACE, { roles })
+    return () => {
+      writeRoles = () => {
+        throw new Error(seedsSettingsUnavailable)
+      }
+    }
+  })
+  // `writeRoles` is a mutable binding (the inject child swaps it when the
+  // settings service appears/disappears) — the adapter must read the binding
+  // at CALL time, not capture its initial value at construction.
+  const seedsIo: SeedsIo = {
+    read: () => source(),
+    writeRoles: (roles) => writeRoles(roles),
+  }
   // The named service surface (responsive capability probe for consumers like
   // mstar-harness): VALUE-form registration — cordis 4 `ReflectService.provide`
   // stores the value directly, so a factory shape would register the function
@@ -281,6 +345,12 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
       resolveChain,
       validateFallbacksConfig,
       detectLegacyKeys,
+      // (a)(b)(c) — plan fallbacks-role-seeds T2: additive seed surface. Each
+      // method delegates to the per-apply manager through the io seam
+      // (single point of truth — no copied logic).
+      declareSeeds: (declarations: readonly SeedDeclaration[]) => seeds.declare(declarations, seedsIo),
+      getEffectiveRoles: () => seeds.effectiveRoles(seedsIo),
+      revertSeededPersona: (id: string) => seeds.revert(id, seedsIo),
     })
   } catch (error) {
     if (!(error instanceof Error) || !error.message.includes('has been registered')) throw error
@@ -356,7 +426,12 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   // `fallbacks` service key while later fibers fall back (no gateway) — the
   // typertGateway claim set dedupes, so claims never conflict.
   try {
-    new FallbacksConfigGateway(ctx, bridge)
+    // T3 (plan fallbacks-role-seeds): the gateway receives the SAME per-apply
+    // seed manager the service exposes — badge state (`seeds` wire field) and
+    // `fallbacks/revert-seed` both delegate to it (spec §9.4 single point of
+    // truth); the gateway builds its io over the bridge + its own settings
+    // capture.
+    new FallbacksConfigGateway(ctx, bridge, seeds)
   } catch (error) {
     if (!(error instanceof Error) || !error.message.includes('has been registered')) throw error
     ctx.logger('llm-fallbacks').debug('fallbacks gateway already registered — no gateway on this fiber (multi-fiber dedupe)')

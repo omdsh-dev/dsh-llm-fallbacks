@@ -1,7 +1,7 @@
 ---
 module: dsh-llm-fallbacks
 date: 2026-08-11
-last_updated: 2026-08-14
+last_updated: 2026-08-15
 problem_type: architecture_pattern
 category: architecture-patterns
 severity: low
@@ -13,6 +13,7 @@ applies_when:
   - 插件需要把自有配置暴露给 web 设置客户端（自有 gateway 通道 /api/fallbacks/get|set|reset）
   - 需要与 dsh 的 model-selection（installModelSelection）协调路由
   - 需要理解两块制配置模型（rootChain / roles.list / roles.rules / inherit）或迁移旧 chains / roles.default 配置
+  - 需要理解 role-seeds 能力（companion 声明角色 / seed default + override + revert 语义 / 9-key service 面）
 tags:
   - dsh
   - llm-fallbacks
@@ -134,6 +135,18 @@ order 100）、会话转录切换行（`conversationEvents` + `conversation.chat
 - **具名 service `'llm-fallbacks'`**：`ctx.get('llm-fallbacks') !== undefined` 即响应式能力探测（cordis 生命周期自动就绪/撤销）。6-key 纯函数面：`{ name, version, resolveRole, resolveChain, validateFallbacksConfig, detectLegacyKeys }`——**不暴露运行态**（store/事件）；运行态请走 `fallbacks/switch` 事件。多 fiber dedupe guard（镜像 gateway/typert 模式）+ `createRequire` 运行时读 version。注册细节 → `best-practices/dsh-cordis-plugin-authoring.md`。
 - **契约边界**：本包契约成立 ≠ 隔壁仓库已接上；消费文档 `docs/consumer-api.md` 是契约 SSOT。
 
+### Role-seeds 能力：companion 自配置角色（iter-20260815-fallbacks-role-seeds）
+
+插件向 companion 插件（如 @mstar-harness/dsh）开放**角色自动补全**面：companion 声明 `[{id, persona}]`，插件在 apply/mount 决策点自动把角色补进 taxonomy，零 operator 手改配置、零 mstar patch 层（fold bundle row 已证伪：同 loader-entry id → 启动重复 id 崩溃；异 id → 双实例/状态分裂——能力必须落在本插件并以稳定 companion-facing 面释放）。
+
+- **双存储模型（R3 关键）**：持久面 = operator 配置 `roles.list[]` 普通行（seeded role 物化为仅 `{id, persona}` 两键行，写 settings user layer）；内存面 = per-apply `FallbacksSeedManager` registry（apply() 内创建，`declare` = 替换语义）。`seeded` / `personaOverridden` **派生不存储**（readback 时从 registry + 行 persona 对比得出）→ 配置 round-trip **构造性无孤儿 override**。同会话 at-default 行跟随新默认；跨重启保守按 override 处理（row-untouched + `persona-source` conflict）。
+- **R1 幂等**：无 delta 不写——AC-1 检查**按成员比较**（`list`/`rules` 两键），schemastery/mergeLayers 保留的 legacy 嵌套键（`roles.default` 等）不引发每次 declare 的 revision churn；compute → write → commit registry（写失败 registry 不更新，retry-safe）。
+- **R2 不可变 id**：seed id 按 **as-declared** 过 `ROLE_ID_PATTERN = /^[a-z0-9-]{1,32}$/`——空白填充/大小写/underscore/超长/`inherit` 一律按条 skip + warn，**零 coercion**（不 trim-and-accept、不改写）；冲突（同 id 异 persona 源 / 批内重复）三通道响亮（logger `llm-fallbacks: seeds:` 前缀 + 结构化 `SeedDeclareOutcome` + 持久 `seeds` wire badge），绝不静默合并/重复；移除声明不删角色行/chain，只丢 seed-default/revert affordance。
+- **R4 链归 human**：seeds 所有写路径 byte-for-byte 保留或整键省略 chain/fallback/prompt/permissions；新角色 chain 留空（卡片 `validateDraft` **仅对 seeded id** 放宽 `roleChainRequired`，非 seeded 行为逐字节不变）。
+- **释放面（9-key service，严格 additive）**：`FallbacksService` 从 6 key → 9 key——`declareSeeds`(a) / `getEffectiveRoles`(b，含 `seeded`/`personaOverridden`/`seedPersona`) / `revertSeededPersona`(c，恢复到**当前声明**的 seed 默认，非历史快照)。方法与 manager 单点真相（闭包委托，无复制逻辑）。gateway wire：`get/set/reset` 响应 additive `seeds: Array<{id, overridden}>`（legacyKeys 先例，旧客户端忽略）+ 新端点 `fallbacks/revert-seed`（业务失败为值，仅 settings 不可用才 throw）。
+- **防御纪律**：读写路径**同用** `roleRows()`/`roleRules()` containment 守卫（legacy/畸形 composed roles 降级不崩）；client store `revertSeed` 镜像 save 的 writable/saving/generation 守卫；卡片 `seededIds` 每次 render 派生（无存储状态）。seeds.ts io-seamed（零 `@deepseek-ai/*` value import，client bundle purity）。
+- **已知边界**：settings user-layer 跨写者 RMW race 无 revision guard（与既有 set/reset 同源通道限制，last-writer-wins，有界可恢复）——R-002 defer，见 `dsh-gateway-settings-channel.md`。
+
 ### 已知限制（open residual）
 
 - 失败码默认 ['AUTH','QUOTA','RATE_LIMIT']；5xx/TRANSPORT 等由 llm-retry 先行退避，预算耗尽后同样进入 fallback 决策，无需额外配置。
@@ -158,4 +171,4 @@ order 100）、会话转录切换行（`conversationEvents` + `conversation.chat
 - 设置页/目录/状态块：tests/fallbacks-store.spec.ts（61 用例）。
 - 真实宿主端到端剧本：docs/verification.md §4（QA gate）。
 
-*Source: iteration iter-20260810-llm-fallbacks（specs/llm-fallbacks-spec.md）+ iter-20260810-fallbacks-settings-ux（specs/fallbacks-settings-runtime-spec.md，D-1..D-6 提升）+ iter-20260810-fallbacks-settings-gateway + iter-20260811-fallbacks-mount-only（Plan B：role rules-only、marker 移除、patch 体系删除）+ iter-20260813-fallbacks-role-model（specs/fallbacks-role-model-spec.md：两块制配置模型、D1–D4、inherit 语义、legacy 三通道），随实现验证。2026-08-12 刷新：由 patch 时代更新为纯挂载现实。2026-08-13 刷新：由链键 specificity / roles.default 时代更新为两块制现实。*
+*Source: iteration iter-20260810-llm-fallbacks（specs/llm-fallbacks-spec.md）+ iter-20260810-fallbacks-settings-ux（specs/fallbacks-settings-runtime-spec.md，D-1..D-6 提升）+ iter-20260810-fallbacks-settings-gateway + iter-20260811-fallbacks-mount-only（Plan B：role rules-only、marker 移除、patch 体系删除）+ iter-20260815-fallbacks-role-seeds（specs/fallbacks-role-seeds-spec.md：role-seeds 能力、D5 service API、双存储模型、R1–R4、release 0.1.4 minor），随实现验证。2026-08-12 刷新：由 patch 时代更新为纯挂载现实。2026-08-13 刷新：由链键 specificity / roles.default 时代更新为两块制现实。2026-08-15 刷新：新增 role-seeds 能力节（9-key service）。*

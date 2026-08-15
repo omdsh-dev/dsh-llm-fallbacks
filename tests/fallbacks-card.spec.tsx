@@ -42,6 +42,7 @@ import { FallbacksCard } from '../src/client/FallbacksCard.tsx'
 import type { FallbacksCardProps } from '../src/client/FallbacksCard.tsx'
 import { FallbacksSettingsController } from '../src/client/fallbacks-store.ts'
 import type { FallbacksSettingsState } from '../src/client/fallbacks-store.ts'
+import type { SeedsWireStatus } from '../src/seeds.ts'
 import { apply } from '../src/client/index.ts'
 import { defaultFallbacksConfig } from '../src/config.ts'
 import { en, zh } from '../src/client/locales.ts'
@@ -91,6 +92,7 @@ interface Scripted {
   get: Mock
   set: Mock
   reset: Mock
+  revertSeed: Mock
   describe: Mock
 }
 
@@ -109,6 +111,7 @@ function scriptedApi(options: {
   config?: typeof defaultFallbacksConfig | null
   writable?: boolean
   legacyKeys?: string[]
+  seeds?: SeedsWireStatus[]
   catalog?: { providers: ConfigurableProviderView[]; groups: ModelProviderGroup[] }
 } = {}): Scripted {
   let current = options.config === undefined ? defaultFallbacksConfig : options.config
@@ -135,6 +138,9 @@ function scriptedApi(options: {
       : okResult({
           config: current,
           ...(options.legacyKeys === undefined ? {} : { legacyKeys: options.legacyKeys }),
+          // spec §9.4: the additive seeds field rides the get response; an
+          // absent option means "no seeds to badge" on this fixture.
+          ...(options.seeds === undefined ? {} : { seeds: options.seeds }),
         }),
   ))
   const set = vi.fn((payload: { args: { patch: typeof defaultFallbacksConfig } }) => {
@@ -147,11 +153,19 @@ function scriptedApi(options: {
     current = defaultFallbacksConfig
     return Promise.resolve(okResult({ config: current }))
   })
+  // The revert-seed fake keeps the effective config (no persona registry in
+  // this fixture); tests script specific post-write read results with
+  // `mockReturnValueOnce` when they exercise the accepted response.
+  const revertSeed = vi.fn((payload: { args: { id: string } }) => {
+    if (current === null) throw new Error('test: revert-seed on an unavailable gateway')
+    return Promise.resolve(okResult({ config: current }))
+  })
   const call = vi.fn((channel: string, endpoint: string, payload: unknown) => {
     if (channel !== '/api') throw new Error(`test: unexpected channel ${channel}`)
     if (endpoint === 'fallbacks/get') return get()
     if (endpoint === 'fallbacks/set') return set(payload as { args: { patch: typeof defaultFallbacksConfig } })
     if (endpoint === 'fallbacks/reset') return reset()
+    if (endpoint === 'fallbacks/revert-seed') return revertSeed(payload as { args: { id: string } })
     throw new Error(`test: unexpected endpoint ${endpoint}`)
   })
   return {
@@ -161,7 +175,7 @@ function scriptedApi(options: {
       sessions: { history },
     } as unknown as Pick<IApiClient, 'settings' | 'llm' | 'sessions'>,
     rpc: { call } as unknown as ClientConnectionRpc,
-    call, get, set, reset, describe,
+    call, get, set, reset, revertSeed, describe,
   }
 }
 
@@ -1225,5 +1239,217 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     const alert = screen.getByRole('alert')
     expect(alert.textContent).toContain(en['validation.blocked'])
     expect(alert.textContent).toContain(en['validation.roleChainRequired'])
+  })
+})
+
+describe('FallbacksCard seeded roles (plan fallbacks-role-seeds T5)', () => {
+  // Two declared roles: architect is the seeded one (empty chain is
+  // legitimate for a seeded role per R4 — seeds never invent a chain),
+  // reviewer is an ordinary non-seeded role with a chain.
+  const SEEDED_CONFIG: typeof defaultFallbacksConfig = {
+    ...defaultFallbacksConfig,
+    enabled: true,
+    roles: {
+      list: [
+        { id: 'architect', persona: 'Designs systems', chain: [], fallback: 'inherit-root' },
+        { id: 'reviewer', persona: 'Reviews code', chain: ['anthropic/claude-3-5-sonnet'], fallback: 'inherit-root' },
+      ],
+      rules: [],
+    },
+  }
+
+  it('badges seeded roles only: default / override pills, none on non-seeded rows', async () => {
+    // At default: exactly ONE badge — the seeded architect row; the
+    // non-seeded reviewer row renders none, and only the seeded row's
+    // persona cell hosts the badge + revert pair.
+    const first = await mountCard({ config: SEEDED_CONFIG, seeds: [{ id: 'architect', overridden: false }] })
+    toggleCard()
+    first.view.rerender(<FallbacksCard {...first.props} />)
+    expect(screen.getAllByText(en['roles.seedDefault'])).toHaveLength(1)
+    expect(screen.queryByText(en['roles.seedOverride'])).toBeNull()
+    const rolesGroup = screen.getByText(en['roles.list.label']).closest('[role="group"]') as HTMLElement
+    expect(within(rolesGroup).getAllByText(en['roles.seedDefault'])).toHaveLength(1)
+    expect(within(rolesGroup).getAllByRole('button', { name: en['roles.revertPersona'] })).toHaveLength(1)
+    first.view.unmount()
+
+    // Override state: the pill flips to the override label; still one badge.
+    const second = await mountCard({ config: SEEDED_CONFIG, seeds: [{ id: 'architect', overridden: true }] })
+    toggleCard()
+    second.view.rerender(<FallbacksCard {...second.props} />)
+    expect(screen.getAllByText(en['roles.seedOverride'])).toHaveLength(1)
+    expect(screen.queryByText(en['roles.seedDefault'])).toBeNull()
+  })
+
+  it('revert calls the store revertSeed through the gateway endpoint', async () => {
+    const { view, props, scripted } = await mountCard({
+      config: SEEDED_CONFIG,
+      seeds: [{ id: 'architect', overridden: true }],
+    })
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    fireEvent.click(screen.getByRole('button', { name: en['roles.revertPersona'] }))
+    // The store mirrors save: the rpc reaches fallbacks/revert-seed with the
+    // row's trimmed id (spec §9.4), independent of any card Save.
+    expect(scripted.call).toHaveBeenCalledWith('/api', 'fallbacks/revert-seed', { args: { id: 'architect' } })
+    expect(scripted.revertSeed).toHaveBeenCalledTimes(1)
+  })
+
+  it('disables the revert affordance when the card cannot write or a write is in flight', async () => {
+    // Read-only describe: the revert button is inert (the wrapping fieldset
+    // also propagates disabled, but the button carries its own term).
+    const readOnly = await mountCard({
+      config: SEEDED_CONFIG,
+      writable: false,
+      seeds: [{ id: 'architect', overridden: true }],
+    })
+    toggleCard()
+    readOnly.view.rerender(<FallbacksCard {...readOnly.props} />)
+    expect((screen.getByRole('button', { name: en['roles.revertPersona'] }) as HTMLButtonElement).disabled).toBe(true)
+    readOnly.view.unmount()
+
+    // While a save is in flight (store status 'saving') the revert is
+    // disabled too — the store never lets the two writes overlap.
+    const { view, props, scripted } = await mountCard({
+      config: SEEDED_CONFIG,
+      seeds: [{ id: 'architect', overridden: true }],
+    })
+    toggleCard()
+    expandAdvanced()
+    view.rerender(<FallbacksCard {...props} />)
+    const gate = Promise.withResolvers<unknown>()
+    scripted.set.mockReturnValueOnce(gate.promise as never)
+    // An unrelated edit makes the draft dirty so Save is enabled; the
+    // in-flight write flips the store to 'saving'.
+    fireEvent.change(screen.getByLabelText(en['cooldownMs.label']), { target: { value: '7000' } })
+    view.rerender(<FallbacksCard {...props} />)
+    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    view.rerender(<FallbacksCard {...props} />)
+    expect((screen.getByRole('button', { name: en['roles.revertPersona'] }) as HTMLButtonElement).disabled).toBe(true)
+    // Release the write so the store settles and the test ends clean.
+    gate.resolve(okResult({ config: { ...SEEDED_CONFIG, cooldownMs: 7000 } }))
+    await waitFor(() => expect(scripted.set).toHaveBeenCalled())
+  })
+
+  it('saves a seeded role whose chain is empty (AC-3 card path)', async () => {
+    // A seeded role with a legitimately empty chain (R4) must stay
+    // persistable: the Save gate relaxes for seeded ids only (spec §9.6) so
+    // the persona edit crosses the wire instead of the validation block.
+    const { view, props, scripted } = await mountCard({
+      config: SEEDED_CONFIG,
+      seeds: [{ id: 'architect', overridden: false }],
+    })
+    toggleCard()
+    expandAdvanced()
+    view.rerender(<FallbacksCard {...props} />)
+    // The seeded row shows the non-blocking chain hint instead of the
+    // blocking one.
+    expect(screen.getByText(en['roles.seedChainOptional'])).toBeTruthy()
+    expect(screen.queryByText(en['validation.roleChainRequired'])).toBeNull()
+    // An unrelated edit makes the draft dirty (a clean draft's Save button
+    // is disabled), then Save passes validation and writes.
+    fireEvent.change(screen.getByLabelText(en['cooldownMs.label']), { target: { value: '7000' } })
+    view.rerender(<FallbacksCard {...props} />)
+    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    await waitFor(() => expect(scripted.set).toHaveBeenCalled())
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('still blocks save on a non-seeded empty-chain role while a sibling is seeded (regression pin)', async () => {
+    // The relax is seeded-only: an ordinary empty-chain role stays blocked
+    // even when a sibling in the same card IS seeded — non-seeded behavior
+    // is byte-identical (spec §9.6 regression pin). Both roles are
+    // chain-less so the hint contrast is explicit: architect (seeded) gets
+    // the non-blocking seeded hint, reviewer (not seeded) keeps the
+    // blocking one.
+    const config: typeof defaultFallbacksConfig = {
+      ...defaultFallbacksConfig,
+      enabled: true,
+      roles: {
+        list: [
+          { id: 'architect', persona: 'Designs systems', chain: [], fallback: 'inherit-root' },
+          { id: 'reviewer', persona: 'Reviews code', chain: [], fallback: 'inherit-root' },
+        ],
+        rules: [],
+      },
+    }
+    const { view, props, scripted } = await mountCard({
+      config,
+      seeds: [{ id: 'architect', overridden: false }],
+    })
+    toggleCard()
+    expandAdvanced()
+    view.rerender(<FallbacksCard {...props} />)
+    // architect is seeded → the seeded (non-blocking) hint; reviewer is NOT
+    // seeded → the blocking chain-required hint stays.
+    expect(screen.getByText(en['roles.seedChainOptional'])).toBeTruthy()
+    expect(screen.getAllByText(en['validation.roleChainRequired'])).toHaveLength(1)
+    // Save is blocked: the non-seeded empty-chain role keeps the draft off
+    // the wire.
+    fireEvent.change(screen.getByLabelText(en['cooldownMs.label']), { target: { value: '7000' } })
+    view.rerender(<FallbacksCard {...props} />)
+    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    view.rerender(<FallbacksCard {...props} />)
+    expect(scripted.set).not.toHaveBeenCalled()
+    expect(scripted.call).not.toHaveBeenCalledWith('/api', 'fallbacks/set', expect.anything())
+    const alert = screen.getByRole('alert')
+    expect(alert.textContent).toContain(en['validation.blocked'])
+    expect(alert.textContent).toContain(en['validation.roleChainRequired'])
+  })
+
+  it('round-trips an override: edit persona → save → override badge → revert → default badge', async () => {
+    const { view, props, scripted } = await mountCard({
+      config: SEEDED_CONFIG,
+      seeds: [{ id: 'architect', overridden: false }],
+    })
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    const rolesGroup = screen.getByText(en['roles.list.label']).closest('[role="group"]') as HTMLElement
+    const personas = within(rolesGroup).getAllByLabelText(en['roles.persona'])
+    expect(personas).toHaveLength(2)
+    // Edit the seeded role's persona → the draft holds the override.
+    fireEvent.change(personas[0]!, { target: { value: 'Edited persona' } })
+    view.rerender(<FallbacksCard {...props} />)
+    // Save: the post-write response reports the persona override (spec §9.4
+    // — the wire's override verdict follows the accepted config).
+    const editedConfig = {
+      ...SEEDED_CONFIG,
+      roles: {
+        ...SEEDED_CONFIG.roles,
+        list: SEEDED_CONFIG.roles.list.map(role => role.id === 'architect'
+          ? { ...role, persona: 'Edited persona' }
+          : role),
+      },
+    }
+    scripted.set.mockReturnValueOnce(okResult({
+      config: editedConfig,
+      seeds: [{ id: 'architect', overridden: true }],
+    }))
+    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    await waitFor(() => expect(screen.getAllByText(en['roles.seedOverride'])).toHaveLength(1))
+    expect(screen.queryByText(en['roles.seedDefault'])).toBeNull()
+    expect((within(rolesGroup).getAllByLabelText(en['roles.persona'])[0] as HTMLTextAreaElement).value)
+      .toBe('Edited persona')
+    // Revert: the gateway restores the CURRENT seed default persona and
+    // reports the badge back at default (AC-3 round-trip).
+    const revertedConfig = {
+      ...editedConfig,
+      roles: {
+        ...editedConfig.roles,
+        list: editedConfig.roles.list.map(role => role.id === 'architect'
+          ? { ...role, persona: 'Designs systems' }
+          : role),
+      },
+    }
+    scripted.revertSeed.mockReturnValueOnce(okResult({
+      config: revertedConfig,
+      seeds: [{ id: 'architect', overridden: false }],
+    }))
+    fireEvent.click(screen.getByRole('button', { name: en['roles.revertPersona'] }))
+    await waitFor(() => expect(screen.getAllByText(en['roles.seedDefault'])).toHaveLength(1))
+    expect(screen.queryByText(en['roles.seedOverride'])).toBeNull()
+    // The store adopted the post-write config: the restored persona lands
+    // back in the draft.
+    expect((within(rolesGroup).getAllByLabelText(en['roles.persona'])[0] as HTMLTextAreaElement).value)
+      .toBe('Designs systems')
   })
 })

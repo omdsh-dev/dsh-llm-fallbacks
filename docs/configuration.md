@@ -43,6 +43,8 @@ Since iter-20260813 the configuration follows a **two-block model** — you only
 | `fallback` | `'inherit-root'` \| `'none'` | No (default `'inherit-root'`) | Chain-append policy: `inherit-root` = append `rootChain` after the role chain; `none` = the role's own chain only |
 | `prompt` / `permissions` | string / object | No | **Reserved fields** (see next section) |
 
+**Seeded rows**: a companion plugin may also auto-provision role rows through the service seeding API — a seeded role is a plain `roles.list` row (`{ id, persona }`, two keys only): seeds never write `chain` / `fallback` (a new seeded role keeps an empty chain until you fill it), its persona can be reverted to the currently declared seed default from the card or via the service, and the card shows a seed badge. See [docs/consumer-api.md](consumer-api.md) → Role seeds.
+
 ### `roles.rules` entry fields
 
 | Field | Type | Description |

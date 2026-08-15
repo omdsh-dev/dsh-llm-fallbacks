@@ -1,7 +1,7 @@
 ---
 module: dsh-plugin-authoring
 date: 2026-08-10
-last_updated: 2026-08-14
+last_updated: 2026-08-15
 problem_type: best_practice
 category: best-practices
 severity: low
@@ -111,6 +111,7 @@ dsh 插件 = npm 包，package.json 声明 dsh.bundle.patch（指向 bundle/cord
 - **版本元信息**：运行时 `createRequire(import.meta.url)('../package.json').version`（模块级读一次）——src/vitest 与 dist/发布后（npm 恒带 package.json）均解析；不要 build-time 内联。
 - **服务面纪律**：只暴露**纯函数面**（解析/校验函数 + name/version 元信息），**不暴露运行态**（store/事件发射器）——跨插件读状态是实现细节非契约；运行态请走事件（如 `fallbacks/switch`）。
 - 单点真相：服务方法 = 直接引用 index re-export 的同一函数（`toBe` 同一性测试钉住），不复制逻辑。
+- **有状态方法的身份（2026-08-15 实证）**：服务面可以是「无状态纯函数 + 有状态闭包」混合——legacy 纯函数方法与库 re-export **同一绑定**（`toBe` 同一），但 per-apply 有状态方法（如 seeds `declareSeeds`/`revertSeededPersona`）是**闭包**（捕获 apply() 内建的 manager），与库 re-export **不是**同一引用。文档必须区分两种身份（写「与库导出同一绑定」会过度声称，2026-08-15 修过此 doc bug）；测试同样分型钉住（纯函数 `toBe` vs 闭包行为）。
 
 ## Why This Matters
 
