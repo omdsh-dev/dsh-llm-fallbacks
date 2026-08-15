@@ -1020,6 +1020,40 @@ describe('FallbacksSettingsController', () => {
     expect(call).toHaveBeenCalledWith('/api', 'fallbacks/get', { args: {} })
   })
 
+  it('accepts the save response when an overlapping load with a failing get supersedes the read (write generation split)', async () => {
+    // Audit F1: load() and save() shared one generation counter, so the
+    // post-save refresh (settings/document-updated → load()) could bump the
+    // counter while the write was in flight and discard the save's accept().
+    // When that refresh's get fails, the UI kept the PRE-SAVE config even
+    // though the server accepted the write. The read/write generation split
+    // lets the write completion publish regardless of overlapping reads.
+    const api = makeApi()
+    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
+    const { rpc, get, set } = makeRpc({ ...defaultFallbacksConfig, cooldownMs: 99_000 })
+    const controller = new FallbacksSettingsController(api, rpc)
+    await controller.load()
+    expect(controller.store.getSnapshot().config.cooldownMs).toBe(99_000)
+
+    // The save's set stays in flight while the overlapping refresh runs.
+    const gate = Promise.withResolvers<{ ok: true; value: { config: FallbacksConfig } }>()
+    set.mockReturnValueOnce(gate.promise)
+    const saving = controller.save({ ...defaultFallbacksConfig, cooldownMs: 55_000 })
+
+    // The refresh overlaps the write and its get fails — the exact overlap
+    // where the shared counter dropped the save's accept().
+    get.mockReturnValueOnce(Promise.resolve(failResult('fallbacks gateway is not ready')))
+    await controller.load()
+    expect(controller.store.getSnapshot().present).toBe(false)
+
+    // The server accepted the write and returned the post-write config.
+    gate.resolve(okResult({ config: { ...defaultFallbacksConfig, cooldownMs: 55_000 } }))
+    await saving
+    const state = controller.store.getSnapshot()
+    expect(state.status).toBe('ready')
+    expect(state.present).toBe(true)
+    expect(state.config.cooldownMs).toBe(55_000)
+  })
+
   it('loads the provider directory and model groups into the catalog snapshot (D-4)', async () => {
     const api = makeApi()
     api.llm.providers.mockResolvedValue(ok({ providers: catalogFixture().providers }))
