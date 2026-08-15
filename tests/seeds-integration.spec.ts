@@ -45,7 +45,12 @@ function track(ctx: Context): Context {
 async function compose(): Promise<Context> {
   const ctx = track(new Context())
   await ctx.plugin(MemorySettings)
-  apply(ctx)
+  // Pin to `presets: 'none'` (fallbacks-preset-roles QC fix wave F-001): the
+  // bundled preset self-declaration would otherwise materialize 7 preset rows
+  // on apply and race the exact row-count/badge assertions below (same
+  // rationale as the T3 pins elsewhere in this file). This suite exercises
+  // companion-declared seeds, not presets.
+  apply(ctx, { ...defaultFallbacksConfig, presets: 'none' })
   await vi.waitFor(() => {
     expect(ctx.get('llm-fallbacks')).toBeDefined()
   })

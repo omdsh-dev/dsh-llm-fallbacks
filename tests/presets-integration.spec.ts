@@ -131,6 +131,29 @@ describe('bundled preset self-declaration (real apply)', () => {
     expect(service(ctx).getEffectiveRoles().roles.map((role) => role.id)).toEqual(presetRoles.map((preset) => preset.id))
   })
 
+  it("enabled: false still materializes the 7 preset rows (D9.3-c — no `enabled` gate)", async () => {
+    // Explicit `enabled: false` (the default): the preset fire is NOT gated
+    // by `enabled` — docs/configuration.md "Not gated by enabled" (F-002).
+    // The default-value coincidence in compose() must not be the only pin.
+    const ctx = track(new Context())
+    await ctx.plugin(MemorySettings)
+    apply(ctx, { ...defaultFallbacksConfig, enabled: false })
+    await vi.waitFor(() => {
+      expect(gateway(ctx).get().config.roles.list).toHaveLength(presetRoles.length)
+    })
+
+    const rows = gateway(ctx).get().config.roles.list
+    expect(gateway(ctx).get().config.enabled).toBe(false)
+    expect(rows.map((row) => row.id)).toEqual(presetRoles.map((preset) => preset.id))
+    expect(rows.map((row) => row.persona)).toEqual(presetRoles.map((preset) => preset.persona))
+    expect(userSection(ctx)).toEqual({
+      roles: { list: presetRoles.map((preset) => ({ id: preset.id, persona: preset.persona })), rules: [] },
+    })
+    expect(gateway(ctx).get().seeds).toEqual(
+      presetRoles.map((preset) => ({ id: preset.id, overridden: false })),
+    )
+  })
+
   it('repeated apply over the same root re-fires nothing: no-delta, zero extra write, single rows (AC-1)', async () => {
     const ctx = track(new Context())
     await ctx.plugin(CountingSettings)
@@ -206,6 +229,47 @@ describe('bundled preset self-declaration (real apply)', () => {
     expect(service(ctx).getEffectiveRoles().roles).toEqual([])
   })
 
+  it("gateway set({ presets: 'none' }) on the user layer short-circuits the next fiber's fire (F-003 / D9.3-c)", async () => {
+    const first = track(new Context())
+    await first.plugin(CountingSettings)
+    const firstSettings = first.settings as unknown as CountingSettings
+    apply(first)
+    await vi.waitFor(() => {
+      expect(gateway(first).get().config.roles.list).toHaveLength(presetRoles.length)
+    })
+    expect(firstSettings.writes).toBe(1)
+
+    // The settings USER-LAYER path (vs the entry/plugin-row path the
+    // `presets: 'none'` test above covers): gateway set accepts `presets`
+    // (CONFIG_KEYS round-trip) and writes it into the user layer.
+    const setResult = await gateway(first).set({ presets: 'none' })
+    expect(setResult.config.presets).toBe('none')
+    // Persist the user layer (HMR mirror — the file-backed provider keeps
+    // the document across a fiber swap).
+    const persisted = userSection(first)
+    await first.fiber.dispose()
+
+    // Fresh fiber over the SAME persisted user layer: the tail child's fire
+    // reads the LIVE composed source — user-layer `presets: 'none'` — and
+    // short-circuits before declare: zero declarations, zero writes.
+    const second = track(new Context())
+    await second.plugin(CountingSettings)
+    ;(second.settings as unknown as MemorySettings).seed(FALLBACKS_SETTINGS_NAMESPACE, persisted!)
+    const secondSettings = second.settings as unknown as CountingSettings
+    apply(second)
+    await vi.waitFor(() => {
+      expect(second.get('llm-fallbacks')).toBeDefined()
+    })
+    await settle()
+
+    expect(secondSettings.writes).toBe(0)
+    // The registry never committed — the fire short-circuited (a fired
+    // no-delta declare would still commit the badge).
+    expect(gateway(second).get().seeds).toEqual([])
+    // The persisted rows are untouched and still visible on the wire.
+    expect(gateway(second).get().config.roles.list).toHaveLength(presetRoles.length)
+  })
+
   it('operator same-name row: persona kept + llm-fallbacks: seeds: conflict warn (AC-4)', async () => {
     const ctx = track(new Context())
     await ctx.plugin(MemorySettings)
@@ -246,6 +310,14 @@ describe('bundled preset self-declaration (real apply)', () => {
     const { agent } = makeAgent('headless-agent', { provider: 'mock', model: 'gpt-4o' })
     const action = await dispatchRequestError(ctx, agent, { failure: { message: 'denied', code: 'AUTH' } })
     expect(action).toEqual({ kind: 'retry' })
+
+    // Give the tail settings child its activation window (a tick + settle,
+    // same negative-assertion style as the `presets: 'none'` case): if it
+    // could fire, the write would land by now (F-004). The structural
+    // guarantee — the inject child only activates when a settings service is
+    // composed — stays the primary pin; the settle is the belt-and-braces
+    // window.
+    await settle()
 
     // Zero declaration, zero write, zero error log — the child never fired.
     expect(service(ctx).getEffectiveRoles().roles).toEqual([])
@@ -325,5 +397,54 @@ describe('bundled preset self-declaration (real apply)', () => {
     const rows = gateway(ctx).get().config.roles.list
     expect(rows).toHaveLength(presetRoles.length)
     expect(rows.find((row) => row.id === 'designer')!.persona).toBe('operator persona')
+  })
+
+  it('settings service removal + restore (provider reload) re-fires the preset child: no duplicate rows, no-delta zero write, badge correct (F-005)', async () => {
+    const ctx = track(new Context())
+    await ctx.plugin(CountingSettings)
+    const firstSettings = ctx.settings as unknown as CountingSettings
+    apply(ctx)
+    await vi.waitFor(() => {
+      expect(gateway(ctx).get().config.roles.list).toHaveLength(presetRoles.length)
+    })
+    expect(firstSettings.writes).toBe(1)
+    // Mirror the file-backed document across the reload: capture the raw
+    // user section before the provider goes away.
+    const persisted = userSection(ctx)
+
+    // Provider reload: the settings service detaches (gateway.spec
+    // remove/restore pattern) — the inject children unload and the composed
+    // source falls back to the entry base (no user-layer rows).
+    ctx.registry.delete(CountingSettings as unknown as typeof MemorySettings)
+    await vi.waitFor(() => {
+      expect(gateway(ctx).get().config.roles.list).toEqual([])
+    })
+    // The write channel is gone while the provider is absent (KD-G5).
+    await expect(gateway(ctx).set({ enabled: true })).rejects.toThrow(/settings service is unavailable/)
+
+    // ... and comes back: a FRESH provider instance over the SAME persisted
+    // document (file-backed HMR mirror). Manual construction + synchronous
+    // seed keeps the raw document in place before the inject children
+    // re-activate (a cordis-init publish would otherwise wipe the doc).
+    const fresh = new CountingSettings(ctx)
+    fresh.seed(FALLBACKS_SETTINGS_NAMESPACE, persisted!)
+
+    // The re-activated preset child re-fires: declare reads the composed
+    // source (entry + persisted user layer) → no-delta → zero writes, no
+    // duplicate rows, badge still reports every preset seeded.
+    await vi.waitFor(() => {
+      expect(gateway(ctx).get().seeds).toHaveLength(presetRoles.length)
+    })
+    await settle()
+
+    expect(fresh.writes).toBe(0)
+    const rows = gateway(ctx).get().config.roles.list
+    expect(rows).toHaveLength(presetRoles.length)
+    expect(new Set(rows.map((row) => row.id)).size).toBe(presetRoles.length)
+    expect(rows.map((row) => row.persona)).toEqual(presetRoles.map((preset) => preset.persona))
+    expect(userSection(ctx)).toEqual(persisted)
+    expect(gateway(ctx).get().seeds).toEqual(
+      presetRoles.map((preset) => ({ id: preset.id, overridden: false })),
+    )
   })
 })

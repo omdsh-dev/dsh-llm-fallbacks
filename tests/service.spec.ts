@@ -198,7 +198,11 @@ describe('llm-fallbacks named cordis service', () => {
   })
 
   it('revertSeededPersona restores the CURRENT declared seed default over an operator edit', async () => {
-    apply(ctx)
+    // Pin to `presets: 'none'` (fallbacks-preset-roles QC fix wave, qc1 S-6):
+    // the bundled preset self-declaration would otherwise materialize 7
+    // preset rows and shadow the intended isolation — this test exercises
+    // the service revert surface, not presets.
+    apply(ctx, { ...defaultFallbacksConfig, presets: 'none' })
 
     const fb = ctx.get('llm-fallbacks')!
     // Same waitFor probe as the declare test above (inject child activation).

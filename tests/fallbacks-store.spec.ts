@@ -289,6 +289,7 @@ describe('parseFallbacksConfig (descriptor read, redactSecrets face)', () => {
     expect(() => parseFallbacksConfig({ roles: { rules: [{ provider: 'openai' }] } })).toThrow(TypeError)
     expect(() => parseFallbacksConfig({ roles: { rules: [{ origin: 'host', role: 'x' }] } })).toThrow(TypeError)
     expect(() => parseFallbacksConfig({ revertPolicy: 'sometimes' })).toThrow(TypeError)
+    expect(() => parseFallbacksConfig({ presets: 'sometimes' })).toThrow(TypeError)
     expect(() => parseFallbacksConfig({ cooldownMs: 'soon' })).toThrow(TypeError)
     expect(() => parseFallbacksConfig({ enabled: 'yes' })).toThrow(TypeError)
   })
