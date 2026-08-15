@@ -134,6 +134,20 @@ fallbacks:
 
 完整契约（导出清单、最小示例、生命周期、类型说明）见 [docs/consumer-api.md](docs/consumer-api.md)。
 
+## 预设角色（Preset roles）
+
+插件内置 **7 个通用子代理角色 taxonomy**，开箱即用——`designer` / `librarian` / `reviewer` / `scout` / `security-reviewer` / `sonic` / `task`——`apply` 时自动以 seeded `roles.list` 行（`{ id, persona }` 两键）声明：幂等，且绝不覆盖 operator 同名 persona。每个 persona 是从 omp bundled agent 提示词蒸馏的精简指令文（来源 `packages/coding-agent/src/prompts/agents/`，快照 2026-08-16）。
+
+- **配置开关**：`fallbacks.presets`——`'bundled'`（默认）在 apply 时声明预设角色；`'none'` 关闭自动声明（零声明零写，已物化行保留）。完整语义（升级行为、冲突处理、手工删行的诚实限制）见 [docs/configuration.md](docs/configuration.md)。
+- **库复用**：同一份 7 项声明从包根导出——一行复用与插件自声明完全相同的 payload：
+
+```ts
+import { presetRoles } from 'dsh-llm-fallbacks'
+
+const fb = ctx.get('llm-fallbacks')                       // 插件已 apply → service 面
+if (fb !== undefined) await fb.declareSeeds(presetRoles)  // 或直接使用 FallbacksSeedManager
+```
+
 ## 文档
 
 | 文档 | 内容 |

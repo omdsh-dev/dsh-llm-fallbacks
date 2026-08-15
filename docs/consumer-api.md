@@ -48,6 +48,26 @@ validateFallbacksConfig(config, logger)
 | `defaultFallbacksConfig` | Default config object (`enabled: false`, default `triggerCodes`, empty chains). |
 | `provide` | Declarative service metadata `['llm-fallbacks'] as const` (for loader/tool recognition; actual registration happens inside `apply()` — see the named service section below). |
 | `SelectorError` | The catchable error class thrown by `parseSelector` — catch-side type safety depends on it. |
+| `presetRoles` | The 7 bundled omp-style preset role declarations — `readonly SeedDeclaration[]`, pure data module, the exact payload the plugin self-declares on apply. Derivation: omp bundled agent prompts `packages/coding-agent/src/prompts/agents/`, snapshot 2026-08-16; persona text frozen per the plugin spec §9.2. See [Preset roles](#preset-roles). |
+
+### Preset roles
+
+`presetRoles` is the single source of the plugin's bundled preset-role declarations — the identical 7-item payload `apply()` self-declares when `presets: 'bundled'` (the default). The 7 ids are `designer` / `librarian` / `reviewer` / `scout` / `security-reviewer` / `sonic` / `task`; each persona is a concise instruction set distilled from the omp bundled agent prompts (`packages/coding-agent/src/prompts/agents/`, snapshot 2026-08-16), not a verbatim copy of a full prompt.
+
+Reuse it through any seed face:
+
+```ts
+import { presetRoles } from 'dsh-llm-fallbacks'
+
+// (a) service face (plugin applied): one line, same payload as the self-declaration
+const fb = ctx.get('llm-fallbacks')
+if (fb !== undefined) await fb.declareSeeds(presetRoles)
+
+// (b) class face: new FallbacksSeedManager(logger).declare(presetRoles, seedsIo)
+```
+
+Operator-facing behavior of the automatic declaration (config key `presets: 'bundled' | 'none'`, upgrade / conflict / deletion semantics) → [docs/configuration.md](configuration.md) → Preset roles.
+| `presetRoles` | The 7 bundled omp-style preset role declarations — `readonly SeedDeclaration[]`, pure data module, the exact payload the plugin self-declares on apply. Derivation: omp bundled agent prompts `packages/coding-agent/src/prompts/agents/`, snapshot 2026-08-16; persona text frozen per the plugin spec §9.2. See [Preset roles](#preset-roles). |
 
 ### Type exports
 

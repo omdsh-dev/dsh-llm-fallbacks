@@ -30,6 +30,7 @@ Since iter-20260813 the configuration follows a **two-block model** — you only
 | `revertPolicy` | `'cooldown-expiry'` \| `'never'` | `'cooldown-expiry'` | Primary-return policy after cooldown expiry: return to the primary model on expiry / keep the fallback model for the session |
 | `maxSwitchesPerStep` | number | `8` | Per-step safety valve: the switch-count cap per step; beyond it switching stops and the original error semantics are kept, preventing chain loops from amplifying latency |
 | `alwaysModeRetryCap` | number | `5` | Always-mode retry cap: providers with `retryPolicy.mode === 'always'` switch after this many retries within the same request; `0` disables |
+| `presets` | `'bundled'` \| `'none'` | `'bundled'` | Preset-role switch: `'bundled'` declares the 7 bundled preset roles as seeded `roles.list` rows on apply; `'none'` disables declaration (zero declarations, zero writes from this switch). Optional key — unset configs resolve to the default via the schema. See [Preset roles](#preset-roles-presets-key) |
 
 > The defaults are defined by `defaultFallbacksConfig` in `src/config.ts`; the card shows the default value next to numeric fields (`cooldownMs` / `maxSwitchesPerStep` / `alwaysModeRetryCap`) and the currently effective value for all other fields (which equals the default when unset).
 
@@ -43,7 +44,7 @@ Since iter-20260813 the configuration follows a **two-block model** — you only
 | `fallback` | `'inherit-root'` \| `'none'` | No (default `'inherit-root'`) | Chain-append policy: `inherit-root` = append `rootChain` after the role chain; `none` = the role's own chain only |
 | `prompt` / `permissions` | string / object | No | **Reserved fields** (see next section) |
 
-**Seeded rows**: a companion plugin may also auto-provision role rows through the service seeding API — a seeded role is a plain `roles.list` row (`{ id, persona }`, two keys only): seeds never write `chain` / `fallback` (a new seeded role keeps an empty chain until you fill it), its persona can be reverted to the currently declared seed default from the card or via the service, and the card shows a seed badge. See [docs/consumer-api.md](consumer-api.md) → Role seeds.
+**Seeded rows**: a companion plugin may also auto-provision role rows through the service seeding API — a seeded role is a plain `roles.list` row (`{ id, persona }`, two keys only): seeds never write `chain` / `fallback` (a new seeded role keeps an empty chain until you fill it), its persona can be reverted to the currently declared seed default from the card or via the service, and the card shows a seed badge. See [docs/consumer-api.md](consumer-api.md) → Role seeds. The plugin itself also auto-provisions 7 bundled preset roles on apply by default (see [Preset roles](#preset-roles-presets-key)) — same seed semantics, same badge / revert affordance.
 
 ### `roles.rules` entry fields
 
@@ -61,6 +62,20 @@ Since iter-20260813 the configuration follows a **two-block model** — you only
 - **Writing them in YAML does not change this round's fallback behavior** — there is no runtime consumer this round;
 - **The UI does not show them this round** — the Fallbacks card does not render these two fields;
 - **next iteration: consumed by the plugin's subagent tool** — landing as persona injection and tool filtering (the planned `fallbacks-explicit-role-tool`).
+
+## Preset roles (`presets` key)
+
+The plugin ships **7 bundled omp-style preset roles** — generic subagent roles available out of the box: `designer` / `librarian` / `reviewer` / `scout` / `security-reviewer` / `sonic` / `task`. Each persona is a concise instruction set distilled from the omp bundled agent prompts (`packages/coding-agent/src/prompts/agents/`, snapshot 2026-08-16) — a distillation, not a verbatim copy of a full prompt.
+
+| `presets` value | Effect |
+|---|---|
+| `'bundled'` (default) | On `apply`, the plugin automatically declares the 7 preset roles through the role-seeds surface: they materialize as plain `roles.list` rows (`{ id, persona }`, two keys only) |
+| `'none'` | No declarations, no writes — this apply round makes **zero** settings writes on account of this switch |
+
+- **Idempotent**: re-declaring the same preset payload is a no-op — repeated `apply` / HMR / fiber swaps never duplicate rows and never drop an override.
+- **Upgrade behavior**: with the default configuration, the first `apply` after upgrading materializes the 7 rows into `roles.list`; each row shows the **seeded badge + revert** from the settings card (existing capability — no extra configuration). Setting `presets: 'none'` stops further declarations but does **not** retract already-materialized rows — delete them by hand if you want them gone. **Honest limitation**: a hand-deleted row is re-materialized by the next `apply` (the plugin cannot distinguish "operator deleted" from "never existed").
+- **Same-name operator rows are never overwritten**: a row the operator already defined keeps its persona — the declaration is flagged with a loud `logger.warn` (`'persona-source'` conflict, seed semantics unchanged) and the row still derives `seeded=true`, so the badge / revert affordance is available. The preset persona is only ever applied to a brand-new row.
+- The `presets` key is an **optional, YAML-only** switch — the settings card does not render a control for it this round. Unset configs resolve to the default through the schema; an invalid value (anything other than `'bundled'` / `'none'`) fails at config resolve, like `revertPolicy`.
 
 ## Entry syntax
 

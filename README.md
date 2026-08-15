@@ -139,6 +139,20 @@ Beyond the dsh plugin mount, `dsh-llm-fallbacks` exposes a programmable consumer
 
 Full contract (export inventory, minimal examples, lifecycle, typing) → [docs/consumer-api.md](docs/consumer-api.md).
 
+## Preset roles
+
+The plugin ships a **bundled taxonomy of 7 generic subagent roles** available out of the box — `designer` / `librarian` / `reviewer` / `scout` / `security-reviewer` / `sonic` / `task` — declared automatically on `apply` as seeded `roles.list` rows (`{ id, persona }`, two keys only): idempotent, and never overwriting an operator persona. Each persona is a concise instruction set distilled from the omp bundled agent prompts (`packages/coding-agent/src/prompts/agents/`, snapshot 2026-08-16).
+
+- **Config switch**: `fallbacks.presets` — `'bundled'` (default) declares the preset roles on apply; `'none'` disables the automatic declaration (zero declarations, zero writes from this switch; already-materialized rows stay). Full semantics (upgrade behavior, conflict handling, honest deletion limitation) → [docs/configuration.md](docs/configuration.md).
+- **Library reuse**: the same 7 declarations are exported from the package root — one line, the identical payload the plugin self-declares:
+
+```ts
+import { presetRoles } from 'dsh-llm-fallbacks'
+
+const fb = ctx.get('llm-fallbacks')                       // plugin applied → service face
+if (fb !== undefined) await fb.declareSeeds(presetRoles)  // or a FallbacksSeedManager
+```
+
 ## Documentation
 
 | Doc | Content |
