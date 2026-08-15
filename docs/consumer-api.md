@@ -51,7 +51,7 @@ validateFallbacksConfig(config, logger)
 
 ### Type exports
 
-`FallbacksConfig` / `FallbacksRole` / `FallbacksRoles` / `FallbacksRoleRule` / `FallbackStrategy` / `RevertPolicy` / `Origin` / `AgentLike` / `Selector` / `FailingModel` / `AnnotatedCandidate` / `CandidateSkipReason` / `CandidateFilterOptions` / `FallbacksConfigLogger` / `FallbacksService` — all `export type`, compile-time only.
+`FallbacksConfig` / `FallbacksRole` / `FallbacksRoles` / `FallbacksRoleRule` / `FallbackStrategy` / `RevertPolicy` / `Origin` / `AgentLike` / `Selector` / `FailingModel` / `AnnotatedCandidate` / `CandidateSkipReason` / `CandidateFilterOptions` / `FallbacksConfigLogger` / `FallbacksService` — all `export type`, compile-time only. The role-seeds types (`SeedDeclaration` / `SeedSkipReason` / `SeedConflict` / `SeedDeclareOutcome` / `EffectiveRole` / `EffectiveRolesReadback` / `SeedRevertFailReason` / `SeedRevertOutcome` / `SeedsWireStatus` / `SeedsIo`) and the `FallbacksSeedManager` class are also re-exported from the package root — see [Role seeds](#role-seeds-service-seeding-api).
 
 ### Existing plugin exports (unchanged)
 
@@ -73,10 +73,13 @@ After the plugin's `apply()`, a service is registered on the cordis `Context` un
   resolveChain: typeof resolveChain
   validateFallbacksConfig: typeof validateFallbacksConfig
   detectLegacyKeys: typeof detectLegacyKeys
+  declareSeeds: (seeds: readonly SeedDeclaration[]) => Promise<SeedDeclareOutcome>
+  getEffectiveRoles: () => EffectiveRolesReadback
+  revertSeededPersona: (id: string) => Promise<SeedRevertOutcome>
 }
 ```
 
-The service surface **deliberately excludes** runtime state (no `stateStore` / event emitter) and the filtering helpers — those go through library imports only. The static export `provide = ['llm-fallbacks'] as const` is declarative metadata (for loader/tool recognition); the actual registration happens inside `apply()`.
+The service surface **deliberately excludes** runtime state (no `stateStore` / event emitter) and the filtering helpers — those go through library imports only. The static export `provide = ['llm-fallbacks'] as const` is declarative metadata (for loader/tool recognition); the actual registration happens inside `apply()`. The three role-seeds keys (a)(b)(c) are strictly additive — see [Role seeds](#role-seeds-service-seeding-api) below.
 
 ### Probe example
 
@@ -97,6 +100,71 @@ if (fb !== undefined) {
 ### Type merging
 
 Importing this package automatically merges the `Context` type (`declare module '@deepseek-ai/cordis'` augments `'llm-fallbacks'?: FallbacksService`), so consumers **do not need to declare it themselves**; the `FallbacksService` type is also exported from the package root. Without importing this package's types, `ctx.get('llm-fallbacks')` degrades to the untyped overload.
+
+### Role seeds (service seeding API)
+
+The service grows three additive keys — the six pre-existing keys are unchanged (strictly additive, spec §9.1). Companion plugins use them to auto-provision role rows into the taxonomy with **zero operator hand-edit** (no config block, no bundle-row write): a seeded role is a plain `roles.list` row, and the settings card surfaces the same state (seed badge + revert) over the gateway wire.
+
+```ts
+declareSeeds(seeds: readonly SeedDeclaration[]): Promise<SeedDeclareOutcome>
+getEffectiveRoles(): EffectiveRolesReadback
+revertSeededPersona(id: string): Promise<SeedRevertOutcome>
+```
+
+| Method | Surface | Notes |
+|---|---|---|
+| `declareSeeds(seeds)` | (a) declare | **Replacement semantics**: the batch is the companion's full current declaration set; ids omitted from the batch drop out of the seed registry (the role row and the operator's chain remain — R2). Per-id validation **as declared** — an id failing `ROLE_ID_PATTERN` (`/^[a-z0-9-]{1,32}$/`) or equal to the reserved `'inherit'` is skipped with a warn (never coerced); valid siblings in the same batch still apply. Re-declaring the same payload is a no-op (no settings write). |
+| `getEffectiveRoles()` | (b) readback | Sync. The effective taxonomy with per-role seed annotations (`seeded` / `personaOverridden` / `seedPersona`). |
+| `revertSeededPersona(id)` | (c) revert | Restores one id to the **currently declared** seed default — never a snapshot of the first seed. `{ reverted: false, reason: 'not-seeded' }` when the id was never declared (no write, no throw). |
+
+#### Minimal example
+
+```ts
+const fb = ctx.get('llm-fallbacks')
+if (fb !== undefined) {
+  // (a) declare — the FULL current set; re-declaring the same payload is a no-op
+  const outcome = await fb.declareSeeds([
+    { id: 'code-reviewer', persona: 'Reviews code for correctness and security' },
+    { id: 'fullstack-dev', persona: 'Backend-led fullstack implementation' },
+  ])
+  // outcome: { applied: string[], skipped: Array<{ id, reason }>, conflicts: Array<{ id, kind }> }
+
+  // (b) read back effective roles with seed annotations
+  const { roles } = fb.getEffectiveRoles()
+  // roles[i].seeded / roles[i].personaOverridden / roles[i].seedPersona
+
+  // (c) revert one id to the CURRENT declared seed default
+  const outcome2 = await fb.revertSeededPersona('code-reviewer')
+  // outcome2: { reverted: true, persona } | { reverted: false, reason }
+}
+```
+
+#### State model and conservative override semantics
+
+Two stores, strictly separated (spec §9.2):
+
+1. **Operator config (persisted — the only persisted store)**: a seeded role is a plain `roles.list` row `{ id, persona }`. `chain` / `fallback` / `prompt` / `permissions` are **omitted** on insert — seeds never write those values (R4).
+2. **Seed registry (in-memory, per-apply)**: `Map<id, seedPersona>`; declare = replacement.
+
+`seeded` and `personaOverridden` are **derived at read time**, never stored — because nothing override-shaped is persisted, a config round-trip cannot orphan an override (AC-3).
+
+- An operator persona edit is an **override** (the row persona differs from the seed default); the card shows override state.
+- Revert always restores the **currently declared** seed default — when the companion re-declares a new persona for the same id, revert goes to that new default.
+- A declared id that already has an operator row is **attached, never duplicated**; a differing persona is flagged loudly as a `'persona-source'` conflict — the operator persona is retained, never silently overwritten.
+- When a declaration is removed, the role row and the operator's chain remain; only the seed-default / revert affordance disappears (R2).
+- Seeds never write `chain` / `fallback`: an existing chain is preserved byte-for-byte, and a new seeded role keeps an empty chain for the operator to fill (R4).
+- **Honest limitation**: the registry dies with the fiber/process. Until the companion re-declares, seeded rows are ordinary config rows (badge/revert absent); after re-declare, "was at default" is indistinguishable from "operator-edited", so the conservative row-untouched path applies and a differing persona is flagged `'persona-source'`. Revert always restores the current declared default; no data is ever lost or silently overwritten.
+
+#### Types
+
+| Type | Shape | Meaning |
+|---|---|---|
+| `SeedDeclaration` | `{ id: string; persona: string }` | One declared seed (`persona` is free text, not validated — payload hygiene is the companion's job). |
+| `SeedDeclareOutcome` | `{ applied: string[]; skipped: Array<{ id, reason }>; conflicts: Array<{ id, kind }> }` | Structured result of `declareSeeds` — the readable status channel; per-id skip never fails the batch. `reason` ∈ `'invalid-id'` \| `'reserved-id'` \| `'duplicate-in-batch'`; `kind` ∈ `'persona-source'`. |
+| `EffectiveRole` | `{ id, persona, chain?, fallback?, seeded, personaOverridden, seedPersona? }` | One effective role with seed annotations (`chain` / `fallback` are passthrough — never touched by seeds). |
+| `EffectiveRolesReadback` | `{ roles: EffectiveRole[] }` | Result of `getEffectiveRoles`. |
+| `SeedRevertOutcome` | `{ reverted, persona?, reason? }` | Result of `revertSeededPersona`; `reason` ∈ `'not-seeded'` \| `'row-absent'` \| `'settings-unavailable'`. |
+| `SeedsWireStatus` | `{ id: string; overridden: boolean }` | Gateway wire entry (card badge state); the gateway `seeds` field is an array of these. |
 
 ## Version metadata
 
