@@ -639,6 +639,12 @@ export class FallbacksSettingsController {
    */
   async load(): Promise<void> {
     const generation = ++this.readGeneration
+    // Mirrored race guard (F-301): capture the write generation at READ
+    // START — a load that began before a save/reset must not publish over
+    // the write's accept() when it settles afterwards (write-wins, the F1
+    // decision applied to the pre-write read). The next
+    // settings/document-updated push refetches, so dropping is safe.
+    const writeGenerationAtStart = this.writeGeneration
     this.store.update((state) => {
       state.status = 'loading'
       state.error = null
@@ -658,6 +664,10 @@ export class FallbacksSettingsController {
         this.rpc.call('/api', 'fallbacks/get', { args: {} }).catch(() => undefined),
       ])
       if (generation !== this.readGeneration) return
+      // A write completed (or dispose() ran) while this read was in flight —
+      // the write's accept() already published; discard the stale read on
+      // both completion branches so it can never clobber the write result.
+      if (writeGenerationAtStart !== this.writeGeneration) return
       if (!describeResult.result.ok) throw describeResult.result.error
       this.namespaces = new Map(describeResult.result.value.namespaces.map(entry => [entry.ns, entry]))
       const writable = describeResult.result.value.writable
@@ -683,6 +693,7 @@ export class FallbacksSettingsController {
       this.accept(config, writable, legacyKeys)
     } catch (error) {
       if (generation !== this.readGeneration) return
+      if (writeGenerationAtStart !== this.writeGeneration) return
       this.fail(error)
     }
   }
