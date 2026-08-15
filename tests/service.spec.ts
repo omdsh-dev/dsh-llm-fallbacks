@@ -166,7 +166,11 @@ describe('llm-fallbacks named cordis service', () => {
   })
 
   it('declareSeeds materializes rows and getEffectiveRoles reads them back (manager single point of truth)', async () => {
-    apply(ctx)
+    // Pin to `presets: 'none'` (fallbacks-preset-roles T3): the bundled
+    // preset self-declaration would otherwise add 7 preset rows to the
+    // registry and break the exact-shape readback assertion below — this
+    // test exercises the service seed surface, not presets.
+    apply(ctx, { ...defaultFallbacksConfig, presets: 'none' })
 
     const fb = ctx.get('llm-fallbacks')!
     // The io write channel activates a tick after apply (conditional inject
@@ -227,7 +231,10 @@ describe('llm-fallbacks named cordis service', () => {
   })
 
   it('a later apply shares the first apply\'s seed registry (multi-fiber dedupe)', async () => {
-    apply(ctx)
+    // Same `presets: 'none'` pin as the declare-materialize test: this test
+    // asserts the exact registry shape after a companion declare, which the
+    // bundled preset self-declaration (T3) would otherwise widen.
+    apply(ctx, { ...defaultFallbacksConfig, presets: 'none' })
     const first = ctx.get('llm-fallbacks')!
     // Same waitFor probe as the declare test above (inject child activation).
     await vi.waitFor(async () => {

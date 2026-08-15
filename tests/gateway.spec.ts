@@ -949,7 +949,11 @@ describe('composed plugin (apply wires the gateway)', () => {
     await ctx.plugin(MemorySettings)
     await ctx.plugin(TypertRegistry)
     await ctx.plugin(TypertGatewayService)
-    const entry = entryConfig({ cooldownMs: 120_000 })
+    // Pin the entry to `presets: 'none'` (fallbacks-preset-roles T3): the
+    // bundled preset self-declaration would otherwise materialize 7 preset
+    // rows into the composed config and break every byte-identical entry
+    // comparison below — this test exercises gateway mechanics, not presets.
+    const entry = entryConfig({ cooldownMs: 120_000, presets: 'none' })
     apply(ctx, entry)
     await vi.waitFor(() => {
       expect(ctx.reflect.props['fallbacks']).toEqual({ type: 'service' })
