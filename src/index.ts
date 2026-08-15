@@ -426,7 +426,12 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   // `fallbacks` service key while later fibers fall back (no gateway) — the
   // typertGateway claim set dedupes, so claims never conflict.
   try {
-    new FallbacksConfigGateway(ctx, bridge)
+    // T3 (plan fallbacks-role-seeds): the gateway receives the SAME per-apply
+    // seed manager the service exposes — badge state (`seeds` wire field) and
+    // `fallbacks/revert-seed` both delegate to it (spec §9.4 single point of
+    // truth); the gateway builds its io over the bridge + its own settings
+    // capture.
+    new FallbacksConfigGateway(ctx, bridge, seeds)
   } catch (error) {
     if (!(error instanceof Error) || !error.message.includes('has been registered')) throw error
     ctx.logger('llm-fallbacks').debug('fallbacks gateway already registered — no gateway on this fiber (multi-fiber dedupe)')

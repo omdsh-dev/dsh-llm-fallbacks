@@ -1,7 +1,8 @@
 /**
- * T1 (plan llm-fallbacks-settings-gateway) — host-side `fallbacks` config
- * gateway: the `/api/fallbacks/get` + `/api/fallbacks/set` +
- * `/api/fallbacks/reset` endpoints.
+ * T1 (plan llm-fallbacks-settings-gateway) + T3 (plan fallbacks-role-seeds) —
+ * host-side `fallbacks` config gateway: the `/api/fallbacks/get` +
+ * `/api/fallbacks/set` + `/api/fallbacks/reset` + `/api/fallbacks/revert-seed`
+ * endpoints.
  *
  * Transport: the typertGateway `/api` interceptor is the single host-wide RPC
  * slot (a plugin must NOT `connection.rpc.intercept('/api')` again — it would
@@ -37,7 +38,11 @@
  * method — advisor has only get/set) clears the user layer via
  * `ctx.settings.replace(ns, {})`: `set` is merge-only and cannot express
  * "reset to composition defaults" (sending default VALUES as a patch would
- * pin stale defaults into the user layer).
+ * pin stale defaults into the user layer). Every read response (get/set/reset)
+ * carries the additive `seeds: SeedsWireStatus[]` badge state (spec §9.4) and
+ * `revert-seed` exposes revert-to-current-seed-default for one id — both
+ * delegate to the per-apply `FallbacksSeedManager` passed into the
+ * constructor (single point of truth, no copied manager logic).
  *
  * The settings service is OPTIONAL (no settings service → the bridge source
  * stays the entry, `get` still works; `set`/`reset` fail with a clear
@@ -62,6 +67,7 @@ import type { TypertContribution } from '@deepseek-ai/dsh-typert-registry'
 import { Config } from './schema'
 import { detectLegacyKeys } from './config'
 import type { FallbacksConfig } from './config'
+import type { FallbacksSeedManager, SeedRevertOutcome, SeedsIo, SeedsWireStatus } from './seeds'
 
 /** The `fallbacks` settings namespace (registered when a settings service exists). */
 export const FALLBACKS_SETTINGS_NAMESPACE = settingsNamespace('fallbacks')
@@ -80,6 +86,22 @@ export interface FallbacksSettingsBridge {
 
 /** Patch shape accepted by `fallbacks.set` — any subset of the config keys. */
 export type FallbacksConfigPatch = Partial<FallbacksConfig>
+
+/**
+ * The wire response of every read (get/set/reset — W-1/F-1): the normalized
+ * config plus `legacyKeys` plus the additive `seeds` badge state (spec §9.4,
+ * legacyKeys precedent — old clients ignore it).
+ */
+export interface FallbacksReadResult {
+  config: FallbacksConfig
+  legacyKeys: string[]
+  seeds: SeedsWireStatus[]
+}
+
+/** The `fallbacks/revert-seed` response — a read result plus the revert outcome. */
+export interface FallbacksRevertResult extends FallbacksReadResult {
+  outcome: SeedRevertOutcome
+}
 
 /**
  * Complete configuration key lookup for strict unknown-key rejection. The
@@ -117,6 +139,8 @@ const ROLES_KEYS: Record<string, true> = {
  */
 export class FallbacksConfigGateway extends TypertRemoteService {
   private readonly bridge: FallbacksSettingsBridge
+  /** The per-apply seed manager — single point of truth for seed state (spec §9.4). */
+  private readonly seeds: FallbacksSeedManager
   /** The live settings service once the optional inject child activates. */
   private settings: SettingsProvider | undefined
 
@@ -124,10 +148,14 @@ export class FallbacksConfigGateway extends TypertRemoteService {
    * @param ctx - owning context (the plugin fiber's ctx inside `apply`).
    * @param bridge - the same `FallbacksSettingsBridge` the runtime reads, so
    *   get/set/reset always operate on the live composed config.
+   * @param seeds - the per-apply `FallbacksSeedManager` constructed in
+   *   `apply()` — the gateway delegates badge state and revert to it (no
+   *   copied manager logic), through the io seam built over this bridge.
    */
-  constructor(ctx: Context, bridge: FallbacksSettingsBridge) {
+  constructor(ctx: Context, bridge: FallbacksSettingsBridge, seeds: FallbacksSeedManager) {
     super(ctx, 'fallbacks')
     this.bridge = bridge
+    this.seeds = seeds
     // The settings service is optional (no settings → entry fallback). The
     // inject child activates only when a settings service is composed,
     // mirroring installSettingsSection's conditional child; the returned
@@ -150,9 +178,11 @@ export class FallbacksConfigGateway extends TypertRemoteService {
    *   two-block-era fields (`chains` / `roles.default` / undeclared rule
    *   role refs) detected on the composed source (schemastery retains them,
    *   plan Task 1 Step 1), so the client can show a migration banner (spec
-   *   §9, incremental field — old clients ignore it).
+   *   §9, incremental field — old clients ignore it) — plus the additive
+   *   `seeds` badge state (spec §9.4, legacyKeys precedent — old clients
+   *   ignore it).
    */
-  get(): { config: FallbacksConfig; legacyKeys: string[] } {
+  get(): FallbacksReadResult {
     return this.readResult()
   }
 
@@ -165,11 +195,12 @@ export class FallbacksConfigGateway extends TypertRemoteService {
    *   POST-WRITE composed source (W-1/F-1): `set` is a settings MERGE, so a
    *   legacy user layer (`chains` / `roles.default`) survives a new-shape
    *   save — the response must keep reporting it, or the client banner
-   *   would clear against server truth. Same shape as `get`.
+   *   would clear against server truth — plus the post-write `seeds` badge
+   *   state (same W-1/F-1 rule as `legacyKeys`). Same shape as `get`.
    * @throws when the patch fails `Config` validation, or when no settings
    *   service is composed (KD-G5: the write channel is unavailable).
    */
-  async set(patch: FallbacksConfigPatch): Promise<{ config: FallbacksConfig; legacyKeys: string[] }> {
+  async set(patch: FallbacksConfigPatch): Promise<FallbacksReadResult> {
     // Unknown-key rejection + type validation. The settings service schema is
     // non-strict (unknown keys merge through), so the explicit reject happens
     // here, before the write — same strictness as the Loader.
@@ -198,17 +229,43 @@ export class FallbacksConfigGateway extends TypertRemoteService {
    * merge-only `set` cannot express).
    * @returns the new composed config plus `legacyKeys` on the post-write
    *   source — `replace` drops the user layer, but legacy keys carried by
-   *   the entry base survive and are correctly re-reported (W-1/F-1).
+   *   the entry base survive and are correctly re-reported (W-1/F-1) — plus
+   *   the post-write `seeds` badge state (clearing the user layer also
+   *   clears the materialized seed rows, so the honest response reports the
+   *   emptied state; the registry survives and the next declare re-materializes).
    * @throws when no settings service is composed (KD-G5: the write channel
    *   is unavailable).
    */
-  async reset(): Promise<{ config: FallbacksConfig; legacyKeys: string[] }> {
+  async reset(): Promise<FallbacksReadResult> {
     const settings = this.settings
     if (settings === undefined) {
       throw new Error('fallbacks: settings service is unavailable — configuration cannot be written')
     }
     await settings.replace(FALLBACKS_SETTINGS_NAMESPACE, {})
     return this.readResult()
+  }
+
+  /**
+   * Revert one seeded role to its CURRENT declared seed default (AC-3, spec
+   * §9.4) — the gateway half of surface (c), delegating to the same manager
+   * the service method uses (single point of truth). Business failures are
+   * values, never throws: a non-seeded id or a deleted row returns
+   * `{ reverted: false, reason }` without writing. The only throw is the
+   * KD-G5 settings-unavailable path, and only when a write is actually
+   * needed (an idempotent revert at the default needs no channel).
+   * @param id - the seeded role id; matched by trimmed id against the
+   *   registry (row matching, spec §9.3).
+   * @returns the post-write read result (config / legacyKeys / seeds — the
+   *   write happened before this read, W-1/F-1) plus the revert `outcome`.
+   * @throws TypeError when `id` is not a string; Error when the settings
+   *   write channel is unavailable (KD-G5).
+   */
+  async revertSeed(id: string): Promise<FallbacksRevertResult> {
+    if (typeof id !== 'string') {
+      throw new TypeError('dsh-llm-fallbacks: seed revert id must be a string')
+    }
+    const outcome = await this.seeds.revert(id, this.seedsIo())
+    return { ...this.readResult(), outcome }
   }
 
   /**
@@ -237,15 +294,42 @@ export class FallbacksConfigGateway extends TypertRemoteService {
   /**
    * The wire response of every read (get/set/reset — W-1/F-1): the
    * normalized config plus `legacyKeys` detected on the live composed
-   * source. set/reset must report the POST-WRITE source: the settings
-   * merge retains legacy user-layer keys, so a save cannot clear them —
-   * the honest response keeps the migration banner until a get agrees.
+   * source plus the additive `seeds` badge state. set/reset must report the
+   * POST-WRITE source: the settings merge retains legacy user-layer keys,
+   * so a save cannot clear them — the honest response keeps the migration
+   * banner until a get agrees; `seeds` follows the same rule (post-write
+   * badge state, W-1/F-1).
    */
-  private readResult(): { config: FallbacksConfig; legacyKeys: string[] } {
+  private readResult(): FallbacksReadResult {
     const source = this.bridge.source()
     return {
       config: this.readConfig(source),
       legacyKeys: detectLegacyKeys(source as unknown as Record<string, unknown>),
+      seeds: this.seeds.wireStatus(this.seedsIo()),
+    }
+  }
+
+  /**
+   * The io seam the seed manager writes through (spec §9.1): `read` walks
+   * the same live bridge source the gateway reads; `writeRoles` persists a
+   * full `{ list, rules }` to the settings user layer — both arrays always
+   * computed from a fresh composed read, so the write stays correct under
+   * dsh-settings `mergeLayers` array-replace semantics and never touches
+   * operator rules. The write channel fails with the same KD-G5 message as
+   * set/reset when no settings service is composed. Built fresh per call so
+   * the mutable settings capture is read at call time (the inject child
+   * swaps it when the settings service appears/disappears).
+   */
+  private seedsIo(): SeedsIo {
+    const settings = this.settings
+    return {
+      read: () => this.bridge.source(),
+      writeRoles: (roles) => {
+        if (settings === undefined) {
+          throw new Error('fallbacks: settings service is unavailable — configuration cannot be written')
+        }
+        return settings.update(FALLBACKS_SETTINGS_NAMESPACE, { roles })
+      },
     }
   }
 }
@@ -354,6 +438,22 @@ export function fallbacksTypertContribution(): TypertContribution {
         method: 'reset',
         invocation: { kind: 'direct' },
         parameters: [],
+        result: { mode: 'src-json' },
+      },
+      {
+        // The card revert endpoint (spec §9.4): the wire method is the
+        // hyphenated endpoint name, `implementation` aliases the actual
+        // service member `revertSeed` (the typertGateway dispatches through
+        // `implementation ?? method`).
+        id: 'dsh-llm-fallbacks#fallbacks/revert-seed',
+        service: 'fallbacks',
+        namespace: 'fallbacks',
+        method: 'revert-seed',
+        implementation: 'revertSeed',
+        invocation: { kind: 'direct' },
+        parameters: [
+          { name: 'id', wire: 'id', source: 'json', codec: { mode: 'src-json' } },
+        ],
         result: { mode: 'src-json' },
       },
     ],

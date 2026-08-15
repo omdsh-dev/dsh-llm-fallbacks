@@ -54,6 +54,7 @@ import {
   fallbacksTypertContribution,
   type FallbacksSettingsBridge,
 } from '../src/gateway.ts'
+import { FallbacksSeedManager } from '../src/seeds.ts'
 import { MemorySettings } from './support/memory-settings.ts'
 
 /** Track every test context and dispose it after the case (settings/gateway effects hygiene). */
@@ -73,6 +74,14 @@ function track(ctx: Context): Context {
 /** Full entry (plugin-row) config shape, merged over the schema defaults. */
 function entryConfig(overrides: Partial<FallbacksConfig> = {}): FallbacksConfig {
   return { ...defaultFallbacksConfig, ...overrides }
+}
+
+/**
+ * An empty seed manager for gateway tests that do not exercise the seeds
+ * wire (the ctor requires the manager; an empty registry yields `seeds: []`).
+ */
+function makeSeeds(): FallbacksSeedManager {
+  return new FallbacksSeedManager({ warn: vi.fn() })
 }
 
 /**
@@ -127,29 +136,92 @@ describe('no settings service (entry fallback)', () => {
   it('get returns the entry composed value; the gateway is a registered service', () => {
     const ctx = track(new Context())
     const entry = entryConfig({ enabled: true, rootChain: ['other/gpt-4o'], cooldownMs: 120_000 })
-    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entry))
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entry), makeSeeds())
 
     expect(ctx.reflect.props['fallbacks']).toEqual({ type: 'service' })
-    expect(gateway.get()).toEqual({ config: entry, legacyKeys: [] })
+    expect(gateway.get()).toEqual({ config: entry, legacyKeys: [], seeds: [] })
+  })
+
+  it('the seeds wire field is additive — config/legacyKeys consumers are untouched (legacyKeys precedent)', () => {
+    // Spec §9.4: the `seeds` badge state rides every read response as an
+    // incremental field, exactly like `legacyKeys` — a client that predates
+    // seeds (or ignores the field) keeps reading config/legacyKeys unchanged.
+    const ctx = track(new Context())
+    const entry = entryConfig({ enabled: true, rootChain: ['other/gpt-4o'] })
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entry), makeSeeds())
+
+    const result = gateway.get()
+    // The full wire shape is exactly the three declared fields — nothing more.
+    expect(Object.keys(result)).toEqual(['config', 'legacyKeys', 'seeds'])
+    // The pre-existing fields are byte-identical to the pre-seeds contract.
+    expect(result.config).toEqual(entry)
+    expect(result.legacyKeys).toEqual([])
+    // An empty seed registry reports an empty badge list.
+    expect(result.seeds).toEqual([])
   })
 
   it('set fails cleanly when no settings service is composed (KD-G5 error path)', async () => {
     const ctx = track(new Context())
-    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()))
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()), makeSeeds())
     await expect(gateway.set({ enabled: true })).rejects.toThrow(/settings service is unavailable/)
   })
 
   it('reset fails cleanly when no settings service is composed (KD-G5 error path)', async () => {
     const ctx = track(new Context())
-    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()))
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()), makeSeeds())
     await expect(gateway.reset()).rejects.toThrow(/settings service is unavailable/)
+  })
+
+  it('revertSeed business failures are values without a settings service; a needed write throws (KD-G5)', async () => {
+    // Spec §9.1: a non-seeded id never writes, so it succeeds even without a
+    // settings service; only a revert that NEEDS a write channel fails loud.
+    const ctx = track(new Context())
+    const bridge = installFallbacksBridge(ctx, entryConfig())
+    const seeds = makeSeeds()
+    const gateway = new FallbacksConfigGateway(ctx, bridge, seeds)
+
+    await expect(gateway.revertSeed('nobody')).resolves.toMatchObject({
+      outcome: { reverted: false, reason: 'not-seeded' },
+    })
+
+    // A seeded-but-overridden row whose revert needs a write: seed the
+    // manager through the bridge (declare attaches to the existing differing
+    // row with NO delta — no write needed to commit the registry), then the
+    // gateway revert must hit the unavailable channel loudly. Separate
+    // context — the gateway registers the `fallbacks` service key (dedupe).
+    const seededCtx = track(new Context())
+    const operatorRow: FallbacksConfig = {
+      ...entryConfig(),
+      roles: { list: [{ id: 'architect', persona: 'operator edit' }], rules: [] },
+    }
+    const seededBridge = installFallbacksBridge(seededCtx, operatorRow)
+    const seeded = makeSeeds()
+    await seeded.declare([{ id: 'architect', persona: 'seed default' }], {
+      read: () => seededBridge.source(),
+      // The attach path writes nothing (row untouched) — this only asserts no
+      // unexpected write on declare.
+      writeRoles: async () => {
+        throw new Error('declare must not write on a no-delta attach')
+      },
+    })
+    const overriddenGateway = new FallbacksConfigGateway(seededCtx, seededBridge, seeded)
+    await expect(overriddenGateway.revertSeed('architect')).rejects.toThrow(/settings service is unavailable/)
+    // Nothing was written: the row still carries the operator persona.
+    expect(overriddenGateway.get().config.roles.list[0]).toMatchObject({ persona: 'operator edit' })
+  })
+
+  it('revertSeed rejects a non-string id with a TypeError', async () => {
+    const ctx = track(new Context())
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()), makeSeeds())
+    await expect(gateway.revertSeed(42 as never)).rejects.toThrow(TypeError)
+    await expect(gateway.revertSeed(42 as never)).rejects.toThrow(/id must be a string/)
   })
 
   it('a second gateway on the same context fails loud (multi-fiber dedupe relies on this)', () => {
     const ctx = track(new Context())
     const entry = entryConfig()
-    new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entry))
-    expect(() => new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entry)))
+    new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entry), makeSeeds())
+    expect(() => new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entry), makeSeeds()))
       .toThrow(/has been registered/)
   })
 })
@@ -163,7 +235,7 @@ describe('with a settings service (set writes the user layer)', () => {
     const ctx = track(new Context())
     await ctx.plugin(MemorySettings)
     const entry = entryConfig({ rootChain: ['other/gpt-4o'], cooldownMs: 120_000 })
-    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entry))
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entry), makeSeeds())
     await waitRegistered(ctx)
     // The gateway's own inject child must have captured the settings service.
     await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
@@ -176,27 +248,27 @@ describe('with a settings service (set writes the user layer)', () => {
     // The composed value keeps the base defaults the patch did not override.
     const composed: FallbacksConfig = { ...entry, enabled: true }
     // Live: the bridge source the runtime reads reflects the write.
-    expect(gateway.get()).toEqual({ config: composed, legacyKeys: [] })
-    // set returns the same { config, legacyKeys } shape as get (W-1/F-1).
-    expect(result).toEqual({ config: composed, legacyKeys: [] })
+    expect(gateway.get()).toEqual({ config: composed, legacyKeys: [], seeds: [] })
+    // set returns the same { config, legacyKeys, seeds } shape as get (W-1/F-1).
+    expect(result).toEqual({ config: composed, legacyKeys: [], seeds: [] })
   })
 
   it('a patch changing only one key leaves the other base values intact', async () => {
     const ctx = track(new Context())
     await ctx.plugin(MemorySettings)
     const entry = entryConfig({ cooldownMs: 120_000, maxSwitchesPerStep: 8 })
-    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entry))
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entry), makeSeeds())
     await waitRegistered(ctx)
     await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
 
     await gateway.set({ maxSwitchesPerStep: 3 })
-    expect(gateway.get()).toEqual({ config: { ...entry, maxSwitchesPerStep: 3 }, legacyKeys: [] })
+    expect(gateway.get()).toEqual({ config: { ...entry, maxSwitchesPerStep: 3 }, legacyKeys: [], seeds: [] })
   })
 
   it('a second set MERGES into the existing user layer (merge, not replace semantics)', async () => {
     const ctx = track(new Context())
     await ctx.plugin(MemorySettings)
-    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()))
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()), makeSeeds())
     await waitRegistered(ctx)
     await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
 
@@ -219,7 +291,7 @@ describe('with a settings service (set writes the user layer)', () => {
     const ctx = track(new Context())
     await ctx.plugin(MemorySettings)
     const entry = entryConfig({ enabled: true, cooldownMs: 120_000 })
-    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entry))
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entry), makeSeeds())
     await waitRegistered(ctx)
     await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
 
@@ -236,7 +308,7 @@ describe('with a settings service (set writes the user layer)', () => {
     const ctx = track(new Context())
     await ctx.plugin(MemorySettings)
     const entry = entryConfig({ enabled: true, cooldownMs: 120_000 })
-    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entry))
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entry), makeSeeds())
     await waitRegistered(ctx)
     await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
 
@@ -252,7 +324,7 @@ describe('with a settings service (set writes the user layer)', () => {
     const ctx = track(new Context())
     await ctx.plugin(MemorySettings)
     const entry = entryConfig({ enabled: true, cooldownMs: 120_000 })
-    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entry))
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entry), makeSeeds())
     await waitRegistered(ctx)
     await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
 
@@ -266,7 +338,7 @@ describe('with a settings service (set writes the user layer)', () => {
     const ctx = track(new Context())
     await ctx.plugin(MemorySettings)
     const entry = entryConfig({ enabled: true, rootChain: ['other/gpt-4o'], cooldownMs: 120_000 })
-    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entry))
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entry), makeSeeds())
     await waitRegistered(ctx)
     await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
 
@@ -279,9 +351,9 @@ describe('with a settings service (set writes the user layer)', () => {
     // composition base (entry), so the earlier write no longer influences it.
     const after = ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)!
     expect(after.user).toEqual({})
-    expect(gateway.get()).toEqual({ config: entry, legacyKeys: [] })
-    // reset returns the same { config, legacyKeys } shape as get (W-1/F-1).
-    expect(result).toEqual({ config: entry, legacyKeys: [] })
+    expect(gateway.get()).toEqual({ config: entry, legacyKeys: [], seeds: [] })
+    // reset returns the same { config, legacyKeys, seeds } shape as get (W-1/F-1).
+    expect(result).toEqual({ config: entry, legacyKeys: [], seeds: [] })
   })
 
   it('set fails cleanly after the settings service is disposed (the inject child disposer clears the capture)', async () => {
@@ -292,13 +364,51 @@ describe('with a settings service (set writes the user layer)', () => {
     // package after disposal).
     const ctx = track(new Context())
     await ctx.plugin(MemorySettings)
-    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()))
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()), makeSeeds())
     await waitRegistered(ctx)
     await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
 
     ctx.registry.delete(MemorySettings)
     await vi.waitFor(() => expect(settingsOf(gateway)).toBeUndefined())
     await expect(gateway.set({ enabled: true })).rejects.toThrow(/settings service is unavailable/)
+  })
+
+  it('set/reset responses carry POST-WRITE seeds (W-1/F-1, legacyKeys precedent)', async () => {
+    const ctx = track(new Context())
+    await ctx.plugin(MemorySettings)
+    const bridge = installFallbacksBridge(ctx, entryConfig())
+    const seeds = makeSeeds()
+    const gateway = new FallbacksConfigGateway(ctx, bridge, seeds)
+    await waitRegistered(ctx)
+    await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
+
+    // Drive a declare through the manager's public surface with the same
+    // bridge + settings write channel the gateway uses (single point of
+    // truth — the gateway never re-implements materialization).
+    const outcome = await seeds.declare([{ id: 'architect', persona: 'seed default' }], {
+      read: () => bridge.source(),
+      writeRoles: async (roles) => {
+        await ctx.settings.update(FALLBACKS_SETTINGS_NAMESPACE, { roles })
+      },
+    })
+    expect(outcome).toEqual({ applied: ['architect'], skipped: [], conflicts: [] })
+    expect(gateway.get().seeds).toEqual([{ id: 'architect', overridden: false }])
+
+    // An operator edit flips the badge to override; the set response reports
+    // the POST-WRITE state (the merge keeps the rows — set is not a reset).
+    await ctx.settings.update(FALLBACKS_SETTINGS_NAMESPACE, {
+      roles: { list: [{ id: 'architect', persona: 'operator edit' }], rules: [] },
+    })
+    const setResult = await gateway.set({ enabled: true })
+    expect(setResult.seeds).toEqual([{ id: 'architect', overridden: true }])
+    expect(gateway.get().seeds).toEqual([{ id: 'architect', overridden: true }])
+
+    // reset clears the user layer — the materialized seed rows go with it,
+    // so the honest post-write badge state is empty (the in-memory registry
+    // survives; the next declare re-materializes per AC-1).
+    const resetResult = await gateway.reset()
+    expect(resetResult.seeds).toEqual([])
+    expect(gateway.get().seeds).toEqual([])
   })
 })
 
@@ -310,7 +420,7 @@ describe('set validation (Config schema, unknown-key rejection unchanged)', () =
   it('an unknown key is rejected before anything is written', async () => {
     const ctx = track(new Context())
     await ctx.plugin(MemorySettings)
-    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()))
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()), makeSeeds())
     await waitRegistered(ctx)
     await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
 
@@ -329,7 +439,7 @@ describe('set validation (Config schema, unknown-key rejection unchanged)', () =
     // membership must reject it.
     const ctx = track(new Context())
     await ctx.plugin(MemorySettings)
-    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()))
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()), makeSeeds())
     await waitRegistered(ctx)
     await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
 
@@ -343,7 +453,7 @@ describe('set validation (Config schema, unknown-key rejection unchanged)', () =
   it('rejects a constructor key (prototype-chain name, not a config key)', async () => {
     const ctx = track(new Context())
     await ctx.plugin(MemorySettings)
-    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()))
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()), makeSeeds())
     await waitRegistered(ctx)
     await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
 
@@ -355,7 +465,7 @@ describe('set validation (Config schema, unknown-key rejection unchanged)', () =
   it('the user layer survives an attempted __proto__ wipe (F-001)', async () => {
     const ctx = track(new Context())
     await ctx.plugin(MemorySettings)
-    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()))
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()), makeSeeds())
     await waitRegistered(ctx)
     await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
 
@@ -376,7 +486,7 @@ describe('set validation (Config schema, unknown-key rejection unchanged)', () =
   it('a patch violating the schema types is rejected', async () => {
     const ctx = track(new Context())
     await ctx.plugin(MemorySettings)
-    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()))
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()), makeSeeds())
     await waitRegistered(ctx)
     await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
 
@@ -390,7 +500,7 @@ describe('set validation (Config schema, unknown-key rejection unchanged)', () =
   it('rejects the removed legacy chains key (new CONFIG_KEYS set)', async () => {
     const ctx = track(new Context())
     await ctx.plugin(MemorySettings)
-    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()))
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()), makeSeeds())
     await waitRegistered(ctx)
     await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
 
@@ -405,7 +515,7 @@ describe('set validation (Config schema, unknown-key rejection unchanged)', () =
   it('a non-object patch is rejected as malformed input', async () => {
     const ctx = track(new Context())
     await ctx.plugin(MemorySettings)
-    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()))
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()), makeSeeds())
     await waitRegistered(ctx)
     await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
 
@@ -415,7 +525,7 @@ describe('set validation (Config schema, unknown-key rejection unchanged)', () =
   it('rejects unknown NESTED roles keys (roles.default would re-arm the legacy banner — qc2 S-1)', async () => {
     const ctx = track(new Context())
     await ctx.plugin(MemorySettings)
-    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()))
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()), makeSeeds())
     await waitRegistered(ctx)
     await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
 
@@ -433,7 +543,7 @@ describe('set validation (Config schema, unknown-key rejection unchanged)', () =
   it('accepts only the declared roles nested keys (list/rules patch passes)', async () => {
     const ctx = track(new Context())
     await ctx.plugin(MemorySettings)
-    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()))
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()), makeSeeds())
     await waitRegistered(ctx)
     await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
 
@@ -464,7 +574,7 @@ describe('containment (malformed stored user layer)', () => {
     // The non-strict settings schema merges the unknown key through.
     const settings = ctx.settings as unknown as MemorySettings
     settings.seed(FALLBACKS_SETTINGS_NAMESPACE, { enabled: true, bogus: 1 })
-    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()))
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()), makeSeeds())
     await waitRegistered(ctx)
 
     const result = gateway.get()
@@ -487,7 +597,7 @@ describe('containment (malformed stored user layer)', () => {
         ...defaultFallbacksConfig,
         cooldownMs: undefined as unknown as number,
       }),
-    })
+    }, makeSeeds())
 
     const result = gateway.get()
     expect('cooldownMs' in result.config).toBe(false)
@@ -504,10 +614,11 @@ describe('containment (malformed stored user layer)', () => {
 describe('get legacyKeys detection (two-block-era leftovers)', () => {
   it('returns an empty list for a clean two-block config', () => {
     const ctx = track(new Context())
-    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig({ enabled: true })))
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig({ enabled: true })), makeSeeds())
     expect(gateway.get()).toEqual({
       config: entryConfig({ enabled: true }),
       legacyKeys: [],
+      seeds: [],
     })
   })
 
@@ -518,7 +629,7 @@ describe('get legacyKeys detection (two-block-era leftovers)', () => {
       chains: { default: ['other/gpt-4o'], reviewer: ['openai/gpt-4o-mini'] },
       roles: { default: 'default', rules: [] },
     } as never
-    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, legacy))
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, legacy), makeSeeds())
     expect(gateway.get().legacyKeys).toEqual(['chains', 'roles.default'])
     // The wire config itself is the new shape — legacy keys never cross.
     expect('chains' in gateway.get().config).toBe(false)
@@ -539,7 +650,7 @@ describe('get legacyKeys detection (two-block-era leftovers)', () => {
       ...entryConfig(),
       roles: { list: [{ id: 'coder' }], rules: [{ role: 'ghost' }, { role: 'coder' }, { role: 'inherit' }] },
     } as never
-    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, legacy))
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, legacy), makeSeeds())
     expect(gateway.get().legacyKeys).toEqual(['roles.rules[].role: ghost'])
   })
 
@@ -557,7 +668,7 @@ describe('get legacyKeys detection (two-block-era leftovers)', () => {
       roles: { default: 'reviewer', rules: [{ role: 'reviewer' }] },
     })
     const bridge = installFallbacksBridge(ctx, entryConfig())
-    const gateway = new FallbacksConfigGateway(ctx, bridge)
+    const gateway = new FallbacksConfigGateway(ctx, bridge, makeSeeds())
     await waitRegistered(ctx)
 
     // Merge-retention path: the composed source the runtime adapters read
@@ -592,7 +703,7 @@ describe('set/reset return post-write legacyKeys (W-1/F-1)', () => {
       chains: { default: ['other/gpt-4o'] },
       roles: { default: 'reviewer', rules: [{ role: 'reviewer' }] },
     })
-    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()))
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()), makeSeeds())
     await waitRegistered(ctx)
     await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
 
@@ -615,7 +726,7 @@ describe('set/reset return post-write legacyKeys (W-1/F-1)', () => {
       ...entryConfig(),
       chains: { default: ['other/gpt-4o'] },
     } as never
-    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, legacy))
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, legacy), makeSeeds())
     await waitRegistered(ctx)
     await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
 
@@ -688,7 +799,7 @@ describe('typertGateway endpoint claims + payload contract', () => {
     await ctx.plugin(FakeConnectionService)
     await ctx.plugin(TypertGatewayService)
     const bridge = installFallbacksBridge(ctx, entryConfig({ cooldownMs: 120_000, maxSwitchesPerStep: 5 }))
-    new FallbacksConfigGateway(ctx, bridge)
+    new FallbacksConfigGateway(ctx, bridge, makeSeeds())
     ctx.typert.register(fallbacksTypertContribution())
     await waitRegistered(ctx)
     const connection = ctx.get('connection') as unknown as FakeConnectionService
@@ -696,7 +807,7 @@ describe('typertGateway endpoint claims + payload contract', () => {
     return { ctx, connection }
   }
 
-  it('claims /api/fallbacks/get + set + reset through the explicit typert registration (ctx.typert.local)', async () => {
+  it('claims /api/fallbacks/get + set + reset + revert-seed through the explicit typert registration (ctx.typert.local)', async () => {
     const { ctx, connection } = await composeGatewayHarness()
     // The registration writes invocation descriptors into `ctx.typert.local`
     // — the store `claimsEndpoint` checks FIRST — and the gateway remains a
@@ -705,10 +816,23 @@ describe('typertGateway endpoint claims + payload contract', () => {
     expect(ctx.typert.local.get('fallbacks/get')).toMatchObject({ service: 'fallbacks', namespace: 'fallbacks', method: 'get' })
     expect(ctx.typert.local.get('fallbacks/set')).toMatchObject({ service: 'fallbacks', namespace: 'fallbacks', method: 'set' })
     expect(ctx.typert.local.get('fallbacks/reset')).toMatchObject({ service: 'fallbacks', namespace: 'fallbacks', method: 'reset' })
+    // The revert endpoint's wire method is the hyphenated endpoint name; the
+    // actual service member is aliased through `implementation` (the
+    // typertGateway dispatches `implementation ?? method`).
+    expect(ctx.typert.local.get('fallbacks/revert-seed')).toMatchObject({
+      service: 'fallbacks',
+      namespace: 'fallbacks',
+      method: 'revert-seed',
+      implementation: 'revertSeed',
+    })
+    expect(ctx.typert.local.get('fallbacks/revert-seed')?.parameters).toEqual([
+      { name: 'id', wire: 'id', source: 'json', codec: { mode: 'src-json' } },
+    ])
     expect(connection.authority).toBe('trusted-host')
     expect(connection.matches!('fallbacks/get')).toBe(true)
     expect(connection.matches!('fallbacks/set')).toBe(true)
     expect(connection.matches!('fallbacks/reset')).toBe(true)
+    expect(connection.matches!('fallbacks/revert-seed')).toBe(true)
     // Unrelated endpoints are NOT claimed (the interceptor falls through).
     expect(connection.matches!('fallbacks/other')).toBe(false)
     expect(connection.matches!('goals/create')).toBe(false)
@@ -724,6 +848,7 @@ describe('typertGateway endpoint claims + payload contract', () => {
       value: {
         config: { ...defaultFallbacksConfig, cooldownMs: 120_000, maxSwitchesPerStep: 5 },
         legacyKeys: [],
+        seeds: [],
       },
     })
 
@@ -754,6 +879,30 @@ describe('typertGateway endpoint claims + payload contract', () => {
         config: { enabled: false, rootChain: [], cooldownMs: 120_000 },
       })
     }
+  })
+
+  it('dispatches fallbacks/revert-seed with the { args: { id } } payload contract; business failures are values', async () => {
+    const { connection } = await composeGatewayHarness()
+    const signal = new AbortController().signal
+
+    // A non-seeded id is a BUSINESS outcome, never an RPC failure: the
+    // response is ok:true carrying the full read result plus the outcome.
+    const result = await connection.handler!('fallbacks/revert-seed', { args: { id: 'nobody' } }, signal)
+    expect(result).toEqual({
+      ok: true,
+      value: {
+        config: { ...defaultFallbacksConfig, cooldownMs: 120_000, maxSwitchesPerStep: 5 },
+        legacyKeys: [],
+        seeds: [],
+        outcome: { reverted: false, reason: 'not-seeded' },
+      },
+    })
+
+    // The descriptor pins the wire param: exactly `id` (assertExactArguments
+    // rejects unknown wire fields).
+    const badWire = await connection.handler!('fallbacks/revert-seed', { args: { id: 'x', extra: 1 } }, signal)
+    expect(badWire.ok).toBe(false)
+    if (!badWire.ok) expect(badWire.error.message).toContain('args fields do not match the descriptor')
   })
 
   it('enforces the payload contract: exactly one plain-object args field', async () => {

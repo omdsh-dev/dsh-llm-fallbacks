@@ -187,8 +187,7 @@ export class FallbacksSeedManager {
    * override-shaped is stored, so a config round-trip cannot orphan state.
    */
   effectiveRoles(io: SeedsIo): EffectiveRolesReadback {
-    const { list } = io.read().roles
-    const roles: EffectiveRole[] = list.map((row) => {
+    const roles: EffectiveRole[] = roleRows(io.read()).map((row) => {
       const seedPersona = this.registry.get(row.id.trim())
       const seeded = seedPersona !== undefined
       const effective: EffectiveRole = {
@@ -207,9 +206,8 @@ export class FallbacksSeedManager {
 
   /** Card badge state (spec §9.4): seeded rows, with the override flag. */
   wireStatus(io: SeedsIo): SeedsWireStatus[] {
-    const { list } = io.read().roles
     const status: SeedsWireStatus[] = []
-    for (const row of list) {
+    for (const row of roleRows(io.read())) {
       const seedPersona = this.registry.get(row.id.trim())
       if (seedPersona === undefined) continue
       status.push({ id: row.id, overridden: row.persona !== seedPersona })
@@ -297,6 +295,19 @@ function materialize(
     if (!rows.some((row) => row.id.trim() === id)) next.push({ id, persona })
   }
   return next
+}
+
+/**
+ * The materialized role rows of a composed config, tolerating a malformed
+ * `roles` shape (guide §10 containment): a legacy two-block-era source can
+ * carry `roles.default` without `roles.list` (schemastery retains unknown
+ * keys), and the non-strict settings layer can store anything — the seed
+ * readbacks must never crash on it. Schema-resolved sources always have an
+ * array `list`; this guard only fires on malformed/legacy input.
+ */
+function roleRows(config: FallbacksConfig): FallbacksRole[] {
+  const list = (config.roles as { list?: unknown } | undefined)?.list
+  return Array.isArray(list) ? list : []
 }
 
 /** Structural equality over the `{ list, rules }` shape (idempotency delta check). */
