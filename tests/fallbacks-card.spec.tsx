@@ -19,6 +19,16 @@
  * the upstream disabled semantics, and the degraded card (gateway channel
  * unreachable — `ready && !present`) is derived-open with the notice + the
  * still-usable skeleton (AC-1 divergence: no white screen).
+ *
+ * Plan fallbacks-role-config-ui (task 1 + 2 + QC fix wave): the role persona
+ * is a multiline textarea, no chain editor offers the `provider/*` wildcard
+ * (a wildcard read-back renders with a conversion hint and becomes an exact
+ * entry once a model is picked), and the Advanced options section is a
+ * collapsible disclosure starting collapsed. The QC fix wave pins the
+ * read-only forced-open behavior (writable:false → advanced body visible,
+ * toggle inert, aria-expanded "true"), the rootChain wildcard read-back
+ * conversion, the aria-expanded value transitions, and the conversion-hint
+ * gating on convertible rows (F-002 / F-003 / F-007 / N-003/N-004).
  */
 
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
@@ -213,6 +223,19 @@ const CHAIN_CATALOG = {
 }
 
 /**
+ * A role carrying a legacy `provider/*` wildcard chain entry. The GUI no
+ * longer offers the wildcard (task 1), but it stays a legal YAML read-back:
+ * the row renders with the legacy-conversion hint and an enabled model
+ * select — picking a model converts it to an exact entry on save (plan
+ * fallbacks-role-config-ui T1).
+ */
+const WILDCARD_ROLE_CONFIG: typeof defaultFallbacksConfig = {
+  ...defaultFallbacksConfig,
+  enabled: true,
+  roles: { list: [{ id: 'coder', persona: '', chain: ['openai/*'], fallback: 'none' }], rules: [] },
+}
+
+/**
  * The card's header disclosure button. The accessible name is the upstream
  * aria-label — `collapse/expand: title` — which flips with the open state.
  */
@@ -227,6 +250,15 @@ function toggleCard(): void {
     name: new RegExp(`^(${en.expand}|${en.collapse}): ${en.title}$`),
   })
   fireEvent.click(button)
+}
+
+/**
+ * Expand the advanced options section (collapsed by default). The disclosure
+ * button's accessible name flips with the state; fireEvent flushes
+ * synchronously, so the section body is mounted once this returns.
+ */
+function expandAdvanced(): void {
+  fireEvent.click(screen.getByRole('button', { name: en['advanced.expand'] }))
 }
 
 /**
@@ -392,6 +424,7 @@ describe('FallbacksCard chrome (upstream PluginCard contract)', () => {
   it('shows the unsaved pill after an edit and keeps it while collapsed', async () => {
     const { view, props } = await mountCard({ config: ENABLED_CONFIG })
     toggleCard()
+    expandAdvanced()
     fireEvent.change(screen.getByLabelText(en['cooldownMs.label']), { target: { value: '5000' } })
     view.rerender(<FallbacksCard {...props} />)
     expect(screen.getByText(en.unsaved)).toBeTruthy()
@@ -403,6 +436,7 @@ describe('FallbacksCard chrome (upstream PluginCard contract)', () => {
   it('clears the unsaved pill after discard', async () => {
     const { view, props } = await mountCard({ config: ENABLED_CONFIG })
     toggleCard()
+    expandAdvanced()
     fireEvent.change(screen.getByLabelText(en['cooldownMs.label']), { target: { value: '5000' } })
     view.rerender(<FallbacksCard {...props} />)
     expect(screen.getByText(en.unsaved)).toBeTruthy()
@@ -418,6 +452,7 @@ describe('FallbacksCard chrome (upstream PluginCard contract)', () => {
   it('disables Save and Discard when clean, enables both once the draft is dirty', async () => {
     const { view, props } = await mountCard({ config: ENABLED_CONFIG })
     toggleCard()
+    expandAdvanced()
     // Clean (no edits): neither action is offered (upstream semantics —
     // save = !dirty || saving || !writable; discard = !dirty || saving).
     expect((screen.getByRole('button', { name: en.save }) as HTMLButtonElement).disabled).toBe(true)
@@ -432,6 +467,7 @@ describe('FallbacksCard chrome (upstream PluginCard contract)', () => {
   it('saves the assembled draft through the store face and clears the pill', async () => {
     const { view, props, controller, scripted } = await mountCard({ config: ENABLED_CONFIG })
     toggleCard()
+    expandAdvanced()
     fireEvent.change(screen.getByLabelText(en['cooldownMs.label']), { target: { value: '5000' } })
     view.rerender(<FallbacksCard {...props} />)
     expect(screen.getByText(en.unsaved)).toBeTruthy()
@@ -561,6 +597,7 @@ describe('FallbacksCard chrome (upstream PluginCard contract)', () => {
   it('a failed save shows the error notice and keeps the form editable (qc2 S-4)', async () => {
     const { view, props, controller, scripted } = await mountCard({ config: ENABLED_CONFIG })
     toggleCard()
+    expandAdvanced()
     fireEvent.change(screen.getByLabelText(en['cooldownMs.label']), { target: { value: '5000' } })
     view.rerender(<FallbacksCard {...props} />)
     // The gateway rejects the write: the error notice surfaces the message
@@ -639,12 +676,14 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     expect(screen.getAllByLabelText(en['roles.rule.provider']).length).toBeGreaterThanOrEqual(1)
   })
 
-  it('renders the chain/role sections before the advanced options and keeps the root chain wildcard-free', async () => {
+  it('renders the chain/role sections before the advanced options and offers no provider wildcard in any chain editor', async () => {
     const { view, props } = await mountCard({ config: TWO_BLOCK_CONFIG })
     toggleCard()
     view.rerender(<FallbacksCard {...props} />)
     // Section order: root chain → role entities → role rules → advanced
-    // options (trigger codes / cooldown / switch caps) at the end.
+    // options (trigger codes / cooldown / switch caps) at the end. The
+    // advanced group is reachable while collapsed — the disclosure button's
+    // label text stays mounted.
     const groups = [
       screen.getByText(en['rootChain.label']).closest('[role="group"]')!,
       screen.getByText(en['roles.list.label']).closest('[role="group"]')!,
@@ -654,10 +693,152 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     for (let i = 1; i < groups.length; i += 1) {
       expect(groups[i - 1]!.compareDocumentPosition(groups[i]!)).toBe(Node.DOCUMENT_POSITION_FOLLOWING)
     }
-    // The root agent's chain editor offers no `provider/*` wildcard checkbox
-    // (provider-any matching lives in the role rules); role chains keep it.
-    expect(within(groups[0]!).queryByLabelText(en['chains.selector.wildcard'])).toBeNull()
-    expect(within(groups[1]!).getAllByLabelText(en['chains.selector.wildcard'])).toHaveLength(2)
+    // No `provider/*` wildcard checkbox in any chain editor (root or role):
+    // the GUI never offers the wildcard — provider-any matching lives in the
+    // roles.rules `any` option. The card's only checkboxes are the enabled
+    // switch and the collapsed trigger codes, neither inside these groups.
+    expect(within(groups[0]!).queryByRole('checkbox')).toBeNull()
+    expect(within(groups[1]!).queryByRole('checkbox')).toBeNull()
+  })
+
+  it('keeps the advanced options collapsed by default and expands/collapses them through the disclosure', async () => {
+    const { view, props } = await mountCard({ config: ENABLED_CONFIG })
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    // The advanced body (cooldown field, trigger codes) is unmounted while
+    // collapsed — the disclosure button's label text stays reachable.
+    expect(screen.queryByLabelText(en['cooldownMs.label'])).toBeNull()
+    expect(screen.getByText(en['advanced.label'])).toBeTruthy()
+    // aria-expanded tracks the disclosure state: false while collapsed.
+    expect(screen.getByRole('button', { name: en['advanced.expand'] }).getAttribute('aria-expanded')).toBe('false')
+    // Expand: the body mounts (fireEvent flushes synchronously).
+    expandAdvanced()
+    expect(screen.getByLabelText(en['cooldownMs.label'])).toBeTruthy()
+    expect(screen.getByRole('button', { name: en['advanced.collapse'] }).getAttribute('aria-expanded')).toBe('true')
+    // Collapse again: the body unmounts and aria-expanded flips back.
+    fireEvent.click(screen.getByRole('button', { name: en['advanced.collapse'] }))
+    expect(screen.queryByLabelText(en['cooldownMs.label'])).toBeNull()
+    expect(screen.getByRole('button', { name: en['advanced.expand'] }).getAttribute('aria-expanded')).toBe('false')
+  })
+
+  it('forces the advanced options open in a read-only view with the toggle inert (F-002)', async () => {
+    const { view, props } = await mountCard({ config: ENABLED_CONFIG, writable: false })
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    // Read-only (`!writable`) forces the advanced group open WITHOUT any
+    // disclosure interaction — expandAdvanced() is never called and the
+    // cooldown field is already visible (same writable:false pattern as the
+    // read-only notice test).
+    expect(screen.getByText(en.readOnly)).toBeTruthy()
+    expect(screen.getByLabelText(en['cooldownMs.label'])).toBeTruthy()
+    // The toggle is inert: the wrapping fieldset's disabled propagation
+    // reaches the native button, which reports the derived open state.
+    const toggle = screen.getByRole('button', { name: en['advanced.collapse'] }) as HTMLButtonElement
+    expect(toggle.disabled).toBe(true)
+    expect(toggle.getAttribute('aria-expanded')).toBe('true')
+    // The rest of the form is inert too (existing read-only pattern).
+    expect((screen.getByLabelText(en['enabled.label']) as HTMLInputElement).disabled).toBe(true)
+  })
+
+  it('reads back a rootChain wildcard entry with the conversion hint and converts it on save (F-003)', async () => {
+    const config: typeof defaultFallbacksConfig = {
+      ...defaultFallbacksConfig,
+      enabled: true,
+      rootChain: ['openai/*'],
+    }
+    const { view, props, controller, scripted } = await mountCard({ config, catalog: CHAIN_CATALOG })
+    // Settle the catalog explicitly so the model select is enabled before
+    // the interaction (the mount-effect load is asynchronous).
+    await controller.loadCatalog()
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    // The rootChain wildcard read-back row shows the legacy-conversion hint
+    // and keeps the model select enabled (the openai catalog group exists).
+    const rootGroup = screen.getByText(en['rootChain.label']).closest('[role="group"]') as HTMLElement
+    expect(within(rootGroup).getByText(en['chains.selector.wildcardLegacy'])).toBeTruthy()
+    const model = within(rootGroup).getByLabelText(en['roles.rule.model']) as HTMLSelectElement
+    expect(model.disabled).toBe(false)
+    // Picking a concrete model converts the wildcard row → the save patch
+    // carries the exact entry, never a `provider/*` line.
+    fireEvent.change(model, { target: { value: 'gpt-4o' } })
+    view.rerender(<FallbacksCard {...props} />)
+    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    await waitFor(() => {
+      expect(scripted.call).toHaveBeenCalledWith('/api', 'fallbacks/set', expect.objectContaining({
+        args: { patch: expect.objectContaining({ rootChain: ['openai/gpt-4o'] }) },
+      }))
+    })
+  })
+
+  it('reads back a role wildcard chain entry with the conversion hint and converts it to an exact entry on save (T1)', async () => {
+    const { view, props, controller, scripted } = await mountCard({ config: WILDCARD_ROLE_CONFIG, catalog: CHAIN_CATALOG })
+    // Settle the catalog explicitly so the model select is enabled before
+    // the interaction (the mount-effect load is asynchronous).
+    await controller.loadCatalog()
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    // The wildcard read-back row shows the legacy-conversion hint inside the
+    // role card; the openai catalog group keeps the model select enabled so
+    // the row can convert to an exact entry.
+    const rolesGroup = screen.getByText(en['roles.list.label']).closest('[role="group"]') as HTMLElement
+    expect(within(rolesGroup).getByText(en['chains.selector.wildcardLegacy'])).toBeTruthy()
+    const model = within(rolesGroup).getByLabelText(en['roles.rule.model']) as HTMLSelectElement
+    expect(model.disabled).toBe(false)
+    // Picking a concrete model converts the wildcard row → the save patch
+    // carries the exact entry, never a `provider/*` line.
+    fireEvent.change(model, { target: { value: 'gpt-4o' } })
+    view.rerender(<FallbacksCard {...props} />)
+    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    await waitFor(() => {
+      expect(scripted.call).toHaveBeenCalledWith('/api', 'fallbacks/set', expect.objectContaining({
+        args: { patch: expect.objectContaining({
+          roles: {
+            list: [expect.objectContaining({ chain: ['openai/gpt-4o'] })],
+            rules: [],
+          },
+        }) },
+      }))
+    })
+  })
+
+  it('keeps the model select disabled with the strict hint when a wildcard read-back has no catalog group (T1)', async () => {
+    // A catalog provider with no successful model listing offers nothing to
+    // convert the wildcard to: the select stays disabled with the strict
+    // hint (task 1 changed groupMissing to count wildcard read-backs too),
+    // and the legacy-conversion hint stays hidden — with the select disabled
+    // there is no model to pick, so the "pick a model" hint would mislead
+    // (N-003/N-004).
+    const noGroupCatalog = { providers: CHAIN_CATALOG.providers, groups: [] }
+    const { view, props, controller } = await mountCard({ config: WILDCARD_ROLE_CONFIG, catalog: noGroupCatalog })
+    await controller.loadCatalog()
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    const rolesGroup = screen.getByText(en['roles.list.label']).closest('[role="group"]') as HTMLElement
+    // The strict hint renders inside the model's wrapping label, so the
+    // label text is "model" + the hint — match the label by its leading text.
+    const model = within(rolesGroup).getByLabelText(new RegExp(`^${en['roles.rule.model']}`)) as HTMLSelectElement
+    expect(model.disabled).toBe(true)
+    expect(within(rolesGroup).getByText(en['chains.selector.noModelsStrict'])).toBeTruthy()
+    expect(within(rolesGroup).queryByText(en['chains.selector.wildcardLegacy'])).toBeNull()
+  })
+
+  it('offers no wildcard on a freshly added role chain row: no checkbox, no legacy hint', async () => {
+    const config: typeof defaultFallbacksConfig = {
+      ...defaultFallbacksConfig,
+      enabled: true,
+      roles: { list: [{ id: 'coder', persona: '', chain: [], fallback: 'inherit-root' }], rules: [] },
+    }
+    const { view, props } = await mountCard({ config })
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    // Add a chain entry: the fresh selector row renders provider/model
+    // selects only — no wildcard checkbox, and no conversion hint (that
+    // hint appears for wildcard read-backs only).
+    const rolesGroup = screen.getByText(en['roles.list.label']).closest('[role="group"]') as HTMLElement
+    fireEvent.click(within(rolesGroup).getByRole('button', { name: en['roles.selector.add'] }))
+    view.rerender(<FallbacksCard {...props} />)
+    expect(within(rolesGroup).queryByRole('checkbox')).toBeNull()
+    expect(within(rolesGroup).queryByText(en['chains.selector.wildcardLegacy'])).toBeNull()
   })
 
   it('renders the declared role entity cards with id/persona/fallback', async () => {
@@ -671,8 +852,11 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     expect((ids[1] as HTMLInputElement).value).toBe('architect')
     const personas = screen.getAllByLabelText(en['roles.persona'])
     expect(personas).toHaveLength(2)
-    expect((personas[0] as HTMLInputElement).value).toBe('Reviews code')
-    expect((personas[1] as HTMLInputElement).value).toBe('Designs systems')
+    // The persona field is a multiline textarea (task 1), not a one-line input.
+    expect(personas[0].tagName).toBe('TEXTAREA')
+    expect(personas[1].tagName).toBe('TEXTAREA')
+    expect((personas[0] as HTMLTextAreaElement).value).toBe('Reviews code')
+    expect((personas[1] as HTMLTextAreaElement).value).toBe('Designs systems')
     const fallbacks = screen.getAllByLabelText(en['roles.fallback'])
     expect(fallbacks).toHaveLength(2)
     expect((fallbacks[0] as HTMLSelectElement).value).toBe('inherit-root')
@@ -829,6 +1013,7 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     toggleCard()
     view.rerender(<FallbacksCard {...props} />)
     expect(screen.getByRole('option', { name: 'bad-selector (outside catalog)' })).toBeTruthy()
+    expandAdvanced()
     fireEvent.change(screen.getByLabelText(en['cooldownMs.label']), { target: { value: '7000' } })
     view.rerender(<FallbacksCard {...props} />)
     fireEvent.click(screen.getByRole('button', { name: en.save }))
@@ -881,6 +1066,7 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     }
     const { view, props, scripted } = await mountCard({ config })
     toggleCard()
+    expandAdvanced()
     view.rerender(<FallbacksCard {...props} />)
     // The card starts CLEAN: the merged draft equals the accepted config
     // (no unsaved pill), proving the merge participates in dirty.
@@ -909,6 +1095,7 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
       legacyKeys: ['chains', 'roles.default'],
     })
     toggleCard()
+    expandAdvanced()
     view.rerender(<FallbacksCard {...props} />)
     expect(controller.store.getSnapshot().legacyKeys).toEqual(['chains', 'roles.default'])
     expect(screen.getByText(en['legacy.banner'])).toBeTruthy()
@@ -938,6 +1125,7 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     }
     const { view, props, scripted } = await mountCard({ config })
     toggleCard()
+    expandAdvanced()
     view.rerender(<FallbacksCard {...props} />)
     // The inline hint explains the chain-less role before any save attempt.
     expect(screen.getAllByText(en['validation.roleChainRequired'])).toHaveLength(1)
@@ -969,6 +1157,7 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     // before the interaction (the mount-effect load is asynchronous).
     await controller.loadCatalog()
     toggleCard()
+    expandAdvanced()
     view.rerender(<FallbacksCard {...props} />)
     // Chain area empty → inline hint shown; save is blocked (an unrelated
     // edit first makes the draft dirty so the save button is enabled).
@@ -1014,6 +1203,7 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     }
     const { view, props, scripted } = await mountCard({ config })
     toggleCard()
+    expandAdvanced()
     view.rerender(<FallbacksCard {...props} />)
     // Chain area empty → inline hint shown.
     expect(screen.getAllByText(en['validation.roleChainRequired'])).toHaveLength(1)

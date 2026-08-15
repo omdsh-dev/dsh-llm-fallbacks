@@ -289,14 +289,16 @@ function InfoHint({ label, disabled = false }: { label: string; disabled?: boole
 }
 
 /**
- * One chain entry selector row: provider select + model select (cascade) +
- * wildcard checkbox (spec §2.5 D-3). `allowWildcard` gates the `provider/*`
- * checkbox — the root agent's chain editor passes false (the main agent's
- * chain stays provider/model lines; provider-any matching lives in the role
- * rules), role chain editors keep it. The provider options are the catalog
- * providers **configured on the Models page** (`configuredProviders`, the
- * Models-page `configured` join) — unconfigured directory providers never
- * become offerable. Out-of-catalog values read back from the server render as
+ * One chain entry selector row: provider select + model select (cascade).
+ * The GUI never offers a `provider/*` wildcard (root agent and role chains
+ * alike; provider-any matching lives in the role rules) — but `provider/*`
+ * stays a legal YAML entry, so a wildcard row read back from the server
+ * renders with the legacy-conversion hint and an enabled model select:
+ * picking a model converts the row to an exact entry (the patch carries
+ * `wildcard: false`). The provider options are the catalog providers
+ * **configured on the Models page** (`configuredProviders`, the Models-page
+ * `configured` join) — unconfigured directory providers never become
+ * offerable. Out-of-catalog values read back from the server render as
  * a synthetic option with the short "outside catalog" annotation and stay
  * selected — keeping them saves verbatim; picking a catalog option is an
  * intentional change. A directory provider that is not configured is offered
@@ -305,7 +307,7 @@ function InfoHint({ label, disabled = false }: { label: string; disabled?: boole
  * options.
  */
 function ChainSelectorEditor({
-  selector, catalog, configuredProviders, disabled, t, onChange, onRemove, allowWildcard = true,
+  selector, catalog, configuredProviders, disabled, t, onChange, onRemove,
 }: {
   selector: ChainSelectorRow
   catalog: CatalogLookup | undefined
@@ -314,7 +316,6 @@ function ChainSelectorEditor({
   t: FallbacksCardProps['t']
   onChange: (patch: Partial<ChainSelectorRow>) => void
   onRemove: () => void
-  allowWildcard?: boolean
 }): ReactNode {
   const providerRaw = selectionToRaw(selector.provider)
   const providerOutside = selector.provider?.kind === 'outside'
@@ -328,11 +329,12 @@ function ChainSelectorEditor({
   const modelOutside = selector.model?.kind === 'outside'
   const group = catalog?.groups.find(entry => entry.id === providerRaw)
   // Catalog provider with no successful model listing: model select disabled
-  // with a hint (D-4); the wildcard stays available where the checkbox is
-  // offered (D-4: never depends on the models).
-  const groupMissing = providerRaw !== '' && !providerOutside && !selector.wildcard && group === undefined
+  // with a strict hint (D-4). A wildcard read-back row counts too — without a
+  // group there is no model to convert it to, so the select stays disabled
+  // instead of offering an empty enabled dropdown.
+  const groupMissing = providerRaw !== '' && !providerOutside && group === undefined
   // Nothing selectable: outside provider with no outside model to keep.
-  const modelDisabled = disabled || selector.wildcard || providerRaw === '' || groupMissing || (providerOutside && modelRaw === '')
+  const modelDisabled = disabled || providerRaw === '' || groupMissing || (providerOutside && modelRaw === '')
 
   return (
     <div className={css.selectorRow}>
@@ -347,6 +349,11 @@ function ChainSelectorEditor({
               // Cascade: a DIFFERENT provider clears the model choice (D-3);
               // re-picking the same provider keeps the model (S-e).
               if (event.target.value === providerRaw) return
+              // A legacy wildcard read-back row switching provider KEEPS
+              // `wildcard: true` — an intentional escape hatch: the GUI never
+              // creates wildcards, but a `provider/*` entry moved onto another
+              // provider stays a wildcard until a concrete model is picked
+              // (only the model change converts it to an exact entry, F-004).
               onChange({ provider: classifyProvider(event.target.value, catalog), model: null })
             }}
           >
@@ -366,11 +373,19 @@ function ChainSelectorEditor({
           <span className={css.ruleCellLabel}>{t('roles.rule.model')}</span>
           <select
             className={`${css.input} ${css.selectInput}`}
-            value={selector.wildcard ? '' : modelRaw}
+            value={modelRaw}
             disabled={modelDisabled}
-            onChange={event => { onChange({ model: classifyModel(providerRaw, event.target.value, catalog) }) }}
+            onChange={event => {
+              onChange({
+                model: classifyModel(providerRaw, event.target.value, catalog),
+                // A wildcard read-back row converts to an exact entry the
+                // moment a concrete model is picked (GUI never re-offers the
+                // wildcard).
+                ...(selector.wildcard ? { wildcard: false } : {}),
+              })
+            }}
           >
-            {modelRaw === '' && !providerOutside && !selector.wildcard && (
+            {modelRaw === '' && !providerOutside && (
               <option value="">{t('chains.selector.modelPlaceholder')}</option>
             )}
             {(group?.models ?? []).map(model => (
@@ -381,31 +396,22 @@ function ChainSelectorEditor({
             )}
           </select>
           {groupMissing && (
-            <span className={css.hint}>{t(allowWildcard ? 'chains.selector.noModels' : 'chains.selector.noModelsStrict')}</span>
+            <span className={css.hint}>{t('chains.selector.noModelsStrict')}</span>
           )}
         </label>
-        {allowWildcard && (
-          <label className={`${css.ruleCell} ${css.wildcardCell}`}>
-            <input
-              type="checkbox"
-              checked={selector.wildcard}
-              disabled={disabled || providerRaw === ''}
-              onChange={event => {
-                onChange({
-                  wildcard: event.target.checked,
-                  ...(event.target.checked ? { model: null } : {}),
-                })
-              }}
-            />
-            {t('chains.selector.wildcard')}
-          </label>
-        )}
       </div>
       {(providerOutside || modelOutside) && (
         <span className={css.hint}>
           {t('catalog.outside.hint')}
           <InfoHint label={t('catalog.outside.tooltip')} disabled={disabled} />
         </span>
+      )}
+      {/* The legacy-conversion hint only renders when a conversion is
+          actually possible: with the model select disabled (no catalog group
+          / empty provider / outside provider without an outside model) there
+          is nothing to pick, so the hint stays off (N-003/N-004). */}
+      {selector.wildcard && !modelDisabled && (
+        <span className={css.hint}>{t('chains.selector.wildcardLegacy')}</span>
       )}
       <div className={css.cardFoot}>
         <button
@@ -746,6 +752,11 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
   // successful state transition — so a recovered card collapses like any
   // healthy card.
   const [userOpen, setUserOpen] = useState(false)
+  // The advanced options disclosure is card-local USER state, default
+  // collapsed (the section is a quiet detail surface). The derived
+  // `advancedVisible` mirrors the card header's degraded-open semantics:
+  // a read-only view must show the advanced fields without interaction.
+  const [advancedOpen, setAdvancedOpen] = useState(false)
   const degradedLatch = useRef(false)
   const errorLatch = useRef(false)
   if (state.status === 'ready') {
@@ -756,6 +767,9 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
   }
   const degraded = state.status === 'ready' ? !state.present : degradedLatch.current
   const open = userOpen || errorLatch.current || degraded
+  // Advanced options: user-collapsible while writable; forced visible in the
+  // read-only (degraded) view — same forced-open rule as the card header.
+  const advancedVisible = advancedOpen || !writable
 
   const title = t('title')
   const header = (
@@ -912,7 +926,6 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                             configuredProviders={state.configuredProviders}
                             disabled={!writable}
                             t={t}
-                            allowWildcard={false}
                             onChange={patch => { updateRootChainSelector(selectorIndex, patch) }}
                             onRemove={() => { removeRootChainSelector(selectorIndex) }}
                           />
@@ -967,8 +980,9 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                       <div className={css.ruleGrid}>
                         <div className={css.ruleCell}>
                           <span className={css.ruleCellLabel}>{t('roles.persona')}</span>
-                          <input
-                            className={css.input}
+                          <textarea
+                            rows={3}
+                            className={`${css.input} ${css.inputTextarea}`}
                             value={row.persona}
                             placeholder={t('roles.personaPlaceholder')}
                             aria-label={t('roles.persona')}
@@ -1207,108 +1221,132 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                 </Button>
               </div>
               <div className={css.field} role="group" aria-labelledby="fallbacks-advanced">
-                <span className={css.fieldLabel}>
-                  <span id="fallbacks-advanced">{t('advanced.label')}</span>
-                </span>
-                <div className={css.field} role="group" aria-labelledby="fallbacks-trigger-codes">
-                  <span className={css.fieldLabel}>
-                    <span id="fallbacks-trigger-codes">{t('triggerCodes.label')}</span>
-                    <InfoHint label={t('triggerCodes.tooltip')} disabled={!writable} />
-                  </span>
-                  <span className={css.hint}>{t('triggerCodes.hint')}</span>
-                  {KNOWN_TRIGGER_CODES.map(code => (
-                    <label key={code} className={css.optionRow}>
-                      <input
-                        type="checkbox"
-                        checked={scalars.triggerCodes.includes(code)}
-                        onChange={event => {
-                          updateScalars(draft => { draft.triggerCodes = withTriggerCode(draft.triggerCodes, code, event.target.checked) })
-                        }}
-                      />
-                      {t(TRIGGER_CODE_LABELS[code])}
-                    </label>
-                  ))}
-                  {unknownCodes.length > 0 && (
-                    <span className={css.hint}>{t('triggerCodes.extra', { codes: unknownCodes.join(', ') })}</span>
-                  )}
-                </div>
+                {/* The toggle is explicitly `disabled` in a read-only view
+                    (`!writable` — the same value the wrapping fieldset uses,
+                    made explicit so the inert state survives jsdom, which
+                    does not propagate fieldset[disabled] to buttons); the
+                    click gate below covers the writable-only toggle;
+                    aria-expanded stays derived (forced true in the read-only
+                    view). The group's accessible name rides a STATIC span id
+                    (not the button's flipping aria-label): `fallbacks-advanced`
+                    names the inner text span, so the group name is always
+                    "Advanced options"; aria-controls is conditional because
+                    the body unmounts while collapsed (F-006). */}
+                <button
+                  type="button"
+                  className={css.sectionToggle}
+                  disabled={!writable}
+                  aria-expanded={advancedVisible}
+                  aria-controls={advancedVisible ? 'fallbacks-advanced-body' : undefined}
+                  aria-label={t(advancedVisible ? 'advanced.collapse' : 'advanced.expand')}
+                  onClick={() => { if (writable) setAdvancedOpen(!advancedOpen) }}
+                >
+                  <span id="fallbacks-advanced" className={css.sectionToggleText}>{t('advanced.label')}</span>
+                  <IconChevronDownOutline14 className={advancedVisible ? `${css.chevron} ${css.chevronOpen}` : css.chevron} />
+                </button>
+                {advancedVisible && (
+                  <div id="fallbacks-advanced-body">
+                    <div className={css.field} role="group" aria-labelledby="fallbacks-trigger-codes">
+                      <span className={css.fieldLabel}>
+                        <span id="fallbacks-trigger-codes">{t('triggerCodes.label')}</span>
+                        <InfoHint label={t('triggerCodes.tooltip')} disabled={!writable} />
+                      </span>
+                      <span className={css.hint}>{t('triggerCodes.hint')}</span>
+                      {KNOWN_TRIGGER_CODES.map(code => (
+                        <label key={code} className={css.optionRow}>
+                          <input
+                            type="checkbox"
+                            checked={scalars.triggerCodes.includes(code)}
+                            onChange={event => {
+                              updateScalars(draft => { draft.triggerCodes = withTriggerCode(draft.triggerCodes, code, event.target.checked) })
+                            }}
+                          />
+                          {t(TRIGGER_CODE_LABELS[code])}
+                        </label>
+                      ))}
+                      {unknownCodes.length > 0 && (
+                        <span className={css.hint}>{t('triggerCodes.extra', { codes: unknownCodes.join(', ') })}</span>
+                      )}
+                    </div>
 
-                <div className={css.field} role="group" aria-labelledby="fallbacks-revert-policy">
-                  <span className={css.fieldLabel}>
-                    <span id="fallbacks-revert-policy">{t('revertPolicy.label')}</span>
-                    <InfoHint label={t('revertPolicy.tooltip')} disabled={!writable} />
-                  </span>
-                  <span className={css.hint}>{t('revertPolicy.hint')}</span>
-                  {(['cooldown-expiry', 'never'] as const).map(policy => (
-                    <label key={policy} className={css.optionRow}>
-                      <input
-                        type="radio"
-                        name="fallbacks-revert-policy"
-                        checked={scalars.revertPolicy === policy}
-                        onChange={() => { updateScalars(draft => { draft.revertPolicy = policy }) }}
-                      />
-                      {t(`revertPolicy.${policy}`)}
-                    </label>
-                  ))}
-                </div>
+                    <div className={css.field} role="group" aria-labelledby="fallbacks-revert-policy">
+                      <span className={css.fieldLabel}>
+                        <span id="fallbacks-revert-policy">{t('revertPolicy.label')}</span>
+                        <InfoHint label={t('revertPolicy.tooltip')} disabled={!writable} />
+                      </span>
+                      <span className={css.hint}>{t('revertPolicy.hint')}</span>
+                      {(['cooldown-expiry', 'never'] as const).map(policy => (
+                        <label key={policy} className={css.optionRow}>
+                          <input
+                            type="radio"
+                            name="fallbacks-revert-policy"
+                            checked={scalars.revertPolicy === policy}
+                            onChange={() => { updateScalars(draft => { draft.revertPolicy = policy }) }}
+                          />
+                          {t(`revertPolicy.${policy}`)}
+                        </label>
+                      ))}
+                    </div>
 
-                {/* The three short numeric fields sit side by side, each keeping a
-                 * full-width field of its own grid column. */}
-                <div className={css.numberFields}>
-                  <div className={css.field}>
-                    <span className={css.fieldLabel}>
-                      <label htmlFor="fallbacks-cooldown-ms">{t('cooldownMs.label')}</label>
-                      <InfoHint label={t('cooldownMs.tooltip')} disabled={!writable} />
-                      <span className={css.defaultNote}>{t('defaults.prefix')}: {state.config.cooldownMs}</span>
-                    </span>
-                    <input
-                      id="fallbacks-cooldown-ms"
-                      className={css.input}
-                      type="number"
-                      min={0}
-                      value={String(scalars.cooldownMs)}
-                      disabled={!writable}
-                      onChange={event => { updateScalars(draft => { draft.cooldownMs = parseCount(event.target.value) }) }}
-                    />
-                    <span className={css.hint}>{t('cooldownMs.hint')}</span>
+                    {/* The three short numeric fields sit side by side, each keeping a
+                     * full-width field of its own grid column. */}
+                    <div className={css.numberFields}>
+                      <div className={css.field}>
+                        <span className={css.fieldLabel}>
+                          <label htmlFor="fallbacks-cooldown-ms">{t('cooldownMs.label')}</label>
+                          <InfoHint label={t('cooldownMs.tooltip')} disabled={!writable} />
+                          <span className={css.defaultNote}>{t('defaults.prefix')}: {state.config.cooldownMs}</span>
+                        </span>
+                        <input
+                          id="fallbacks-cooldown-ms"
+                          className={css.input}
+                          type="number"
+                          min={0}
+                          value={String(scalars.cooldownMs)}
+                          disabled={!writable}
+                          onChange={event => { updateScalars(draft => { draft.cooldownMs = parseCount(event.target.value) }) }}
+                        />
+                        <span className={css.hint}>{t('cooldownMs.hint')}</span>
+                      </div>
+
+                      <div className={css.field}>
+                        <span className={css.fieldLabel}>
+                          <label htmlFor="fallbacks-max-switches">{t('maxSwitchesPerStep.label')}</label>
+                          <InfoHint label={t('maxSwitchesPerStep.tooltip')} disabled={!writable} />
+                          <span className={css.defaultNote}>{t('defaults.prefix')}: {state.config.maxSwitchesPerStep}</span>
+                        </span>
+                        <input
+                          id="fallbacks-max-switches"
+                          className={css.input}
+                          type="number"
+                          min={0}
+                          value={String(scalars.maxSwitchesPerStep)}
+                          disabled={!writable}
+                          onChange={event => { updateScalars(draft => { draft.maxSwitchesPerStep = parseCount(event.target.value) }) }}
+                        />
+                        <span className={css.hint}>{t('maxSwitchesPerStep.hint')}</span>
+                      </div>
+
+                      <div className={css.field}>
+                        <span className={css.fieldLabel}>
+                          <label htmlFor="fallbacks-always-cap">{t('alwaysModeRetryCap.label')}</label>
+                          <InfoHint label={t('alwaysModeRetryCap.tooltip')} disabled={!writable} />
+                          <span className={css.defaultNote}>{t('defaults.prefix')}: {state.config.alwaysModeRetryCap}</span>
+                        </span>
+                        <input
+                          id="fallbacks-always-cap"
+                          className={css.input}
+                          type="number"
+                          min={0}
+                          value={String(scalars.alwaysModeRetryCap)}
+                          disabled={!writable}
+                          onChange={event => { updateScalars(draft => { draft.alwaysModeRetryCap = parseCount(event.target.value) }) }}
+                        />
+                        <span className={css.hint}>{t('alwaysModeRetryCap.hint')}</span>
+                      </div>
+                    </div>
                   </div>
-
-                  <div className={css.field}>
-                    <span className={css.fieldLabel}>
-                      <label htmlFor="fallbacks-max-switches">{t('maxSwitchesPerStep.label')}</label>
-                      <InfoHint label={t('maxSwitchesPerStep.tooltip')} disabled={!writable} />
-                      <span className={css.defaultNote}>{t('defaults.prefix')}: {state.config.maxSwitchesPerStep}</span>
-                    </span>
-                    <input
-                      id="fallbacks-max-switches"
-                      className={css.input}
-                      type="number"
-                      min={0}
-                      value={String(scalars.maxSwitchesPerStep)}
-                      disabled={!writable}
-                      onChange={event => { updateScalars(draft => { draft.maxSwitchesPerStep = parseCount(event.target.value) }) }}
-                    />
-                    <span className={css.hint}>{t('maxSwitchesPerStep.hint')}</span>
-                  </div>
-
-                  <div className={css.field}>
-                    <span className={css.fieldLabel}>
-                      <label htmlFor="fallbacks-always-cap">{t('alwaysModeRetryCap.label')}</label>
-                      <InfoHint label={t('alwaysModeRetryCap.tooltip')} disabled={!writable} />
-                      <span className={css.defaultNote}>{t('defaults.prefix')}: {state.config.alwaysModeRetryCap}</span>
-                    </span>
-                    <input
-                      id="fallbacks-always-cap"
-                      className={css.input}
-                      type="number"
-                      min={0}
-                      value={String(scalars.alwaysModeRetryCap)}
-                      disabled={!writable}
-                      onChange={event => { updateScalars(draft => { draft.alwaysModeRetryCap = parseCount(event.target.value) }) }}
-                    />
-                    <span className={css.hint}>{t('alwaysModeRetryCap.hint')}</span>
-                  </div>
-                </div>
+                )}
               </div>
             </fieldset>
             )}

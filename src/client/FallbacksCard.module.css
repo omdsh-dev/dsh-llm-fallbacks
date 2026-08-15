@@ -273,6 +273,47 @@
   color: var(--dsw-alias-label-secondary);
 }
 
+/* The advanced-section disclosure: a full-width quiet button at the
+   field-label typography, mirroring the card header's chevron interaction
+   (hover brighten, brand focus ring). The section body is the
+   `fallbacks-advanced-body` region it controls. */
+.sectionToggle {
+  width: 100%;
+  appearance: none;
+  border: 0;
+  background: none;
+  font: inherit;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 18px;
+  font-weight: 500;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.sectionToggle:hover:not(:disabled) {
+  color: var(--dsw-alias-label-primary);
+}
+
+.sectionToggle:disabled {
+  cursor: default;
+}
+
+.sectionToggle:focus-visible {
+  outline: 2px solid var(--dsw-alias-brand-primary);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+.sectionToggleText {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+}
+
 .hint {
   display: inline-flex;
   align-items: center;
@@ -347,10 +388,9 @@
 
 /* Native checkbox/radio controls share the checkbox geometry: 16px box,
    brand accent, same focus-visible ring (the enabled checkbox is the
-   advisor `.checkbox`; the option/wildcard rows follow it). */
+   advisor `.checkbox`; the option rows follow it). */
 .checkbox,
-.optionRow input,
-.wildcardCell input {
+.optionRow input {
   flex: none;
   width: 16px;
   height: 16px;
@@ -360,14 +400,12 @@
 }
 
 .checkbox:focus-visible,
-.optionRow input:focus-visible,
-.wildcardCell input:focus-visible {
+.optionRow input:focus-visible {
   outline: none;
   box-shadow: 0 0 0 2px var(--dsw-alias-border-l3);
 }
 
-.optionRow input:disabled,
-.wildcardCell input:disabled {
+.optionRow input:disabled {
   cursor: default;
 }
 
@@ -399,6 +437,16 @@
 .input:disabled {
   opacity: 0.6;
   cursor: default;
+}
+
+/* Multiline persona field: the same `.input` chrome, but the fixed 32px
+   height yields to an auto-sizing textarea with a vertical resize handle. */
+.inputTextarea {
+  height: auto;
+  min-height: 72px;
+  padding: 6px 10px;
+  resize: vertical;
+  line-height: 20px;
 }
 
 /* Pre-save validation failure (role id format/reserved/duplicate): the
@@ -482,9 +530,9 @@ select.input {
   color: var(--dsw-alias-label-secondary);
 }
 
-/* Chain selector rows (provider select + model select + wildcard): each row
-   is its own edit surface inside the chain card — the same grid rhythm as
-   the role rules, with the wildcard checkbox as a row-level cell. */
+/* Chain selector rows (provider select + model select): each row is its own
+   edit surface inside the chain card — the same grid rhythm as the role
+   rules. */
 .chainSelectors {
   display: flex;
   flex-direction: column;
@@ -495,25 +543,6 @@ select.input {
   display: flex;
   flex-direction: column;
   gap: 6px;
-}
-
-/* The wildcard cell flips the column cell to a row layout: the checkbox
-   stands beside its label, centered against the selects above it. It takes
-   the checkbox-row form (Models candidate rows: padding 6/8, pointer cursor,
-   radius 6) so it reads as a toggle, not a bare control. */
-.wildcardCell {
-  flex-direction: row;
-  align-items: center;
-  gap: 8px;
-  min-width: 200px;
-  align-self: center;
-  padding: 6px 8px;
-  border-radius: 6px;
-  cursor: pointer;
-}
-
-.wildcardCell:hover:has(input:not(:disabled)) {
-  background: var(--dsw-alias-interactive-bg-hover);
 }
 
 /* Icon-only actions: a 28×28 square with 6px radius on the Models
