@@ -83,3 +83,7 @@ npm 的 Trusted Publishing（OIDC provenance，无 token）**只对已存在的�
 ### role seeds（角色种子）
 companion 插件经释放面声明 `[{id, persona}]`、由本插件自动补全角色 taxonomy 的机制（iter-20260815-fallbacks-role-seeds）：持久面 = operator 配置 `roles.list[]` 普通行（物化仅 `{id, persona}` 两键），内存面 = per-apply `FallbacksSeedManager` registry；`seeded`/`personaOverridden` **派生不存储**（round-trip 构造性无孤儿 override）。释放面 = 9-key service 的 `declareSeeds`(a) / `getEffectiveRoles`(b) / `revertSeededPersona`(c) + gateway `seeds` wire + `fallbacks/revert-seed`。seed id 按 as-declared 过 `ROLE_ID_PATTERN`（零 coercion），chain/fallback/prompt/permissions 永不被动（R4）。
 *Avoid:* 「seed 覆盖配置」「mstar patch 写插件行」（fold bundle row 已证伪——同 loader-entry id 启动崩溃 / 异 id 双实例）
+
+### bundled preset roles（内置预设角色）
+插件自身携带的默认角色声明（iter-20260816-fallbacks-preset-roles）：`presetRoles` 包根导出 + config `presets: 'bundled' | 'none'`（默认 bundled）——插件在 apply 尾部经条件注入子自声明 7 个 omp 风格通用角色（designer/librarian/reviewer/scout/security-reviewer/sonic/task），operator 可关（none = 零声明零写）。与 companion 声明的区别：seeds 的**调用方是插件自身**；语义（冲突保留/幂等/derived seeded）完全复用。
+*Avoid:* 默认 none（bundled 语义开箱即有）· async 化 apply 自声明（fiber FAILED）· 复用早注册注入子 fire（base-only 基线覆盖 operator 行）
