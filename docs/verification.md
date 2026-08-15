@@ -6,7 +6,7 @@ This document records the installation / runtime-contract verification already c
 
 ## Verified (evidence summary for this iteration)
 
-### 1. Test matrix (unit + integration + client + host gateway + command + release/consumer tooling; 23 files / 468 tests all green)
+### 1. Test matrix (unit + integration + client + host gateway + command + release/consumer tooling; 23 files / 469 tests all green)
 
 | Scope | Files | Count | Contract covered |
 |---|---|---|---|
@@ -19,7 +19,7 @@ This document records the installation / runtime-contract verification already c
 | release/consumer tooling | `service.spec.ts` / `export-surface.spec.ts` / `release-scripts.spec.ts` | 7 / 27 / 17 | the named cordis service surface (static provide metadata, `ctx.get` availability while applied, unregister on dispose, multi-fiber dedupe, same functions as the package-root re-exports); the package export surface (runtime values + callable smokes + type exports matching the docs-inventory keys); release-script gates (autoBumpPatch / insertSection / parseArgs / validateReleaseVersion / tagExists) |
 | regression | `skeleton.spec.ts` / `host-native.spec.ts` / `peer-deps.test.ts` | 3 / 3 / 5 | bundle contract (row id, empty schema accepted, host+client apply entry points); host-native behavior baseline (real `@deepseek-ai/dsh-agent` module: trigger-code switches route to the chain target, always-cap second return point, no-op invariant); registry peer contract (`@deepseek-ai/*` as peerDependencies only, dsh-* pinned to `^0.1.0-rc.6`, autoInstallPeers, no link farm) |
 
-Result: **23 files / 468 tests all green** (`pnpm test`, vitest run); `pnpm build` (`tsc -p tsconfig.build.json` emits JS first (standard decorator downgrade `__esDecorate`) → tsdown host bundle →
+Result: **23 files / 469 tests all green** (`pnpm test`, vitest run); `pnpm build` (`tsc -p tsconfig.build.json` emits JS first (standard decorator downgrade `__esDecorate`) → tsdown host bundle →
 `pnpm run build-client` → `tsc` declarations → `node scripts/verify-dist.mjs` artifact-parsing guard) all green — `tsc` is
 driven by the real host type surface (registry peer `@deepseek-ai/*@0.1.0-rc.6`, no in-repo type shims). The no-op regression
 invariants (empty chains / no match / chain exhausted / safety-valve cap exceeded → pass through without producing
