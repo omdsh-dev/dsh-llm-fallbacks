@@ -63,6 +63,7 @@ import {
   type SeedRevertOutcome,
   type SeedsIo,
 } from './seeds.ts'
+import { presetRoles } from './presets.ts'
 
 /** The plugin row id mounted by the profile bundle patch. */
 export const name = 'llm-fallbacks'
@@ -187,6 +188,13 @@ export {
   type SeedsIo,
   type SeedsWireStatus,
 } from './seeds.ts'
+// --- Bundled preset roles (plan fallbacks-preset-roles T3) ---
+// The 7 omp-style bundled preset role declarations re-exported from the
+// package root so library consumers can `import { presetRoles } from
+// 'dsh-llm-fallbacks'` and `declareSeeds(presetRoles)` — the SAME data
+// source apply()'s self-declaration fires (derivation: omp coding-agent
+// agent prompts, snapshot 2026-08-16; frozen text = spec §9.2).
+export { presetRoles } from './presets.ts'
 
 /** Model-catalog service shape the wildcard existence probe reads (`ctx.llm`). */
 interface ModelCatalogService {
@@ -337,6 +345,12 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   // dedupe-guarded gateway/typert registrations below. Mirror advisor's
   // multi-fiber dedupe: the catch lets the FIRST fiber own the service while
   // later fibers degrade gracefully (no service on that fiber).
+  // Preset self-declaration ownership (plan fallbacks-preset-roles T3, spec
+  // §9.3 D9.3-a W-1): `serviceOwned` records which fiber successfully
+  // registered the service — only that fiber's tail settings child fires
+  // the bundled preset declare; a deduped later fiber must not re-fire (no
+  // duplicate conflict warns, no duplicate writes).
+  let serviceOwned = false
   try {
     ctx.provide('llm-fallbacks', {
       name: 'llm-fallbacks',
@@ -352,8 +366,10 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
       getEffectiveRoles: () => seeds.effectiveRoles(seedsIo),
       revertSeededPersona: (id: string) => seeds.revert(id, seedsIo),
     })
+    serviceOwned = true
   } catch (error) {
     if (!(error instanceof Error) || !error.message.includes('has been registered')) throw error
+    serviceOwned = false
     ctx.logger('llm-fallbacks').debug('fallbacks service already registered — no service on this fiber (multi-fiber dedupe)')
   }
   let source: () => FallbacksConfig = () => entry
@@ -697,5 +713,35 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     // returned function and runs it on unload, making the documented
     // lifetime contract (registerFallbacksCommands' @returns) true.
     return registerFallbacksCommands(commandCtx.commands, fallbacksCommandController)
+  })
+
+  // Bundled preset self-declaration (plan fallbacks-preset-roles T3, spec
+  // §9.3 D9.3-a): a NEW conditional settings inject child, registered LAST
+  // (after the writeRoles child and installSettingsSection's internal
+  // child), so by cordis' activation order its fire sees the composed live
+  // source (setSource already ran) and a live write channel — reusing the
+  // writeRoles child would materialize against the base-only entry and
+  // clobber operator user-layer rows. apply() stays synchronous (D9.3-a):
+  // the fire is fire-and-forget with a terminal catch — a failed write
+  // never FAILEDs this fiber (cordis would treat a rejected thenable apply
+  // return as a plugin load failure), never rethrows, and leaves no
+  // unhandled rejection. The registry only commits on a successful write
+  // (declare's compute → write → commit), so failure leaves badge/revert
+  // unseeded (D9.3-b); retry happens on the next apply / child
+  // re-activation — no in-process retry loop. `presets: 'none'` reads the
+  // LIVE composed source at fire time and short-circuits before declare:
+  // zero declarations, zero writes, zero registry change (D9.3-c; no
+  // `enabled` gate — enabled:false still materializes). No per-apply
+  // one-shot guard: declare is idempotent (no-delta zero write, D9.3-d),
+  // so every child re-activation re-fires safely.
+  ctx.inject(['settings'], () => {
+    if (!serviceOwned) return
+    if (seedsIo.read().presets === 'none') return
+    seeds.declare(presetRoles, seedsIo).catch((error) => {
+      logger.error(
+        'llm-fallbacks: seeds: preset role declaration failed — %s',
+        (error as Error)?.message ?? String(error),
+      )
+    })
   })
 }

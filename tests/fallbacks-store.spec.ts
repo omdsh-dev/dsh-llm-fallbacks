@@ -255,6 +255,7 @@ describe('parseFallbacksConfig (descriptor read, redactSecrets face)', () => {
       revertPolicy: 'never',
       maxSwitchesPerStep: 4,
       alwaysModeRetryCap: 0,
+      presets: 'bundled',
     }
     expect(parseFallbacksConfig(config)).toEqual(config)
   })
@@ -288,6 +289,7 @@ describe('parseFallbacksConfig (descriptor read, redactSecrets face)', () => {
     expect(() => parseFallbacksConfig({ roles: { rules: [{ provider: 'openai' }] } })).toThrow(TypeError)
     expect(() => parseFallbacksConfig({ roles: { rules: [{ origin: 'host', role: 'x' }] } })).toThrow(TypeError)
     expect(() => parseFallbacksConfig({ revertPolicy: 'sometimes' })).toThrow(TypeError)
+    expect(() => parseFallbacksConfig({ presets: 'sometimes' })).toThrow(TypeError)
     expect(() => parseFallbacksConfig({ cooldownMs: 'soon' })).toThrow(TypeError)
     expect(() => parseFallbacksConfig({ enabled: 'yes' })).toThrow(TypeError)
   })

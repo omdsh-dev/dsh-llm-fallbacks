@@ -289,6 +289,10 @@ export function parseFallbacksConfig(value: unknown): FallbacksConfig {
   if (revertPolicy !== undefined && revertPolicy !== 'cooldown-expiry' && revertPolicy !== 'never') {
     throw new TypeError('fallbacks descriptor revertPolicy must be cooldown-expiry|never')
   }
+  const presets = value.presets
+  if (presets !== undefined && presets !== 'bundled' && presets !== 'none') {
+    throw new TypeError('fallbacks descriptor presets must be bundled|none')
+  }
   const enabled = value.enabled
   if (enabled !== undefined && typeof enabled !== 'boolean') {
     throw new TypeError('fallbacks descriptor enabled must be a boolean')
@@ -307,6 +311,12 @@ export function parseFallbacksConfig(value: unknown): FallbacksConfig {
     revertPolicy: (revertPolicy as FallbacksConfig['revertPolicy'] | undefined) ?? defaultFallbacksConfig.revertPolicy,
     maxSwitchesPerStep: (maxSwitchesPerStep as number | undefined) ?? defaultFallbacksConfig.maxSwitchesPerStep,
     alwaysModeRetryCap: (alwaysModeRetryCap as number | undefined) ?? defaultFallbacksConfig.alwaysModeRetryCap,
+    // §9.4 mirror: the host default gained `presets` (9th field), so the
+    // client fold mirrors it too — `parseFallbacksConfig` output must stay
+    // equal to `defaultFallbacksConfig` (pinned invariant). Mechanical
+    // mirror of `revertPolicy`; the settings card neither consumes nor
+    // renders `presets` (R-001 re-defer — no client feature change).
+    presets: (presets as FallbacksConfig['presets'] | undefined) ?? defaultFallbacksConfig.presets,
   }
 }
 
