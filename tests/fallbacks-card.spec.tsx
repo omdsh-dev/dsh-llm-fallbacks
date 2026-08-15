@@ -19,6 +19,16 @@
  * the upstream disabled semantics, and the degraded card (gateway channel
  * unreachable — `ready && !present`) is derived-open with the notice + the
  * still-usable skeleton (AC-1 divergence: no white screen).
+ *
+ * Plan fallbacks-role-config-ui (task 1 + 2 + QC fix wave): the role persona
+ * is a multiline textarea, no chain editor offers the `provider/*` wildcard
+ * (a wildcard read-back renders with a conversion hint and becomes an exact
+ * entry once a model is picked), and the Advanced options section is a
+ * collapsible disclosure starting collapsed. The QC fix wave pins the
+ * read-only forced-open behavior (writable:false → advanced body visible,
+ * toggle inert, aria-expanded "true"), the rootChain wildcard read-back
+ * conversion, the aria-expanded value transitions, and the conversion-hint
+ * gating on convertible rows (F-002 / F-003 / F-007 / N-003/N-004).
  */
 
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
@@ -699,12 +709,65 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     // collapsed — the disclosure button's label text stays reachable.
     expect(screen.queryByLabelText(en['cooldownMs.label'])).toBeNull()
     expect(screen.getByText(en['advanced.label'])).toBeTruthy()
+    // aria-expanded tracks the disclosure state: false while collapsed.
+    expect(screen.getByRole('button', { name: en['advanced.expand'] }).getAttribute('aria-expanded')).toBe('false')
     // Expand: the body mounts (fireEvent flushes synchronously).
     expandAdvanced()
     expect(screen.getByLabelText(en['cooldownMs.label'])).toBeTruthy()
-    // Collapse again: the body unmounts.
+    expect(screen.getByRole('button', { name: en['advanced.collapse'] }).getAttribute('aria-expanded')).toBe('true')
+    // Collapse again: the body unmounts and aria-expanded flips back.
     fireEvent.click(screen.getByRole('button', { name: en['advanced.collapse'] }))
     expect(screen.queryByLabelText(en['cooldownMs.label'])).toBeNull()
+    expect(screen.getByRole('button', { name: en['advanced.expand'] }).getAttribute('aria-expanded')).toBe('false')
+  })
+
+  it('forces the advanced options open in a read-only view with the toggle inert (F-002)', async () => {
+    const { view, props } = await mountCard({ config: ENABLED_CONFIG, writable: false })
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    // Read-only (`!writable`) forces the advanced group open WITHOUT any
+    // disclosure interaction — expandAdvanced() is never called and the
+    // cooldown field is already visible (same writable:false pattern as the
+    // read-only notice test).
+    expect(screen.getByText(en.readOnly)).toBeTruthy()
+    expect(screen.getByLabelText(en['cooldownMs.label'])).toBeTruthy()
+    // The toggle is inert: the wrapping fieldset's disabled propagation
+    // reaches the native button, which reports the derived open state.
+    const toggle = screen.getByRole('button', { name: en['advanced.collapse'] }) as HTMLButtonElement
+    expect(toggle.disabled).toBe(true)
+    expect(toggle.getAttribute('aria-expanded')).toBe('true')
+    // The rest of the form is inert too (existing read-only pattern).
+    expect((screen.getByLabelText(en['enabled.label']) as HTMLInputElement).disabled).toBe(true)
+  })
+
+  it('reads back a rootChain wildcard entry with the conversion hint and converts it on save (F-003)', async () => {
+    const config: typeof defaultFallbacksConfig = {
+      ...defaultFallbacksConfig,
+      enabled: true,
+      rootChain: ['openai/*'],
+    }
+    const { view, props, controller, scripted } = await mountCard({ config, catalog: CHAIN_CATALOG })
+    // Settle the catalog explicitly so the model select is enabled before
+    // the interaction (the mount-effect load is asynchronous).
+    await controller.loadCatalog()
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    // The rootChain wildcard read-back row shows the legacy-conversion hint
+    // and keeps the model select enabled (the openai catalog group exists).
+    const rootGroup = screen.getByText(en['rootChain.label']).closest('[role="group"]') as HTMLElement
+    expect(within(rootGroup).getByText(en['chains.selector.wildcardLegacy'])).toBeTruthy()
+    const model = within(rootGroup).getByLabelText(en['roles.rule.model']) as HTMLSelectElement
+    expect(model.disabled).toBe(false)
+    // Picking a concrete model converts the wildcard row → the save patch
+    // carries the exact entry, never a `provider/*` line.
+    fireEvent.change(model, { target: { value: 'gpt-4o' } })
+    view.rerender(<FallbacksCard {...props} />)
+    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    await waitFor(() => {
+      expect(scripted.call).toHaveBeenCalledWith('/api', 'fallbacks/set', expect.objectContaining({
+        args: { patch: expect.objectContaining({ rootChain: ['openai/gpt-4o'] }) },
+      }))
+    })
   })
 
   it('reads back a role wildcard chain entry with the conversion hint and converts it to an exact entry on save (T1)', async () => {
@@ -741,7 +804,10 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
   it('keeps the model select disabled with the strict hint when a wildcard read-back has no catalog group (T1)', async () => {
     // A catalog provider with no successful model listing offers nothing to
     // convert the wildcard to: the select stays disabled with the strict
-    // hint (task 1 changed groupMissing to count wildcard read-backs too).
+    // hint (task 1 changed groupMissing to count wildcard read-backs too),
+    // and the legacy-conversion hint stays hidden — with the select disabled
+    // there is no model to pick, so the "pick a model" hint would mislead
+    // (N-003/N-004).
     const noGroupCatalog = { providers: CHAIN_CATALOG.providers, groups: [] }
     const { view, props, controller } = await mountCard({ config: WILDCARD_ROLE_CONFIG, catalog: noGroupCatalog })
     await controller.loadCatalog()
@@ -753,7 +819,7 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     const model = within(rolesGroup).getByLabelText(new RegExp(`^${en['roles.rule.model']}`)) as HTMLSelectElement
     expect(model.disabled).toBe(true)
     expect(within(rolesGroup).getByText(en['chains.selector.noModelsStrict'])).toBeTruthy()
-    expect(within(rolesGroup).getByText(en['chains.selector.wildcardLegacy'])).toBeTruthy()
+    expect(within(rolesGroup).queryByText(en['chains.selector.wildcardLegacy'])).toBeNull()
   })
 
   it('offers no wildcard on a freshly added role chain row: no checkbox, no legacy hint', async () => {
