@@ -12,8 +12,8 @@
  */
 
 import { describe, expect, it, vi } from 'vitest'
+import { Config } from '../src/schema.ts'
 import {
-  Config,
   INHERIT_ROLE_ID,
   defaultFallbacksConfig,
   detectLegacyKeys,

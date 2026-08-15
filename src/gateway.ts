@@ -59,7 +59,8 @@ import type { SettingsProvider } from '@deepseek-ai/dsh-settings'
 import { settingsNamespace } from '@deepseek-ai/dsh-settings'
 import { TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import type { TypertContribution } from '@deepseek-ai/dsh-typert-registry'
-import { Config, detectLegacyKeys } from './config'
+import { Config } from './schema'
+import { detectLegacyKeys } from './config'
 import type { FallbacksConfig } from './config'
 
 /** The `fallbacks` settings namespace (registered when a settings service exists). */

@@ -46,7 +46,8 @@ import { installSettingsSection } from '@deepseek-ai/dsh-settings'
 import TypertGatewayService from '@deepseek-ai/dsh-api-gateway'
 import { TypertRegistry } from '@deepseek-ai/dsh-typert-registry'
 import { apply } from '../src/index.ts'
-import { Config, defaultFallbacksConfig, type FallbacksConfig } from '../src/config.ts'
+import { Config } from '../src/schema.ts'
+import { defaultFallbacksConfig, type FallbacksConfig } from '../src/config.ts'
 import {
   FALLBACKS_SETTINGS_NAMESPACE,
   FallbacksConfigGateway,

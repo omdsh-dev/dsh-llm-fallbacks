@@ -1,5 +1,8 @@
 /**
- * The `fallbacks` settings namespace: plugin config schema + defaults.
+ * The `fallbacks` settings namespace: config types + defaults (the
+ * schemastery `Config` schema lives in `./schema.ts`, host-only — this
+ * module must stay free of `@deepseek-ai/*` value imports so the client
+ * bundle never reaches schemastery).
  *
  * Two-block config model (plan fallbacks-role-config-model): block 1
  * `rootChain` — the root agent's single fallback chain (empty = no
@@ -19,13 +22,12 @@
  *
  * This module is pure logic: it must not import any `@deepseek-ai/*` package
  * (types included) — `FallbacksConfig` is the plugin's own type. Task 3
- * registers this schema with `installSettingsSection` under the `fallbacks`
- * settings namespace.
+ * registers the schemastery schema (see `./schema.ts`) with
+ * `installSettingsSection` under the `fallbacks` settings namespace.
  *
  * @module dsh-llm-fallbacks/config
  */
 
-import z from '@deepseek-ai/schemastery'
 import { parseSelector } from './selectors.ts'
 
 /** How a cooled-down model comes back (spec §4). */
@@ -240,52 +242,3 @@ export function detectLegacyKeys(source: Record<string, unknown>): string[] {
 function isRecordLike(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
-
-/**
- * Plugin Config schema (schemastery), mirroring {@link FallbacksConfig}.
- * Object fields are optional by default in schemastery; `.default()` fills
- * the spec defaults, `.required()` keeps mandatory fields. Unknown keys are
- * RETAINED by the composition (verified plan Task 1 Step 1) — that is what
- * lets `detectLegacyKeys` flag two-block-era leftovers (`chains` /
- * `roles.default`) on the composed object at startup (warn + gateway
- * `legacyKeys`, see `src/index.ts` apply()).
- */
-export const Config = z.object({
-  enabled: z.boolean().default(false),
-  triggerCodes: z.array(z.string()).default(['AUTH', 'QUOTA', 'RATE_LIMIT']),
-  rootChain: z.array(z.string()).default([]),
-  roles: z
-    .object({
-      list: z
-        .array(
-          z.object({
-            id: z.string().required(),
-            label: z.string().default(''),
-            description: z.string().default(''),
-            prompt: z.string(),
-            permissions: z.object({
-              allow: z.array(z.string()),
-              deny: z.array(z.string()),
-            }),
-            chain: z.array(z.string()),
-            fallback: z.union([z.const('inherit-root'), z.const('none')]).default('inherit-root'),
-          }),
-        )
-        .default([]),
-      rules: z
-        .array(
-          z.object({
-            origin: z.union([z.const('root'), z.const('subagent')]),
-            provider: z.string(),
-            model: z.string(),
-            role: z.string().required(),
-          }),
-        )
-        .default([]),
-    })
-    .default({ list: [], rules: [] }),
-  cooldownMs: z.number().default(300_000),
-  revertPolicy: z.union([z.const('cooldown-expiry'), z.const('never')]).default('cooldown-expiry'),
-  maxSwitchesPerStep: z.number().default(8),
-  alwaysModeRetryCap: z.number().default(5),
-}) as unknown as z<FallbacksConfig>
