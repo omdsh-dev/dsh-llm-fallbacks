@@ -94,7 +94,7 @@ if (fb !== undefined) {
 
 ### Lifecycle
 
-- **Available after `apply`**: during plugin apply, `ctx.get('llm-fallbacks')` returns the service object; the four functions are the same function references as the library re-exports, and `version` equals the package.json version.
+- **Available after `apply`**: during plugin apply, `ctx.get('llm-fallbacks')` returns the service object; the service's methods are the same function references as the library re-exports, and `version` equals the package.json version.
 - **Withdrawn after `dispose`**: the registration is automatically unregistered when the plugin fiber unloads (cordis 4 fiber-scoped); after plugin dispose, `ctx.get('llm-fallbacks')` is `undefined` — the strict `get` returns `undefined` for a missing implementation, never throwing.
 
 ### Type merging
