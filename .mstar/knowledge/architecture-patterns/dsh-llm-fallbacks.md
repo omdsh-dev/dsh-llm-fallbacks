@@ -147,6 +147,20 @@ order 100）、会话转录切换行（`conversationEvents` + `conversation.chat
 - **防御纪律**：读写路径**同用** `roleRows()`/`roleRules()` containment 守卫（legacy/畸形 composed roles 降级不崩）；client store `revertSeed` 镜像 save 的 writable/saving/generation 守卫；卡片 `seededIds` 每次 render 派生（无存储状态）。seeds.ts io-seamed（零 `@deepseek-ai/*` value import，client bundle purity）。
 - **已知边界**：settings user-layer 跨写者 RMW race 无 revision guard（与既有 set/reset 同源通道限制，last-writer-wins，有界可恢复）——R-002 defer，见 `dsh-gateway-settings-channel.md`。
 
+### Preset roles：bundled 预设角色（iter-20260816-fallbacks-preset-roles）
+
+插件自带 **7 个 omp 风格通用子代理角色**（designer / librarian / reviewer / scout / security-reviewer / sonic / task），默认 apply 时经既有 seeds 面**自声明**（插件自身成为 seeds 的调用方，零新 io seam）——dsh 宿主开箱即有通用角色 taxonomy：
+
+- **机制**：`src/presets.ts` 导出 `presetRoles: readonly SeedDeclaration[]`（纯数据，persona = 提炼自 omp bundled agents 提示词的精简指令文，快照 2026-08-16，spec 定稿逐字冻结）；config 键 `presets: 'bundled' | 'none'`（默认 `'bundled'`，**四处同步**：config.ts interface+default / schema.ts union-of-const+default（照抄 revertPolicy 先例）/ **gateway `CONFIG_KEYS`**（漏掉则 `set({presets})` 被未知键拒绝且 get wire 缺键）/ tests）；包根 re-export `presetRoles`（非 service 键，9-key service 零改动）。
+- **D9.3 自声明时序（apply 同步签名，关键约束）**：cordis async-apply 的 rejection 会经 `_reload` 把整条 fiber 打成 FAILED（插件整体不加载）→ **否决 async 化**；注入子一个 tick 后才激活（cordis Fiber `_reload` 微任务波按注册序激活）→ apply 尾部**同步 fire 必中 settings-unavailable stub** → 定案：apply 尾部（全部既有 wiring 之后）注册**新** `ctx.inject(['settings'])` 条件子，子激活回调内 `seeds.declare(presetRoles, seedsIo)` + 同步挂 `.catch`（terminal：logger.error 带 `llm-fallbacks: seeds:` 前缀、registry 不 commit、不阻断 apply、无进程内重试）。
+- **不得复用早注册的 writeRoles 注入子**：它注册先于 `installSettingsSection`，fire 时 `source()` 仍是 base-only → 以错误基线物化会**整键覆盖 operator user-layer 行**（写覆盖事故）；尾部新子保证 `writeRoles` live + `source()` composed（`setSource` 同步执行，无 load 竞态）。
+- **multi-fiber 门控**：fire 仅发生在成功注册 service 的 fiber（provide try 置 ownership 标志、dedupe catch 置 false）；second fiber 不 fire；declare 幂等 + settings 写队列串行为双兜底。
+- **`presets:'none'`**：fire 时读 live composed source 短路（零声明零写）；**无 `enabled` 门**（enabled:false 默认安装态仍物化 7 行——taxonomy 物化不在 no-op 短路范围内）。
+- **client 连锁**：host 默认值增长会连锁 client——`parseFallbacksConfig` fold 镜像（保持 `parseFallbacksConfig({})` toEqual `defaultFallbacksConfig` 不变量）+ `FallbacksCard` `assembleConfig` 携带新键（否则卡片 clean/dirty JSON 比较永久 dirty）；`export-surface.spec.ts` `LIBRARY_EXPORT_KEYS` SSOT 同步新导出。
+- **测试隔离纪律**：legacy 套件若断言 roles.list 精确形状，须 pin `presets:'none'`（默认 bundled 会物化 7 行改变观测值）；`tests/support/harness.ts` `cfg()` 默认 pin none。
+- 冲突/覆盖/幂等语义**零新逻辑**（完全沿用 seeds 既有 declare 语义：operator 同名行保留 + conflict warn、no-delta 零写、derived seeded 不落盘）。
+- 发布：0.1.6 minor；fragment 命名 preset roles 表面（presetRoles 导出 + presets 键）。
+
 ### 已知限制（open residual）
 
 - 失败码默认 ['AUTH','QUOTA','RATE_LIMIT']；5xx/TRANSPORT 等由 llm-retry 先行退避，预算耗尽后同样进入 fallback 决策，无需额外配置。
@@ -171,4 +185,4 @@ order 100）、会话转录切换行（`conversationEvents` + `conversation.chat
 - 设置页/目录/状态块：tests/fallbacks-store.spec.ts（61 用例）。
 - 真实宿主端到端剧本：docs/verification.md §4（QA gate）。
 
-*Source: iteration iter-20260810-llm-fallbacks（specs/llm-fallbacks-spec.md）+ iter-20260810-fallbacks-settings-ux（specs/fallbacks-settings-runtime-spec.md，D-1..D-6 提升）+ iter-20260810-fallbacks-settings-gateway + iter-20260811-fallbacks-mount-only（Plan B：role rules-only、marker 移除、patch 体系删除）+ iter-20260815-fallbacks-role-seeds（specs/fallbacks-role-seeds-spec.md：role-seeds 能力、D5 service API、双存储模型、R1–R4、release 0.1.4 minor），随实现验证。2026-08-12 刷新：由 patch 时代更新为纯挂载现实。2026-08-13 刷新：由链键 specificity / roles.default 时代更新为两块制现实。2026-08-15 刷新：新增 role-seeds 能力节（9-key service）。*
+*Source: iteration iter-20260810-llm-fallbacks（specs/llm-fallbacks-spec.md）+ iter-20260810-fallbacks-settings-ux（specs/fallbacks-settings-runtime-spec.md，D-1..D-6 提升）+ iter-20260810-fallbacks-settings-gateway + iter-20260811-fallbacks-mount-only（Plan B：role rules-only、marker 移除、patch 体系删除）+ iter-20260815-fallbacks-role-seeds（specs/fallbacks-role-seeds-spec.md：role-seeds 能力、D5 service API、双存储模型、R1–R4、release 0.1.4 minor），随实现验证。2026-08-12 刷新：由 patch 时代更新为纯挂载现实。2026-08-13 刷新：由链键 specificity / roles.default 时代更新为两块制现实。2026-08-15 刷新：新增 role-seeds 能力节（9-key service）。2026-08-16 刷新：新增 Preset roles 节（bundled 预设、D9.3 自声明时序、四处同步、client 连锁、0.1.6）。*

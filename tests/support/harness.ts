@@ -35,7 +35,13 @@ import { defaultFallbacksConfig, type FallbacksConfig } from '../../src/config.t
  * by its own explicit test).
  */
 export function cfg(overrides: Partial<FallbacksConfig> = {}): FallbacksConfig {
-  return { ...defaultFallbacksConfig, enabled: true, ...overrides }
+  // Default to `presets: 'none'` (fallbacks-preset-roles QC fix wave, qc1
+  // S-2): the bundled preset self-declaration would otherwise materialize 7
+  // preset rows on every legacy apply() that uses cfg(), isolating those
+  // suites from preset behavior they do not test. Tests that need the
+  // bundled behavior expand the default config explicitly
+  // (`{ ...defaultFallbacksConfig, presets: 'bundled' }`).
+  return { ...defaultFallbacksConfig, enabled: true, presets: 'none', ...overrides }
 }
 
 /** Fake agent + session; `setRoute` simulates the loop logging a new request header after a switch. */

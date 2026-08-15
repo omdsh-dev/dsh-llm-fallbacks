@@ -113,6 +113,16 @@ dsh 插件 = npm 包，package.json 声明 dsh.bundle.patch（指向 bundle/cord
 - 单点真相：服务方法 = 直接引用 index re-export 的同一函数（`toBe` 同一性测试钉住），不复制逻辑。
 - **有状态方法的身份（2026-08-15 实证）**：服务面可以是「无状态纯函数 + 有状态闭包」混合——legacy 纯函数方法与库 re-export **同一绑定**（`toBe` 同一），但 per-apply 有状态方法（如 seeds `declareSeeds`/`revertSeededPersona`）是**闭包**（捕获 apply() 内建的 manager），与库 re-export **不是**同一引用。文档必须区分两种身份（写「与库导出同一绑定」会过度声称，2026-08-15 修过此 doc bug）；测试同样分型钉住（纯函数 `toBe` vs 闭包行为）。
 
+### 条件注入子 fire 模式（apply 尾部触发后台动作，2026-08-16 实证）
+
+插件需要在 apply 后做**异步后台动作**（如经 settings 通道物化默认数据）时的安全模式：
+
+- **apply 保持同步签名**：cordis 虽 await thenable 返回值，但 rejection 经 `_reload` 使整条 fiber **FAILED**（插件整体不加载）——headless 组合会把运行时整个拖死；且 `void → Promise<void>` 是公共库面非 additive 变更。异步动作一律 fire-and-forget + **同步挂 `.catch`**（无 unhandled rejection 窗口）。
+- **不要在 apply 尾部同步触发**：`ctx.inject` 子一个 tick 后才激活，同步触发必中「服务未就绪」stub。定案：**注册新的条件注入子**（`ctx.inject(['settings'])`），子激活回调内执行动作；子不激活 = 服务结构性不存在 = 零副作用（headless 边界天然成立）。
+- **不要复用早注册的注入子**：早注册子激活时 `setSource`/绑定可能尚未就绪（base-only 基线 → 整键覆盖事故）；新 fire 点注册于 apply 最尾部，按注册序激活保证依赖先 live。
+- **multi-fiber 门控**：同一动作只应发生在成功注册 service 的 fiber（provide try 置 ownership 标志、dedupe catch 置 false）；second fiber 不重复执行；动作本身幂等（no-delta）作双兜底。
+- 失败面：logger.error 一条带前缀、状态不 commit、不阻断 apply、无进程内重试（下次 apply / 子再激活即重试）。测试须 `vi.waitFor`（fire 在激活后一个 tick）+ 负向断言 settle 窗口。
+
 ## Why This Matters
 
 每条模式都踩过坑（registry 404、closure-factory 契约、schemastery cast、waterfall 注册顺序），按此 playbook 可绕过全部已知陷阱；验证证据链见迭代 review bundle。

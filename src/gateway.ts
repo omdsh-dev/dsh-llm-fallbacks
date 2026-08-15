@@ -117,6 +117,7 @@ const CONFIG_KEYS: Record<string, true> = {
   revertPolicy: true,
   maxSwitchesPerStep: true,
   alwaysModeRetryCap: true,
+  presets: true,
 }
 
 /** Declared nested keys of the `roles` patch — anything else is rejected (qc2 S-1). */

@@ -62,4 +62,8 @@ export const Config = z.object({
   revertPolicy: z.union([z.const('cooldown-expiry'), z.const('never')]).default('cooldown-expiry'),
   maxSwitchesPerStep: z.number().default(8),
   alwaysModeRetryCap: z.number().default(5),
+  // 9th field (spec §9.4): union-of-const + default, same shape as
+  // `revertPolicy` above — illegal values fail at schema resolve, and the
+  // default guarantees every resolved config carries `presets`.
+  presets: z.union([z.const('bundled'), z.const('none')]).default('bundled'),
 }) as unknown as z<FallbacksConfig>

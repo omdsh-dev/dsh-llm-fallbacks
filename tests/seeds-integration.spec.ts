@@ -19,7 +19,7 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
-import { apply, type FallbacksService } from '../src/index.ts'
+import { apply, defaultFallbacksConfig, type FallbacksService } from '../src/index.ts'
 import {
   FALLBACKS_SETTINGS_NAMESPACE,
   type FallbacksConfigGateway,
@@ -45,7 +45,12 @@ function track(ctx: Context): Context {
 async function compose(): Promise<Context> {
   const ctx = track(new Context())
   await ctx.plugin(MemorySettings)
-  apply(ctx)
+  // Pin to `presets: 'none'` (fallbacks-preset-roles QC fix wave F-001): the
+  // bundled preset self-declaration would otherwise materialize 7 preset rows
+  // on apply and race the exact row-count/badge assertions below (same
+  // rationale as the T3 pins elsewhere in this file). This suite exercises
+  // companion-declared seeds, not presets.
+  apply(ctx, { ...defaultFallbacksConfig, presets: 'none' })
   await vi.waitFor(() => {
     expect(ctx.get('llm-fallbacks')).toBeDefined()
   })
@@ -125,7 +130,11 @@ describe('seeds → gateway integration (real apply)', () => {
   it('fiber swap: dispose + re-apply + re-declare keeps rows single and preserves an operator override (AC-1)', async () => {
     const first = track(new Context())
     await first.plugin(MemorySettings)
-    apply(first)
+    // Pin to `presets: 'none'` (fallbacks-preset-roles T3): the bundled
+    // preset self-declaration would otherwise materialize 7 preset rows on
+    // each apply and break the exact row-count/badge assertions below — this
+    // test exercises the fiber-swap seed semantics, not presets.
+    apply(first, { ...defaultFallbacksConfig, presets: 'none' })
     const fb = service(first)
     await vi.waitFor(async () => {
       await expect(fb.declareSeeds([{ id: 'architect', persona: 'seed default' }])).resolves.toEqual({
@@ -155,7 +164,7 @@ describe('seeds → gateway integration (real apply)', () => {
     const second = track(new Context())
     await second.plugin(MemorySettings)
     ;(second.settings as unknown as MemorySettings).seed(FALLBACKS_SETTINGS_NAMESPACE, persisted)
-    apply(second)
+    apply(second, { ...defaultFallbacksConfig, presets: 'none' })
 
     // Re-declare on the fresh fiber: the row exists with no previous default
     // in the fresh registry → conservative row-untouched, and the differing
@@ -181,7 +190,11 @@ describe('seeds → gateway integration (real apply)', () => {
     const ctx = track(new Context())
     await ctx.plugin(MemorySettings)
     const logs = captureLogs(ctx)
-    apply(ctx)
+    // Pin to `presets: 'none'` (fallbacks-preset-roles T3): the bundled
+    // preset self-declaration would otherwise pre-materialize 7 preset rows
+    // and break the exact single-row assertion below — this test exercises
+    // the declare skip/conflict warn channel, not presets.
+    apply(ctx, { ...defaultFallbacksConfig, presets: 'none' })
     const fb = service(ctx)
 
     // Activate the seed write channel first (the inject child settles a tick

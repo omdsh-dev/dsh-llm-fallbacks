@@ -170,6 +170,12 @@ gateway 响应加字段用 **additive** 模式：`readResult()` 统一附加（`
     测试 double 钉事件名集合（drift-visible）；`grep settings/changed|models/changed`
     零残留。
 
+### 注入子注册序 = 激活序；SettingsProvider init publish 清 seed（2026-08-16 实证）
+
+- **cordis 注入子按注册序同波激活**（Fiber `_reload` 先 `await Promise.resolve()`，微任务 FIFO）：apply 内多个 `ctx.inject([...])` 子按注册先后激活。依赖「先注册子先执行」的隐式顺序（如 writeRoles live 先于 preset fire）成立但脆弱——**新 fire 点应注册于 apply 最尾部**，并在注释钉住理由（preset 子见 `dsh-llm-fallbacks.md` Preset roles 节）。
+- **SettingsProvider init publish 清 seed（F-005 教训）**：cordis `Service` 构造同步 provide 但不跑 `[Service.init]`；dsh-settings init 的 `publish(await load())` 会**清掉 init 完成前 publish 的任何 seed**（测试 double 人造物；file-backed HMR 因文档持久化天然规避）。测试「settings 移除→恢复→注入子 re-fire」时，须手工构造 fresh provider 并在子再激活前同步 seed——四断言面（re-fire 证明 / no-delta 零写 / 无重复 / user section 未变）各自独立失败才算钉住。
+- **re-fire 语义**：settings 子每次激活 re-fire（无 per-apply 单发 guard）；declare 幂等 + registry re-commit 保持 badge 正确。
+
 ## Why This Matters
 
 - 设置数据面彻底离开 apiproxy expose 机制：插件命名空间在未打 patch 的宿主上不出现于
@@ -202,4 +208,4 @@ gateway 响应加字段用 **additive** 模式：`readResult()` 统一附加（`
 
 *Source: iteration iter-20260811-fallbacks-mount-only `guides/gateway-channel-design.md`（ADR-1..ADR-5 契约），
 与 dsh-advisor `src/gateway.ts` 对照验证。2026-08-12 compound 提升（结构化重写为模式层）。
-2026-08-15 刷新：跨写者 RMW race（R-002）、读写 containment 守卫、additive wire 字段先例。*
+2026-08-15 刷新：跨写者 RMW race（R-002）、读写 containment 守卫、additive wire 字段先例。2026-08-16 刷新：注入子注册序=激活序、SettingsProvider init publish 清 seed（iter-20260816-fallbacks-preset-roles F-005 实证）。*
