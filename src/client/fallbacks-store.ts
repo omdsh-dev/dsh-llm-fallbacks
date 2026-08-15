@@ -195,13 +195,9 @@ export function parseFallbacksConfig(value: unknown): FallbacksConfig {
     if (!isRecord(role) || typeof role.id !== 'string') {
       throw new TypeError(`fallbacks descriptor roles.list[${String(index)}] must have a string id`)
     }
-    const label = role.label
-    if (label !== undefined && typeof label !== 'string') {
-      throw new TypeError(`fallbacks descriptor roles.list[${String(index)}].label must be a string`)
-    }
-    const description = role.description
-    if (description !== undefined && typeof description !== 'string') {
-      throw new TypeError(`fallbacks descriptor roles.list[${String(index)}].description must be a string`)
+    const persona = role.persona
+    if (persona !== undefined && typeof persona !== 'string') {
+      throw new TypeError(`fallbacks descriptor roles.list[${String(index)}].persona must be a string`)
     }
     // prompt/permissions are schema-reserved for the next iteration — parsed
     // and preserved on a read, but never edited by this round's rows.
@@ -225,8 +221,7 @@ export function parseFallbacksConfig(value: unknown): FallbacksConfig {
     }
     return {
       id: role.id,
-      label: label ?? '',
-      description: description ?? '',
+      persona: persona ?? '',
       ...(prompt === undefined ? {} : { prompt }),
       ...(permissions === undefined ? {} : { permissions }),
       chain: (chain as string[] | undefined) ?? [],
@@ -467,8 +462,7 @@ export function rowsToRootChain(rows: readonly RootChainRow[]): string[] {
  */
 export interface RoleRow {
   id: string
-  label: string
-  description: string
+  persona: string
   selectors: ChainSelectorRow[]
   fallback: FallbackStrategy
 }
@@ -477,8 +471,7 @@ export interface RoleRow {
 export function rolesToRows(roles: readonly FallbacksRole[], catalog?: CatalogLookup): RoleRow[] {
   return roles.map(role => ({
     id: role.id,
-    label: role.label,
-    description: role.description,
+    persona: role.persona,
     selectors: (role.chain ?? []).map(entry => entryToSelectorRow(entry, catalog)),
     fallback: role.fallback ?? 'inherit-root',
   }))
@@ -488,8 +481,7 @@ export function rolesToRows(roles: readonly FallbacksRole[], catalog?: CatalogLo
 export function rowsToRoles(rows: readonly RoleRow[]): FallbacksRole[] {
   return rows.map(row => ({
     id: row.id.trim(),
-    label: row.label,
-    description: row.description,
+    persona: row.persona,
     chain: row.selectors.map(selectorRowToRaw).filter(entry => entry !== ''),
     fallback: row.fallback,
   }))
@@ -512,8 +504,7 @@ export function mergeRoleExtras(rows: readonly RoleRow[], originalRoles: readonl
     if (original === undefined) return role
     return {
       id: role.id,
-      label: role.label,
-      description: role.description,
+      persona: role.persona,
       ...(original.prompt === undefined ? {} : { prompt: original.prompt }),
       ...(original.permissions === undefined ? {} : { permissions: original.permissions }),
       chain: role.chain,

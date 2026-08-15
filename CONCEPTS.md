@@ -30,7 +30,7 @@ agent 失败时的有序降级 selector 列表。两块制配置模型下链分�
 *Avoid:* `chains` 键→链映射（旧字段，已删除）
 
 ### 两块制配置模型（two-block config model）
-fallbacks 配置的自明结构：块 1 = `rootChain`（root 主代理一条链），块 2 = 声明式角色实体 `roles.list`（id/label/description/chain/fallback）+ `roles.rules`（origin/provider/model → 角色 id 或 `inherit` 的引用）。心智模型只有两级：root 一条、角色各自一条（默认继承 root）。
+fallbacks 配置的自明结构：块 1 = `rootChain`（root 主代理一条链），块 2 = 声明式角色实体 `roles.list`（id/persona/chain/fallback）+ `roles.rules`（origin/provider/model → 角色 id 或 `inherit` 的引用）。心智模型只有两级：root 一条、角色各自一条（默认继承 root）。
 *Avoid:* `chains` 键→链映射、`roles.default`（旧模型，已删除）
 
 ### inherit（内置角色 id）

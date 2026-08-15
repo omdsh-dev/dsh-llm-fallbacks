@@ -117,7 +117,7 @@ describe('llm-fallbacks named cordis service', () => {
       enabled: true,
       rootChain: ['openai/gpt-4o'],
       roles: {
-        list: [{ id: 'coder', label: 'Coder', description: '', chain: ['anthropic/claude-3-5-sonnet'] }],
+        list: [{ id: 'coder', persona: '', chain: ['anthropic/claude-3-5-sonnet'] }],
         rules: [{ origin: 'root', role: 'coder' }],
       },
     }

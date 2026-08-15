@@ -18,7 +18,7 @@ dsh plugin --profile web add dsh-llm-fallbacks   # pin a version with @<version>
 ## Features
 
 - **Automatic fallback for root and subagents**: any agent switches down the chain to the next available provider/model on model failure — no manual model switching.
-- **Two-block config**: block 1 `rootChain` — the root agent's single fallback chain (empty = root does not fall back); block 2 declared roles — `roles.list` role entities (id/label/description/chain/fallback) that `roles.rules` reference by id (or the built-in `inherit`); no rule match → `inherit` → `rootChain`.
+- **Two-block config**: block 1 `rootChain` — the root agent's single fallback chain (empty = root does not fall back); block 2 declared roles — `roles.list` role entities (id/persona/chain/fallback) that `roles.rules` reference by id (or the built-in `inherit`); no rule match → `inherit` → `rootChain`.
 - **Entry syntax**: chain entries are `provider/model` (exact switch) or `provider/*` (keep the failed model id, switch provider only) — the old chain-key namespace (provider/model keys, role-name keys) is gone.
 - **Cooldown and revert**: models that were switched away from / failed are not re-selected during the cooldown period; `revertPolicy: cooldown-expiry` automatically returns to the primary model when the cooldown expires, while `never` does not return within the session.
 - **Visible behavior**: every switch appends a persisted session event `fallbacks/switch` (from/to/role/reason), alongside info-level logs (candidate attempt order and skip reasons) and the read-only status block on the Settings → 插件配置 → Fallbacks card — no silent model switching.
@@ -85,8 +85,7 @@ fallbacks:
   roles:                   # block 2: declare roles first, then let rules reference them
     list:
       - id: reviewer       # role entity: unique id (/^[a-z0-9-]{1,32}$/); "inherit" is reserved
-        label: Reviewer
-        description: Code-review subagents
+        persona: Code-review subagents
         chain:
           - openai/gpt-4o-mini
         fallback: inherit-root   # default: role chain, then append rootChain
@@ -95,7 +94,7 @@ fallbacks:
         role: reviewer
 ```
 
-Roles are declared entities: `roles.list` holds role cards (id/label/description + chain/fallback), and `roles.rules` match origin/provider/model in order to a declared role id or the built-in `inherit` (first match wins) — **no rule match → `inherit` → `rootChain`**. A declared role is only ever hit when a rule references it. A role without a chain is meaningless — the settings card blocks saving it and the host warns at startup; give every declared role a chain, or point its rules at the built-in `inherit`. (A hand-written YAML role with a missing/empty chain is not fatal: with `fallback: inherit-root` (the default) an empty chain still falls back to `rootChain`; with `fallback: none` an empty chain leaves no candidates and the request passes through untouched — either way it is only a startup warn.) The legacy chain-key namespace and role-default field are gone (migration table: [docs/configuration.md](docs/configuration.md)).
+Roles are declared entities: `roles.list` holds role cards (id/persona + chain/fallback), and `roles.rules` match origin/provider/model in order to a declared role id or the built-in `inherit` (first match wins) — **no rule match → `inherit` → `rootChain`**. A declared role is only ever hit when a rule references it. A role without a chain is meaningless — the settings card blocks saving it and the host warns at startup; give every declared role a chain, or point its rules at the built-in `inherit`. (A hand-written YAML role with a missing/empty chain is not fatal: with `fallback: inherit-root` (the default) an empty chain still falls back to `rootChain`; with `fallback: none` an empty chain leaves no candidates and the request passes through untouched — either way it is only a startup warn.) The legacy chain-key namespace and role-default field are gone (migration table: [docs/configuration.md](docs/configuration.md)).
 
 Save and restart the web session for the changes to take effect. The feature switch `fallbacks.enabled` **defaults to off (`false`)** — the plugin only engages once it is turned on; `triggerCodes` defaults to `AUTH` / `QUOTA` / `RATE_LIMIT`; and with **no `rootChain`/role chains configured the behavior is identical to not having the plugin installed**. More examples (role entities, fallback strategies, rules referencing `inherit`) → [docs/configuration.md](docs/configuration.md).
 

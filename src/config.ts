@@ -7,7 +7,7 @@
  * Two-block config model (plan fallbacks-role-config-model): block 1
  * `rootChain` — the root agent's single fallback chain (empty = no
  * degradation) — plus block 2 declared role entities: `roles.list`
- * (id/label/description/prompt?/permissions?/chain?/fallback) and
+ * (id/persona/prompt?/permissions?/chain?/fallback) and
  * `roles.rules` enum references into the declared ids (or the built-in
  * `'inherit'` role). The legacy `chains` / `roles.default` keys are gone
  * from the schema and type (zero residual, migration table excepted); the
@@ -57,8 +57,8 @@ export type FallbackStrategy = 'inherit-root' | 'none'
  */
 export interface FallbacksRole {
   id: string
-  label: string
-  description: string
+  /** Personality hint (人格提示) — free text, never validated. */
+  persona: string
   /** Reserved for next iteration — no consumer this round. */
   prompt?: string
   /** Reserved for next iteration — no consumer this round. */
@@ -131,7 +131,7 @@ export interface FallbacksConfigLogger {
  * `rootChain`/role-chain selector legality, and the role model-config
  * requirement (a declared role with a missing/empty chain warns — a role
  * without a model config is meaningless, plan fallbacks-feedback-round
- * T2). `label`/`description` are free text and are deliberately not
+ * T2). `persona` is free text and is deliberately not
  * validated. Each violation emits one `llm-fallbacks: ...` warn and "does
  * not take effect" — the config stays usable (spec §4 / AC-4
  * warn-not-crash semantics).
@@ -204,12 +204,14 @@ export function validateFallbacksConfig(config: FallbacksConfig, logger: Fallbac
 /**
  * Detect legacy (two-block-era) leftovers in a config SOURCE — the composed
  * object `source()` returns, or a raw settings document. Recognizes the
- * removed `chains` key, the removed `roles.default` field, and
- * `roles.rules[].role` values that reference no declared `roles.list` id
- * and are not the built-in `'inherit'`. Returns descriptive key/role names;
- * the gateway attaches them as `get().legacyKeys` so the client can show a
- * migration banner (spec §9 — the source is read directly because
- * schemastery retains unknown keys, verified plan Task 1 Step 1).
+ * removed `chains` key, the removed `roles.default` field, the removed
+ * role-entity fields `roles.list[].label` / `roles.list[].description`
+ * (renamed to `persona`), and `roles.rules[].role` values that reference no
+ * declared `roles.list` id and are not the built-in `'inherit'`. Returns
+ * descriptive key/role names; the gateway attaches them as `get().legacyKeys`
+ * so the client can show a migration banner (spec §9 — the source is read
+ * directly because schemastery retains unknown keys, verified plan Task 1
+ * Step 1).
  */
 export function detectLegacyKeys(source: Record<string, unknown>): string[] {
   const keys: string[] = []
@@ -220,7 +222,10 @@ export function detectLegacyKeys(source: Record<string, unknown>): string[] {
     const declared = new Set<string>()
     if (Array.isArray(roles.list)) {
       for (const item of roles.list) {
-        if (isRecordLike(item) && typeof item.id === 'string') declared.add(item.id)
+        if (!isRecordLike(item)) continue
+        if (typeof item.id === 'string') declared.add(item.id)
+        if (Object.hasOwn(item, 'label')) keys.push('roles.list[].label')
+        if (Object.hasOwn(item, 'description')) keys.push('roles.list[].description')
       }
     }
     if (Array.isArray(roles.rules)) {

@@ -68,7 +68,7 @@ function captureLogs(): Array<{ type: string; args: unknown[] }> {
 
 /** A declared role entity with the given chain + fallback (spec defaults elsewhere). */
 function role(id: string, chain: string[], fallback: 'inherit-root' | 'none' = 'inherit-root') {
-  return { id, label: '', description: '', chain, fallback }
+  return { id, persona: '', chain, fallback }
 }
 
 describe('request-error → request switch closed loop', () => {

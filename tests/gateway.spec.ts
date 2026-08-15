@@ -438,12 +438,12 @@ describe('set validation (Config schema, unknown-key rejection unchanged)', () =
     await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
 
     await gateway.set({
-      roles: { list: [{ id: 'coder', label: 'Coder', description: 'Coding subagent' }], rules: [{ role: 'coder' }] },
+      roles: { list: [{ id: 'coder', persona: 'Coding subagent' }], rules: [{ role: 'coder' }] },
     } as never)
     const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)!
     expect(descriptor.user).toEqual({
       roles: {
-        list: [{ id: 'coder', label: 'Coder', description: 'Coding subagent' }],
+        list: [{ id: 'coder', persona: 'Coding subagent' }],
         rules: [{ role: 'coder' }],
       },
     })

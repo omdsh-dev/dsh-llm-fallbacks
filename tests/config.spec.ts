@@ -33,7 +33,7 @@ function messagesOf(logger: { warn: ReturnType<typeof vi.fn> }): string[] {
 }
 
 function role(overrides: Partial<FallbacksRole> = {}): FallbacksRole {
-  return { id: 'coder', label: 'Coder', description: 'Coding subagent', ...overrides }
+  return { id: 'coder', persona: 'Coding subagent', ...overrides }
 }
 
 describe('fallbacks Config schema (two-block model)', () => {
@@ -46,7 +46,7 @@ describe('fallbacks Config schema (two-block model)', () => {
       cooldownMs: 1_000,
       rootChain: ['other/gpt-4o'],
       roles: {
-        list: [{ id: 'reviewer', label: 'Reviewer', description: '' }],
+        list: [{ id: 'reviewer', persona: '' }],
         rules: [{ role: 'reviewer' }],
       },
     } as unknown as FallbacksConfig)
@@ -54,8 +54,7 @@ describe('fallbacks Config schema (two-block model)', () => {
     expect(resolved.rootChain).toEqual(['other/gpt-4o'])
     expect(resolved.roles.list).toEqual([{
       id: 'reviewer',
-      label: 'Reviewer',
-      description: '',
+      persona: '',
       // schemastery fills absent object/array fields with empty defaults —
       // semantically "no own chain / no permissions", same as absent.
       permissions: { allow: [], deny: [] },
@@ -71,12 +70,11 @@ describe('fallbacks Config schema (two-block model)', () => {
 
   it('composed role entities carry the fallback default and keep string-optional fields absent', () => {
     const resolved = Config({
-      roles: { list: [{ id: 'coder', label: 'Coder', description: 'd' }] },
+      roles: { list: [{ id: 'coder', persona: 'd' }] },
     } as unknown as FallbacksConfig)
     expect(resolved.roles.list[0]).toEqual({
       id: 'coder',
-      label: 'Coder',
-      description: 'd',
+      persona: 'd',
       // absent object/array fields compose to empty defaults (schemastery);
       // a string-optional field (prompt) stays absent.
       permissions: { allow: [], deny: [] },
@@ -87,7 +85,7 @@ describe('fallbacks Config schema (two-block model)', () => {
   })
 
   it('keeps role id mandatory and rule role mandatory in the schema', () => {
-    expect(() => Config({ roles: { list: [{ label: 'x', description: '' }] } } as unknown as FallbacksConfig))
+    expect(() => Config({ roles: { list: [{ persona: 'x' }] } } as unknown as FallbacksConfig))
       .toThrow(/id/)
     expect(() => Config({ roles: { rules: [{ provider: 'openai' }] } } as unknown as FallbacksConfig))
       .toThrow(/role/)
@@ -95,16 +93,16 @@ describe('fallbacks Config schema (two-block model)', () => {
 })
 
 describe('validateFallbacksConfig — role ids (format / uniqueness / reserved word)', () => {
-  it('accepts valid ids and free-text label/description without a single warn', () => {
+  it('accepts valid ids and free-text persona without a single warn', () => {
     const { logger } = warnLogger()
     validateFallbacksConfig({
       ...defaultFallbacksConfig,
       roles: {
         list: [
           // Roles carry a chain so the role model-config requirement (T2)
-          // does not fire — the zero-warn assertion pins id/label/description.
-          role({ id: 'coder', label: '任意 label，含特殊字符 !@#', description: '自由文本', chain: ['openai/gpt-4o'] }),
-          role({ id: 'a1-b2', label: '', description: '', chain: ['other/gpt-4o-mini'] }),
+          // does not fire — the zero-warn assertion pins id/persona.
+          role({ id: 'coder', persona: '任意 persona，含特殊字符 !@#', chain: ['openai/gpt-4o'] }),
+          role({ id: 'a1-b2', persona: '', chain: ['other/gpt-4o-mini'] }),
         ],
         rules: [],
       },
@@ -372,5 +370,17 @@ describe('detectLegacyKeys — three legacy classes', () => {
       chains: { default: ['a/b'] },
       roles: { default: 'reviewer', list: [], rules: [{ role: 'reviewer' }, { role: 'inherit' }] },
     })).toEqual(['chains', 'roles.default', 'roles.rules[].role: reviewer'])
+  })
+
+  it('detects the removed role-entity label / description fields (renamed to persona)', () => {
+    expect(detectLegacyKeys({
+      roles: {
+        list: [
+          { id: 'coder', label: 'Coder', description: 'Code review subagent' },
+          { id: 'cheap', description: 'Cost first' },
+        ],
+        rules: [],
+      },
+    })).toEqual(['roles.list[].label', 'roles.list[].description', 'roles.list[].description'])
   })
 })

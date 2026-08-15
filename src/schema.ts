@@ -35,8 +35,7 @@ export const Config = z.object({
         .array(
           z.object({
             id: z.string().required(),
-            label: z.string().default(''),
-            description: z.string().default(''),
+            persona: z.string().default(''),
             prompt: z.string(),
             permissions: z.object({
               allow: z.array(z.string()),
