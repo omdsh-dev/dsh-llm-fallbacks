@@ -55,6 +55,9 @@ const LIBRARY_EXPORT_KEYS = [
   // class is the only runtime value among the seeds exports; the §9.1 types
   // are compile-time only (pinned in the type-exports block below).
   'FallbacksSeedManager',
+  // Bundled preset roles (plan fallbacks-preset-roles T3) — the 7 preset
+  // declarations re-exported from the package root (pure data module).
+  'presetRoles',
 ] as const
 
 describe('export surface: runtime values', () => {
@@ -84,6 +87,7 @@ describe('export surface: runtime values', () => {
     provide: 'object',
     SelectorError: 'function',
     FallbacksSeedManager: 'function',
+    presetRoles: 'object',
   }
 
   // The type map and the docs-inventory SSOT must cover EXACTLY the same

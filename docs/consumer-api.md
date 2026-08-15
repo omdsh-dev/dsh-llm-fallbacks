@@ -66,8 +66,7 @@ if (fb !== undefined) await fb.declareSeeds(presetRoles)
 // (b) class face: new FallbacksSeedManager(logger).declare(presetRoles, seedsIo)
 ```
 
-Operator-facing behavior of the automatic declaration (config key `presets: 'bundled' | 'none'`, upgrade / conflict / deletion semantics) → [docs/configuration.md](configuration.md) → Preset roles.
-| `presetRoles` | The 7 bundled omp-style preset role declarations — `readonly SeedDeclaration[]`, pure data module, the exact payload the plugin self-declares on apply. Derivation: omp bundled agent prompts `packages/coding-agent/src/prompts/agents/`, snapshot 2026-08-16; persona text frozen per the plugin spec §9.2. See [Preset roles](#preset-roles). |
+Operator-facing behavior of the automatic declaration (config key `presets: 'bundled' | 'none'`, upgrade / conflict / deletion semantics) → [docs/configuration.md → Preset roles](configuration.md#preset-roles-presets-key).
 
 ### Type exports
 
