@@ -43,6 +43,7 @@ import type { FallbacksCardProps } from '../src/client/FallbacksCard.tsx'
 import { FallbacksSettingsController } from '../src/client/fallbacks-store.ts'
 import type { FallbacksSettingsState } from '../src/client/fallbacks-store.ts'
 import type { SeedsWireStatus } from '../src/seeds.ts'
+import { presetRoles } from '../src/presets.ts'
 import { apply } from '../src/client/index.ts'
 import { defaultFallbacksConfig } from '../src/config.ts'
 import { en, zh } from '../src/client/locales.ts'
@@ -1451,5 +1452,77 @@ describe('FallbacksCard seeded roles (plan fallbacks-role-seeds T5)', () => {
     // back in the draft.
     expect((within(rolesGroup).getAllByLabelText(en['roles.persona'])[0] as HTMLTextAreaElement).value)
       .toBe('Designs systems')
+  })
+
+  it('locks the seeded row id only: non-seeded ids stay editable, personas stay editable (R2 id-only)', async () => {
+    const { view, props } = await mountCard({
+      config: SEEDED_CONFIG,
+      seeds: [{ id: 'architect', overridden: false }],
+    })
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    // SEEDED_CONFIG declares architect (seeded) before reviewer (ordinary).
+    const ids = screen.getAllByLabelText(en['roles.id'])
+    expect(ids).toHaveLength(2)
+    expect((ids[0] as HTMLInputElement).value).toBe('architect')
+    expect((ids[1] as HTMLInputElement).value).toBe('reviewer')
+    // Only the seeded row's id input is inert; the non-seeded row keeps an
+    // editable id (R2 — renaming a seeded row would detach it from the
+    // seed registry, so the id is immutable).
+    expect((ids[0] as HTMLInputElement).disabled).toBe(true)
+    expect((ids[1] as HTMLInputElement).disabled).toBe(false)
+    // The lock covers the id ONLY: the seeded row's persona textarea stays
+    // editable (R3 — override/revert remain reachable).
+    const personas = screen.getAllByLabelText(en['roles.persona'])
+    expect((personas[0] as HTMLTextAreaElement).disabled).toBe(false)
+    expect((personas[1] as HTMLTextAreaElement).disabled).toBe(false)
+  })
+
+  it('locks the seeded id in override state too (R2 holds across default and override)', async () => {
+    const { view, props } = await mountCard({
+      config: SEEDED_CONFIG,
+      seeds: [{ id: 'architect', overridden: true }],
+    })
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    const ids = screen.getAllByLabelText(en['roles.id'])
+    expect(ids).toHaveLength(2)
+    expect((ids[0] as HTMLInputElement).value).toBe('architect')
+    expect((ids[1] as HTMLInputElement).value).toBe('reviewer')
+    expect((ids[0] as HTMLInputElement).disabled).toBe(true)
+    expect((ids[1] as HTMLInputElement).disabled).toBe(false)
+  })
+
+  it('locks preset-materialized rows too: a designer preset row id is disabled (regression pin)', async () => {
+    // Presets land as seeded two-key rows through the seeds face (spec
+    // §9.3), so a preset row IS a seeded row — the same `seededIds`
+    // derivation must lock its id (R2, plan fallbacks-preset-roles). The
+    // persona rides the frozen presets source so the fixture is a faithful
+    // materialized row, not invented text (presets.spec.ts pins the
+    // personas verbatim to spec §9.2).
+    const designer = presetRoles.find((role) => role.id === 'designer')!
+    const config: typeof defaultFallbacksConfig = {
+      ...defaultFallbacksConfig,
+      enabled: true,
+      roles: {
+        list: [
+          { id: 'designer', persona: designer.persona, chain: [], fallback: 'inherit-root' },
+          { id: 'reviewer', persona: 'Reviews code', chain: ['anthropic/claude-3-5-sonnet'], fallback: 'inherit-root' },
+        ],
+        rules: [],
+      },
+    }
+    const { view, props } = await mountCard({
+      config,
+      seeds: [{ id: 'designer', overridden: false }],
+    })
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    const ids = screen.getAllByLabelText(en['roles.id'])
+    expect(ids).toHaveLength(2)
+    expect((ids[0] as HTMLInputElement).value).toBe('designer')
+    expect((ids[1] as HTMLInputElement).value).toBe('reviewer')
+    expect((ids[0] as HTMLInputElement).disabled).toBe(true)
+    expect((ids[1] as HTMLInputElement).disabled).toBe(false)
   })
 })
