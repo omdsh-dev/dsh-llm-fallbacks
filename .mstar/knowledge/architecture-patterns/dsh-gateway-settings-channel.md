@@ -1,7 +1,7 @@
 ---
 module: dsh-plugin-gateway
 date: 2026-08-12
-last_updated: 2026-08-13
+last_updated: 2026-08-15
 problem_type: architecture_pattern
 category: architecture-patterns
 severity: medium
@@ -114,6 +114,31 @@ gateway 通道是普通 RPC merge/replace，**无版本戳**。迁移时删除�
 既有错误横幅、表单保持可编辑供重试。这是 store 保存路径唯一允许的行为变化，需新单测
 钉住（「set 拒绝 → 错误横幅」替换旧「冲突」用例）。
 
+### 跨写者 RMW race（无 revision guard 的代价，2026-08-15 实证）
+
+`mergeLayers` 数组整替 + 无版本戳 → 任何「fresh-read → 计算 → `settings.update`」的写路径
+（gateway `set`/`reset`、seeds `declare`/`revert`）之间没有互斥：读与写两个 await 点之间
+另一写者整替落地 → **last-writer-wins**，输方改动从 user layer 消失。影响有界且可恢复：
+registry 存活、re-declare 重新物化、card-save 丢失在 post-write read 可见；低概率（低频
+写）。这是**通道既有限制**（非任一迭代引入），修复 = 跨写者 revision guard / compare-and-
+retry = settings-channel 迭代的产品决策（R-002 defer，Durable Roadmap：下一
+settings-channel 迭代；trigger：第三并发写者或该迭代启动）。
+
+### 读写路径同用 containment 守卫
+
+schemastery/mergeLayers 非严格组合会保留 legacy/畸形嵌套键（如两块制前的
+`roles.default`、非数组 `list`）。**读路径必须容忍**（降级为 `[]`/默认，不崩——「readbacks
+must never crash」）；**写路径必须与读路径共用同一守卫**（`roleRows()`/`roleRules()`）——
+否则同一畸形源在写路径抛裸 TypeError（RPC 错误面）而读路径静默降级，语义不对称。2026-08-15
+fix wave 实证：declare/revert 直读 `config.roles.list` 被收口到守卫。
+
+### Additive wire 字段（旧客户端兼容先例）
+
+gateway 响应加字段用 **additive** 模式：`readResult()` 统一附加（`legacyKeys`、`seeds`），
+缺字段的旧客户端忽略、老响应对新客户端 keep-last——wire 兼容前向/后向都不需要版本协商。
+新端点（如 `fallbacks/revert-seed`）在 `fallbacksTypertContribution()` 增加 invocation
+即可，`ROLES_KEYS`/`CONFIG_KEYS` 等既有键集合不动。
+
 ### 写前校验与「不要发明 resolver」
 
 - settings schema **非严格**（未知键静默合并），gateway 必须在写前显式拒绝未知键（与
@@ -168,11 +193,13 @@ gateway 通道是普通 RPC merge/replace，**无版本戳**。迁移时删除�
 - **dsh-advisor**：`AdvisorConfigGateway` + `advisorTypertContribution()`（get/set 两
   方法；`resolveAdvisorConfig` 有 enabled 解析器——fallbacks 无，见下）。
 - **dsh-llm-fallbacks**：`FallbacksConfigGateway` + `fallbacksTypertContribution()`
-  （get/set/reset 三方法；无解析器；实例细节与 store 迁移 →
+  （get/set/reset 三方法 + seeds wire `seeds` 字段 + `fallbacks/revert-seed` 端点
+  (2026-08-15)；无解析器；实例细节与 store 迁移 →
   `architecture-patterns/dsh-llm-fallbacks.md`「设置命名空间 web 暴露」节）。
 - 测试缝：`tests/gateway.spec.ts`（get 规范化、set 未知键拒绝/空 patch no-op、reset 走
   replace、KD-G5 无 settings 服务三分支、畸形 user layer 不崩 get）。
 - 展示挂载契约（`settings.section` slot 等）→ `architecture-patterns/dsh-settings-slot-contract.md`。
 
 *Source: iteration iter-20260811-fallbacks-mount-only `guides/gateway-channel-design.md`（ADR-1..ADR-5 契约），
-与 dsh-advisor `src/gateway.ts` 对照验证。2026-08-12 compound 提升（结构化重写为模式层）。*
+与 dsh-advisor `src/gateway.ts` 对照验证。2026-08-12 compound 提升（结构化重写为模式层）。
+2026-08-15 刷新：跨写者 RMW race（R-002）、读写 containment 守卫、additive wire 字段先例。*
