@@ -349,6 +349,11 @@ function ChainSelectorEditor({
               // Cascade: a DIFFERENT provider clears the model choice (D-3);
               // re-picking the same provider keeps the model (S-e).
               if (event.target.value === providerRaw) return
+              // A legacy wildcard read-back row switching provider KEEPS
+              // `wildcard: true` — an intentional escape hatch: the GUI never
+              // creates wildcards, but a `provider/*` entry moved onto another
+              // provider stays a wildcard until a concrete model is picked
+              // (only the model change converts it to an exact entry, F-004).
               onChange({ provider: classifyProvider(event.target.value, catalog), model: null })
             }}
           >
@@ -401,7 +406,11 @@ function ChainSelectorEditor({
           <InfoHint label={t('catalog.outside.tooltip')} disabled={disabled} />
         </span>
       )}
-      {selector.wildcard && (
+      {/* The legacy-conversion hint only renders when a conversion is
+          actually possible: with the model select disabled (no catalog group
+          / empty provider / outside provider without an outside model) there
+          is nothing to pick, so the hint stays off (N-003/N-004). */}
+      {selector.wildcard && !modelDisabled && (
         <span className={css.hint}>{t('chains.selector.wildcardLegacy')}</span>
       )}
       <div className={css.cardFoot}>
@@ -1212,20 +1221,27 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                 </Button>
               </div>
               <div className={css.field} role="group" aria-labelledby="fallbacks-advanced">
-                {/* `disabled` is not set on the toggle button: the wrapping
-                    fieldset propagates it to native buttons, and the click
-                    gate below covers the writable-only toggle; aria-expanded
-                    stays derived (forced true in the read-only view). */}
+                {/* The toggle is explicitly `disabled` in a read-only view
+                    (`!writable` — the same value the wrapping fieldset uses,
+                    made explicit so the inert state survives jsdom, which
+                    does not propagate fieldset[disabled] to buttons); the
+                    click gate below covers the writable-only toggle;
+                    aria-expanded stays derived (forced true in the read-only
+                    view). The group's accessible name rides a STATIC span id
+                    (not the button's flipping aria-label): `fallbacks-advanced`
+                    names the inner text span, so the group name is always
+                    "Advanced options"; aria-controls is conditional because
+                    the body unmounts while collapsed (F-006). */}
                 <button
                   type="button"
-                  id="fallbacks-advanced"
                   className={css.sectionToggle}
+                  disabled={!writable}
                   aria-expanded={advancedVisible}
-                  aria-controls="fallbacks-advanced-body"
+                  aria-controls={advancedVisible ? 'fallbacks-advanced-body' : undefined}
                   aria-label={t(advancedVisible ? 'advanced.collapse' : 'advanced.expand')}
                   onClick={() => { if (writable) setAdvancedOpen(!advancedOpen) }}
                 >
-                  <span className={css.sectionToggleText}>{t('advanced.label')}</span>
+                  <span id="fallbacks-advanced" className={css.sectionToggleText}>{t('advanced.label')}</span>
                   <IconChevronDownOutline14 className={advancedVisible ? `${css.chevron} ${css.chevronOpen}` : css.chevron} />
                 </button>
                 {advancedVisible && (
