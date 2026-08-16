@@ -6,8 +6,19 @@ problem_type: architecture_pattern
 category: architecture-patterns
 severity: medium
 plan_id: llm-fallbacks-settings-style
-applies_when: ["为 dsh web 添加新设置页/设置条目/头部操作", "判断某设置能力是否可经 slot 挂载而无需改 shell", "评估为 section 提供专属导航图标", "在官方插件配置页注册插件设置卡（settings.plugin.item）"]
-tags: [dsh, settings, slots, ui-settings, plugin, shell, navIcon]
+applies_when:
+  - 为 dsh web 添加新设置页/设置条目/头部操作
+  - 判断某设置能力是否可经 slot 挂载而无需改 shell
+  - 评估为 section 提供专属导航图标
+  - 在官方插件配置页注册插件设置卡（settings.plugin.item）
+tags:
+  - dsh
+  - settings
+  - slots
+  - ui-settings
+  - plugin
+  - shell
+  - navIcon
 ---
 
 # dsh Web Settings slot 契约（挂载新设置条目，不改 shell）
@@ -15,10 +26,10 @@ tags: [dsh, settings, slots, ui-settings, plugin, shell, navIcon]
 ## Context
 
 dsh web settings 是**纯组合面（shell 零自有内容）**——所有条目通过 slot 注册进来，契约的
-权威定义在 dsh-private `packages/client/ui-settings/src/client/contract/slots.ts`。契约设计
+权威定义在 dsh-private `{HOST}/packages/client/ui-settings/src/client/contract/slots.ts`。契约设计
 意图原文："A feature owns its settings surface — adding a setting never means editing the
 shell"（新增设置永远不用改 shell 本体）。本仓库 Fallbacks 设置入口即经 `settings.plugin.item`
-（插件配置页卡，id `fallbacks`，order 30）挂载（2026-08-12 起；旧 `settings.section` 独立
+（插件配置页卡，id `fallbacks`，order 30）挂载（2026-08-12 起；旧 settings.section 独立
 导航已删除，卡片替换 section 不并存）。
 
 ## Guidance
@@ -27,15 +38,15 @@ shell"（新增设置永远不用改 shell 本体）。本仓库 Fallbacks 设�
 
 | Slot | 用途 | 注册项要点 |
 |------|------|-----------|
-| `settings.plugin.item` | 官方**插件配置页**卡（`ui-plugin-config` 的 PluginConfigSection 经 `settings.section` id `plugins` order 30 挂载后渲染此列表）；卡自绘内部，折叠列表项 | `name`、`id`、`order`、`locale`、可选 `inject`（owner `children?: never`，`slots.ts:16,21-24`） |
-| `settings.section` | 一整页新设置（主入口；`kind: 'list'`，导航行 + 内容页按 order 排序） | `id`（导航 key + `only` 过滤键）、`order`、`label`（注册方本地化）、`locale`、可选 `inject`/`children` |
-| `settings.general.item` | General 页内单行偏好项 | 由 ui-settings-general GeneralSection 在 children 声明；**SlotMap 类型在 `ui-settings/slots.ts:77`**（locale 包只是注册范例）；owner 空（`slots.ts:81-84`），行自绘 |
-| `settings.action` | 内容列头部、Close 前的操作列表（如「打开配置文件」） | — |
-| `settings.onboarding` | root 级 onboarding 步骤（一次挂一个） | `order`/`stepId`/`complete`/`openSection` |
-| `settings.trigger` / `header` / `close` | `single` seat（chrome 文案位）——**不是**业务条目用 | — |
+| `settings.plugin.item` | 官方**插件配置页**卡（`ui-plugin-config` 的 PluginConfigSection 经 settings.section id `plugins` order 30 挂载后渲染此列表）；卡自绘内部，折叠列表项 | `name`、`id`、`order`、`locale`、可选 `inject`（owner `children?: never`，`slots.ts:16,21-24`） |
+| settings.section | 一整页新设置（主入口；`kind: 'list'`，导航行 + 内容页按 order 排序） | `id`（导航 key + `only` 过滤键）、`order`、`label`（注册方本地化）、`locale`、可选 `inject`/`children` |
+| `settings.general.item` | General 页内单行偏好项 | 由 ui-settings-general GeneralSection 在 children 声明；**SlotMap 类型在 `{HOST}/ui-settings/slots.ts:77`**（locale 包只是注册范例）；owner 空（`slots.ts:81-84`），行自绘 |
+| settings.action | 内容列头部、Close 前的操作列表（如「打开配置文件」） | — |
+| settings.onboarding | root 级 onboarding 步骤（一次挂一个） | `order`/`stepId`/`complete`/`openSection` |
+| settings.trigger / `header` / `close` | `single` seat（chrome 文案位）——**不是**业务条目用 | — |
 
 **List slot 排序语义（order tie）**：按 `order` 升序，**同 order 按注册先后稳定排序**
-（`ui-slots/src/index.ts:779-783`，V8 stable sort）。插件配置页卡（bash 0 / agent-loop 10 /
+（`{HOST}/ui-slots/src/index.ts:779-783`，V8 stable sort）。插件配置页卡（bash 0 / agent-loop 10 /
 web-search 20 / advisor 30 / fallbacks 30）中 advisor 与 fallbacks 同为 30——并列时顺序由
 bundle 插行顺序决定，调整卡序应改 bundle 顺序而非动 slot。
 
@@ -52,12 +63,12 @@ ctx.slots.inject('settings.section', () => ctx.slots.register({
 ```
 
 **注意**：
-1. **导航图标硬编码 fallback**：`SettingsRoot.tsx` 的 `navIcon(id)` 只为 `models` 与
+1. **导航图标硬编码 fallback**：`{HOST}/SettingsRoot.tsx` 的 `navIcon(id)` 只为 `models` 与
    `agent-presets` 提供专属图标；新 section id 一律落到齿轮图标（`IconSettingsOutline16`）。
    要专属图标须改宿主函数（独立决策项）。
 2. **挂载走 `ctx.slots.inject`**：等待声明就绪、声明坍缩时自动移除贡献、重声明后重跑。
-3. **全新插件包**需补三个注册面：`tsconfig.client.json` aggregate 引用、
-   `packages/bundle/web-app/cordis.patch.yml` 的 `dsh.client` 行、`package.json` 依赖；
+3. **全新插件包**需补三个注册面：`{HOST}/tsconfig.client.json` aggregate 引用、
+   `{HOST}/packages/bundle/web-app/cordis.patch.yml` 的 dsh.client 行、`package.json` 依赖；
    **在现有包内挂**只需 register 片段。
 
 ## Why This Matters
@@ -78,7 +89,7 @@ ctx.slots.inject('settings.section', () => ctx.slots.register({
 ### 现有注册者（对照）
 
 - `general`（ui-settings-general，order 0）、`models`（ui-models）、`agent-presets`
-  （ui-agent-preset，order 20）、`plugins`（ui-plugin-config，order 30，`settings.section`
+  （ui-agent-preset，order 20）、`plugins`（ui-plugin-config，order 30，settings.section
   承载插件配置页）
 - 插件配置页卡：bash（order 0）、agent-loop（10）、web-search（20）、advisor（30）、
   `fallbacks`（dsh-llm-fallbacks，order 30，`settings.plugin.item`）——同序并列按注册顺序

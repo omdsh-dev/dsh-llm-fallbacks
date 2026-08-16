@@ -33,7 +33,7 @@ iter-20260812 插件配置卡扩展）。
 
 用户对插件设置页的观感要求是「与 dsh web 本体 sections（Models/General）同屏一致」，不是
 「和 advisor 差不多」——参照优先级：**dsh web 本体 sections 第一，advisor 第二**。本体 sections
-的形态权威在 dsh-private client 包的 `.module.css`；插件 CSS 全部色值必须走
+的形态权威在 dsh-private client 包的 .module.css；插件 CSS 全部色值必须走
 `--dsw-alias-*` token（light/dark 双主题解析），零硬编码色值。对照方法 = 逐维度（几何/
 字级/token/控件形态）比对 + 显式记录「用户可见差异」裁决。
 
@@ -43,26 +43,26 @@ iter-20260812 插件配置卡扩展）。
 
 | 代号 | 文件 | 角色 |
 |------|------|------|
-| MS | `packages/client/ui-models/src/client/ModelsSection.module.css` | 主参照（section 词表 + 行卡 + 输入/胶囊） |
-| MSX | `…/ui-models/src/client/ModelsSection.tsx` / `ProviderEditor.tsx` / `DeepSeekModelsEditor.tsx` / `ModelListEditor.tsx` | 结构参照（field、editor、候选行） |
-| GR | `…/ui-conversation/src/client/settings/EnterBehaviorRow.module.css` | General 项行（title+desc+控件右置） |
-| AR | `…/ui-theme/src/client/AppearanceRow.module.css` | General 项行（16/0 padding + hairline） |
-| GS | `…/ui-settings-general/src/client/GeneralSection.module.css` | section 容器（列布局，末项去分隔线） |
-| SR | `…/ui-settings-general/src/client/SettingsRoot.module.css` | 外壳几何（panel 800 / options 24 padding） |
-| SC | `…/ui-subagent/src/client/SubagentCatalogAction.module.css` | 静默 notice 盒（padding 10/12） |
+| MS | `{HOST}/packages/client/ui-models/src/client/ModelsSection.module.css` | 主参照（section 词表 + 行卡 + 输入/胶囊） |
+| MSX | `{HOST}/…/ui-models/src/client/ModelsSection.tsx` / `{HOST}/ProviderEditor.tsx` / `{HOST}/DeepSeekModelsEditor.tsx` / `{HOST}/ModelListEditor.tsx` | 结构参照（field、editor、候选行） |
+| GR | `{HOST}/…/ui-conversation/src/client/settings/EnterBehaviorRow.module.css` | General 项行（title+desc+控件右置） |
+| AR | `{HOST}/…/ui-theme/src/client/AppearanceRow.module.css` | General 项行（16/0 padding + hairline） |
+| GS | `{HOST}/…/ui-settings-general/src/client/GeneralSection.module.css` | section 容器（列布局，末项去分隔线） |
+| SR | `{HOST}/…/ui-settings-general/src/client/SettingsRoot.module.css` | 外壳几何（panel 800 / options 24 padding） |
+| SC | `{HOST}/…/ui-subagent/src/client/SubagentCatalogAction.module.css` | 静默 notice 盒（padding 10/12） |
 
-**已知误导**：`ui-settings/src/client/SettingsRoot.module.css` 不存在（该包仅
+**已知误导**：`{HOST}/ui-settings/src/client/SettingsRoot.module.css` 不存在（该包仅
 contract/index/settings-scope）；外壳几何实际在 `ui-settings-general` 包内。
 
 ### 插件配置卡参照（`settings.plugin.item` 卡 chrome，iter-20260812 扩展）
 
 | 代号 | 文件 | 角色 |
 |------|------|------|
-| PC.tsx | `packages/client/ui-plugin-config/src/client/PluginCard.tsx`（98 行） | 上游卡组件——chrome 契约（`<li>` 折叠列表项：header 按钮 + name/description + dirty pill + chevron + body + footer） |
-| PC.css | `…/PluginCard.module.css`（158 行） | 上游卡 CSS——**尺寸权威**（card r12 border-l2 / header padding 14 16 gap 12 / pending pill r999 / footer 等） |
-| PCS.tsx | `…/PluginConfigSection.tsx` | 卡列表渲染（section 经 `settings.section` id `plugins` order 30 挂载） |
-| SC.ts | `…/slot-contract.ts`（24 行） | `settings.plugin.item` slot 类型（owner `children?: never`——卡自绘） |
-| AC.tsx / AC.css | dsh-advisor `src/client/advisor-card.tsx` / `.module.css` | 兄弟插件自绘参考——**chrome 类与上游字节级一致**（advisor 逐字复制上游 chrome 类，仅增 body 通知/表单类）；最接近 fallbacks 需求的自绘参照 |
+| PC.tsx | `{HOST}/packages/client/ui-plugin-config/src/client/PluginCard.tsx`（98 行） | 上游卡组件——chrome 契约（`<li>` 折叠列表项：header 按钮 + name/description + dirty pill + chevron + body + footer） |
+| PC.css | `{HOST}/…/PluginCard.module.css`（158 行） | 上游卡 CSS——**尺寸权威**（card r12 border-l2 / header padding 14 16 gap 12 / pending pill r999 / footer 等） |
+| PCS.tsx | `{HOST}/…/PluginConfigSection.tsx` | 卡列表渲染（section 经 settings.section id `plugins` order 30 挂载） |
+| SC.ts | `{HOST}/…/slot-contract.ts`（24 行） | `settings.plugin.item` slot 类型（owner `children?: never`——卡自绘） |
+| AC.tsx / AC.css | dsh-advisor src/client/advisor-card.tsx / .module.css | 兄弟插件自绘参考——**chrome 类与上游字节级一致**（advisor 逐字复制上游 chrome 类，仅增 body 通知/表单类）；最接近 fallbacks 需求的自绘参照 |
 | ACI.ts | dsh-advisor `src/client/index.ts` | 注册范式（inject + apply + slot.inject） |
 
 **卡 chrome 词表要点**：`--dsw-alias-border-l2`/`bg-layer-3`（卡）、`bg-layer-2`（open）、
@@ -148,13 +148,13 @@ padding-bottom 8px、footer gap 8 padding 12 0 4 border-top。折叠态 `aria-ex
 
 - iter-20260811-fallbacks-mount-only Plan C：A1–A14 全维度对照表 + C 节 9 条落地清单 +
   「用户可见差异」4 条裁决（卡片形态/checkbox/banner/data-tip），QA CSSOM 全生效。
-- iter-20260812 插件配置卡：`guides/card-fidelity-checklist.md` 逐维度对照表（结构/几何/
+- iter-20260812 插件配置卡：`.mstar/iterations/iter-20260812-fallbacks-plugin-config/guides/card-fidelity-checklist.md` 逐维度对照表（结构/几何/
   tokens/行为/a11y，上游 PluginCard.module.css:1-158 ↔ fallbacks card css）+ 7 条已知差异
   裁决；light/dark 截图 + CSSOM 规则数 == 文本规则数验证。
-- 参照实现：`FallbacksCard.module.css` / `FallbacksCard.tsx`（插件侧；2026-08-12 起取代
-  整页 `FallbacksSection`）；本体 `ModelsSection.module.css`、`GeneralSection.module.css`
+- 参照实现：`src/client/FallbacksCard.module.css` / `src/client/FallbacksCard.tsx`（插件侧；2026-08-12 起取代
+  整页 `FallbacksSection`）；本体 `{HOST}/ModelsSection.module.css`、`{HOST}/GeneralSection.module.css`
   （dsh-private）。
 
-*Source: iteration iter-20260811-fallbacks-mount-only `guides/ui-fidelity-checklist.md` +
-iter-20260812-fallbacks-plugin-config `guides/card-fidelity-checklist.md`，2026-08-12
+*Source: iteration iter-20260811-fallbacks-mount-only `.mstar/iterations/iter-20260811-fallbacks-mount-only/guides/ui-fidelity-checklist.md` +
+iter-20260812-fallbacks-plugin-config `.mstar/iterations/iter-20260812-fallbacks-plugin-config/guides/card-fidelity-checklist.md`，2026-08-12
 compound 提升（保留参照地图/词表/方法/裁决，剥离一次性现状快照）。*
