@@ -6,6 +6,22 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-16
+
+### Added
+
+- dsh-tui profile support: the plugin now has a first-class client surface in the terminal TUI — `/fallbacks` and the new read-only `/fallbacks config` subcommand appear in the TUI `/` menu with localized descriptions and `config` completion (via the `tuiCommandTrees` service; zero dsh-TUI changes).
+- `/fallbacks config` read-only subcommand: prints the composed configuration summary (enabled / trigger codes / root chain / roles / cooldown / revert / caps / presets) with file-edit hints — the TUI settings readback (the TUI has no settings page; configuration stays file-based).
+
+### Changed
+
+- Split the README compatibility badge into two: `dsh web` and `dsh tui` (simplified text).
+- Refactor README: unified client-agnostic install (copyable `--profile web|dsh-tui` lines), condensed Quick start / Features / Mount-only; details moved to `docs/` (install variants, TUI profile, consumer API); condensed Preset roles section retained (7 bundled roles + `presets` switch).
+
+### Fixed
+
+- `/fallbacks` command registration no longer uses an empty `input.hint` — the real dsh-commands registry rejects empty hints, so the command silently never appeared in any profile; it now registers in both web and dsh-tui profiles.
+
 ## [0.1.7] - 2026-08-16
 
 ### Changed
