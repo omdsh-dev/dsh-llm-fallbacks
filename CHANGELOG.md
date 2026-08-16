@@ -6,6 +6,13 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-08-16
+
+### Fixed
+
+- Sessions containing `fallbacks/switch` events no longer refuse to load after a dsh restart: the plugin registers its session event type at startup (a stopgap until the upstream registration surface lands; tracked in the .mstar plans).
+- When registration is unavailable, the switch still applies but the durable event is skipped — a session log is never written with an unregistered event type.
+
 ## [0.2.0] - 2026-08-16
 
 ### Added
