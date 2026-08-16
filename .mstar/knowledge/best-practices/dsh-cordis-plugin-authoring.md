@@ -1,7 +1,7 @@
 ---
 module: dsh-plugin-authoring
 date: 2026-08-10
-last_updated: 2026-08-15
+last_updated: 2026-08-16
 problem_type: best_practice
 category: best-practices
 severity: low
@@ -57,6 +57,17 @@ dsh 插件 = npm 包，package.json 声明 dsh.bundle.patch（指向 bundle/cord
   （`ctx.inject(['commands'], (commandCtx) => registerCommands(...))`，**不入顶层
   inject**）——commands 服务缺失时子不激活、命令静默缺席，不抛顶层注入错误；注册返回
   disposer。只读命令不改运行时状态（快照构建走现有 store 只读面）。
+- **命令注册元数据必须过真实 `CommandRuntime` 校验（20260816 活体实测坑）**：
+  `normalizeDefinition`（`@deepseek-ai/dsh-commands` 0.1.0-rc.6
+  `lib/types/index.js`）对 `input.hint.trim().length === 0` 抛
+  `TypeError: command "X" input hint must not be empty`——`input: { hint: '' }`
+  在**任何真实 profile（web/TUI）注册即抛**；cordis 注入子吞错 → 命令静默不存在，
+  连注册行都进不了菜单。stub registry 测试永不暴露（校验在真实实现里）。
+  **正确形态：省略 `input` 键**（`CommandDefinition.input` 可选；省略 = 「无自由
+  输入」，TUI tag 不显示——`descriptor.input?.hint` 可选链）。校验规则：
+  name 正则 `COMMAND_NAME`、description 非空字符串、handler 函数、input 提供则
+  hint 必须非空字符串。活体验证法：探针插件（`--patch` overlay）在 inject 子内
+  注册同名命令并 `console.error` 结果。
 - **失效刷新走 remote 转发事件（20260811+ 宿主）**：`settings/changed` / `models/changed`
   客户端事件已移除（订阅即死代码）。迁移到 `ctx.remote.$on`（需 `remote` 在 inject 面）：
   `settings/document-updated(ns, rev)`（ns 精确过滤）+ `llm/adapters-updated()`（payload-free）
