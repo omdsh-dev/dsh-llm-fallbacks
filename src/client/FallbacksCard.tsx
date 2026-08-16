@@ -992,10 +992,11 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                  * ids with the red border (aria-invalid). Seeded rows (R2 —
                  * incl. preset-materialized rows, which surface as seeded
                  * rows) have their id input disabled: seed/preset role ids
-                 * are immutable. Only the id is locked — persona (R3
-                 * override/revert) and chain/fallback (R4) stay editable;
-                 * renaming a seeded row detaches it from the seed registry
-                 * and it becomes an ordinary row. */}
+                 * are immutable from the card. Only the id is locked —
+                 * persona (R3 override/revert) and chain/fallback (R4) stay
+                 * editable. A rename can only arrive via an external config
+                 * edit; a row whose id no longer matches the wire's seed
+                 * declaration renders as an ordinary row. */}
                 <div className={css.list}>
                   {roleRows.map((row, index) => {
                     const invalid = invalidRoleIds?.has(row.id.trim()) ?? false
@@ -1004,8 +1005,10 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                     // row; R2: dropping a declaration keeps the row). Seeded
                     // rows (incl. preset-materialized ones) are id-immutable
                     // (R2): their id input is disabled below — only the id is
-                    // locked; persona/chain/fallback stay editable, and a
-                    // renamed row detaches from the registry (ordinary row).
+                    // locked; persona/chain/fallback stay editable. Renames
+                    // arrive only via external config edits; a row whose id
+                    // no longer matches the wire's seed declaration renders
+                    // as an ordinary row.
                     const seed = seededIds.get(row.id.trim())
                     return (
                     <div key={index} className={css.editorCard}>

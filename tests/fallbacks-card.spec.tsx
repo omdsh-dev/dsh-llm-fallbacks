@@ -1476,6 +1476,13 @@ describe('FallbacksCard seeded roles (plan fallbacks-role-seeds T5)', () => {
     const personas = screen.getAllByLabelText(en['roles.persona'])
     expect((personas[0] as HTMLTextAreaElement).disabled).toBe(false)
     expect((personas[1] as HTMLTextAreaElement).disabled).toBe(false)
+    // The seeded row's fallback selector stays editable too — only the id is
+    // locked, chain/fallback controls keep the `!writable`-only term (R4;
+    // qc1 S-3).
+    const fallbacks = screen.getAllByLabelText(en['roles.fallback'])
+    expect(fallbacks).toHaveLength(2)
+    expect((fallbacks[0] as HTMLSelectElement).disabled).toBe(false)
+    expect((fallbacks[1] as HTMLSelectElement).disabled).toBe(false)
   })
 
   it('locks the seeded id in override state too (R2 holds across default and override)', async () => {
@@ -1491,16 +1498,44 @@ describe('FallbacksCard seeded roles (plan fallbacks-role-seeds T5)', () => {
     expect((ids[1] as HTMLInputElement).value).toBe('reviewer')
     expect((ids[0] as HTMLInputElement).disabled).toBe(true)
     expect((ids[1] as HTMLInputElement).disabled).toBe(false)
+    // Mirror of the default-seed pin: the lock covers the id ONLY, so the
+    // seeded row's persona textarea stays editable in override state too
+    // (R3 — override/revert remain reachable; qc1 S-2).
+    const personas = screen.getAllByLabelText(en['roles.persona'])
+    expect((personas[0] as HTMLTextAreaElement).disabled).toBe(false)
+    expect((personas[1] as HTMLTextAreaElement).disabled).toBe(false)
+  })
+
+  it('keeps seeded ids disabled under the global read-only gate (R2 × writable:false)', async () => {
+    // The id lock is `disabled={!writable || seed !== undefined}` — read-only
+    // mode disables every id through the `!writable` term on its own; the pin
+    // documents that a seeded fixture under writable:false stays disabled via
+    // the same expression (qc1 S-1, plan §成功判据 (1)).
+    const { view, props } = await mountCard({
+      config: SEEDED_CONFIG,
+      writable: false,
+      seeds: [{ id: 'architect', overridden: false }],
+    })
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    const ids = screen.getAllByLabelText(en['roles.id'])
+    expect(ids).toHaveLength(2)
+    expect((ids[0] as HTMLInputElement).disabled).toBe(true)
+    expect((ids[1] as HTMLInputElement).disabled).toBe(true)
   })
 
   it('locks preset-materialized rows too: a designer preset row id is disabled (regression pin)', async () => {
     // Presets land as seeded two-key rows through the seeds face (spec
     // §9.3), so a preset row IS a seeded row — the same `seededIds`
     // derivation must lock its id (R2, plan fallbacks-preset-roles). The
-    // persona rides the frozen presets source so the fixture is a faithful
-    // materialized row, not invented text (presets.spec.ts pins the
-    // personas verbatim to spec §9.2).
-    const designer = presetRoles.find((role) => role.id === 'designer')!
+    // persona rides the frozen presets source so the fixture cannot drift
+    // from the spec-frozen preset set (presets.spec.ts pins the personas
+    // verbatim to spec §9.2). The chain/fallback keys are config-shape
+    // requirements of this card fixture — the lock keys on the id match
+    // only, so they are irrelevant to the asserted behavior.
+    const designer = presetRoles.find((role) => role.id === 'designer')
+    expect(designer).toBeDefined()
+    if (!designer) throw new Error('preset designer removed')
     const config: typeof defaultFallbacksConfig = {
       ...defaultFallbacksConfig,
       enabled: true,
