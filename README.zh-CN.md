@@ -69,6 +69,20 @@ dsh plugin --profile web add .
 
 > 两种安装方式、卸载与 `--dump-config` 验证（含 bundle 层顺序要求）详见 [docs/install.md](docs/install.md)。
 
+### dsh-tui profile（终端 TUI）
+
+插件同样可在终端（`dsh-tui`）profile 中运行——安装方式相同，把 `--profile` 指向 `dsh-tui`：
+
+```sh
+dsh plugin --profile dsh-tui add dsh-llm-fallbacks   # registry 安装；钉版本：加 @<version>
+# 或在插件仓库目录（先构建，见上文「本地目录安装」）：
+dsh plugin --profile dsh-tui add .
+```
+
+- **命令**：`/fallbacks`（会话诊断）与 `/fallbacks config`（组合配置回读）出现在 TUI 的 `/` 菜单中，并带 `config` 子命令补全——需要 profile 提供 `tuiCommandTrees` 服务（`dsh-tui-command-trees` bundle 行；dsh-tui 自带 bundle 已包含）。
+- **配置仅文件**：TUI 没有设置页、没有写入面——全局设置编辑共享的 `$DSH_HOME/settings.yaml`（`fallbacks:` 分节，与 Web 设置卡写入的是同一个文件），dsh-tui 专属覆盖编辑 profile 补丁层 `~/.dsh/profiles/dsh-tui/cordis.patch.yml`（插件行 `config:` 覆盖）；组合后的结果用 `/fallbacks config` 回读。`enabled` 仍默认关闭（`false`）。
+- **限制**：Web 设置 → 插件配置 → Fallbacks 卡片仅 Web 可用——TUI 中没有卡片、没有设置页；修改配置只能编辑文件，并用 `/fallbacks config` 回读。
+
 ## 快速开始
 
 ### 最小配置
@@ -152,9 +166,9 @@ if (fb !== undefined) await fb.declareSeeds(presetRoles)  // 或直接使用 Fal
 
 | 文档 | 内容 |
 |---|---|
-| [docs/install.md](docs/install.md) | profile 安装 / registry 安装 / 卸载 / `--dump-config` 验证 |
+| [docs/install.md](docs/install.md) | profile 安装（web + dsh-tui）/ registry 安装 / 卸载 / `--dump-config` 验证 |
 | [docs/release.md](docs/release.md) | 发布流程：Trusted Publishing 前置、Release prep SOP、fragment 格式、回滚 |
-| [docs/configuration.md](docs/configuration.md) | `fallbacks` 命名空间全字段、selector 语法、示例 YAML、插件配置卡使用、行为说明 |
+| [docs/configuration.md](docs/configuration.md) | `fallbacks` 命名空间全字段、selector 语法、示例 YAML、插件配置卡使用、TUI 回读指引、行为说明 |
 | [docs/consumer-api.md](docs/consumer-api.md) | 开发者消费契约：导出清单、最小示例、生命周期、类型说明 |
 | [docs/verification.md](docs/verification.md) | 验证记录（测试矩阵、bundle 层序、运行契约、QA gate 剧本） |
 

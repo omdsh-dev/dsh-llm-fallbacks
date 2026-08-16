@@ -54,6 +54,7 @@ import {
   resolveChainForDiagnostic,
   type FallbacksCommandController,
   type FallbacksCommandSnapshot,
+  type FallbacksConfigSummary,
 } from './commands.ts'
 import {
   FallbacksSeedManager,
@@ -64,6 +65,7 @@ import {
   type SeedsIo,
 } from './seeds.ts'
 import { presetRoles } from './presets.ts'
+import { installTuiClient } from './tui.ts'
 
 /** The plugin row id mounted by the profile bundle patch. */
 export const name = 'llm-fallbacks'
@@ -707,6 +709,25 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
         cooldown: state === undefined ? [] : state.cooldown.snapshot(),
       }
     },
+    // T2 AC-2: composed-config readback — the SAME live `source()` the
+    // runtime reads (schema defaults → plugin-row base → settings user
+    // layer). Role summaries from `roles.list` (id + chain length, the
+    // two-block model); `presets` is optional-on-type with a schema default,
+    // so the summary falls back to 'bundled' explicitly.
+    getConfig(): FallbacksConfigSummary {
+      const config = source()
+      return {
+        enabled: config.enabled,
+        triggerCodes: config.triggerCodes,
+        rootChain: config.rootChain,
+        roles: config.roles.list.map((role) => ({ id: role.id, chainCount: role.chain?.length ?? 0 })),
+        cooldownMs: config.cooldownMs,
+        revertPolicy: config.revertPolicy,
+        maxSwitchesPerStep: config.maxSwitchesPerStep,
+        alwaysModeRetryCap: config.alwaysModeRetryCap,
+        presets: config.presets ?? 'bundled',
+      }
+    },
   }
   ctx.inject(['commands'], (commandCtx) => {
     // Return the registry disposer: cordis collects the inject child's
@@ -714,6 +735,16 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     // lifetime contract (registerFallbacksCommands' @returns) true.
     return registerFallbacksCommands(commandCtx.commands, fallbacksCommandController)
   })
+
+  // dsh-tui client surface (plan fallbacks-tui-client T1, AC-1): register
+  // the `tuiCommandTrees` /fallbacks provider (localized root descriptions +
+  // `config` subcommand completion). Conditional inject child like the
+  // commands/typert children — absent service = clean no-op. First-fiber-only
+  // via `serviceOwned` (the host registry throws on duplicate roots, so a
+  // deduped later fiber must never register). Registered here — after the
+  // commands child, BEFORE the tail settings preset child — so the tail
+  // child's last-registered activation order is preserved.
+  installTuiClient(ctx, { serviceOwned })
 
   // Bundled preset self-declaration (plan fallbacks-preset-roles T3, spec
   // §9.3 D9.3-a): a NEW conditional settings inject child, registered LAST

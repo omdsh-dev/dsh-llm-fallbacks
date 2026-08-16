@@ -81,7 +81,28 @@ Git install notes:
   Then re-run `add`; alternatively allow it interactively with `dsh plugin --profile web approve-builds`. The approval means that package's code is allowed to execute on your machine at install time — pinning a commit (`github:omdsh-dev/dsh-llm-fallbacks#<sha>`) is recommended to prevent a later push from silently changing the code that actually runs. Exact behavior follows the policy of the pnpm version you use.
 - **Mount-only, no patch steps**: a git install executes `prepare` (build) and is done — the plugin makes zero modifications to the dsh source tree (bundle row insert + client inject + its own gateway), no apply/revert scripts, and nothing to re-patch after a dsh upgrade.
 
-## 5. Verify the installation
+## 5. dsh-tui profile (terminal TUI)
+
+A terminal (`dsh-tui`) profile loads the plugin with the same `add` mechanics — pass `--profile dsh-tui` instead of `--profile web`:
+
+```sh
+dsh plugin --profile dsh-tui add dsh-llm-fallbacks   # registry; pin an exact version: add @<version>
+# or a source install (local directory, build first — see §1; git, see §4):
+dsh plugin --profile dsh-tui add .
+dsh plugin --profile dsh-tui add github:omdsh-dev/dsh-llm-fallbacks
+```
+
+If no dsh-tui profile exists yet, create it first: `dsh plugin --profile dsh-tui add @deepseek-harness-tui/dsh-tui` (the launcher also self-bootstraps the profile on first run if absent).
+
+`add` reads the package's `dsh.bundle.patch` (`bundle/cordis.patch.yml`) and appends it as a composition layer over the dsh-tui profile's bundle stack — the `- insert: id: llm-fallbacks` row lands in the profile, with the same mount-only guarantees as every other profile (zero dsh source-tree modification, no patch steps, nothing to re-patch after a dsh upgrade).
+
+**Restart the dsh-tui session after installing.** In the terminal:
+
+- The `/` menu lists `/fallbacks` (session diagnostics) and `/fallbacks config` (composed-config readback) with `config` subcommand completion — this needs the profile's `tuiCommandTrees` service (the `dsh-tui-command-trees` bundle row; the shipped dsh-tui bundle has it).
+- The TUI has **no settings page and no write surface**: the web Settings → 插件配置 → Fallbacks card is web-only. Configure by editing files — the shared `$DSH_HOME/settings.yaml` (`fallbacks:` section, the same file the web card writes) for global settings, or the profile patch `~/.dsh/profiles/dsh-tui/cordis.patch.yml` (an `- id: llm-fallbacks` row with `config:` overrides) for dsh-tui-specific values. Note: a patch row **replaces** the targeted row's whole `config` — restate every field you want to keep (schema defaults fill the rest).
+- Read the composed result back with `/fallbacks config` (config namespace + TUI readback → [docs/configuration.md](docs/configuration.md)); verify the layer with `dsh --profile dsh-tui --dump-config` (the `llm-fallbacks` row appears over the profile bundle stack).
+
+## 6. Verify the installation
 
 ```sh
 dsh --profile web --dump-config
@@ -104,7 +125,7 @@ Then **restart the dsh web session** (`dsh web`, or restart the running session)
 - The card is readable, editable, and saveable; the feature switch `enabled` **defaults to OFF** (hiding the config form body while off) — turning the switch on reveals the full config form; with no chains configured the behavior is a no-op (see [docs/configuration.md](docs/configuration.md)).
 - In-session, type `/fallbacks` directly to inspect the current session's diagnostics (role → chain → recent switches → cooldown); see the README's `/fallbacks` section.
 
-## 6. Uninstall
+## 7. Uninstall
 
 ```sh
 dsh plugin --profile web remove dsh-llm-fallbacks
