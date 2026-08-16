@@ -54,6 +54,7 @@ import {
   resolveChainForDiagnostic,
   type FallbacksCommandController,
   type FallbacksCommandSnapshot,
+  type FallbacksConfigSummary,
 } from './commands.ts'
 import {
   FallbacksSeedManager,
@@ -706,6 +707,25 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
         ...resolveChainForDiagnostic(config.roles.list, config.rootChain, role, logger.warn),
         switches: recentFallbacksSwitches(agent.session.events, RECENT_SWITCHES_LIMIT),
         cooldown: state === undefined ? [] : state.cooldown.snapshot(),
+      }
+    },
+    // T2 AC-2: composed-config readback — the SAME live `source()` the
+    // runtime reads (schema defaults → plugin-row base → settings user
+    // layer). Role summaries from `roles.list` (id + chain length, the
+    // two-block model); `presets` is optional-on-type with a schema default,
+    // so the summary falls back to 'bundled' explicitly.
+    getConfig(): FallbacksConfigSummary {
+      const config = source()
+      return {
+        enabled: config.enabled,
+        triggerCodes: config.triggerCodes,
+        rootChain: config.rootChain,
+        roles: config.roles.list.map((role) => ({ id: role.id, chainCount: role.chain?.length ?? 0 })),
+        cooldownMs: config.cooldownMs,
+        revertPolicy: config.revertPolicy,
+        maxSwitchesPerStep: config.maxSwitchesPerStep,
+        alwaysModeRetryCap: config.alwaysModeRetryCap,
+        presets: config.presets ?? 'bundled',
       }
     },
   }

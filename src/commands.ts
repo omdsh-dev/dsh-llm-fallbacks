@@ -76,6 +76,27 @@ export interface FallbacksCommandSnapshot {
 }
 
 /**
+ * The composed-config surface `/fallbacks config` renders (plan
+ * fallbacks-tui-client T2, AC-2): the composed `fallbacks` namespace as the
+ * runtime sees it (settings user layer included). Roles are summarized from
+ * `roles.list` as `{ id, chainCount }` — the two-block model: `roles.list`
+ * entities carry id/persona/chain/fallback (NO per-role `model`;
+ * `provider`/`model` live on `roles.rules`), so the readback line is id +
+ * chain count, never a rules dump.
+ */
+export interface FallbacksConfigSummary {
+  readonly enabled: boolean
+  readonly triggerCodes: readonly string[]
+  readonly rootChain: readonly string[]
+  readonly roles: readonly { id: string; chainCount: number }[]
+  readonly cooldownMs: number
+  readonly revertPolicy: string
+  readonly maxSwitchesPerStep: number
+  readonly alwaysModeRetryCap: number
+  readonly presets: 'bundled' | 'none'
+}
+
+/**
  * The session-scoped read-only operations the `/fallbacks` handler drives.
  * Implemented by the wiring (`src/index.ts`) against the live config source
  * (`roles.list` / `rootChain` — no chain map anymore) and the per-agent
@@ -84,18 +105,36 @@ export interface FallbacksCommandSnapshot {
 export interface FallbacksCommandController {
   /** Snapshot the session's fallback diagnostics. Never mutates state. */
   getSnapshot(agent: FallbacksCommandAgent): FallbacksCommandSnapshot
+  /**
+   * Snapshot the composed fallbacks config (settings readback). Not
+   * agent-scoped — the composed config is session-independent; reads the
+   * same live config source the runtime reads. Never mutates state.
+   */
+  getConfig(): FallbacksConfigSummary
 }
 
 // ---------------------------------------------------------------------------
 // zh/en copy (zh source, en mirror — repo locale convention)
 // ---------------------------------------------------------------------------
 
+/**
+ * The `config` subcommand's localized one-line description — single copy
+ * source: consumed by the `usageConfig` copy key (TUI completion node) and
+ * the `usage` USAGE line (plan fallbacks-tui-client T2 — the USAGE line
+ * references this key instead of duplicating its text).
+ */
+const CONFIG_SUBCOMMAND_DESCRIPTION = {
+  zh: '查看组合后的 fallbacks 配置（设置回读）',
+  en: 'show the composed fallbacks config (settings readback)',
+} as const
+
 /** zh/en dictionaries for the `/fallbacks` output. */
 export const FALLBACKS_COMMAND_LOCALES = {
   zh: {
     title: '当前会话 fallback 诊断（只读）',
     description: '查看当前会话的降级链、最近切换与冷却状态（只读）',
-    usageConfig: '查看组合后的 fallbacks 配置（设置回读）',
+    usageConfig: CONFIG_SUBCOMMAND_DESCRIPTION.zh,
+    usage: `  /fallbacks config   ${CONFIG_SUBCOMMAND_DESCRIPTION.zh}`,
     origin: '会话来源',
     role: '角色',
     chain: '链',
@@ -112,11 +151,29 @@ export const FALLBACKS_COMMAND_LOCALES = {
       'trigger-code': '触发码',
       'always-cap': 'always 上限',
     },
+    // /fallbacks config (composed-config readback) labels — values stay raw
+    // (enum strings / numbers / file paths), labels localize (T2 AC-2).
+    configTitle: 'Fallbacks 配置',
+    configEnabled: '已启用',
+    configDisabled: '未启用',
+    configTriggerCodes: '触发码',
+    configRootChain: '根链',
+    configEmpty: '（空）',
+    configRoles: '角色',
+    configRoleItem: '{id}（chain: {n}）',
+    configCooldown: '冷却',
+    configRevert: '回主策略',
+    configMaxSwitches: '单步最大切换',
+    configAlwaysCap: 'always 上限',
+    configPresets: '预置',
+    configEdit: '编辑：~/.dsh/profiles/<profile>/cordis.patch.yml（插件行）或 $DSH_HOME/settings.yaml（fallbacks: 分节）',
+    configEditHint: 'TUI 无法修改配置——只能编辑文件',
   },
   en: {
     title: 'Session fallback diagnostics (read-only)',
     description: 'Inspect fallback chain, recent switches, and cooldown for this session (read-only)',
-    usageConfig: 'show the composed fallbacks config (settings readback)',
+    usageConfig: CONFIG_SUBCOMMAND_DESCRIPTION.en,
+    usage: `  /fallbacks config   ${CONFIG_SUBCOMMAND_DESCRIPTION.en}`,
     origin: 'Session origin',
     role: 'Role',
     chain: 'Chain',
@@ -133,6 +190,21 @@ export const FALLBACKS_COMMAND_LOCALES = {
       'trigger-code': 'trigger-code',
       'always-cap': 'always-cap',
     },
+    configTitle: 'Fallbacks config',
+    configEnabled: 'enabled',
+    configDisabled: 'disabled',
+    configTriggerCodes: 'Trigger codes',
+    configRootChain: 'Root chain',
+    configEmpty: '(empty)',
+    configRoles: 'Roles',
+    configRoleItem: '{id} (chain: {n})',
+    configCooldown: 'Cooldown',
+    configRevert: 'Revert',
+    configMaxSwitches: 'Max switches/step',
+    configAlwaysCap: 'Always-mode cap',
+    configPresets: 'Presets',
+    configEdit: 'Edit: ~/.dsh/profiles/<profile>/cordis.patch.yml (plugin row) or $DSH_HOME/settings.yaml (fallbacks: section)',
+    configEditHint: 'TUI cannot change config — edit files only',
   },
 } as const
 
@@ -141,6 +213,23 @@ export type FallbacksCommandLocale = keyof typeof FALLBACKS_COMMAND_LOCALES
 
 /** One locale's copy table (structural — zh and en share the same shape). */
 type FallbacksCommandCopy = (typeof FALLBACKS_COMMAND_LOCALES)[FallbacksCommandLocale]
+
+// ---------------------------------------------------------------------------
+// Subcommand parsing
+// ---------------------------------------------------------------------------
+
+/** The `/fallbacks` subcommands: `'config'` (composed-config readback) or
+ * `''` (the bare session snapshot). */
+export type FallbacksSubcommand = '' | 'config'
+
+/**
+ * Map an invocation's rawInput to a subcommand: trimmed `'config'` →
+ * `'config'`; everything else (incl. empty) → `''` (bare snapshot). Lenient
+ * by design — unknown input keeps today's bare behavior, never errors.
+ */
+export function parseFallbacksSubcommand(rawInput: string): FallbacksSubcommand {
+  return rawInput.trim() === 'config' ? 'config' : ''
+}
 
 // ---------------------------------------------------------------------------
 // Snapshot building (pure helpers, tested directly)
@@ -257,6 +346,56 @@ function formatCooldown(entry: FallbacksCooldownEntry, t: FallbacksCommandCopy):
 }
 
 /**
+ * Cap for long list lines in the composed-config readback: beyond this many
+ * items a line truncates with `…` (the `Roles:` count always stays the FULL
+ * count). Same sanity scale as {@link RECENT_SWITCHES_LIMIT}.
+ */
+export const FALLBACKS_CONFIG_LIST_CAP = 5
+
+/** Join a list line, truncating past {@link FALLBACKS_CONFIG_LIST_CAP} with `…`. */
+function formatConfigList(items: readonly string[]): string {
+  if (items.length <= FALLBACKS_CONFIG_LIST_CAP) return items.join(', ')
+  return [...items.slice(0, FALLBACKS_CONFIG_LIST_CAP), '…'].join(', ')
+}
+
+/** Render the `Roles:` line: full count, then `id (chain: n)` items (truncated). */
+function formatConfigRoles(roles: readonly { id: string; chainCount: number }[], t: FallbacksCommandCopy): string {
+  const items = roles.map((role) => t.configRoleItem.replace('{id}', role.id).replace('{n}', String(role.chainCount)))
+  const list = formatConfigList(items)
+  return `${roles.length}${list.length === 0 ? '' : ` — ${list}`}`
+}
+
+/**
+ * Render the `/fallbacks config` surface (plan fallbacks-tui-client T2,
+ * AC-2): the composed `fallbacks` namespace as the runtime reads it + file-only
+ * edit hints (TUI has no write surface). The FIRST LINE marks the
+ * composed-config readback — distinct from the diagnostic title and never
+ * merged into {@link fallbacksCommandText} (two operator surfaces, product
+ * lock). Locale defaults to `zh` (the command default); en dictionary tested.
+ */
+export function fallbacksConfigText(
+  summary: FallbacksConfigSummary,
+  locale: FallbacksCommandLocale = 'zh',
+): string {
+  const t = FALLBACKS_COMMAND_LOCALES[locale]
+  const lines: string[] = [
+    `${t.configTitle}: ${summary.enabled ? t.configEnabled : t.configDisabled}`,
+    `${t.configTriggerCodes}: ${formatConfigList(summary.triggerCodes)}`,
+    `${t.configRootChain}: ${summary.rootChain.length === 0 ? t.configEmpty : formatConfigList(summary.rootChain)}`,
+    `${t.configRoles}: ${formatConfigRoles(summary.roles, t)}`,
+    `${t.configCooldown}: ${summary.cooldownMs} ms`,
+    `${t.configRevert}: ${summary.revertPolicy}`,
+    `${t.configMaxSwitches}: ${summary.maxSwitchesPerStep}`,
+    `${t.configAlwaysCap}: ${summary.alwaysModeRetryCap}`,
+    `${t.configPresets}: ${summary.presets}`,
+    '',
+    t.configEdit,
+    t.configEditHint,
+  ]
+  return lines.join('\n')
+}
+
+/**
  * Render the `/fallbacks` status surface for one snapshot. Kept minimal and
  * truthful: origin → role → chain (+ inherit tail) → recent switches →
  * cooldown.
@@ -305,7 +444,10 @@ function createFallbacksCommandHandler(
 ) {
   return (invocation: CommandInvocation): CommandResult => ({
     kind: 'success',
-    text: fallbacksCommandText(controller.getSnapshot(invocation.agent), locale),
+    text:
+      parseFallbacksSubcommand(invocation.rawInput) === 'config'
+        ? fallbacksConfigText(controller.getConfig(), locale)
+        : fallbacksCommandText(controller.getSnapshot(invocation.agent), locale),
   })
 }
 
