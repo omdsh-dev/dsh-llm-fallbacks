@@ -6,6 +6,12 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-08-16
+
+### Changed
+
+- Settings card: seeded role ids are now immutable — the id input of any seed/preset role row is disabled; non-seeded rows keep editable ids.
+
 ## [0.1.6] - 2026-08-15
 
 ### Added
