@@ -64,6 +64,7 @@ import {
   type SeedsIo,
 } from './seeds.ts'
 import { presetRoles } from './presets.ts'
+import { installTuiClient } from './tui.ts'
 
 /** The plugin row id mounted by the profile bundle patch. */
 export const name = 'llm-fallbacks'
@@ -714,6 +715,16 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     // lifetime contract (registerFallbacksCommands' @returns) true.
     return registerFallbacksCommands(commandCtx.commands, fallbacksCommandController)
   })
+
+  // dsh-tui client surface (plan fallbacks-tui-client T1, AC-1): register
+  // the `tuiCommandTrees` /fallbacks provider (localized root descriptions +
+  // `config` subcommand completion). Conditional inject child like the
+  // commands/typert children — absent service = clean no-op. First-fiber-only
+  // via `serviceOwned` (the host registry throws on duplicate roots, so a
+  // deduped later fiber must never register). Registered here — after the
+  // commands child, BEFORE the tail settings preset child — so the tail
+  // child's last-registered activation order is preserved.
+  installTuiClient(ctx, { serviceOwned })
 
   // Bundled preset self-declaration (plan fallbacks-preset-roles T3, spec
   // §9.3 D9.3-a): a NEW conditional settings inject child, registered LAST

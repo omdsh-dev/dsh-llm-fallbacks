@@ -95,6 +95,7 @@ export const FALLBACKS_COMMAND_LOCALES = {
   zh: {
     title: '当前会话 fallback 诊断（只读）',
     description: '查看当前会话的降级链、最近切换与冷却状态（只读）',
+    usageConfig: '查看组合后的 fallbacks 配置（设置回读）',
     origin: '会话来源',
     role: '角色',
     chain: '链',
@@ -115,6 +116,7 @@ export const FALLBACKS_COMMAND_LOCALES = {
   en: {
     title: 'Session fallback diagnostics (read-only)',
     description: 'Inspect fallback chain, recent switches, and cooldown for this session (read-only)',
+    usageConfig: 'show the composed fallbacks config (settings readback)',
     origin: 'Session origin',
     role: 'Role',
     chain: 'Chain',
