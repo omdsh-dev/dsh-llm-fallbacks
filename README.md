@@ -71,6 +71,20 @@ dsh plugin --profile web add .
 
 > Both methods, uninstall, and `--dump-config` verification — including the bundle-layer ordering requirements — are covered in [docs/install.md](docs/install.md).
 
+### dsh-tui profile (terminal TUI)
+
+The plugin also runs in a terminal (`dsh-tui`) profile — install it the same way, pointing `--profile` at `dsh-tui`:
+
+```sh
+dsh plugin --profile dsh-tui add dsh-llm-fallbacks   # registry; pin a version with @<version>
+# or, from this repository (build first — see "Local directory install" above):
+dsh plugin --profile dsh-tui add .
+```
+
+- **Commands**: `/fallbacks` (session diagnostics) and `/fallbacks config` (composed-config readback) appear in the TUI `/` menu with `config` subcommand completion — this needs the profile's `tuiCommandTrees` service (the `dsh-tui-command-trees` bundle row; the shipped dsh-tui bundle has it).
+- **Configuration is file-only**: the TUI has no settings page and no write surface — edit the shared `$DSH_HOME/settings.yaml` (`fallbacks:` section — the same file the web Settings card writes) for global settings, or the profile patch layer `~/.dsh/profiles/dsh-tui/cordis.patch.yml` (plugin-row `config:` overrides) for dsh-tui-specific values; read the composed result back with `/fallbacks config`. `enabled` still defaults to off (`false`).
+- **Limitation**: the web Settings → 插件配置 → Fallbacks card is web-only — in the TUI there is no card and no settings page; config changes are file edits, with `/fallbacks config` as the readback.
+
 ## Quick start
 
 ### Minimal configuration
@@ -157,9 +171,9 @@ if (fb !== undefined) await fb.declareSeeds(presetRoles)  // or a FallbacksSeedM
 
 | Doc | Content |
 |---|---|
-| [docs/install.md](docs/install.md) | profile install / registry install / uninstall / `--dump-config` verification |
+| [docs/install.md](docs/install.md) | profile install (web + dsh-tui) / registry install / uninstall / `--dump-config` verification |
 | [docs/release.md](docs/release.md) | release process: Trusted Publishing setup, Release prep SOP, fragment format, rollback |
-| [docs/configuration.md](docs/configuration.md) | full `fallbacks` namespace reference, selector syntax, example YAML, plugin-config card usage, behavior notes |
+| [docs/configuration.md](docs/configuration.md) | full `fallbacks` namespace reference, selector syntax, example YAML, plugin-config card usage, TUI readback pointer, behavior notes |
 | [docs/consumer-api.md](docs/consumer-api.md) | developer consumption contract: export inventory, minimal examples, lifecycle, typing |
 | [docs/verification.md](docs/verification.md) | verification records (test matrix, bundle layer order, runtime contracts, QA gate script) |
 
