@@ -474,7 +474,11 @@ export function registerFallbacksCommands(
   return registry.register({
     name: 'fallbacks',
     description: FALLBACKS_COMMAND_LOCALES[locale].description,
-    input: { hint: '' },
+    // No `input` descriptor: `/fallbacks` takes no free-form input (only the
+    // `config` subcommand, parsed from rawInput by the handler). Real
+    // dsh-commands normalizeDefinition rejects an empty hint, so omitting
+    // the optional `input` is both the correct representation and the only
+    // shape that registers.
     handler: createFallbacksCommandHandler(controller, locale),
   })
 }

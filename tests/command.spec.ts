@@ -92,11 +92,14 @@ function captureRegistration(
 }
 
 describe('registerFallbacksCommands — registration shape', () => {
-  it('registers the /fallbacks definition with name, description, empty hint, and a handler', () => {
+  it('registers the /fallbacks definition with name, description, no free-form input, and a handler', () => {
     const { definition } = captureRegistration({ getSnapshot: () => snapshot(), getConfig: () => configSummary() })
     expect(definition.name).toBe('fallbacks')
     expect(definition.description.length).toBeGreaterThan(0)
-    expect(definition.input).toEqual({ hint: '' })
+    // No input descriptor: /fallbacks takes no free-form input, and real
+    // dsh-commands normalizeDefinition rejects an empty hint (TypeError) —
+    // omitting the optional `input` is the only shape that registers.
+    expect(definition.input).toBeUndefined()
     expect(typeof definition.handler).toBe('function')
   })
 
