@@ -132,4 +132,4 @@ dsh plugin --profile web remove dsh-llm-fallbacks
 dsh --profile web --dump-config   # confirm the llm-fallbacks layer is gone
 ```
 
-Restart the dsh web session for the uninstall to take effect. After uninstalling, the plugin no longer participates in any request/error path; already-persisted `fallbacks/switch` session events remain as history and are unaffected by the uninstall.
+Restart the dsh web session for the uninstall to take effect. After uninstalling, the plugin no longer participates in any request/error path. Note: already-persisted `fallbacks/switch` session events are only loadable while the plugin registers their type at startup — after an uninstall, sessions containing them refuse to load again until the upstream registration surface lands (the startup registration is a stopgap; see the README Features note).

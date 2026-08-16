@@ -34,6 +34,14 @@ import { installSettingsSection } from '@deepseek-ai/dsh-settings'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { LlmCallConfig } from '@deepseek-ai/dsh-llm'
 import type { Session } from '@deepseek-ai/dsh-session'
+// issue #52 runtime registration seam: VALUE import of the dsh-session module
+// namespace, resolved from the package ROOT (same specifier as the type
+// import above — NOT the `./types` subpath, which is a divergent copy the
+// persistence read path never consults). Namespace import so that if a
+// future dsh removes `KNOWN_SESSION_EVENT_TYPES`, the plugin still loads
+// (namespace access yields `undefined`; a named import would fail at link
+// time and kill the whole plugin). Details/upstream tracking in apply().
+import * as dshSession from '@deepseek-ai/dsh-session'
 import { defaultFallbacksConfig, detectLegacyKeys, validateFallbacksConfig, type FallbacksConfig } from './config.ts'
 import { Config } from './schema.ts'
 import { annotateCandidates, createCandidateFilter, hasWildcardEntry, resolveChain, resolveChainViews, selectCandidates, type FailingModel } from './chains.ts'
@@ -300,6 +308,34 @@ function overrideConfig(seed: LlmCallConfig, to: { provider: string; model: stri
 
 export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksConfig): void {
   const logger = ctx.logger('llm-fallbacks')
+  // issue #52 (a session containing `fallbacks/switch` refuses to load after
+  // a dsh restart): the persistence read path
+  // (`dsh-session-persistence` `assertEventsSupported`) refuses a log whose
+  // event type is outside the host's baked `KNOWN_SESSION_EVENT_TYPES`
+  // catalog unless the event carries the envelope's `ignorable` marker —
+  // which `Session.append` cannot write (seed-only field). `fallbacks/switch`
+  // is a TYPE-ONLY augmentation (`src/events.ts` `declare module`), erased at
+  // runtime, so the type is registered HERE into the ROOT-exported catalog
+  // (not the `./types` subpath — a divergent copy): persistence imports the
+  // root export (`@deepseek-ai/dsh-session` main), and the plugin bundle
+  // externalizes `@deepseek-ai/*` (tsdown `neverBundle`), so at runtime this
+  // namespace IS the host's in-box module — the same Set the read path
+  // consults. Apply time, not module scope: session loads are LAZY
+  // (per open/resume via `ensureSession`, request-triggered post-boot), so
+  // registration here always precedes any load, and a module-level side
+  // effect is deliberately avoided (multi-fiber re-apply stays safe — the
+  // check + Set.add are idempotent). Registration failure is tolerated: the
+  // commit() guard below skips the durable event rather than writing one the
+  // read path would refuse. STOPGAP — remove when the upstream registration
+  // surface lands (tracked in
+  // .mstar/plans/llm-fallbacks-session-event-format/UPSTREAM-ISSUE.md).
+  const known = (dshSession as { KNOWN_SESSION_EVENT_TYPES?: ReadonlySet<string> }).KNOWN_SESSION_EVENT_TYPES
+  let sessionEventRegistered = false
+  if (known instanceof Set) {
+    try { (known as Set<string>).add('fallbacks/switch'); sessionEventRegistered = known.has('fallbacks/switch') } catch { sessionEventRegistered = false }
+  }
+  // Rate-limits the commit() guard warn to once per apply.
+  let sessionEventWarned = false
   // Cordis resolves the entry through the schema before apply, so `config` is
   // already defaulted; re-resolving keeps direct calls (tests) normalized.
   const entry = Config(config)
@@ -578,6 +614,25 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     states.suppress(state, fromKey, until)
     states.recordFailure(state, fromKey)
     states.recordSwitch(state)
+    // issue #52 append guard: never write an event the host read path would
+    // refuse. The apply() registration is the ONLY runtime seam that makes
+    // `fallbacks/switch` loadable after a restart; when it failed (export
+    // removed / catalog frozen), the durable event is SKIPPED — the switch
+    // decision, cooldown and step bookkeeping above stay intact, only the
+    // event is dropped, so a session log can never be poisoned by an
+    // unregistered type. Warn at most once per apply (rate-limited). STOPGAP
+    // — remove with the upstream registration surface (see the apply()
+    // comment / .mstar/plans/llm-fallbacks-session-event-format/
+    // UPSTREAM-ISSUE.md).
+    if (!sessionEventRegistered) {
+      if (!sessionEventWarned) {
+        sessionEventWarned = true
+        logger.warn(
+          'llm-fallbacks: session event type "fallbacks/switch" is not registered with this harness — skipping the durable event (the switch itself is applied)',
+        )
+      }
+      return
+    }
     agent.session.append('fallbacks/switch', {
       turn,
       step,
