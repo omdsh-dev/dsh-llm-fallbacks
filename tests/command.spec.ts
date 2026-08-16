@@ -14,7 +14,10 @@ import { apply } from '../src/index.ts'
 import { cfg, dispatchRequestError, makeAgent } from './support/harness.ts'
 import { MemorySettings } from './support/memory-settings.ts'
 import {
+  FALLBACKS_COMMAND_LOCALES,
   fallbacksCommandText,
+  fallbacksConfigText,
+  parseFallbacksSubcommand,
   RECENT_SWITCHES_LIMIT,
   recentFallbacksSwitches,
   registerFallbacksCommands,
@@ -22,6 +25,7 @@ import {
   type FallbacksCommandController,
   type FallbacksCommandRegistry,
   type FallbacksCommandSnapshot,
+  type FallbacksConfigSummary,
 } from '../src/commands.ts'
 import type { FallbacksSwitchEventData } from '../src/events.ts'
 
@@ -48,6 +52,25 @@ function snapshot(overrides: Partial<FallbacksCommandSnapshot> = {}): FallbacksC
   }
 }
 
+/** A fully-populated composed-config summary; `overrides` trim it to the state under test. */
+function configSummary(overrides: Partial<FallbacksConfigSummary> = {}): FallbacksConfigSummary {
+  return {
+    enabled: true,
+    triggerCodes: ['AUTH', 'QUOTA', 'RATE_LIMIT'],
+    rootChain: ['anthropic/claude-3-5-sonnet', 'openai/*'],
+    roles: [
+      { id: 'coder', chainCount: 2 },
+      { id: 'reviewer', chainCount: 1 },
+    ],
+    cooldownMs: 300_000,
+    revertPolicy: 'cooldown-expiry',
+    maxSwitchesPerStep: 8,
+    alwaysModeRetryCap: 5,
+    presets: 'bundled',
+    ...overrides,
+  }
+}
+
 /** Register through a capturing fake registry and return the captured definition. */
 function captureRegistration(
   controller: FallbacksCommandController,
@@ -69,16 +92,19 @@ function captureRegistration(
 }
 
 describe('registerFallbacksCommands — registration shape', () => {
-  it('registers the /fallbacks definition with name, description, empty hint, and a handler', () => {
-    const { definition } = captureRegistration({ getSnapshot: () => snapshot() })
+  it('registers the /fallbacks definition with name, description, no free-form input, and a handler', () => {
+    const { definition } = captureRegistration({ getSnapshot: () => snapshot(), getConfig: () => configSummary() })
     expect(definition.name).toBe('fallbacks')
     expect(definition.description.length).toBeGreaterThan(0)
-    expect(definition.input).toEqual({ hint: '' })
+    // No input descriptor: /fallbacks takes no free-form input, and real
+    // dsh-commands normalizeDefinition rejects an empty hint (TypeError) —
+    // omitting the optional `input` is the only shape that registers.
+    expect(definition.input).toBeUndefined()
     expect(typeof definition.handler).toBe('function')
   })
 
   it('returns the registry disposer', () => {
-    const { result, disposer } = captureRegistration({ getSnapshot: () => snapshot() })
+    const { result, disposer } = captureRegistration({ getSnapshot: () => snapshot(), getConfig: () => configSummary() })
     // registerFallbacksCommands must hand back the registry's own disposer
     // (the inject child owns its lifetime).
     expect(result).toBe(disposer)
@@ -86,9 +112,9 @@ describe('registerFallbacksCommands — registration shape', () => {
   })
 
   it('localizes the description to the registration locale', () => {
-    const zh = captureRegistration({ getSnapshot: () => snapshot() })
+    const zh = captureRegistration({ getSnapshot: () => snapshot(), getConfig: () => configSummary() })
     expect(zh.definition.description).toBe('查看当前会话的降级链、最近切换与冷却状态（只读）')
-    const en = captureRegistration({ getSnapshot: () => snapshot() }, 'en')
+    const en = captureRegistration({ getSnapshot: () => snapshot(), getConfig: () => configSummary() }, 'en')
     expect(en.definition.description).toBe(
       'Inspect fallback chain, recent switches, and cooldown for this session (read-only)',
     )
@@ -178,6 +204,24 @@ describe('snapshot building helpers', () => {
     ])
     // Malformed entries must not crash the builder even when nothing is valid.
     expect(recentFallbacksSwitches([{ type: 'fallbacks/switch', data: { n: 1 } }], 5)).toEqual([])
+  })
+})
+
+describe('parseFallbacksSubcommand — rawInput subcommand parsing', () => {
+  it("maps trimmed 'config' to the config subcommand (separator whitespace included)", () => {
+    // /fallbacks config → rawInput === ' config' (exact text after the name).
+    expect(parseFallbacksSubcommand(' config')).toBe('config')
+    expect(parseFallbacksSubcommand('config')).toBe('config')
+    expect(parseFallbacksSubcommand('  config  ')).toBe('config')
+  })
+
+  it("maps everything else — including empty input — to the bare snapshot (lenient, no error)", () => {
+    expect(parseFallbacksSubcommand('')).toBe('')
+    expect(parseFallbacksSubcommand('   ')).toBe('')
+    expect(parseFallbacksSubcommand(' xyz')).toBe('')
+    expect(parseFallbacksSubcommand('configx')).toBe('')
+    // Trim only — no case folding: the host lowercases the command name, not rawInput.
+    expect(parseFallbacksSubcommand('CONFIG')).toBe('')
   })
 })
 
@@ -290,10 +334,125 @@ describe('fallbacksCommandText — zh/en copy smoke', () => {
   })
 })
 
+describe('fallbacksConfigText — composed-config readback', () => {
+  it('first line marks the composed-config surface — distinct from the diagnostic title and not USAGE', () => {
+    const text = fallbacksConfigText(configSummary(), 'en')
+    const first = text.split('\n')[0]!
+    expect(first).toBe('Fallbacks config: enabled')
+    expect(first).not.toBe(FALLBACKS_COMMAND_LOCALES.en.title)
+    expect(first).not.toContain('Session fallback diagnostics')
+    expect(first).not.toMatch(/^  \/fallbacks/)
+  })
+
+  it('renders the enabled/disabled switch as the first line', () => {
+    expect(fallbacksConfigText(configSummary(), 'en').split('\n')[0]).toBe('Fallbacks config: enabled')
+    expect(fallbacksConfigText(configSummary({ enabled: false }), 'en').split('\n')[0]).toBe('Fallbacks config: disabled')
+  })
+
+  it('renders trigger codes as a joined list', () => {
+    expect(fallbacksConfigText(configSummary(), 'en')).toContain('Trigger codes: AUTH, QUOTA, RATE_LIMIT')
+  })
+
+  it('renders root chain entries, and (empty) when none', () => {
+    expect(fallbacksConfigText(configSummary(), 'en')).toContain('Root chain: anthropic/claude-3-5-sonnet, openai/*')
+    expect(fallbacksConfigText(configSummary({ rootChain: [] }), 'en')).toContain('Root chain: (empty)')
+  })
+
+  it('renders (empty) for no trigger codes — no trailing-empty line (qc2 N-4)', () => {
+    expect(fallbacksConfigText(configSummary({ triggerCodes: [] }), 'en')).toContain('Trigger codes: (empty)')
+    const text = fallbacksConfigText(configSummary({ triggerCodes: [] }), 'en')
+    expect(text).not.toMatch(/Trigger codes: ?\n/)
+  })
+
+  it('renders the roles summary with the full count and per-role chain counts', () => {
+    expect(fallbacksConfigText(configSummary(), 'en')).toContain('Roles: 2 — coder (chain: 2), reviewer (chain: 1)')
+  })
+
+  it('renders zero roles without a dangling separator', () => {
+    const text = fallbacksConfigText(configSummary({ roles: [] }), 'en')
+    expect(text).toContain('Roles: 0')
+    expect(text).not.toContain('Roles: 0 —')
+  })
+
+  it('truncates long lists at the cap with an ellipsis (full count stays visible)', () => {
+    const roles = Array.from({ length: 7 }, (_, i) => ({ id: `role-${i}`, chainCount: i }))
+    const text = fallbacksConfigText(configSummary({ roles }), 'en')
+    expect(text).toContain('Roles: 7 — role-0 (chain: 0), role-1 (chain: 1), role-2 (chain: 2), role-3 (chain: 3), role-4 (chain: 4), …')
+    expect(text).not.toContain('role-5')
+    const codes = ['A', 'B', 'C', 'D', 'E', 'F']
+    expect(fallbacksConfigText(configSummary({ triggerCodes: codes }), 'en')).toContain('Trigger codes: A, B, C, D, E, …')
+  })
+
+  it('renders cooldown, revert policy, caps, and presets', () => {
+    expect(fallbacksConfigText(configSummary(), 'en')).toContain('Cooldown: 300000 ms')
+    expect(fallbacksConfigText(configSummary(), 'en')).toContain('Revert: cooldown-expiry')
+    expect(fallbacksConfigText(configSummary(), 'en')).toContain('Max switches/step: 8')
+    expect(fallbacksConfigText(configSummary(), 'en')).toContain('Always-mode cap: 5')
+    expect(fallbacksConfigText(configSummary(), 'en')).toContain('Presets: bundled')
+    expect(fallbacksConfigText(configSummary({ presets: 'none' }), 'en')).toContain('Presets: none')
+  })
+
+  it('renders the file-only edit hints after a blank line', () => {
+    const text = fallbacksConfigText(configSummary(), 'en')
+    expect(text).toContain(
+      '\n\nEdit: ~/.dsh/profiles/<profile>/cordis.patch.yml (plugin row) or $DSH_HOME/settings.yaml (fallbacks: section)',
+    )
+    expect(text).toContain('TUI cannot change config — edit files only')
+  })
+})
+
+describe('fallbacksConfigText — zh/en copy smoke', () => {
+  const populated = configSummary()
+
+  it('renders the zh dictionary end to end', () => {
+    const text = fallbacksConfigText(populated, 'zh')
+    expect(text.split('\n')[0]).toBe('Fallbacks 配置: 已启用')
+    expect(text).toContain('触发码: AUTH, QUOTA, RATE_LIMIT')
+    expect(text).toContain('根链: anthropic/claude-3-5-sonnet, openai/*')
+    expect(text).toContain('角色: 2 — coder（chain: 2）, reviewer（chain: 1）')
+    expect(text).toContain('冷却: 300000 ms')
+    expect(text).toContain('回主策略: cooldown-expiry')
+    expect(text).toContain('单步最大切换: 8')
+    expect(text).toContain('always 上限: 5')
+    expect(text).toContain('预置: bundled')
+    expect(text).toContain('编辑：~/.dsh/profiles/<profile>/cordis.patch.yml（插件行）或 $DSH_HOME/settings.yaml（fallbacks: 分节）')
+    expect(text).toContain('TUI 无法修改配置——只能编辑文件')
+  })
+
+  it('renders the en dictionary end to end', () => {
+    const text = fallbacksConfigText(populated, 'en')
+    expect(text.split('\n')[0]).toBe('Fallbacks config: enabled')
+    expect(text).toContain('Trigger codes: AUTH, QUOTA, RATE_LIMIT')
+    expect(text).toContain('Root chain: anthropic/claude-3-5-sonnet, openai/*')
+    expect(text).toContain('Roles: 2 — coder (chain: 2), reviewer (chain: 1)')
+    expect(text).toContain('Cooldown: 300000 ms')
+    expect(text).toContain('Revert: cooldown-expiry')
+    expect(text).toContain('Max switches/step: 8')
+    expect(text).toContain('Always-mode cap: 5')
+    expect(text).toContain('Presets: bundled')
+    expect(text).toContain('Edit: ~/.dsh/profiles/<profile>/cordis.patch.yml (plugin row) or $DSH_HOME/settings.yaml (fallbacks: section)')
+    expect(text).toContain('TUI cannot change config — edit files only')
+  })
+
+  it('defaults to zh when no locale is given', () => {
+    expect(fallbacksConfigText(populated)).toBe(fallbacksConfigText(populated, 'zh'))
+  })
+
+  it('USAGE lists the config subcommand, reusing the usageConfig description (single copy source)', () => {
+    expect(FALLBACKS_COMMAND_LOCALES.zh.usage).toBe('  /fallbacks config   查看组合后的 fallbacks 配置（设置回读）')
+    expect(FALLBACKS_COMMAND_LOCALES.en.usage).toBe(
+      '  /fallbacks config   show the composed fallbacks config (settings readback)',
+    )
+    // The USAGE line composes the shared description — never duplicated copy.
+    expect(FALLBACKS_COMMAND_LOCALES.zh.usage).toContain(FALLBACKS_COMMAND_LOCALES.zh.usageConfig)
+    expect(FALLBACKS_COMMAND_LOCALES.en.usage).toContain(FALLBACKS_COMMAND_LOCALES.en.usageConfig)
+  })
+})
+
 describe('handler — factory-bound, read-only', () => {
   it('renders the controller snapshot as a success result for the invoking agent', () => {
     const agent = { id: 'a1', session: { events: [] } }
-    const controller: FallbacksCommandController = { getSnapshot: vi.fn(() => snapshot()) }
+    const controller: FallbacksCommandController = { getSnapshot: vi.fn(() => snapshot()), getConfig: vi.fn(() => configSummary()) }
     const { definition } = captureRegistration(controller, 'en')
     const result = definition.handler({
       commandId: 'x',
@@ -305,8 +464,8 @@ describe('handler — factory-bound, read-only', () => {
     expect(controller.getSnapshot).toHaveBeenCalledWith(agent)
   })
 
-  it('ignores rawInput (diagnostic command takes no subcommand)', () => {
-    const controller: FallbacksCommandController = { getSnapshot: () => snapshot() }
+  it('treats non-config rawInput leniently — falls back to the snapshot (no USAGE prepend)', () => {
+    const controller: FallbacksCommandController = { getSnapshot: () => snapshot(), getConfig: () => configSummary() }
     const { definition } = captureRegistration(controller)
     const result = definition.handler({
       commandId: 'x',
@@ -314,11 +473,50 @@ describe('handler — factory-bound, read-only', () => {
       rawInput: '   whatever',
       signal: new AbortController().signal,
     } as unknown as CommandInvocation)
-    expect(result.kind).toBe('success')
+    expect(result).toEqual({ kind: 'success', text: fallbacksCommandText(snapshot()) })
+    // The diagnostic body is exactly the snapshot text — the config surface
+    // (USAGE / composed-config summary) is never prepended onto it.
+    const text = result.kind === 'success' ? (result.text ?? '') : ''
+    expect(text).not.toContain('/fallbacks config')
+  })
+
+  it('routes the config subcommand to getConfig and renders the composed-config readback', () => {
+    const controller: FallbacksCommandController = {
+      getSnapshot: vi.fn(() => snapshot()),
+      getConfig: vi.fn(() => configSummary()),
+    }
+    const { definition } = captureRegistration(controller, 'en')
+    const result = definition.handler({
+      commandId: 'x',
+      agent: { id: 'a1', session: { events: [] } },
+      rawInput: ' config',
+      signal: new AbortController().signal,
+    } as unknown as CommandInvocation)
+    expect(result).toEqual({ kind: 'success', text: fallbacksConfigText(configSummary(), 'en') })
+    expect(controller.getConfig).toHaveBeenCalledTimes(1)
+    expect(controller.getConfig).toHaveBeenCalledWith()
+    expect(controller.getSnapshot).not.toHaveBeenCalled()
+  })
+
+  it('treats a contract-violating missing rawInput as bare input (defensive ?? \'\') (qc2 N-3)', () => {
+    const controller: FallbacksCommandController = {
+      getSnapshot: vi.fn(() => snapshot()),
+      getConfig: () => configSummary(),
+    }
+    const { definition } = captureRegistration(controller)
+    const result = definition.handler({
+      commandId: 'x',
+      agent: { id: 'a1', session: { events: [] } },
+      rawInput: undefined,
+      signal: new AbortController().signal,
+    } as unknown as CommandInvocation)
+    // Falls back to the bare snapshot instead of throwing on the deref.
+    expect(result).toEqual({ kind: 'success', text: fallbacksCommandText(snapshot()) })
+    expect(controller.getSnapshot).toHaveBeenCalledTimes(1)
   })
 
   it('is bound to the locale passed at registration', () => {
-    const { definition } = captureRegistration({ getSnapshot: () => snapshot() }, 'en')
+    const { definition } = captureRegistration({ getSnapshot: () => snapshot(), getConfig: () => configSummary() }, 'en')
     const result = definition.handler({
       commandId: 'x',
       agent: { id: 'a1', session: { events: [] } },
@@ -444,6 +642,51 @@ describe('apply() wiring — conditional commands child', () => {
     expect(result.kind).toBe('success')
     const text = (result as { text?: string }).text ?? ''
     expect(text).toContain('最近切换: 本会话暂无 fallback 切换')
+  })
+
+  it('/fallbacks config reads the composed live source (getConfig over source()) and never mutates session state', async () => {
+    const registered: CommandDefinition[] = []
+    ctx.provide('commands', {
+      register: (def: CommandDefinition) => {
+        registered.push(def)
+        return () => {}
+      },
+    } as never)
+    // Composed config incl. the settings user layer: role chain length feeds
+    // the chainCount summary; `presets: 'none'` (cfg default) keeps the
+    // bundled preset self-declaration inert so the roles summary is stable.
+    apply(ctx, cfg({
+      enabled: true,
+      triggerCodes: ['AUTH'],
+      rootChain: ['other/gpt-4o'],
+      roles: {
+        list: [{ id: 'coder', persona: '', chain: ['other/gpt-4o-mini'], fallback: 'inherit-root' }],
+        rules: [],
+      },
+    }))
+    await vi.waitFor(() => expect(registered).toHaveLength(1))
+
+    const { agent } = makeAgent('cmd-config', { provider: 'mock', model: 'gpt-4o' })
+    const result = registered[0]!.handler({
+      commandId: 'x',
+      agent,
+      rawInput: ' config',
+      signal: new AbortController().signal,
+    } as unknown as CommandInvocation)
+    expect(result.kind).toBe('success')
+    const text = result.kind === 'success' ? (result.text ?? '') : ''
+    expect(text.split('\n')[0]).toBe('Fallbacks 配置: 已启用')
+    expect(text).toContain('触发码: AUTH')
+    expect(text).toContain('根链: other/gpt-4o')
+    expect(text).toContain('角色: 1 — coder（chain: 1）')
+    expect(text).toContain('冷却: 300000 ms')
+    expect(text).toContain('回主策略: cooldown-expiry')
+    expect(text).toContain('单步最大切换: 8')
+    expect(text).toContain('always 上限: 5')
+    expect(text).toContain('预置: none')
+    expect(text).toContain('编辑：')
+    // Read-only: the config readback must not grow the session log.
+    expect(agent.session.events).toHaveLength(0)
   })
 
   it('top-level inject list is unchanged (commands stays conditional)', async () => {
