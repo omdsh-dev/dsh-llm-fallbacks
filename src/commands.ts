@@ -360,8 +360,13 @@ function formatConfigList(items: readonly string[]): string {
 
 /** Render the `Roles:` line: full count, then `id (chain: n)` items (truncated). */
 function formatConfigRoles(roles: readonly { id: string; chainCount: number }[], t: FallbacksCommandCopy): string {
-  const items = roles.map((role) => t.configRoleItem.replace('{id}', role.id).replace('{n}', String(role.chainCount)))
-  const list = formatConfigList(items)
+  // S-1 (qc3): bound the interpolation allocation before truncation — only
+  // the first FALLBACKS_CONFIG_LIST_CAP roles can ever render, so slice
+  // before map (never O(N) intermediate strings on the command path). The
+  // `Roles:` count below still reports the FULL array length.
+  const items = roles.slice(0, FALLBACKS_CONFIG_LIST_CAP)
+    .map((role) => t.configRoleItem.replace('{id}', role.id).replace('{n}', String(role.chainCount)))
+  const list = items.length === 0 ? '' : `${items.join(', ')}${roles.length > FALLBACKS_CONFIG_LIST_CAP ? ', …' : ''}`
   return `${roles.length}${list.length === 0 ? '' : ` — ${list}`}`
 }
 
@@ -380,7 +385,7 @@ export function fallbacksConfigText(
   const t = FALLBACKS_COMMAND_LOCALES[locale]
   const lines: string[] = [
     `${t.configTitle}: ${summary.enabled ? t.configEnabled : t.configDisabled}`,
-    `${t.configTriggerCodes}: ${formatConfigList(summary.triggerCodes)}`,
+    `${t.configTriggerCodes}: ${summary.triggerCodes.length === 0 ? t.configEmpty : formatConfigList(summary.triggerCodes)}`,
     `${t.configRootChain}: ${summary.rootChain.length === 0 ? t.configEmpty : formatConfigList(summary.rootChain)}`,
     `${t.configRoles}: ${formatConfigRoles(summary.roles, t)}`,
     `${t.configCooldown}: ${summary.cooldownMs} ms`,
@@ -445,7 +450,10 @@ function createFallbacksCommandHandler(
   return (invocation: CommandInvocation): CommandResult => ({
     kind: 'success',
     text:
-      parseFallbacksSubcommand(invocation.rawInput) === 'config'
+      // The contract says rawInput is a string; a contract-violating host
+      // passing undefined must still fall back to the bare snapshot (qc2
+      // N-3 — keep the lenient-fallback promise absolute).
+      parseFallbacksSubcommand(invocation.rawInput ?? '') === 'config'
         ? fallbacksConfigText(controller.getConfig(), locale)
         : fallbacksCommandText(controller.getSnapshot(invocation.agent), locale),
   })

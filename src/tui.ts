@@ -56,18 +56,19 @@ const FALLBACKS_CONFIG_NODE: TuiCommandCompletionNode = {
   },
 }
 
-/** The single child row under the root (readonly; the host never mutates it). */
-const FALLBACKS_CONFIG_CHILDREN: readonly TuiCommandCompletionNode[] = [FALLBACKS_CONFIG_NODE]
-
 /**
  * Completion children for the `/fallbacks` tree. The host only passes
  * canonical paths (root at index 0, registered names), so any path whose
  * first element is not the canonical root — or that reaches past the
  * `config` leaf — is unknown and yields `[]`, never throwing.
+ *
+ * The `config` row is returned as a FRESH array per call (qc3 N-3): callers
+ * receive a copy, never the shared module constant by reference, so a
+ * host-side mutation could never corrupt subsequent completions.
  */
 function fallbacksChildren(canonicalPath: readonly string[]): readonly TuiCommandCompletionNode[] {
   if (canonicalPath[0] !== FALLBACKS_TUI_ROOT) return []
-  if (canonicalPath.length === 1) return FALLBACKS_CONFIG_CHILDREN
+  if (canonicalPath.length === 1) return [FALLBACKS_CONFIG_NODE]
   return []
 }
 
@@ -103,6 +104,17 @@ export function installTuiClient(ctx: Context, opts: { serviceOwned: boolean }):
     }
     const trees = tuiHost.tuiCommandTrees
     if (trees === undefined) return
-    return trees.register(FALLBACKS_PROVIDER)
+    try {
+      return trees.register(FALLBACKS_PROVIDER)
+    } catch (error) {
+      // M-1 (qc2): sibling dedupe guard — the host registry throws on a
+      // duplicate root, and a cross-plugin (or future host) provider may
+      // own `fallbacks` before this fiber. Degrade to a no-op disposer with
+      // a debug log, mirroring the typert child idiom (src/index.ts); any
+      // other error stays loud.
+      if (!(error instanceof Error) || !error.message.includes('already registered')) throw error
+      tctx.logger('llm-fallbacks').debug('llm-fallbacks: tui command tree already registered — no provider on this fiber')
+      return () => {}
+    }
   })
 }

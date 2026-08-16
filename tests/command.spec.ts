@@ -355,6 +355,12 @@ describe('fallbacksConfigText — composed-config readback', () => {
     expect(fallbacksConfigText(configSummary({ rootChain: [] }), 'en')).toContain('Root chain: (empty)')
   })
 
+  it('renders (empty) for no trigger codes — no trailing-empty line (qc2 N-4)', () => {
+    expect(fallbacksConfigText(configSummary({ triggerCodes: [] }), 'en')).toContain('Trigger codes: (empty)')
+    const text = fallbacksConfigText(configSummary({ triggerCodes: [] }), 'en')
+    expect(text).not.toMatch(/Trigger codes: ?\n/)
+  })
+
   it('renders the roles summary with the full count and per-role chain counts', () => {
     expect(fallbacksConfigText(configSummary(), 'en')).toContain('Roles: 2 — coder (chain: 2), reviewer (chain: 1)')
   })
@@ -487,6 +493,23 @@ describe('handler — factory-bound, read-only', () => {
     expect(controller.getConfig).toHaveBeenCalledTimes(1)
     expect(controller.getConfig).toHaveBeenCalledWith()
     expect(controller.getSnapshot).not.toHaveBeenCalled()
+  })
+
+  it('treats a contract-violating missing rawInput as bare input (defensive ?? \'\') (qc2 N-3)', () => {
+    const controller: FallbacksCommandController = {
+      getSnapshot: vi.fn(() => snapshot()),
+      getConfig: () => configSummary(),
+    }
+    const { definition } = captureRegistration(controller)
+    const result = definition.handler({
+      commandId: 'x',
+      agent: { id: 'a1', session: { events: [] } },
+      rawInput: undefined,
+      signal: new AbortController().signal,
+    } as unknown as CommandInvocation)
+    // Falls back to the bare snapshot instead of throwing on the deref.
+    expect(result).toEqual({ kind: 'success', text: fallbacksCommandText(snapshot()) })
+    expect(controller.getSnapshot).toHaveBeenCalledTimes(1)
   })
 
   it('is bound to the locale passed at registration', () => {

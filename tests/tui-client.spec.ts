@@ -13,6 +13,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
+import type { CommandDefinition, CommandInvocation } from '@deepseek-ai/dsh-commands'
 import { apply } from '../src/index.ts'
 import {
   FALLBACKS_TUI_ROOT,
@@ -21,7 +22,8 @@ import {
   type TuiCommandTreeProvider,
 } from '../src/tui.ts'
 import { FALLBACKS_COMMAND_LOCALES } from '../src/commands.ts'
-import { cfg } from './support/harness.ts'
+import { FALLBACKS_SETTINGS_NAMESPACE } from '../src/gateway.ts'
+import { cfg, makeAgent } from './support/harness.ts'
 import { MemorySettings } from './support/memory-settings.ts'
 
 /**
@@ -68,18 +70,22 @@ class TuiCommandTreesStub {
  * A stub Context whose `inject` mirrors cordis' child-activation contract:
  * with a service present the child activates immediately (receiving the
  * service bag), and its returned disposer is captured; with no service the
- * child never activates. The stub ctx is cast to `Context` — the real
- * `Context` surface is not needed, `installTuiClient` only touches `inject`.
+ * child never activates. The child bag carries the service + a logger
+ * surface (the minimal slice of a real child context the dedupe guard logs
+ * through). The stub ctx is cast to `Context` — the real `Context` surface
+ * is not needed, `installTuiClient` only touches `inject`.
  */
 function makeStubContext(service: TuiCommandTreesStub | undefined): {
   ctx: Context
   disposer: (() => void) | undefined
+  debugLog: ReturnType<typeof vi.fn>
 } {
   let disposer: (() => void) | undefined
+  const debugLog = vi.fn()
   const ctx = {
     inject(names: readonly string[], callback: (tctx: unknown) => unknown) {
       if (service === undefined) return
-      const returned = callback({ tuiCommandTrees: service })
+      const returned = callback({ tuiCommandTrees: service, logger: () => ({ debug: debugLog }) })
       if (typeof returned === 'function') disposer = returned as () => void
     },
   } as unknown as Context
@@ -90,6 +96,7 @@ function makeStubContext(service: TuiCommandTreesStub | undefined): {
     get disposer() {
       return disposer
     },
+    debugLog,
   }
 }
 
@@ -144,6 +151,43 @@ describe('installTuiClient — registration shape (AC-1)', () => {
     expect(registry.roots).toHaveLength(0)
     expect(registry.providers.size).toBe(0)
   })
+
+  it('degrades to a no-op disposer when another provider already owns the root (M-1 dedupe guard)', () => {
+    const registry = new TuiCommandTreesStub()
+    // Cross-plugin conflict: a sibling provider claimed the root first — the
+    // host duplicate-root throw inside the inject child.
+    registry.register({ root: FALLBACKS_TUI_ROOT, children: () => [] })
+    const stub = makeStubContext(registry)
+
+    expect(() => installTuiClient(stub.ctx, { serviceOwned: true })).not.toThrow()
+    // The dedupe catch logged the degradation at debug level...
+    expect(stub.debugLog).toHaveBeenCalledWith(
+      'llm-fallbacks: tui command tree already registered — no provider on this fiber',
+    )
+    // ...and returned a no-op disposer (nothing was registered to withdraw).
+    expect(typeof stub.disposer).toBe('function')
+    expect(stub.disposer).not.toBe(registry.lastDisposer)
+    stub.disposer!()
+    expect(registry.providers.size).toBe(1)
+    expect(registry.roots).toEqual([FALLBACKS_TUI_ROOT])
+  })
+
+  it('rethrows non-duplicate registration errors (only "already registered" degrades)', () => {
+    const ctx = {
+      inject(_names: readonly string[], callback: (tctx: unknown) => unknown) {
+        callback({
+          tuiCommandTrees: {
+            register: () => {
+              throw new TypeError('invalid root')
+            },
+          },
+          logger: () => ({ debug: vi.fn() }),
+        })
+      },
+    } as unknown as Context
+
+    expect(() => installTuiClient(ctx, { serviceOwned: true })).toThrow(/invalid root/)
+  })
 })
 
 describe('provider completion children — config node (AC-1)', () => {
@@ -179,6 +223,18 @@ describe('provider completion children — config node (AC-1)', () => {
     expect(provider.children(['other'])).toEqual([])
     expect(provider.children([FALLBACKS_TUI_ROOT, 'unknown'])).toEqual([])
     expect(provider.children(['Fallbacks'])).toEqual([])
+  })
+
+  it('returns a fresh children array per call — never the shared constant by reference (qc3 N-3)', () => {
+    const provider = registeredProvider()
+
+    const first = provider.children([FALLBACKS_TUI_ROOT])
+    const second = provider.children([FALLBACKS_TUI_ROOT])
+    expect(first).toEqual(second)
+    expect(first).not.toBe(second)
+    // Mutating a caller's copy must not corrupt the next caller's view.
+    ;(first as TuiCommandCompletionNode[]).push({ name: 'tampered', description: 'x' })
+    expect(provider.children([FALLBACKS_TUI_ROOT])).toHaveLength(1)
   })
 
   it('serves the same completion through the registry lookup path', () => {
@@ -223,5 +279,90 @@ describe('apply() wiring — conditional tuiCommandTrees child', () => {
     ctx.provide('tuiCommandTrees', registry as never)
     await vi.waitFor(() => expect(registry.providers.size).toBe(1))
     expect(registry.roots).toEqual(['fallbacks'])
+  })
+
+  it('serviceOwned: false — a deduped fiber registers no provider through the apply path (M-2b)', async () => {
+    const registry = new TuiCommandTreesStub()
+    // The `llm-fallbacks` service is already owned on the shared context
+    // root: apply()'s provide hits cordis' duplicate-key failure, the catch
+    // sets serviceOwned = false, and installTuiClient must NOT register —
+    // even though the tuiCommandTrees service is composed (a second
+    // registration would be the host duplicate-root throw).
+    ctx.provide('llm-fallbacks', { name: 'llm-fallbacks' } as never)
+    ctx.provide('tuiCommandTrees', registry as never)
+
+    expect(() => apply(ctx, cfg())).not.toThrow()
+    // Give any (incorrectly) scheduled activation a beat before asserting.
+    await vi.waitFor(() => expect(registry.providers.size).toBe(0))
+    expect(registry.roots).toHaveLength(0)
+  })
+
+  it('/fallbacks config reflects a live settings change (getConfig reads the composed source per call) (M-2a)', async () => {
+    const registered: CommandDefinition[] = []
+    ctx.provide('commands', {
+      register: (def: CommandDefinition) => {
+        registered.push(def)
+        return () => {}
+      },
+    } as never)
+    apply(ctx, cfg({ enabled: true, triggerCodes: ['AUTH'] }))
+    await vi.waitFor(() => expect(registered).toHaveLength(1))
+
+    const { agent } = makeAgent('cmd-live', { provider: 'mock', model: 'gpt-4o' })
+    const invoke = (rawInput: string): string => {
+      const result = registered[0]!.handler({
+        commandId: 'x',
+        agent,
+        rawInput,
+        signal: new AbortController().signal,
+      } as unknown as CommandInvocation)
+      return result.kind === 'success' ? (result.text ?? '') : ''
+    }
+
+    // At-apply composed values.
+    expect(invoke(' config').split('\n')[0]).toBe('Fallbacks 配置: 已启用')
+    expect(invoke(' config')).toContain('触发码: AUTH')
+
+    // A live settings update mutates the user layer; the next readback must
+    // reflect it — getConfig() shares the exact per-call source() accessor
+    // the runtime reads (no cached readback).
+    await ctx.settings.update(FALLBACKS_SETTINGS_NAMESPACE, { triggerCodes: ['QUOTA'] })
+    await vi.waitFor(() => expect(invoke(' config')).toContain('触发码: QUOTA'))
+    expect(invoke(' config')).not.toContain('触发码: AUTH')
+    await ctx.settings.update(FALLBACKS_SETTINGS_NAMESPACE, { enabled: false })
+    await vi.waitFor(() => expect(invoke(' config').split('\n')[0]).toBe('Fallbacks 配置: 未启用'))
+
+    // Read-only: the readbacks never grow the session log.
+    expect(agent.session.events).toHaveLength(0)
+  })
+
+  it('registers the tuiCommandTrees child BEFORE the tail settings preset child (S-2 activation-order invariant)', () => {
+    // The tail ctx.inject(['settings']) preset child must stay the LAST
+    // registered child so its fire sees the composed live source and write
+    // channel; a future reorder of installTuiClient after it would silently
+    // break that guarantee. Pin the inject registration order via a
+    // recording wrapper.
+    const injectKeys: string[] = []
+    const recorder = new Proxy(ctx, {
+      get(target, prop) {
+        if (prop === 'inject') {
+          return (deps: readonly string[], callback: unknown) => {
+            injectKeys.push(deps.join(','))
+            return Reflect.get(target, prop).call(target, deps, callback)
+          }
+        }
+        return Reflect.get(target, prop)
+      },
+    })
+
+    apply(recorder, cfg())
+
+    const tuiIndex = injectKeys.indexOf('tuiCommandTrees')
+    const lastSettings = injectKeys.lastIndexOf('settings')
+    expect(tuiIndex).toBeGreaterThanOrEqual(0)
+    // The preset child is the last-registered child overall...
+    expect(lastSettings).toBe(injectKeys.length - 1)
+    // ...and the TUI child precedes it.
+    expect(tuiIndex).toBeLessThan(lastSettings)
   })
 })
