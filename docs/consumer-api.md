@@ -80,7 +80,7 @@ Operator-facing behavior of the automatic declaration (config key `presets: 'bun
 
 ## Named service (`ctx.get('llm-fallbacks')`)
 
-After the plugin's `apply()`, a service is registered on the cordis `Context` under the name `'llm-fallbacks'`. **It is a small face over the library logic — not a second library API**: the four legacy callables are reference-identical to the library re-exports, and the three role-seed methods are per-apply closures over the seed manager (state stays behind the closure, spec §9.5) — no copied logic on either side. Runtime state (cooldown, recent switches, etc.) is not part of the contract — cross-plugin state reads should listen to `fallbacks/switch` events instead of reading service object internals.
+After the plugin's `apply()`, a service is registered on the cordis `Context` under the name `'llm-fallbacks'`. **It is a small face over the library logic — not a second library API**: the four legacy callables are reference-identical to the library re-exports, and the three role-seed methods are per-apply closures over the seed manager (state stays behind the closure, spec §9.5) — no copied logic on either side. Runtime state (cooldown, recent switches, etc.) is not part of the contract — cross-plugin state reads should listen to `fallbacks/switch` events instead of reading service object internals. Caveat: those events only survive a dsh restart while the plugin's startup registration is active (rc.6 runtime registration; an upstream registration surface is pending — see the README / [install.md](install.md) notes), so for state that must stay current in-process, prefer in-process reads over the persisted events.
 
 ### Shape
 

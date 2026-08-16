@@ -25,7 +25,7 @@ fallbacks-aux-seams D1+D2 门禁 POSITIVE 并落地）：`conversationEvents` �
 
 ## Context
 
-`fallbacks/switch` 事件已持久化（`SessionEventMap` merge + `session.append`），但**不是**
+`fallbacks/switch` 事件已持久化（`SessionEventMap` merge + `session.append`；跨重启可读依赖插件在 apply() 启动时把类型注册进宿主根导出 `KNOWN_SESSION_EVENT_TYPES`——rc.6 运行时注册 stopgap，上游注册面跟踪见 `.mstar/plans/llm-fallbacks-session-event-format/`），但**不是**
 SurfaceEventType（`user/message | assistant/message | tool/result`）——不进 surface 投影，
 会话转录默认完全不渲染。20260811 dsh 的兜底定义（`unknown-surface`）只 match surface
 事件，插件事件落在「已持久化但会话内不可见」的空白。本模式回答：如何让这类事件在转录中

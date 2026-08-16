@@ -52,14 +52,14 @@ No rule match → the built-in `inherit` → `rootChain`. `enabled` defaults to 
 
 ### Verify
 
-Save and restart the session, then type `/fallbacks` — the read-only in-session diagnostics (origin, resolved role, chain, recent `fallbacks/switch` events, cooldown status). In a dsh-tui profile, `/fallbacks config` additionally reads back the composed configuration (the TUI has no settings page — config is file-only; see [docs/configuration.md](docs/configuration.md)).
+Save and restart the session, then type `/fallbacks` — the read-only in-session diagnostics (origin, resolved role, chain, recent `fallbacks/switch` events, cooldown status). Sessions containing `fallbacks/switch` events load after a restart because the plugin registers the event type at startup (rc.6 runtime registration; an upstream registration surface is pending) — without the plugin installed, such sessions refuse to load again until the upstream surface lands (see the Features note below). In a dsh-tui profile, `/fallbacks config` additionally reads back the composed configuration (the TUI has no settings page — config is file-only; see [docs/configuration.md](docs/configuration.md)).
 
 ## Features
 
 - **Automatic fallback for root and subagents**: any agent switches down the chain to the next available provider/model on model failure — no manual model switching.
 - **Two-block config**: `rootChain` for the root agent; declared role entities (`roles.list`) referenced by `roles.rules` (or the built-in `inherit`).
 - **Cooldown and revert**: failed / switched-away models are not re-selected during cooldown; `revertPolicy: cooldown-expiry` returns to the primary model automatically.
-- **Visible behavior**: every switch appends a persisted `fallbacks/switch` session event (from/to/role/reason) with info-level logs — no silent model switching.
+- **Visible behavior**: every switch appends a persisted `fallbacks/switch` session event (from/to/role/reason) with info-level logs — no silent model switching. The event type is registered with the harness at plugin startup (rc.6 runtime registration; an upstream registration surface is pending), so persisted events stay loadable across restarts while the plugin is installed.
 - **Safety valves**: `maxSwitchesPerStep` caps switches per step and `alwaysModeRetryCap` caps always-mode retries — chain loops cannot amplify latency.
 - **No-config no-op**: `enabled` defaults to off; with no chains configured the plugin behaves exactly like not being installed.
 

@@ -221,6 +221,6 @@ Then restart the dsh web session so the host half and the client half load.
 |---|---|---|
 | web settings GUI interaction (card appears, edit & save, conflict reload) | the sandbox cannot operate a real web session | user §2 / §4 (client-half logic already covered by T5's 155 tests) |
 | real model calls and failure injection (AUTH/QUOTA/RATE_LIMIT triggers, switch continuation) | the sandbox has no real model credentials or running session | user §3 / §4 (decision logic already covered by T3/T4 integration tests) |
-| cross-process observation (logs, `fallbacks/switch` session events landing in a real session) | the sandbox cannot run a real dsh session | user §3/§4 |
+| cross-process observation (logs, `fallbacks/switch` session events landing in a real session) | the sandbox cannot run a real dsh session — the untested reload path was the gap that shipped issue #52 (a session refused to load after restart until the startup registration fix); the registration + append-guard pins in `tests/session-event-registration*.spec.ts` cover the reload semantics | user §3/§4 |
 | `/fallbacks` command input/output in a real session | the sandbox cannot run a real dsh session and command registry | user §4.3 step 5 (command logic already covered by command.spec.ts) |
 | real routing override under an active model-selection (documented degradation) | the sandbox has no real web session and model selection | user §4.3 (combination order already covered by T4 integration tests) |
