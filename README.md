@@ -18,10 +18,11 @@ Works in both dsh front ends: the **web** profile (Settings → 插件配置 →
 ### Install
 
 ```sh
-dsh plugin --profile <web|dsh-tui> add dsh-llm-fallbacks   # pin a version with @<version>
+dsh plugin --profile web add dsh-llm-fallbacks      # web profile (Settings → Fallbacks card)
+dsh plugin --profile dsh-tui add dsh-llm-fallbacks  # dsh-tui terminal profile
 ```
 
-One command, any client — the only difference is the `--profile` flag. A registry install fetches the **built package** (`dist/`), nothing builds on the target machine. Registry / git / local-directory variants, uninstall, and `--dump-config` verification → [docs/install.md](docs/install.md).
+Same plugin, either front end — the only difference is the `--profile` flag. Pin a version with `@<version>`. A registry install fetches the **built package** (`dist/`), nothing builds on the target machine. Registry / git / local-directory variants, uninstall, and `--dump-config` verification → [docs/install.md](docs/install.md).
 
 ### Minimal configuration
 

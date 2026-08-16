@@ -18,10 +18,11 @@ dsh（DeepSeek Harness）的自动模型降级插件：当 root agent 或 subage
 ### 安装
 
 ```sh
-dsh plugin --profile <web|dsh-tui> add dsh-llm-fallbacks   # 钉版本：加 @<version>
+dsh plugin --profile web add dsh-llm-fallbacks      # web profile（设置 → Fallbacks 卡片）
+dsh plugin --profile dsh-tui add dsh-llm-fallbacks  # dsh-tui 终端 profile
 ```
 
-一条命令、任意 client——区别只在 `--profile` 参数。registry 安装拉取的是**已构建产物**（`dist/`），目标机无需构建。registry / git / 本地目录变体、卸载与 `--dump-config` 验证 → [docs/install.md](docs/install.md)。
+同一个插件、两个前端——区别只在 `--profile` 参数。钉版本：加 `@<version>`。registry 安装拉取的是**已构建产物**（`dist/`），目标机无需构建。registry / git / 本地目录变体、卸载与 `--dump-config` 验证 → [docs/install.md](docs/install.md)。
 
 ### 最小配置
 
