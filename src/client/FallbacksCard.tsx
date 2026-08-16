@@ -989,13 +989,26 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                  * strategy, removal. prompt/permissions are schema-reserved
                  * and never rendered this round. The id input carries the
                  * format hint inline; a blocked save attempt marks offending
-                 * ids with the red border (aria-invalid). */}
+                 * ids with the red border (aria-invalid). Seeded rows (R2 —
+                 * incl. preset-materialized rows, which surface as seeded
+                 * rows) have their id input disabled: seed/preset role ids
+                 * are immutable from the card. Only the id is locked —
+                 * persona (R3 override/revert) and chain/fallback (R4) stay
+                 * editable. A rename can only arrive via an external config
+                 * edit; a row whose id no longer matches the wire's seed
+                 * declaration renders as an ordinary row. */}
                 <div className={css.list}>
                   {roleRows.map((row, index) => {
                     const invalid = invalidRoleIds?.has(row.id.trim()) ?? false
                     // undefined = not a currently seeded row (no badge, no
                     // revert, no Save relax — the row is an ordinary config
-                    // row; R2: dropping a declaration keeps the row).
+                    // row; R2: dropping a declaration keeps the row). Seeded
+                    // rows (incl. preset-materialized ones) are id-immutable
+                    // (R2): their id input is disabled below — only the id is
+                    // locked; persona/chain/fallback stay editable. Renames
+                    // arrive only via external config edits; a row whose id
+                    // no longer matches the wire's seed declaration renders
+                    // as an ordinary row.
                     const seed = seededIds.get(row.id.trim())
                     return (
                     <div key={index} className={css.editorCard}>
@@ -1008,7 +1021,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                             placeholder={t('roles.idPlaceholder')}
                             aria-label={t('roles.id')}
                             aria-invalid={invalid ? true : undefined}
-                            disabled={!writable}
+                            disabled={!writable || seed !== undefined}
                             onChange={event => { updateRoleRow(index, { id: event.target.value }) }}
                           />
                           <span className={css.hint}>{t('roles.id.hint')}</span>

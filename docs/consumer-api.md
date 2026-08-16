@@ -122,7 +122,7 @@ Importing this package automatically merges the `Context` type (`declare module 
 
 ### Role seeds (service seeding API)
 
-The service grows three additive keys — the six pre-existing keys are unchanged (strictly additive, spec §9.1). Companion plugins use them to auto-provision role rows into the taxonomy with **zero operator hand-edit** (no config block, no bundle-row write): a seeded role is a plain `roles.list` row, and the settings card surfaces the same state (seed badge + revert) over the gateway wire.
+The service grows three additive keys — the six pre-existing keys are unchanged (strictly additive, spec §9.1). Companion plugins use them to auto-provision role rows into the taxonomy with **zero operator hand-edit** (no config block, no bundle-row write): a seeded role is a plain `roles.list` row, and the settings card surfaces the same state (seed badge + revert) over the gateway wire — the card renders the seeded role's id as a disabled (immutable) field, so the id of any seed/preset role cannot be changed in the card (R2); persona, chain and fallback stay editable.
 
 ```ts
 declareSeeds(seeds: readonly SeedDeclaration[]): Promise<SeedDeclareOutcome>
