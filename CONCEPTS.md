@@ -42,7 +42,7 @@ fallbacks 配置的自明结构：块 1 = `rootChain`（root 主代理一条链�
 *Avoid:* 与 `inherit`（角色 id）混用
 
 ### fallbacks/switch 事件
-插件每次切换模型时追加的持久化会话事件（from/to/role/reason），是「行为可见」承诺的载体：无事件即无切换。reason 是开放字符串（未知值客户端原样渲染，向后兼容）；`role-inject` 是分发时角色注入的附加 reason 值（additive，非结构变更——见三段式分发角色解析）。
+`fallbacks/switch` 事件类型词汇（from/to/role/reason）——2026-08-17 起插件**不再写入** durable 事件（issue #52：apply() 时的事件类型注册被证伪无效，含该事件的会话在 dsh 重启后拒绝加载），「行为可见」由 info 日志承载；旧版写入的会话事件由 `scripts/repair-fallbacks-switch-logs.ts` 标记 ignorable 后恢复加载。reason 是开放字符串（未知值客户端原样渲染，向后兼容）；`role-inject` 是分发时角色注入的附加 reason 值（additive，非结构变更——见三段式分发角色解析）。
 
 ### triggerCodes
 触发 fallback 决策的失败码集合，默认 `['AUTH', 'QUOTA', 'RATE_LIMIT']`（dsh 稳定失败码；注意是 `QUOTA` 不是 `QUOTA_EXCEEDED`）。重试型失败（5xx/TRANSPORT）由 llm-retry 先行退避，预算耗尽后同样进入 fallback 决策。
@@ -89,5 +89,5 @@ companion 插件经释放面声明 `[{id, persona}]`、由本插件自动补全�
 *Avoid:* 默认 none（bundled 语义开箱即有）· async 化 apply 自声明（fiber FAILED）· 复用早注册注入子 fire（base-only 基线覆盖 operator 行）
 
 ### 三段式分发角色解析（three-stage dispatch role resolution）
-subagent 分发时（首请求）解析角色的三段流程：显式角色（session header `agentPreset` 精确匹配已声明角色 id）→ 确定性规则匹配（`roles.rules`，与失败时共用 resolveRole）→ LLM 自动匹配（`roleAutoMatch` 默认开启；模型从已声明角色 taxonomy 中自选，超时/失败/无合法答案回退 inherit）。解析角色的链首 exact 候选在分发时注入首请求（`fallbacks/switch` 事件，reason `role-inject`；非失败决策——无冷却/记账，仅 subagent origin，首请求幂等）。
+subagent 分发时（首请求）解析角色的三段流程：显式角色（session header `agentPreset` 精确匹配已声明角色 id）→ 确定性规则匹配（`roles.rules`，与失败时共用 resolveRole）→ LLM 自动匹配（`roleAutoMatch` 默认开启；模型从已声明角色 taxonomy 中自选，超时/失败/无合法答案回退 inherit）。解析角色的链首 exact 候选在分发时注入首请求（不写 `fallbacks/switch` 事件——issue #52 停写，仅 info 日志记录 role → model；非失败决策——无冷却/记账，仅 subagent origin，首请求幂等）。
 *Avoid:* 把「模型自选角色」当作既有机制（角色解析是确定性规则匹配，模型自选仅存在于自动匹配兜底段）

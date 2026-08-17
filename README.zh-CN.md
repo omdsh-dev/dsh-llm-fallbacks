@@ -52,15 +52,15 @@ fallbacks:
 
 ### 验证
 
-保存并重启会话后，键入 `/fallbacks`——只读的会话内诊断（来源、解析角色、链、最近的 `fallbacks/switch` 事件、冷却状态）。含 `fallbacks/switch` 事件的会话能在重启后正常加载，是因为插件在启动时注册了该事件类型（rc.6 运行时注册；上游注册面待落地）——卸载插件后，含此类事件的会话将再次拒绝加载，直到上游注册面落地（见下方「能力一览」说明）。在 dsh-tui profile 中，`/fallbacks config` 额外回读组合配置（TUI 无设置页——配置仅文件，见 [docs/configuration.md](docs/configuration.md)）。
+保存并重启会话后，键入 `/fallbacks`——只读的会话内诊断（来源、解析角色、链、最近的 `fallbacks/switch` 事件、冷却状态）。插件**不再写入** durable `fallbacks/switch` 会话事件（issue #52——apply() 时的注册被证伪无效），因此新切换只出现在 info 日志中，不再出现在 recent-switch 展示面；由旧版插件写入、含 `fallbacks/switch` 事件的会话，可用 `scripts/repair-fallbacks-switch-logs.ts` 修复——脚本把旧事件标记为 ignorable，会话即可重新加载（见下方「能力一览」说明）。在 dsh-tui profile 中，`/fallbacks config` 额外回读组合配置（TUI 无设置页——配置仅文件，见 [docs/configuration.md](docs/configuration.md)）。
 
 ## 能力一览
 
 - **root / subagent 自动降级**：任意 agent 在模型故障下按链切换到下一个可用 provider/model，无需手动换模型。
 - **两块制配置**：`rootChain` 管 root 代理；声明式角色实体（`roles.list`）供 `roles.rules` 引用（或内置 `inherit`）。
-- **派发时角色解析**：在 subagent 的首次请求上，其角色按三个阶段解析——显式（`agentPreset` 匹配已声明角色 id）→ 确定性规则（不变）→ LLM 自动匹配（从已声明角色体系中选择，`fallbacks.roleAutoMatch` 默认 `true`）。解析出的角色的链头模型注入首次请求，并作为 `fallbacks/switch` 事件（`reason: 'role-inject'`）呈现；设 `roleAutoMatch: false` 仅关闭 LLM 自动匹配阶段（显式 `agentPreset` 阶段仍生效——无显式角色时即复现原有仅规则行为）。设置卡总是渲染「启用角色自动匹配」开关（默认 `true`）以切换之——即使是从未声明过该键的旧配置，schema 默认值同样生效。
+- **派发时角色解析**：在 subagent 的首次请求上，其角色按三个阶段解析——显式（`agentPreset` 匹配已声明角色 id）→ 确定性规则（不变）→ LLM 自动匹配（从已声明角色体系中选择，`fallbacks.roleAutoMatch` 默认 `true`）。解析出的角色的链头模型注入首次请求，并以显式 `role → model` 日志行记录（不写 durable `fallbacks/switch` 事件——issue #52 停写）；设 `roleAutoMatch: false` 仅关闭 LLM 自动匹配阶段（显式 `agentPreset` 阶段仍生效——无显式角色时即复现原有仅规则行为）。设置卡总是渲染「启用角色自动匹配」开关（默认 `true`）以切换之——即使是从未声明过该键的旧配置，schema 默认值同样生效。
 - **冷却与回主**：被切离/失败的模型在冷却期内不再入选；`revertPolicy: cooldown-expiry` 冷却到期后自动回主模型。
-- **行为可见**：每次切换追加持久化会话事件 `fallbacks/switch`（from/to/role/reason），配合 info 级日志——无静默换模型。插件在启动时把该事件类型注册进宿主（rc.6 运行时注册；上游注册面待落地），持久化事件在插件安装期间可跨重启加载。
+- **行为可见**：每次切换以 info 级日志行（from/to/role/reason）记录——无静默换模型。插件**刻意不写** durable `fallbacks/switch` 会话事件（issue #52——apply() 时的事件类型注册被证伪无效，含该事件的会话在 dsh 重启后拒绝加载）。由旧版插件写入、含此类事件的会话由 `scripts/repair-fallbacks-switch-logs.ts` 修复——旧事件被标记 ignorable 后，受影响会话可重新加载。
 - **安全阀**：`maxSwitchesPerStep` 限制每 step 切换次数、`alwaysModeRetryCap` 限制 always 模式重试——链循环不会放大延迟。
 - **无配置回归（no-op）**：`enabled` 默认关闭；未配置任何链时行为与未安装插件完全一致。
 

@@ -658,8 +658,8 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     // candidate — no cooldown/failed filtering, no existence probe, per the
     // Task 4 decision) when it differs from the request's current model. This
     // is NOT a failure decision: no commit(), no pending switch, no cooldown,
-    // no failure bookkeeping — only the override + the `role-inject` event +
-    // an explicit role → model log. `'inherit'` ("no specific role") NEVER
+    // no failure bookkeeping — only the override + an explicit role → model
+    // log. `'inherit'` ("no specific role") NEVER
     // injects, so with `roleAutoMatch: false` and no explicit/rules role the
     // outcome is identical to today. Defensive: any throw in the
     // resolution/injection path warns and the request proceeds unchanged

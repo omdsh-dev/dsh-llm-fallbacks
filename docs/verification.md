@@ -111,7 +111,8 @@ Then restart the dsh web session so the host half and the client half load.
 2. Issue a request to trigger the failure.
 3. **Expected**:
    - info-level logs from this plugin appear (candidate attempt order and skip reasons);
-   - the session event stream gains a `fallbacks/switch` entry (from/to/role/reason);
+   - the session event stream gains **no** `fallbacks/switch` entry (issue #52 stop-write — the switch is recorded in
+     the info log only);
    - the request continues on the fallback model and the current step/turn is not interrupted.
 4. Retryable-code path (`RATE_LIMIT` / 5xx): with `RATE_LIMIT` in `triggerCodes`, observe
    llm-retry backing off first and the chain decision being entered only after its budget is exhausted — confirming
@@ -160,13 +161,15 @@ Then restart the dsh web session so the host half and the client half load.
    time matches the §4.1 baseline (`ps -o pid,lstart -p <pid>`), then trigger one trigger-code failure (§4.3
    injection method, e.g. AUTH/QUOTA) → expected:
    - `llm-fallbacks: agent ... switch` appears in the logs (info level, candidate attempt order and skip reasons);
-   - the session event stream gains a `fallbacks/switch` event (from/to/role/reason/time);
+   - the session event stream gains **no** `fallbacks/switch` event (issue #52 stop-write — the switch is recorded in
+     the info log only);
    - subsequent requests route to the chain target (provider/model becomes the first chain entry), and the current step/turn
      is not interrupted.
    → **the next failure after saving switches = no session restart needed**.
 8. **Read-back evidence**: reload the page → the server truth renders via `fallbacks/get` (`enabled` stays ON,
    the chain line is there);
-   the status block shows step 7's switch entry (AC-7, see §4.3).
+   the status block does **not** show step 7's switch (no durable event was written — the recent-switch line reflects
+   only events already in the session history, see §4.3 step 4).
 9. **Counter-evidence control**: if step 7 shows the change **only takes effect after a host restart** → record it
    truthfully (with PID/start-time change evidence), and report it back to the compass/spec product commitment (the
    Global Constraint fallback clause).
@@ -178,26 +181,30 @@ Then restart the dsh web session so the host half and the client half load.
    (`AUTH` / `QUOTA`, reaching the plugin directly without backoff);
    on the retryable-code path (`RATE_LIMIT` / 5xx) observe llm-retry backing off first and the chain decision
    after its budget is exhausted.
-2. **Expected**: `llm-fallbacks: agent ... switch` in the logs + a `fallbacks/switch` event + the request
+2. **Expected**: `llm-fallbacks: agent ... switch` in the logs (no durable `fallbacks/switch` session event is written — issue #52 stop-write; the switch is recorded only in the info log) + the request
    continuing on the chain target with the current step/turn uninterrupted (corresponding to the §3 runtime verification).
 3. **Under an active model-selection (documented degradation, T2 conclusion)**: with an active model-selection (the user
    picked a provider/model in the settings page / `settings.yaml`), a switch after a trigger-code failure **still happens
-   and is recorded**; but that step's routing may be re-applied by the outer model-selection listener (a model manually
+   and is recorded in the info log** (no durable `fallbacks/switch` event — issue #52 stop-write); but that step's routing may be re-applied by the outer model-selection listener (a model manually
    selected in the web front end is re-applied after the switch) — this is **host-native behavior** after removing the
    local patch-marker coordination (documented degradation, see §4.7). request-error-triggered chains are unaffected;
    without an active selection the request routes to the chain target. Spec and guides records:
    `.mstar/iterations/iter-20260811-fallbacks-mount-only/guides/role-and-model-selection-exploration.md`
    (Model-selection section).
 4. **Status-block entry (AC-2/AC-7)**: the plugin-config card's status block shows **only** the recent-switch line
-   (from/to/role/reason, newest first); the former "current effective model" line (D-6) and the selectionNote line were
-   removed from the card (compass AC-2 — the read-only status block keeps the recent switch only). The summary refreshes
-   via push on `settings/document-updated` (fallbacks namespace) / `llm/adapters-updated` (catalog only) / session
-   switch / connection reset — a switch occurring while the page is open appears after a page reload (or the next push),
-   with no host restart needed.
+   (from/to/role/reason, newest first), read from the current session's raw event surface — the plugin writes no durable
+   `fallbacks/switch` events (issue #52 stop-write), so the line reflects only events already in the session history
+   (e.g. legacy events marked ignorable by `scripts/repair-fallbacks-switch-logs.ts`); new switches are **not** visible
+   here, neither in-process nor after a restart (they are recorded in the info logs instead). The former "current
+   effective model" line (D-6) and the selectionNote line were removed from the card (compass AC-2 — the read-only
+   status block keeps the recent switch only). The summary refreshes via push on `settings/document-updated` (fallbacks
+   namespace) / `llm/adapters-updated` (catalog only) / session switch / connection reset — with no durable events
+   written, a switch occurring while the page is open never appears, with or without a page reload or host restart.
 5. **In-session diagnostics (AC-5)**: type `/fallbacks` in the same session; the output should contain the session origin
    (root/subagent), the resolved role, the resolved chain (including the default-fallback annotation), recent switches
-   (newest first, from/to/role/reason) and the cooldown state; the command is read-only and never changes any fallback
-   state.
+   (newest first, from/to/role/reason — historical events only; the plugin writes no durable events, issue #52, so new
+   switches are visible in the info logs, not here) and the cooldown state; the command is read-only and never changes
+   any fallback state.
 
 #### 4.4 No-regression spot checks
 
@@ -216,14 +223,15 @@ Then restart the dsh web session so the host half and the client half load.
 - Any step that deviates from expectations → record it as a QA finding (severity + reproduction steps), report it
   truthfully, and do not write it back into "Verified".
 
-#### 4.6 Dispatch-time role injection + `role-inject` event (AC-3 / AC-5) — documented degradation (listener order)
+#### 4.6 Dispatch-time role injection (`role-inject` reason) — documented degradation (listener order)
 
 1. **Setup**: with `fallbacks.enabled: true` and a role resolvable for a subagent — an explicit `agentPreset` matching a
    declared role id, a `roles.rules` match, or (with `roleAutoMatch` left at its default `true`) the LLM auto-match stage —
    dispatch a subagent whose resolved role's chain head differs from the request's current model.
 2. **Expected**: on the subagent's **first** request the chain-head model is injected — an info-level
-   `llm-fallbacks: agent ... role-inject role=<role> model=<provider>/<model>` log line and a `fallbacks/switch` event with
-   `reason: 'role-inject'` (from = current model, to = injected model, role = resolved role). Later requests are **not**
+   `llm-fallbacks: agent ... role-inject role=<role> model=<provider>/<model>` log line (no durable `fallbacks/switch`
+   event is written — issue #52 stop-write; the `role-inject` reason survives only in the event vocabulary for legacy
+   events). Later requests are **not**
    re-injected (idempotent once-marker). The injection writes **no** pending switch / cooldown / failure bookkeeping (it is
    not a failure decision). With `roleAutoMatch: false` and no explicit/rules role, no auto-match and no injection occurs
    (today's behavior).
@@ -242,8 +250,8 @@ Then restart the dsh web session so the host half and the client half load.
 2. **Semantics**: a model **manually selected in the web front end may be re-applied over a fallback switch** — whether
    the switch routing survives depends on the outer model-selection listener's waterfall order. With an active
    model-selection (a provider/model picked in the settings page or `settings.yaml`), a switch after a trigger-code
-   failure **still happens and is recorded** as a `fallbacks/switch` event, but that step's routing may be re-applied by
-   the selection listener.
+   failure **still happens and is recorded in the info log** (no durable `fallbacks/switch` event is written — issue
+   #52 stop-write), but that step's routing may be re-applied by the selection listener.
 3. **Scope**: request-error-triggered chains are unaffected; without an active model selection the request routes to the
    chain target. This is host-native behavior, not a plugin defect.
 4. **Spec/guide records**: `.mstar/iterations/iter-20260811-fallbacks-mount-only/guides/role-and-model-selection-exploration.md`
@@ -256,6 +264,6 @@ Then restart the dsh web session so the host half and the client half load.
 |---|---|---|
 | web settings GUI interaction (card appears, edit & save, conflict reload) | the sandbox cannot operate a real web session | user §2 / §4 (client-half logic already covered by T5's 155 tests) |
 | real model calls and failure injection (AUTH/QUOTA/RATE_LIMIT triggers, switch continuation) | the sandbox has no real model credentials or running session | user §3 / §4 (decision logic already covered by T3/T4 integration tests) |
-| cross-process observation (logs, `fallbacks/switch` session events landing in a real session) | the sandbox cannot run a real dsh session — the untested reload path was the gap that shipped issue #52 (a session refused to load after restart until the startup registration fix); the registration + append-guard pins in `tests/session-event-registration*.spec.ts` cover the reload semantics | user §3/§4 |
+| cross-process observation (info logs, no durable `fallbacks/switch` events landing in a real session) | the sandbox cannot run a real dsh session — issue #52's reload gap is closed by the stop-write decision (the no-write pins in `tests/session-event-registration*.spec.ts` cover the commit + role-inject paths) and the repair transform is covered by `tests/repair-fallbacks-switch-logs.spec.ts`; a real repair run stays a user-side step (see the script's `--dry-run`/`--backup`/`--apply` usage) | user §3/§4 + `scripts/repair-fallbacks-switch-logs.ts` |
 | `/fallbacks` command input/output in a real session | the sandbox cannot run a real dsh session and command registry | user §4.3 step 5 (command logic already covered by command.spec.ts) |
 | real routing override under an active model-selection (documented degradation) | the sandbox has no real web session and model selection | user §4.3 (combination order already covered by T4 integration tests) |
