@@ -1,6 +1,11 @@
 /**
- * Unit tests for the pure transform `markFallbacksSwitchIgnorable`
- * (scripts/repair-fallbacks-switch-logs.ts).
+ * Tests for scripts/repair-fallbacks-switch-logs.ts:
+ *   - unit tests for the pure transform `markFallbacksSwitchIgnorable`;
+ *   - unit tests for the CLI arg parsing (`parseArgs`), incl. the
+ *     `--apply`-requires-`--backup` refusal;
+ *   - fixture-based tests for `processFile` (gated on a system `zstd`
+ *     binary): dry-run/report never touch the filesystem, apply keeps a
+ *     `.bak`, preserves the original file mode and leaves no tmp files.
  *
  * The transform repairs session logs poisoned by the old plugin's durable
  * `fallbacks/switch` events (no `ignorable` marker), so the host read path
@@ -14,8 +19,25 @@
  *     byte-identical;
  *   - `changed` counts only lines that were modified.
  */
+import { execFileSync } from 'node:child_process'
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+} from 'node:fs'
+import { homedir, tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { markFallbacksSwitchIgnorable } from '../scripts/repair-fallbacks-switch-logs.ts'
+import {
+  markFallbacksSwitchIgnorable,
+  parseArgs,
+  processFile,
+} from '../scripts/repair-fallbacks-switch-logs.ts'
 
 const HEADER = '{"type":"session","version":0,"id":"session-8505afff","createdAt":1786936372682}'
 
@@ -111,5 +133,136 @@ describe('markFallbacksSwitchIgnorable', () => {
     expect(lines[5]).toBe('{"type":"fallbacks/switch","seq":9,"time":8,"ignorable":true,"data":{}}')
     expect(JSON.parse(lines[2]).ignorable).toBe(true)
     expect(JSON.parse(lines[3]).ignorable).toBe(true)
+  })
+})
+
+describe('parseArgs', () => {
+  it('defaults to ~/.dsh/sessions with every flag off', () => {
+    expect(parseArgs([])).toEqual({
+      root: join(homedir(), '.dsh', 'sessions'),
+      dryRun: false,
+      backup: false,
+      apply: false,
+    })
+  })
+
+  it('parses every flag', () => {
+    expect(parseArgs(['--root', '/tmp/x', '--dry-run', '--backup', '--apply'])).toEqual({
+      root: '/tmp/x',
+      dryRun: true,
+      backup: true,
+      apply: true,
+    })
+  })
+
+  it('skips the pnpm `--` separator', () => {
+    expect(parseArgs(['--', '--dry-run']).dryRun).toBe(true)
+  })
+
+  it('expands a leading ~ in --root', () => {
+    expect(parseArgs(['--root', '~']).root).toBe(homedir())
+    expect(parseArgs(['--root', '~/x']).root).toBe(join(homedir(), 'x'))
+  })
+
+  it('throws when --root is missing its argument', () => {
+    expect(() => parseArgs(['--root'])).toThrow(/--root requires a directory argument/)
+  })
+
+  it('throws on unknown arguments', () => {
+    expect(() => parseArgs(['--nope'])).toThrow(/unknown argument: --nope/)
+  })
+
+  it('refuses --apply without --backup', () => {
+    expect(() => parseArgs(['--apply'])).toThrow(/--apply requires --backup/)
+  })
+
+  it('accepts --apply together with --backup', () => {
+    expect(() => parseArgs(['--apply', '--backup'])).not.toThrow()
+  })
+})
+
+// `processFile` shells out to the system `zstd` binary (same as the script
+// at runtime); skip the fixture suite when the binary is not installed.
+const zstdBin = (() => {
+  try {
+    execFileSync('zstd', ['--version'], { stdio: 'ignore' })
+    return 'zstd'
+  } catch {
+    return null
+  }
+})()
+
+describe.skipIf(zstdBin === null)('processFile (fixture; skipped without system zstd)', () => {
+  const ZSTD = zstdBin as string
+
+  /** Build a fake `<ns>/<session-id>/session.jsonl.zstd` (0600) in a tmp dir. */
+  function makeFixture(): { root: string; sessionFile: string; original: Buffer } {
+    const root = mkdtempSync(join(tmpdir(), 'repair-switch-logs-'))
+    const dir = join(root, 'default', 'session-8505afff')
+    mkdirSync(dir, { recursive: true })
+    const sessionFile = join(dir, 'session.jsonl.zstd')
+    const plain =
+      [HEADER, SWITCH_NO_IGNORABLE, SWITCH_NO_IGNORABLE_2, '{"type":"user","seq":9,"time":1,"data":{"text":"fallbacks/switch string noise"}}'].join(
+        '\n',
+      ) + '\n'
+    execFileSync(ZSTD, ['-f', '-o', sessionFile], { input: plain, stdio: ['pipe', 'ignore', 'ignore'] })
+    chmodSync(sessionFile, 0o600)
+    return { root, sessionFile, original: readFileSync(sessionFile) }
+  }
+
+  it('report/dry-run: returns would-change and never touches the filesystem', () => {
+    const { root, sessionFile, original } = makeFixture()
+    try {
+      for (const opts of [
+        { root, dryRun: true, backup: false, apply: false },
+        { root, dryRun: false, backup: false, apply: false },
+      ]) {
+        const outcome = processFile(ZSTD, sessionFile, opts)
+        expect(outcome.action).toBe('would-change')
+        expect(outcome.changed).toBe(2)
+      }
+      // no scratch tmp files next to the log, and the log is byte-identical
+      const leftovers = readdirSync(dirname(sessionFile)).filter((name) => name.endsWith('.tmp'))
+      expect(leftovers).toEqual([])
+      expect(readFileSync(sessionFile)).toEqual(original)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('apply: keeps a .bak, preserves the original mode, no tmp leftovers', () => {
+    const { root, sessionFile, original } = makeFixture()
+    try {
+      const outcome = processFile(ZSTD, sessionFile, {
+        root,
+        dryRun: false,
+        backup: true,
+        apply: true,
+      })
+      expect(outcome.action).toBe('changed')
+      expect(outcome.changed).toBe(2)
+
+      // backup copy carries the pre-repair bytes
+      expect(existsSync(`${sessionFile}.bak`)).toBe(true)
+      expect(readFileSync(`${sessionFile}.bak`)).toEqual(original)
+
+      // replacement keeps the original 0600 permission bits (fixture default)
+      expect(statSync(sessionFile).mode & 0o7777).toBe(0o600)
+
+      // replacement is a valid zstd frame carrying the ignorable markers
+      execFileSync(ZSTD, ['-t', sessionFile], { stdio: 'ignore' })
+      const repaired = execFileSync(ZSTD, ['-d', '-c', sessionFile], { encoding: 'utf8' })
+      const switches = repaired
+        .split('\n')
+        .filter(Boolean)
+        .filter((line) => JSON.parse(line).type === 'fallbacks/switch')
+      expect(switches).toHaveLength(2)
+      for (const line of switches) expect(JSON.parse(line).ignorable).toBe(true)
+
+      const leftovers = readdirSync(dirname(sessionFile)).filter((name) => name.endsWith('.tmp'))
+      expect(leftovers).toEqual([])
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 })

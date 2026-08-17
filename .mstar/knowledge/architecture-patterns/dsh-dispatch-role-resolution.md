@@ -55,7 +55,7 @@ subagent 分发时（首请求）的三段式角色解析（显式 → 规则 �
 
 ### 注入不是失败决策（no-commit 语义）
 
-分发时注入**不写** pending switch / cooldown / step-failed 记账（绝不 commit()），只 override 请求配置 + append fallbacks/switch 事件（reason: role-inject，from/to/role 齐全）+ 显式 role → model 日志行。失败路径状态逐字节不变。范围：仅 subagent origin（session.header.origin === 'subagent'）；root 代理不触碰。注入幂等：仅首请求（per-agent once-marker，agent/disposed 清理；后续请求永不重评估）；仅在 applied === undefined 分支评估，失败路径 pending switch 恒胜。
+分发时注入**不写** pending switch / cooldown / step-failed 记账（绝不 commit()），只 override 请求配置 + 显式 role → model info 日志行；**不** append durable fallbacks/switch 事件（issue #52 stop-write：apply() 注册 seam 被证无效，含该事件的会话重启后拒绝加载；`role-inject` reason 仅存于事件词汇表，供 legacy 读侧渲染）。失败路径状态逐字节不变。范围：仅 subagent origin（session.header.origin === 'subagent'）；root 代理不触碰。注入幂等：仅首请求（per-agent once-marker，agent/disposed 清理；后续请求永不重评估）；仅在 applied === undefined 分支评估，失败路径 pending switch 恒胜。
 
 ### roleAutoMatch 配置键（optional-on-type）
 
@@ -69,7 +69,7 @@ subagent 分发时（首请求）的三段式角色解析（显式 → 规则 �
 
 - 角色解析的确定性规则匹配是既有契约；三段式扩展只在其上**追加**兜底段，roleAutoMatch: false / 无显式角色 / 无规则命中 → 行为与今日完全一致——可解释、可回归（单测钉住各级 + roleAutoMatch: false 逐字节回归）。
 - 注入与失败决策严格分离（no-commit）是安全边界：分发注入绝不污染失败路径的冷却/记账，也绝不被误认为「已切换模型」。
-- mount-only seam 全部闭合：agentPreset 载体、ctx.get('llm') 可选服务、overrideConfig 复用、role-inject additive reason——零 dsh 改动。
+- mount-only seam 全部闭合：agentPreset 载体、ctx.get('llm') 可选服务、overrideConfig 复用、role-inject reason 词汇（additive，vocabulary-only——无 durable 事件，issue #52 stop-write）——零 dsh 改动。
 - wire 折叠默认（absent ≡ default）是客户端插件共性问题：把 UI 语义建在「键是否存在」上必然落空，建在值上才诚实。
 
 ## When to Apply
@@ -97,7 +97,12 @@ resolveRoleAtDispatch(agent, rules, roleIds, {
 head = firstExactCandidate(chain)  // 无 cooldown/failed 过滤、无 catalog 探针
 if (head !== currentModel) {
   overrideConfig(seed, head)       // 复用失败路径注入机制
-  appendSwitch({ reason: 'role-inject', from: currentModel, to: head, role })  // 不 commit()
+  // issue #52 stop-write：不 append durable fallbacks/switch 事件，
+  // 只写显式 role → model info 日志（role-inject reason 仅存事件词汇表）
+  logger.info(
+    'llm-fallbacks: agent "%s" role-inject role=%s model=%s/%s',
+    agent.id, role, head.provider, head.model,
+  )
 }
 ```
 

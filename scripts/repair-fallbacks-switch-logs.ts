@@ -19,33 +19,42 @@
  *     frame); re-encoding as a single checksummed frame is accepted by the
  *     host read path (`scanZstdFrames` walks any complete frame set).
  *
+ * IMPORTANT: stop dsh before running with `--apply`. The script replaces a
+ * session log via read → transform → atomic rename; a live dsh that appends
+ * a new zstd frame between the read and the rename would have that frame
+ * lost (read-modify-write race). Report / `--dry-run` runs are safe any
+ * time — they never write files.
+ *
  * Usage (from the repo root, via tsx — the package.json
  * `repair:fallbacks-switch-logs` script):
  *   pnpm repair:fallbacks-switch-logs -- --dry-run
- *   pnpm repair:fallbacks-switch-logs -- --apply
  *   pnpm repair:fallbacks-switch-logs -- --apply --backup
  *   pnpm repair:fallbacks-switch-logs -- --root /tmp/repair-fixture --dry-run
  *
  * Flags:
  *   --root <dir>   session root to walk (default: ~/.dsh/sessions)
  *   --dry-run      report only — never write files
- *   --backup       with --apply: copy the original to <file>.bak before
- *                  replacing (only meaningful together with --apply)
- *   --apply        required to actually replace files; without it (or with
- *                  --dry-run) the run only reports would-change
+ *   --backup       required with --apply: copy the original to <file>.bak
+ *                  before replacing (apply is refused without it)
+ *   --apply        actually replace repaired files; requires --backup and a
+ *                  stopped dsh; without it (or with --dry-run) the run only
+ *                  reports would-change
  *
  * Safe by construction: a file is only replaced after its re-encoded form
- * passes `zstd -t`; a file that fails to decompress or re-encode is reported
- * and skipped (never corrupted); the replace is an atomic rename of a temp
- * file in the same directory.
+ * passes `zstd -t` and carries the original file's permission bits; a file
+ * that fails to decompress or re-encode is reported and skipped (never
+ * corrupted); the replace is an atomic rename of a temp file in the same
+ * directory. Report/dry-run mode performs no filesystem writes at all.
  */
 import { execFileSync } from 'node:child_process'
 import {
+  chmodSync,
   copyFileSync,
   existsSync,
   readdirSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs'
 import { homedir } from 'node:os'
@@ -134,8 +143,10 @@ function usage(): string {
 
   --root DIR    session root to walk (default: ~/.dsh/sessions)
   --dry-run     report only — never write files
-  --backup      with --apply: copy the original to <file>.bak before replacing
-  --apply       actually replace repaired files (required to write)`
+  --backup      required with --apply: copy the original to <file>.bak before
+                replacing
+  --apply       actually replace repaired files (requires --backup; stop dsh
+                before applying)`
 }
 
 function expandHome(p: string): string {
@@ -143,7 +154,7 @@ function expandHome(p: string): string {
   return p.startsWith('~/') ? join(homedir(), p.slice(2)) : p
 }
 
-function parseArgs(argv: string[]): CliOptions {
+export function parseArgs(argv: string[]): CliOptions {
   let root = join(homedir(), '.dsh', 'sessions')
   let dryRun = false
   let backup = false
@@ -170,6 +181,11 @@ function parseArgs(argv: string[]): CliOptions {
       default:
         throw new Error(`${usage()}\n\nunknown argument: ${arg}`)
     }
+  }
+  if (apply && !backup) {
+    throw new Error(
+      `${usage()}\n\n--apply requires --backup: real modification must keep a .bak copy of every replaced session log (run with --dry-run first to review)`,
+    )
   }
   return { root, dryRun, backup, apply }
 }
@@ -217,12 +233,14 @@ type FileOutcome =
   | { action: 'error'; changed: number; error: string }
 
 /**
- * Decompress all frames of one log, transform it, and (unless dry-run /
- * not-apply) atomically replace it with a single-frame re-encode that passed
- * `zstd -t`. Returns the per-file outcome; never throws for per-file failures
- * (they become `error` outcomes so the walk continues).
+ * Decompress all frames of one log, transform it, and (only when actually
+ * applying) atomically replace it with a single-frame re-encode that passed
+ * `zstd -t` and carries the original file's permission bits. Report/dry-run
+ * returns would-change WITHOUT touching the filesystem (no tmp files, no
+ * encode, no `zstd -t`). Returns the per-file outcome; never throws for
+ * per-file failures (they become `error` outcomes so the walk continues).
  */
-function processFile(zstd: string, file: string, opts: CliOptions): FileOutcome {
+export function processFile(zstd: string, file: string, opts: CliOptions): FileOutcome {
   let plain: string
   try {
     plain = execFileSync(zstd, ['-d', '-c', file], { encoding: 'utf8', maxBuffer: MAX_BUFFER })
@@ -237,20 +255,25 @@ function processFile(zstd: string, file: string, opts: CliOptions): FileOutcome 
   const { lines, changed } = markFallbacksSwitchIgnorable(plain.split('\n'))
   if (changed === 0) return { action: 'unchanged', changed: 0 }
 
-  // Temp files live next to the target so the final rename is atomic (same
-  // filesystem) and the walker never mistakes them for session logs.
+  // Report / dry-run: nothing to write — return would-change right after the
+  // transform (parseArgs refuses `--apply` without `--backup`, so any run
+  // reaching here without `write` is a report-only invocation).
+  const write = opts.apply && !opts.dryRun
+  if (!write) return { action: 'would-change', changed }
+
+  // Apply: temp files live next to the target so the final rename is atomic
+  // (same filesystem) and the walker never mistakes them for session logs.
   const dir = dirname(file)
   const tmpPlain = join(dir, `.${basename(file)}.${process.pid}.plain.tmp`)
   const tmpZstd = join(dir, `.${basename(file)}.${process.pid}.zstd.tmp`)
-  const write = opts.apply && !opts.dryRun
+  const mode = statSync(file).mode & 0o7777
   try {
     writeFileSync(tmpPlain, lines.join('\n'), 'utf8')
     execFileSync(zstd, ['-f', '-o', tmpZstd, tmpPlain], { stdio: 'ignore' })
     execFileSync(zstd, ['-t', tmpZstd], { stdio: 'ignore' })
-    if (write) {
-      if (opts.backup) copyFileSync(file, `${file}.bak`)
-      renameSync(tmpZstd, file)
-    }
+    copyFileSync(file, `${file}.bak`)
+    chmodSync(tmpZstd, mode)
+    renameSync(tmpZstd, file)
   } catch (err) {
     return {
       action: 'error',
@@ -261,7 +284,7 @@ function processFile(zstd: string, file: string, opts: CliOptions): FileOutcome 
     rmSync(tmpPlain, { force: true })
     rmSync(tmpZstd, { force: true })
   }
-  return write ? { action: 'changed', changed } : { action: 'would-change', changed }
+  return { action: 'changed', changed }
 }
 
 export function main(): void {
