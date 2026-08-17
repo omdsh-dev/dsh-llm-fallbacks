@@ -68,6 +68,7 @@ import {
 } from './seeds.ts'
 import { presetRoles } from './presets.ts'
 import { installTuiClient } from './tui.ts'
+import { installFallbacksAdapter } from './virtual-adapter.ts'
 
 /** The plugin row id mounted by the profile bundle patch. */
 export const name = 'llm-fallbacks'
@@ -377,6 +378,21 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     ctx.logger('llm-fallbacks').debug('fallbacks service already registered — no service on this fiber (multi-fiber dedupe)')
   }
   let source: () => FallbacksConfig = () => entry
+  // Virtual FallbacksChain adapter (plan fallbacks-virtual-chain Task 1, P2):
+  // ONE conditional `ctx.inject(['llm'])` child — the picker row registers
+  // only when `enabled` AND the all-day chain conforms (`isAllDayConforming`
+  // from `src/time-slots.ts`; a legacy multi-model rootChain earns no row,
+  // warn-not-crash — spec § Technical pins item 4), and hides on disable /
+  // conformance loss. The returned reconcile thunk is wired into the
+  // settings onChange below: transition-reconcile over COMMITTED composed
+  // snapshots only (card drafts are client-side until gateway save), so the
+  // catalog never flickers; the condition deliberately ignores timeSlots,
+  // so slot-row edits never churn registration.
+  // `() => source()` — the mutable binding, not the initial thunk: the
+  // settings section's setSource swaps `source` for the composed scope, and
+  // reconcile must read the LIVE composed snapshot (same pattern as the
+  // settings bridge below).
+  const reconcileFallbacksAdapter = installFallbacksAdapter(ctx, () => source())
   // AC-4: warn-not-crash startup validation — the schema-resolved entry is
   // checked once (invalid ids / undeclared rule references / illegal
   // selectors / bad fallback enum); each violation warns and "does not take
@@ -432,6 +448,9 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
       const current = source()
       roleIds = new Map(current.roles.list.map((role) => [role.id.trim(), role.id] as const))
       hasChains = current.rootChain.length > 0 || current.roles.list.some((role) => (role.chain?.length ?? 0) > 0)
+      // Virtual adapter registration reconcile (P2): enabled / all-day
+      // conformance transitions only — idempotent, slot edits no-op.
+      reconcileFallbacksAdapter()
     },
   })
   const bridge: FallbacksSettingsBridge = {
