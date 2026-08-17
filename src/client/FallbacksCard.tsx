@@ -79,7 +79,6 @@ import {
   FallbacksSettingsController,
   classifyModel,
   classifyProvider,
-  deriveEffectiveModel,
   mergeRoleExtras,
   rolesToRows,
   rootChainToRows,
@@ -648,18 +647,12 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
     seededIds.set(seed.id.trim(), seed.overridden)
   }
 
-  // R-4b: the status block's derived effective model (spec §2.5 D-6). The
-  // derivation is a display value over config + recent switches — the
-  // non-probing note ⑤ renders inline after the value.
-  const effectiveModel = deriveEffectiveModel(state.config, state.switches)
-  const effectiveModelLine = effectiveModel.kind === 'unavailable'
-    ? t('status.effectiveModel.unavailable')
-    : `${effectiveModel.provider}/${effectiveModel.model} · ${t('status.effectiveModel.note')}`
-
   // The compact recent-switch line: the most recent switch (from → to +
   // role/reason) or an honest empty/loading/error state — one line, never a
   // list (spec §2.5 D-5 semantics unchanged; the store still caps at
-  // RECENT_SWITCH_LIMIT).
+  // RECENT_SWITCH_LIMIT). Compass AC-2: this is the ONLY line the read-only
+  // status block carries — the effective-model line (D-6) and the selectionNote
+  // degradation line moved out of the card (see docs/verification.md).
   const latestSwitch = state.switches[0]
   let switchesLine: string
   if (state.switchesStatus === 'error') {
@@ -1455,28 +1448,20 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
             )}
           </div>
 
-          {/* AC-7 read-only status, compact and folded into the card body
-           * (above the footer — the page-bottom block is gone): the derived
-           * "current effective model" (D-6 — a display value from config +
-           * recent switches, never a live route probe; note ⑤ rides inline)
-           * and the most recent switch (D-5 — read through the store's
-           * `sessions.history` face). The verbose config-summary dump is
-           * gone; errors/empty still render, compact. */}
+          {/* AC-2 read-only status, compact and folded into the card body
+           * (above the footer — the page-bottom block is gone): only the most
+           * recent switch (D-5 — read through the store's `sessions.history`
+           * face). The effective-model line (D-6) and the selectionNote
+           * degradation line moved out of the card (compass AC-2); the
+           * documented degradation is re-homed to docs/verification.md. The
+           * verbose config-summary dump is gone; errors/empty still render,
+           * compact. */}
           <div className={css.statusBlock}>
             <span className={css.statusTitle}>{t('status.title')}</span>
-            <p className={css.statusLine}>
-              <span className={css.statusLineLabel}>{t('status.effectiveModel.label')}</span>
-              {effectiveModelLine}
-            </p>
             <p className={css.statusLine} role={state.switchesStatus === 'error' ? 'alert' : undefined}>
               <span className={css.statusLineLabel}>{t('status.switches.label')}</span>
               {switchesLine}
             </p>
-            {/* Plan llm-fallbacks-runtime-depatch T2 (degradation): the marker
-             * coordination shipped with the local dsh-agent patch is removed, so
-             * a model manually selected in the web front end may be re-applied
-             * over a fallback switch. Honest one-line note (zh + en). */}
-            <p className={css.statusLine}>{t('status.selectionNote')}</p>
           </div>
 
           {/* Discard / Reset / Save: the upstream footer (failed message +

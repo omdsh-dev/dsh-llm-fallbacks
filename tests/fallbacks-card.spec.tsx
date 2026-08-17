@@ -34,7 +34,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi, type Mock } from 'vitest'
 import type {
-  ClientConnectionRpc, ConfigurableProviderView, IApiClient, ModelProviderGroup, RpcResult,
+  ClientConnectionRpc, ConfigurableProviderView, HistoryEntry, IApiClient, ModelProviderGroup, RpcResult,
 } from '@deepseek-ai/dsh-client-connection/client'
 import { bindSnapshotSelector, type SnapshotSelectorHook } from '@deepseek-ai/dsh-client-web-react'
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
@@ -47,6 +47,7 @@ import { presetRoles } from '../src/presets.ts'
 import { apply } from '../src/client/index.ts'
 import { defaultFallbacksConfig } from '../src/config.ts'
 import { en, zh } from '../src/client/locales.ts'
+import type { FallbacksSwitchEventData } from '../src/events.ts'
 
 afterEach(cleanup)
 
@@ -86,6 +87,30 @@ function ok(value: unknown) {
   return { result: { ok: true, value } }
 }
 
+/**
+ * One `fallbacks/switch` history entry with a deterministic seq/time (the
+ * store-spec / general-row fixture shape), for the status block's recent-switch
+ * face (D-5 — `sessions.history`).
+ */
+function switchEntry(seq: number, overrides: Partial<FallbacksSwitchEventData> = {}): HistoryEntry {
+  return {
+    event: {
+      type: 'fallbacks/switch',
+      seq,
+      time: 1_700_000_000_000 + seq * 1000,
+      data: {
+        turn: 1,
+        step: 1,
+        from: { provider: 'openai', model: 'gpt-4o' },
+        to: { provider: 'anthropic', model: 'claude-3-5-sonnet' },
+        role: 'inherit',
+        reason: 'trigger-code',
+        ...overrides,
+      },
+    },
+  } as HistoryEntry
+}
+
 interface Scripted {
   api: Pick<IApiClient, 'settings' | 'llm' | 'sessions'>
   rpc: ClientConnectionRpc
@@ -114,6 +139,8 @@ function scriptedApi(options: {
   legacyKeys?: string[]
   seeds?: SeedsWireStatus[]
   catalog?: { providers: ConfigurableProviderView[]; groups: ModelProviderGroup[] }
+  historyEntries?: HistoryEntry[]
+  historyError?: string
 } = {}): Scripted {
   let current = options.config === undefined ? defaultFallbacksConfig : options.config
   const describe = vi.fn(() => Promise.resolve(ok({
@@ -132,7 +159,9 @@ function scriptedApi(options: {
   })))
   const providers = vi.fn(() => Promise.resolve(ok({ providers: options.catalog?.providers ?? [] })))
   const models = vi.fn(() => Promise.resolve(ok({ groups: options.catalog?.groups ?? [], failures: [] })))
-  const history = vi.fn(() => Promise.resolve(ok({ events: [] })))
+  const history = vi.fn(() => options.historyError === undefined
+    ? Promise.resolve(ok({ events: options.historyEntries ?? [], hasMore: false }))
+    : Promise.reject(new Error(options.historyError)))
   const get = vi.fn(() => Promise.resolve(
     current === null
       ? failResult('fallbacks gateway is not ready')
@@ -1611,5 +1640,90 @@ describe('FallbacksCard rootChain first-line copy + conditional hint (plan fallb
     expect(en['rootChain.firstLine']).toBeTruthy()
     expect(zh['rootChain.hint']).toBeTruthy()
     expect(en['rootChain.hint']).toBeTruthy()
+  })
+})
+
+describe('FallbacksCard status block (AC-2: recent switch only)', () => {
+  it('renders only the recent-switch line — no effective-model line, no selectionNote', async () => {
+    const { view, props } = await mountCard({ config: ENABLED_CONFIG })
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    // The read-only block keeps its title and the recent-switch (empty) line.
+    expect(screen.getByText(en['status.title'])).toBeTruthy()
+    expect(screen.getByText(/^Recent switches:/)).toBeTruthy()
+    expect(screen.getByText(en['status.switches.empty'])).toBeTruthy()
+    // Compass AC-2: the effective-model line and the selectionNote are gone
+    // from the card (the degradation content is re-homed to verification.md).
+    expect(screen.queryByText(/current effective model/i)).toBeNull()
+    expect(screen.queryByText(/manually selected in the web front end/i)).toBeNull()
+  })
+
+  it('renders the recent-switch compact line when a switch exists (still no effective-model/selectionNote)', async () => {
+    const scripted = scriptedApi({ config: ENABLED_CONFIG, historyEntries: [switchEntry(1)] })
+    const controller = new FallbacksSettingsController(scripted.api, scripted.rpc)
+    await controller.load()
+    controller.setCurrentSession('sess-1' as never)
+    await controller.loadSwitches()
+    // The compact line's {count}/{from}/{to}/{role}/{reason} slots are
+    // interpolated at render time, so this test binds an interpolating `t`
+    // (the module `t` seat is deliberately non-interpolating — the validation
+    // specs pin raw templates there; the sibling general-row spec uses the
+    // same interpolating seat to pin the concrete from → to (role · reason)).
+    const interpolate = ((key, params) => {
+      let text: string = en[key as keyof typeof en]
+      if (params !== undefined) {
+        for (const [name, value] of Object.entries(params)) text = text.split(`{${name}}`).join(value)
+      }
+      return text
+    }) as FallbacksCardProps['t']
+    const props: FallbacksCardProps = {
+      controller,
+      useSnapshot: bindSnapshotSelector(controller.store),
+      t: interpolate,
+      useSessions: undefined as never,
+      useWorkspaces: undefined as never,
+    }
+    const view = render(<FallbacksCard {...props} />)
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    expect(screen.getByText(
+      'last 1 · openai/gpt-4o → anthropic/claude-3-5-sonnet (inherit · trigger code)',
+    )).toBeTruthy()
+    expect(screen.queryByText(/current effective model/i)).toBeNull()
+    expect(screen.queryByText(/manually selected in the web front end/i)).toBeNull()
+  })
+
+  it('shows the loading term while the switch history read is in flight', async () => {
+    const scripted = scriptedApi({ config: ENABLED_CONFIG })
+    scripted.api.sessions.history = vi.fn(() => new Promise(() => {}))
+    const controller = new FallbacksSettingsController(scripted.api, scripted.rpc)
+    await controller.load()
+    controller.setCurrentSession('sess-1' as never)
+    void controller.loadSwitches()
+    const props = cardProps(controller, bindSnapshotSelector(controller.store))
+    const view = render(<FallbacksCard {...props} />)
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    expect(screen.getByText(en.loading)).toBeTruthy()
+  })
+
+  it('surfaces the switches read error with an alert and no effective-model/selectionNote', async () => {
+    const scripted = scriptedApi({ config: ENABLED_CONFIG, historyError: 'history refused' })
+    const controller = new FallbacksSettingsController(scripted.api, scripted.rpc)
+    await controller.load()
+    controller.setCurrentSession('sess-1' as never)
+    await controller.loadSwitches()
+    const props = cardProps(controller, bindSnapshotSelector(controller.store))
+    const view = render(<FallbacksCard {...props} />)
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    // The switches face carried the read error into the line's `{message}`
+    // slot (the card-spec `t` seat is non-interpolating, so assert the state
+    // + the error line + the alert, per the file's convention).
+    expect(controller.store.getSnapshot().switchesError).toBe('history refused')
+    expect(screen.getByText(/Switch history read failed/)).toBeTruthy()
+    expect(document.querySelector('[role="alert"]')).not.toBeNull()
+    expect(screen.queryByText(/current effective model/i)).toBeNull()
+    expect(screen.queryByText(/manually selected in the web front end/i)).toBeNull()
   })
 })

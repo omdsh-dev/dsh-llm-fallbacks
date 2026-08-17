@@ -184,15 +184,16 @@ Then restart the dsh web session so the host half and the client half load.
    picked a provider/model in the settings page / `settings.yaml`), a switch after a trigger-code failure **still happens
    and is recorded**; but that step's routing may be re-applied by the outer model-selection listener (a model manually
    selected in the web front end is re-applied after the switch) — this is **host-native behavior** after removing the
-   local patch-marker coordination, and the plugin-config card carries a one-line degradation note
-   (`status.selectionNote`, zh/en). request-error-triggered chains are unaffected; without an active selection the request
-   routes to the chain target. Spec and guides records: `.mstar/iterations/iter-20260811-fallbacks-mount-only/guides/role-and-model-selection-exploration.md`
+   local patch-marker coordination (documented degradation, see §4.7). request-error-triggered chains are unaffected;
+   without an active selection the request routes to the chain target. Spec and guides records:
+   `.mstar/iterations/iter-20260811-fallbacks-mount-only/guides/role-and-model-selection-exploration.md`
    (Model-selection section).
-4. **Status-block entry (AC-7)**: the plugin-config card's status block shows the switch entry (from/to/role/reason/time,
-   in the "recent switches" list, newest first); the "current effective model" is a **derived value** (configuration +
-   recent switches), with a non-real-time note. The summary refreshes via push on `settings/document-updated`
-   (fallbacks namespace) / `llm/adapters-updated` (catalog only) / session switch / connection reset — a switch
-   occurring while the page is open appears after a page reload (or the next push), with no host restart needed.
+4. **Status-block entry (AC-2/AC-7)**: the plugin-config card's status block shows **only** the recent-switch line
+   (from/to/role/reason, newest first); the former "current effective model" line (D-6) and the selectionNote line were
+   removed from the card (compass AC-2 — the read-only status block keeps the recent switch only). The summary refreshes
+   via push on `settings/document-updated` (fallbacks namespace) / `llm/adapters-updated` (catalog only) / session
+   switch / connection reset — a switch occurring while the page is open appears after a page reload (or the next push),
+   with no host restart needed.
 5. **In-session diagnostics (AC-5)**: type `/fallbacks` in the same session; the output should contain the session origin
    (root/subagent), the resolved role, the resolved chain (including the default-fallback annotation), recent switches
    (newest first, from/to/role/reason) and the cooldown state; the command is read-only and never changes any fallback
@@ -230,6 +231,24 @@ Then restart the dsh web session so the host half and the client half load.
    failure-time fallback, so whether it survives a **manual web model selection** depends on waterfall listener order — the
    same documented degradation as the failure-time switch (§4.3 step 3 above). Without an active selection the request
    routes to the injected model.
+
+#### 4.7 Manual web model selection may re-apply over a fallback switch (AC-2 — documented degradation, re-homed)
+
+1. **Background**: removing the marker coordination that shipped with the local dsh-agent patch (plan
+   `llm-fallbacks-runtime-depatch`) left the plugin with no way to mark a fallback switch so a web-front-end model
+   selection would not re-apply over it. The status block carried a one-line `status.selectionNote` (zh/en) documenting
+   this; since plan `fallbacks-settings-visibility` (AC-2) trims the card's read-only status block to the recent-switch
+   line only, the degradation is re-homed here with equivalent semantics.
+2. **Semantics**: a model **manually selected in the web front end may be re-applied over a fallback switch** — whether
+   the switch routing survives depends on the outer model-selection listener's waterfall order. With an active
+   model-selection (a provider/model picked in the settings page or `settings.yaml`), a switch after a trigger-code
+   failure **still happens and is recorded** as a `fallbacks/switch` event, but that step's routing may be re-applied by
+   the selection listener.
+3. **Scope**: request-error-triggered chains are unaffected; without an active model selection the request routes to the
+   chain target. This is host-native behavior, not a plugin defect.
+4. **Spec/guide records**: `.mstar/iterations/iter-20260811-fallbacks-mount-only/guides/role-and-model-selection-exploration.md`
+   (Model-selection section); the failure-time switch path is §4.3 step 3 above; the dispatch-injection variant of the
+   same listener-order degradation is §4.6 above.
 
 ## Known limitations (real runtime surfaces the sandbox cannot cover)
 
