@@ -94,6 +94,8 @@ export interface FallbacksConfigSummary {
   readonly maxSwitchesPerStep: number
   readonly alwaysModeRetryCap: number
   readonly presets: 'bundled' | 'none'
+  /** Dispatch-time LLM role auto-match switch (default true). */
+  readonly roleAutoMatch: boolean
 }
 
 /**
@@ -166,6 +168,7 @@ export const FALLBACKS_COMMAND_LOCALES = {
     configMaxSwitches: '单步最大切换',
     configAlwaysCap: 'always 上限',
     configPresets: '预置',
+    configRoleAutoMatch: '角色自动匹配',
     configEdit: '编辑：~/.dsh/profiles/<profile>/cordis.patch.yml（插件行）或 $DSH_HOME/settings.yaml（fallbacks: 分节）',
     configEditHint: 'TUI 无法修改配置——只能编辑文件',
   },
@@ -203,6 +206,7 @@ export const FALLBACKS_COMMAND_LOCALES = {
     configMaxSwitches: 'Max switches/step',
     configAlwaysCap: 'Always-mode cap',
     configPresets: 'Presets',
+    configRoleAutoMatch: 'Auto-match',
     configEdit: 'Edit: ~/.dsh/profiles/<profile>/cordis.patch.yml (plugin row) or $DSH_HOME/settings.yaml (fallbacks: section)',
     configEditHint: 'TUI cannot change config — edit files only',
   },
@@ -393,6 +397,7 @@ export function fallbacksConfigText(
     `${t.configMaxSwitches}: ${summary.maxSwitchesPerStep}`,
     `${t.configAlwaysCap}: ${summary.alwaysModeRetryCap}`,
     `${t.configPresets}: ${summary.presets}`,
+    `${t.configRoleAutoMatch}: ${summary.roleAutoMatch ? t.configEnabled : t.configDisabled}`,
     '',
     t.configEdit,
     t.configEditHint,

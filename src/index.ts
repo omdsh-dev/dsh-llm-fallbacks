@@ -768,7 +768,8 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     // runtime reads (schema defaults → plugin-row base → settings user
     // layer). Role summaries from `roles.list` (id + chain length, the
     // two-block model); `presets` is optional-on-type with a schema default,
-    // so the summary falls back to 'bundled' explicitly.
+    // so the summary falls back to 'bundled' explicitly; `roleAutoMatch`
+    // reads defensively (`?? true`) for direct constructors that omit it.
     getConfig(): FallbacksConfigSummary {
       const config = source()
       return {
@@ -781,6 +782,7 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
         maxSwitchesPerStep: config.maxSwitchesPerStep,
         alwaysModeRetryCap: config.alwaysModeRetryCap,
         presets: config.presets ?? 'bundled',
+        roleAutoMatch: config.roleAutoMatch ?? true,
       }
     },
   }

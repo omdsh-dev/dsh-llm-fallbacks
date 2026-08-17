@@ -67,6 +67,7 @@ function configSummary(overrides: Partial<FallbacksConfigSummary> = {}): Fallbac
     maxSwitchesPerStep: 8,
     alwaysModeRetryCap: 5,
     presets: 'bundled',
+    roleAutoMatch: true,
     ...overrides,
   }
 }
@@ -383,13 +384,15 @@ describe('fallbacksConfigText — composed-config readback', () => {
     expect(fallbacksConfigText(configSummary({ triggerCodes: codes }), 'en')).toContain('Trigger codes: A, B, C, D, E, …')
   })
 
-  it('renders cooldown, revert policy, caps, and presets', () => {
+  it('renders cooldown, revert policy, caps, presets, and role auto-match', () => {
     expect(fallbacksConfigText(configSummary(), 'en')).toContain('Cooldown: 300000 ms')
     expect(fallbacksConfigText(configSummary(), 'en')).toContain('Revert: cooldown-expiry')
     expect(fallbacksConfigText(configSummary(), 'en')).toContain('Max switches/step: 8')
     expect(fallbacksConfigText(configSummary(), 'en')).toContain('Always-mode cap: 5')
     expect(fallbacksConfigText(configSummary(), 'en')).toContain('Presets: bundled')
     expect(fallbacksConfigText(configSummary({ presets: 'none' }), 'en')).toContain('Presets: none')
+    expect(fallbacksConfigText(configSummary(), 'en')).toContain('Auto-match: enabled')
+    expect(fallbacksConfigText(configSummary({ roleAutoMatch: false }), 'en')).toContain('Auto-match: disabled')
   })
 
   it('renders the file-only edit hints after a blank line', () => {

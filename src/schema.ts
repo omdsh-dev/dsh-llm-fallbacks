@@ -66,4 +66,9 @@ export const Config = z.object({
   // `revertPolicy` above — illegal values fail at schema resolve, and the
   // default guarantees every resolved config carries `presets`.
   presets: z.union([z.const('bundled'), z.const('none')]).default('bundled'),
+  // 10th field (plan fallbacks-role-automatch Task 1): dispatch-time LLM
+  // role auto-match switch, default ON. Boolean with a schema default — the
+  // same additive shape as the other optional fields — so `Config({})`
+  // carries `roleAutoMatch: true` and every resolved config has a value.
+  roleAutoMatch: z.boolean().default(true),
 }) as unknown as z<FallbacksConfig>
