@@ -124,11 +124,12 @@ interface FallbacksScalars {
   revertPolicy: RevertPolicy
   maxSwitchesPerStep: number
   alwaysModeRetryCap: number
-  // The roleAutoMatch VALUE (a boolean once configured, or undefined while
-  // a legacy config has not declared the key — plan fallbacks-settings-
-  // visibility T3; the store strips the parse fold so the undefined is
-  // real). The card only RENDERS a toggle when the value is defined; the
-  // undefined-armed value keeps a legacy save from re-inventing the key.
+  // `roleAutoMatch` is ALWAYS defined at runtime (default `true`): the
+  // schema default is folded on the real wire (gateway composition + client
+  // parse fold), so absent ≡ true (AC-7 re-scope, PM decision 2026-08-17
+  // Option A) and the toggle always renders. The nullable type only mirrors
+  // the optional config-model field (`FallbacksConfig.roleAutoMatch`,
+  // additive, non-breaking for library consumers — src/config.ts).
   roleAutoMatch: boolean | undefined
 }
 
@@ -181,7 +182,7 @@ function assembleConfig(
     maxSwitchesPerStep: scalars.maxSwitchesPerStep,
     alwaysModeRetryCap: scalars.alwaysModeRetryCap,
     ...(presets === undefined ? {} : { presets }),
-    ...(roleAutoMatch === undefined ? {} : { roleAutoMatch }),
+    roleAutoMatch,
   }
 }
 
