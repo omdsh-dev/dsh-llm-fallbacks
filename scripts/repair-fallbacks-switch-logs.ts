@@ -12,12 +12,14 @@
  * marks those events `ignorable: true` so the read path accepts them again.
  *
  * Session log format (`~/.dsh/sessions/<namespace>/<session-id>/session.jsonl.zstd`):
- *   - concatenated-zstd-frame container: line 1 is the `session` header,
- *     subsequent lines are events, each append batch its own zstd frame;
- *   - `node:zlib.zstdDecompress` only decodes the FIRST frame, so this script
- *     shells out to the `zstd` CLI (`zstd -d -c` decodes every concatenated
- *     frame); re-encoding as a single checksummed frame is accepted by the
- *     host read path (`scanZstdFrames` walks any complete frame set).
+ *   - concatenated-zstd-frame container: **first frame MUST decode to
+ *     exactly one header line** (rc.7 `assertZstdHeaderFrame`:
+ *     `indexOf(10) === length-1`). Subsequent frames hold events.
+ *   - `node:zlib.zstdDecompress` only decodes the FIRST frame, so this
+ *     script shells out to the `zstd` CLI (`zstd -d -c` decodes every
+ *     concatenated frame). Re-encoding MUST emit frame-1 = header only
+ *     + a following frame for the rest — a single-frame rewrite of the
+ *     whole log fails host boot (`first frame is not exactly one header line`).
  *
  * IMPORTANT: stop dsh before running with `--apply`. The script replaces a
  * session log via read → transform → atomic rename; a live dsh that appends
@@ -41,10 +43,11 @@
  *                  reports would-change
  *
  * Safe by construction: a file is only replaced after its re-encoded form
- * passes `zstd -t` and carries the original file's permission bits; a file
- * that fails to decompress or re-encode is reported and skipped (never
- * corrupted); the replace is an atomic rename of a temp file in the same
- * directory. Report/dry-run mode performs no filesystem writes at all.
+ * passes `zstd -t`, has a one-line first frame, and carries the original
+ * file's permission bits; a file that fails to decompress or re-encode is
+ * reported and skipped (never corrupted); the replace is an atomic rename
+ * of a temp file in the same directory. Report/dry-run mode performs no
+ * filesystem writes at all.
  */
 import { execFileSync } from 'node:child_process'
 import {
@@ -233,12 +236,30 @@ type FileOutcome =
   | { action: 'error'; changed: number; error: string }
 
 /**
+ * Encode repaired plaintext as concatenated zstd frames that rc.7 will
+ * accept: frame 1 = header line + `\n` only; frame 2 = remaining lines.
+ */
+export function encodeRepairedSessionLog(zstd: string, lines: string[]): Buffer {
+  const header = lines[0] ?? ''
+  const headerPlain = header.endsWith('\n') ? header : `${header}\n`
+  const zstdOut = { input: headerPlain, maxBuffer: MAX_BUFFER }
+  const frame1 = execFileSync(zstd, ['-c'], zstdOut)
+  const rest = lines.slice(1)
+  if (rest.length === 0 || (rest.length === 1 && rest[0] === '')) return frame1
+  const restPlain = rest.join('\n')
+  const frame2 = execFileSync(zstd, ['-c'], {
+    input: restPlain.endsWith('\n') ? restPlain : `${restPlain}\n`,
+    maxBuffer: MAX_BUFFER,
+  })
+  return Buffer.concat([frame1, frame2])
+}
+
+/**
  * Decompress all frames of one log, transform it, and (only when actually
- * applying) atomically replace it with a single-frame re-encode that passed
- * `zstd -t` and carries the original file's permission bits. Report/dry-run
- * returns would-change WITHOUT touching the filesystem (no tmp files, no
- * encode, no `zstd -t`). Returns the per-file outcome; never throws for
- * per-file failures (they become `error` outcomes so the walk continues).
+ * applying) atomically replace it with a two-frame re-encode (header frame
+ * + events frame) that passed `zstd -t` and carries the original file's
+ * permission bits. Report/dry-run returns would-change WITHOUT touching the
+ * filesystem.
  */
 export function processFile(zstd: string, file: string, opts: CliOptions): FileOutcome {
   let plain: string
@@ -264,12 +285,10 @@ export function processFile(zstd: string, file: string, opts: CliOptions): FileO
   // Apply: temp files live next to the target so the final rename is atomic
   // (same filesystem) and the walker never mistakes them for session logs.
   const dir = dirname(file)
-  const tmpPlain = join(dir, `.${basename(file)}.${process.pid}.plain.tmp`)
   const tmpZstd = join(dir, `.${basename(file)}.${process.pid}.zstd.tmp`)
   const mode = statSync(file).mode & 0o7777
   try {
-    writeFileSync(tmpPlain, lines.join('\n'), 'utf8')
-    execFileSync(zstd, ['-f', '-o', tmpZstd, tmpPlain], { stdio: 'ignore' })
+    writeFileSync(tmpZstd, encodeRepairedSessionLog(zstd, lines))
     execFileSync(zstd, ['-t', tmpZstd], { stdio: 'ignore' })
     copyFileSync(file, `${file}.bak`)
     chmodSync(tmpZstd, mode)
@@ -281,7 +300,6 @@ export function processFile(zstd: string, file: string, opts: CliOptions): FileO
       error: `re-encode/validate failed: ${err instanceof Error ? err.message : String(err)}`,
     }
   } finally {
-    rmSync(tmpPlain, { force: true })
     rmSync(tmpZstd, { force: true })
   }
   return { action: 'changed', changed }

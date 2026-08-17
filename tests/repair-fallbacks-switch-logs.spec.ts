@@ -20,6 +20,7 @@
  *   - `changed` counts only lines that were modified.
  */
 import { execFileSync } from 'node:child_process'
+import { zstdDecompressSync } from 'node:zlib'
 import {
   chmodSync,
   existsSync,
@@ -249,8 +250,11 @@ describe.skipIf(zstdBin === null)('processFile (fixture; skipped without system 
       // replacement keeps the original 0600 permission bits (fixture default)
       expect(statSync(sessionFile).mode & 0o7777).toBe(0o600)
 
-      // replacement is a valid zstd frame carrying the ignorable markers
       execFileSync(ZSTD, ['-t', sessionFile], { stdio: 'ignore' })
+      // rc.7 assertZstdHeaderFrame: first frame is exactly one header line.
+      const firstFrame = zstdDecompressSync(readFileSync(sessionFile))
+      expect(firstFrame.indexOf(10)).toBe(firstFrame.length - 1)
+      expect(JSON.parse(firstFrame.toString('utf8').trim()).type).toBe('session')
       const repaired = execFileSync(ZSTD, ['-d', '-c', sessionFile], { encoding: 'utf8' })
       const switches = repaired
         .split('\n')
