@@ -119,6 +119,12 @@ const CONFIG_KEYS: Record<string, true> = {
   alwaysModeRetryCap: true,
   presets: true,
   roleAutoMatch: true,
+  // Plan fallbacks-timeslots Task 1 (P5): time-slot rows + config-level tz.
+  // The READ side must carry them so `get` matches the composed config
+  // (schema defaults); nested row-shape guards land with the Task 3 gateway
+  // work (ROLES_KEYS pattern).
+  timeSlots: true,
+  tz: true,
 }
 
 /** Declared nested keys of the `roles` patch — anything else is rejected (qc2 S-1). */

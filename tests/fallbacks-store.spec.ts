@@ -264,6 +264,10 @@ describe('parseFallbacksConfig (descriptor read, redactSecrets face)', () => {
       alwaysModeRetryCap: 0,
       presets: 'bundled',
       roleAutoMatch: true,
+      // P5 keys (plan fallbacks-timeslots Task 1): the fold mirrors the
+      // host defaults, so a truly complete config carries them.
+      timeSlots: [],
+      tz: 'Asia/Shanghai',
     }
     expect(parseFallbacksConfig(config)).toEqual(config)
   })

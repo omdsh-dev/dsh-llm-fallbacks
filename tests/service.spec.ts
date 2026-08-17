@@ -125,7 +125,9 @@ describe('llm-fallbacks named cordis service', () => {
     const validConfig: FallbacksConfig = {
       ...defaultFallbacksConfig,
       enabled: true,
-      rootChain: ['openai/gpt-4o'],
+      // Conforming all-day (P6): rootChain must be exactly one official V4
+      // model — a legacy multi-model chain would now earn a conformance warn.
+      rootChain: ['deepseek-official/deepseek-v4-flash'],
       roles: {
         list: [{ id: 'coder', persona: '', chain: ['anthropic/claude-3-5-sonnet'] }],
         rules: [{ origin: 'root', role: 'coder' }],

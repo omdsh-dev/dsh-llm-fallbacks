@@ -171,6 +171,8 @@ function assembleConfig(
   originalRoles: readonly FallbacksRole[],
   presets: FallbacksConfig['presets'],
   roleAutoMatch: FallbacksConfig['roleAutoMatch'],
+  timeSlots: FallbacksConfig['timeSlots'],
+  tz: FallbacksConfig['tz'],
 ): FallbacksConfig {
   const list = mergeRoleExtras(roleRows, originalRoles)
   return {
@@ -184,6 +186,12 @@ function assembleConfig(
     alwaysModeRetryCap: scalars.alwaysModeRetryCap,
     ...(presets === undefined ? {} : { presets }),
     roleAutoMatch,
+    // P5 keys (plan fallbacks-timeslots Task 1): ride the accepted config
+    // untouched — the store ALWAYS folds them (parse mirrors the schema
+    // defaults), so a clean draft equals the accepted config and the dirty
+    // check stays quiet; the card edits rows in Task 3.
+    ...(timeSlots === undefined ? {} : { timeSlots }),
+    ...(tz === undefined ? {} : { tz }),
   }
 }
 
@@ -631,6 +639,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
   const draft = assembleConfig(
     scalars, rootChainRows, roleRows, ruleRows,
     state.config.roles.list, state.config.presets, scalars.roleAutoMatch,
+    state.config.timeSlots, state.config.tz,
   )
   // Empty rule rows (role still on the "select role" placeholder) never
   // reach the assembled draft — rowsToRules drops them — so validateDraft
