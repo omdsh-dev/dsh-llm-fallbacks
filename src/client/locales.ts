@@ -120,7 +120,9 @@ export const zh = {
   // Task 5 (direction 3): the role-inject line reads naturally as the
   // resolved role → its chain-head model (`{to}`) instead of the generic
   // `({role} · {reason})` parenthetical — role + reason stay visible.
-  'status.switches.compact.roleInject': '最近 {count} 次 · {from} → {to}（{role} → {to} · {reason}）',
+  // The destination `{to}` appears once (as its role→model mapping), not
+  // twice: the leading `{from} → {to}` is dropped.
+  'status.switches.compact.roleInject': '最近 {count} 次 · {role} → {to}（{reason}）',
   'status.switches.reason.trigger-code': '触发失败码',
   'status.switches.reason.always-cap': 'always 模式上限',
   'general.title': '模型故障降级',
@@ -129,7 +131,8 @@ export const zh = {
   'general.unknown': '未知',
   'general.unavailable': '状态通道暂不可达',
   'general.switch': '最近切换：{from} → {to}（{role} · {reason}）',
-  'general.switch.roleInject': '最近切换：{from} → {to}（{role} → {to} · {reason}）',
+  // Task 5 (direction 3): same dedupe as `status.switches.compact.roleInject`.
+  'general.switch.roleInject': '最近切换：{role} → {to}（{reason}）',
   'general.switch.empty': '本会话暂无切换',
   'general.error': '状态读取失败：{message}',
   'chat.switch.title': '模型已降级',
@@ -262,7 +265,7 @@ export const en = {
   'status.switches.empty': 'No fallback switches in this session yet.',
   'status.switches.error': 'Switch history read failed: {message}',
   'status.switches.compact': 'last {count} · {from} → {to} ({role} · {reason})',
-  'status.switches.compact.roleInject': 'last {count} · {from} → {to} ({role} → {to} · {reason})',
+  'status.switches.compact.roleInject': 'last {count} · {role} → {to} ({reason})',
   'status.switches.reason.trigger-code': 'trigger code',
   'status.switches.reason.always-cap': 'always-mode cap',
   'general.title': 'Model failover',
@@ -271,7 +274,7 @@ export const en = {
   'general.unknown': 'Unknown',
   'general.unavailable': 'Status channel unavailable',
   'general.switch': 'Last switch: {from} → {to} ({role} · {reason})',
-  'general.switch.roleInject': 'Last switch: {from} → {to} ({role} → {to} · {reason})',
+  'general.switch.roleInject': 'Last switch: {role} → {to} ({reason})',
   'general.switch.empty': 'No switches this session',
   'general.error': 'Status read failed: {message}',
   'chat.switch.title': 'Model downgraded',

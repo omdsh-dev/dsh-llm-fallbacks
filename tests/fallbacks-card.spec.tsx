@@ -1799,12 +1799,12 @@ describe('FallbacksCard status block (AC-2: recent switch only)', () => {
     expect(screen.queryByText(/manually selected in the web front end/i)).toBeNull()
   })
 
-  it('renders the role-inject recent-switch line with the role → model mapping (localized reason)', async () => {
+  it('renders the role-inject recent-switch line as the deduped role → model mapping (localized reason)', async () => {
     // Task 5 (direction 3): a `role-inject` switch reads naturally as the
     // resolved role mapping to its chain-head model (`reviewer →
-    // anthropic/claude-3-5-sonnet`) instead of the generic
-    // `(role · reason)` parenthetical — role + reason both stay visible
-    // (AC-5), nothing from today is dropped.
+    // anthropic/claude-3-5-sonnet`) — the destination `{to}` appears once
+    // (as the role→model mapping), not twice; the leading `{from} → {to}`
+    // is dropped. Role + reason both stay visible (AC-5).
     const scripted = scriptedApi({
       config: ENABLED_CONFIG,
       historyEntries: [switchEntry(1, { role: 'reviewer', reason: 'role-inject' })],
@@ -1831,7 +1831,7 @@ describe('FallbacksCard status block (AC-2: recent switch only)', () => {
     toggleCard()
     view.rerender(<FallbacksCard {...props} />)
     expect(screen.getByText(
-      'last 1 · openai/gpt-4o → anthropic/claude-3-5-sonnet (reviewer → anthropic/claude-3-5-sonnet · role inject)',
+      'last 1 · reviewer → anthropic/claude-3-5-sonnet (role inject)',
     )).toBeTruthy()
     expect(screen.queryByText(/current effective model/i)).toBeNull()
     expect(screen.queryByText(/manually selected in the web front end/i)).toBeNull()
