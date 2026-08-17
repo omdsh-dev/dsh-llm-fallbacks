@@ -37,6 +37,9 @@ import {
   type FallbackStrategy, type FallbacksConfig, type FallbacksRole,
   type FallbacksRoleRule, type FallbacksRoles,
 } from '../config.ts'
+// Type-only — `src/time-slots.ts` is a pure module (no `@deepseek-ai/*`
+// runtime imports), so the row type stays out of the client runtime graph.
+import type { SlotRowConfig } from '../time-slots.ts'
 import type { FallbacksSwitchEventData } from '../events.ts'
 import { parseSelector } from '../selectors.ts'
 // Type-only — `src/seeds.ts` carries no `@deepseek-ai/*` value imports, so
@@ -301,6 +304,27 @@ export function parseFallbacksConfig(value: unknown): FallbacksConfig {
   if (roleAutoMatch !== undefined && typeof roleAutoMatch !== 'boolean') {
     throw new TypeError('fallbacks descriptor roleAutoMatch must be a boolean')
   }
+  // P5 mirror: the host schema gained `timeSlots` (11th field) — mechanical
+  // descriptor guard for the row shape; the card edits rows in Task 3.
+  const timeSlots = value.timeSlots
+  if (timeSlots !== undefined && (!Array.isArray(timeSlots) || timeSlots.some((row) => {
+    if (!isRecord(row)) return true
+    for (const field of ['kind', 'preset', 'start', 'end'] as const) {
+      if (row[field] !== undefined && typeof row[field] !== 'string') return true
+    }
+    const chain = row.chain
+    if (chain !== undefined && (!Array.isArray(chain) || chain.some(entry => typeof entry !== 'string'))) return true
+    const days = row.days
+    if (days !== undefined && (!Array.isArray(days) || days.some(day => typeof day !== 'number'))) return true
+    return false
+  }))) {
+    throw new TypeError('fallbacks descriptor timeSlots must be an array of slot rows (kind/preset/start/end strings, chain string array, days number array)')
+  }
+  // P5 mirror: the host schema gained `tz` (12th field).
+  const tz = value.tz
+  if (tz !== undefined && typeof tz !== 'string') {
+    throw new TypeError('fallbacks descriptor tz must be a string')
+  }
   return {
     enabled: enabled ?? defaultFallbacksConfig.enabled,
     triggerCodes: (triggerCodes as string[] | undefined) ?? [...defaultFallbacksConfig.triggerCodes],
@@ -328,6 +352,14 @@ export function parseFallbacksConfig(value: unknown): FallbacksConfig {
     // "Enable role auto-match" toggle (default true, plan
     // fallbacks-settings-visibility Task 3).
     roleAutoMatch: roleAutoMatch ?? defaultFallbacksConfig.roleAutoMatch,
+    // P5 mirror: the host default gained `timeSlots` (11th field), so the
+    // client fold mirrors it too — `parseFallbacksConfig` output must stay
+    // equal to `defaultFallbacksConfig` (pinned invariant). Mechanical
+    // mirror of `triggerCodes`; the settings card edits rows in Task 3.
+    timeSlots: (timeSlots as SlotRowConfig[] | undefined) ?? [...(defaultFallbacksConfig.timeSlots ?? [])],
+    // P5 mirror: the host default gained `tz` (12th field), so the client
+    // fold mirrors it too — mechanical mirror of `presets`.
+    tz: (tz as FallbacksConfig['tz'] | undefined) ?? defaultFallbacksConfig.tz,
   }
 }
 

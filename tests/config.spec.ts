@@ -340,9 +340,12 @@ describe('validateFallbacksConfig — selector legality (rootChain + role chains
       rootChain: ['other/gpt-4o', 'bogus', 'provider/', 'openai/gpt-4o'],
     }, logger)
     const messages = messagesOf({ warn: logger.warn })
-    expect(messages).toHaveLength(2)
-    expect(messages[0]).toContain('ignoring invalid rootChain entry "bogus"')
-    expect(messages[1]).toContain('ignoring invalid rootChain entry "provider/"')
+    // P6 (plan fallbacks-timeslots): a non-empty non-conforming all-day
+    // chain earns the conformance warn FIRST, then per-entry selector warns.
+    expect(messages).toHaveLength(3)
+    expect(messages[0]).toContain('rootChain must be exactly one official V4 model')
+    expect(messages[1]).toContain('ignoring invalid rootChain entry "bogus"')
+    expect(messages[2]).toContain('ignoring invalid rootChain entry "provider/"')
   })
 
   it('warns on invalid role chain entries, naming the role', () => {
