@@ -118,6 +118,7 @@ const CONFIG_KEYS: Record<string, true> = {
   maxSwitchesPerStep: true,
   alwaysModeRetryCap: true,
   presets: true,
+  roleAutoMatch: true,
 }
 
 /** Declared nested keys of the `roles` patch — anything else is rejected (qc2 S-1). */

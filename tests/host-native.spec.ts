@@ -18,8 +18,9 @@
  *
  * Composition with an active model-selection (the only observable behavioral
  * difference of the patch removal) is pinned in `tests/plugin.spec.ts`
- * (registration-order dependence) and documented in the settings page note
- * (`status.selectionNote`, zh + en).
+ * (registration-order dependence) and documented as a documented degradation
+ * in docs/verification.md (§4.7) — the card status block no longer carries a
+ * one-line note (plan fallbacks-settings-visibility, AC-2).
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'

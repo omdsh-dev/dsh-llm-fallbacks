@@ -24,8 +24,13 @@
  * event the `unknown-surface` fallback never picked up becomes visible.
  *
  * Rendered states: one compact system-style line — warning-toned title +
- * separator + ellipsized summary (`{from} → {to} ({role} · {reason})`),
- * role="status";
+ * separator + ellipsized summary. A role-mapped switch (dispatch-time
+ * `role-inject`, `role !== 'inherit'`) renders a role badge + explicit
+ * `role → model` mapping as the PRIMARY info with the reason-only summary —
+ * `{to}` appears once (dedupe, qc1 F-002 / qc2 F-003); a failure-time
+ * switch (`role: 'inherit'`) keeps the plain `{from} → {to} ({reason})`
+ * transition line with no hollow `inherit → <model>` mapping (qc1 F-002 /
+ * qc2 F-004). role="status";
  * an unknown reason value renders raw (forward-compatible durable log); a
  * malformed/partial payload degrades to the title-only line (no throw);
  * the zh dictionary renders through the same seat (parity smoke).
@@ -436,24 +441,77 @@ describe('ConversationFallbackSwitch rendered line', () => {
   it('renders the compact system line from a switch payload', () => {
     render(<ConversationFallbackSwitch {...switchProps(nodeFor(switchEvent(5)))} />)
     expect(screen.getByText('Model downgraded')).toBeTruthy()
+    // The summary keeps the from → to transition + reason context; the role
+    // now lives in its own badge + explicit role → model mapping.
     expect(screen.getByText(
-      'openai/gpt-4o → anthropic/claude-3-5-sonnet (inherit · trigger code)',
+      'openai/gpt-4o → anthropic/claude-3-5-sonnet (trigger code)',
     )).toBeTruthy()
     // The line is announced as a status row (non-interactive system notice).
     expect(document.querySelector('[role="status"]')).not.toBeNull()
   })
 
+  it('renders a distinct role badge (chip) with the role value', () => {
+    render(<ConversationFallbackSwitch {...switchProps(nodeFor(switchEvent(5, { role: 'reviewer' })))} />)
+    const badge = screen.getByText('reviewer')
+    expect(badge).toBeTruthy()
+    // The badge is its own visually distinct chip (not inline summary text).
+    const classes = (badge.getAttribute('class') ?? '').split(' ')
+    expect(classes.some((c) => c.includes('roleBadge'))).toBe(true)
+  })
+
+  it('renders the explicit role → model mapping segment', () => {
+    render(<ConversationFallbackSwitch {...switchProps(nodeFor(switchEvent(5, { role: 'reviewer' })))} />)
+    expect(screen.getByText(
+      'reviewer → anthropic/claude-3-5-sonnet',
+    )).toBeTruthy()
+  })
+
+  it('renders the role-inject reason through the shared reason map (localized), deduped — no duplicate {to}', () => {
+    // A realistic role-inject event carries the injected role (`role !==
+    // 'inherit'`): the role → model mapping is the primary info and the
+    // `from → to` prefix is dropped, so the destination `{to}` renders once
+    // (qc1 F-002 / qc2 F-003 dedupe, same as the card/general-row lines).
+    render(<ConversationFallbackSwitch {...switchProps(nodeFor(switchEvent(5, { role: 'reviewer', reason: 'role-inject' })))} />)
+    expect(screen.getByText(
+      'reviewer → anthropic/claude-3-5-sonnet',
+    )).toBeTruthy()
+    // The reason rides the summary after the dedupe; the old `from → to`
+    // transition prefix is gone from this row.
+    expect(screen.getByText('(role inject)')).toBeTruthy()
+    expect(screen.queryByText(
+      'openai/gpt-4o → anthropic/claude-3-5-sonnet (role inject)',
+    )).toBeNull()
+  })
+
   it('renders the always-cap reason through the shared reason map', () => {
     render(<ConversationFallbackSwitch {...switchProps(nodeFor(switchEvent(5, { reason: 'always-cap' })))} />)
     expect(screen.getByText(
-      'openai/gpt-4o → anthropic/claude-3-5-sonnet (inherit · always-mode cap)',
+      'openai/gpt-4o → anthropic/claude-3-5-sonnet (always-mode cap)',
     )).toBeTruthy()
+  })
+
+  it('does not render a role → model mapping for role:inherit (failure-time switch — no hollow mapping)', () => {
+    // `inherit` is the "no specific role" token, not a role that maps to a
+    // chain head: the failure-time row keeps the plain from → to (reason)
+    // transition and shows NO badge / role → model mapping (qc1 F-002 / qc2
+    // F-004).
+    const { container } = render(
+      <ConversationFallbackSwitch {...switchProps(nodeFor(switchEvent(5, { role: 'inherit', reason: 'trigger-code' })))} />,
+    )
+    expect(screen.getByText(
+      'openai/gpt-4o → anthropic/claude-3-5-sonnet (trigger code)',
+    )).toBeTruthy()
+    expect(screen.queryByText(
+      'inherit → anthropic/claude-3-5-sonnet',
+    )).toBeNull()
+    expect(container.querySelector('[class*="roleBadge"]')).toBeNull()
+    expect(container.querySelector('[class*="roleModelMap"]')).toBeNull()
   })
 
   it('renders an unknown reason value raw (forward-compatible log)', () => {
     render(<ConversationFallbackSwitch {...switchProps(nodeFor(switchEvent(3, { reason: 'future-reason' as never })))} />)
     expect(screen.getByText(
-      'openai/gpt-4o → anthropic/claude-3-5-sonnet (inherit · future-reason)',
+      'openai/gpt-4o → anthropic/claude-3-5-sonnet (future-reason)',
     )).toBeTruthy()
   })
 
@@ -461,8 +519,14 @@ describe('ConversationFallbackSwitch rendered line', () => {
     render(<ConversationFallbackSwitch {...switchProps(nodeFor(switchEvent(4)), tZh)} />)
     expect(screen.getByText('模型已降级')).toBeTruthy()
     expect(screen.getByText(
-      'openai/gpt-4o → anthropic/claude-3-5-sonnet（inherit · 触发失败码）',
+      'openai/gpt-4o → anthropic/claude-3-5-sonnet（触发失败码）',
     )).toBeTruthy()
+    // zh role-inject reason key parity (deduped role-mapped row).
+    render(<ConversationFallbackSwitch {...switchProps(nodeFor(switchEvent(6, { role: 'reviewer', reason: 'role-inject' })), tZh)} />)
+    expect(screen.getByText(
+      'reviewer → anthropic/claude-3-5-sonnet',
+    )).toBeTruthy()
+    expect(screen.getByText('（角色注入）')).toBeTruthy()
   })
 
   it('degrades to a title-only line on a malformed payload (no throw)', () => {

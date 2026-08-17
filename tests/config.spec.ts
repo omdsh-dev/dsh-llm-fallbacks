@@ -110,6 +110,59 @@ describe('fallbacks Config schema (two-block model)', () => {
   })
 })
 
+describe('roleAutoMatch config key (plan fallbacks-role-automatch Task 1)', () => {
+  it('defaults roleAutoMatch to true when absent (Config({}) == defaultFallbacksConfig)', () => {
+    const resolved = Config({} as FallbacksConfig)
+    expect(resolved.roleAutoMatch).toBe(true)
+    expect(Config({} as FallbacksConfig)).toEqual(defaultFallbacksConfig)
+  })
+
+  it('round-trips an explicit true', () => {
+    expect(Config({ roleAutoMatch: true } as FallbacksConfig).roleAutoMatch).toBe(true)
+  })
+
+  it('round-trips an explicit false', () => {
+    expect(Config({ roleAutoMatch: false } as FallbacksConfig).roleAutoMatch).toBe(false)
+  })
+
+  it('defaultFallbacksConfig carries roleAutoMatch: true', () => {
+    expect(defaultFallbacksConfig.roleAutoMatch).toBe(true)
+  })
+
+  it('validation accepts both true and false without a single warn', () => {
+    const { logger } = warnLogger()
+    validateFallbacksConfig({ ...defaultFallbacksConfig, roleAutoMatch: true }, logger)
+    validateFallbacksConfig({ ...defaultFallbacksConfig, roleAutoMatch: false }, logger)
+    expect(messagesOf({ warn: logger.warn })).toEqual([])
+  })
+
+  it('detectLegacyKeys does not flag roleAutoMatch (a new key, not a two-block-era leftover)', () => {
+    expect(detectLegacyKeys({
+      enabled: true,
+      rootChain: [],
+      roles: { list: [], rules: [] },
+      roleAutoMatch: false,
+    })).toEqual([])
+  })
+
+  it('a FallbacksConfig literal without roleAutoMatch still type-checks (optional-on-type)', () => {
+    // Compile-time pin: library consumers building configs with only the
+    // pre-existing keys must not be forced to add roleAutoMatch (additive,
+    // non-breaking — the documented reason `presets` is optional).
+    const minimal: FallbacksConfig = {
+      enabled: false,
+      triggerCodes: ['AUTH', 'QUOTA', 'RATE_LIMIT'],
+      rootChain: [],
+      roles: { list: [], rules: [] },
+      cooldownMs: 300_000,
+      revertPolicy: 'cooldown-expiry',
+      maxSwitchesPerStep: 8,
+      alwaysModeRetryCap: 5,
+    }
+    expect(minimal.roleAutoMatch).toBeUndefined()
+  })
+})
+
 describe('validateFallbacksConfig — role ids (format / uniqueness / reserved word)', () => {
   it('accepts valid ids and free-text persona without a single warn', () => {
     const { logger } = warnLogger()

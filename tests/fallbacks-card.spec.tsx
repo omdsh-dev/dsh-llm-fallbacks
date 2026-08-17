@@ -34,7 +34,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi, type Mock } from 'vitest'
 import type {
-  ClientConnectionRpc, ConfigurableProviderView, IApiClient, ModelProviderGroup, RpcResult,
+  ClientConnectionRpc, ConfigurableProviderView, HistoryEntry, IApiClient, ModelProviderGroup, RpcResult,
 } from '@deepseek-ai/dsh-client-connection/client'
 import { bindSnapshotSelector, type SnapshotSelectorHook } from '@deepseek-ai/dsh-client-web-react'
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
@@ -47,6 +47,7 @@ import { presetRoles } from '../src/presets.ts'
 import { apply } from '../src/client/index.ts'
 import { defaultFallbacksConfig } from '../src/config.ts'
 import { en, zh } from '../src/client/locales.ts'
+import type { FallbacksSwitchEventData } from '../src/events.ts'
 
 afterEach(cleanup)
 
@@ -86,6 +87,30 @@ function ok(value: unknown) {
   return { result: { ok: true, value } }
 }
 
+/**
+ * One `fallbacks/switch` history entry with a deterministic seq/time (the
+ * store-spec / general-row fixture shape), for the status block's recent-switch
+ * face (D-5 — `sessions.history`).
+ */
+function switchEntry(seq: number, overrides: Partial<FallbacksSwitchEventData> = {}): HistoryEntry {
+  return {
+    event: {
+      type: 'fallbacks/switch',
+      seq,
+      time: 1_700_000_000_000 + seq * 1000,
+      data: {
+        turn: 1,
+        step: 1,
+        from: { provider: 'openai', model: 'gpt-4o' },
+        to: { provider: 'anthropic', model: 'claude-3-5-sonnet' },
+        role: 'inherit',
+        reason: 'trigger-code',
+        ...overrides,
+      },
+    },
+  } as HistoryEntry
+}
+
 interface Scripted {
   api: Pick<IApiClient, 'settings' | 'llm' | 'sessions'>
   rpc: ClientConnectionRpc
@@ -114,6 +139,8 @@ function scriptedApi(options: {
   legacyKeys?: string[]
   seeds?: SeedsWireStatus[]
   catalog?: { providers: ConfigurableProviderView[]; groups: ModelProviderGroup[] }
+  historyEntries?: HistoryEntry[]
+  historyError?: string
 } = {}): Scripted {
   let current = options.config === undefined ? defaultFallbacksConfig : options.config
   const describe = vi.fn(() => Promise.resolve(ok({
@@ -132,7 +159,9 @@ function scriptedApi(options: {
   })))
   const providers = vi.fn(() => Promise.resolve(ok({ providers: options.catalog?.providers ?? [] })))
   const models = vi.fn(() => Promise.resolve(ok({ groups: options.catalog?.groups ?? [], failures: [] })))
-  const history = vi.fn(() => Promise.resolve(ok({ events: [] })))
+  const history = vi.fn(() => options.historyError === undefined
+    ? Promise.resolve(ok({ events: options.historyEntries ?? [], hasMore: false }))
+    : Promise.reject(new Error(options.historyError)))
   const get = vi.fn(() => Promise.resolve(
     current === null
       ? failResult('fallbacks gateway is not ready')
@@ -197,6 +226,24 @@ async function mountCard(options: Parameters<typeof scriptedApi>[0] = {}, preloa
  * dirty-transition assertions hold.
  */
 const ENABLED_CONFIG: typeof defaultFallbacksConfig = { ...defaultFallbacksConfig, enabled: true }
+
+/**
+ * A config with the `roleAutoMatch` key removed — the pre-fold legacy wire
+ * shape (plan fallbacks-settings-visibility T3): a unit fixture can hand-build
+ * it, but the REAL gateway composition always folds the schema default
+ * `roleAutoMatch: true` into the wire (see tests/gateway.spec.ts), so the
+ * card must render the toggle (default on) even for this shape and a save
+ * persists the resolved value (AC-7 re-scope, PM decision 2026-08-17
+ * Option A).
+ */
+const LEGACY_CONFIG: typeof defaultFallbacksConfig = withoutRoleAutoMatch(ENABLED_CONFIG)
+
+/** Copy a config without the `roleAutoMatch` property. */
+function withoutRoleAutoMatch(config: typeof defaultFallbacksConfig): typeof defaultFallbacksConfig {
+  const copy: Record<string, unknown> = { ...config }
+  delete copy.roleAutoMatch
+  return copy as typeof defaultFallbacksConfig
+}
 
 /**
  * A two-block config (spec §8) exercising every new editing surface: a
@@ -679,8 +726,10 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     const { view, props } = await mountCard({ config: TWO_BLOCK_CONFIG })
     toggleCard()
     view.rerender(<FallbacksCard {...props} />)
-    // Block 1: title + the "unset = no fallback" hint; the chain-key text
-    // input of the old model is gone (spec §8 无键输入).
+    // Block 1: title + the engages-after-failure first line + the
+    // session-model-first hint (TWO_BLOCK_CONFIG is enabled + configured, so
+    // the conditional hint renders); the chain-key text input of the old
+    // model is gone (spec §8 无键输入).
     expect(screen.getByText(en['rootChain.label'])).toBeTruthy()
     expect(screen.getByText(en['rootChain.hint'])).toBeTruthy()
     expect(screen.queryByLabelText('Key')).toBeNull()
@@ -1559,5 +1608,311 @@ describe('FallbacksCard seeded roles (plan fallbacks-role-seeds T5)', () => {
     expect((ids[1] as HTMLInputElement).value).toBe('reviewer')
     expect((ids[0] as HTMLInputElement).disabled).toBe(true)
     expect((ids[1] as HTMLInputElement).disabled).toBe(false)
+  })
+})
+
+describe('FallbacksCard rootChain first-line copy + conditional hint (plan fallbacks-settings-visibility T1)', () => {
+  it('renders the engages-after-failure first line when the section is shown', async () => {
+    const { view, props } = await mountCard({ config: TWO_BLOCK_CONFIG })
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    // Compass AC-1: the rootChain section's first descriptive line states the
+    // chain engages only after the current session's selected model fails —
+    // it never preempts the session model.
+    expect(screen.getByText(en['rootChain.firstLine'])).toBeTruthy()
+  })
+
+  it('shows the session-model-first hint when enabled and rootChain is configured', async () => {
+    const { view, props } = await mountCard({ config: TWO_BLOCK_CONFIG })
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    // The conditional hint renders for the enabled + configured case and
+    // carries the prefer-session-model copy (compass AC-1).
+    expect(screen.getByText(en['rootChain.hint'])).toBeTruthy()
+  })
+
+  it('hides the hint when enabled but rootChain is empty (unset)', async () => {
+    const { view, props } = await mountCard({ config: ENABLED_CONFIG })
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    // The first line still explains the section semantics...
+    expect(screen.getByText(en['rootChain.firstLine'])).toBeTruthy()
+    // ...but the conditional hint is hidden while the chain is unset.
+    expect(screen.queryByText(en['rootChain.hint'])).toBeNull()
+  })
+
+  it('keeps the hint hidden while a freshly added rootChain selector is still blank (qc2 F-002)', async () => {
+    const { view, props, controller } = await mountCard({ config: ENABLED_CONFIG, catalog: CHAIN_CATALOG })
+    // Settle the catalog explicitly so the selector dropdown offers openai
+    // before the interaction (the mount-effect load is asynchronous).
+    await controller.loadCatalog()
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    // ENABLED_CONFIG has an empty rootChain → hint hidden (unset case).
+    expect(screen.queryByText(en['rootChain.hint'])).toBeNull()
+
+    // Add a blank selector: `selectors.length > 0` alone must NOT count as
+    // "configured" — the serialized chain is still empty, so the hint stays
+    // hidden (qc2 F-002: the old `some(row => selectors.length > 0)`
+    // derivation leaked the hint the moment the blank row appeared).
+    const rootChainGroup = screen.getByText(en['rootChain.label']).closest('[role="group"]') as HTMLElement
+    fireEvent.click(within(rootChainGroup).getByRole('button', { name: en['rootChain.selector.add'] }))
+    view.rerender(<FallbacksCard {...props} />)
+    expect(screen.queryByText(en['rootChain.hint'])).toBeNull()
+
+    // Pick a provider for the added row → the chain serializes to one
+    // usable entry → the hint appears (the configured condition engages).
+    const providerSelect = within(rootChainGroup).getByLabelText(en['roles.rule.provider']) as HTMLSelectElement
+    fireEvent.change(providerSelect, { target: { value: 'openai' } })
+    view.rerender(<FallbacksCard {...props} />)
+    expect(screen.getByText(en['rootChain.hint'])).toBeTruthy()
+  })
+
+  it('hides the hint (and the section) when the plugin is disabled', async () => {
+    // defaultFallbacksConfig → enabled: false: the whole rootChain section
+    // (first line + hint) is gated off with the form body.
+    const { view, props } = await mountCard()
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    expect(screen.queryByText(en['rootChain.hint'])).toBeNull()
+    expect(screen.queryByText(en['rootChain.firstLine'])).toBeNull()
+  })
+
+  it('keeps the rootChain first-line and hint keys in both zh and en dictionaries', () => {
+    // Bilingual-pair constraint (plan Global Constraints): every locale
+    // change lands in both zh and en, non-empty.
+    expect(zh['rootChain.firstLine']).toBeTruthy()
+    expect(en['rootChain.firstLine']).toBeTruthy()
+    expect(zh['rootChain.hint']).toBeTruthy()
+    expect(en['rootChain.hint']).toBeTruthy()
+  })
+})
+
+describe('FallbacksCard roleAutoMatch toggle (plan fallbacks-settings-visibility T3)', () => {
+  it('renders the toggle in the advanced options, default on', async () => {
+    const { view, props } = await mountCard({ config: ENABLED_CONFIG })
+    toggleCard()
+    expandAdvanced()
+    view.rerender(<FallbacksCard {...props} />)
+    // The toggle lives in the advanced section and starts checked (the
+    // config-model default, `true` — compass AC-6 roleAutoMatch default on).
+    const toggle = screen.getByLabelText(en['roleAutoMatch.label']) as HTMLInputElement
+    expect(toggle.checked).toBe(true)
+  })
+
+  it('writes the toggle to the scalar and persists roleAutoMatch:false through a save', async () => {
+    const { view, props, scripted } = await mountCard({ config: ENABLED_CONFIG })
+    toggleCard()
+    expandAdvanced()
+    view.rerender(<FallbacksCard {...props} />)
+    // Flipping the toggle off makes the draft dirty (scalar roleAutoMatch
+    // true → false) and a save persists it through assembleConfig → draft.
+    fireEvent.click(screen.getByLabelText(en['roleAutoMatch.label']))
+    view.rerender(<FallbacksCard {...props} />)
+    expect((screen.getByLabelText(en['roleAutoMatch.label']) as HTMLInputElement).checked).toBe(false)
+    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    await waitFor(() => expect(scripted.set).toHaveBeenCalled())
+    expect(scripted.set).toHaveBeenCalledWith(expect.objectContaining({
+      args: { patch: expect.objectContaining({ roleAutoMatch: false }) },
+    }))
+  })
+
+  it('renders the toggle (default on) for a legacy config that never declared the key (AC-7 re-scope Option A)', async () => {
+    const { view, props } = await mountCard({ config: LEGACY_CONFIG })
+    toggleCard()
+    expandAdvanced()
+    view.rerender(<FallbacksCard {...props} />)
+    // AC-7 re-scope (PM decision 2026-08-17 Option A): the real gateway wire
+    // always carries `roleAutoMatch: true` (the schema fold — see
+    // tests/gateway.spec.ts), so the card ALWAYS renders the toggle and it
+    // starts checked. The advanced options render the rest as usual.
+    const toggle = screen.getByLabelText(en['roleAutoMatch.label']) as HTMLInputElement
+    expect(toggle.checked).toBe(true)
+    expect(screen.getByLabelText(en['cooldownMs.label'])).toBeTruthy()
+  })
+
+  it('loads a legacy config clean (no unsaved pill) — the draft and accepted basis both carry the folded roleAutoMatch: true', async () => {
+    // The dirty-check invariant must hold for legacy configs too: the
+    // accepted config-basis keeps the folded `roleAutoMatch: true` (the
+    // value every real-wire read emits), and the assembled draft carries the
+    // same value, so the card does NOT show a spurious "unsaved" state the
+    // moment it loads.
+    const { view, props } = await mountCard({ config: LEGACY_CONFIG })
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    expect(screen.queryByText(en.unsaved)).toBeNull()
+    expect((screen.getByRole('button', { name: en.save }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('a legacy-config save persists roleAutoMatch: true (the schema default is pinned, not invented)', async () => {
+    const { view, props, scripted } = await mountCard({ config: LEGACY_CONFIG })
+    toggleCard()
+    expandAdvanced()
+    view.rerender(<FallbacksCard {...props} />)
+    // An unrelated edit makes the draft dirty (a clean draft's Save button
+    // is disabled); the always-rendered toggle stays on, so the assembled
+    // draft carries `roleAutoMatch: true` and the save pins it — semantically
+    // identical to the schema default (AC-7 re-scope Option A).
+    fireEvent.change(screen.getByLabelText(en['cooldownMs.label']), { target: { value: '7000' } })
+    view.rerender(<FallbacksCard {...props} />)
+    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    await waitFor(() => expect(scripted.set).toHaveBeenCalled())
+    expect(scripted.set).toHaveBeenCalledWith(expect.objectContaining({
+      args: { patch: expect.objectContaining({ roleAutoMatch: true }) },
+    }))
+  })
+
+  it('keeps the roleAutoMatch label + hint/tooltip keys in both zh and en dictionaries', () => {
+    // Bilingual-pair constraint (plan Global Constraints).
+    expect(zh['roleAutoMatch.label']).toBeTruthy()
+    expect(en['roleAutoMatch.label']).toBeTruthy()
+    expect(zh['roleAutoMatch.hint']).toBeTruthy()
+    expect(en['roleAutoMatch.hint']).toBeTruthy()
+    expect(zh['roleAutoMatch.tooltip']).toBeTruthy()
+    expect(en['roleAutoMatch.tooltip']).toBeTruthy()
+  })
+
+  it('keeps the toggle inert under the global read-only gate (!writable)', async () => {
+    const { view, props } = await mountCard({ config: ENABLED_CONFIG, writable: false })
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    // Read-only forces the advanced options open and the wrapping fieldset
+    // + explicit disabled term make the toggle inert (F-002 precedent).
+    const toggle = screen.getByLabelText(en['roleAutoMatch.label']) as HTMLInputElement
+    expect(toggle.disabled).toBe(true)
+  })
+})
+
+describe('FallbacksCard status block (AC-2: recent switch only)', () => {
+  it('renders only the recent-switch line — no effective-model line, no selectionNote', async () => {
+    const { view, props } = await mountCard({ config: ENABLED_CONFIG })
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    // The read-only block keeps its title and the recent-switch (empty) line.
+    expect(screen.getByText(en['status.title'])).toBeTruthy()
+    expect(screen.getByText(/^Recent switches:/)).toBeTruthy()
+    expect(screen.getByText(en['status.switches.empty'])).toBeTruthy()
+    // Compass AC-2: the effective-model line and the selectionNote are gone
+    // from the card (the degradation content is re-homed to verification.md).
+    expect(screen.queryByText(/current effective model/i)).toBeNull()
+    expect(screen.queryByText(/manually selected in the web front end/i)).toBeNull()
+  })
+
+  it('renders the recent-switch compact line when a switch exists (still no effective-model/selectionNote)', async () => {
+    const scripted = scriptedApi({ config: ENABLED_CONFIG, historyEntries: [switchEntry(1)] })
+    const controller = new FallbacksSettingsController(scripted.api, scripted.rpc)
+    await controller.load()
+    controller.setCurrentSession('sess-1' as never)
+    await controller.loadSwitches()
+    // The compact line's {count}/{from}/{to}/{role}/{reason} slots are
+    // interpolated at render time, so this test binds an interpolating `t`
+    // (the module `t` seat is deliberately non-interpolating — the validation
+    // specs pin raw templates there; the sibling general-row spec uses the
+    // same interpolating seat to pin the concrete from → to (role · reason)).
+    const interpolate = ((key, params) => {
+      let text: string = en[key as keyof typeof en]
+      if (params !== undefined) {
+        for (const [name, value] of Object.entries(params)) text = text.split(`{${name}}`).join(value)
+      }
+      return text
+    }) as FallbacksCardProps['t']
+    const props: FallbacksCardProps = {
+      controller,
+      useSnapshot: bindSnapshotSelector(controller.store),
+      t: interpolate,
+      useSessions: undefined as never,
+      useWorkspaces: undefined as never,
+    }
+    const view = render(<FallbacksCard {...props} />)
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    expect(screen.getByText(
+      'last 1 · openai/gpt-4o → anthropic/claude-3-5-sonnet (inherit · trigger code)',
+    )).toBeTruthy()
+    expect(screen.queryByText(/current effective model/i)).toBeNull()
+    expect(screen.queryByText(/manually selected in the web front end/i)).toBeNull()
+  })
+
+  it('renders the role-inject recent-switch line as the deduped role → model mapping (localized reason)', async () => {
+    // Task 5 (direction 3): a `role-inject` switch reads naturally as the
+    // resolved role mapping to its chain-head model (`reviewer →
+    // anthropic/claude-3-5-sonnet`) — the destination `{to}` appears once
+    // (as the role→model mapping), not twice; the leading `{from} → {to}`
+    // is dropped. Role + reason both stay visible (AC-5).
+    const scripted = scriptedApi({
+      config: ENABLED_CONFIG,
+      historyEntries: [switchEntry(1, { role: 'reviewer', reason: 'role-inject' })],
+    })
+    const controller = new FallbacksSettingsController(scripted.api, scripted.rpc)
+    await controller.load()
+    controller.setCurrentSession('sess-1' as never)
+    await controller.loadSwitches()
+    const interpolate = ((key, params) => {
+      let text: string = en[key as keyof typeof en]
+      if (params !== undefined) {
+        for (const [name, value] of Object.entries(params)) text = text.split(`{${name}}`).join(value)
+      }
+      return text
+    }) as FallbacksCardProps['t']
+    const props: FallbacksCardProps = {
+      controller,
+      useSnapshot: bindSnapshotSelector(controller.store),
+      t: interpolate,
+      useSessions: undefined as never,
+      useWorkspaces: undefined as never,
+    }
+    const view = render(<FallbacksCard {...props} />)
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    expect(screen.getByText(
+      'last 1 · reviewer → anthropic/claude-3-5-sonnet (role inject)',
+    )).toBeTruthy()
+    expect(screen.queryByText(/current effective model/i)).toBeNull()
+    expect(screen.queryByText(/manually selected in the web front end/i)).toBeNull()
+  })
+
+  it('keeps the role-inject recent-switch keys in both zh and en dictionaries', () => {
+    // Bilingual pair (HARD): the new role-inject line shape exists in both
+    // dictionaries, non-empty — the row spec pins its own `general.switch.roleInject`
+    // rendering; the en dictionary completeness is type-enforced by `satisfies
+    // Record<FallbacksKey, string>` in locales.ts.
+    expect(zh['status.switches.compact.roleInject']).toBeTruthy()
+    expect(en['status.switches.compact.roleInject']).toBeTruthy()
+    expect(zh['general.switch.roleInject']).toBeTruthy()
+    expect(en['general.switch.roleInject']).toBeTruthy()
+  })
+
+  it('shows the loading term while the switch history read is in flight', async () => {
+    const scripted = scriptedApi({ config: ENABLED_CONFIG })
+    scripted.api.sessions.history = vi.fn(() => new Promise(() => {}))
+    const controller = new FallbacksSettingsController(scripted.api, scripted.rpc)
+    await controller.load()
+    controller.setCurrentSession('sess-1' as never)
+    void controller.loadSwitches()
+    const props = cardProps(controller, bindSnapshotSelector(controller.store))
+    const view = render(<FallbacksCard {...props} />)
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    expect(screen.getByText(en.loading)).toBeTruthy()
+  })
+
+  it('surfaces the switches read error with an alert and no effective-model/selectionNote', async () => {
+    const scripted = scriptedApi({ config: ENABLED_CONFIG, historyError: 'history refused' })
+    const controller = new FallbacksSettingsController(scripted.api, scripted.rpc)
+    await controller.load()
+    controller.setCurrentSession('sess-1' as never)
+    await controller.loadSwitches()
+    const props = cardProps(controller, bindSnapshotSelector(controller.store))
+    const view = render(<FallbacksCard {...props} />)
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    // The switches face carried the read error into the line's `{message}`
+    // slot (the card-spec `t` seat is non-interpolating, so assert the state
+    // + the error line + the alert, per the file's convention).
+    expect(controller.store.getSnapshot().switchesError).toBe('history refused')
+    expect(screen.getByText(/Switch history read failed/)).toBeTruthy()
+    expect(document.querySelector('[role="alert"]')).not.toBeNull()
+    expect(screen.queryByText(/current effective model/i)).toBeNull()
+    expect(screen.queryByText(/manually selected in the web front end/i)).toBeNull()
   })
 })

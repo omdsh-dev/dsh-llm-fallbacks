@@ -430,6 +430,20 @@ describe('set validation (Config schema, unknown-key rejection unchanged)', () =
     expect(descriptor.user).toBeUndefined()
   })
 
+  it('accepts the roleAutoMatch switch (plan fallbacks-role-automatch Task 1 — toggleable)', async () => {
+    const ctx = track(new Context())
+    await ctx.plugin(MemorySettings)
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()), makeSeeds())
+    await waitRegistered(ctx)
+    await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
+
+    // The key is a declared config key (not rejected as unknown) and lands
+    // on the composed config — the write path the settings UI will use.
+    const setResult = await gateway.set({ roleAutoMatch: false })
+    expect(setResult.config.roleAutoMatch).toBe(false)
+    expect(gateway.get().config.roleAutoMatch).toBe(false)
+  })
+
   it('rejects an own __proto__ key (prototype-chain bypass of the unknown-key gate — F-001)', async () => {
     // An object LITERAL cannot carry an own `__proto__` key (it sets the
     // prototype instead), but JSON.parse / Object.fromEntries can — the
@@ -735,6 +749,50 @@ describe('set/reset return post-write legacyKeys (W-1/F-1)', () => {
     // carries the legacy key, and the post-write source re-reports it.
     expect(result.legacyKeys).toEqual(['chains'])
     expect(gateway.get().legacyKeys).toEqual(['chains'])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// ⑨ legacy roleAutoMatch on the real gateway wire (AC-7 re-scope Option A —
+//    PM decision 2026-08-17)
+// ---------------------------------------------------------------------------
+
+describe('legacy roleAutoMatch on the real gateway wire (AC-7 re-scope Option A)', () => {
+  it('always emits roleAutoMatch: true for a seeded legacy user layer that never declared the key (F-001 proof)', async () => {
+    const ctx = track(new Context())
+    await ctx.plugin(MemorySettings)
+    // A pre-Plan-A user layer WITHOUT the roleAutoMatch key — the exact
+    // upgrade shape the QC flag (qc1/qc2 F-001) traced: the unit tests only
+    // exercised a hand-built absent-key wire that the real gateway never
+    // produces.
+    const settings = ctx.settings as unknown as MemorySettings
+    settings.seed(FALLBACKS_SETTINGS_NAMESPACE, {
+      enabled: true,
+      rootChain: ['other/gpt-4o'],
+    })
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()), makeSeeds())
+    await waitRegistered(ctx)
+
+    // F-001 proof through the REAL path: the `Config` schema composition
+    // (entry base → user layer → `resolve`) folds the schema default into
+    // the merged source, and `readConfig` emits every non-undefined declared
+    // key — so `get()` for a legacy user layer carries `roleAutoMatch: true`
+    // even though the user layer never declared it. There is no
+    // key-presence signal for the client to strip on (AC-7 re-scope Option
+    // A: the toggle always renders, default on).
+    const first = gateway.get()
+    expect('roleAutoMatch' in first.config).toBe(true)
+    expect(first.config.roleAutoMatch).toBe(true)
+
+    // The client's assembled draft always carries the key (the toggle always
+    // renders), so a save pins `roleAutoMatch: true` into the user layer —
+    // semantically identical to the schema default.
+    const result = await gateway.set({ roleAutoMatch: true, cooldownMs: 120_000 })
+    expect(result.config.roleAutoMatch).toBe(true)
+    const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)!
+    expect(descriptor.user).toMatchObject({ roleAutoMatch: true, cooldownMs: 120_000 })
+    // The next get agrees.
+    expect(gateway.get().config.roleAutoMatch).toBe(true)
   })
 })
 
