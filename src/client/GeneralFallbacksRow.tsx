@@ -98,12 +98,19 @@ export function GeneralFallbacksRow({ controller, useSnapshot, t }: GeneralFallb
     summary = t('general.switch.empty')
   } else {
     const reasonKey = SWITCH_REASON_KEYS[latestSwitch.reason]
-    summary = t('general.switch', {
+    const params = {
       from: `${latestSwitch.from.provider}/${latestSwitch.from.model}`,
       to: `${latestSwitch.to.provider}/${latestSwitch.to.model}`,
       role: latestSwitch.role,
       reason: reasonKey === undefined ? latestSwitch.reason : t(reasonKey),
-    })
+    }
+    // Task 5 (direction 3): a `role-inject` switch reads naturally as the
+    // resolved role → its chain-head model (`{to}`) instead of the generic
+    // `({role} · {reason})` parenthetical — role + reason stay visible
+    // (AC-5); all other reasons keep today's shape.
+    summary = latestSwitch.reason === 'role-inject'
+      ? t('general.switch.roleInject', params)
+      : t('general.switch', params)
   }
 
   const alert = state.status === 'error' || state.switchesStatus === 'error'

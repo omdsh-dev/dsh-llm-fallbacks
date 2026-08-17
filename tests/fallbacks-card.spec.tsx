@@ -1799,6 +1799,55 @@ describe('FallbacksCard status block (AC-2: recent switch only)', () => {
     expect(screen.queryByText(/manually selected in the web front end/i)).toBeNull()
   })
 
+  it('renders the role-inject recent-switch line with the role → model mapping (localized reason)', async () => {
+    // Task 5 (direction 3): a `role-inject` switch reads naturally as the
+    // resolved role mapping to its chain-head model (`reviewer →
+    // anthropic/claude-3-5-sonnet`) instead of the generic
+    // `(role · reason)` parenthetical — role + reason both stay visible
+    // (AC-5), nothing from today is dropped.
+    const scripted = scriptedApi({
+      config: ENABLED_CONFIG,
+      historyEntries: [switchEntry(1, { role: 'reviewer', reason: 'role-inject' })],
+    })
+    const controller = new FallbacksSettingsController(scripted.api, scripted.rpc)
+    await controller.load()
+    controller.setCurrentSession('sess-1' as never)
+    await controller.loadSwitches()
+    const interpolate = ((key, params) => {
+      let text: string = en[key as keyof typeof en]
+      if (params !== undefined) {
+        for (const [name, value] of Object.entries(params)) text = text.split(`{${name}}`).join(value)
+      }
+      return text
+    }) as FallbacksCardProps['t']
+    const props: FallbacksCardProps = {
+      controller,
+      useSnapshot: bindSnapshotSelector(controller.store),
+      t: interpolate,
+      useSessions: undefined as never,
+      useWorkspaces: undefined as never,
+    }
+    const view = render(<FallbacksCard {...props} />)
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    expect(screen.getByText(
+      'last 1 · openai/gpt-4o → anthropic/claude-3-5-sonnet (reviewer → anthropic/claude-3-5-sonnet · role inject)',
+    )).toBeTruthy()
+    expect(screen.queryByText(/current effective model/i)).toBeNull()
+    expect(screen.queryByText(/manually selected in the web front end/i)).toBeNull()
+  })
+
+  it('keeps the role-inject recent-switch keys in both zh and en dictionaries', () => {
+    // Bilingual pair (HARD): the new role-inject line shape exists in both
+    // dictionaries, non-empty — the row spec pins its own `general.switch.roleInject`
+    // rendering; the en dictionary completeness is type-enforced by `satisfies
+    // Record<FallbacksKey, string>` in locales.ts.
+    expect(zh['status.switches.compact.roleInject']).toBeTruthy()
+    expect(en['status.switches.compact.roleInject']).toBeTruthy()
+    expect(zh['general.switch.roleInject']).toBeTruthy()
+    expect(en['general.switch.roleInject']).toBeTruthy()
+  })
+
   it('shows the loading term while the switch history read is in flight', async () => {
     const scripted = scriptedApi({ config: ENABLED_CONFIG })
     scripted.api.sessions.history = vi.fn(() => new Promise(() => {}))

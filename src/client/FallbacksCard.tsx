@@ -682,13 +682,20 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
     switchesLine = t('status.switches.empty')
   } else {
     const reasonKey = SWITCH_REASON_KEYS[latestSwitch.reason]
-    switchesLine = t('status.switches.compact', {
+    const params = {
       count: String(state.switches.length),
       from: `${latestSwitch.from.provider}/${latestSwitch.from.model}`,
       to: `${latestSwitch.to.provider}/${latestSwitch.to.model}`,
       role: latestSwitch.role,
       reason: reasonKey === undefined ? latestSwitch.reason : t(reasonKey),
-    })
+    }
+    // Task 5 (direction 3): a `role-inject` switch reads naturally as the
+    // resolved role → its chain-head model (`{to}`) instead of the generic
+    // `({role} · {reason})` parenthetical — role + reason stay visible
+    // (AC-5); all other reasons keep today's shape.
+    switchesLine = latestSwitch.reason === 'role-inject'
+      ? t('status.switches.compact.roleInject', params)
+      : t('status.switches.compact', params)
   }
 
   // Catalog refresh (llm/adapters-updated) re-classifies rows against the fresh

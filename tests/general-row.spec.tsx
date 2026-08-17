@@ -306,6 +306,24 @@ describe('GeneralFallbacksRow states (compact read-only row)', () => {
     )).toBeTruthy())
   })
 
+  it('renders the role-inject last-switch line with the role → model mapping (localized reason)', async () => {
+    // Task 5 (direction 3): a `role-inject` switch reads naturally as the
+    // resolved role mapping to its chain-head model (`reviewer →
+    // anthropic/claude-3-5-sonnet`) instead of the generic
+    // `(role · reason)` parenthetical — role + reason both stay visible
+    // (AC-5), nothing from today is dropped.
+    await mountRow({
+      config: ENABLED_CONFIG,
+      historyEntries: [switchEntry(9, { role: 'reviewer', reason: 'role-inject' })],
+    })
+    await waitFor(() => expect(screen.getByText(en['general.enabled'])).toBeTruthy())
+    expect(screen.getByText(
+      'Last switch: openai/gpt-4o → anthropic/claude-3-5-sonnet (reviewer → anthropic/claude-3-5-sonnet · role inject)',
+    )).toBeTruthy()
+    // No error alert on a healthy role-inject row.
+    expect(document.querySelector('[role="alert"]')).toBeNull()
+  })
+
   it('renders the neutral unknown badge + channel-unavailable line when the gateway is unreachable', async () => {
     await mountRow({ config: null })
     await waitFor(() => expect(screen.getByText(en['general.unknown'])).toBeTruthy())
