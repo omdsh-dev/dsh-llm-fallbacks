@@ -161,25 +161,41 @@ export function ConversationFallbackSwitch({ node, t }: ConversationFallbackSwit
     )
   }
   const reasonKey = SWITCH_REASON_KEYS[data.reason]
-  const summary = t('chat.switch.summary', {
-    from: `${data.from.provider}/${data.from.model}`,
-    to: `${data.to.provider}/${data.to.model}`,
-    // The role no longer interpolates into the summary — it renders as its
-    // own badge + explicit `role → model` segment (AC-5). The reason keeps
-    // the keep-from/to-context contract; unknown reasons still render raw.
-    reason: reasonKey === undefined ? data.reason : t(reasonKey),
-  })
+  const reason = reasonKey === undefined ? data.reason : t(reasonKey)
+  // A `role → model` mapping only exists when the switch resolved a concrete
+  // role (dispatch-time role-inject events). `inherit` means "no specific
+  // role" — an `inherit → <model>` mapping on a failure-time switch would
+  // claim a role↔model relationship that does not exist (qc1 F-002 / qc2
+  // F-004), so those rows keep the plain `from → to (reason)` transition
+  // line. For a role-mapped row, the role badge + `role → model` segment is
+  // the PRIMARY info and `{to}` is deduped: the `from → to` prefix is
+  // dropped and the summary carries only the reason — the same direction-3
+  // dedupe as the card/general-row role-inject lines (qc1 F-002 / qc2
+  // F-003).
+  const isRoleMapped = data.role !== 'inherit'
   return (
     <div className={css.switchRow} role="status">
       <span className={css.switchTitle}>{t('chat.switch.title')}</span>
       <span className={css.switchSep} aria-hidden="true" />
-      <span className={css.roleBadge}>{data.role}</span>
-      <span className={css.roleModelMap}>{t('chat.switch.roleMap', {
-        role: data.role,
-        model: `${data.to.provider}/${data.to.model}`,
-      })}</span>
-      <span className={css.switchSep} aria-hidden="true" />
-      <span className={css.switchSummary}>{summary}</span>
+      {isRoleMapped ? (
+        <>
+          <span className={css.roleBadge} title={data.role}>{data.role}</span>
+          <span className={css.roleModelMap}>{t('chat.switch.roleMap', {
+            role: data.role,
+            model: `${data.to.provider}/${data.to.model}`,
+          })}</span>
+          <span className={css.switchSep} aria-hidden="true" />
+          <span className={css.switchSummary}>{t('chat.switch.summary.roleInject', { reason })}</span>
+        </>
+      ) : (
+        <span className={css.switchSummary}>
+          {t('chat.switch.summary', {
+            from: `${data.from.provider}/${data.from.model}`,
+            to: `${data.to.provider}/${data.to.model}`,
+            reason,
+          })}
+        </span>
+      )}
     </div>
   )
 }

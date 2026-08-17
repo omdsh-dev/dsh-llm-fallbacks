@@ -155,11 +155,11 @@ function scalarsOf(config: FallbacksConfig): FallbacksScalars {
  * draft carries the accepted value through untouched — a clean draft stays
  * equal to the accepted config and a save never drops the key.
  * `roleAutoMatch` follows the same rule (config-model mirror of `presets`):
- * the draft carries the scalar's value through untouched — `undefined`
- * (a legacy config that never declared the key) omits the key so a save
- * never invents it, and the schema default `true` rules the resolved config
- * on the round-trip. The card renders a toggle once the scalar is defined
- * (Task 3).
+ * the draft carries the scalar's value through untouched. The scalar is
+ * ALWAYS defined — the gateway composition resolves the schema default
+ * `true` even for a legacy config that never declared the key — so the
+ * toggle always renders (default on) and a save persists the resolved value
+ * (AC-7 re-scope, PM decision 2026-08-17 Option A).
  */
 function assembleConfig(
   scalars: FallbacksScalars,
@@ -619,11 +619,13 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
   // The draft is assembled once per render and reused by the dirty check,
   // the validation gate, and save — `state.config.roles.list` supplies the
   // prompt/permissions merge so a clean draft equals the accepted config.
-  // `roleAutoMatch` rides the scalar, which the store keeps `undefined` for
-  // a legacy config that never declared the key: `assembleConfig` then omits
-  // the key on save (AC-7 — the toggle is hidden and the schema default
-  // `true` rules), while a clean legacy draft still equals the accepted
-  // config (both omit the key), preserving the dirty-check invariant.
+  // `roleAutoMatch` rides the scalar, which the store ALWAYS defines (the
+  // parse folds the schema default `true` and the gateway wire always
+  // carries the key): `assembleConfig` always includes it, so the toggle
+  // always renders and a legacy config's first save persists
+  // `roleAutoMatch: true` (AC-7 re-scope, PM decision 2026-08-17 Option A).
+  // A clean legacy draft still equals the accepted config (both carry the
+  // key), preserving the dirty-check invariant.
   const draft = assembleConfig(
     scalars, rootChainRows, roleRows, ruleRows,
     state.config.roles.list, state.config.presets, scalars.roleAutoMatch,
@@ -642,9 +644,11 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
   const writable = state.writable
   const unknownCodes = scalars.triggerCodes.filter(code => !KNOWN_TRIGGER_CODES.includes(code))
   // Compass AC-1: the rootChain hint is conditional — shown only when the
-  // plugin is enabled AND the chain is configured (at least one selector row
-  // holds an entry); hidden when off or unset.
-  const rootChainConfigured = rootChainRows.some(row => row.selectors.length > 0)
+  // plugin is enabled AND the chain is configured; hidden when off or unset.
+  // "Configured" follows the serialization rule (`rowsToRootChain` drops
+  // blank selectors): a freshly added blank selector row does NOT count —
+  // the hint stays hidden until a usable entry is picked (qc2 F-002).
+  const rootChainConfigured = rowsToRootChain(rootChainRows).length > 0
 
   // The rules role dropdown's offer set — derived ONCE per render and shared
   // by every rule row (qc3 F-3; previously recomputed inside the render
@@ -1368,36 +1372,34 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                 </button>
                 {advancedVisible && (
                   <div id="fallbacks-advanced-body">
-                    {/* The roleAutoMatch toggle (plan fallbacks-settings-
-                     * visibility Task 3): a row-level preference in the
-                     * advanced section, default on (the config-model
-                     * default). It renders ONLY when the resolved config
-                     * declared the key (`scalars.roleAutoMatch` is defined —
-                     * the store keeps it undefined for a pre-Plan-A / legacy
-                     * config that never had it): legacy configs keep today's
-                     * card (toggle hidden, AC-7) and the scalar's undefined
-                     * value keeps a save from re-inventing the key. Bound to
-                     * the scalar → the existing draft → config path via
-                     * `assembleConfig`. */}
-                    {scalars.roleAutoMatch !== undefined && (
-                      <div className={css.checkboxRow}>
-                        <div className={css.checkLabel}>
-                          <span className={css.checkLabelTitle}>
-                            <label htmlFor="fallbacks-role-automatch">{t('roleAutoMatch.label')}</label>
-                            <InfoHint label={t('roleAutoMatch.tooltip')} disabled={!writable} />
-                          </span>
-                          <span className={css.checkLabelDesc}>{t('roleAutoMatch.hint')}</span>
-                        </div>
-                        <input
-                          id="fallbacks-role-automatch"
-                          type="checkbox"
-                          className={css.checkbox}
-                          checked={scalars.roleAutoMatch}
-                          disabled={!writable}
-                          onChange={event => { updateScalars(draft => { draft.roleAutoMatch = event.target.checked }) }}
-                        />
+                    {/* The roleAutoMatch toggle (plan fallbacks-settings-visibility Task 3): a
+                     * row-level preference in the advanced section, default on (the
+                     * config-model default). It ALWAYS renders (AC-7 re-scope, PM
+                     * decision 2026-08-17 Option A): the gateway composition always
+                     * resolves the schema default `true` for the key — even for a
+                     * legacy config that never declared it — so there is no
+                     * client-side key-presence signal to hide on. The toggle reads
+                     * and writes the scalar → the existing draft → config path via
+                     * `assembleConfig`; a legacy config's first save therefore
+                     * persists `roleAutoMatch: true` (semantically identical to the
+                     * default). */}
+                    <div className={css.checkboxRow}>
+                      <div className={css.checkLabel}>
+                        <span className={css.checkLabelTitle}>
+                          <label htmlFor="fallbacks-role-automatch">{t('roleAutoMatch.label')}</label>
+                          <InfoHint label={t('roleAutoMatch.tooltip')} disabled={!writable} />
+                        </span>
+                        <span className={css.checkLabelDesc}>{t('roleAutoMatch.hint')}</span>
                       </div>
-                    )}
+                      <input
+                        id="fallbacks-role-automatch"
+                        type="checkbox"
+                        className={css.checkbox}
+                        checked={scalars.roleAutoMatch}
+                        disabled={!writable}
+                        onChange={event => { updateScalars(draft => { draft.roleAutoMatch = event.target.checked }) }}
+                      />
+                    </div>
                     <div className={css.field} role="group" aria-labelledby="fallbacks-trigger-codes">
                       <span className={css.fieldLabel}>
                         <span id="fallbacks-trigger-codes">{t('triggerCodes.label')}</span>
@@ -1508,10 +1510,12 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
            * (above the footer — the page-bottom block is gone): only the most
            * recent switch (D-5 — read through the store's `sessions.history`
            * face). The effective-model line (D-6) and the selectionNote
-           * degradation line moved out of the card (compass AC-2); the
-           * documented degradation is re-homed to docs/verification.md. The
-           * verbose config-summary dump is gone; errors/empty still render,
-           * compact. */}
+           * degradation line moved out of the card (compass AC-2): the
+           * selectionNote degradation is re-homed to docs/verification.md
+           * §4.7, while the D-6 trim itself is documented there at §4.3
+           * item 4 (the derived-value helper stays as a store export — D-6
+           * contract retention). The verbose config-summary dump is gone;
+           * errors/empty still render, compact. */}
           <div className={css.statusBlock}>
             <span className={css.statusTitle}>{t('status.title')}</span>
             <p className={css.statusLine} role={state.switchesStatus === 'error' ? 'alert' : undefined}>

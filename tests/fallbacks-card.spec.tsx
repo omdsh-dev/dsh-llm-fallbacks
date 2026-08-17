@@ -228,11 +228,13 @@ async function mountCard(options: Parameters<typeof scriptedApi>[0] = {}, preloa
 const ENABLED_CONFIG: typeof defaultFallbacksConfig = { ...defaultFallbacksConfig, enabled: true }
 
 /**
- * A config with the `roleAutoMatch` key removed — the pre-Plan-A / legacy
- * shape (plan fallbacks-settings-visibility T3): `parseFallbacksConfig`
- * folds the key to `true` on read, so only the store's raw-key-presence
- * flag distinguishes this from a config that declares it; the toggle must
- * stay hidden and a save must not re-invent the key (AC-7).
+ * A config with the `roleAutoMatch` key removed — the pre-fold legacy wire
+ * shape (plan fallbacks-settings-visibility T3): a unit fixture can hand-build
+ * it, but the REAL gateway composition always folds the schema default
+ * `roleAutoMatch: true` into the wire (see tests/gateway.spec.ts), so the
+ * card must render the toggle (default on) even for this shape and a save
+ * persists the resolved value (AC-7 re-scope, PM decision 2026-08-17
+ * Option A).
  */
 const LEGACY_CONFIG: typeof defaultFallbacksConfig = withoutRoleAutoMatch(ENABLED_CONFIG)
 
@@ -1639,6 +1641,33 @@ describe('FallbacksCard rootChain first-line copy + conditional hint (plan fallb
     expect(screen.queryByText(en['rootChain.hint'])).toBeNull()
   })
 
+  it('keeps the hint hidden while a freshly added rootChain selector is still blank (qc2 F-002)', async () => {
+    const { view, props, controller } = await mountCard({ config: ENABLED_CONFIG, catalog: CHAIN_CATALOG })
+    // Settle the catalog explicitly so the selector dropdown offers openai
+    // before the interaction (the mount-effect load is asynchronous).
+    await controller.loadCatalog()
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    // ENABLED_CONFIG has an empty rootChain → hint hidden (unset case).
+    expect(screen.queryByText(en['rootChain.hint'])).toBeNull()
+
+    // Add a blank selector: `selectors.length > 0` alone must NOT count as
+    // "configured" — the serialized chain is still empty, so the hint stays
+    // hidden (qc2 F-002: the old `some(row => selectors.length > 0)`
+    // derivation leaked the hint the moment the blank row appeared).
+    const rootChainGroup = screen.getByText(en['rootChain.label']).closest('[role="group"]') as HTMLElement
+    fireEvent.click(within(rootChainGroup).getByRole('button', { name: en['rootChain.selector.add'] }))
+    view.rerender(<FallbacksCard {...props} />)
+    expect(screen.queryByText(en['rootChain.hint'])).toBeNull()
+
+    // Pick a provider for the added row → the chain serializes to one
+    // usable entry → the hint appears (the configured condition engages).
+    const providerSelect = within(rootChainGroup).getByLabelText(en['roles.rule.provider']) as HTMLSelectElement
+    fireEvent.change(providerSelect, { target: { value: 'openai' } })
+    view.rerender(<FallbacksCard {...props} />)
+    expect(screen.getByText(en['rootChain.hint'])).toBeTruthy()
+  })
+
   it('hides the hint (and the section) when the plugin is disabled', async () => {
     // defaultFallbacksConfig → enabled: false: the whole rootChain section
     // (first line + hint) is gated off with the form body.
@@ -1660,7 +1689,7 @@ describe('FallbacksCard rootChain first-line copy + conditional hint (plan fallb
 })
 
 describe('FallbacksCard roleAutoMatch toggle (plan fallbacks-settings-visibility T3)', () => {
-  it('renders the toggle in the advanced options, default on, when the config declares roleAutoMatch', async () => {
+  it('renders the toggle in the advanced options, default on', async () => {
     const { view, props } = await mountCard({ config: ENABLED_CONFIG })
     toggleCard()
     expandAdvanced()
@@ -1688,22 +1717,26 @@ describe('FallbacksCard roleAutoMatch toggle (plan fallbacks-settings-visibility
     }))
   })
 
-  it('hides the toggle when the config lacks roleAutoMatch (pre-Plan-A / legacy, AC-7)', async () => {
+  it('renders the toggle (default on) for a legacy config that never declared the key (AC-7 re-scope Option A)', async () => {
     const { view, props } = await mountCard({ config: LEGACY_CONFIG })
     toggleCard()
     expandAdvanced()
     view.rerender(<FallbacksCard {...props} />)
-    // AC-7: a config that never declared the key renders WITHOUT the toggle
-    // (today's behavior) — the advanced options still render the rest.
-    expect(screen.queryByLabelText(en['roleAutoMatch.label'])).toBeNull()
+    // AC-7 re-scope (PM decision 2026-08-17 Option A): the real gateway wire
+    // always carries `roleAutoMatch: true` (the schema fold — see
+    // tests/gateway.spec.ts), so the card ALWAYS renders the toggle and it
+    // starts checked. The advanced options render the rest as usual.
+    const toggle = screen.getByLabelText(en['roleAutoMatch.label']) as HTMLInputElement
+    expect(toggle.checked).toBe(true)
     expect(screen.getByLabelText(en['cooldownMs.label'])).toBeTruthy()
   })
 
-  it('loads a legacy config clean (no unsaved pill) even though the parse folds roleAutoMatch to true', async () => {
+  it('loads a legacy config clean (no unsaved pill) — the draft and accepted basis both carry the folded roleAutoMatch: true', async () => {
     // The dirty-check invariant must hold for legacy configs too: the
-    // accepted config-basis omits the invented `roleAutoMatch` key (the
-    // store strips the parse fold), so a clean draft equals it and the card
-    // does NOT show a spurious "unsaved" state the moment it loads.
+    // accepted config-basis keeps the folded `roleAutoMatch: true` (the
+    // value every real-wire read emits), and the assembled draft carries the
+    // same value, so the card does NOT show a spurious "unsaved" state the
+    // moment it loads.
     const { view, props } = await mountCard({ config: LEGACY_CONFIG })
     toggleCard()
     view.rerender(<FallbacksCard {...props} />)
@@ -1711,21 +1744,22 @@ describe('FallbacksCard roleAutoMatch toggle (plan fallbacks-settings-visibility
     expect((screen.getByRole('button', { name: en.save }) as HTMLButtonElement).disabled).toBe(true)
   })
 
-  it('does not invent roleAutoMatch in a legacy-config save (key omitted from the patch)', async () => {
+  it('a legacy-config save persists roleAutoMatch: true (the schema default is pinned, not invented)', async () => {
     const { view, props, scripted } = await mountCard({ config: LEGACY_CONFIG })
     toggleCard()
     expandAdvanced()
     view.rerender(<FallbacksCard {...props} />)
     // An unrelated edit makes the draft dirty (a clean draft's Save button
-    // is disabled); the hidden toggle stays untouched, so the assembled
-    // draft must NOT add a roleAutoMatch key the legacy config never had —
-    // the schema default `true` rules the resolved config on the round-trip.
+    // is disabled); the always-rendered toggle stays on, so the assembled
+    // draft carries `roleAutoMatch: true` and the save pins it — semantically
+    // identical to the schema default (AC-7 re-scope Option A).
     fireEvent.change(screen.getByLabelText(en['cooldownMs.label']), { target: { value: '7000' } })
     view.rerender(<FallbacksCard {...props} />)
     fireEvent.click(screen.getByRole('button', { name: en.save }))
     await waitFor(() => expect(scripted.set).toHaveBeenCalled())
-    const patch = scripted.set.mock.calls[0]![0].args.patch as Record<string, unknown>
-    expect('roleAutoMatch' in patch).toBe(false)
+    expect(scripted.set).toHaveBeenCalledWith(expect.objectContaining({
+      args: { patch: expect.objectContaining({ roleAutoMatch: true }) },
+    }))
   })
 
   it('keeps the roleAutoMatch label + hint/tooltip keys in both zh and en dictionaries', () => {

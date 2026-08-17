@@ -125,6 +125,10 @@ export const zh = {
   'status.switches.compact.roleInject': '最近 {count} 次 · {role} → {to}（{reason}）',
   'status.switches.reason.trigger-code': '触发失败码',
   'status.switches.reason.always-cap': 'always 模式上限',
+  // One shared reason key family for every seat (qc1 F-004): role-inject
+  // resolves from the same `status.switches.reason.*` family as the other
+  // reasons — the conversation node reads it through the same shared map.
+  'status.switches.reason.role-inject': '角色注入',
   'general.title': '模型故障降级',
   'general.enabled': '已启用',
   'general.disabled': '未启用',
@@ -137,8 +141,11 @@ export const zh = {
   'general.error': '状态读取失败：{message}',
   'chat.switch.title': '模型已降级',
   'chat.switch.summary': '{from} → {to}（{reason}）',
+  // Role-mapped (role-inject) summary on the conversation node (qc1 F-002 /
+  // qc2 F-003 dedupe): the `role → model` mapping is the primary info, so
+  // the summary carries only the reason — `{to}` does not appear twice.
+  'chat.switch.summary.roleInject': '（{reason}）',
   'chat.switch.roleMap': '{role} → {model}',
-  'chat.switch.reason.role-inject': '角色注入',
   'defaults.prefix': '默认值',
   'save': '保存',
   'save.saving': '保存中…',
@@ -268,6 +275,10 @@ export const en = {
   'status.switches.compact.roleInject': 'last {count} · {role} → {to} ({reason})',
   'status.switches.reason.trigger-code': 'trigger code',
   'status.switches.reason.always-cap': 'always-mode cap',
+  // One shared reason key family for every seat (qc1 F-004): role-inject
+  // resolves from the same `status.switches.reason.*` family as the other
+  // reasons — the conversation node reads it through the same shared map.
+  'status.switches.reason.role-inject': 'role inject',
   'general.title': 'Model failover',
   'general.enabled': 'Enabled',
   'general.disabled': 'Disabled',
@@ -279,8 +290,11 @@ export const en = {
   'general.error': 'Status read failed: {message}',
   'chat.switch.title': 'Model downgraded',
   'chat.switch.summary': '{from} → {to} ({reason})',
+  // Role-mapped (role-inject) summary on the conversation node (qc1 F-002 /
+  // qc2 F-003 dedupe): the `role → model` mapping is the primary info, so
+  // the summary carries only the reason — `{to}` does not appear twice.
+  'chat.switch.summary.roleInject': '({reason})',
   'chat.switch.roleMap': '{role} → {model}',
-  'chat.switch.reason.role-inject': 'role inject',
   'defaults.prefix': 'Default',
   'save': 'Save',
   'save.saving': 'Saving…',
@@ -309,14 +323,17 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 
 /**
  * Reason → locale key map for switch summaries (S-c; shared by the card's
- * status block and the General page status row). The session log is durable
- * and forward-compatible: a reason value outside the current union (a newer
- * plugin wrote it) renders raw instead of falling into a binary else branch.
+ * status block, the General page status row, and the conversation node). All
+ * reasons resolve from ONE key family (`status.switches.reason.*`) — the
+ * shared reason vocabulary must not mix dictionary families (qc1 F-004). The
+ * session log is durable and forward-compatible: a reason value outside the
+ * current union (a newer plugin wrote it) renders raw instead of falling
+ * into a binary else branch.
  */
 export const SWITCH_REASON_KEYS: Readonly<Partial<Record<FallbackSwitchReason, FallbacksKey>>> = {
   'trigger-code': 'status.switches.reason.trigger-code',
   'always-cap': 'status.switches.reason.always-cap',
-  'role-inject': 'chat.switch.reason.role-inject',
+  'role-inject': 'status.switches.reason.role-inject',
 }
 
 /** Human-readable trigger-code labels (spec §4 用户直观性). */

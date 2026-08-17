@@ -672,14 +672,17 @@ describe('FallbacksSettingsController', () => {
     expect(get).toHaveBeenCalledTimes(1)
   })
 
-  it('keeps roleAutoMatch honest for legacy configs: declared value retained, absent key folded away from the config basis', async () => {
+  it('parses roleAutoMatch to the schema default true for a legacy wire — the accepted basis always carries the key (AC-7 re-scope Option A)', async () => {
     // The raw descriptor's `roleAutoMatch` key presence (plan
-    // fallbacks-settings-visibility T3): `parseFallbacksConfig` always FOLDS
-    // the key to `true`, so the store must drop the invented key from the
-    // accepted config-basis when the descriptor never declared it — that way
-    // a clean draft equals the accepted config AND a save never re-invents
-    // the key (the card hides the toggle, AC-7). A config that declares the
-    // key (true or false) keeps it.
+    // fallbacks-settings-visibility T3, AC-7 re-scope — PM decision
+    // 2026-08-17 Option A): the REAL gateway composition always resolves the
+    // schemastery default `true` (the entry base carries the key, and the
+    // wire `readConfig` emits every non-undefined declared key — see
+    // tests/gateway.spec.ts), so no client-side key-presence signal exists
+    // to honor. `parseFallbacksConfig` folds the key to the default and the
+    // accepted config-basis KEEPS it: the toggle always renders (default on)
+    // and a save persists the resolved value. A config that declares the
+    // key (true or false) is retained verbatim, as before.
     const api = makeApi()
     api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
 
@@ -689,13 +692,14 @@ describe('FallbacksSettingsController', () => {
     await one.load()
     expect(one.store.getSnapshot().config.roleAutoMatch).toBe(false)
 
-    // Key absent (legacy / pre-Plan-A) → the accepted config-basis omits it
-    // (the parse fold to `true` is stripped), even though the resolved
-    // value is semantically the default `true`.
+    // Key absent on the wire (the pre-fold legacy shape this unit fixture
+    // can hand-build) → the accepted config-basis carries the folded default
+    // `true` — the same value every real-wire read emits.
     const legacy = makeRpc(withoutRoleAutoMatch(defaultFallbacksConfig))
     const two = new FallbacksSettingsController(api, legacy.rpc)
     await two.load()
-    expect('roleAutoMatch' in two.store.getSnapshot().config).toBe(false)
+    expect(two.store.getSnapshot().config.roleAutoMatch).toBe(true)
+    expect('roleAutoMatch' in two.store.getSnapshot().config).toBe(true)
   })
 
   it('keeps the usable skeleton when the gateway get fails (ok:false → present:false, not a dead end)', async () => {
