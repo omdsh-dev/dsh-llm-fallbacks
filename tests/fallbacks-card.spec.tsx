@@ -679,8 +679,10 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     const { view, props } = await mountCard({ config: TWO_BLOCK_CONFIG })
     toggleCard()
     view.rerender(<FallbacksCard {...props} />)
-    // Block 1: title + the "unset = no fallback" hint; the chain-key text
-    // input of the old model is gone (spec §8 无键输入).
+    // Block 1: title + the engages-after-failure first line + the
+    // session-model-first hint (TWO_BLOCK_CONFIG is enabled + configured, so
+    // the conditional hint renders); the chain-key text input of the old
+    // model is gone (spec §8 无键输入).
     expect(screen.getByText(en['rootChain.label'])).toBeTruthy()
     expect(screen.getByText(en['rootChain.hint'])).toBeTruthy()
     expect(screen.queryByLabelText('Key')).toBeNull()
@@ -1559,5 +1561,55 @@ describe('FallbacksCard seeded roles (plan fallbacks-role-seeds T5)', () => {
     expect((ids[1] as HTMLInputElement).value).toBe('reviewer')
     expect((ids[0] as HTMLInputElement).disabled).toBe(true)
     expect((ids[1] as HTMLInputElement).disabled).toBe(false)
+  })
+})
+
+describe('FallbacksCard rootChain first-line copy + conditional hint (plan fallbacks-settings-visibility T1)', () => {
+  it('renders the engages-after-failure first line when the section is shown', async () => {
+    const { view, props } = await mountCard({ config: TWO_BLOCK_CONFIG })
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    // Compass AC-1: the rootChain section's first descriptive line states the
+    // chain engages only after the current session's selected model fails —
+    // it never preempts the session model.
+    expect(screen.getByText(en['rootChain.firstLine'])).toBeTruthy()
+  })
+
+  it('shows the session-model-first hint when enabled and rootChain is configured', async () => {
+    const { view, props } = await mountCard({ config: TWO_BLOCK_CONFIG })
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    // The conditional hint renders for the enabled + configured case and
+    // carries the prefer-session-model copy (compass AC-1).
+    expect(screen.getByText(en['rootChain.hint'])).toBeTruthy()
+  })
+
+  it('hides the hint when enabled but rootChain is empty (unset)', async () => {
+    const { view, props } = await mountCard({ config: ENABLED_CONFIG })
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    // The first line still explains the section semantics...
+    expect(screen.getByText(en['rootChain.firstLine'])).toBeTruthy()
+    // ...but the conditional hint is hidden while the chain is unset.
+    expect(screen.queryByText(en['rootChain.hint'])).toBeNull()
+  })
+
+  it('hides the hint (and the section) when the plugin is disabled', async () => {
+    // defaultFallbacksConfig → enabled: false: the whole rootChain section
+    // (first line + hint) is gated off with the form body.
+    const { view, props } = await mountCard()
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    expect(screen.queryByText(en['rootChain.hint'])).toBeNull()
+    expect(screen.queryByText(en['rootChain.firstLine'])).toBeNull()
+  })
+
+  it('keeps the rootChain first-line and hint keys in both zh and en dictionaries', () => {
+    // Bilingual-pair constraint (plan Global Constraints): every locale
+    // change lands in both zh and en, non-empty.
+    expect(zh['rootChain.firstLine']).toBeTruthy()
+    expect(en['rootChain.firstLine']).toBeTruthy()
+    expect(zh['rootChain.hint']).toBeTruthy()
+    expect(en['rootChain.hint']).toBeTruthy()
   })
 })

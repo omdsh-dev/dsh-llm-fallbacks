@@ -623,6 +623,10 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
   const saving = state.status === 'saving'
   const writable = state.writable
   const unknownCodes = scalars.triggerCodes.filter(code => !KNOWN_TRIGGER_CODES.includes(code))
+  // Compass AC-1: the rootChain hint is conditional — shown only when the
+  // plugin is enabled AND the chain is configured (at least one selector row
+  // holds an entry); hidden when off or unset.
+  const rootChainConfigured = rootChainRows.some(row => row.selectors.length > 0)
 
   // The rules role dropdown's offer set — derived ONCE per render and shared
   // by every rule row (qc3 F-3; previously recomputed inside the render
@@ -936,7 +940,17 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                   <span id="fallbacks-root-chain">{t('rootChain.label')}</span>
                   <InfoHint label={t('rootChain.tooltip')} disabled={!writable} />
                 </span>
-                <span className={css.hint}>{t('rootChain.hint')}</span>
+                {/* The first line is the section's engagement semantics
+                 * (compass AC-1): the root chain is a safety net that only
+                 * kicks in AFTER the current session's selected model fails —
+                 * it never preempts the session model. */}
+                <span className={css.hint}>{t('rootChain.firstLine')}</span>
+                {/* The prefer-session-model hint is conditional (compass AC-1):
+                 * rendered only when the plugin is enabled AND the chain is
+                 * configured — hidden when off or unset. */}
+                {scalars.enabled && rootChainConfigured && (
+                  <span className={css.hint}>{t('rootChain.hint')}</span>
+                )}
                 {/* Catalog state is an enrichment of the dropdowns, never a blocker:
                  * a failed read (or an empty directory) only adds a hint line and
                  * leaves every other field editable and saveable (spec §2.3 R-3a). */}
