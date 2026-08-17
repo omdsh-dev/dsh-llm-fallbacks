@@ -256,6 +256,7 @@ describe('parseFallbacksConfig (descriptor read, redactSecrets face)', () => {
       maxSwitchesPerStep: 4,
       alwaysModeRetryCap: 0,
       presets: 'bundled',
+      roleAutoMatch: true,
     }
     expect(parseFallbacksConfig(config)).toEqual(config)
   })

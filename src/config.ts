@@ -96,6 +96,19 @@ export interface FallbacksConfig {
    * every resolved config carries a value via the schema default.
    */
   presets?: 'bundled' | 'none'
+  /**
+   * Dispatch-time LLM role auto-match switch (plan fallbacks-role-automatch
+   * Task 1): when `true` (default), a subagent-origin request with no
+   * explicit/rules-resolved role may have the best-fit declared role picked
+   * by the LLM; `false` reproduces today's behavior exactly. Optional on
+   * purpose, mirroring `presets` — a required field would break library
+   * consumers that construct `FallbacksConfig` literals with the existing
+   * keys (additive, non-breaking). The value domain is guarded by the
+   * schema (`z.boolean().default(true)` in `src/schema.ts`), and the
+   * runtime reads it defensively as `config.roleAutoMatch ?? true` (safe
+   * for direct constructors that omit it).
+   */
+  roleAutoMatch?: boolean
 }
 
 /**
@@ -115,6 +128,7 @@ export const defaultFallbacksConfig: FallbacksConfig = {
   maxSwitchesPerStep: 8,
   alwaysModeRetryCap: 5,
   presets: 'bundled',
+  roleAutoMatch: true,
 }
 
 /**

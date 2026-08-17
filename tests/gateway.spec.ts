@@ -430,6 +430,20 @@ describe('set validation (Config schema, unknown-key rejection unchanged)', () =
     expect(descriptor.user).toBeUndefined()
   })
 
+  it('accepts the roleAutoMatch switch (plan fallbacks-role-automatch Task 1 — toggleable)', async () => {
+    const ctx = track(new Context())
+    await ctx.plugin(MemorySettings)
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()), makeSeeds())
+    await waitRegistered(ctx)
+    await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
+
+    // The key is a declared config key (not rejected as unknown) and lands
+    // on the composed config — the write path the settings UI will use.
+    const setResult = await gateway.set({ roleAutoMatch: false })
+    expect(setResult.config.roleAutoMatch).toBe(false)
+    expect(gateway.get().config.roleAutoMatch).toBe(false)
+  })
+
   it('rejects an own __proto__ key (prototype-chain bypass of the unknown-key gate — F-001)', async () => {
     // An object LITERAL cannot carry an own `__proto__` key (it sets the
     // prototype instead), but JSON.parse / Object.fromEntries can — the

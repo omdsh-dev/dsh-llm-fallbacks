@@ -2,6 +2,12 @@
  * Role resolution for fallback chains (spec §7.1; plan fallbacks-role-runtime
  * Task 1).
  *
+ * This module is the RULES stage. Dispatch-time role resolution
+ * (plan fallbacks-role-automatch) is the three-stage resolver in
+ * `role-resolution.ts` — explicit (`session.header.agentPreset`) → this
+ * rules stage → an optional auto-match hook; `AgentLike` carries the additive
+ * `session.header.agentPreset?` carrier for that explicit stage.
+ *
  * Precedence (first hit wins):
  * 1. the first `rules` entry whose specified origin/provider/model patterns
  *    all match the agent;
@@ -51,6 +57,8 @@ export interface AgentLike {
   session?: {
     header?: {
       origin?: Origin
+      /** Dispatch-time explicit role carrier (plan fallbacks-role-automatch Task 2). */
+      agentPreset?: string
     }
   }
 }

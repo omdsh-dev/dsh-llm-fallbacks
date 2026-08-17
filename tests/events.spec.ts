@@ -43,8 +43,8 @@ describe('fallbacks/switch session event', () => {
     expect(JSON.parse(JSON.stringify(data))).toEqual(data)
   })
 
-  it('only admits the two spec reasons', () => {
-    const reasons: FallbackSwitchReason[] = ['trigger-code', 'always-cap']
-    expect(reasons).toHaveLength(2)
+  it('admits the three spec reasons (role-inject added in Task 4)', () => {
+    const reasons: FallbackSwitchReason[] = ['trigger-code', 'always-cap', 'role-inject']
+    expect(reasons).toHaveLength(3)
   })
 })

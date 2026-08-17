@@ -9,8 +9,18 @@
  * @module dsh-llm-fallbacks/events
  */
 
-/** Why a switch was decided (spec §5.1 `PendingSwitch.reason`). */
-export type FallbackSwitchReason = 'trigger-code' | 'always-cap'
+/**
+ * Why a switch was decided (spec §5.1 `PendingSwitch.reason`).
+ *
+ * `role-inject` is the dispatch-time reason (plan fallbacks-role-automatch
+ * Task 4): a subagent-origin agent's first request was re-routed to its
+ * resolved role's chain head. It is ADDITIVE to the failure-time reasons —
+ * the event shape stays a superset of the pre-feature payload, and existing
+ * renderers show unknown reasons raw (AC-5). Unlike `trigger-code` /
+ * `always-cap`, a `role-inject` event is NOT a failure decision: it carries
+ * no pending switch / cooldown / failure bookkeeping (no `commit()`).
+ */
+export type FallbackSwitchReason = 'trigger-code' | 'always-cap' | 'role-inject'
 
 /** Durable payload of one provider/model switch (spec §5 table). */
 export interface FallbacksSwitchEventData {

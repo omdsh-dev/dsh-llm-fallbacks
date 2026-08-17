@@ -148,6 +148,8 @@ function scalarsOf(config: FallbacksConfig): FallbacksScalars {
  * the top level: no presets UI this iteration (R-001 re-defer), so the
  * draft carries the accepted value through untouched — a clean draft stays
  * equal to the accepted config and a save never drops the key.
+ * `roleAutoMatch` follows the same rule (config-model mirror of `presets`):
+ * no UI this iteration, so the draft carries the accepted value through.
  */
 function assembleConfig(
   scalars: FallbacksScalars,
@@ -156,6 +158,7 @@ function assembleConfig(
   ruleRows: readonly RoleRuleRow[],
   originalRoles: readonly FallbacksRole[],
   presets: FallbacksConfig['presets'],
+  roleAutoMatch: FallbacksConfig['roleAutoMatch'],
 ): FallbacksConfig {
   const list = mergeRoleExtras(roleRows, originalRoles)
   return {
@@ -168,6 +171,7 @@ function assembleConfig(
     maxSwitchesPerStep: scalars.maxSwitchesPerStep,
     alwaysModeRetryCap: scalars.alwaysModeRetryCap,
     ...(presets === undefined ? {} : { presets }),
+    ...(roleAutoMatch === undefined ? {} : { roleAutoMatch }),
   }
 }
 
@@ -605,7 +609,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
   // The draft is assembled once per render and reused by the dirty check,
   // the validation gate, and save — `state.config.roles.list` supplies the
   // prompt/permissions merge so a clean draft equals the accepted config.
-  const draft = assembleConfig(scalars, rootChainRows, roleRows, ruleRows, state.config.roles.list, state.config.presets)
+  const draft = assembleConfig(scalars, rootChainRows, roleRows, ruleRows, state.config.roles.list, state.config.presets, state.config.roleAutoMatch)
   // Empty rule rows (role still on the "select role" placeholder) never
   // reach the assembled draft — rowsToRules drops them — so validateDraft
   // cannot see them. Surface them as a validation error instead of
