@@ -50,7 +50,19 @@ export interface AgentHarness {
   setRoute(provider: string, model: string): void
 }
 
-export function makeAgent(id: string, options: { provider?: string; model?: string } = {}): AgentHarness {
+/**
+ * Make a fake agent. `header` mirrors the native `SessionHeader` fields the
+ * dispatch-time runtime reads (plan fallbacks-role-automatch Task 4):
+ * `session.header.origin` (the origin gate — `'subagent'` only) and
+ * `session.header.agentPreset` (the explicit-role carrier). Additive — the
+ * default `{}` behaves exactly like the previous `undefined` header for every
+ * existing reader (`?.header?.origin ?? 'root'` → `'root'`).
+ */
+export function makeAgent(
+  id: string,
+  options: { provider?: string; model?: string } = {},
+  header: { origin?: 'root' | 'subagent'; agentPreset?: string } = {},
+): AgentHarness {
   const route: { provider?: string; model?: string } = { ...options }
   const events: Array<{ type: string; data: Record<string, unknown> }> = []
   const agent = {
@@ -60,6 +72,7 @@ export function makeAgent(id: string, options: { provider?: string; model?: stri
     session: {
       id,
       events,
+      header,
       append(type: string, data: Record<string, unknown>) {
         events.push({ type, data })
         return { seq: events.length, type, data }

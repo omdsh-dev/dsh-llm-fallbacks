@@ -22,7 +22,7 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AgentLike, FallbacksRoleRule } from '../src/roles.ts'
-import { resolveRoleAtDispatch } from '../src/role-resolution.ts'
+import { firstExactCandidate, resolveRoleAtDispatch } from '../src/role-resolution.ts'
 
 const RULES: FallbacksRoleRule[] = [
   { origin: 'subagent', role: 'code-review' },
@@ -179,5 +179,28 @@ describe('resolveRoleAtDispatch — stage 3 auto-match hook', () => {
     await expect(
       resolveRoleAtDispatch({}, RULES, ROLE_IDS, { automatchEnabled: false, warn: () => {} }),
     ).resolves.toBe('inherit')
+  })
+})
+
+describe('firstExactCandidate (Task 4 dispatch chain-head helper)', () => {
+  it('returns the first candidate whose wildcard flag is false', () => {
+    const all = [
+      { provider: 'a', model: 'm1', raw: 'a/*' },
+      { provider: 'b', model: 'm2', raw: 'b/m2' },
+      { provider: 'c', model: 'm3', raw: 'c/m3' },
+    ]
+    expect(firstExactCandidate(all, [true, false, false])).toEqual({ provider: 'b', model: 'm2', raw: 'b/m2' })
+  })
+
+  it('returns undefined when every candidate is wildcard', () => {
+    const all = [
+      { provider: 'a', model: 'm1', raw: 'a/*' },
+      { provider: 'b', model: 'm2', raw: 'b/*' },
+    ]
+    expect(firstExactCandidate(all, [true, true])).toBeUndefined()
+  })
+
+  it('returns undefined on an empty chain', () => {
+    expect(firstExactCandidate([], [])).toBeUndefined()
   })
 })

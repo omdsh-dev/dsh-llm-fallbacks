@@ -42,11 +42,13 @@ import type { Session } from '@deepseek-ai/dsh-session'
 // (namespace access yields `undefined`; a named import would fail at link
 // time and kill the whole plugin). Details/upstream tracking in apply().
 import * as dshSession from '@deepseek-ai/dsh-session'
-import { defaultFallbacksConfig, detectLegacyKeys, validateFallbacksConfig, type FallbacksConfig } from './config.ts'
+import { defaultFallbacksConfig, detectLegacyKeys, INHERIT_ROLE_ID, validateFallbacksConfig, type FallbacksConfig } from './config.ts'
 import { Config } from './schema.ts'
+import { pickRoleByLlm } from './automatch.ts'
 import { annotateCandidates, createCandidateFilter, hasWildcardEntry, resolveChain, resolveChainViews, selectCandidates, type FailingModel } from './chains.ts'
 import { selectorKey } from './selectors.ts'
 import { resolveRole } from './roles.ts'
+import { firstExactCandidate, resolveRoleAtDispatch } from './role-resolution.ts'
 import { FallbackStateStore, type AgentFallbackState, type PendingSwitch } from './state.ts'
 import type { FallbackSwitchReason } from './events.ts'
 import {
@@ -515,6 +517,11 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
 
   const states = new FallbackStateStore()
   stateStores.set(ctx, states)
+  // Dispatch-injection once-marker (plan fallbacks-role-automatch Task 4):
+  // agent ids whose FIRST request has already been evaluated for dispatch-time
+  // role injection. Survives across the agent's request lifecycle; cleaned on
+  // agent/disposed + plugin dispose (mirrors `states`).
+  const dispatchInjected = new Set<string>()
 
   /**
    * Shared decision path (spec §5.1 lifecycle step 1): resolve the agent's
@@ -698,6 +705,70 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
       return overrideConfig(seed, applied.to)
     }
     const config = source()
+    // Dispatch-time role injection (plan fallbacks-role-automatch Task 4): a
+    // subagent-origin agent's FIRST request only (per-agent once-marker,
+    // `dispatchInjected`, cleaned on agent/disposed + plugin dispose below).
+    // Evaluated ONLY in this branch — a failure-path pending switch always
+    // wins above. Resolve the role (explicit → rules → auto-match hook), then
+    // inject the resolved role's chain head (first exact, non-wildcard
+    // candidate — no cooldown/failed filtering, no existence probe, per the
+    // Task 4 decision) when it differs from the request's current model. This
+    // is NOT a failure decision: no commit(), no pending switch, no cooldown,
+    // no failure bookkeeping — only the override + the `role-inject` event +
+    // an explicit role → model log. `'inherit'` ("no specific role") NEVER
+    // injects, so with `roleAutoMatch: false` and no explicit/rules role the
+    // outcome is identical to today. Defensive: any throw in the
+    // resolution/injection path warns and the request proceeds unchanged
+    // (mirror the `agent/request-error` defensive pattern).
+    if (config.enabled && hasChains && agent.session?.header?.origin === 'subagent' && !dispatchInjected.has(agent.id)) {
+      dispatchInjected.add(agent.id)
+      try {
+        const role = await resolveRoleAtDispatch(agent, config.roles.rules, roleIds, {
+          automatchEnabled: config.roleAutoMatch ?? true,
+          automatch: (candidate) => pickRoleByLlm(ctx, config.roles, candidate, { warn: logger.warn }),
+          warn: logger.warn,
+        })
+        if (role !== INHERIT_ROLE_ID) {
+          const { all, wildcard } = resolveChainViews(
+            config.roles.list,
+            config.rootChain,
+            role,
+            seed.provider,
+            seed.model,
+            logger.warn,
+          )
+          const head = firstExactCandidate(all, wildcard)
+          if (head !== undefined && head.model !== undefined && !(head.provider === seed.provider && head.model === seed.model)) {
+            const to = { provider: head.provider, model: head.model }
+            // issue #52 append guard (mirror commit()): never write an event
+            // the host read path would refuse — the override still applies.
+            if (sessionEventRegistered) {
+              agent.session.append('fallbacks/switch', {
+                turn,
+                step,
+                from: { provider: seed.provider, model: seed.model },
+                to,
+                role,
+                reason: 'role-inject',
+              })
+            }
+            logger.info(
+              'llm-fallbacks: agent "%s" role-inject role=%s model=%s/%s',
+              agent.id,
+              role,
+              head.provider,
+              head.model,
+            )
+            return overrideConfig(seed, to)
+          }
+        }
+      } catch (error) {
+        logger.warn(
+          'llm-fallbacks: dispatch role-injection failed, proceeding with the request unchanged: %s',
+          (error as Error)?.message ?? String(error),
+        )
+      }
+    }
     if (
       hasChains
       && config.enabled
@@ -737,10 +808,12 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
 
   ctx.on('agent/disposed', ({ agent }) => {
     states.delete(agent.id)
+    dispatchInjected.delete(agent.id)
   })
 
   ctx.effect(() => () => {
     states.clear()
+    dispatchInjected.clear()
   }, 'llm-fallbacks: clear per-agent state')
 
   // AC-5: /fallbacks — session-scoped read-only diagnostics. Conditional

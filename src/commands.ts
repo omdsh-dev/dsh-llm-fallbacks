@@ -24,7 +24,7 @@
 import type { CommandDefinition, CommandInvocation, CommandResult } from '@deepseek-ai/dsh-commands'
 import { INHERIT_ROLE_ID, type FallbacksRole } from './config.ts'
 import type { Origin } from './roles.ts'
-import type { FallbacksSwitchEventData } from './events.ts'
+import type { FallbackSwitchReason, FallbacksSwitchEventData } from './events.ts'
 
 /** How many recent `fallbacks/switch` events `/fallbacks` shows (newest first). */
 export const RECENT_SWITCHES_LIMIT = 5
@@ -337,8 +337,10 @@ function formatSwitch(entry: FallbacksSwitchEventData, t: FallbacksCommandCopy):
     .replace('{from}', from)
     .replace('{to}', to)
     .replace('{role}', entry.role)
-    // Unknown future reasons render the raw reason string, never "undefined".
-    .replace('{reason}', t.reason[entry.reason] ?? entry.reason)
+    // Unknown future reasons render the raw reason string, never "undefined"
+    // (a `role-inject` display key is deferred to Plan B client locales — the
+    // records above intentionally hold only the failure-time reasons).
+    .replace('{reason}', (t.reason as Partial<Record<FallbackSwitchReason, string>>)[entry.reason] ?? entry.reason)
 }
 
 /** Render one cooldown entry as one text line (`Infinity` = never reverts). */

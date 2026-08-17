@@ -32,6 +32,7 @@
 
 import { INHERIT_ROLE_ID, type FallbacksRoleRule } from './config.ts'
 import { resolveRole, type AgentLike } from './roles.ts'
+import type { Selector } from './selectors.ts'
 
 export type { FallbacksRoleRule } from './config.ts'
 
@@ -96,4 +97,27 @@ export async function resolveRoleAtDispatch(
   }
 
   return INHERIT_ROLE_ID
+}
+
+/**
+ * The dispatch-time chain head (plan fallbacks-role-automatch Task 4): the
+ * FIRST candidate of a `resolveChainViews` pass whose `wildcard` flag is
+ * false — an exact `provider/model` entry. `provider/*` entries are NOT
+ * dispatch injection targets (no failing model to anchor them; a guessed
+ * injection risks a hard failure whose code may sit outside `triggerCodes`),
+ * so a wildcard-only chain yields `undefined` → no injection (today's
+ * behavior). No cooldown/failed filtering and no existence probe run here —
+ * a fresh subagent's first request has no failure-scoped state (see the Task
+ * 4 decision) and exact heads are never probed. Pairs with
+ * {@link resolveChainViews}'s parallel `wildcard` provenance (`src/chains.ts`);
+ * the caller resolves the role's concatenated chain first.
+ */
+export function firstExactCandidate(
+  all: readonly Selector[],
+  wildcard: readonly boolean[],
+): Selector | undefined {
+  for (let index = 0; index < all.length; index += 1) {
+    if (!wildcard[index]) return all[index]
+  }
+  return undefined
 }
