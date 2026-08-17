@@ -249,6 +249,22 @@ describe('pickRoleByLlm — judgment call', () => {
     expect(warn).not.toHaveBeenCalled()
   })
 
+  it('returns null on a clean-abort finish chunk (adapter aborted the stream, no throw)', async () => {
+    // The dsh-llm contract normalizes an adapter-side abort to a terminal
+    // `finish { kind: 'aborted', failure }` chunk — NOT a throw. Partial text
+    // from an aborted completion is never trusted → 'inherit' (T3 review
+    // coordination item: the stream ended cleanly, so no warn either).
+    const { stream } = makeFake(() =>
+      asyncIter([
+        { type: 'text-delta', index: 0, text: 'co' },
+        { type: 'finish', reason: { kind: 'aborted', failure: { message: 'aborted', code: 'ABORTED' } } },
+      ]),
+    )
+    const warn = vi.fn()
+    await expect(pickRoleByLlm(fakeCtx({ stream }), ROLES, AGENT, { timeoutMs: 1000, warn })).resolves.toBeNull()
+    expect(warn).not.toHaveBeenCalled()
+  })
+
   it('returns null when the stub stream throws, warns, and does not rethrow', async () => {
     const { stream } = makeFake(() => ({
       async *[Symbol.asyncIterator]() {
