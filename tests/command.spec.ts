@@ -37,6 +37,7 @@ function snapshot(overrides: Partial<FallbacksCommandSnapshot> = {}): FallbacksC
     chainRole: true,
     chain: ['anthropic/claude-3-5-sonnet', 'openai/*'],
     inherit: false,
+    slot: { winner: 'all-day', label: 'all-day' },
     switches: [
       {
         turn: 1,
@@ -114,10 +115,10 @@ describe('registerFallbacksCommands — registration shape', () => {
 
   it('localizes the description to the registration locale', () => {
     const zh = captureRegistration({ getSnapshot: () => snapshot(), getConfig: () => configSummary() })
-    expect(zh.definition.description).toBe('查看当前会话的降级链、最近切换与冷却状态（只读）')
+    expect(zh.definition.description).toBe('查看当前会话的降级链、最近降级切换与冷却状态（只读）')
     const en = captureRegistration({ getSnapshot: () => snapshot(), getConfig: () => configSummary() }, 'en')
     expect(en.definition.description).toBe(
-      'Inspect fallback chain, recent switches, and cooldown for this session (read-only)',
+      'Inspect fallback chain, recent fallback switches, and cooldown for this session (read-only)',
     )
   })
 })
@@ -271,7 +272,7 @@ describe('fallbacksCommandText — output states', () => {
       { turn: 2, step: 1, from: { provider: 'anthropic', model: 'claude-3-5-sonnet' }, to: { provider: 'openai', model: 'gpt-4o' }, role: 'default', reason: 'always-cap' },
     ]
     const text = fallbacksCommandText(snapshot({ switches }), 'zh')
-    expect(text).toContain('最近切换 (2):')
+    expect(text).toContain('最近降级切换 (2):')
     expect(text.indexOf('deepseek/deepseek-chat → anthropic/claude-3-5-sonnet')).toBeLessThan(
       text.indexOf('anthropic/claude-3-5-sonnet → openai/gpt-4o'),
     )
@@ -282,9 +283,20 @@ describe('fallbacksCommandText — output states', () => {
 
   it('renders the none state when no switches exist', () => {
     const zh = fallbacksCommandText(snapshot({ switches: [] }), 'zh')
-    expect(zh).toContain('最近切换: 本会话暂无 fallback 切换')
+    expect(zh).toContain('最近降级切换: 本会话暂无 fallback 切换')
     const en = fallbacksCommandText(snapshot({ switches: [] }), 'en')
-    expect(en).toContain('Recent switches: No fallback switches in this session')
+    expect(en).toContain('Recent fallback switches: No fallback switches in this session')
+  })
+
+  it('renders the current time-slot winner (分时 side) with its label', () => {
+    const zh = fallbacksCommandText(snapshot({ slot: { winner: 'all-day', label: 'all-day' } }), 'zh')
+    expect(zh).toContain('分时: all-day')
+    const slotRow = { kind: 'preset' as const, preset: 'liang-peak' as const, chain: ['openai/gpt-4o'] }
+    const peak = fallbacksCommandText(snapshot({ slot: { winner: slotRow, label: 'Liang Peak' } }), 'zh')
+    expect(peak).toContain('分时: Liang Peak')
+    // en mirror
+    const en = fallbacksCommandText(snapshot({ slot: { winner: slotRow, label: 'Liang Peak' } }), 'en')
+    expect(en).toContain('Time slot: Liang Peak')
   })
 
   it('lists active cooldown entries with their expiry', () => {
@@ -315,7 +327,8 @@ describe('fallbacksCommandText — zh/en copy smoke', () => {
     expect(text).toContain('会话来源: root')
     expect(text).toContain('角色: inherit')
     expect(text).toContain('链:')
-    expect(text).toContain('最近切换 (1):')
+    expect(text).toContain('分时: all-day')
+    expect(text).toContain('最近降级切换 (1):')
     expect(text).toContain('冷却 (1):')
   })
 
@@ -325,7 +338,8 @@ describe('fallbacksCommandText — zh/en copy smoke', () => {
     expect(text).toContain('Session origin: root')
     expect(text).toContain('Role: inherit')
     expect(text).toContain('Chain:')
-    expect(text).toContain('Recent switches (1):')
+    expect(text).toContain('Time slot: all-day')
+    expect(text).toContain('Recent fallback switches (1):')
     expect(text).toContain('Cooldown (1):')
     expect(text).toContain('(role=inherit, reason=trigger-code)')
   })
@@ -583,9 +597,12 @@ describe('apply() wiring — conditional commands child', () => {
     // No rules match → the built-in 'inherit' role → rootChain + inherit tail.
     expect(text).toContain('角色: inherit')
     expect(text).toContain('链: other/gpt-4o（inherit-root）')
+    // P7: the 分时 line reports the current slot winner (all-day here — no
+    // extra rows), separate from the 降级切换 switches section.
+    expect(text).toContain('分时: all-day')
     // Stop-write (issue #52): no durable fallbacks/switch event → the command's
     // recent-switch section is empty, while the cooldown readback still works.
-    expect(text).toContain('最近切换: 本会话暂无 fallback 切换')
+    expect(text).toContain('最近降级切换: 本会话暂无 fallback 切换')
     expect(text).toContain('冷却 (1):')
     expect(text).toContain('mock/gpt-4o 冷却至')
     expect(text).not.toContain('无活跃冷却')
@@ -614,7 +631,8 @@ describe('apply() wiring — conditional commands child', () => {
     } as unknown as CommandInvocation)
     const text = (result as { text?: string }).text ?? ''
     expect(text).toContain('链: 未配置')
-    expect(text).toContain('最近切换: 本会话暂无 fallback 切换')
+    expect(text).toContain('分时: all-day')
+    expect(text).toContain('最近降级切换: 本会话暂无 fallback 切换')
     expect(text).toContain('冷却: 无活跃冷却')
   })
 
@@ -645,7 +663,7 @@ describe('apply() wiring — conditional commands child', () => {
     // Never throws to the host runner; malformed entries are skipped.
     expect(result.kind).toBe('success')
     const text = (result as { text?: string }).text ?? ''
-    expect(text).toContain('最近切换: 本会话暂无 fallback 切换')
+    expect(text).toContain('最近降级切换: 本会话暂无 fallback 切换')
   })
 
   it('/fallbacks config reads the composed live source (getConfig over source()) and never mutates session state', async () => {
