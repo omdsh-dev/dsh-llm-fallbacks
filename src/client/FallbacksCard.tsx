@@ -1,8 +1,9 @@
 /**
  * Fallbacks settings card — the `fallbacks` plugin card on the web settings
- * "插件配置" page (spec §4). Registered into the `settings.plugin.item` slot
- * (id `fallbacks`, order 30, alongside the upstream bash/agent-loop/web-search
- * cards and the advisor card); owner props are empty and all data flows
+ * "插件配置" page (spec §4). Registered into the `settings.plugin.item` keyed
+ * slot (key `fallbacks`, the settings namespace the card edits, alongside
+ * the upstream bash/agent-loop/web-search cards and the advisor card, in
+ * registration order); owner props are empty and all data flows
  * through {@link FallbacksSettingsController}.
  *
  * The card chrome replicates the upstream `PluginCard` contract (self-drawn:

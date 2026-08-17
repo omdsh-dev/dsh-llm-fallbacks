@@ -26,7 +26,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
-import { apply } from '../src/index.ts'
+import { apply, stateStore } from '../src/index.ts'
 import { MemorySettings } from './support/memory-settings.ts'
 import { installLlmRetryStub } from './support/llm-retry-stub.ts'
 import {
@@ -78,9 +78,10 @@ describe('dual-plugin coexistence: llm-retry stub registered first (bundle order
     })
     expect(delegated).toEqual({ kind: 'retry' })
     expect(llmRetryEvents(agent)).toHaveLength(2)
-    expect(switchEvents(agent)).toHaveLength(1)
-    expect(switchEvents(agent)[0]?.data.reason).toBe('trigger-code')
-    expect(switchEvents(agent)[0]?.data.to).toEqual({ provider: 'other', model: 'gpt-4o' })
+    // Stop-write: the delegated trigger code still switches (switchCount bumps)
+    // but no durable fallbacks/switch event is written.
+    expect(stateStore(ctx)?.peek(agent.id)?.stepFailures.switchCount ?? 0).toBe(1)
+    expect(switchEvents(agent)).toHaveLength(0)
   })
 
   it('never-retryable codes (AUTH/QUOTA) bypass llm-retry and switch directly', async () => {
@@ -99,8 +100,8 @@ describe('dual-plugin coexistence: llm-retry stub registered first (bundle order
     // Neither code is retryable → the stub never scheduled a backoff; both
     // failures switched directly through the fallback.
     expect(llmRetryEvents(agent)).toHaveLength(0)
-    expect(switchEvents(agent)).toHaveLength(2)
-    expect(switchEvents(agent).every((event) => event.data.reason === 'trigger-code')).toBe(true)
+    expect(stateStore(ctx)?.peek(agent.id)?.stepFailures.switchCount ?? 0).toBe(2)
+    expect(switchEvents(agent)).toHaveLength(0)
   })
 
   it('always mode: llm-retry delegates downstream first — non-trigger failures backoff, trigger codes switch (ADR-2)', async () => {
@@ -131,8 +132,9 @@ describe('dual-plugin coexistence: llm-retry stub registered first (bundle order
     })
     expect(trigger).toEqual({ kind: 'retry' })
     expect(llmRetryEvents(agent)).toHaveLength(1)
-    expect(switchEvents(agent)).toHaveLength(1)
-    expect(switchEvents(agent)[0]?.data.reason).toBe('trigger-code')
+    // Stop-write: the trigger code switches (switchCount bumps) with no event.
+    expect(stateStore(ctx)?.peek(agent.id)?.stepFailures.switchCount ?? 0).toBe(1)
+    expect(switchEvents(agent)).toHaveLength(0)
   })
 
   it('pins the reverse order: fallback registered first owns trigger codes (bundle-order risk)', async () => {
@@ -149,7 +151,7 @@ describe('dual-plugin coexistence: llm-retry stub registered first (bundle order
       retryPolicy: policy,
     })
     expect(action).toEqual({ kind: 'retry' })
-    expect(switchEvents(agent)).toHaveLength(1)
+    expect(stateStore(ctx)?.peek(agent.id)?.stepFailures.switchCount ?? 0).toBe(1)
     expect(llmRetryEvents(agent)).toHaveLength(0)
   })
 })

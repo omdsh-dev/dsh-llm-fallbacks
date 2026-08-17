@@ -48,7 +48,7 @@ dsh 插件 = npm 包，package.json 声明 dsh.bundle.patch（指向 bundle/cord
 
 - settings 命名空间：installSettingsSection(ctx, settingsNamespace(命名空间名), Config, entry, {setSource, onChange})（参照 agent-default-model）；composition entry 作 base、用户文档作覆盖层。
 - web 设置入口两形态（2026-08-12 起 fallbacks 用卡片形态）：
-  - **插件配置页卡（`settings.plugin.item`）**：`ctx.slots.inject('settings.plugin.item', generator)` 注册 `{ name, id, order, locale, inject }` + 自绘折叠卡组件（`<li>` + header + body + footer，chrome 对齐上游 `PluginCard`——组件**不可值导入**，必须 self-draw；advisor 自绘参考）。**卡替换 section 导航，不并存**（单入口）。卡内数据仍走插件自有 gateway 通道。
+  - **插件配置页卡（`settings.plugin.item`）**：`ctx.slots.inject('settings.plugin.item', generator)` 注册 `{ name, key, locale, inject }`（rc.7 起该 slot 为 keyed——key = 卡片编辑的设置命名空间，旧 list-slot 的 `id`/`order` 已删除）+ 自绘折叠卡组件（`<li>` + header + body + footer，chrome 对齐上游 `PluginCard`——组件**不可值导入**，必须 self-draw；advisor 自绘参考）。**卡替换 section 导航，不并存**（单入口）。卡内数据仍走插件自有 gateway 通道。
   - **整页 section（settings.section）**：独立设置页（`ctx.slots.inject('settings.section', …)` 注册 name/id/order/label/locale）；仍适用于整页设置产品。
   - 两种形态的**数据都走插件自有 gateway 通道**（client connection.rpc.call('/api', '<ns>/<method>', { args })，host 半 `TypertRemoteService` 绑定 + 显式 `ctx.typert.register(contribution)`——2026-08-13 起，`@Remote` SRC 标记对 link 插件失效）——apiproxy `exposedNamespaces()` 白名单对插件命名空间关闭，wire 读写（describe/update/replace）不可行；owner props 为空。
   - slot 挂载全契约（settings.section / plugin.item / general.item / action / onboarding / navIcon fallback / 新包三注册面）→ `.mstar/knowledge/architecture-patterns/dsh-settings-slot-contract.md`。

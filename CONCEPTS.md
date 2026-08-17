@@ -9,7 +9,7 @@
 *Avoid:* plugin row / patch layer（口语混用时可接受，正式文档用 bundle）
 
 ### dsh settings slot
-dsh web settings 的条目挂载契约（权威：dsh-private `packages/client/ui-settings/src/client/contract/slots.ts`）：`settings.plugin.item`（官方**插件配置页**卡，list kind——卡自绘折叠列表项，**卡形态替换 section 导航**的单入口）、`settings.section`（整页设置，list kind，按 order 排序）、`settings.general.item`（General 页内单行）、`settings.action`（头部操作）、`settings.onboarding`（root 步骤）；`trigger`/`header`/`close` 是 single seat（chrome 文案位）。list 槽同 order 按注册先后稳定排序（order tie 可预期）。shell 零自有内容——**新增设置不改 shell**；唯一宿主侧触发点是 `SettingsRoot.tsx` `navIcon(id)`（仅 models/agent-presets 有专属图标，新 id 落齿轮）。挂载统一 `ctx.slots.inject`（非裸 register）。*Avoid:* 把「新设置要改 shell」当默认假设。
+dsh web settings 的条目挂载契约（权威：dsh-private `packages/client/ui-settings/src/client/contract/slots.ts`）：`settings.plugin.item`（官方**插件配置页**卡，keyed kind（rc.7 起；key = 卡片编辑的设置命名空间）——卡自绘折叠列表项，**卡形态替换 section 导航**的单入口）、`settings.section`（整页设置，list kind，按 order 排序）、`settings.general.item`（General 页内单行）、`settings.action`（头部操作）、`settings.onboarding`（root 步骤）；`trigger`/`header`/`close` 是 single seat（chrome 文案位）。list 槽同 order 按注册先后稳定排序（order tie 可预期）。shell 零自有内容——**新增设置不改 shell**；唯一宿主侧触发点是 `SettingsRoot.tsx` `navIcon(id)`（仅 models/agent-presets 有专属图标，新 id 落齿轮）。挂载统一 `ctx.slots.inject`（非裸 register）。*Avoid:* 把「新设置要改 shell」当默认假设。
 
 ### gateway channel（插件 gateway 通道）
 插件自有配置读写通道：宿主半声明 `GatewayService`（`TypertRemoteService` 基类，仅取其 `typertRemote` 绑定）+ **显式 `ctx.typert.register(contribution)`** 注册 `/api/<ns>/get|set|reset`（2026-08-13 起替代 `@Remote` SRC 标记——SRC 发现读 `remoteMethods()` 的模块私有 WeakMap，link 插件与 dlx 宿主物理分离永不可共享；显式注册写入 `ctx.typert.local`，claims 先查它），client 半 `connection.rpc.call('/api', '<ns>/<method>', { args })` 读写。与 `settings slot` 正交——slot 决定页面出现，gateway 决定配置数据从哪来。apiproxy wire 的 `exposedNamespaces()` 白名单对插件命名空间关闭，gateway 是 mount-only 下 web 配置读写的唯一路径；通道无版本戳（无 revision 守卫，失败走错误横幅）。*Avoid:* 把插件配置经 `settings.describe/update/replace` 读写（patch 时代路径，已删除）
@@ -18,7 +18,7 @@ dsh web settings 的条目挂载契约（权威：dsh-private `packages/client/u
 本插件交付约束：对 dsh 源码树**零本地修改**。安装 = bundle 插行 + client inject + 自有 gateway；无 `patches/`、无 autopatch/prepare 打补丁链路；升级 dsh 无需重打。*Avoid:* patch 交付 / 本地修改交付
 
 ### registry peers（开发期依赖解析）
-dsh 私有 `@deepseek-ai/*` 包的开发期类型/测试解析方案：`pnpm-workspace.yaml` 的 `autoInstallPeers: true` + 用户级 `~/.npmrc` 的 registry 认证令牌（pnpm 11 起项目级 `.npmrc` 不再展开 `${NPM_TOKEN}`）从 npm registry 解析 `@deepseek-ai/*@0.1.0-rc.6` peer 依赖（`peerDependencies` 契约，无本地 link farm；pnpm 11 全量重解析后 lockfile 零 pre-rc.6 残留）。运行时值 import 保持 external 由宿主 in-box 解析，测试用真实 `dsh-settings`（内存 provider）与本地 node-safe store 双（`tests/support/snapshot-store.ts`，因 registry 包的 `./client` 是浏览器 loader artifact）。`*Avoid:* peer-stubs / tsconfig paths / 本地 link farm（历史方案，已移除）`
+dsh 私有 `@deepseek-ai/*` 包的开发期类型/测试解析方案：`pnpm-workspace.yaml` 的 `autoInstallPeers: true` + 用户级 `~/.npmrc` 的 registry 认证令牌（pnpm 11 起项目级 `.npmrc` 不再展开 `${NPM_TOKEN}`）从 npm registry 解析 `@deepseek-ai/*@0.1.0-rc.7` peer 依赖（`peerDependencies` 契约，无本地 link farm；pnpm 11 全量重解析后 lockfile 零 pre-rc.7 残留）。运行时值 import 保持 external 由宿主 in-box 解析，测试用真实 `dsh-settings`（内存 provider）与本地 node-safe store 双（`tests/support/snapshot-store.ts`，因 registry 包的 `./client` 是浏览器 loader artifact）。`*Avoid:* peer-stubs / tsconfig paths / 本地 link farm（历史方案，已移除）`
 
 ### remote events（转发事件）
 host → client 的远程事件转发面：client 经 `ctx.remote.$on(key, listener)` 订阅，事件名受宿主转发白名单（`API_REMOTE_FORWARDED_EVENTS`）约束；与 client 本地事件（`ctx.on`）区分——本地事件在 client 进程内 emit，remote 事件由 host 侧转发帧推送。20260811 起 `settings/changed`、`models/changed` 客户端事件已移除，配置/目录变更通知迁移到 remote events：`settings/document-updated(ns, revision)`（订阅方按 ns 精确过滤）与 `llm/adapters-updated()`（payload-free）。*Avoid:* `settings/changed`、`models/changed`（20260811 已移除的死事件名）
@@ -42,7 +42,7 @@ fallbacks 配置的自明结构：块 1 = `rootChain`（root 主代理一条链�
 *Avoid:* 与 `inherit`（角色 id）混用
 
 ### fallbacks/switch 事件
-插件每次切换模型时追加的持久化会话事件（from/to/role/reason），是「行为可见」承诺的载体：无事件即无切换。reason 是开放字符串（未知值客户端原样渲染，向后兼容）；`role-inject` 是分发时角色注入的附加 reason 值（additive，非结构变更——见三段式分发角色解析）。
+`fallbacks/switch` 事件类型词汇（from/to/role/reason）——2026-08-17 起插件**不再写入** durable 事件（issue #52：apply() 时的事件类型注册被证伪无效，含该事件的会话在 dsh 重启后拒绝加载），「行为可见」由 info 日志承载；旧版写入的会话事件由 `scripts/repair-fallbacks-switch-logs.ts` 标记 ignorable 后恢复加载。reason 是开放字符串（未知值客户端原样渲染，向后兼容）；`role-inject` 是分发时角色注入的附加 reason 值（additive，非结构变更——见三段式分发角色解析）。
 
 ### triggerCodes
 触发 fallback 决策的失败码集合，默认 `['AUTH', 'QUOTA', 'RATE_LIMIT']`（dsh 稳定失败码；注意是 `QUOTA` 不是 `QUOTA_EXCEEDED`）。重试型失败（5xx/TRANSPORT）由 llm-retry 先行退避，预算耗尽后同样进入 fallback 决策。
@@ -89,5 +89,5 @@ companion 插件经释放面声明 `[{id, persona}]`、由本插件自动补全�
 *Avoid:* 默认 none（bundled 语义开箱即有）· async 化 apply 自声明（fiber FAILED）· 复用早注册注入子 fire（base-only 基线覆盖 operator 行）
 
 ### 三段式分发角色解析（three-stage dispatch role resolution）
-subagent 分发时（首请求）解析角色的三段流程：显式角色（session header `agentPreset` 精确匹配已声明角色 id）→ 确定性规则匹配（`roles.rules`，与失败时共用 resolveRole）→ LLM 自动匹配（`roleAutoMatch` 默认开启；模型从已声明角色 taxonomy 中自选，超时/失败/无合法答案回退 inherit）。解析角色的链首 exact 候选在分发时注入首请求（`fallbacks/switch` 事件，reason `role-inject`；非失败决策——无冷却/记账，仅 subagent origin，首请求幂等）。
+subagent 分发时（首请求）解析角色的三段流程：显式角色（session header `agentPreset` 精确匹配已声明角色 id）→ 确定性规则匹配（`roles.rules`，与失败时共用 resolveRole）→ LLM 自动匹配（`roleAutoMatch` 默认开启；模型从已声明角色 taxonomy 中自选，超时/失败/无合法答案回退 inherit）。解析角色的链首 exact 候选在分发时注入首请求（不写 `fallbacks/switch` 事件——issue #52 停写，仅 info 日志记录 role → model；非失败决策——无冷却/记账，仅 subagent origin，首请求幂等）。
 *Avoid:* 把「模型自选角色」当作既有机制（角色解析是确定性规则匹配，模型自选仅存在于自动匹配兜底段）

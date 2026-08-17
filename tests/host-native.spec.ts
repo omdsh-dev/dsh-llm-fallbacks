@@ -57,7 +57,8 @@ describe('host-native baseline (patch-free plugin)', () => {
     expect(await dispatchRequestError(ctx, agent)).toEqual({ kind: 'retry' })
     const config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
     expect(config).toEqual({ provider: 'other', model: 'gpt-4o' })
-    expect(switchEvents(agent)).toHaveLength(1)
+    // Stop-write (issue #52): the switch happens but no durable event is written.
+    expect(switchEvents(agent)).toHaveLength(0)
   })
 
   it('applies the always-cap switch (second return point)', async () => {
@@ -67,8 +68,8 @@ describe('host-native baseline (patch-free plugin)', () => {
     appendLlmRetry(agent, { turn: 1, step: 1, provider: 'mock', mode: 'always', retry: 1 })
     const config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
     expect(config).toEqual({ provider: 'other', model: 'gpt-4o' })
-    expect(switchEvents(agent)).toHaveLength(1)
-    expect(switchEvents(agent)[0]?.data.reason).toBe('always-cap')
+    // Stop-write: the always-cap switch applies but no durable event is written.
+    expect(switchEvents(agent)).toHaveLength(0)
   })
 
   it('keeps the no-op invariant (AC-8)', async () => {

@@ -67,15 +67,8 @@ describe('closed loop through the request boundary (real apply, ADR-4)', () => {
     ])
     expect(result.outcome).toBe('success')
     expect(result.requests.map((request) => request.provider)).toEqual(['mock', 'other'])
-    expect(switchEvents(agent)).toHaveLength(1)
-    expect(switchEvents(agent)[0]?.data).toEqual({
-      turn: 1,
-      step: 1,
-      from: { provider: 'mock', model: 'gpt-4o' },
-      to: { provider: 'other', model: 'gpt-4o' },
-      role: 'inherit',
-      reason: 'trigger-code',
-    })
+    // Stop-write (issue #52): the switch happens but no durable event is written.
+    expect(switchEvents(agent)).toHaveLength(0)
   })
 
   it('drops an inherited reasoningEffort when applying a switch (withoutInheritedEffort pattern)', async () => {
@@ -111,7 +104,7 @@ describe('per-agent state machine integration (spec §5.1)', () => {
     // Same (turn, step) again: no replay — the seed passes through untouched.
     const again = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
     expect(again).toEqual({ provider: 'mock', model: 'gpt-4o' })
-    expect(switchEvents(agent)).toHaveLength(1)
+    expect(switchEvents(agent)).toHaveLength(0)
   })
 
   it('applies a chain decision B→C at the same (turn, step) after A→B (fresh decision supersedes)', async () => {
@@ -129,10 +122,8 @@ describe('per-agent state machine integration (spec §5.1)', () => {
       'b/x',
       'c/x',
     ])
-    expect(switchEvents(agent).map((event) => event.data.to)).toEqual([
-      { provider: 'b', model: 'x' },
-      { provider: 'c', model: 'x' },
-    ])
+    // Stop-write: the A→B→C chain decisions apply but no durable event is written.
+    expect(switchEvents(agent)).toHaveLength(0)
   })
 
   it('resets the failed set when the step advances (revert to main on a later step)', async () => {
@@ -148,7 +139,10 @@ describe('per-agent state machine integration (spec §5.1)', () => {
     // Step 2 (advanced): other fails → mock is re-eligible — syncStep reset the
     // failed set for (1, 2) → revert to the main model.
     expect(await dispatchRequestError(ctx, agent, { turn: 1, step: 2, provider: 'other' })).toEqual({ kind: 'retry' })
-    expect(switchEvents(agent)[1]?.data.to).toEqual({ provider: 'mock', model: 'gpt-4o' })
+    // Stop-write: no durable event; the revert still routes back to mock/gpt-4o.
+    expect(switchEvents(agent)).toHaveLength(0)
+    expect(await dispatchRequest(ctx, agent, { provider: 'other', model: 'gpt-4o' }))
+      .toEqual({ provider: 'mock', model: 'gpt-4o' })
   })
 
   it('leaves no residual state after agent/disposed and plugin dispose (spec §6)', async () => {
@@ -164,7 +158,7 @@ describe('per-agent state machine integration (spec §5.1)', () => {
     expect(store?.size).toBe(0)
     setRoute('other', 'gpt-4o')
     expect(await dispatchRequestError(ctx, agent, { provider: 'other' })).toEqual({ kind: 'retry' })
-    expect(switchEvents(agent)).toHaveLength(2)
+    expect(switchEvents(agent)).toHaveLength(0)
 
     // Plugin dispose (the effect cleanup runs with the fiber) clears everything.
     await ctx.fiber.dispose()
@@ -183,7 +177,7 @@ describe('cooldown / revert integration (US-4)', () => {
 
     // Same step, other fails: mock is cooled AND step-failed → no candidate.
     expect(await dispatchRequestError(ctx, agent, { turn: 1, step: 1, provider: 'other' })).toBeUndefined()
-    expect(switchEvents(agent)).toHaveLength(1)
+    expect(switchEvents(agent)).toHaveLength(0)
   })
 
   it('reverts to the main model once the cooldown expires (cooldown-expiry, positive case)', async () => {
@@ -201,8 +195,11 @@ describe('cooldown / revert integration (US-4)', () => {
     // Cooldown expires → step 2: other fails → mock re-eligible → revert to main.
     vi.advanceTimersByTime(10_001)
     expect(await dispatchRequestError(ctx, agent, { turn: 1, step: 2, provider: 'other' })).toEqual({ kind: 'retry' })
-    expect(switchEvents(agent)[1]?.data.to).toEqual({ provider: 'mock', model: 'gpt-4o' })
-    expect(switchEvents(agent)[1]?.data.reason).toBe('trigger-code')
+    // Stop-write: no durable event; the cooldown-expiry revert still routes
+    // back to mock/gpt-4o.
+    expect(switchEvents(agent)).toHaveLength(0)
+    expect(await dispatchRequest(ctx, agent, { provider: 'other', model: 'gpt-4o' }))
+      .toEqual({ provider: 'mock', model: 'gpt-4o' })
   })
 
   it('never keeps the session on the fallback (no revert within the session)', async () => {
@@ -215,7 +212,7 @@ describe('cooldown / revert integration (US-4)', () => {
     setRoute('other', 'gpt-4o')
 
     expect(await dispatchRequestError(ctx, agent, { turn: 1, step: 2, provider: 'other' })).toBeUndefined()
-    expect(switchEvents(agent)).toHaveLength(1)
+    expect(switchEvents(agent)).toHaveLength(0)
   })
 })
 
@@ -233,7 +230,7 @@ describe('safety valve (spec §2 clause 4)', () => {
     // switchCount 2 ≥ maxSwitchesPerStep 2 → passthrough → terminal error.
     expect(result.outcome).toBe('error')
     expect(result.requests.map((request) => request.provider)).toEqual(['mock', 'b', 'c'])
-    expect(switchEvents(agent)).toHaveLength(2)
+    expect(switchEvents(agent)).toHaveLength(0)
     expect(result.error).toBeInstanceOf(LlmError)
     expect(result.error?.code).toBe('QUOTA')
     expect(result.error?.message).toBe('quota exceeded')
@@ -241,22 +238,28 @@ describe('safety valve (spec §2 clause 4)', () => {
 })
 
 describe('decision-path failure defense (F-005)', () => {
-  it('passes the original failure through when the decision path throws', async () => {
+  it('never calls session.append during a switch (F-005 decision path no longer touches the durable log)', async () => {
     const { agent } = makeAgent('defensive', { provider: 'mock', model: 'gpt-4o' })
     apply(ctx, cfg({ rootChain: ['other/gpt-4o'] }))
 
-    // The durable append inside commit() explodes: the request-error listener
-    // must catch, log, and delegate — the original failure semantics (spec §6)
-    // survive and no switch event is recorded.
+    // The durable append is gone — commit() never touches session.append, so
+    // even a hostile append that would throw cannot break the switch: the
+    // decision still applies and the retry action survives (spec §6).
     const session = agent.session as unknown as { append: (type: string, data: unknown) => unknown }
     const originalAppend = session.append
-    session.append = () => { throw new Error('append exploded') }
+    const append = vi.fn(() => { throw new Error('append exploded') })
+    session.append = append
     try {
       const action = await dispatchRequestError(ctx, agent, { failure: { message: 'denied', code: 'AUTH' } })
-      expect(action).toBeUndefined()
+      expect(action).toEqual({ kind: 'retry' })
+      // The pending switch still applies at the next request.
+      expect(await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' }))
+        .toEqual({ provider: 'other', model: 'gpt-4o' })
     } finally {
       session.append = originalAppend
     }
+    // append was never invoked — and no fallbacks/switch entry reached the stream.
+    expect(append).not.toHaveBeenCalled()
     expect(switchEvents(agent)).toHaveLength(0)
   })
 })
@@ -307,7 +310,8 @@ describe('composition order with model-selection (T3 review ⚠️3)', () => {
       reasoningEffort: 'high' as ReasoningEffortId,
     })
     expect(config).toEqual({ provider: 'other', model: 'gpt-4o' })
-    expect(switchEvents(agent)).toHaveLength(1)
+    // Stop-write: the switch survives the composition but no durable event is written.
+    expect(switchEvents(agent)).toHaveLength(0)
   })
 
   it('keeps the always-cap path intact under the same composition (model-selection first)', async () => {
@@ -318,8 +322,8 @@ describe('composition order with model-selection (T3 review ⚠️3)', () => {
     appendLlmRetry(agent, { turn: 1, step: 1, provider: 'mock', mode: 'always', retry: 1 })
     const config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
     expect(config).toEqual({ provider: 'other', model: 'gpt-4o' })
-    expect(switchEvents(agent)).toHaveLength(1)
-    expect(switchEvents(agent)[0]?.data.reason).toBe('always-cap')
+    // Stop-write: the always-cap switch applies but no durable event is written.
+    expect(switchEvents(agent)).toHaveLength(0)
   })
 
   it('keeps fallback switching intact when model-selection is registered after the plugin', async () => {
@@ -330,7 +334,7 @@ describe('composition order with model-selection (T3 review ⚠️3)', () => {
     expect(await dispatchRequestError(ctx, agent)).toEqual({ kind: 'retry' })
     const config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
     expect(config).toEqual({ provider: 'other', model: 'gpt-4o' })
-    expect(switchEvents(agent)).toHaveLength(1)
+    expect(switchEvents(agent)).toHaveLength(0)
   })
 
   it('re-applies the user selection over a fallback-switched step when model-selection composes outer (host-native degradation)', async () => {
@@ -341,7 +345,7 @@ describe('composition order with model-selection (T3 review ⚠️3)', () => {
     // first — the composition the old marker-handoff test modeled), its
     // post-`next()` re-apply is the final say: the switched step routes to
     // the user's selection, NOT the chain target. The switch decision is
-    // still recorded (fallbacks/switch event) — the coordination loss is
+    // still applied (no durable event, issue #52) — the coordination loss is
     // observable only in the served route, and the settings page documents it.
     const selection: ModelSelectionRef = {
       current: undefined,
@@ -351,7 +355,7 @@ describe('composition order with model-selection (T3 review ⚠️3)', () => {
     apply(ctx, cfg({ rootChain: ['other/gpt-4o'] }))
 
     expect(await dispatchRequestError(ctx, agent)).toEqual({ kind: 'retry' })
-    expect(switchEvents(agent)).toHaveLength(1)
+    expect(switchEvents(agent)).toHaveLength(0)
     const config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
     expect(config).toEqual({ provider: 'sel', model: 'm' })
   })
@@ -377,7 +381,7 @@ describe('composition order with model-selection (T3 review ⚠️3)', () => {
       provider: 'sel',
       model: 'm',
     })
-    expect(switchEvents(agent)).toHaveLength(1)
+    expect(switchEvents(agent)).toHaveLength(0)
   })
 
   it('lets the switch win when the plugin listener composes outer (registration-order dependence)', async () => {
@@ -397,6 +401,6 @@ describe('composition order with model-selection (T3 review ⚠️3)', () => {
     expect(await dispatchRequestError(ctx, agent)).toEqual({ kind: 'retry' })
     const config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
     expect(config).toEqual({ provider: 'other', model: 'gpt-4o' })
-    expect(switchEvents(agent)).toHaveLength(1)
+    expect(switchEvents(agent)).toHaveLength(0)
   })
 })

@@ -567,7 +567,7 @@ describe('apply() wiring — conditional commands child', () => {
     await vi.waitFor(() => expect(registered).toHaveLength(1))
 
     const { agent } = makeAgent('cmd-agent', { provider: 'mock', model: 'gpt-4o' })
-    // A real switch: durable event + cooldown on the source model.
+    // A real switch: cooldown on the source model (no durable event, issue #52).
     const action = await dispatchRequestError(ctx, agent)
     expect(action).toEqual({ kind: 'retry' })
 
@@ -583,14 +583,15 @@ describe('apply() wiring — conditional commands child', () => {
     // No rules match → the built-in 'inherit' role → rootChain + inherit tail.
     expect(text).toContain('角色: inherit')
     expect(text).toContain('链: other/gpt-4o（inherit-root）')
-    expect(text).toContain('mock/gpt-4o → other/gpt-4o')
-    expect(text).toContain('reason=触发码')
+    // Stop-write (issue #52): no durable fallbacks/switch event → the command's
+    // recent-switch section is empty, while the cooldown readback still works.
+    expect(text).toContain('最近切换: 本会话暂无 fallback 切换')
     expect(text).toContain('冷却 (1):')
     expect(text).toContain('mock/gpt-4o 冷却至')
     expect(text).not.toContain('无活跃冷却')
 
     // Read-only: the invocation must not have grown the store or replayed events.
-    expect(agent.session.events).toHaveLength(1)
+    expect(agent.session.events).toHaveLength(0)
   })
 
   it('shows an unconfigured chain and no cooldown for an untouched agent', async () => {

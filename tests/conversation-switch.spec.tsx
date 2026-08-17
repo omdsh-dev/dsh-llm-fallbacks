@@ -303,10 +303,14 @@ describe('conversation switch registration (D1 definition + D2 keyed seat)', () 
     expect(nodes[0].options.locale).toBe('fallbacks')
     expect(nodes[0].component).toBe(ConversationFallbackSwitch)
 
-    // The two settings registrations are untouched.
+    // The two settings registrations are untouched: plugin.item is the rc.7
+    // keyed slot (key only — the old list-slot id/order are absent),
+    // general.item keeps the list shape.
     const cards = slotsLedger['settings.plugin.item'] ?? []
     expect(cards).toHaveLength(1)
-    expect(cards[0].options.id).toBe('fallbacks')
+    expect(cards[0].options.key).toBe('fallbacks')
+    expect(cards[0].options).not.toHaveProperty('id')
+    expect(cards[0].options).not.toHaveProperty('order')
     const rows = slotsLedger['settings.general.item'] ?? []
     expect(rows).toHaveLength(1)
     expect(rows[0].options.id).toBe('fallbacks')

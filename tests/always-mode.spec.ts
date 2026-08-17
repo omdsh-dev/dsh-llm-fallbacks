@@ -73,14 +73,8 @@ describe('always-mode cap at the agent/request boundary (spec §2 clause 5 / ADR
       reasoningEffort: 'high' as ReasoningEffortId,
     })
     expect(switched).toEqual({ provider: 'other', model: 'gpt-4o' })
-    expect(switchEvents(agent)).toHaveLength(1)
-    expect(switchEvents(agent)[0]?.data).toMatchObject({
-      turn: 1,
-      step: 1,
-      from: { provider: 'mock', model: 'gpt-4o' },
-      to: { provider: 'other', model: 'gpt-4o' },
-      reason: 'always-cap',
-    })
+    // Stop-write (issue #52): the cap switch applies but no durable event is written.
+    expect(switchEvents(agent)).toHaveLength(0)
   })
 
   it('counts only always-mode events under the real llm/retry event shape (T3 fix review ⚠️2)', async () => {
@@ -107,8 +101,8 @@ describe('always-mode cap at the agent/request boundary (spec §2 clause 5 / ADR
     appendLlmRetry(agent, { turn: 1, step: 1, provider: 'mock', mode: 'always', retry: 3 })
     expect(await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' }))
       .toEqual({ provider: 'other', model: 'gpt-4o' })
-    expect(switchEvents(agent)).toHaveLength(1)
-    expect(switchEvents(agent)[0]?.data.reason).toBe('always-cap')
+    // Stop-write: the cap switch applies but no durable event is written.
+    expect(switchEvents(agent)).toHaveLength(0)
   })
 
   it('scopes the count to the current (turn, step, provider)', async () => {
@@ -159,7 +153,7 @@ describe('always-mode cap at the agent/request boundary (spec §2 clause 5 / ADR
     expect(result.requests.map((request) => request.provider)).toEqual(['mock', 'mock', 'mock', 'other'])
     expect(llmRetryEvents(agent)).toHaveLength(3)
     expect(llmRetryEvents(agent).every((event) => event.data.mode === 'always')).toBe(true)
-    expect(switchEvents(agent)).toHaveLength(1)
-    expect(switchEvents(agent)[0]?.data.reason).toBe('always-cap')
+    // Stop-write: the end-to-end cap switch applies but no durable event is written.
+    expect(switchEvents(agent)).toHaveLength(0)
   })
 })

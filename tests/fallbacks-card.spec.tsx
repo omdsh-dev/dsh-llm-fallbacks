@@ -5,7 +5,8 @@
  *
  * Registration surface (task 1): the fake slots runtime runs the inject
  * generator and records every register call, pinning the card contract: the
- * `settings.plugin.item` slot ledger holds id 'fallbacks', order 30, locale
+ * `settings.plugin.item` slot ledger holds key 'fallbacks' (the rc.7 keyed
+ * slot — the old list-slot `id` / `order` options are absent), locale
  * 'fallbacks' with a business-face-only inject (controller + useSnapshot —
  * no `t`, which the renderer synthesizes from `locale:` via PropsLocale);
  * the old `settings.section` fallbacks registration is gone, so the section
@@ -416,8 +417,11 @@ describe('FallbacksCard registration (settings.plugin.item)', () => {
     // The card ledger holds exactly one fallbacks card.
     const cards = ledger['settings.plugin.item'] ?? []
     expect(cards).toHaveLength(1)
-    expect(cards[0].options.id).toBe('fallbacks')
-    expect(cards[0].options.order).toBe(30)
+    // rc.7 keyed slot: `key` is the settings namespace the card edits; the
+    // old list-slot `id` / `order` options must be absent.
+    expect(cards[0].options.key).toBe('fallbacks')
+    expect(cards[0].options).not.toHaveProperty('id')
+    expect(cards[0].options).not.toHaveProperty('order')
     expect(cards[0].options.locale).toBe('fallbacks')
     // No nav-label thunk survives from the removed section registration.
     expect(cards[0].options).not.toHaveProperty('label')

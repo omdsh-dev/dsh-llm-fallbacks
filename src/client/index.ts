@@ -1,8 +1,9 @@
 /**
  * dsh-llm-fallbacks client half: registers the Fallbacks card into the
- * plugin-config page's `settings.plugin.item` slot (the official "插件配置"
- * settings page — id `fallbacks`, order 30, alongside the upstream bash /
- * agent-loop / web-search cards and the advisor card).
+ * plugin-config page's `settings.plugin.item` keyed slot (the official
+ * "插件配置" settings page — key `fallbacks`, the settings namespace the card
+ * edits, appearing after the upstream bash / agent-loop / web-search cards
+ * and the advisor card in registration order).
  *
  * Wiring (mirrors dsh-advisor):
  * - Registers the `fallbacks` locale dictionaries (zh/en).
@@ -11,10 +12,11 @@
  *   `/api/fallbacks/get|set|reset`), while `settings.describe` (writable +
  *   namespace directory) and the provider/model catalog stay on
  *   `connection.api` (see `fallbacks-store.ts`).
- * - Registers the `settings.plugin.item` card `id: 'fallbacks'` (order 30)
- *   with a business-only inject face ({@link FallbacksSettingsController} +
- *   the snapshot-selector hook); the old Settings-nav section registration
- *   is removed — deleting the section registration deletes the nav entry.
+ * - Registers the `settings.plugin.item` card `key: 'fallbacks'` (the rc.7
+ *   keyed slot — no `id`/`order`) with a business-only inject face
+ *   ({@link FallbacksSettingsController} + the snapshot-selector hook); the
+ *   old Settings-nav section registration is removed — deleting the section
+ *   registration deletes the nav entry.
  * - Refreshes the store on pushed invalidations — the forwarded remote
  *   events `settings/document-updated` (ns-filtered to the fallbacks
  *   namespace; refetches the descriptor + recent-switch summary) and
@@ -189,20 +191,20 @@ export function apply(ctx: ClientContext): void {
     }
   }, 'llm-fallbacks: pushed invalidations')
 
-  // The card registers into the plugin-config page's card slot with the
-  // upstream card shape — generator + `yield`, `locale: NS`, and an inject
-  // face carrying ONLY the business surface (controller + useSnapshot). The
-  // typed `t` seat is synthesized by the renderer from `locale: NS`
-  // (PropsLocale<'fallbacks'>), exactly like the upstream three cards and
-  // the advisor card; the old Settings-nav section registration (the
-  // "Fallbacks" nav entry) is removed — deleting the section registration
-  // deletes the nav entry. `order: 30` ties with the advisor card; ties are
-  // resolved by registration sequence (ui-slots stable sort).
+  // The card registers into the plugin-config page's keyed card slot with
+  // the upstream card shape — generator + `yield`, `locale: NS`, and an
+  // inject face carrying ONLY the business surface (controller +
+  // useSnapshot). The typed `t` seat is synthesized by the renderer from
+  // `locale: NS` (PropsLocale<'fallbacks'>), exactly like the upstream
+  // three cards and the advisor card; the old Settings-nav section
+  // registration (the "Fallbacks" nav entry) is removed — deleting the
+  // section registration deletes the nav entry. rc.7 made the slot keyed:
+  // `key` is the settings namespace the card edits, and the card renders in
+  // registration order — the old list-slot `id`/`order` options are gone.
   ctx.slots.inject('settings.plugin.item', function* () {
     yield ctx.slots.register({
       name: 'settings.plugin.item',
-      id: 'fallbacks',
-      order: 30, // bash 0 / agent-loop 10 / web-search 20 / advisor 30 / fallbacks 30
+      key: 'fallbacks', // the settings namespace the card edits
       locale: NS,
       inject: () => ({ controller, useSnapshot }),
     }, FallbacksCard)
