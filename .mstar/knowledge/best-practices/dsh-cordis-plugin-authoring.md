@@ -1,7 +1,7 @@
 ---
 module: dsh-plugin-authoring
 date: 2026-08-10
-last_updated: 2026-08-16
+last_updated: 2026-08-17
 problem_type: best_practice
 category: best-practices
 severity: low
@@ -92,6 +92,15 @@ dsh 插件 = npm 包，package.json 声明 dsh.bundle.patch（指向 bundle/cord
 **三通道迁移模式**（breaking 不自动迁移）：启动 logger.warn + gateway `legacyKeys` + UI 迁移横幅（表单保持可编辑）+ docs 迁移映射表；插件绝不自动改写配置。
 
 **组合空值填充语义**（已声明可选字段的等价默认）：`chain` 缺省 → `[]`、`permissions` 缺省 → `{ allow: [], deny: [] }`、字符串可选字段（如 `prompt`）缺省 → 不出现——「无自身链 / 无权限」语义等价，消费方 `roleDef?.chain ?? []` 不变；空组合 `Config({})` 深等于默认配置（no-op 不变式的组合侧验证）。
+
+### 客户端显隐语义的 wire 折叠陷阱（absent ≡ default，2026-08-17 实证）
+
+宿主 settings 组合（`Config(config)` 经 schemastery）**恒折叠 schema 默认**：声明了 default 的键在组合/解析结果中总是存在。wire 上「键缺失」与「键=默认值」不可区分（absent ≡ default）：
+
+- **client「hidden-when-absent」开关不可交付**：读到的配置里该键恒在（被折叠为默认），不存在可依赖的 absent 态——「键缺失才隐藏/才显示」的语义必然落空。
+- **save 是 merge**：首次保存即持久化默认值（≡ schema 默认，无行为差）——legacy 配置被触碰前行为不变，触碰后键落地为默认。
+- **诚实修法（Option A）= 恒渲染 + 文档**：开关常显（默认态 = schema 默认），不做 `accept()` key-strip / hidden-when-absent 死逻辑（死代码，且制造「客户端与宿主对默认语义各执一词」的假象）。
+- **设计含义**：客户端 UI 显隐以**值语义**（读到的默认即真值）而非**存在性语义**（键是否在 wire 上）驱动；实例见 iter-20260817 fallbacks `roleAutoMatch` 开关（AC-7 重定界）→ `.mstar/knowledge/architecture-patterns/dsh-dispatch-role-resolution.md`。
 
 ### 事件监听组合顺序与运行时面可读性（waterfall 内外层）
 
