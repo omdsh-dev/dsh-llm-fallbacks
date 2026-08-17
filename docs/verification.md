@@ -215,6 +215,22 @@ Then restart the dsh web session so the host half and the client half load.
 - Any step that deviates from expectations → record it as a QA finding (severity + reproduction steps), report it
   truthfully, and do not write it back into "Verified".
 
+#### 4.6 Dispatch-time role injection + `role-inject` event (AC-3 / AC-5) — documented degradation (listener order)
+
+1. **Setup**: with `fallbacks.enabled: true` and a role resolvable for a subagent — an explicit `agentPreset` matching a
+   declared role id, a `roles.rules` match, or (with `roleAutoMatch` left at its default `true`) the LLM auto-match stage —
+   dispatch a subagent whose resolved role's chain head differs from the request's current model.
+2. **Expected**: on the subagent's **first** request the chain-head model is injected — an info-level
+   `llm-fallbacks: agent ... role-inject role=<role> model=<provider>/<model>` log line and a `fallbacks/switch` event with
+   `reason: 'role-inject'` (from = current model, to = injected model, role = resolved role). Later requests are **not**
+   re-injected (idempotent once-marker). The injection writes **no** pending switch / cooldown / failure bookkeeping (it is
+   not a failure decision). With `roleAutoMatch: false` and no explicit/rules role, no auto-match and no injection occurs
+   (today's behavior).
+3. **Documented degradation (listener order)**: dispatch injection reuses the same `agent/request` override path as the
+   failure-time fallback, so whether it survives a **manual web model selection** depends on waterfall listener order — the
+   same documented degradation as the failure-time switch (§4.3 step 3 above). Without an active selection the request
+   routes to the injected model.
+
 ## Known limitations (real runtime surfaces the sandbox cannot cover)
 
 | Surface | Why not covered | Verification owner |
