@@ -48,6 +48,7 @@
     "build-client": "tsx scripts/build-client.ts",
     "release:prepare": "tsx scripts/prepare-release.ts",
     "release:validate": "tsx scripts/validate-release-version.ts",
+    "repair:fallbacks-switch-logs": "tsx scripts/repair-fallbacks-switch-logs.ts",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.build.json --noEmit && tsc --noEmit",
     "prepare": "pnpm run build"
