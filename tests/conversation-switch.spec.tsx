@@ -436,24 +436,49 @@ describe('ConversationFallbackSwitch rendered line', () => {
   it('renders the compact system line from a switch payload', () => {
     render(<ConversationFallbackSwitch {...switchProps(nodeFor(switchEvent(5)))} />)
     expect(screen.getByText('Model downgraded')).toBeTruthy()
+    // The summary keeps the from → to transition + reason context; the role
+    // now lives in its own badge + explicit role → model mapping.
     expect(screen.getByText(
-      'openai/gpt-4o → anthropic/claude-3-5-sonnet (inherit · trigger code)',
+      'openai/gpt-4o → anthropic/claude-3-5-sonnet (trigger code)',
     )).toBeTruthy()
     // The line is announced as a status row (non-interactive system notice).
     expect(document.querySelector('[role="status"]')).not.toBeNull()
   })
 
+  it('renders a distinct role badge (chip) with the role value', () => {
+    render(<ConversationFallbackSwitch {...switchProps(nodeFor(switchEvent(5, { role: 'reviewer' })))} />)
+    const badge = screen.getByText('reviewer')
+    expect(badge).toBeTruthy()
+    // The badge is its own visually distinct chip (not inline summary text).
+    const classes = (badge.getAttribute('class') ?? '').split(' ')
+    expect(classes.some((c) => c.includes('roleBadge'))).toBe(true)
+  })
+
+  it('renders the explicit role → model mapping segment', () => {
+    render(<ConversationFallbackSwitch {...switchProps(nodeFor(switchEvent(5, { role: 'reviewer' })))} />)
+    expect(screen.getByText(
+      'reviewer → anthropic/claude-3-5-sonnet',
+    )).toBeTruthy()
+  })
+
+  it('renders the role-inject reason through the shared reason map (localized)', () => {
+    render(<ConversationFallbackSwitch {...switchProps(nodeFor(switchEvent(5, { reason: 'role-inject' })))} />)
+    expect(screen.getByText(
+      'openai/gpt-4o → anthropic/claude-3-5-sonnet (role inject)',
+    )).toBeTruthy()
+  })
+
   it('renders the always-cap reason through the shared reason map', () => {
     render(<ConversationFallbackSwitch {...switchProps(nodeFor(switchEvent(5, { reason: 'always-cap' })))} />)
     expect(screen.getByText(
-      'openai/gpt-4o → anthropic/claude-3-5-sonnet (inherit · always-mode cap)',
+      'openai/gpt-4o → anthropic/claude-3-5-sonnet (always-mode cap)',
     )).toBeTruthy()
   })
 
   it('renders an unknown reason value raw (forward-compatible log)', () => {
     render(<ConversationFallbackSwitch {...switchProps(nodeFor(switchEvent(3, { reason: 'future-reason' as never })))} />)
     expect(screen.getByText(
-      'openai/gpt-4o → anthropic/claude-3-5-sonnet (inherit · future-reason)',
+      'openai/gpt-4o → anthropic/claude-3-5-sonnet (future-reason)',
     )).toBeTruthy()
   })
 
@@ -461,7 +486,12 @@ describe('ConversationFallbackSwitch rendered line', () => {
     render(<ConversationFallbackSwitch {...switchProps(nodeFor(switchEvent(4)), tZh)} />)
     expect(screen.getByText('模型已降级')).toBeTruthy()
     expect(screen.getByText(
-      'openai/gpt-4o → anthropic/claude-3-5-sonnet（inherit · 触发失败码）',
+      'openai/gpt-4o → anthropic/claude-3-5-sonnet（触发失败码）',
+    )).toBeTruthy()
+    // zh role-inject reason key parity.
+    render(<ConversationFallbackSwitch {...switchProps(nodeFor(switchEvent(6, { reason: 'role-inject' })), tZh)} />)
+    expect(screen.getByText(
+      'openai/gpt-4o → anthropic/claude-3-5-sonnet（角色注入）',
     )).toBeTruthy()
   })
 

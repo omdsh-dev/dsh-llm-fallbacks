@@ -164,12 +164,20 @@ export function ConversationFallbackSwitch({ node, t }: ConversationFallbackSwit
   const summary = t('chat.switch.summary', {
     from: `${data.from.provider}/${data.from.model}`,
     to: `${data.to.provider}/${data.to.model}`,
-    role: data.role,
+    // The role no longer interpolates into the summary — it renders as its
+    // own badge + explicit `role → model` segment (AC-5). The reason keeps
+    // the keep-from/to-context contract; unknown reasons still render raw.
     reason: reasonKey === undefined ? data.reason : t(reasonKey),
   })
   return (
     <div className={css.switchRow} role="status">
       <span className={css.switchTitle}>{t('chat.switch.title')}</span>
+      <span className={css.switchSep} aria-hidden="true" />
+      <span className={css.roleBadge}>{data.role}</span>
+      <span className={css.roleModelMap}>{t('chat.switch.roleMap', {
+        role: data.role,
+        model: `${data.to.provider}/${data.to.model}`,
+      })}</span>
       <span className={css.switchSep} aria-hidden="true" />
       <span className={css.switchSummary}>{summary}</span>
     </div>

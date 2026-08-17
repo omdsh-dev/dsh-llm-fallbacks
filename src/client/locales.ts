@@ -128,7 +128,9 @@ export const zh = {
   'general.switch.empty': '本会话暂无切换',
   'general.error': '状态读取失败：{message}',
   'chat.switch.title': '模型已降级',
-  'chat.switch.summary': '{from} → {to}（{role} · {reason}）',
+  'chat.switch.summary': '{from} → {to}（{reason}）',
+  'chat.switch.roleMap': '{role} → {model}',
+  'chat.switch.reason.role-inject': '角色注入',
   'defaults.prefix': '默认值',
   'save': '保存',
   'save.saving': '保存中…',
@@ -266,7 +268,9 @@ export const en = {
   'general.switch.empty': 'No switches this session',
   'general.error': 'Status read failed: {message}',
   'chat.switch.title': 'Model downgraded',
-  'chat.switch.summary': '{from} → {to} ({role} · {reason})',
+  'chat.switch.summary': '{from} → {to} ({reason})',
+  'chat.switch.roleMap': '{role} → {model}',
+  'chat.switch.reason.role-inject': 'role inject',
   'defaults.prefix': 'Default',
   'save': 'Save',
   'save.saving': 'Saving…',
@@ -302,6 +306,7 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 export const SWITCH_REASON_KEYS: Readonly<Partial<Record<FallbackSwitchReason, FallbacksKey>>> = {
   'trigger-code': 'status.switches.reason.trigger-code',
   'always-cap': 'status.switches.reason.always-cap',
+  'role-inject': 'chat.switch.reason.role-inject',
 }
 
 /** Human-readable trigger-code labels (spec §4 用户直观性). */

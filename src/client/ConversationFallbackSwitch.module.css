@@ -42,3 +42,35 @@
   white-space: nowrap;
   color: var(--dsw-alias-label-tertiary);
 }
+
+/* Role badge (AC-5): a compact, non-interactive chip distinct from the
+ * surrounding text — same pill geometry as the card/general-row status
+ * badge (`GeneralFallbacksRow.module.css .badge`, `FallbacksCard.module.css`
+ * `:107-113`), surfaced on the module-platform tone so it reads as a tag
+ * rather than inline summary copy. */
+.roleBadge {
+  flex: none;
+  max-width: 96px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  line-height: 20px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: var(--dsw-alias-bg-module-platform);
+  color: var(--dsw-alias-label-primary);
+}
+
+/* Explicit `role → model` mapping segment (AC-5): sits after the badge on
+ * the secondary tone, making the role's resolved chain-head model explicit
+ * and separated from the `from → to` transition + reason that follows. */
+.roleModelMap {
+  flex: none;
+  min-width: 0;
+  margin-left: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--dsw-alias-label-secondary);
+}
