@@ -311,6 +311,15 @@ function validateDraft(
       } else {
         seenSlotPresets.add(row.preset)
       }
+      // qc1 F-002: preset rows reject stored windows/day masks the same way
+      // the gateway does (`validateTimeSlotsPatch`) — preset windows are
+      // frozen code constants. A hand-written YAML row carrying days/start/
+      // end is invisible in the preset UI (no window controls render), so
+      // without this guard it would pass the card and fail only at the
+      // gateway with a generic English banner, un-fixable from the card.
+      if (row.start !== undefined || row.end !== undefined || (row.days !== undefined && row.days.length > 0)) {
+        errors.push(t('validation.slotPresetFrozen'))
+      }
     } else if (row.kind === 'custom') {
       if (typeof row.start !== 'string' || typeof row.end !== 'string' || !HHMM_RE.test(row.start) || !HHMM_RE.test(row.end)) {
         errors.push(t('validation.slotWindow'))

@@ -576,10 +576,12 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     // the effective chain (first matching extra row, else the all-day
     // `rootChain`) replaces the raw `rootChain` as the root role's
     // resolveChainViews tail. Subagent walks are UNCHANGED (raw rootChain
-    // append). P6: without a conforming all-day the slot rows stay inert
-    // and the v0.2.2 walk over the raw rootChain runs verbatim (mirror the
+    // append). P6 (qc1 F-001 — the gate lives in `resolveSlotState`, the
+    // single source every slot surface reads): without a conforming all-day
+    // the effective chain IS the raw rootChain — slot rows stay inert and
+    // the v0.2.2 walk over the raw rootChain runs verbatim (mirror the
     // virtual adapter registration gate).
-    const rootTail = agent.session?.header?.origin === 'subagent' || !isAllDayConforming(config.rootChain)
+    const rootTail = agent.session?.header?.origin === 'subagent'
       ? config.rootChain
       : resolveEffectiveChain(config, new Date(), config.tz ?? 'Asia/Shanghai')
     // T1 review Important #2: resolveChainViews walks the concatenated
@@ -741,9 +743,14 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     // force-switches an in-flight step — the rotation is observed here and
     // applies through the SAME resolver to the failure walk (decide) and the
     // FallbacksChain primary override below. Skipped entirely when no extra
-    // slot rows exist (the winner would always be 'all-day').
+    // slot rows exist (the winner would always be 'all-day'). P6 (qc1
+    // F-001): gated on a conforming all-day like every other slot surface —
+    // a legacy multi-model chain keeps the rows inert HERE too (the
+    // resolver already reports 'all-day', but the explicit gate also keeps
+    // the per-agent marker and the log untouched across a config change).
     if (
       config.enabled
+      && isAllDayConforming(config.rootChain)
       && (config.timeSlots?.length ?? 0) > 0
       && agent.session?.header?.origin !== 'subagent'
     ) {

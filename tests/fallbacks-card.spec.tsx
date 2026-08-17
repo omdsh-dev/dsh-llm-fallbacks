@@ -1604,6 +1604,37 @@ describe('FallbacksCard time-slot rows (plan fallbacks-timeslots Task 3)', () =>
     expect(scripted.set).not.toHaveBeenCalled()
     expect(screen.getByRole('alert').textContent).toContain(en['validation.slotChainRequired'])
   })
+
+  it('rejects a YAML preset row carrying a day mask on save (qc1 F-002 — frozen windows, gateway mirror)', async () => {
+    const config: typeof defaultFallbacksConfig = {
+      ...SLOT_CONFIG,
+      timeSlots: [
+        // Hand-written YAML row: preset windows are frozen code constants,
+        // so `days` is illegal. The preset UI renders NO day controls —
+        // the offending value is invisible in the card, so without this
+        // guard the row would pass card validation and be rejected only at
+        // the gateway with a generic English banner, un-fixable from here.
+        { kind: 'preset', preset: 'liang-peak', days: [1], chain: ['openai/gpt-4o'] },
+      ],
+    }
+    const { view, props, scripted } = await mountCard({ config })
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    // The row loads clean (days round-trips through the editor — the
+    // dirty-check invariant holds; no unsaved pill).
+    expect(screen.queryByText(en.unsaved)).toBeNull()
+    expect(within(slotsGroup()).getByText(en['timeSlots.preset.liang-peak.label'])).toBeTruthy()
+    // An unrelated edit dirties the draft (a clean draft's save button is
+    // disabled), then Save is blocked by the frozen-window guard with an
+    // inline explanation — the gateway error never becomes the first word.
+    expandAdvanced()
+    fireEvent.change(screen.getByLabelText(en['cooldownMs.label']), { target: { value: '7000' } })
+    view.rerender(<FallbacksCard {...props} />)
+    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    view.rerender(<FallbacksCard {...props} />)
+    expect(scripted.set).not.toHaveBeenCalled()
+    expect(screen.getByRole('alert').textContent).toContain(en['validation.slotPresetFrozen'])
+  })
 })
 
 describe('FallbacksCard seeded roles (plan fallbacks-role-seeds T5)', () => {

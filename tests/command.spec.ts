@@ -611,6 +611,43 @@ describe('apply() wiring — conditional commands child', () => {
     expect(agent.session.events).toHaveLength(0)
   })
 
+  it('reports the slot as all-day when a legacy non-conforming all-day keeps the rows inert (qc1 F-001)', async () => {
+    const registered: CommandDefinition[] = []
+    ctx.provide('commands', {
+      register: (def: CommandDefinition) => {
+        registered.push(def)
+        return () => {}
+      },
+    } as never)
+    apply(ctx, cfg({
+      rootChain: ['mock/legacy-a', 'other/legacy-b'],
+      timeSlots: [{ kind: 'custom', start: '09:00', end: '12:00', chain: ['anthropic/claude-sonnet-4'] }],
+    }))
+    await vi.waitFor(() => expect(registered).toHaveLength(1))
+
+    const { agent } = makeAgent('cmd-legacy-slot', { provider: 'mock', model: 'gpt-4o' })
+    // Pin the clock INSIDE the slot window (09:01 Asia/Shanghai): the row
+    // would win for a conforming all-day — with a legacy multi-model chain
+    // the 分时 line must stay on the inert all-day state (no slot status
+    // for a rotation that never affects routing).
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-08-17T01:01:00Z'))
+    try {
+      const result = registered[0]!.handler({
+        commandId: 'x',
+        agent,
+        rawInput: '',
+        signal: new AbortController().signal,
+      } as unknown as CommandInvocation)
+      expect(result.kind).toBe('success')
+      const text = (result as { text?: string }).text ?? ''
+      expect(text).toContain('分时: all-day')
+      expect(text).not.toContain('custom 09:00-12:00')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('shows an unconfigured chain and no cooldown for an untouched agent', async () => {
     const registered: CommandDefinition[] = []
     ctx.provide('commands', {

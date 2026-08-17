@@ -231,6 +231,27 @@ describe('分时切换 detection — per-root-agent last-winner marker (P7)', ()
     expect(slotSwitchLogs(logs)).toHaveLength(0)
   })
 
+  it('never logs for a legacy non-conforming all-day (qc1 F-001 — rows inert on the log surface too)', async () => {
+    const logs = captureLogs()
+    const { agent } = makeAgent('ts-legacy-log', { provider: 'mock', model: 'gpt-4o' }, { origin: 'root' })
+    apply(ctx, cfg({ rootChain: ['mock/legacy-a', 'other/legacy-b'], timeSlots: [morningSlotRow] }))
+    vi.useFakeTimers()
+
+    // The clock crosses INTO the slot window — with a conforming all-day
+    // this would log 分时切换 (see the rotation test above). A legacy
+    // multi-model chain keeps the rows inert on the log surface (P6): no
+    // switch log, and no per-agent marker is written either.
+    vi.setSystemTime(new Date('2026-08-17T00:59:00Z'))
+    await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
+    vi.setSystemTime(new Date('2026-08-17T01:01:00Z'))
+    await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
+    expect(slotSwitchLogs(logs)).toHaveLength(0)
+    // The failure walk stays on the raw rootChain (v0.2.2 verbatim).
+    expect(await dispatchRequestError(ctx, agent)).toEqual({ kind: 'retry' })
+    expect(await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' }))
+      .toEqual({ provider: 'mock', model: 'legacy-a' })
+  })
+
   it('keeps the marker per agent (a fresh agent baselines on its first request)', async () => {
     const logs = captureLogs()
     const { agent: first } = makeAgent('ts-a', { provider: 'mock', model: 'gpt-4o' }, { origin: 'root' })

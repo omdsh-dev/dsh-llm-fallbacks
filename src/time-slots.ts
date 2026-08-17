@@ -233,6 +233,11 @@ export function isAllDayConforming(chain: readonly string[]): boolean {
  * REPLACES the all-day chain (never concatenated); no match ⇒ `rootChain`
  * (the all-day row, always last and required). Malformed rows warn once
  * and are skipped; never throws.
+ *
+ * P6 (qc1 F-001): without a conforming all-day the slot rows are inert, so
+ * this IS the raw `rootChain` — the gate lives in {@link resolveSlotState},
+ * the single source every slot surface (this, the 分时切换 log, the
+ * `/fallbacks` strip, select-is-primary, the virtual adapter delegate) reads.
  */
 export function resolveEffectiveChain(config: FallbacksConfig, now: Date, tz: string): string[] {
   const state = resolveSlotState(config, now, tz)
@@ -244,12 +249,21 @@ export function resolveEffectiveChain(config: FallbacksConfig, now: Date, tz: st
  * last-winner marker, in-process only) and the card / `/fallbacks` status
  * strip. `winner` is the matching row or `'all-day'`; `label` names the
  * slot (frozen preset label or `custom HH:mm-HH:mm`).
+ *
+ * P6 gate (qc1 F-001): without a conforming all-day
+ * (`isAllDayConforming(config.rootChain)`) the winner is ALWAYS `'all-day'`
+ * — a legacy multi-model (or empty) chain earns no slot rows, so every
+ * surface fed by this resolver reports the inert state and routing stays on
+ * the raw `rootChain` (the v0.2.2 walk verbatim).
  */
 export function resolveSlotState(
   config: FallbacksConfig,
   now: Date,
   tz: string,
 ): { winner: SlotRowConfig | 'all-day'; label: string } {
+  if (!isAllDayConforming(config.rootChain)) {
+    return { winner: 'all-day', label: 'all-day' }
+  }
   const clock = wallClock(now, tz)
   const seenPresets = new Set<string>()
   const rows = Array.isArray(config.timeSlots) ? config.timeSlots : []
