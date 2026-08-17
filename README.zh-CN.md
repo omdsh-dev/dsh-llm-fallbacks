@@ -24,6 +24,20 @@ dsh plugin --profile dsh-tui add dsh-llm-fallbacks  # dsh-tui 终端 profile
 
 同一个插件、两个前端——区别只在 `--profile` 参数。钉版本：加 `@<version>`。registry 安装拉取的是**已构建产物**（`dist/`），目标机无需构建。registry / git / 本地目录变体、卸载与 `--dump-config` 验证 → [docs/install.md](docs/install.md)。
 
+### 修复旧会话（0.2.2 之前的版本）
+
+0.2.2 之前的版本会把 `fallbacks/switch` 事件写入会话持久化日志，而新版 dsh 拒绝加载这类会话（issue #52——apply() 时的注册因插件与宿主解析到不同模块实例而无效）。如果升级后已有会话打不开，clone 本仓库并修复日志（先停 dsh）：
+
+```sh
+git clone https://github.com/omdsh-dev/dsh-llm-fallbacks.git
+cd dsh-llm-fallbacks
+pnpm install
+pnpm repair:fallbacks-switch-logs -- --dry-run            # 预览哪些会话会被改动
+pnpm repair:fallbacks-switch-logs -- --apply --backup     # 给旧事件打 ignorable 标记
+```
+
+脚本默认扫描 `~/.dsh/sessions`（可用 `--root <dir>` 覆盖），把遗留 `fallbacks/switch` 事件标记为 `ignorable: true`，宿主读路径即可重新接受该会话；每个被修复的日志保留一份 `<file>.bak`。`--apply` 必须搭配 `--backup`，且须在 dsh 停止时运行。从 0.2.2 起插件不再写 durable 切换事件，新会话无需修复。
+
 ### 最小配置
 
 在 dsh 的设置文档（默认 `$DSH_HOME/settings.yaml`）中添加 `fallbacks:` 分节：

@@ -24,6 +24,20 @@ dsh plugin --profile dsh-tui add dsh-llm-fallbacks  # dsh-tui terminal profile
 
 Same plugin, either front end — the only difference is the `--profile` flag. Pin a version with `@<version>`. A registry install fetches the **built package** (`dist/`), nothing builds on the target machine. Registry / git / local-directory variants, uninstall, and `--dump-config` verification → [docs/install.md](docs/install.md).
 
+### Repair existing sessions (versions before 0.2.2)
+
+Versions before 0.2.2 wrote durable `fallbacks/switch` session events that newer dsh releases refuse to load (issue #52 — the apply()-time event-type registration is ineffective because plugin and host resolve different module instances). If existing sessions fail to open after an upgrade, clone this repository and repair the logs (stop dsh first):
+
+```sh
+git clone https://github.com/omdsh-dev/dsh-llm-fallbacks.git
+cd dsh-llm-fallbacks
+pnpm install
+pnpm repair:fallbacks-switch-logs -- --dry-run            # preview which sessions would change
+pnpm repair:fallbacks-switch-logs -- --apply --backup     # mark legacy events ignorable
+```
+
+The script scans `~/.dsh/sessions` by default (override with `--root <dir>`), marks legacy `fallbacks/switch` events `ignorable: true` so the host read path accepts the session again, and keeps a `<file>.bak` per repaired log. `--apply` requires `--backup` and must run with dsh stopped. From 0.2.2 on, the plugin stops writing durable switch events, so no new sessions need repair.
+
 ### Minimal configuration
 
 Add a `fallbacks:` section to the dsh settings document (default `$DSH_HOME/settings.yaml`):
