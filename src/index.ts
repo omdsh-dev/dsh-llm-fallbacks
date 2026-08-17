@@ -72,7 +72,12 @@ import {
 } from './seeds.ts'
 import { presetRoles } from './presets.ts'
 import { installTuiClient } from './tui.ts'
-import { FALLBACKS_CHAIN_MODEL, FALLBACKS_PROVIDER, installFallbacksAdapter } from './virtual-adapter.ts'
+import {
+  FALLBACKS_CHAIN_MODEL,
+  FALLBACKS_PROVIDER,
+  firstDispatchableExactHead,
+  installFallbacksAdapter,
+} from './virtual-adapter.ts'
 
 /** The plugin row id mounted by the profile bundle patch. */
 export const name = 'llm-fallbacks'
@@ -303,30 +308,6 @@ function currentModel(agent: Agent, provider: string): FailingModel {
 function overrideConfig(seed: LlmCallConfig, to: { provider: string; model: string }): LlmCallConfig {
   const { reasoningEffort: _inherited, ...withoutInheritedEffort } = seed
   return { ...withoutInheritedEffort, provider: to.provider, model: to.model }
-}
-
-/**
- * The select-is-primary head (plan fallbacks-virtual-chain Task 2, P3): the
- * FIRST EXACT `provider/model` selector of an effective chain —
- * `firstExactCandidate` semantics. `provider/*` wildcards are never seeds
- * and malformed entries are skipped (config-warning path, same as
- * `resolveChainViews`). `undefined` when the chain is empty or every entry
- * is wildcard/malformed — the caller warns once and skips the override.
- * The chain itself comes from `resolveEffectiveChain` (`src/time-slots.ts`)
- * — the resolver is the single source; there is deliberately NO
- * `rootChain[0]` fallback branch here.
- */
-function firstExactHead(chain: readonly string[]): { provider: string; model: string } | undefined {
-  for (const entry of chain) {
-    let selector: Selector
-    try {
-      selector = parseSelector(entry)
-    } catch {
-      continue // malformed entries never become seeds (config-warning path)
-    }
-    if (selector.model !== undefined) return { provider: selector.provider, model: selector.model }
-  }
-  return undefined
 }
 
 export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksConfig): void {
@@ -702,15 +683,17 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     // Select-is-primary (plan fallbacks-virtual-chain Task 2, P3): a
     // ROOT-origin seed of the virtual `fallbacks/FallbacksChain` row means
     // "use the chain as the root primary" — override the seed to the
-    // effective chain's FIRST EXACT head (the same `resolveEffectiveChain`
-    // the virtual adapter's stream() delegates through; the resolver is the
-    // single source — no rootChain[0] fallback branch here). Detection
-    // lives AFTER pending-switch application: a failure decision already
-    // progressed past the head and wins. Root-origin only (mirror the
-    // role-inject gate — a subagent seed that still carries the virtual
-    // pair is NOT overridden here; P1's thin stream() delegate handles
-    // those), plugin `enabled`, and the effective chain must yield an exact
-    // head — a wildcard-only (or empty) chain warns once and skips.
+    // effective chain's FIRST DISPATCHABLE EXACT head (the shared
+    // `firstDispatchableExactHead` the virtual adapter's delegate paths
+    // also use — ONE skip/walk rule for override and delegate; the chain
+    // comes from `resolveEffectiveChain`, the single source — no
+    // rootChain[0] fallback branch here). Detection lives AFTER
+    // pending-switch application: a failure decision already progressed
+    // past the head and wins. Root-origin only (mirror the role-inject
+    // gate — a subagent seed that still carries the virtual pair is NOT
+    // overridden here; P1's thin stream() delegate handles those), plugin
+    // `enabled`, and the effective chain must yield a dispatchable head —
+    // an empty / wildcard-only / self-route chain warns once and skips.
     if (
       config.enabled
       && seed.provider === FALLBACKS_PROVIDER
@@ -718,10 +701,10 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
       && agent.session?.header?.origin !== 'subagent'
     ) {
       const effective = resolveEffectiveChain(config, new Date(), config.tz ?? 'Asia/Shanghai')
-      const head = firstExactHead(effective)
+      const head = firstDispatchableExactHead(effective)
       if (head === undefined) {
         logger.warn(
-          'llm-fallbacks: FallbacksChain selected but the effective chain has no exact head (empty or wildcard-only) — no primary override',
+          'llm-fallbacks: FallbacksChain selected but the effective chain has no exact head (empty, wildcard-only, or self-route) — no primary override',
         )
       } else {
         logger.info(

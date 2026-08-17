@@ -240,6 +240,46 @@ describe('adapter contract (P1/P3)', () => {
     expect(stub.calls[0]).toMatchObject({ provider: HEAD_PROVIDER, model: HEAD_MODEL })
   })
 
+  it('resolveModel and stream() use the same exact head as the root request override (wildcard-first chain)', async () => {
+    // The same wildcard-first slot chain the select-is-primary override test
+    // uses (tests/index-request.spec.ts, "picks the FIRST exact head,
+    // skipping earlier wildcard entries"): the leading `other/*` is never a
+    // dispatch target, so BOTH delegate paths must land on
+    // `anthropic/claude-sonnet-4` — the head the root override resolves to.
+    const anthropicStub = new StubHeadAdapter({ name: 'Claude Sonnet 4' })
+    ctx.llm.registerAdapter(['anthropic'], anthropicStub)
+    apply(
+      ctx,
+      cfg({
+        rootChain: [OFFICIAL_V4_FLASH],
+        timeSlots: [{ kind: 'custom', start: '00:00', end: '23:59', chain: ['other/*', 'anthropic/claude-sonnet-4'] }],
+      }),
+    )
+    await vi.waitFor(() => expect(listed()).toBe(true))
+    // Pin the wall clock inside the matching slot window (00:00–23:59).
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-08-18T04:00:00Z'))
+
+    // resolveModel proxies the SAME head's metadata (name comes from the
+    // anthropic stub — proof the proxy followed the chain past the wildcard).
+    const info = await ctx.llm.resolveModelInfo(FALLBACKS_PROVIDER, FALLBACKS_CHAIN_MODEL)
+    expect(info).toMatchObject({ provider: FALLBACKS_PROVIDER, id: FALLBACKS_CHAIN_MODEL, name: 'Claude Sonnet 4' })
+
+    // stream() delegates to the SAME head — the virtual route never streams
+    // itself and never touches the leading wildcard entry.
+    const chunks = await collect(
+      ctx.llm.stream({ provider: FALLBACKS_PROVIDER, model: FALLBACKS_CHAIN_MODEL, messages: [] }),
+    )
+    expect(chunks).toEqual([
+      { type: 'text-delta', index: 0, text: 'hello from head' },
+      { type: 'finish', reason: { kind: 'stop' } },
+    ])
+    expect(anthropicStub.calls).toHaveLength(1)
+    expect(anthropicStub.calls[0]).toMatchObject({ provider: 'anthropic', model: 'claude-sonnet-4' })
+    // The all-day head was never dispatched either.
+    expect(stub.calls).toHaveLength(0)
+  })
+
   it('stream() throws an explicit LlmError when the effective chain is empty', async () => {
     const config: FallbacksConfig = {
       ...defaultFallbacksConfig,

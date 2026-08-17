@@ -38,7 +38,7 @@ import {
   type StreamChunk,
 } from '@deepseek-ai/dsh-llm'
 import type { FallbacksConfig } from './config.ts'
-import { parseSelector } from './selectors.ts'
+import { parseSelector, type Selector } from './selectors.ts'
 import { isAllDayConforming, resolveEffectiveChain } from './time-slots.ts'
 
 /** Provider route of the virtual adapter (exact string, spec lock). */
@@ -61,30 +61,47 @@ export const UNDISPATCHABLE_HEAD_CODE = 'UNDISPATCHABLE_EFFECTIVE_HEAD'
 export const LLM_UNAVAILABLE_CODE = 'LLM_UNAVAILABLE'
 
 /** One dispatchable exact head: `provider/model`. Wildcards are never seeds (P3). */
-interface EffectiveHead {
+export interface EffectiveHead {
   provider: string
   model: string
 }
 
 /**
- * The effective chain head at `now` (P1): the FIRST entry of the SAME
- * `resolveEffectiveChain` the routing engine uses — no walking, no skipping.
- * `undefined` when the chain is empty or the head is not an exact real pair
- * (wildcard, self-route to `fallbacks/*`, malformed selector).
+ * The FIRST DISPATCHABLE exact head of a chain — the single definition of
+ * "effective head" (F-001) shared by the root select-is-primary override
+ * (`src/index.ts`) and the virtual adapter's delegate paths. Walks the SAME
+ * chain `resolveEffectiveChain` produces, skipping entries that can never
+ * be dispatched: malformed selectors (config-warning path), `provider/*`
+ * wildcards (no real pair), and self-routes back to `fallbacks/*` (the P1
+ * recursion guard). `undefined` when the chain is empty or no entry is
+ * dispatchable.
+ */
+export function firstDispatchableExactHead(chain: readonly string[]): EffectiveHead | undefined {
+  for (const entry of chain) {
+    let selector: Selector
+    try {
+      selector = parseSelector(entry)
+    } catch {
+      continue // malformed chain entries (hand-written YAML) are never dispatch targets
+    }
+    if (selector.model === undefined) continue // wildcard: no real pair to delegate
+    if (selector.provider === FALLBACKS_PROVIDER) continue // self-route: recursion guard
+    return { provider: selector.provider, model: selector.model }
+  }
+  return undefined
+}
+
+/**
+ * The effective chain head at `now` (P1): the first DISPATCHABLE exact head
+ * of the SAME `resolveEffectiveChain` the routing engine uses — thin
+ * config+clock entry into the shared {@link firstDispatchableExactHead} (no
+ * divergent skip/walk rules). `undefined` when the chain is empty or no
+ * entry is dispatchable (wildcard, self-route to `fallbacks/*`, malformed
+ * selector).
  */
 function effectiveHeadOf(config: FallbacksConfig, now: Date): EffectiveHead | undefined {
   const chain = resolveEffectiveChain(config, now, config.tz ?? 'Asia/Shanghai')
-  const head = chain[0]
-  if (head === undefined) return undefined
-  let selector
-  try {
-    selector = parseSelector(head)
-  } catch {
-    // Malformed chain entry (hand-written YAML) — never a dispatch target.
-    return undefined
-  }
-  if (selector.provider === FALLBACKS_PROVIDER || selector.model === undefined) return undefined
-  return { provider: selector.provider, model: selector.model }
+  return firstDispatchableExactHead(chain)
 }
 
 /**
