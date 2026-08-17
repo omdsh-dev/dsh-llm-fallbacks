@@ -76,7 +76,7 @@ Verdict（implement-now / gated / map-only + 理由）。
 
 | Seam | 契约要点 | 可行性 | 成本 | Verdict |
 |------|----------|--------|------|---------|
-| `settings.plugin.item` | list/root；卡自绘（owner `children?: never`） | ✅ | S | **implement-now**（fallbacks 卡，order 30） |
+| `settings.plugin.item` | keyed/root（rc.7 起；key = 卡片编辑的设置命名空间）；卡自绘（owner `children?: never`） | ✅ | S | **implement-now**（fallbacks 卡，key `fallbacks`） |
 | settings.section | list/root；整页导航 | ✅ | S | map-only（fallbacks 已迁出；其它产品仍可用） |
 | `settings.general.item` | list/root；owner 空、行自绘 | ✅ | S | **implement-now**（fallbacks 只读行，order 100） |
 | settings.action | list/root；头部操作 | ✅ | S–M | map-only（被 `/fallbacks` 命令覆盖） |

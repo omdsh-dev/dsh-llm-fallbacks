@@ -29,8 +29,8 @@ dsh web settings 是**纯组合面（shell 零自有内容）**——所有条�
 权威定义在 dsh-private `{HOST}/packages/client/ui-settings/src/client/contract/slots.ts`。契约设计
 意图原文："A feature owns its settings surface — adding a setting never means editing the
 shell"（新增设置永远不用改 shell 本体）。本仓库 Fallbacks 设置入口即经 `settings.plugin.item`
-（插件配置页卡，id `fallbacks`，order 30）挂载（2026-08-12 起；旧 settings.section 独立
-导航已删除，卡片替换 section 不并存）。
+（插件配置页卡，key `fallbacks`——rc.7 起该 slot 为 keyed，key = 卡片编辑的设置命名空间）
+挂载（2026-08-12 起；旧 settings.section 独立导航已删除，卡片替换 section 不并存）。
 
 ## Guidance
 
@@ -38,7 +38,7 @@ shell"（新增设置永远不用改 shell 本体）。本仓库 Fallbacks 设�
 
 | Slot | 用途 | 注册项要点 |
 |------|------|-----------|
-| `settings.plugin.item` | 官方**插件配置页**卡（`ui-plugin-config` 的 PluginConfigSection 经 settings.section id `plugins` order 30 挂载后渲染此列表）；卡自绘内部，折叠列表项 | `name`、`id`、`order`、`locale`、可选 `inject`（owner `children?: never`，`slots.ts:16,21-24`） |
+| `settings.plugin.item` | 官方**插件配置页**卡（`ui-plugin-config` 的 PluginConfigSection 经 settings.section id `plugins` order 30 挂载后按注册顺序渲染）；卡自绘内部，折叠列表项 | `name`、`key`（rc.7 起 keyed；key = 卡片编辑的设置命名空间）、`locale`、可选 `inject`（owner `children?: never`，`slots.ts:16,21-24`） |
 | settings.section | 一整页新设置（主入口；`kind: 'list'`，导航行 + 内容页按 order 排序） | `id`（导航 key + `only` 过滤键）、`order`、`label`（注册方本地化）、`locale`、可选 `inject`/`children` |
 | `settings.general.item` | General 页内单行偏好项 | 由 ui-settings-general GeneralSection 在 children 声明；**SlotMap 类型在 `{HOST}/ui-settings/slots.ts:77`**（locale 包只是注册范例）；owner 空（`slots.ts:81-84`），行自绘 |
 | settings.action | 内容列头部、Close 前的操作列表（如「打开配置文件」） | — |
@@ -46,9 +46,9 @@ shell"（新增设置永远不用改 shell 本体）。本仓库 Fallbacks 设�
 | settings.trigger / `header` / `close` | `single` seat（chrome 文案位）——**不是**业务条目用 | — |
 
 **List slot 排序语义（order tie）**：按 `order` 升序，**同 order 按注册先后稳定排序**
-（`{HOST}/ui-slots/src/index.ts:779-783`，V8 stable sort）。插件配置页卡（bash 0 / agent-loop 10 /
-web-search 20 / advisor 30 / fallbacks 30）中 advisor 与 fallbacks 同为 30——并列时顺序由
-bundle 插行顺序决定，调整卡序应改 bundle 顺序而非动 slot。
+（`{HOST}/ui-slots/src/index.ts:779-783`，V8 stable sort）。rc.7 起 `settings.plugin.item`
+改为 keyed slot——插件配置页卡按注册顺序渲染，不再有 `order`；其它 list slot（如
+General 行）的排序语义不变。
 
 ```ts
 // 新设置页最近范例（ui-agent-preset）——统一走 ctx.slots.inject（非裸 register）：
@@ -91,9 +91,8 @@ ctx.slots.inject('settings.section', () => ctx.slots.register({
 - `general`（ui-settings-general，order 0）、`models`（ui-models）、`agent-presets`
   （ui-agent-preset，order 20）、`plugins`（ui-plugin-config，order 30，settings.section
   承载插件配置页）
-- 插件配置页卡：bash（order 0）、agent-loop（10）、web-search（20）、advisor（30）、
-  `fallbacks`（dsh-llm-fallbacks，order 30，`settings.plugin.item`）——同序并列按注册顺序
-  稳定排序（tie 语义见上）
+- 插件配置页卡（rc.7 keyed slot，按注册顺序）：bash、agent-loop、web-search、advisor、
+  `fallbacks`（dsh-llm-fallbacks，key `fallbacks`，`settings.plugin.item`）
 - General 内单行：locale、theme、permission、conversation、agent-preset 及 fallbacks
   （id `fallbacks` order 100 列尾，只读状态行）均用
   `ctx.slots.inject('settings.general.item', ...)`
