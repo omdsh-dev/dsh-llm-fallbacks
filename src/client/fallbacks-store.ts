@@ -297,6 +297,10 @@ export function parseFallbacksConfig(value: unknown): FallbacksConfig {
   if (enabled !== undefined && typeof enabled !== 'boolean') {
     throw new TypeError('fallbacks descriptor enabled must be a boolean')
   }
+  const roleAutoMatch = value.roleAutoMatch
+  if (roleAutoMatch !== undefined && typeof roleAutoMatch !== 'boolean') {
+    throw new TypeError('fallbacks descriptor roleAutoMatch must be a boolean')
+  }
   return {
     enabled: enabled ?? defaultFallbacksConfig.enabled,
     triggerCodes: (triggerCodes as string[] | undefined) ?? [...defaultFallbacksConfig.triggerCodes],
@@ -317,6 +321,12 @@ export function parseFallbacksConfig(value: unknown): FallbacksConfig {
     // mirror of `revertPolicy`; the settings card neither consumes nor
     // renders `presets` (R-001 re-defer — no client feature change).
     presets: (presets as FallbacksConfig['presets'] | undefined) ?? defaultFallbacksConfig.presets,
+    // §9.4 mirror: the host default gained `roleAutoMatch` (10th field), so
+    // the client fold mirrors it too — `parseFallbacksConfig` output must
+    // stay equal to `defaultFallbacksConfig` (pinned invariant). Mechanical
+    // mirror of `enabled`; the settings card neither consumes nor renders
+    // `roleAutoMatch` (R-001 re-defer — no client feature change).
+    roleAutoMatch: roleAutoMatch ?? defaultFallbacksConfig.roleAutoMatch,
   }
 }
 
