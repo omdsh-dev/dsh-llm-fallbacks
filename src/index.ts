@@ -17,10 +17,13 @@
  *   `{ kind: 'retry' }` (own recovery, no `next()`).
  * - `agent/request` waterfall: apply a pending switch after `await next()`
  *   (provider/model override, inherited `reasoningEffort` dropped — the
- *   `installModelSelection` `withoutInheritedEffort` pattern), then the
- *   always-mode cap check (count `llm/retry` events for the current
- *   turn/step/provider; ≥ `alwaysModeRetryCap` → same decision path, reason
- *   `always-cap` — ADR-2).
+ *   `installModelSelection` `withoutInheritedEffort` pattern); a
+ *   root-origin `fallbacks/FallbacksChain` seed then overrides to the
+ *   effective chain's first exact head (select-is-primary, plan
+ *   fallbacks-virtual-chain Task 2); then the always-mode cap check (count
+ *   `llm/retry` events for the current turn/step/provider; ≥
+ *   `alwaysModeRetryCap` → same decision path, reason `always-cap` —
+ *   ADR-2).
  * - Per-agent state (`FallbackStateStore`): `agent/disposed` removes it,
  *   `agent/status` idle prunes per-step state defensively, plugin dispose
  *   clears everything (spec §6 — no residual state).
@@ -38,10 +41,11 @@ import { defaultFallbacksConfig, detectLegacyKeys, INHERIT_ROLE_ID, validateFall
 import { Config } from './schema.ts'
 import { pickRoleByLlm } from './automatch.ts'
 import { annotateCandidates, createCandidateFilter, hasWildcardEntry, resolveChain, resolveChainViews, selectCandidates, type FailingModel } from './chains.ts'
-import { selectorKey } from './selectors.ts'
+import { parseSelector, selectorKey, type Selector } from './selectors.ts'
 import { resolveRole } from './roles.ts'
 import { firstExactCandidate, resolveRoleAtDispatch } from './role-resolution.ts'
 import { FallbackStateStore, type AgentFallbackState, type PendingSwitch } from './state.ts'
+import { resolveEffectiveChain } from './time-slots.ts'
 import type { FallbackSwitchReason } from './events.ts'
 import {
   FALLBACKS_SETTINGS_NAMESPACE,
@@ -68,7 +72,7 @@ import {
 } from './seeds.ts'
 import { presetRoles } from './presets.ts'
 import { installTuiClient } from './tui.ts'
-import { installFallbacksAdapter } from './virtual-adapter.ts'
+import { FALLBACKS_CHAIN_MODEL, FALLBACKS_PROVIDER, installFallbacksAdapter } from './virtual-adapter.ts'
 
 /** The plugin row id mounted by the profile bundle patch. */
 export const name = 'llm-fallbacks'
@@ -299,6 +303,30 @@ function currentModel(agent: Agent, provider: string): FailingModel {
 function overrideConfig(seed: LlmCallConfig, to: { provider: string; model: string }): LlmCallConfig {
   const { reasoningEffort: _inherited, ...withoutInheritedEffort } = seed
   return { ...withoutInheritedEffort, provider: to.provider, model: to.model }
+}
+
+/**
+ * The select-is-primary head (plan fallbacks-virtual-chain Task 2, P3): the
+ * FIRST EXACT `provider/model` selector of an effective chain —
+ * `firstExactCandidate` semantics. `provider/*` wildcards are never seeds
+ * and malformed entries are skipped (config-warning path, same as
+ * `resolveChainViews`). `undefined` when the chain is empty or every entry
+ * is wildcard/malformed — the caller warns once and skips the override.
+ * The chain itself comes from `resolveEffectiveChain` (`src/time-slots.ts`)
+ * — the resolver is the single source; there is deliberately NO
+ * `rootChain[0]` fallback branch here.
+ */
+function firstExactHead(chain: readonly string[]): { provider: string; model: string } | undefined {
+  for (const entry of chain) {
+    let selector: Selector
+    try {
+      selector = parseSelector(entry)
+    } catch {
+      continue // malformed entries never become seeds (config-warning path)
+    }
+    if (selector.model !== undefined) return { provider: selector.provider, model: selector.model }
+  }
+  return undefined
 }
 
 export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksConfig): void {
@@ -654,7 +682,7 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     // request means the always-cap count of the previous provider is moot.
     const applied = state === undefined ? undefined : states.applyPending(state, turn, step)
     // The override creates a NEW spread config object (never the deep-frozen
-    // LOOP seed). Host-native semantics (the marker coordination shipped with
+    // Host-native semantics (the marker coordination shipped with
     // the local dsh-agent patch is removed — see
     // .mstar/iterations/iter-20260811-fallbacks-mount-only/guides/
     // role-and-model-selection-exploration.md): whether this step's routing
@@ -663,11 +691,47 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     // default web-profile composition) the switch wins; when the
     // model-selection listener is outer (e.g. headless profile, or any agent
     // created before the plugin registered) the selection re-applies over
-    // this step — the documented degradation.
+    // this step — the documented degradation. For a FallbacksChain seed the
+    // same degradation stays graceful: the re-applied selection dispatches
+    // to the virtual route, whose stream() is P1's thin delegate to the
+    // effective head — no hard outage.
     if (applied !== undefined) {
       return overrideConfig(seed, applied.to)
     }
     const config = source()
+    // Select-is-primary (plan fallbacks-virtual-chain Task 2, P3): a
+    // ROOT-origin seed of the virtual `fallbacks/FallbacksChain` row means
+    // "use the chain as the root primary" — override the seed to the
+    // effective chain's FIRST EXACT head (the same `resolveEffectiveChain`
+    // the virtual adapter's stream() delegates through; the resolver is the
+    // single source — no rootChain[0] fallback branch here). Detection
+    // lives AFTER pending-switch application: a failure decision already
+    // progressed past the head and wins. Root-origin only (mirror the
+    // role-inject gate — a subagent seed that still carries the virtual
+    // pair is NOT overridden here; P1's thin stream() delegate handles
+    // those), plugin `enabled`, and the effective chain must yield an exact
+    // head — a wildcard-only (or empty) chain warns once and skips.
+    if (
+      config.enabled
+      && seed.provider === FALLBACKS_PROVIDER
+      && seed.model === FALLBACKS_CHAIN_MODEL
+      && agent.session?.header?.origin !== 'subagent'
+    ) {
+      const effective = resolveEffectiveChain(config, new Date(), config.tz ?? 'Asia/Shanghai')
+      const head = firstExactHead(effective)
+      if (head === undefined) {
+        logger.warn(
+          'llm-fallbacks: FallbacksChain selected but the effective chain has no exact head (empty or wildcard-only) — no primary override',
+        )
+      } else {
+        logger.info(
+          'llm-fallbacks: FallbacksChain selection overrides to the effective head %s/%s',
+          head.provider,
+          head.model,
+        )
+        return overrideConfig(seed, head)
+      }
+    }
     // Dispatch-time role injection (plan fallbacks-role-automatch Task 4): a
     // subagent-origin agent's FIRST request only (per-agent once-marker,
     // `dispatchInjected`, cleaned on agent/disposed + plugin dispose below).
