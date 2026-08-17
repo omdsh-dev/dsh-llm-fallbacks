@@ -192,6 +192,27 @@ describe('dispatch-time role injection', () => {
     expect(switchEvents(agent)).toHaveLength(0)
   })
 
+  it('still resolves and injects a declared explicit preset when roleAutoMatch:false (the toggle gates only the auto-match stage)', async () => {
+    // qc2 F-001: `roleAutoMatch` disables ONLY stage 3 (the LLM auto-match);
+    // the explicit `agentPreset` stage is independent new behavior and is NOT
+    // gated by the toggle — a declared preset still resolves and injects
+    // under `false` (dual-path contrast to t4-off above: same `false` toggle,
+    // but with a declared explicit preset the role-inject fires).
+    const { agent } = makeAgent('t4-off-explicit', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent', agentPreset: 'coder' })
+    apply(ctx, cfg({ roles: coderRoles(), roleAutoMatch: false }))
+
+    const config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
+    expect(config).toEqual({ provider: 'anthropic', model: 'claude-sonnet-4' })
+    expect(switchEvents(agent)[0]?.data).toEqual({
+      turn: 1,
+      step: 1,
+      from: { provider: 'mock', model: 'gpt-4o' },
+      to: { provider: 'anthropic', model: 'claude-sonnet-4' },
+      role: 'coder',
+      reason: 'role-inject',
+    })
+  })
+
   it('is a no-op when disabled (AC-8)', async () => {
     const { agent } = makeAgent('t4-disabled', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent', agentPreset: 'coder' })
     apply(ctx, cfg({ enabled: false, roles: coderRoles() }))

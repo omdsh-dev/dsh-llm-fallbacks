@@ -51,7 +51,7 @@ export interface ResolveRoleAtDispatchOptions {
    * return against `roleIds` — an unknown id warns and resolves to
    * `'inherit'`, never an undeclared role. Skipped when undefined.
    */
-  automatch?: (ctx: AgentLike) => Promise<string | null>
+  automatch?: (agent: AgentLike) => Promise<string | null>
   /** Warning sink — the decision path injects the plugin logger. */
   warn: (message: string) => void
 }

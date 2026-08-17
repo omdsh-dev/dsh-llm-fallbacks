@@ -725,7 +725,7 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
       try {
         const role = await resolveRoleAtDispatch(agent, config.roles.rules, roleIds, {
           automatchEnabled: config.roleAutoMatch ?? true,
-          automatch: (candidate) => pickRoleByLlm(ctx, config.roles, candidate, { warn: logger.warn }),
+          automatch: (agent) => pickRoleByLlm(ctx, config.roles, agent, { warn: logger.warn }),
           warn: logger.warn,
         })
         if (role !== INHERIT_ROLE_ID) {
@@ -742,7 +742,17 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
             const to = { provider: head.provider, model: head.model }
             // issue #52 append guard (mirror commit()): never write an event
             // the host read path would refuse — the override still applies.
-            if (sessionEventRegistered) {
+            // Warn at most once per apply (the shared sessionEventWarned
+            // rate-limiter), so a silently-skipped role-inject event is not
+            // completely silent (qc1 N-2).
+            if (!sessionEventRegistered) {
+              if (!sessionEventWarned) {
+                sessionEventWarned = true
+                logger.warn(
+                  'llm-fallbacks: session event type "fallbacks/switch" is not registered with this harness — skipping the durable role-inject event (the override itself is applied)',
+                )
+              }
+            } else {
               agent.session.append('fallbacks/switch', {
                 turn,
                 step,
