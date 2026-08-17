@@ -6,6 +6,27 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-08-17
+
+### Fixed
+
+- dsh 0.1.0-rc.7 loads the plugin again: the Fallbacks card registers into the keyed `settings.plugin.item` slot with `key: 'fallbacks'` (the old list-slot `id`/`order` options are gone).
+- Every `@deepseek-ai/dsh-*` peer dependency is floored to `^0.1.0-rc.7` (`cordis` / `schemastery` / `react` unchanged).
+- Sessions containing `fallbacks/switch` events no longer refuse to load: the plugin stops writing durable switch events, and `scripts/repair-fallbacks-switch-logs.ts` marks legacy events ignorable so affected sessions load again.
+- The ineffective apply()-time event-type registration stopgap is removed.
+
+### Added
+
+- Dispatch-time role resolution: on a subagent's first request its role is now resolved in three stages — explicit (`agentPreset` matches a declared role id) → deterministic rules (unchanged) → LLM auto-match from the declared role taxonomy (`fallbacks.roleAutoMatch`, default `true`). Setting `roleAutoMatch: false` disables only the LLM auto-match stage; it reproduces the previous rules-only behavior when there is no explicit role (the explicit `agentPreset` stage is independent new behavior, not gated by the toggle).
+- The resolved role's chain-head model is injected into the subagent's first request and recorded via an explicit `role → model` log line (no durable `fallbacks/switch` event is written — issue #52 stop-write; the `role-inject` reason survives only in the event vocabulary for legacy events).
+
+### Changed
+
+- The web settings card's root-chain section makes explicit that the root chain engages **only after the current session's selected model fails** — it never preempts the session model — and shows a prefer-session-model hint only when the plugin is enabled and a root chain is configured.
+- The card's read-only status block is trimmed to the **recent switch** only: the "current effective model" line and the `selectionNote` degradation line were removed from the card (the documented model-selection degradation is re-homed to `docs/verification.md` §4.7).
+- The settings card now always renders an **Enable role auto-match** switch for `fallbacks.roleAutoMatch` (default `true`), reading and writing the existing config key — the schema default applies even to legacy configs that never declared the key, so the toggle always shows (default on) and a legacy config's first save persists `roleAutoMatch: true`.
+- The conversation `fallbacks-switch` node now shows an explicit **role badge + `role → model`**, and `role-inject` switches display a localized reason rather than the raw string.
+
 ## [0.2.1] - 2026-08-16
 
 ### Fixed
