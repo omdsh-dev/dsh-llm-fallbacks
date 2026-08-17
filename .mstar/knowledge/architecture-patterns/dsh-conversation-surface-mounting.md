@@ -10,7 +10,15 @@ applies_when:
   - 理解 conversationEvents 注册表 / conversation.chat.node keyed 座位的契约
   - 实现会话内可见的插件状态呈现（switch 行、通知、状态行）
   - 评估「注入模型上下文」vs「纯渲染」两条会话可见性路径的行为边界
-tags: [dsh, conversation, conversation-events, chat-node, slots, render-only, degrade-never-crash, mount-only]
+tags:
+  - dsh
+  - conversation
+  - conversation-events
+  - chat-node
+  - slots
+  - render-only
+  - degrade-never-crash
+  - mount-only
 related_components:
   - dsh-private (client/runtime conversation registry, ui-conversation)
   - dsh-llm-fallbacks (ConversationFallbackSwitch)
@@ -25,8 +33,8 @@ fallbacks-aux-seams D1+D2 门禁 POSITIVE 并落地）：`conversationEvents` �
 
 ## Context
 
-`fallbacks/switch` 事件已持久化（`SessionEventMap` merge + `session.append`；跨重启可读依赖插件在 apply() 启动时把类型注册进宿主根导出 `KNOWN_SESSION_EVENT_TYPES`——rc.6 运行时注册 stopgap，上游注册面跟踪见 `.mstar/plans/llm-fallbacks-session-event-format/`），但**不是**
-SurfaceEventType（`user/message | assistant/message | tool/result`）——不进 surface 投影，
+fallbacks/switch 事件已持久化（`SessionEventMap` merge + session.append；跨重启可读依赖插件在 apply() 启动时把类型注册进宿主根导出 `KNOWN_SESSION_EVENT_TYPES`——rc.6 运行时注册 stopgap，上游注册面跟踪见 `.mstar/plans/llm-fallbacks-session-event-format/`），但**不是**
+SurfaceEventType（user/message | assistant/message | tool/result）——不进 surface 投影，
 会话转录默认完全不渲染。20260811 dsh 的兜底定义（`unknown-surface`）只 match surface
 事件，插件事件落在「已持久化但会话内不可见」的空白。本模式回答：如何让这类事件在转录中
 可见，且不动宿主、不进模型上下文。
@@ -35,16 +43,16 @@ SurfaceEventType（`user/message | assistant/message | tool/result`）——不�
 
 ### 双段挂载：注册表 + keyed 座位
 
-1. **`conversationEvents` 服务**（`runtime/src/client/conversation/event-registry.ts:19-27`）：
+1. **`conversationEvents` 服务**（`{HOST}/runtime/src/client/conversation/event-registry.ts:19-27`）：
    `register(definition)`，**kind 唯一、重复抛错**；`registerFallback` 注册单例兜底定义。
    引擎把**每条摄入事件**（surface 与否不限）投喂给**每个定义**的 `match`
    （`conversation-assembler.ts:370-382`；live 路径 `session.ts:673` 全量 append）——
    `ConversationNodeDefinition = { kind; target?; match(event); start(context, match,
    reader); update(context, match); publication?; buildLocationData?; buildViewNode?(context) }`。
    外部注册实证：ui-workflow-run（非 surface 的 `tool-workflow/*` 事件在转录中渲染）。
-2. **`conversation.chat.node` keyed 座位**（`ui-conversation/src/client/contract/slots.ts:56-63`）：
-   `{ kind: 'keyed'; scope: 'session' }`，按 `ChatConversationViewNode.kind` 派发
-   （`chat/ChatNodeSeat.tsx:48-51`，`entryKey: routedNode.kind`）。注册 shape
+2. **`conversation.chat.node` keyed 座位**（`{HOST}/ui-conversation/src/client/contract/slots.ts:56-63`）：
+   `{ kind: 'keyed'; scope: 'session' }`，按 ChatConversationViewNode.kind 派发
+   （`{HOST}/chat/ChatNodeSeat.tsx:48-51`，`entryKey: routedNode.kind`）。注册 shape
    `{ name, key, locale }`，**inject 可选**（ui-tool 的 `tool-call` 即无 inject 注册——
    业务数据经 `node` prop 传入，`ChatNodeDataMap` 类型级 merge 承载 payload）。
 
@@ -61,8 +69,8 @@ ctx.slots.inject('conversation.chat.node', function* () {
 
 ### 座位 fallback 语义（易错点）
 
-未注册 kind 的节点渲染 **JsonBlock**（label `message.unknownSurface`，
-`chat/ChatNodeSeat.tsx:48-57`）——**不是** `UnknownNodeView`（后者是字面量 `unknown`
+未注册 kind 的节点渲染 **JsonBlock**（label message.unknownSurface，
+`{HOST}/chat/ChatNodeSeat.tsx:48-57`）——**不是** `UnknownNodeView`（后者是字面量 `unknown`
 key 的注册渲染器，`register-node-renderers.ts:44-45`）。两个概念不同：座位 fallback
 是通用 JSON 块，`unknown` 渲染器是注册表内的兜底条目。
 
@@ -80,7 +88,7 @@ key 的注册渲染器，`register-node-renderers.ts:44-45`）。两个概念不
 
 - `match` 对畸形信封（null/空 data、缺/非整数 seq）必须 **no-op**（不 match），不抛错；
 - `start` 必须**恒返回确定态**（如降级 `{seq, time}` 快照），对畸形载荷降级而非抛错；
-- 事件级守卫与渲染/装配共享同一形状守卫（`switch-guard.ts`），保证 match/start/buildViewNode
+- 事件级守卫与渲染/装配共享同一形状守卫（`src/client/switch-guard.ts`），保证 match/start/buildViewNode
   判定一致；
 - 注册返回的 disposer 显式接线（事件注册表无隐式清理）。
 
@@ -112,8 +120,8 @@ key 的注册渲染器，`register-node-renderers.ts:44-45`）。两个概念不
 
 ## Examples
 
-- fallbacks `ConversationFallbackSwitch.tsx`：`fallbackSwitchDefinition`（match 只认
-  `fallbacks/switch` 且 id = event seq；start 快照载荷、畸形降级确定态；buildViewNode 于
+- fallbacks `src/client/ConversationFallbackSwitch.tsx`：`fallbackSwitchDefinition`（match 只认
+  fallbacks/switch 且 id = event seq；start 快照载荷、畸形降级确定态；buildViewNode 于
   anchorSeq 产节点）+ keyed 渲染行（dim 标题 + 分隔点 + 省略摘要 `from → to（role ·
   reason）`，几何对齐上游 compaction 行 `MessageItem.module.css:38-122`）。
 - 外部注册先例：ui-tool（`tool-call`，无 inject）、ui-goal（`command-input`）、
@@ -121,5 +129,5 @@ key 的注册渲染器，`register-node-renderers.ts:44-45`）。两个概念不
 - 未选备选：D3 turnTail（每 Turn 尾部聚合行，后续可叠加）、D4 会话头动作（与 `/fallbacks`
   命令语义重叠）。
 
-*Source: iteration iter-20260812-fallbacks-plugin-config `guides/seam-exploration-session-visibility.md`
-（D1–D4 门禁证据）+ `guides/mount-point-map.md` D 节，2026-08-12 compound 提升。*
+*Source: iteration iter-20260812-fallbacks-plugin-config `.mstar/iterations/iter-20260812-fallbacks-plugin-config/guides/seam-exploration-session-visibility.md`
+（D1–D4 门禁证据）+ `.mstar/iterations/iter-20260812-fallbacks-plugin-config/guides/mount-point-map.md` D 节，2026-08-12 compound 提升。*

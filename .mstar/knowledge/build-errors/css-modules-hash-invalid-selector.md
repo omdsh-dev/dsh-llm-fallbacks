@@ -4,11 +4,22 @@ date: 2026-08-11
 problem_type: build_error
 category: build-errors
 severity: high
-symptoms: ["Fallbacks 设置页约 60% 样式从未渲染（标题/开关/字段标签/hint/chevron 丢失）", "页面呈现无层级、无间距的裸控件堆叠", "代码级 diff 审查与单元测试全部通过，视觉验收仍失败", "注入 <style> 文本 57 条规则，浏览器 sheet.cssRules 仅 20 条生效（≈35%）"]
+symptoms:
+  - Fallbacks 设置页约 60% 样式从未渲染（标题/开关/字段标签/hint/chevron 丢失）
+  - 页面呈现无层级、无间距的裸控件堆叠
+  - 代码级 diff 审查与单元测试全部通过，视觉验收仍失败
+  - 注入 <style> 文本 57 条规则，浏览器 sheet.cssRules 仅 20 条生效（≈35%）
 root_cause: CSS Modules 哈希类名以数字开头（FNV-1a `8hex_local` → `.8b697c55_fieldRow`）是非法 CSS 标识符，浏览器按 CSS 规范静默丢弃整条规则；10/16 概率数字开头，导致大部分样式从未解析。
 resolution_type: code_fix
 plan_id: llm-fallbacks-settings-style
-tags: [css-modules, hash, invalid-identifier, selector, build-client, cssom, contract-assertion]
+tags:
+  - css-modules
+  - hash
+  - invalid-identifier
+  - selector
+  - build-client
+  - cssom
+  - contract-assertion
 ---
 
 # CSS Modules 哈希类名数字开头 → 浏览器静默丢弃样式规则
@@ -22,8 +33,8 @@ tags: [css-modules, hash, invalid-identifier, selector, build-client, cssom, con
 
 ## Symptoms
 
-- 注入 `<style data-plugin-css="dsh-llm-fallbacks/FallbacksSection.module.css">` 文本 57 条
-  规则，`sheet.cssRules` 仅 20 条（≈35%）
+- 注入 <style data-plugin-css="dsh-llm-fallbacks/FallbacksSection.module.css"> 文本 57 条
+  规则，sheet.cssRules 仅 20 条（≈35%）
 - 被丢弃的关键规则：`.title`、`.intro`、`.fieldLabel`、`.hint`、`.fieldRow`、`.switch`、
   `.optionRow input`、`.selectInput`（chevron）、`.iconButton`、`.banner`
 - 上一轮 polish 迭代（llm-fallbacks-settings-ux-polish）视觉验收失败，根因即此

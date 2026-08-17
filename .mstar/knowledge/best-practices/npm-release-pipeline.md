@@ -29,8 +29,8 @@ dsh-llm-fallbacks 建立 npm 发布流水线（单包），参考 mstar-harness 
 
 ### 架构：PR-driven release（不直接 push tag 发版）
 
-- **`release-prep.yml`**（`workflow_dispatch` + 可选 version 输入）：reject 已存在 tag → `prepare-release` 脚本（bump + changelog fragments 组装 + 归档）→ validate → build 冒烟 → commit `release/vX.Y.Z` 分支 → 开 `release vX.Y.Z` PR。
-- **`release.yml`**（`pull_request: types: [closed]` + branches [main] + `merged == true` + title `startsWith('release v')` + head.ref `release/v*`）：checkout merge_commit → validate → build → `npm publish --provenance --access public` → tag + GitHub Release。
+- **`.github/workflows/release-prep.yml`**（`workflow_dispatch` + 可选 version 输入）：reject 已存在 tag → `prepare-release` 脚本（bump + changelog fragments 组装 + 归档）→ validate → build 冒烟 → commit release/vX.Y.Z 分支 → 开 `release vX.Y.Z` PR。
+- **`.github/workflows/release.yml`**（`pull_request: types: [closed]` + branches [main] + `merged == true` + title `startsWith('release v')` + head.ref `release/v*`）：checkout merge_commit → validate → build → `npm publish --provenance --access public` → tag + GitHub Release。
 - 发布动作 = merge release PR：可审查、可回滚、无 secrets。**不写** push:tags 自动发布路径。
 
 ### 坑 1：npm Trusted Publishing 只对**已存在**的包可配置（无 pre-registration）
@@ -48,7 +48,7 @@ dsh-llm-fallbacks 建立 npm 发布流水线（单包），参考 mstar-harness 
 
 - npm 11.x（Node 24 自带）发布 `X.Y.Z-pre.N` 无 `--tag` → hard-throw「You must specify a tag using --tag when publishing a prerelease version」（npm 11 源码 v11.0.0-v11.6.2 验证；npm 10 无此 guard）。
 - 首发 prerelease 用 `--tag latest`：默认 dist-tag 是 latest，`npm i <pkg>` 能解析；正式版后续自然接管。
-- 对应地，GitHub Release 的 `prerelease` 标志按版本推导：`prerelease=$(node -p "/-/.test(require('./package.json').version)")`。
+- 对应地，GitHub Release 的 `prerelease` 标志按版本推导：prerelease=$(node -p "/-/.test(require('./package.json').version)")。
 
 ### 坑 4：流水线重跑/版本一致性防护
 
@@ -56,12 +56,12 @@ dsh-llm-fallbacks 建立 npm 发布流水线（单包），参考 mstar-harness 
 - **PR title 版本交叉校验**：release.yml 从 title 后缀推导期望版本 vs package.json version，mismatch → fail（防手工改分支导致的标题/版本脱钩）；changelog 提取空文件 → fail。
 - **reject 已存在 tag**：release-prep 前置 `git rev-parse v$V` 拒绝 + validate 双保险。
 - **publish 先于 tag**：发布失败不会产生坏 tag；tag push 不会重复触发 CI（push filter 只 main）。
-- **fragments 机制**：`.changes/unreleased/*.md`（frontmatter `category:` 可选 + 英文 bullets）→ prepare-release 插入 `## [v] - date`（UTC）→ 归档 `.changes/archive/<v>/`。auto-bump 对 `X.Y.Z-pre.N` 只递增 N（`0.1.0-alpha.1 → alpha.2`，**别学 mstar 的 parseInt 朴素 split**——会把 alpha 静默跳成正式版）。
+- **fragments 机制**：`.changes/unreleased/*.md`（frontmatter `category:` 可选 + 英文 bullets）→ prepare-release 插入 `## [v] - date`（UTC）→ 归档 .changes/archive/<v>/。auto-bump 对 `X.Y.Z-pre.N` 只递增 N（`0.1.0-alpha.1 → alpha.2`，**别学 mstar 的 parseInt 朴素 split**——会把 alpha 静默跳成正式版）。
 
 ### 工具细节
 
 - scripts 用 `tsx` 跑（node:fs/node:path only，不引 Bun API）；逻辑导出（parseArgs/autoBumpPatch/insertSection/validateReleaseVersion）供 vitest 套件——bump 分支/插入/validate 正反例全部提交进仓库（fixture 干跑不落仓 = 无保护）。
-- action pins：`checkout@v4` / `setup-node@v4` / `pnpm/action-setup@v4`（11.21.0）；release workflows 对齐 pnpm/action-setup → setup-node(cache: pnpm) 顺序。
+- action pins：`checkout@v4` / `setup-node@v4` / pnpm/action-setup@v4（11.21.0）；release workflows 对齐 pnpm/action-setup → setup-node(cache: pnpm) 顺序。
 - `git tag -a -m "release vX.Y.Z"`（git 2.55+ 无 message 拒绝 tag）。
 - 工作流权限：release-prep `contents: write, pull-requests: write`；release `contents: write, id-token: write`；无 `NPM_TOKEN`。
 
@@ -77,4 +77,4 @@ dsh-llm-fallbacks 建立 npm 发布流水线（单包），参考 mstar-harness 
 
 ## Examples
 
-本仓库：`.github/workflows/release-prep.yml` + `release.yml` + `scripts/prepare-release.ts` + `scripts/validate-release-version.ts` + `tests/release-scripts.spec.ts` + `docs/release.md`（SOP 含 Trusted Publishing 前置清单）。
+本仓库：`.github/workflows/release-prep.yml` + `.github/workflows/release.yml` + `scripts/prepare-release.ts` + `scripts/validate-release-version.ts` + `tests/release-scripts.spec.ts` + `docs/release.md`（SOP 含 Trusted Publishing 前置清单）。

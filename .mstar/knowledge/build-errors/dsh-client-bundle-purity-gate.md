@@ -11,29 +11,36 @@ symptoms:
 root_cause: "deps.alwaysBundle 会把 CLIENT_EXTERNALS 之外的依赖全部内联——值导入的对等包根本不产生 require，旧的 require-only 文本断言（只匹配 require(\"@deepseek-ai/...\")）对「已内联的非法值导入」完全不可见；断言与内联路径错位。"
 resolution_type: code_fix
 plan_id: fallbacks-plugin-config-card
-tags: [client-bundle, purity, alwaysBundle, resolveId, externals, build-contract, mount-only]
+tags:
+  - client-bundle
+  - purity
+  - alwaysBundle
+  - resolveId
+  - externals
+  - build-contract
+  - mount-only
 ---
 
 # Client bundle purity：alwaysBundle 静默内联 → require-only 断言失明（94 kB 缺口）
 
 `scripts/build-client.ts` 的 purity 门曾只扫 `require(...)` 文本——但 rolldown 的
-`deps.alwaysBundle` 会把表外依赖**内联进产物**，值导入根本不产生 `require`。负向探针实证
+deps.alwaysBundle 会把表外依赖**内联进产物**，值导入根本不产生 `require`。负向探针实证
 缺口：故意值导入 3 个 type-only 对等包构建**成功**（94.37 kB 内联产物、零 require、
 旧断言通过）。修复 = resolveId 门 + 更严的 emitted-surface token 扫描。
 
 ## Problem
 
 client 半的 bundle purity 契约：浏览器可加载产物只能值导入冻结表 `CLIENT_EXTERNALS`
-（`PLATFORM_MODULES` 10 项 + `@deepseek-ai/dsh-client-runtime/client` 豁免）。旧断言
+（`PLATFORM_MODULES` 10 项 + @deepseek-ai/dsh-client-runtime/client 豁免）。旧断言
 `require\(\s*["'](@deepseek-ai\/[^"']+)` 只匹配**显式 require**——对 alwaysBundle
-内联的模块不可见：值导入 `@deepseek-ai/dsh-client-ui-plugin-config/client` 等对等包会被
+内联的模块不可见：值导入 @deepseek-ai/dsh-client-ui-plugin-config/client 等对等包会被
 **静默内联**（peer 自动外部化列表之外的全进 alwaysBundle），产物无 require 残留，断言
 照过。这正是 Task 4 引入新 type-only 对等包时的真实风险面。
 
 ## Symptoms
 
 - 负向探针（临时入口值导入 3 个新对等包）`pnpm build` **exit 0**，产物 94.37 kB、零
-  `require("@deepseek-ai/...")`——旧门无感。
+  require("@deepseek-ai/...")——旧门无感。
 - 修复后同探针 exit 1：`client bundle purity: value import of … is not in CLIENT_EXTERNALS`。
 - 门与内联路径错位：断言看「require 面」，内联走「模块图面」，两者对不上。
 
@@ -52,8 +59,8 @@ client 半的 bundle purity 契约：浏览器可加载产物只能值导入冻�
 2. **emitted-surface token 扫描升级**：`/@deepseek-ai\/[\w./-]+/g` 全 token 扫描，严格
    超集——现在能捕获内联模块（闭合 94 kB 缺口）与 peer 自动外部化 require
    （`dsh-client-locale` 等）。当前产物每个命中 token 都在表内。
-3. 表格与 plan 文档同步：`PLATFORM_MODULES` 10 项实测对齐 `web/src/platform.ts:8-15`
-   （补 `@deepseek-ai/dsh-client-ui-attachment`；`cordis` vs `@deepseek-ai/cordis` 双名
+3. 表格与 plan 文档同步：`PLATFORM_MODULES` 10 项实测对齐 `{HOST}/web/src/platform.ts:8-15`
+   （补 @deepseek-ai/dsh-client-ui-attachment；`cordis` vs @deepseek-ai/cordis 双名
    注记——shim 名与宿主名同表）。
 
 ```ts
@@ -81,10 +88,10 @@ verification-only——不改任何运行时值导入，产物面零变化。
 - 双道防线缺一不可：resolveId 门（面） + token 扫描（文本超集）。
 - 已知残余（roadmap，loud-failure 接受）：token 扫描是 text-agnostic——comment/string
   命中外包名会假阳性（当前靠产物干净）；split-literal specifier
-  （`'@deepseek-ai/' + 'dsh-client-ui-plugin-config'`）可同时绕过两层（非可分析 require，
+  （'@deepseek-ai/' + 'dsh-client-ui-plugin-config'）可同时绕过两层（非可分析 require，
   loader 期失败）；门只覆盖 `src/client/index.ts` 单入口——未来新增 client 入口需挂同
   插件。
 
 *Source: iteration iter-20260812-fallbacks-plugin-config plan `fallbacks-plugin-config-card`
-Task 4（`sdd/fallbacks-plugin-config-card/task-4-report.md` 负向探针 + qc 复核），
+Task 4（`.mstar/sdd/fallbacks-plugin-config-card/task-4-report.md` 负向探针 + qc 复核），
 2026-08-12 compound 提升。*

@@ -15,3 +15,11 @@
 | [best-practices/dsh-settings-ui-fidelity.md](best-practices/dsh-settings-ui-fidelity.md) | llm-fallbacks-settings-ui-fidelity | dsh web 设置 UI 保真参考（参照文件地图含插件配置卡 chrome、几何/token 词表、逐维度对照方法、用户可见差异裁决） | Active |
 | [developer-experience/pnpm11-workspace-config-and-windows-link-farm.md](developer-experience/pnpm11-workspace-config-and-windows-link-farm.md) | fix/install 自检（dsh-advisor PR #11 经验 commit 294aff1b → ac994ea） | pnpm 11 workspace 配置迁移 + Windows 安全 link farm + cordis scoped 对齐（.npmrc 静默忽略/死 token、prerelease-tuple 规则实证、requiredPeers 豁免、legacy 清理、junction/file 分型、USERPROFILE） | Active |
 | [best-practices/npm-release-pipeline.md](best-practices/npm-release-pipeline.md) | fallbacks-npm-release | npm Release Pipeline（PR-driven + Trusted Publishing）：4 坑（TP 仅已存在包可配/无 pre-registration、node 24 provenance、npm≥11 prerelease 必须 --tag、closed-PR 重跑 state-aware）+ bootstrap 路径 + changelog fragments | Active |
+
+## Corpus conventions（语料约定）
+
+- 反引号 token 必须是仓库根可解析引用：仓库文件写仓库根相对路径（如 `src/client/switch-guard.ts`）；跨文档链接写 `.mstar/knowledge/<category>/<doc>.md`；迭代 package / sdd 产物写 `.mstar/iterations/<iter>/guides/<file>.md`、`.mstar/sdd/<plan>/<file>.md`。
+- 宿主（dsh-private）内部路径用 `{HOST}/…` 前缀（`{HOST}` = dsh 宿主源码仓库），保留 `:line` 后缀；checker 对 `{…}` 占位符形态跳过。
+- 域词汇（事件/服务/槽位名如 `fallbacks/switch`、点号符号 `session.append`）与 npm 包名（`@deepseek-ai/*`）一律纯文本、不加反引号；长内联代码示例同样去反引号或改围栏代码块。
+- `tags` 是 ≤8 项的 YAML 块列表（引擎不认 `[a, b]` 流式列表）；`symptoms` / `applies_when` 同为 YAML 块列表。
+- 其它 checker 跳过形态：URL / 绝对路径（`/` 开头）/ glob（含 `*`）/ `#anchor` / `~` 前缀。
