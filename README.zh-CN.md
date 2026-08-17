@@ -45,9 +45,19 @@ pnpm repair:fallbacks-switch-logs -- --apply --backup     # 给旧事件打 igno
 ```yaml
 fallbacks:
   enabled: true          # 功能级开关；默认关闭（false），需显式打开后生效
-  rootChain:             # 块 1：root 主代理降级链；主模型失败后按顺序尝试
-    - anthropic/claude-3-5-sonnet
-    - openai/*
+  rootChain:             # 全时段：恰好一个官方 V4 模型（Flash 或 Pro，二选一）
+    - deepseek-official/deepseek-v4-flash
+  timeSlots:             # 可选：按墙钟时段轮换 root 生效链
+    - kind: preset       # 冻结的 UTC+8 窗口；仅模型链可编辑
+      preset: liang-peak # 09:00–12:00 与 14:00–18:00，每天
+      chain:
+        - anthropic/claude-3-5-sonnet
+    - kind: custom       # 自定义窗口（可跨午夜）
+      start: '22:00'
+      end: '02:00'
+      days: [1, 5]       # 可选；缺省/空 = 每天（0=周日…6=周六）
+      chain:
+        - openai/gpt-4o
   roles:                 # 块 2：先声明角色，再让规则引用
     list:
       - id: reviewer     # 角色实体：id 唯一（/^[a-z0-9-]{1,32}$/）；inherit 为保留字
@@ -60,7 +70,7 @@ fallbacks:
         role: reviewer
 ```
 
-未命中规则 → 内置 `inherit` → `rootChain`。`enabled` **默认关闭（`false`）**——未配置任何链时插件完全 no-op。完整参考（角色实体、fallback 策略、规则、selector、预设角色）→ [docs/configuration.md](docs/configuration.md)。
+未命中规则 → 内置 `inherit` → `rootChain`。`enabled` **默认关闭（`false`）**——未配置任何链时插件完全 no-op。全时段 `rootChain` 必须恰好是一个官方 V4 模型（`deepseek-official/deepseek-v4-flash` 或 `deepseek-official/deepseek-v4-pro`）——设置卡与 gateway 在保存时拒绝其它形状（遗留多模型链启动时告警并继续按 fallback-only 走原链，但无法原样保存）。完整参考（角色实体、fallback 策略、规则、selector、预设角色、分时槽预设）→ [docs/configuration.md](docs/configuration.md)。
 
 > **升级提示（行为变更）**：已有 `fallbacks:` 配置若**未显式写 `enabled` 键**，升级后解析为 `false`——请补上 `enabled: true` 以保持插件继续生效。
 
@@ -73,6 +83,7 @@ fallbacks:
 - **root / subagent 自动降级**：任意 agent 在模型故障下按链切换到下一个可用 provider/model，无需手动换模型。
 - **两块制配置**：`rootChain` 管 root 代理；声明式角色实体（`roles.list`）供 `roles.rules` 引用（或内置 `inherit`）。
 - **选择器里把链当主模型**：`enabled` 开启且 all-day `rootChain` 合规时，宿主模型选择器（web 与 TUI 一致）出现虚拟 `FallbacksChain` 行——选中它即以配置的链作为 root 主模型；选真实模型则保持 fallback-only（见 [模型选择器中的 FallbacksChain](#模型选择器中的-fallbackschain)）。
+- **分时切换（Time-slot rotation）**：可选的 `fallbacks.timeSlots` 行按墙钟窗口（配置级 `tz` 时区，默认 `Asia/Shanghai`）轮换 root 生效链——四个冻结的 UTC+8 预设（`liang-peak` / `liang-valley` / `glm-peak` / `glm-valley`，窗口为代码常量、仅模型链可编辑），或自定义 `start`/`end`/`days` 窗口。第一条命中的行生效；全时段行固定最后。时段切换在**下一个** root 请求生效，日志记为**分时切换**——路由种子而非失败决策：不消耗冷却、不计入 `maxSwitchesPerStep`。失败降级保留**降级切换**文案（见 [分时槽预设（分时切换）](#分时槽预设分时切换)）。
 - **派发时角色解析**：在 subagent 的首次请求上，其角色按三个阶段解析——显式（`agentPreset` 匹配已声明角色 id）→ 确定性规则（不变）→ LLM 自动匹配（从已声明角色体系中选择，`fallbacks.roleAutoMatch` 默认 `true`）。解析出的角色的链头模型注入首次请求，并以显式 `role → model` 日志行记录（不写 durable `fallbacks/switch` 事件——issue #52 停写）；设 `roleAutoMatch: false` 仅关闭 LLM 自动匹配阶段（显式 `agentPreset` 阶段仍生效——无显式角色时即复现原有仅规则行为）。设置卡总是渲染「启用角色自动匹配」开关（默认 `true`）以切换之——即使是从未声明过该键的旧配置，schema 默认值同样生效。
 - **冷却与回主**：被切离/失败的模型在冷却期内不再入选；`revertPolicy: cooldown-expiry` 冷却到期后自动回主模型。
 - **行为可见**：每次切换以 info 级日志行（from/to/role/reason）记录——无静默换模型。插件**刻意不写** durable `fallbacks/switch` 会话事件（issue #52——apply() 时的事件类型注册被证伪无效，含该事件的会话在 dsh 重启后拒绝加载）。由旧版插件写入、含此类事件的会话由 `scripts/repair-fallbacks-switch-logs.ts` 修复——旧事件被标记 ignorable 后，受影响会话可重新加载。
@@ -93,6 +104,16 @@ fallbacks:
 - **合规门槛**：遗留的多模型 `rootChain` 不产生该行；all-day 链必须是恰好一个官方 V4 模型。禁用插件或失去合规性后该行隐藏（slot 行编辑不会触发注册抖动）。
 - **过期选择**：行消失（插件禁用 / all-day 链被清空或不合规）而会话仍选中 `FallbacksChain` 时，会话继续把它显示为当前模型，但 `routable: false`——从目录选一个真实模型即可继续（宿主原生目录语义）。
 - **能力跟随链头**：该行的模型元数据（上下文窗口、模态、推理）镜像当前生效链头；重试归属保持宽松默认——重试/失败记到被委托的真实链头，而非 `fallbacks`。完整语义 → [docs/configuration.md](docs/configuration.md)。
+
+## 分时槽预设（分时切换）
+
+分时槽行按墙钟窗口轮换**生效 root 链**——适合按峰谷切换模型，且不会把墙钟轮换误认为故障降级。文案严格区分：时段轮换的日志与 UI 用**分时切换**；失败降级保持**降级切换**；会话内「模型已降级」提示只出现在失败路径。
+
+- **匹配顺序**：每个 root 请求时刻，第一条窗口包含当前时刻（按 `fallbacks.tz`，默认 `Asia/Shanghai` / UTC+8）的额外行生效——该行的模型链**取代**全时段链；无行命中则用全时段 `rootChain`。全时段行固定最后且**必选**：恰好一个官方 V4 模型（Flash 或 Pro）。
+- **预设**（冻结，不可编辑窗口）：`liang-peak` = 每天 09:00–12:00 **与** 14:00–18:00；`liang-valley` = 其它所有 UTC+8 时间；`glm-peak` = 周一至周五 14:00–18:00；`glm-valley` = 其余时间。一个预设 id 对应一行；设置卡的选择器不会重复提供已添加的预设。
+- **自定义行**：`start` / `end`（`HH:mm`，可跨午夜）+ 可选 `days`（0=周日…6=周六；缺省/空 = 每天）+ 模型。
+- **下一请求生效**：时段边界跨越绝不打断进行中的 step——新行在下一个 root 请求生效。轮换仅挂载生效：info 日志 + 设置卡/`/fallbacks` 状态行，无 durable 切换事件。
+- **设置卡**：额外行（添加预设 / 添加自定义 / 删除 / 排序）位于**全时段选择器之上**；预设行只读展示窗口摘要、仅可编辑模型链；没有 `timeSlots.enabled` 总开关（添加行即开启），也没有 `rootMode` 控件。
 
 ## 预设角色（Preset roles）
 

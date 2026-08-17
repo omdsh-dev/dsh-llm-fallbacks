@@ -25,6 +25,7 @@ import type { CommandDefinition, CommandInvocation, CommandResult } from '@deeps
 import { INHERIT_ROLE_ID, type FallbacksRole } from './config.ts'
 import type { Origin } from './roles.ts'
 import type { FallbackSwitchReason, FallbacksSwitchEventData } from './events.ts'
+import type { SlotRowConfig } from './time-slots.ts'
 
 /** How many recent `fallbacks/switch` events `/fallbacks` shows (newest first). */
 export const RECENT_SWITCHES_LIMIT = 5
@@ -69,7 +70,12 @@ export interface FallbacksCommandSnapshot {
    * `fallback` is `'inherit-root'` — or the role is unknown — and rootChain
    * is non-empty; the diagnostic annotation source, spec §7.4). */
   readonly inherit: boolean
-  /** Recent `fallbacks/switch` events, newest first, capped at {@link RECENT_SWITCHES_LIMIT}. */
+  /** Current time-slot winner + display label (P5/P7): the 分时切换 side of
+   * the status strip. The switches section below is the 降级切换 side —
+   * the copy never mixes. */
+  readonly slot: { readonly winner: SlotRowConfig | 'all-day'; readonly label: string }
+  /** Recent `fallbacks/switch` events (failure walks — 降级切换), newest
+   * first, capped at {@link RECENT_SWITCHES_LIMIT}. */
   readonly switches: readonly FallbacksSwitchEventData[]
   /** Active cooldown entries for the agent. */
   readonly cooldown: readonly FallbacksCooldownEntry[]
@@ -134,7 +140,7 @@ const CONFIG_SUBCOMMAND_DESCRIPTION = {
 export const FALLBACKS_COMMAND_LOCALES = {
   zh: {
     title: '当前会话 fallback 诊断（只读）',
-    description: '查看当前会话的降级链、最近切换与冷却状态（只读）',
+    description: '查看当前会话的降级链、最近降级切换与冷却状态（只读）',
     usageConfig: CONFIG_SUBCOMMAND_DESCRIPTION.zh,
     usage: `  /fallbacks config   ${CONFIG_SUBCOMMAND_DESCRIPTION.zh}`,
     origin: '会话来源',
@@ -142,7 +148,10 @@ export const FALLBACKS_COMMAND_LOCALES = {
     chain: '链',
     inheritRoot: '（inherit-root）',
     chainNone: '未配置',
-    switches: '最近切换',
+    // Copy split (spec § Copy): the slot line is the 分时切换 side; the
+    // switches section lists failure walks only — 降级切换. Never mix.
+    slot: '分时',
+    switches: '最近降级切换',
     switchesNone: '本会话暂无 fallback 切换',
     switchLine: '{from} → {to}（role={role}，reason={reason}）',
     cooldown: '冷却',
@@ -174,7 +183,7 @@ export const FALLBACKS_COMMAND_LOCALES = {
   },
   en: {
     title: 'Session fallback diagnostics (read-only)',
-    description: 'Inspect fallback chain, recent switches, and cooldown for this session (read-only)',
+    description: 'Inspect fallback chain, recent fallback switches, and cooldown for this session (read-only)',
     usageConfig: CONFIG_SUBCOMMAND_DESCRIPTION.en,
     usage: `  /fallbacks config   ${CONFIG_SUBCOMMAND_DESCRIPTION.en}`,
     origin: 'Session origin',
@@ -182,7 +191,10 @@ export const FALLBACKS_COMMAND_LOCALES = {
     chain: 'Chain',
     inheritRoot: ' (inherit-root)',
     chainNone: 'not configured',
-    switches: 'Recent switches',
+    // Copy split (spec § Copy): the slot line is the time-slot side; the
+    // switches section lists failure walks only — fallback switches.
+    slot: 'Time slot',
+    switches: 'Recent fallback switches',
     switchesNone: 'No fallback switches in this session',
     switchLine: '{from} → {to} (role={role}, reason={reason})',
     cooldown: 'Cooldown',
@@ -409,8 +421,8 @@ export function fallbacksConfigText(
 
 /**
  * Render the `/fallbacks` status surface for one snapshot. Kept minimal and
- * truthful: origin → role → chain (+ inherit tail) → recent switches →
- * cooldown.
+ * truthful: origin → role → chain (+ inherit tail) → current slot (分时) →
+ * recent switches (降级切换) → cooldown.
  */
 export function fallbacksCommandText(
   snapshot: FallbacksCommandSnapshot,
@@ -426,6 +438,7 @@ export function fallbacksCommandText(
     const suffix = snapshot.inherit ? t.inheritRoot : ''
     lines.push(`${t.chain}: ${snapshot.chain.join(' → ')}${suffix}`)
   }
+  lines.push(`${t.slot}: ${snapshot.slot.label}`)
   if (snapshot.switches.length === 0) {
     lines.push(`${t.switches}: ${t.switchesNone}`)
   } else {

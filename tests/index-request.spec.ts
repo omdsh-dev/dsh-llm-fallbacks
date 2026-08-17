@@ -162,19 +162,25 @@ describe('select-is-primary routing (P3)', () => {
       ctx,
       cfg({
         rootChain: [OFFICIAL_V4_FLASH],
-        timeSlots: [{ kind: 'custom', start: '00:00', end: '23:59', chain: ['anthropic/claude-sonnet-4'] }],
+        timeSlots: [{ kind: 'custom', start: '00:00', end: '23:59', chain: ['anthropic/claude-sonnet-4', 'openai/gpt-4o'] }],
       }),
     )
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-08-18T04:00:00Z'))
 
-    // Failure-time decision: root agent walks the RAW rootChain (slot
-    // rotation applies to primaries, not failure walks) → the pending
-    // switch targets deepseek-official — NOT the slot head.
+    // P7 (plan fallbacks-timeslots Task 2): the root-origin failure walk
+    // walks the SLOT-effective chain (replaces the rootChain argument of the
+    // root role's resolveChainViews) → the first failure switches to the
+    // slot head (anthropic), not the all-day head.
     expect(await dispatchRequestError(ctx, agent)).toEqual({ kind: 'retry' })
-    // The pending switch applies first and wins over the select-is-primary
-    // override (the seed would otherwise route to the slot head).
+    expect(await dispatchRequest(ctx, agent, virtualSeed))
+      .toEqual({ provider: 'anthropic', model: 'claude-sonnet-4' })
+
+    // Second failure on the slot head: the walk progresses past it (same
+    // model filtered) → the pending switch targets the NEXT effective-chain
+    // candidate — which the select-is-primary override would never pick.
+    expect(await dispatchRequestError(ctx, agent, { provider: 'anthropic' })).toEqual({ kind: 'retry' })
     const config = await dispatchRequest(ctx, agent, virtualSeed)
-    expect(config).toEqual({ provider: 'deepseek-official', model: 'deepseek-v4-flash' })
+    expect(config).toEqual({ provider: 'openai', model: 'gpt-4o' })
   })
 })

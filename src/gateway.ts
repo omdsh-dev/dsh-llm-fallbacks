@@ -67,6 +67,7 @@ import type { TypertContribution } from '@deepseek-ai/dsh-typert-registry'
 import { Config } from './schema'
 import { detectLegacyKeys } from './config'
 import type { FallbacksConfig } from './config'
+import { PRESETS, isAllDayConforming } from './time-slots'
 import type { FallbacksSeedManager, SeedRevertOutcome, SeedsIo, SeedsWireStatus } from './seeds'
 
 /** The `fallbacks` settings namespace (registered when a settings service exists). */
@@ -119,10 +120,10 @@ const CONFIG_KEYS: Record<string, true> = {
   alwaysModeRetryCap: true,
   presets: true,
   roleAutoMatch: true,
-  // Plan fallbacks-timeslots Task 1 (P5): time-slot rows + config-level tz.
-  // The READ side must carry them so `get` matches the composed config
-  // (schema defaults); nested row-shape guards land with the Task 3 gateway
-  // work (ROLES_KEYS pattern).
+  // Plan fallbacks-timeslots (P5): time-slot rows + config-level tz. The
+  // READ side carries them so `get` matches the composed config (schema
+  // defaults); the WRITE side validates them — nested row-shape guards in
+  // validateConfigPatch (the ROLES_KEYS pattern, Task 3).
   timeSlots: true,
   tz: true,
 }
@@ -132,6 +133,21 @@ const ROLES_KEYS: Record<string, true> = {
   list: true,
   rules: true,
 }
+
+/** Declared nested keys of one `timeSlots` row — anything else is rejected
+ * (plan fallbacks-timeslots Task 3, the `ROLES_KEYS` pattern). */
+const SLOT_ROW_KEYS: Record<string, true> = {
+  kind: true,
+  preset: true,
+  start: true,
+  end: true,
+  days: true,
+  chain: true,
+}
+
+/** Strict 24h `HH:mm` — the resolver's HHMM_RE twin (the reject-on-save
+ * mirror of the resolver's warn-and-skip `describeRow`). */
+const SLOT_HHMM_RE = /^([01]\d|2[0-3]):[0-5]\d$/
 
 /**
  * The host-side `fallbacks` config gateway (`/api/fallbacks/get` +
@@ -364,7 +380,11 @@ function normalizeRoles(value: unknown): unknown {
 /**
  * Reject a patch the `Config` schema cannot express: non-object input, unknown
  * top-level keys (schemastery merges them silently — the settings service
- * would accept them), and schema type violations.
+ * would accept them), and schema type violations — plus the Task 3 semantic
+ * guards the permissive schema deliberately does not carry: nested `roles`
+ * keys, `timeSlots` row shapes (unknown preset ids, duplicate presets, preset
+ * rows carrying windows, non-`HH:mm` custom bounds, out-of-range days, empty
+ * chains), and the all-day 2-choose-1 `rootChain` conformance.
  */
 function validateConfigPatch(patch: unknown): void {
   if (patch === null || typeof patch !== 'object' || Array.isArray(patch)) {
@@ -394,11 +414,100 @@ function validateConfigPatch(patch: unknown): void {
         }
       }
     }
+    // Plan fallbacks-timeslots Task 3: the READ side carries the keys (Task
+    // 1), the WRITE side validates them — nested row-shape guards mirroring
+    // the `roles` boundary above. The schema keeps the row shape permissive
+    // on purpose (malformed rows warn at load, P6 warn-not-crash); the
+    // reject-on-save rules live here, the mirror of the resolver's
+    // warn-and-skip `describeRow`.
+    if (key === 'timeSlots') {
+      const rows = (patch as Record<string, unknown>)[key]
+      if (rows !== null && rows !== undefined) {
+        validateTimeSlotsPatch(rows)
+      }
+    }
+    // All-day 2-choose-1 (P6 save gate): `rootChain` is exactly one official
+    // V4 model — Flash XOR Pro. An empty default or a legacy multi-model
+    // chain is rejected on save (the card forces the pick; hand-written YAML
+    // stays warn-only at load). `null` is the wire's "absent" signal and is
+    // dropped by the caller's normalization — not validated.
+    if (key === 'rootChain') {
+      const chain = (patch as Record<string, unknown>)[key]
+      if (chain !== null && chain !== undefined && (!Array.isArray(chain) || !isAllDayConforming(chain))) {
+        throw new Error(
+          'dsh-llm-fallbacks: rootChain must be exactly one official V4 model (deepseek-official/deepseek-v4-flash or deepseek-official/deepseek-v4-pro)',
+        )
+      }
+    }
   }
   // Type/bounds validation (schemastery fills defaults for absent keys; null
   // is treated as missing by defaulted fields, so it validates and is dropped
   // by the caller's wire normalization).
   Config(patch as unknown as FallbacksConfig)
+}
+
+/**
+ * Reject a `timeSlots` patch value the config model cannot express
+ * (plan fallbacks-timeslots Task 3 — the `ROLES_KEYS` pattern applied to
+ * slot rows): unknown nested keys, non-object rows, unknown preset ids,
+ * duplicate preset rows, preset rows carrying their own windows/day masks
+ * (windows are frozen code constants, P4), custom rows without strict
+ * `HH:mm` bounds or out-of-range day entries, and empty chains. Every rule
+ * here is the reject-on-save mirror of the resolver's warn-and-skip
+ * `describeRow` (load stays warn-not-crash, P6).
+ */
+function validateTimeSlotsPatch(rows: unknown): void {
+  if (!Array.isArray(rows)) {
+    throw new Error('dsh-llm-fallbacks: timeSlots must be an array of slot rows')
+  }
+  const seenPresets = new Set<string>()
+  rows.forEach((row, index) => {
+    const at = `timeSlots[${index}]`
+    if (row === null || typeof row !== 'object' || Array.isArray(row)) {
+      throw new Error(`dsh-llm-fallbacks: ${at} must be a plain object`)
+    }
+    const record = row as Record<string, unknown>
+    for (const nestedKey of Object.keys(record)) {
+      if (!Object.hasOwn(SLOT_ROW_KEYS, nestedKey)) {
+        throw new Error(`dsh-llm-fallbacks: unknown config key "${at}.${nestedKey}"`)
+      }
+    }
+    if (record.kind === 'preset') {
+      const preset = record.preset
+      if (typeof preset !== 'string' || !Object.hasOwn(PRESETS, preset)) {
+        throw new Error(
+          `dsh-llm-fallbacks: ${at}.preset must be one of the four frozen preset ids (got ${JSON.stringify(preset)})`,
+        )
+      }
+      if (seenPresets.has(preset)) {
+        throw new Error(`dsh-llm-fallbacks: ${at} duplicates preset "${preset}" — at most one row per preset`)
+      }
+      seenPresets.add(preset)
+      if (record.start !== undefined || record.end !== undefined || (Array.isArray(record.days) && record.days.length > 0)) {
+        throw new Error(
+          `dsh-llm-fallbacks: ${at} preset "${preset}" cannot carry start/end/days — preset windows are frozen code constants`,
+        )
+      }
+    } else if (record.kind === 'custom') {
+      const { start, end } = record
+      if (typeof start !== 'string' || typeof end !== 'string' || !SLOT_HHMM_RE.test(start) || !SLOT_HHMM_RE.test(end)) {
+        throw new Error(
+          `dsh-llm-fallbacks: ${at} custom row requires HH:mm start and end (got ${JSON.stringify(start)}-${JSON.stringify(end)})`,
+        )
+      }
+      if (record.days !== undefined) {
+        if (!Array.isArray(record.days) || record.days.some(day => !Number.isInteger(day) || day < 0 || day > 6)) {
+          throw new Error(`dsh-llm-fallbacks: ${at}.days must be an array of integers 0–6`)
+        }
+      }
+    } else {
+      throw new Error(`dsh-llm-fallbacks: ${at}.kind must be "preset" or "custom" (got ${JSON.stringify(record.kind)})`)
+    }
+    const chain = record.chain
+    if (!Array.isArray(chain) || chain.length === 0 || chain.some(entry => typeof entry !== 'string')) {
+      throw new Error(`dsh-llm-fallbacks: ${at}.chain must be a non-empty string array`)
+    }
+  })
 }
 
 /**

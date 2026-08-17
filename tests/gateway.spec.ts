@@ -48,6 +48,7 @@ import { TypertRegistry } from '@deepseek-ai/dsh-typert-registry'
 import { apply } from '../src/index.ts'
 import { Config } from '../src/schema.ts'
 import { defaultFallbacksConfig, type FallbacksConfig } from '../src/config.ts'
+import { OFFICIAL_V4_FLASH, OFFICIAL_V4_PRO } from '../src/time-slots.ts'
 import {
   FALLBACKS_SETTINGS_NAMESPACE,
   FallbacksConfigGateway,
@@ -576,6 +577,139 @@ describe('set validation (Config schema, unknown-key rejection unchanged)', () =
 })
 
 // ---------------------------------------------------------------------------
+// ⑩ plan fallbacks-timeslots Task 3: time-slot rows + all-day 2-choose-1
+//    (gateway reject-on-save guards — the load side stays warn-not-crash)
+// ---------------------------------------------------------------------------
+
+describe('timeSlots + all-day set guards (plan fallbacks-timeslots Task 3)', () => {
+  async function mountGateway(): Promise<{ gateway: FallbacksConfigGateway; ctx: Context }> {
+    const ctx = track(new Context())
+    await ctx.plugin(MemorySettings)
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()), makeSeeds())
+    await waitRegistered(ctx)
+    await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
+    return { gateway, ctx }
+  }
+
+  it('accepts a conforming all-day chain (Flash or Pro, length 1)', async () => {
+    const { gateway } = await mountGateway()
+    const flash = await gateway.set({ rootChain: [OFFICIAL_V4_FLASH] })
+    expect(flash.config.rootChain).toEqual([OFFICIAL_V4_FLASH])
+    const pro = await gateway.set({ rootChain: [OFFICIAL_V4_PRO] })
+    expect(pro.config.rootChain).toEqual([OFFICIAL_V4_PRO])
+  })
+
+  it('rejects a non-conforming all-day chain on save (legacy multi-model AND empty — P6)', async () => {
+    const { gateway } = await mountGateway()
+    await expect(gateway.set({ rootChain: ['openai/gpt-4o', 'anthropic/claude-3-5-sonnet'] })).rejects
+      .toThrow(/rootChain must be exactly one official V4 model/)
+    await expect(gateway.set({ rootChain: ['openai/gpt-4o'] })).rejects
+      .toThrow(/rootChain must be exactly one official V4 model/)
+    // The empty default is the "no all-day" state — also rejected on save:
+    // everything saved through the gateway is conforming (spec pin 4).
+    await expect(gateway.set({ rootChain: [] })).rejects.toThrow(/rootChain must be exactly one official V4 model/)
+    // Nothing was persisted: the composed rootChain stays the entry default.
+    expect(gateway.get().config.rootChain).toEqual([])
+  })
+
+  it('accepts valid preset rows (frozen windows, models-only) and custom rows', async () => {
+    const { gateway } = await mountGateway()
+    const patch = {
+      timeSlots: [
+        { kind: 'preset', preset: 'liang-peak', chain: ['openai/gpt-4o'] },
+        { kind: 'custom', start: '22:00', end: '02:00', days: [1, 3, 5], chain: ['anthropic/claude-3-5-sonnet'] },
+        { kind: 'custom', start: '09:00', end: '10:00', chain: ['openai/gpt-4o'] },
+      ],
+    }
+    const result = await gateway.set(patch as never)
+    // The composed rows carry the schema's materialized `days: []` (absent
+    // array fields compose as []) — the shape every `get` and card load sees.
+    expect(result.config.timeSlots).toEqual([
+      { kind: 'preset', preset: 'liang-peak', days: [], chain: ['openai/gpt-4o'] },
+      { kind: 'custom', start: '22:00', end: '02:00', days: [1, 3, 5], chain: ['anthropic/claude-3-5-sonnet'] },
+      { kind: 'custom', start: '09:00', end: '10:00', days: [], chain: ['openai/gpt-4o'] },
+    ])
+  })
+
+  it('rejects unknown nested keys inside a timeSlots row (ROLES_KEYS pattern)', async () => {
+    const { gateway } = await mountGateway()
+    await expect(gateway.set({
+      timeSlots: [{ kind: 'custom', start: '09:00', end: '10:00', chain: ['openai/gpt-4o'], bogus: 1 }],
+    } as never)).rejects.toThrow(/unknown config key "timeSlots\[0\]\.bogus"/)
+  })
+
+  it('rejects an unknown preset id on save', async () => {
+    const { gateway } = await mountGateway()
+    await expect(gateway.set({
+      timeSlots: [{ kind: 'preset', preset: 'not-a-preset', chain: ['openai/gpt-4o'] }],
+    } as never)).rejects.toThrow(/preset must be one of the four frozen preset ids/)
+  })
+
+  it('rejects a duplicate preset row on save (two locked liang-peak rows)', async () => {
+    const { gateway } = await mountGateway()
+    const patch = {
+      timeSlots: [
+        { kind: 'preset', preset: 'liang-peak', chain: [OFFICIAL_V4_FLASH] },
+        { kind: 'preset', preset: 'liang-peak', chain: [OFFICIAL_V4_PRO] },
+      ],
+    }
+    await expect(gateway.set(patch as never)).rejects.toThrow(/duplicates preset "liang-peak"/)
+  })
+
+  it('rejects a preset row carrying its own window/day fields (windows are code constants — P4)', async () => {
+    const { gateway } = await mountGateway()
+    await expect(gateway.set({
+      timeSlots: [{ kind: 'preset', preset: 'glm-peak', start: '10:00', end: '11:00', chain: ['openai/gpt-4o'] }],
+    } as never)).rejects.toThrow(/cannot carry start\/end\/days/)
+    await expect(gateway.set({
+      timeSlots: [{ kind: 'preset', preset: 'glm-peak', days: [1, 2], chain: ['openai/gpt-4o'] }],
+    } as never)).rejects.toThrow(/cannot carry start\/end\/days/)
+  })
+
+  it('rejects custom rows with a non-HH:mm or missing window', async () => {
+    const { gateway } = await mountGateway()
+    await expect(gateway.set({
+      timeSlots: [{ kind: 'custom', start: '9:00', end: '10:00', chain: ['openai/gpt-4o'] }],
+    } as never)).rejects.toThrow(/requires HH:mm start and end/)
+    await expect(gateway.set({
+      timeSlots: [{ kind: 'custom', start: '09:00', chain: ['openai/gpt-4o'] }],
+    } as never)).rejects.toThrow(/requires HH:mm start and end/)
+  })
+
+  it('rejects out-of-range day entries', async () => {
+    const { gateway } = await mountGateway()
+    await expect(gateway.set({
+      timeSlots: [{ kind: 'custom', start: '09:00', end: '10:00', days: [7], chain: ['openai/gpt-4o'] }],
+    } as never)).rejects.toThrow(/days must be an array of integers 0–6/)
+    await expect(gateway.set({
+      timeSlots: [{ kind: 'custom', start: '09:00', end: '10:00', days: ['1'], chain: ['openai/gpt-4o'] }],
+    } as never)).rejects.toThrow(/days must be an array of integers 0–6/)
+  })
+
+  it('rejects an empty chain and an unknown kind', async () => {
+    const { gateway } = await mountGateway()
+    await expect(gateway.set({
+      timeSlots: [{ kind: 'custom', start: '09:00', end: '10:00', chain: [] }],
+    } as never)).rejects.toThrow(/chain must be a non-empty string array/)
+    await expect(gateway.set({
+      timeSlots: [{ kind: 'weird', chain: ['openai/gpt-4o'] }],
+    } as never)).rejects.toThrow(/kind must be "preset" or "custom"/)
+  })
+
+  it('rejects a non-array timeSlots value', async () => {
+    const { gateway } = await mountGateway()
+    await expect(gateway.set({ timeSlots: 'nope' } as never)).rejects.toThrow(/timeSlots must be an array of slot rows/)
+  })
+
+  it('accepts tz as a config-level string and carries it through get', async () => {
+    const { gateway } = await mountGateway()
+    const result = await gateway.set({ tz: 'UTC' })
+    expect(result.config.tz).toBe('UTC')
+    expect(gateway.get().config.tz).toBe('UTC')
+  })
+})
+
+// ---------------------------------------------------------------------------
 // ④ containment: a malformed stored user layer never fails get (guide §10)
 // ---------------------------------------------------------------------------
 
@@ -912,13 +1046,13 @@ describe('typertGateway endpoint claims + payload contract', () => {
 
     const setResult = await connection.handler!(
       'fallbacks/set',
-      { args: { patch: { enabled: true, rootChain: ['other/gpt-4o'] } } },
+      { args: { patch: { enabled: true, rootChain: [OFFICIAL_V4_FLASH] } } },
       signal,
     )
     expect(setResult.ok).toBe(true)
     if (setResult.ok) {
       expect(setResult.value).toMatchObject({
-        config: { enabled: true, rootChain: ['other/gpt-4o'], cooldownMs: 120_000 },
+        config: { enabled: true, rootChain: [OFFICIAL_V4_FLASH], cooldownMs: 120_000 },
       })
     }
 
@@ -926,7 +1060,7 @@ describe('typertGateway endpoint claims + payload contract', () => {
     const gotAgain = await connection.handler!('fallbacks/get', { args: {} }, signal)
     expect(gotAgain).toMatchObject({
       ok: true,
-      value: { config: { enabled: true, rootChain: ['other/gpt-4o'] } },
+      value: { config: { enabled: true, rootChain: [OFFICIAL_V4_FLASH] } },
     })
 
     // reset clears the user layer back to the composition base.
@@ -1027,17 +1161,17 @@ describe('composed plugin (apply wires the gateway)', () => {
       const result = await ctx.typertGateway.invoke({
         namespace: 'fallbacks',
         method: 'set',
-        args: { patch: { enabled: true, rootChain: ['other/gpt-4o'] } },
+        args: { patch: { enabled: true, rootChain: [OFFICIAL_V4_FLASH] } },
       })
       expect(invokeConfig(result).enabled).toBe(true)
-      expect(invokeConfig(result).rootChain).toEqual(['other/gpt-4o'])
+      expect(invokeConfig(result).rootChain).toEqual([OFFICIAL_V4_FLASH])
     })
 
     const after = await ctx.typertGateway.invoke({ namespace: 'fallbacks', method: 'get', args: {} })
-    expect(invokeConfig(after)).toEqual({ ...entry, enabled: true, rootChain: ['other/gpt-4o'] })
+    expect(invokeConfig(after)).toEqual({ ...entry, enabled: true, rootChain: [OFFICIAL_V4_FLASH] })
     // describe shows the user layer written through the gateway.
     const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)!
-    expect(descriptor.user).toEqual({ enabled: true, rootChain: ['other/gpt-4o'] })
+    expect(descriptor.user).toEqual({ enabled: true, rootChain: [OFFICIAL_V4_FLASH] })
 
     // reset through the gateway returns the composition base (entry).
     const reset = await ctx.typertGateway.invoke({ namespace: 'fallbacks', method: 'reset', args: {} })

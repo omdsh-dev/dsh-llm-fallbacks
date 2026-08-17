@@ -23,7 +23,7 @@ Since iter-20260813 the configuration follows a **two-block model** — you only
 |---|---|---|---|
 | `enabled` | boolean | `false` | Feature-level master switch. Defaults to off (`false`): when `false` the plugin never intervenes and the card hides the configuration form body; when `true` but with no chains configured, the behavior is identical to an uninstalled plugin (no-op) |
 | `triggerCodes` | string[] | `['AUTH', 'QUOTA', 'RATE_LIMIT']` | Failures with these codes enter chain decision. Retryable failures (5xx / `RATE_LIMIT` etc.) are first retried with backoff by llm-retry and enter the decision the same way once its budget is exhausted — **no extra `triggerCodes` entries are needed for 5xx** |
-| `rootChain` | string[] | `[]` | **Block 1**. The root agent's ordered fallback chain; entries are `provider/model` or `provider/*` (see entry syntax below). Empty = root does not fall back (no-op pass-through) |
+| `rootChain` | string[] | `[]` | **Block 1 — the all-day row**. Exactly ONE entry: `deepseek-official/deepseek-v4-flash` **or** `deepseek-official/deepseek-v4-pro` (2-choose-1, Flash XOR Pro — the settings card and gateway reject any other shape on save; an empty or legacy multi-model chain warns at startup and keeps the v0.2.2 fallback-only walk, but cannot be saved as-is). Used whenever no `timeSlots` row matches |
 | `roles.list` | Array | `[]` | **Block 2**. Declarative role-entity collection (id/persona + optional chain/fallback; entry fields in the table below). The id must match `/^[a-z0-9-]{1,32}$/` and be unique within the collection; `'inherit'` is a reserved word and **must not** be used as an id |
 | `roles.rules` | Array | `[]` | **Block 2**. Role rules: match to a role in order by `origin` (`root`/`subagent`), `provider`, `model` patterns (omitted fields are unconstrained; first match wins); `role` may only reference `roles.list[].id` or the built-in `'inherit'` |
 | `cooldownMs` | number | `300000` | Cooldown duration (milliseconds). Switched-away / failed models are not re-selected during the cooldown period |
@@ -32,6 +32,8 @@ Since iter-20260813 the configuration follows a **two-block model** — you only
 | `alwaysModeRetryCap` | number | `5` | Always-mode retry cap: providers with `retryPolicy.mode === 'always'` switch after this many retries within the same request; `0` disables |
 | `presets` | `'bundled'` \| `'none'` | `'bundled'` | Preset-role switch: `'bundled'` declares the 7 bundled preset roles as seeded `roles.list` rows on apply; `'none'` disables declaration (zero declarations, zero writes from this switch). Optional key — unset configs resolve to the default via the schema. See [Preset roles](#preset-roles-presets-key) |
 | `roleAutoMatch` | boolean | `true` | Dispatch-time LLM role auto-match switch: when `true` (default), a subagent-origin request whose role is not resolved by an explicit `agentPreset` or a rule may have the best-fit declared role picked by the LLM (three-stage resolution — see [Dispatch-time role resolution and injection](#dispatch-time-role-resolution-and-injection-roleautomatch)); `false` disables ONLY the LLM auto-match stage — with no explicit role it reproduces the previous rules-only behavior (the explicit `agentPreset` stage is independent new behavior, not gated by the toggle). Optional key — unset configs resolve to the default via the schema |
+| `timeSlots` | Array | `[]` | Extra time-slot rows (see [Time slots (分时切换)](#time-slots-分时切换)): the FIRST row whose window contains the current moment wins and its chain **replaces** the all-day chain; no match → `rootChain`. Rows are `{ kind: 'preset' \| 'custom', preset?, start?, end?, days?, chain }` — preset windows are frozen code constants, custom windows may wrap midnight. There is NO `timeSlots.enabled` master switch — adding rows IS the opt-in. The gateway rejects malformed rows on save (unknown preset ids, duplicate presets, preset rows carrying windows, non-`HH:mm` custom bounds, out-of-range days, empty chains) |
+| `tz` | string | `'Asia/Shanghai'` | Config-level timezone for slot matching (standard `Intl` timezone rules, DST-safe). Not per-slot; no settings-card picker this iteration (YAML only) |
 
 > The defaults are defined by `defaultFallbacksConfig` in `src/config.ts`; the card shows the default value next to numeric fields (`cooldownMs` / `maxSwitchesPerStep` / `alwaysModeRetryCap`) and the currently effective value for all other fields (which equals the default when unset).
 
@@ -81,12 +83,12 @@ The plugin ships **7 bundled omp-style preset roles** — generic subagent roles
 
 ## Entry syntax
 
-**Chain entries** (the values of `rootChain` / `roles.list[].chain`, ordered):
+**Chain entries** (the values of `roles.list[].chain` / `timeSlots[].chain`, ordered; the all-day `rootChain` is a single-entry list — exactly one official V4 model):
 
 - `provider/model` — exact switch: switch to the specified model;
 - `provider/*` — keep the failed model id and switch the provider only; when the target provider lacks this model id the candidate is skipped (fuzzy near-match resolution is out of scope for this iteration).
 
-> **The chain-key namespace is removed**: the three key semantics of the old `chains` key (`provider/model` exact, `provider/*` wildcard, role-name keys) no longer exist — model-specific routing on failure is now approximated by `roles.rules` (matching to a role by provider/model pattern), and role membership is expressed by declared entities. The entry-side `provider/*` wildcard stays a valid YAML entry everywhere (role chains and `rootChain`); the settings GUI no longer offers a wildcard checkbox in any chain editor (rootChain and role chains alike) — chains are edited as provider/model lines, a hand-written `provider/*` entry reads back with a conversion hint and becomes an exact entry once a model is picked, and provider-any matching is expressed through the `any` option in `roles.rules` instead. In the GUI, changing the provider of a legacy `provider/*` entry keeps its wildcard semantics — the entry stays a wildcard until a concrete model is chosen, which is what converts it to an exact entry.
+> **The chain-key namespace is removed**: the three key semantics of the old `chains` key (`provider/model` exact, `provider/*` wildcard, role-name keys) no longer exist — model-specific routing on failure is now approximated by `roles.rules` (matching to a role by provider/model pattern), and role membership is expressed by declared entities. The entry-side `provider/*` wildcard stays a valid YAML entry everywhere (role chains and `timeSlots[].chain`); the settings GUI no longer offers a wildcard checkbox in any chain editor (role and time-slot chains alike) — chains are edited as provider/model lines, a hand-written `provider/*` entry reads back with a conversion hint and becomes an exact entry once a model is picked, and provider-any matching is expressed through…
 
 Whitespace padding: whitespace padding in a selector (e.g. `other/ gpt-4o`) is **preserved as-is** on save (the GUI does not rewrite user input); runtime parsing normalizes it (`parseSelector` tolerates whitespace), so the semantics are identical to the unpadded form.
 
@@ -110,6 +112,8 @@ Invalid/unknown entries (missing separator, empty segment, extra separator, etc.
 - `fallback: inherit-root` (default): the role's own chain first, `rootChain` as the trailing fallback;
 - `fallback: none`: the role's own chain only; an empty own chain with `none` → no-op pass-through;
 - no rule matched (`inherit`) or role undeclared: candidate chain = `rootChain`.
+
+> **Root tail is slot-effective (分时切换)**: for ROOT-origin agents the trailing `rootChain` in the composition above is replaced by the **effective chain** at request time — `resolveEffectiveChain(config, now, tz)`: the first matching `timeSlots` row's chain, else the all-day `rootChain` (see [Time slots](#time-slots-分时切换)). Subagent walks keep the raw `rootChain` (role-inject unchanged).
 
 Candidate filtering (skipped on hit): same as the current model, in cooldown, already failed this step, or the `provider/*` entry's target provider lacks this model id.
 
@@ -151,6 +155,43 @@ When `enabled` is true and the all-day `rootChain` is **conforming** — exactly
 - **Metadata follows the head**: `resolveModel('FallbacksChain')` proxies the current effective head's model info (modalities / context window / reasoning) when resolvable, with a permissive identity default otherwise (never throws). `providerRetryPolicy` keeps the permissive default: retries and failures are attributed to the real head pair the delegate dispatches, not to the `fallbacks` provider — retry attribution limits are a documented consequence of the mount-only design.
 - **Stale selection after unregister**: if the row disappears (plugin disabled / all-day chain emptied or non-conforming) while `FallbacksChain` is the session selection, the host keeps showing it as session `current` with `routable: false` (host-native catalog semantics) — select a real model to continue.
 
+## Time slots (分时切换)
+
+Time-slot rows rotate the **effective root chain** by wall-clock windows. At every **root** request the resolver (`resolveEffectiveChain` in `src/time-slots.ts`) walks the stored rows top-to-bottom: the FIRST row whose window contains `now` (in the config-level `tz`, default `Asia/Shanghai`) wins and its `chain` **replaces** the all-day chain (never concatenated); no match → the all-day `rootChain`. Subagent walks and role-inject are unchanged. The all-day row is always last and **required**.
+
+**Copy split (never mix):** slot rotation is a **分时切换** / time-slot switch — a routing seed: it applies on the **next** root request (no mid-step preemption), is exempt from `cooldownMs` and does not count against `maxSwitchesPerStep`, and is mount-only (info log + card / `/fallbacks` status line; no durable `fallbacks/switch` event). The failure walk keeps **降级切换** / fallback switch and the conversation notice 模型已降级 / Model downgraded stays on the failure path only.
+
+### Row shape
+
+```text
+{ kind: 'preset' | 'custom', preset?, start?, end?, days?, chain }
+```
+
+| Field | Type | Rules |
+|---|---|---|
+| `kind` | `'preset'` \| `'custom'` | Required. Anything else is rejected on save (the resolver warns and skips at load) |
+| `preset` | string | `kind: 'preset'` only — one of `liang-peak` / `liang-valley` / `glm-peak` / `glm-valley`. At most ONE row per preset id (duplicates are rejected on save, first row wins at load). Preset rows must NOT carry `start`/`end`/`days` — their windows are frozen code constants |
+| `start` / `end` | string (`HH:mm`) | `kind: 'custom'` only — strict 24h format. `end` is EXCLUSIVE; `start > end` wraps midnight |
+| `days` | number[] | Custom only — 0=Sunday … 6=Saturday; omitted/empty = every day |
+| `chain` | string[] | Always required and editable (entry syntax below). A matched row's chain is the effective chain |
+
+### Frozen preset windows (UTC+8)
+
+| preset | Window (not user-editable) |
+|--------|----------------------------|
+| `liang-peak` | 09:00–12:00 **and** 14:00–18:00 (both clocks, every day; ONE row) |
+| `liang-valley` | all UTC+8 times that are not Liang Peak (complement of the peak) |
+| `glm-peak` | Monday–Friday 14:00–18:00 |
+| `glm-valley` | all other times (complement of GLM Peak) |
+
+### All-day 2-choose-1
+
+`rootChain` (the all-day row) must be **exactly one** official V4 model — `deepseek-official/deepseek-v4-flash` XOR `deepseek-official/deepseek-v4-pro`. The settings card renders an exclusive chooser (required, last, not removable, not a multi-row chain editor), and both the card and the gateway **reject** any non-conforming value on save — an empty chain or a legacy multi-model `rootChain` cannot be saved as-is (no migration wizard; pick one of the two models). At load, a non-conforming all-day earns ONE startup warn, slot rows stay inert, and the v0.2.2 failure walk over the raw chain keeps working verbatim (warn-not-crash).
+
+### Save rules (card + gateway)
+
+The gateway (`/api/fallbacks/set`) and the card's pre-save validation apply the same guards: all-day must conform; preset ids must be known and unique; preset rows carry no windows; custom rows need strict `HH:mm` bounds and 0–6 integer days; every row needs a non-empty chain. Malformed rows are rejected — they are never persisted.
+
 ## Example YAML
 
 The following configuration demonstrates the full two-block shape — a root chain, role entities (including their `fallback` policy), and rules referencing declared roles / the built-in `inherit` (write it into `$DSH_HOME/settings.yaml`):
@@ -162,9 +203,20 @@ fallbacks:
     - AUTH
     - QUOTA
     - RATE_LIMIT
-  rootChain:                     # Block 1: the root agent's fallback chain; empty = root does not fall back
-    - anthropic/claude-3-5-sonnet
-    - openai/*
+  rootChain:                     # All-day row: exactly ONE official V4 model (Flash XOR Pro)
+    - deepseek-official/deepseek-v4-flash
+  timeSlots:                     # Optional: rotate the effective root chain by wall-clock windows
+    - kind: preset               # Frozen UTC+8 windows; only the chain is editable
+      preset: liang-peak         # 09:00–12:00 AND 14:00–18:00, every day
+      chain:
+        - anthropic/claude-3-5-sonnet
+    - kind: custom               # Custom window: HH:mm, may wrap midnight
+      start: '22:00'
+      end: '02:00'
+      days: [1, 5]               # Optional; omitted/empty = every day (0=Sunday…6=Saturday)
+      chain:
+        - openai/gpt-4o
+  tz: Asia/Shanghai              # Config-level slot timezone (default Asia/Shanghai; not per-slot)
   roles:                         # Block 2: declare roles first, then let rules reference them
     list:
       - id: reviewer             # Role entity: unique id matching /^[a-z0-9-]{1,32}$/; 'inherit' is reserved
@@ -197,6 +249,7 @@ Key points:
 - The first chain entry is the first fallback target after the primary model; entries in the chain are ordered by priority.
 - Declaring a role without any rule = that role is **never hit** (a no-match goes to `inherit` → `rootChain`); to have a role hit you must also write a `roles.rules` entry referencing it.
 - `role: inherit` is a valid rule target: it explicitly points a class of requests at the built-in inherit (the root chain).
+- `timeSlots` rows rotate the effective root chain by wall-clock windows: first matching row wins (its chain replaces the all-day chain), no match → the all-day `rootChain`; the all-day row is always last and required (exactly one official V4 model — the example above shows both).
 - Switching only changes the provider/model routing of subsequent requests; it does not reset session context or tool state.
 - Each chain-target model needs its own credentials and quota configured (costs/quotas can differ between providers).
 
@@ -231,12 +284,13 @@ After an upgrade, legacy-format configuration is flagged through **three channel
 - **Entry**: web settings GUI → Settings → **Plugin Settings** page → **Fallbacks card** (rc.7 keyed slot: key `fallbacks`, the settings namespace the card edits, rendered after the bash / agent-loop / web-search / advisor cards in registration order; the card replaces the old standalone Settings navigation page).
 - **Always available (skeleton always renders)**: in any state — first open, loading, error — the card renders its skeleton: card header (name/description), read-only status block, feature switch `enabled`, and the save / reset-to-defaults actions. The config comes from the gateway channel `get` (`present` when it succeeds); when `get` fails / the channel is unreachable, an actionable skeleton is shown instead of a dead card, and saving stays available (failures are reported truthfully, see below).
 - **Legacy banner**: a non-empty `legacyKeys` in the `get` response → a migration banner (zh/en) renders at the top of the card body, pointing at this document's migration table; it does not block editing or touch disk.
-- **Feature switch `enabled` (default OFF)**: the switch is the user-config field `fallbacks.enabled`, off by default. When off, the configuration form body is hidden (`triggerCodes` / `rootChain` / `roles` / `cooldownMs` / `revertPolicy` / `maxSwitchesPerStep` / `alwaysModeRetryCap`) and the hint "Feature disabled: turn on the enabled switch to show the configuration interface." is shown — hiding does not discard anything; an in-progress draft is kept. Turning the switch on reveals the full configuration interface. Toggling shows/hides immediately (draft-driven) and persists via the save action.
+- **Feature switch `enabled` (default OFF)**: the switch is the user-config field `fallbacks.enabled`, off by default. When off, the configuration form body is hidden (`triggerCodes` / `timeSlots` / `rootChain` / `roles` / `cooldownMs` / `revertPolicy` / `maxSwitchesPerStep` / `alwaysModeRetryCap`) and the hint "Feature disabled: turn on the enabled switch to show the configuration interface." is shown — hiding does not discard anything; an in-progress draft is kept. Turning the switch on reveals the full configuration interface. Toggling shows/hides immediately (draft-driven) and persists via the save action.
 - **Readable labels**: enumerable config items show readable labels instead of raw enum values — `RATE_LIMIT` → "Rate limit (429)", `QUOTA` → "Quota exceeded", `AUTH` → "Auth / permission failure"; `cooldown-expiry` → "Return to the primary model", `never` → "Keep the fallback model (until session end)"; `inherit-root` → "Inherit root (append rootChain after the role chain)", `none` → "Role chain only (no rootChain)". Numeric fields show the default value beside them; other fields show the currently effective value (the default when unset). The **Advanced options** group (`triggerCodes` / `revertPolicy` / `cooldownMs` / `maxSwitchesPerStep` / `alwaysModeRetryCap`) is collapsible and starts collapsed; its disclosure button expands/collapses it. In a **read-only** view (`!writable` — the environment is read-only) the group is **forced expanded** so the fields show without interaction; when the config channel is unreachable but the form stays writable, the group keeps the user's collapsed/expanded state and can still be toggled manually.
-- **rootChain area**: title "Root agent fallback chain" + a first line that makes the engagement semantics explicit — "Engages only after the current session's selected model fails — it never preempts the session model" — plus a prefer-session-model hint ("Prefer the current session's model; degrade down this chain only after it fails") that is rendered **only when fallbacks is enabled and a root chain is configured** (hidden when off or unset). Selector rows reuse the catalog dropdown (provider/model cascade, **no wildcard checkbox** — no chain editor in the card offers one; chains stay provider/model lines, and provider-any matching lives in the role rules) + synthetic options for values outside the catalog, **no key input**.
+- **timeSlots area (above the all-day row)**: the extra-row list — "Add preset" (four frozen ids in a picker; an already-added preset is not offered again) / "Add custom time slot" buttons; per-row remove + move-up/down (the all-day row is not in this list). A **preset row** shows its frozen name + a read-only window summary and edits the model chain only (no start/end/days controls — windows are code constants); a **custom row** edits start/end (`HH:mm`) + optional weekday toggles (none checked = every day) + the model chain. There is **no `timeSlots.enabled` master switch** (adding a row is the opt-in) and **no `rootMode` control** (picker selection is the mode).
+- **rootChain area (all-day)**: title "Root agent fallback chain" + a first line that makes the engagement semantics explicit — "Engages only after the current session's selected model fails — it never preempts the session model" — plus a prefer-session-model hint ("Prefer the current session's model; fall back to this all-day model only after it fails") that is rendered **only when fallbacks is enabled and an all-day model is picked** (hidden when off or unset). The editor is the **exclusive 2-choose-1 chooser**: official V4 Flash or official V4 Pro — required, always last, not removable, NOT a multi-row chain editor. A legacy/empty all-day chain reads back with no selection + a "pick one of the two official V4 models" notice; saving is blocked until one is picked (no migration wizard).
 - **roles.list area**: one entity card per role — id (text, format-validated: `/^[a-z0-9-]{1,32}$/`, unique, the `inherit` reserved word is invalid), persona (personality hint, multiline text, **recommended**, on its own line below the id), chain selector rows (collapsible / appendable), fallback dropdown (`inherit-root` / `none`), and a delete button; an "Add role" button. `prompt` / `permissions` are **not rendered this round**.
 - **roles.rules area**: per-row editing of origin (root/subagent/any) + provider (catalog dropdown/any) + model (cascade dropdown/any) + role (**dropdown**: `inherit` + declared role ids, linked within the page — role add/remove reflects immediately); an "Add rule" button. Empty fields do not participate in matching.
-- **Pre-save validation (blocks save)**: id format/uniqueness/reserved word, rule role references, invalid selectors, empty role chain (no model config) → inline annotation (red border/hint) + error banner; **a failed validation blocks `save()`** — clicking save writes nothing and shows the error; only a passing validation writes the user layer via the gateway `set`.
+- **Pre-save validation (blocks save)**: id format/uniqueness/reserved word, rule role references, invalid selectors, empty role chain (no model config), **non-conforming all-day (must be exactly one official V4 model)**, and malformed time-slot rows (empty chain, non-`HH:mm` custom window, invalid kind/preset) → inline annotation (red border/hint) + error banner; **a failed validation blocks `save()`** — clicking save writes nothing and shows the error; only a passing validation writes the user layer via the gateway `set` (the gateway applies the same guards).
 - **model-selection coordination (AC-2, documented degradation)**: with an active model-selection (the user picked a provider/model in the settings page or `settings.yaml`), a switch after a trigger-code failure is **still decided and recorded in the info log** (no durable `fallbacks/switch` event — issue #52 stop-write; cooldown unchanged; the step's actual routing may be overridden by the active selection, with the final provider/model following the re-applied selection) — this is **host-native behavior** after removing the local patch-marker coordination (T2 conclusion). request-error-triggered chains are unaffected; without an active selection the request routes to the chain target. This degradation is documented in [docs/verification.md](docs/verification.md) §4.7 (the card no longer carries the former one-line `status.selectionNote`, which was trimmed with the status block).
 - **Reset to defaults**: one click resets this namespace's user configuration to the composed defaults (`enabled` back to `false`) — via the gateway `reset` (clears the user layer; the composed defaults take effect).
 - **Saving and error presentation**: saving writes the user layer via the gateway `set` (merge semantics) with no revision guard — on concurrent/write failure an error banner truthfully presents the save result, and the skeleton and draft are kept (no silent overwrite).
@@ -247,7 +301,7 @@ After an upgrade, legacy-format configuration is flagged through **three channel
 In a terminal (`dsh-tui`) profile the plugin has **no settings page and no write surface** — the web Settings → 插件配置 → Fallbacks card (and its migration banner) is web-only, and there is no `set` / form / mutate command. Configuration lives in the same files as everywhere else and is read back through the command:
 
 - **Where config lives**: the shared `$DSH_HOME/settings.yaml` (`fallbacks:` section — the same file the web card writes) for global settings; the profile patch layer `~/.dsh/profiles/dsh-tui/cordis.patch.yml` (plugin-row `config:` overrides) for dsh-tui-specific values. The namespace itself is not TUI-specific — the composed config the TUI reads is the same composed config the runtime uses.
-- **Readback**: `/fallbacks config` prints the composed `fallbacks` namespace — first line `Fallbacks 配置: 已启用` / `未启用` (the command renders in its default locale `zh`, like the rest of `/fallbacks`; the en dictionary mirrors the same line as `Fallbacks config: enabled` / `disabled`), then trigger codes, root chain, roles (`N — id (chain: n)` per role, long lists truncated with `…`), cooldown, revert policy, max switches/step, always-mode cap, presets, role auto-match (`enabled`/`disabled`), and the file-only edit hints. Bare `/fallbacks` stays the session diagnostic (origin / role / chain / recent switches / cooldown) — the two surfaces are distinct from their first line.
+- **Readback**: `/fallbacks config` prints the composed `fallbacks` namespace — first line `Fallbacks 配置: 已启用` / `未启用` (the command renders in its default locale `zh`, like the rest of `/fallbacks`; the en dictionary mirrors the same line as `Fallbacks config: enabled` / `disabled`), then trigger codes, root chain, roles (`N — id (chain: n)` per role, long lists truncated with `…`), cooldown, revert policy, max switches/step, always-mode cap, presets, role auto-match (`enabled`/`disabled`), and the file-only edit hints. Bare `/fallbacks` stays the session diagnostic (origin / role / chain / current time-slot winner — 分时 side — / recent **fallback switches** — 降级 side — / cooldown) — the two surfaces are distinct from their first line.
 - **Menu + completion**: `/fallbacks` and `/fallbacks config` appear in the TUI `/` menu with `config` subcommand completion when the profile carries the `tuiCommandTrees` service (the `dsh-tui-command-trees` bundle row; the shipped dsh-tui bundle has it).
 
 Installation for the dsh-tui profile → [docs/install.md](install.md) §5.

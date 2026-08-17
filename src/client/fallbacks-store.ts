@@ -38,8 +38,8 @@ import {
   type FallbacksRoleRule, type FallbacksRoles,
 } from '../config.ts'
 // Type-only — `src/time-slots.ts` is a pure module (no `@deepseek-ai/*`
-// runtime imports), so the row type stays out of the client runtime graph.
-import type { SlotRowConfig } from '../time-slots.ts'
+// runtime imports), so the row types stay out of the client runtime graph.
+import type { PresetId, SlotRowConfig } from '../time-slots.ts'
 import type { FallbacksSwitchEventData } from '../events.ts'
 import { parseSelector } from '../selectors.ts'
 // Type-only — `src/seeds.ts` carries no `@deepseek-ai/*` value imports, so
@@ -536,6 +536,63 @@ export function rowsToRootChain(rows: readonly RootChainRow[]): string[] {
     }
   }
   return entries
+}
+
+/**
+ * One extra time-slot row in the editor (plan fallbacks-timeslots Task 3):
+ * preset rows freeze their windows (read-only summary, models-only edits);
+ * custom rows edit start/end/days + chain. `kind` rides the wire VERBATIM —
+ * a hand-written YAML row with an unknown kind reads back as a custom-shaped
+ * row and serializes back unchanged, so the dirty check stays quiet (save
+ * validation rejects it).
+ */
+export interface SlotEditorRow {
+  kind: string
+  /** Frozen preset id — preset rows only (windows are code constants). */
+  preset?: string
+  /** Custom rows: window start `HH:mm` text. */
+  start: string
+  /** Custom rows: window end `HH:mm` text. */
+  end: string
+  /** Custom rows: day mask 0=Sunday…6=Saturday; [] = every day. */
+  days: number[]
+  selectors: ChainSelectorRow[]
+}
+
+/** Project the time-slot rows into editable rows (chain selectors classified). */
+export function timeSlotsToRows(timeSlots: readonly SlotRowConfig[], catalog?: CatalogLookup): SlotEditorRow[] {
+  return timeSlots.map(row => ({
+    kind: row.kind,
+    ...(row.preset === undefined ? {} : { preset: row.preset }),
+    start: row.start ?? '',
+    end: row.end ?? '',
+    days: [...(row.days ?? [])],
+    selectors: (row.chain ?? []).map(entry => entryToSelectorRow(entry, catalog)),
+  }))
+}
+
+/** Rebuild the time-slot rows from edited rows; blank selectors drop out.
+ * `kind` rides verbatim (a hand-written unknown kind reads back unchanged;
+ * save validation rejects it) — the cast asserts the trusted editor shape.
+ * `days` is ALWAYS serialized ([] included): schemastery composes absent
+ * array fields as `[]`, so the composed config every card load accepts
+ * carries `days` on every row — the draft must too, or a clean card would
+ * read back dirty. */
+export function rowsToTimeSlots(rows: readonly SlotEditorRow[]): SlotRowConfig[] {
+  return rows.map(row => {
+    const chain = row.selectors.map(selectorRowToRaw).filter(entry => entry !== '')
+    if (row.kind === 'preset') {
+      return { kind: 'preset', preset: row.preset as PresetId, days: row.days, chain }
+    }
+    return {
+      kind: row.kind as 'custom',
+      ...(row.preset === undefined ? {} : { preset: row.preset as PresetId }),
+      start: row.start,
+      end: row.end,
+      days: row.days,
+      chain,
+    }
+  })
 }
 
 /**
