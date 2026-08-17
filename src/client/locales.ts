@@ -48,8 +48,12 @@ export const zh = {
   'advanced.label': '高级选项',
   'advanced.expand': '展开高级选项',
   'advanced.collapse': '收起高级选项',
+  'roleAutoMatch.label': '启用角色自动匹配',
+  'roleAutoMatch.hint': '规则未命中时，由模型自选最贴近的已声明角色',
+  'roleAutoMatch.tooltip': '规则未命中时，模型会自动从已声明角色（id + persona）中选择最匹配者并注入该角色的链；关闭后未命中规则时按现状回落（inherit / rootChain）。',
   'rootChain.label': 'root 主代理降级链',
-  'rootChain.hint': '未配置 = root 不降级',
+  'rootChain.firstLine': '仅当当前会话所选模型失败后才启用降级——不抢占会话模型',
+  'rootChain.hint': '优先使用当前会话的模型；失败后才按此链降级',
   'rootChain.tooltip': 'root 主代理失败时按此有序选择器列表依次降级；未配置时行为与未安装插件一致。',
   'rootChain.selector.add': '添加选择器',
   'chains.selector.remove': '删除该选择器',
@@ -109,26 +113,39 @@ export const zh = {
   'catalog.outside.short': ' （目录外）',
   'catalog.unconfigured.short': ' （未配置）',
   'status.title': '运行状态（只读）',
-  'status.effectiveModel.label': '当前生效模型：',
-  'status.effectiveModel.unavailable': 'fallbacks 未启用（或 rootChain 未配置）',
-  'status.effectiveModel.note': '配置 + 最近切换推导，非实时路由探测',
   'status.switches.label': '最近切换：',
   'status.switches.empty': '本会话暂无 fallback 切换。',
   'status.switches.error': '切换历史读取失败：{message}',
   'status.switches.compact': '最近 {count} 次 · {from} → {to}（{role} · {reason}）',
+  // Task 5 (direction 3): the role-inject line reads naturally as the
+  // resolved role → its chain-head model (`{to}`) instead of the generic
+  // `({role} · {reason})` parenthetical — role + reason stay visible.
+  // The destination `{to}` appears once (as its role→model mapping), not
+  // twice: the leading `{from} → {to}` is dropped.
+  'status.switches.compact.roleInject': '最近 {count} 次 · {role} → {to}（{reason}）',
   'status.switches.reason.trigger-code': '触发失败码',
   'status.switches.reason.always-cap': 'always 模式上限',
-  'status.selectionNote': '说明：web 前端手动选择的模型可能在切换后重新套用（标记载体已随本地 patch 移除）。',
+  // One shared reason key family for every seat (qc1 F-004): role-inject
+  // resolves from the same `status.switches.reason.*` family as the other
+  // reasons — the conversation node reads it through the same shared map.
+  'status.switches.reason.role-inject': '角色注入',
   'general.title': '模型故障降级',
   'general.enabled': '已启用',
   'general.disabled': '未启用',
   'general.unknown': '未知',
   'general.unavailable': '状态通道暂不可达',
   'general.switch': '最近切换：{from} → {to}（{role} · {reason}）',
+  // Task 5 (direction 3): same dedupe as `status.switches.compact.roleInject`.
+  'general.switch.roleInject': '最近切换：{role} → {to}（{reason}）',
   'general.switch.empty': '本会话暂无切换',
   'general.error': '状态读取失败：{message}',
   'chat.switch.title': '模型已降级',
-  'chat.switch.summary': '{from} → {to}（{role} · {reason}）',
+  'chat.switch.summary': '{from} → {to}（{reason}）',
+  // Role-mapped (role-inject) summary on the conversation node (qc1 F-002 /
+  // qc2 F-003 dedupe): the `role → model` mapping is the primary info, so
+  // the summary carries only the reason — `{to}` does not appear twice.
+  'chat.switch.summary.roleInject': '（{reason}）',
+  'chat.switch.roleMap': '{role} → {model}',
   'defaults.prefix': '默认值',
   'save': '保存',
   'save.saving': '保存中…',
@@ -186,8 +203,12 @@ export const en = {
   'advanced.label': 'Advanced options',
   'advanced.expand': 'Show advanced options',
   'advanced.collapse': 'Hide advanced options',
+  'roleAutoMatch.label': 'Enable role auto-match',
+  'roleAutoMatch.hint': 'On rules-miss, the model picks the closest declared role',
+  'roleAutoMatch.tooltip': 'When no rule matches, the model auto-selects the best-fit declared role (id + persona) and uses its chain; turn off to keep today\'s fallback (inherit / rootChain) on a rules-miss.',
   'rootChain.label': 'Root agent fallback chain',
-  'rootChain.hint': 'Unset = root does not fall back',
+  'rootChain.firstLine': 'Engages only after the current session\'s selected model fails — it never preempts the session model',
+  'rootChain.hint': 'Prefer the current session\'s model; degrade down this chain only after it fails',
   'rootChain.tooltip': 'When the root agent fails it falls back down this ordered selector list; unset behaves like an uninstalled plugin.',
   'rootChain.selector.add': 'Add selector',
   'chains.selector.remove': 'Remove this selector',
@@ -247,26 +268,33 @@ export const en = {
   'catalog.outside.short': ' (outside catalog)',
   'catalog.unconfigured.short': ' (not configured)',
   'status.title': 'Runtime status (read-only)',
-  'status.effectiveModel.label': 'Current effective model: ',
-  'status.effectiveModel.unavailable': 'Fallbacks disabled (or rootChain not configured)',
-  'status.effectiveModel.note': 'Derived from configuration and recent switches; not real-time route probing',
   'status.switches.label': 'Recent switches: ',
   'status.switches.empty': 'No fallback switches in this session yet.',
   'status.switches.error': 'Switch history read failed: {message}',
   'status.switches.compact': 'last {count} · {from} → {to} ({role} · {reason})',
+  'status.switches.compact.roleInject': 'last {count} · {role} → {to} ({reason})',
   'status.switches.reason.trigger-code': 'trigger code',
   'status.switches.reason.always-cap': 'always-mode cap',
-  'status.selectionNote': 'Note: a model manually selected in the web front end may be re-applied after a switch (the marker coordination shipped with the local patch has been removed).',
+  // One shared reason key family for every seat (qc1 F-004): role-inject
+  // resolves from the same `status.switches.reason.*` family as the other
+  // reasons — the conversation node reads it through the same shared map.
+  'status.switches.reason.role-inject': 'role inject',
   'general.title': 'Model failover',
   'general.enabled': 'Enabled',
   'general.disabled': 'Disabled',
   'general.unknown': 'Unknown',
   'general.unavailable': 'Status channel unavailable',
   'general.switch': 'Last switch: {from} → {to} ({role} · {reason})',
+  'general.switch.roleInject': 'Last switch: {role} → {to} ({reason})',
   'general.switch.empty': 'No switches this session',
   'general.error': 'Status read failed: {message}',
   'chat.switch.title': 'Model downgraded',
-  'chat.switch.summary': '{from} → {to} ({role} · {reason})',
+  'chat.switch.summary': '{from} → {to} ({reason})',
+  // Role-mapped (role-inject) summary on the conversation node (qc1 F-002 /
+  // qc2 F-003 dedupe): the `role → model` mapping is the primary info, so
+  // the summary carries only the reason — `{to}` does not appear twice.
+  'chat.switch.summary.roleInject': '({reason})',
+  'chat.switch.roleMap': '{role} → {model}',
   'defaults.prefix': 'Default',
   'save': 'Save',
   'save.saving': 'Saving…',
@@ -295,13 +323,17 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 
 /**
  * Reason → locale key map for switch summaries (S-c; shared by the card's
- * status block and the General page status row). The session log is durable
- * and forward-compatible: a reason value outside the current union (a newer
- * plugin wrote it) renders raw instead of falling into a binary else branch.
+ * status block, the General page status row, and the conversation node). All
+ * reasons resolve from ONE key family (`status.switches.reason.*`) — the
+ * shared reason vocabulary must not mix dictionary families (qc1 F-004). The
+ * session log is durable and forward-compatible: a reason value outside the
+ * current union (a newer plugin wrote it) renders raw instead of falling
+ * into a binary else branch.
  */
 export const SWITCH_REASON_KEYS: Readonly<Partial<Record<FallbackSwitchReason, FallbacksKey>>> = {
   'trigger-code': 'status.switches.reason.trigger-code',
   'always-cap': 'status.switches.reason.always-cap',
+  'role-inject': 'status.switches.reason.role-inject',
 }
 
 /** Human-readable trigger-code labels (spec §4 用户直观性). */

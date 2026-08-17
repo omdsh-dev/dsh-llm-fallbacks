@@ -324,8 +324,9 @@ export function parseFallbacksConfig(value: unknown): FallbacksConfig {
     // §9.4 mirror: the host default gained `roleAutoMatch` (10th field), so
     // the client fold mirrors it too — `parseFallbacksConfig` output must
     // stay equal to `defaultFallbacksConfig` (pinned invariant). Mechanical
-    // mirror of `enabled`; the settings card neither consumes nor renders
-    // `roleAutoMatch` (R-001 re-defer — no client feature change).
+    // mirror of `enabled`; the settings card renders the key as an always-on
+    // "Enable role auto-match" toggle (default true, plan
+    // fallbacks-settings-visibility Task 3).
     roleAutoMatch: roleAutoMatch ?? defaultFallbacksConfig.roleAutoMatch,
   }
 }
@@ -399,7 +400,7 @@ export function extractRecentSwitches(
   return switches.slice(0, limit)
 }
 
-/** The config's primary target: the rootChain's first entry (D-6 ③). */
+/** The config's primary target: the rootChain's first entry (spec §2.5 D-6 ③). */
 function configPrimaryTarget(config: FallbacksConfig): { provider: string; model: string } | null {
   const firstEntry = config.rootChain[0]
   if (firstEntry === undefined) return null
@@ -414,12 +415,18 @@ function configPrimaryTarget(config: FallbacksConfig): { provider: string; model
 }
 
 /**
- * Derive the status block's "current effective model" (spec §2.5 D-6): ①
- * disabled / empty rootChain → unavailable; ② a recent switch exists → the
- * latest one's `to`; ③ otherwise → the config's primary target. A **display
- * value** — never a live route probe (the section appends the non-probing
- * note inline right after the derived value, available case only; the
- * unavailable 空态 renders its own copy without the note).
+ * Derive the "current effective model" (spec §2.5 D-6): ① disabled / empty
+ * rootChain → unavailable; ② a recent switch exists → the latest one's `to`;
+ * ③ otherwise → the config's primary target. A **display value** — never a
+ * live route probe.
+ *
+ * INTENTIONAL D-6 CONTRACT RETENTION: after the AC-2 trim (plan
+ * fallbacks-settings-visibility Task 2) the settings card's status block no
+ * longer consumes this derivation, and no other production code imports it —
+ * it is retained (NOT dead code to delete) as the spec §2.5 D-6 derived-value
+ * surface, pinned by `tests/fallbacks-store.spec.ts` (D-6 display-value
+ * contract). Keep both exports until the spec derivation is removed or gains
+ * a real consumer.
  */
 export function deriveEffectiveModel(
   config: FallbacksConfig,
@@ -1048,6 +1055,17 @@ export class FallbacksSettingsController {
    */
   private accept(config: unknown, writable: boolean, legacyKeys: string[], seeds: SeedsWireStatus[]): void {
     const parsed = config === undefined ? undefined : parseFallbacksConfig(config)
+    // `roleAutoMatch` (plan fallbacks-role-automatch Task 1) is a boolean
+    // with a schemastery schema default `true`, so the gateway composition
+    // (entry base → user layer) ALWAYS resolves the key on the real wire —
+    // even for a pre-Plan-A / legacy descriptor that never declared it
+    // (AC-7 re-scope, PM decision 2026-08-17 Option A). There is no
+    // key-presence signal to honor client-side: `parseFallbacksConfig` folds
+    // the key to the default, the card toggle always renders (default on),
+    // and a save persists the resolved value (`true` for a legacy config).
+    // Keeping the key in the stored config-basis is honest to server truth
+    // and the clean-draft invariant holds (both the draft and the accepted
+    // config carry `roleAutoMatch`).
     this.store.update((state) => {
       state.status = 'ready'
       state.error = null
