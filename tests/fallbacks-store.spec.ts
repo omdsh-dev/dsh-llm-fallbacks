@@ -45,9 +45,11 @@ import {
   rowsToRoles,
   rowsToRootChain,
   rowsToRules,
+  rowsToTimeSlots,
   ruleRoleOptions,
   rulesToRows,
   selectorRowToRaw,
+  timeSlotsToRows,
   RECENT_SWITCH_LIMIT,
   SWITCHES_HISTORY_PAGE,
   type CatalogLookup,
@@ -55,6 +57,7 @@ import {
   type RoleRow,
   type RootChainRow,
 } from '../src/client/fallbacks-store.ts'
+import type { SlotRowConfig } from '../src/time-slots.ts'
 
 /** One gateway RPC success (the channel returns the unwrapped result). */
 function okResult<T>(value: T): { ok: true; value: T } {
@@ -548,6 +551,40 @@ describe('catalog classification (spec §2.5 D-3)', () => {
     const rows = rootChainToRows(['gpt-4o'], catalogFixture())
     expect(rows[0]!.selectors[0]).toEqual({ wildcard: false, provider: { kind: 'outside', raw: 'gpt-4o' }, model: null })
     expect(rowsToRootChain(rows)).toEqual(['gpt-4o'])
+  })
+
+  it('round-trips time-slot rows losslessly (Task 3 editor carrier)', () => {
+    const catalog = catalogFixture()
+    // The composed shape every card load accepts: `days` materialized on
+    // every row (schemastery composes absent arrays as []).
+    const timeSlots: SlotRowConfig[] = [
+      { kind: 'preset', preset: 'liang-peak', days: [], chain: ['openai/gpt-4o', 'openai/*'] },
+      { kind: 'custom', start: '22:00', end: '02:00', days: [1, 5], chain: ['anthropic/claude-3-5-sonnet'] },
+      { kind: 'custom', start: '09:00', end: '10:00', days: [], chain: ['openai/gpt-4o'] },
+    ]
+    const rows = timeSlotsToRows(timeSlots, catalog)
+    expect(rows[0]!.kind).toBe('preset')
+    expect(rows[0]!.preset).toBe('liang-peak')
+    expect(rows[0]!.days).toEqual([])
+    // The wildcard entry reads back as a wildcard selector row (the GUI
+    // conversion hint path, same as role chains).
+    expect(rows[0]!.selectors[1]).toEqual({ wildcard: true, provider: { kind: 'catalog', id: 'openai' }, model: null })
+    expect(rows[1]!.days).toEqual([1, 5])
+    // Round-trip: the original rows come back unchanged (blank selectors
+    // drop out, but there are none here).
+    expect(rowsToTimeSlots(rows)).toEqual(timeSlots)
+  })
+
+  it('serializes an unknown row kind verbatim and drops blank selectors (dirty-check honesty)', () => {
+    // A hand-written YAML row with an unknown kind reads back unchanged —
+    // the card's dirty check stays quiet; save validation rejects it.
+    const rows = timeSlotsToRows([{ kind: 'weird', start: '09:00', end: '10:00', chain: ['openai/gpt-4o'] }])
+    expect(rows[0]!.kind).toBe('weird')
+    expect(rowsToTimeSlots(rows)).toEqual([{ kind: 'weird', start: '09:00', end: '10:00', days: [], chain: ['openai/gpt-4o'] }])
+    // Blank selector rows serialize to nothing (the chain-required
+    // validation surfaces the empty result).
+    const blank = timeSlotsToRows([{ kind: 'custom', start: '09:00', end: '10:00', days: [], chain: [] }])
+    expect(rowsToTimeSlots(blank)).toEqual([{ kind: 'custom', start: '09:00', end: '10:00', days: [], chain: [] }])
   })
 })
 

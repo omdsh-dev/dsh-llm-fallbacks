@@ -1,0 +1,4 @@
+---
+category: Added
+---
+- Time-slot rows (`fallbacks.timeSlots`) rotate the effective root chain by wall-clock windows: four frozen UTC+8 presets (Liang Peak / Liang Valley / GLM Peak / GLM Valley; windows are code constants, models-only edits) or custom `start`/`end`/`days` windows; the first matching row wins and the all-day row is always last. The all-day `rootChain` is now a 2-choose-1 — exactly one official V4 model (`deepseek-official/deepseek-v4-flash` or `deepseek-official/deepseek-v4-pro`) — enforced by the settings card and the gateway on save (a legacy multi-model chain warns at startup, keeps the fallback-only walk, and cannot be saved as-is). Slot changes apply on the next root request and are logged as time-slot switches (分时切换 / time-slot switch) — a routing seed exempt from cooldown and switch caps — never as fallback switches (降级切换 / fallback switch).

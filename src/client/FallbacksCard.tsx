@@ -69,7 +69,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { ConfigurableProviderView } from '@deepseek-ai/dsh-client-connection/client'
 import {
-  Button, IconChevronDownOutline14, IconPlusOutline16, IconTrashOutline16, Modal, Tooltip,
+  Button, IconChevronDownOutline14, IconChevronUpOutline14, IconPlusOutline16, IconTrashOutline16, Modal, Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { SnapshotSelectorHook } from '@deepseek-ai/dsh-client-web-react'
@@ -82,19 +82,19 @@ import {
   classifyProvider,
   mergeRoleExtras,
   rolesToRows,
-  rootChainToRows,
-  rowsToRootChain,
   rowsToRules,
+  rowsToTimeSlots,
   rulesToRows,
   ruleRoleOptions,
   selectionToRaw,
   selectorRowToRaw,
+  timeSlotsToRows,
   type CatalogLookup,
   type ChainSelectorRow,
   type FallbacksSettingsState,
   type RoleRow,
   type RoleRuleRow,
-  type RootChainRow,
+  type SlotEditorRow,
 } from './fallbacks-store.ts'
 import {
   KNOWN_TRIGGER_CODES,
@@ -104,6 +104,29 @@ import {
   type FallbacksKey,
 } from './locales.ts'
 import css from './FallbacksCard.module.css'
+
+// Frozen strings mirrored from `src/time-slots.ts` (OFFICIAL_V4_FLASH /
+// OFFICIAL_V4_PRO / PRESET_IDS) — the card keeps the resolver module out of
+// the client bundle (type-only seam, time-slots.ts docblock), so these
+// product-locked exact strings live here too.
+const ALL_DAY_FLASH = 'deepseek-official/deepseek-v4-flash'
+const ALL_DAY_PRO = 'deepseek-official/deepseek-v4-pro'
+const SLOT_PRESET_IDS = ['liang-peak', 'liang-valley', 'glm-peak', 'glm-valley'] as const
+/** Custom-row day toggle order (index = weekday, 0=Sunday); display copy lives in the dictionaries. */
+const SLOT_WEEKDAYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'] as const
+/** Strict 24h `HH:mm` — the resolver's HHMM_RE twin (drift-guarded by the gateway reject-on-save). */
+const HHMM_RE = /^([01]\d|2[0-3]):[0-5]\d$/
+
+/**
+ * The all-day chooser value for a chain: the official V4 id when the chain
+ * is EXACTLY one official V4 model (Flash XOR Pro — the 2-choose-1 rule,
+ * plan fallbacks-timeslots Task 3); `''` for an empty or legacy
+ * non-conforming chain (the chooser reads back unselected and save
+ * validation blocks the value).
+ */
+function allDayModelOf(chain: readonly string[]): string {
+  return chain.length === 1 && (chain[0] === ALL_DAY_FLASH || chain[0] === ALL_DAY_PRO) ? chain[0] : ''
+}
 
 /** Injected dependencies of {@link FallbacksCard} (slot `inject`). */
 export interface FallbacksCardInjected {
@@ -162,23 +185,32 @@ function scalarsOf(config: FallbacksConfig): FallbacksScalars {
  * `true` even for a legacy config that never declared the key — so the
  * toggle always renders (default on) and a save persists the resolved value
  * (AC-7 re-scope, PM decision 2026-08-17 Option A).
+ *
+ * All-day (plan fallbacks-timeslots Task 3): the rootChain editor is the
+ * exclusive chooser — exactly one official V4 model (Flash XOR Pro). While
+ * nothing is selected the ACCEPTED chain rides through untouched, so a
+ * clean legacy draft still equals the accepted config (dirty-check
+ * invariant) and save validation blocks the non-conforming value with
+ * `validation.allDayRequired`. `timeSlots` is rebuilt from the slot rows
+ * every render (the P5 pass-through ends here — Task 3 edits rows).
  */
 function assembleConfig(
   scalars: FallbacksScalars,
-  rootChainRows: readonly RootChainRow[],
+  allDayModel: string,
+  acceptedRootChain: readonly string[],
   roleRows: readonly RoleRow[],
   ruleRows: readonly RoleRuleRow[],
   originalRoles: readonly FallbacksRole[],
   presets: FallbacksConfig['presets'],
   roleAutoMatch: FallbacksConfig['roleAutoMatch'],
-  timeSlots: FallbacksConfig['timeSlots'],
+  timeSlotRows: readonly SlotEditorRow[],
   tz: FallbacksConfig['tz'],
 ): FallbacksConfig {
   const list = mergeRoleExtras(roleRows, originalRoles)
   return {
     enabled: scalars.enabled,
     triggerCodes: [...scalars.triggerCodes],
-    rootChain: rowsToRootChain(rootChainRows),
+    rootChain: allDayModel === '' ? [...acceptedRootChain] : [allDayModel],
     roles: { list, rules: rowsToRules(ruleRows) },
     cooldownMs: scalars.cooldownMs,
     revertPolicy: scalars.revertPolicy,
@@ -186,11 +218,10 @@ function assembleConfig(
     alwaysModeRetryCap: scalars.alwaysModeRetryCap,
     ...(presets === undefined ? {} : { presets }),
     roleAutoMatch,
-    // P5 keys (plan fallbacks-timeslots Task 1): ride the accepted config
-    // untouched — the store ALWAYS folds them (parse mirrors the schema
-    // defaults), so a clean draft equals the accepted config and the dirty
-    // check stays quiet; the card edits rows in Task 3.
-    ...(timeSlots === undefined ? {} : { timeSlots }),
+    timeSlots: rowsToTimeSlots(timeSlotRows),
+    // `tz` is config-level (P5) and has no per-slot control this iteration
+    // (spec Settings UX notes — no large tz picker); it rides the accepted
+    // config untouched.
     ...(tz === undefined ? {} : { tz }),
   }
 }
@@ -247,11 +278,56 @@ function validateDraft(
       errors.push(t('validation.roleChainRequired', { id: role.id }))
     }
   }
+  // All-day 2-choose-1 (plan fallbacks-timeslots Task 3, product AC — the
+  // all-day row is required and NOT removable): the chain must be exactly
+  // one official V4 model. An empty default or a legacy multi-model chain
+  // (which rides the draft untouched while the chooser is unselected)
+  // blocks the save — the user picks Flash or Pro.
+  if (draft.rootChain.length !== 1 || (draft.rootChain[0] !== ALL_DAY_FLASH && draft.rootChain[0] !== ALL_DAY_PRO)) {
+    errors.push(t('validation.allDayRequired'))
+  }
   for (const entry of draft.rootChain) {
     try {
       parseSelector(entry)
     } catch (error) {
       errors.push(t('validation.selector', { entry, message: (error as Error).message }))
+    }
+  }
+  // Time-slot rows (plan fallbacks-timeslots Task 3): preset rows must
+  // carry a frozen preset id, at most one row per preset; custom rows
+  // require strict `HH:mm` bounds and 0–6 integer days; every row needs a
+  // non-empty model chain (an empty chain is a no-op the resolver would
+  // warn about and skip) and legal selector entries.
+  const seenSlotPresets = new Set<string>()
+  for (const row of draft.timeSlots ?? []) {
+    if (row.kind !== 'preset' && row.kind !== 'custom') {
+      errors.push(t('validation.slotKind'))
+    }
+    if (row.kind === 'preset') {
+      if (typeof row.preset !== 'string' || !(SLOT_PRESET_IDS as readonly string[]).includes(row.preset)) {
+        errors.push(t('validation.slotPresetUnknown', { preset: row.preset }))
+      } else if (seenSlotPresets.has(row.preset)) {
+        errors.push(t('validation.slotPresetDuplicate', { preset: row.preset }))
+      } else {
+        seenSlotPresets.add(row.preset)
+      }
+    } else if (row.kind === 'custom') {
+      if (typeof row.start !== 'string' || typeof row.end !== 'string' || !HHMM_RE.test(row.start) || !HHMM_RE.test(row.end)) {
+        errors.push(t('validation.slotWindow'))
+      }
+      if (row.days !== undefined && row.days.some(day => !Number.isInteger(day) || day < 0 || day > 6)) {
+        errors.push(t('validation.slotDays'))
+      }
+    }
+    for (const entry of row.chain) {
+      try {
+        parseSelector(entry)
+      } catch (error) {
+        errors.push(t('validation.selector', { entry, message: (error as Error).message }))
+      }
+    }
+    if (row.chain.length === 0) {
+      errors.push(t('validation.slotChainRequired'))
     }
   }
   const validTargets = new Set([...declaredIds, INHERIT_ROLE_ID])
@@ -291,6 +367,21 @@ function collectInvalidRoleIds(rows: readonly RoleRow[]): Set<string> {
 function parseCount(raw: string): number {
   const parsed = Number.parseInt(raw, 10)
   return Number.isNaN(parsed) ? 0 : Math.max(0, parsed)
+}
+
+/**
+ * Custom time-slot rows whose window is not valid `HH:mm` — drives the
+ * inline red border after a blocked save attempt (same derivation pattern
+ * as {@link collectInvalidRoleIds}: one pass per render, index lookup per
+ * row).
+ */
+function collectInvalidSlotRows(rows: readonly SlotEditorRow[]): Set<number> {
+  const invalid = new Set<number>()
+  rows.forEach((row, index) => {
+    if (row.kind === 'preset') return
+    if (!HHMM_RE.test(row.start) || !HHMM_RE.test(row.end)) invalid.add(index)
+  })
+  return invalid
 }
 
 /** The catalog faces the dropdowns classify against; undefined while unready. */
@@ -514,9 +605,15 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
   // next content-changing ready: unsaved drafts are not preserved across
   // the unreachable→ready upgrade.
   const [scalars, setScalars] = useState<FallbacksScalars>(() => scalarsOf(defaultFallbacksConfig))
-  const [rootChainRows, setRootChainRows] = useState<RootChainRow[]>(() => rootChainToRows(defaultFallbacksConfig.rootChain))
+  // All-day 2-choose-1 (plan fallbacks-timeslots Task 3): the exclusive
+  // chooser value — the official V4 id, or '' while the accepted chain is
+  // empty/legacy (the draft rides the accepted value until a pick).
+  const [allDayModel, setAllDayModel] = useState<string>(() => allDayModelOf(defaultFallbacksConfig.rootChain))
+  const [timeSlotRows, setTimeSlotRows] = useState<SlotEditorRow[]>(() => timeSlotsToRows(defaultFallbacksConfig.timeSlots ?? []))
   const [roleRows, setRoleRows] = useState<RoleRow[]>(() => rolesToRows(defaultFallbacksConfig.roles.list))
   const [ruleRows, setRuleRows] = useState<RoleRuleRow[]>(() => rulesToRows(defaultFallbacksConfig.roles.rules))
+  // The preset picker's pending selection (UI-only, never part of the draft).
+  const [presetToAdd, setPresetToAdd] = useState<string>('')
   // Pre-save validation (spec §8): save() validates the assembled draft and
   // a blocked write leaves the messages in the banner with
   // `validationAttempted` true so the offending role-id rows keep their
@@ -532,7 +629,8 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
     if (seededConfigKey.current === key) return
     seededConfigKey.current = key
     setScalars(scalarsOf(state.config))
-    setRootChainRows(rootChainToRows(state.config.rootChain, catalogOf(state)))
+    setAllDayModel(allDayModelOf(state.config.rootChain))
+    setTimeSlotRows(timeSlotsToRows(state.config.timeSlots ?? [], catalogOf(state)))
     setRoleRows(rolesToRows(state.config.roles.list, catalogOf(state)))
     setRuleRows(rulesToRows(state.config.roles.rules, catalogOf(state)))
   }, [state.status, state.config])
@@ -560,25 +658,63 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
     })
   }
 
-  // The rootChain block is ONE row holding the ordered selector list — no
-  // key input (spec §8: 无键输入). `rootChainToRows` always yields a single
-  // row, so these helpers operate on its selectors.
-  const updateRootChainSelector = (selectorIndex: number, patch: Partial<ChainSelectorRow>): void => {
-    setRootChainRows(rows => rows.map((row, index) => index === 0
-      ? { ...row, selectors: row.selectors.map((selector, sIndex) => sIndex === selectorIndex ? { ...selector, ...patch } : selector) }
-      : row))
+  // Time-slot row editors (plan fallbacks-timeslots Task 3): preset rows
+  // freeze their windows (models-only edits); custom rows edit
+  // start/end/days + models. Rows reorder freely — the all-day row below
+  // is always last and NOT part of this list.
+  const updateTimeSlotRow = (index: number, patch: Partial<SlotEditorRow>): void => {
+    setTimeSlotRows(rows => {
+      const next = rows.map(row => ({ ...row }))
+      next[index] = { ...next[index]!, ...patch }
+      return next
+    })
   }
 
-  const addRootChainSelector = (): void => {
-    setRootChainRows(rows => rows.map((row, index) => index === 0
+  const updateTimeSlotSelector = (rowIndex: number, selectorIndex: number, patch: Partial<ChainSelectorRow>): void => {
+    setTimeSlotRows(rows => {
+      const next = rows.map(row => ({ ...row, selectors: row.selectors.map(selector => ({ ...selector })) }))
+      const selectors = next[rowIndex]!.selectors
+      selectors[selectorIndex] = { ...selectors[selectorIndex]!, ...patch }
+      return next
+    })
+  }
+
+  const addTimeSlotSelector = (rowIndex: number): void => {
+    setTimeSlotRows(rows => rows.map((row, index) => index === rowIndex
       ? { ...row, selectors: [...row.selectors, { wildcard: false, provider: null, model: null }] }
       : row))
   }
 
-  const removeRootChainSelector = (selectorIndex: number): void => {
-    setRootChainRows(rows => rows.map((row, index) => index === 0
+  const removeTimeSlotSelector = (rowIndex: number, selectorIndex: number): void => {
+    setTimeSlotRows(rows => rows.map((row, index) => index === rowIndex
       ? { ...row, selectors: row.selectors.filter((_, sIndex) => sIndex !== selectorIndex) }
       : row))
+  }
+
+  const addPresetSlotRow = (): void => {
+    if (presetToAdd === '') return
+    setTimeSlotRows(rows => [...rows, { kind: 'preset', preset: presetToAdd, start: '', end: '', days: [], selectors: [] }])
+    setPresetToAdd('')
+  }
+
+  const addCustomSlotRow = (): void => {
+    setTimeSlotRows(rows => [...rows, { kind: 'custom', start: '', end: '', days: [], selectors: [] }])
+  }
+
+  const removeTimeSlotRow = (index: number): void => {
+    setTimeSlotRows(rows => rows.filter((_, rowIndex) => rowIndex !== index))
+  }
+
+  const moveTimeSlotRow = (index: number, delta: -1 | 1): void => {
+    setTimeSlotRows(rows => {
+      const target = index + delta
+      if (target < 0 || target >= rows.length) return rows
+      const next = rows.map(row => ({ ...row }))
+      const moved = next[index]!
+      next[index] = next[target]!
+      next[target] = moved
+      return next
+    })
   }
 
   const updateRoleRow = (index: number, patch: Partial<RoleRow>): void => {
@@ -637,9 +773,10 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
   // A clean legacy draft still equals the accepted config (both carry the
   // key), preserving the dirty-check invariant.
   const draft = assembleConfig(
-    scalars, rootChainRows, roleRows, ruleRows,
+    scalars, allDayModel, state.config.rootChain,
+    roleRows, ruleRows,
     state.config.roles.list, state.config.presets, scalars.roleAutoMatch,
-    state.config.timeSlots, state.config.tz,
+    timeSlotRows, state.config.tz,
   )
   // Empty rule rows (role still on the "select role" placeholder) never
   // reach the assembled draft — rowsToRules drops them — so validateDraft
@@ -655,11 +792,12 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
   const writable = state.writable
   const unknownCodes = scalars.triggerCodes.filter(code => !KNOWN_TRIGGER_CODES.includes(code))
   // Compass AC-1: the rootChain hint is conditional — shown only when the
-  // plugin is enabled AND the chain is configured; hidden when off or unset.
-  // "Configured" follows the serialization rule (`rowsToRootChain` drops
-  // blank selectors): a freshly added blank selector row does NOT count —
-  // the hint stays hidden until a usable entry is picked (qc2 F-002).
-  const rootChainConfigured = rowsToRootChain(rootChainRows).length > 0
+  // plugin is enabled AND the all-day chain is configured; hidden when off
+  // or unset. "Configured" follows the 2-choose-1 rule: the chooser has a
+  // selection (exactly one official V4 model) — an empty or legacy
+  // non-conforming chain does NOT count (the hint stays hidden until a
+  // model is picked).
+  const rootChainConfigured = allDayModel !== ''
 
   // The rules role dropdown's offer set — derived ONCE per render and shared
   // by every rule row (qc3 F-3; previously recomputed inside the render
@@ -670,6 +808,9 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
   // Offending role ids after a blocked save attempt, derived once per render
   // into a Set (qc3 F-3) — each row's inline red border is one lookup.
   const invalidRoleIds = validationAttempted ? collectInvalidRoleIds(roleRows) : null
+  // Custom slot rows with an invalid `HH:mm` window after a blocked save
+  // attempt (same derivation pattern — red borders on the start/end inputs).
+  const invalidSlotRows = validationAttempted ? collectInvalidSlotRows(timeSlotRows) : null
   // Seeded-role badge state, derived ONCE per render from the wire `seeds`
   // (spec §9.4; the qc3 F-3 same-derivation pattern): trimmed role id →
   // whether the persona is currently an operator override. The same map
@@ -726,7 +867,8 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
     if (catalogSeededEpoch.current === state.catalogEpoch) return
     if (dirty) return
     catalogSeededEpoch.current = state.catalogEpoch
-    setRootChainRows(rootChainToRows(state.config.rootChain, catalogOf(state)))
+    setAllDayModel(allDayModelOf(state.config.rootChain))
+    setTimeSlotRows(timeSlotsToRows(state.config.timeSlots ?? [], catalogOf(state)))
     setRoleRows(rolesToRows(state.config.roles.list, catalogOf(state)))
     setRuleRows(rulesToRows(state.config.roles.rules, catalogOf(state)))
   }, [state.catalogStatus, state.catalogEpoch, state.config, dirty])
@@ -760,7 +902,8 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
   // client-side revert is always safe).
   const discard = (): void => {
     setScalars(scalarsOf(state.config))
-    setRootChainRows(rootChainToRows(state.config.rootChain, catalogOf(state)))
+    setAllDayModel(allDayModelOf(state.config.rootChain))
+    setTimeSlotRows(timeSlotsToRows(state.config.timeSlots ?? [], catalogOf(state)))
     setRoleRows(rolesToRows(state.config.roles.list, catalogOf(state)))
     setRuleRows(rulesToRows(state.config.roles.rules, catalogOf(state)))
     // The draft reverted to the accepted config: any blocked-validation
@@ -969,6 +1112,200 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
              * labels the previous per-group legends provided via role="group" +
              * aria-labelledby. */
             <fieldset className={css.fieldset} disabled={!writable}>
+              {/* Extra time-slot rows (plan fallbacks-timeslots Task 3): the
+               * list sits ABOVE the all-day row — first matching row wins,
+               * all-day is always last. Preset rows freeze their windows
+               * (read-only summary; models-only edits); custom rows edit
+               * start/end/days + models. Rows can be removed and reordered
+               * (the all-day row cannot). No `timeSlots.enabled` master
+               * switch — adding a row IS the opt-in (spec Settings UX). */}
+              <div className={css.field} role="group" aria-labelledby="fallbacks-time-slots">
+                <span className={css.fieldLabel}>
+                  <span id="fallbacks-time-slots">{t('timeSlots.label')}</span>
+                  <InfoHint label={t('timeSlots.tooltip')} disabled={!writable} />
+                </span>
+                <span className={css.hint}>{t('timeSlots.hint')}</span>
+                <div className={css.list}>
+                  {timeSlotRows.map((row, index) => {
+                    const invalidWindow = invalidSlotRows?.has(index) ?? false
+                    const chainEmpty = row.selectors.every(selector => selectorRowToRaw(selector) === '')
+                    return (
+                    <div key={index} className={css.editorCard}>
+                      {row.kind === 'preset' ? (
+                        <>
+                          <div className={css.ruleGrid}>
+                            <div className={css.ruleCell}>
+                              <span className={css.ruleCellLabel}>{t('timeSlots.preset.name')}</span>
+                              <span className={css.slotPresetName}>
+                                {t(`timeSlots.preset.${row.preset}.label` as FallbacksKey)}
+                              </span>
+                            </div>
+                            <div className={css.ruleCell}>
+                              <span className={css.ruleCellLabel}>{t('timeSlots.preset.windowLabel')}</span>
+                              <span className={css.hint}>
+                                {t(`timeSlots.preset.${row.preset}.window` as FallbacksKey)}
+                              </span>
+                            </div>
+                          </div>
+                          <span className={css.hint}>{t('timeSlots.preset.chainsOnly')}</span>
+                        </>
+                      ) : (
+                        <>
+                          <div className={css.ruleGrid}>
+                            <label className={css.ruleCell}>
+                              <span className={css.ruleCellLabel}>{t('timeSlots.start')}</span>
+                              <input
+                                className={`${css.input} ${invalidWindow ? css.inputInvalid : ''}`}
+                                value={row.start}
+                                placeholder="09:00"
+                                aria-label={t('timeSlots.start')}
+                                disabled={!writable}
+                                onChange={event => { updateTimeSlotRow(index, { start: event.target.value }) }}
+                              />
+                            </label>
+                            <label className={css.ruleCell}>
+                              <span className={css.ruleCellLabel}>{t('timeSlots.end')}</span>
+                              <input
+                                className={`${css.input} ${invalidWindow ? css.inputInvalid : ''}`}
+                                value={row.end}
+                                placeholder="18:00"
+                                aria-label={t('timeSlots.end')}
+                                disabled={!writable}
+                                onChange={event => { updateTimeSlotRow(index, { end: event.target.value }) }}
+                              />
+                            </label>
+                          </div>
+                          <div className={css.field}>
+                            <span className={css.ruleCellLabel}>{t('timeSlots.days')}</span>
+                            <div className={css.dayRow}>
+                              {SLOT_WEEKDAYS.map((day, dayIndex) => (
+                                <label key={day} className={css.dayCell}>
+                                  <input
+                                    type="checkbox"
+                                    checked={row.days.includes(dayIndex)}
+                                    disabled={!writable}
+                                    onChange={() => {
+                                      updateTimeSlotRow(index, {
+                                        days: row.days.includes(dayIndex)
+                                          ? row.days.filter(existing => existing !== dayIndex)
+                                          : [...row.days, dayIndex],
+                                      })
+                                    }}
+                                  />
+                                  {t(`timeSlots.day.${day}` as FallbacksKey)}
+                                </label>
+                              ))}
+                            </div>
+                            <span className={css.hint}>{t('timeSlots.days.hint')}</span>
+                          </div>
+                          {/* The window-format hint surfaces while a custom
+                           * row is partially filled (a fresh blank row stays
+                           * quiet — the chain hint below already marks it). */}
+                          {(row.start !== '' || row.end !== '')
+                            && !(HHMM_RE.test(row.start) && HHMM_RE.test(row.end)) && (
+                            <span className={css.hint}>{t('validation.slotWindow')}</span>
+                          )}
+                        </>
+                      )}
+                      {chainEmpty && (
+                        <span className={css.hint}>{t('validation.slotChainRequired')}</span>
+                      )}
+                      <div className={css.chainSelectors}>
+                        {row.selectors.map((selector, selectorIndex) => (
+                          <ChainSelectorEditor
+                            key={selectorIndex}
+                            selector={selector}
+                            catalog={catalogOf(state)}
+                            configuredProviders={state.configuredProviders}
+                            disabled={!writable}
+                            t={t}
+                            onChange={patch => { updateTimeSlotSelector(index, selectorIndex, patch) }}
+                            onRemove={() => { removeTimeSlotSelector(index, selectorIndex) }}
+                          />
+                        ))}
+                      </div>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        icon={<IconPlusOutline16 size={14} />}
+                        className={css.addButton}
+                        onClick={() => { addTimeSlotSelector(index) }}
+                      >
+                        {t('timeSlots.selector.add')}
+                      </Button>
+                      <div className={css.cardFoot}>
+                        <div className={css.rowActions}>
+                          <button
+                            type="button"
+                            className={css.iconButton}
+                            data-tip={t('timeSlots.moveUp')}
+                            aria-label={t('timeSlots.moveUp')}
+                            disabled={!writable || index === 0}
+                            onClick={() => { moveTimeSlotRow(index, -1) }}
+                          >
+                            <IconChevronUpOutline14 />
+                          </button>
+                          <button
+                            type="button"
+                            className={css.iconButton}
+                            data-tip={t('timeSlots.moveDown')}
+                            aria-label={t('timeSlots.moveDown')}
+                            disabled={!writable || index === timeSlotRows.length - 1}
+                            onClick={() => { moveTimeSlotRow(index, 1) }}
+                          >
+                            <IconChevronDownOutline14 />
+                          </button>
+                          <button
+                            type="button"
+                            className={`${css.iconButton} ${css.iconButtonDanger}`}
+                            data-tip={t('timeSlots.remove')}
+                            aria-label={t('timeSlots.remove')}
+                            onClick={() => { removeTimeSlotRow(index) }}
+                          >
+                            <IconTrashOutline16 />
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                    )
+                  })}
+                </div>
+                <div className={css.slotAddRow}>
+                  <select
+                    className={`${css.input} ${css.selectInput}`}
+                    value={presetToAdd}
+                    aria-label={t('timeSlots.presetPlaceholder')}
+                    disabled={!writable}
+                    onChange={event => { setPresetToAdd(event.target.value) }}
+                  >
+                    <option value="">{t('timeSlots.presetPlaceholder')}</option>
+                    {SLOT_PRESET_IDS
+                      .filter(id => !timeSlotRows.some(row => row.kind === 'preset' && row.preset === id))
+                      .map(id => (
+                        <option key={id} value={id}>{t(`timeSlots.preset.${id}.label` as FallbacksKey)}</option>
+                      ))}
+                  </select>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    icon={<IconPlusOutline16 size={14} />}
+                    disabled={!writable || presetToAdd === ''}
+                    onClick={addPresetSlotRow}
+                  >
+                    {t('timeSlots.addPreset')}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    icon={<IconPlusOutline16 size={14} />}
+                    disabled={!writable}
+                    onClick={addCustomSlotRow}
+                  >
+                    {t('timeSlots.addCustom')}
+                  </Button>
+                </div>
+              </div>
+
               <div className={css.field} role="group" aria-labelledby="fallbacks-root-chain">
                 <span className={css.fieldLabel}>
                   <span id="fallbacks-root-chain">{t('rootChain.label')}</span>
@@ -997,36 +1334,39 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                 {state.catalogStatus === 'ready' && (state.groups.length === 0 || state.configuredProviders.length === 0) && (
                   <span className={css.hint}>{t('catalog.empty')}</span>
                 )}
-                {/* Block 1 (spec §8): ONE row holding the ordered selector
-                 * list — no key input, the row IS the chain. */}
+                {/* All-day (plan fallbacks-timeslots Task 3): the exclusive
+                 * 2-choose-1 chooser — exactly one official V4 model (Flash
+                 * XOR Pro). NOT a multi-row chain editor, NOT removable,
+                 * and required: an empty or legacy chain reads back with no
+                 * selection plus the nonconforming notice, and save
+                 * validation blocks the value (validation.allDayRequired). */}
                 <div className={css.list}>
-                  {rootChainRows.map((row, rowIndex) => (
-                    <div key={rowIndex} className={css.editorCard}>
-                      <div className={css.chainSelectors}>
-                        {row.selectors.map((selector, selectorIndex) => (
-                          <ChainSelectorEditor
-                            key={selectorIndex}
-                            selector={selector}
-                            catalog={catalogOf(state)}
-                            configuredProviders={state.configuredProviders}
-                            disabled={!writable}
-                            t={t}
-                            onChange={patch => { updateRootChainSelector(selectorIndex, patch) }}
-                            onRemove={() => { removeRootChainSelector(selectorIndex) }}
-                          />
-                        ))}
-                      </div>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        icon={<IconPlusOutline16 size={14} />}
-                        className={css.addButton}
-                        onClick={addRootChainSelector}
-                      >
-                        {t('rootChain.selector.add')}
-                      </Button>
-                    </div>
-                  ))}
+                  <div className={css.editorCard}>
+                    <span className={css.hint}>{t('allDay.hint')}</span>
+                    <label className={css.optionRow}>
+                      <input
+                        type="radio"
+                        name="fallbacks-all-day"
+                        checked={allDayModel === ALL_DAY_FLASH}
+                        disabled={!writable}
+                        onChange={() => { setAllDayModel(ALL_DAY_FLASH) }}
+                      />
+                      {t('allDay.flash')}
+                    </label>
+                    <label className={css.optionRow}>
+                      <input
+                        type="radio"
+                        name="fallbacks-all-day"
+                        checked={allDayModel === ALL_DAY_PRO}
+                        disabled={!writable}
+                        onChange={() => { setAllDayModel(ALL_DAY_PRO) }}
+                      />
+                      {t('allDay.pro')}
+                    </label>
+                    {allDayModel === '' && (
+                      <span className={css.hint}>{t('allDay.nonconforming')}</span>
+                    )}
+                  </div>
                 </div>
               </div>
 
