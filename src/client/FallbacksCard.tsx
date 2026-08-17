@@ -124,6 +124,12 @@ interface FallbacksScalars {
   revertPolicy: RevertPolicy
   maxSwitchesPerStep: number
   alwaysModeRetryCap: number
+  // The roleAutoMatch VALUE (a boolean once configured, or undefined while
+  // a legacy config has not declared the key — plan fallbacks-settings-
+  // visibility T3; the store strips the parse fold so the undefined is
+  // real). The card only RENDERS a toggle when the value is defined; the
+  // undefined-armed value keeps a legacy save from re-inventing the key.
+  roleAutoMatch: boolean | undefined
 }
 
 /** Split scalars from the row editors (rootChain / role entities / role rules). */
@@ -135,6 +141,7 @@ function scalarsOf(config: FallbacksConfig): FallbacksScalars {
     revertPolicy: config.revertPolicy,
     maxSwitchesPerStep: config.maxSwitchesPerStep,
     alwaysModeRetryCap: config.alwaysModeRetryCap,
+    roleAutoMatch: config.roleAutoMatch,
   }
 }
 
@@ -148,7 +155,11 @@ function scalarsOf(config: FallbacksConfig): FallbacksScalars {
  * draft carries the accepted value through untouched — a clean draft stays
  * equal to the accepted config and a save never drops the key.
  * `roleAutoMatch` follows the same rule (config-model mirror of `presets`):
- * no UI this iteration, so the draft carries the accepted value through.
+ * the draft carries the scalar's value through untouched — `undefined`
+ * (a legacy config that never declared the key) omits the key so a save
+ * never invents it, and the schema default `true` rules the resolved config
+ * on the round-trip. The card renders a toggle once the scalar is defined
+ * (Task 3).
  */
 function assembleConfig(
   scalars: FallbacksScalars,
@@ -608,7 +619,15 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
   // The draft is assembled once per render and reused by the dirty check,
   // the validation gate, and save — `state.config.roles.list` supplies the
   // prompt/permissions merge so a clean draft equals the accepted config.
-  const draft = assembleConfig(scalars, rootChainRows, roleRows, ruleRows, state.config.roles.list, state.config.presets, state.config.roleAutoMatch)
+  // `roleAutoMatch` rides the scalar, which the store keeps `undefined` for
+  // a legacy config that never declared the key: `assembleConfig` then omits
+  // the key on save (AC-7 — the toggle is hidden and the schema default
+  // `true` rules), while a clean legacy draft still equals the accepted
+  // config (both omit the key), preserving the dirty-check invariant.
+  const draft = assembleConfig(
+    scalars, rootChainRows, roleRows, ruleRows,
+    state.config.roles.list, state.config.presets, scalars.roleAutoMatch,
+  )
   // Empty rule rows (role still on the "select role" placeholder) never
   // reach the assembled draft — rowsToRules drops them — so validateDraft
   // cannot see them. Surface them as a validation error instead of
@@ -1342,6 +1361,36 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                 </button>
                 {advancedVisible && (
                   <div id="fallbacks-advanced-body">
+                    {/* The roleAutoMatch toggle (plan fallbacks-settings-
+                     * visibility Task 3): a row-level preference in the
+                     * advanced section, default on (the config-model
+                     * default). It renders ONLY when the resolved config
+                     * declared the key (`scalars.roleAutoMatch` is defined —
+                     * the store keeps it undefined for a pre-Plan-A / legacy
+                     * config that never had it): legacy configs keep today's
+                     * card (toggle hidden, AC-7) and the scalar's undefined
+                     * value keeps a save from re-inventing the key. Bound to
+                     * the scalar → the existing draft → config path via
+                     * `assembleConfig`. */}
+                    {scalars.roleAutoMatch !== undefined && (
+                      <div className={css.checkboxRow}>
+                        <div className={css.checkLabel}>
+                          <span className={css.checkLabelTitle}>
+                            <label htmlFor="fallbacks-role-automatch">{t('roleAutoMatch.label')}</label>
+                            <InfoHint label={t('roleAutoMatch.tooltip')} disabled={!writable} />
+                          </span>
+                          <span className={css.checkLabelDesc}>{t('roleAutoMatch.hint')}</span>
+                        </div>
+                        <input
+                          id="fallbacks-role-automatch"
+                          type="checkbox"
+                          className={css.checkbox}
+                          checked={scalars.roleAutoMatch}
+                          disabled={!writable}
+                          onChange={event => { updateScalars(draft => { draft.roleAutoMatch = event.target.checked }) }}
+                        />
+                      </div>
+                    )}
                     <div className={css.field} role="group" aria-labelledby="fallbacks-trigger-codes">
                       <span className={css.fieldLabel}>
                         <span id="fallbacks-trigger-codes">{t('triggerCodes.label')}</span>

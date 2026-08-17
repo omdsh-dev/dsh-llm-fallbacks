@@ -228,6 +228,22 @@ async function mountCard(options: Parameters<typeof scriptedApi>[0] = {}, preloa
 const ENABLED_CONFIG: typeof defaultFallbacksConfig = { ...defaultFallbacksConfig, enabled: true }
 
 /**
+ * A config with the `roleAutoMatch` key removed — the pre-Plan-A / legacy
+ * shape (plan fallbacks-settings-visibility T3): `parseFallbacksConfig`
+ * folds the key to `true` on read, so only the store's raw-key-presence
+ * flag distinguishes this from a config that declares it; the toggle must
+ * stay hidden and a save must not re-invent the key (AC-7).
+ */
+const LEGACY_CONFIG: typeof defaultFallbacksConfig = withoutRoleAutoMatch(ENABLED_CONFIG)
+
+/** Copy a config without the `roleAutoMatch` property. */
+function withoutRoleAutoMatch(config: typeof defaultFallbacksConfig): typeof defaultFallbacksConfig {
+  const copy: Record<string, unknown> = { ...config }
+  delete copy.roleAutoMatch
+  return copy as typeof defaultFallbacksConfig
+}
+
+/**
  * A two-block config (spec §8) exercising every new editing surface: a
  * rootChain, two declared role entities (one `inherit-root`, one
  * `fallback: none` — both with their own chains so the draft is save-valid
@@ -1640,6 +1656,96 @@ describe('FallbacksCard rootChain first-line copy + conditional hint (plan fallb
     expect(en['rootChain.firstLine']).toBeTruthy()
     expect(zh['rootChain.hint']).toBeTruthy()
     expect(en['rootChain.hint']).toBeTruthy()
+  })
+})
+
+describe('FallbacksCard roleAutoMatch toggle (plan fallbacks-settings-visibility T3)', () => {
+  it('renders the toggle in the advanced options, default on, when the config declares roleAutoMatch', async () => {
+    const { view, props } = await mountCard({ config: ENABLED_CONFIG })
+    toggleCard()
+    expandAdvanced()
+    view.rerender(<FallbacksCard {...props} />)
+    // The toggle lives in the advanced section and starts checked (the
+    // config-model default, `true` — compass AC-6 roleAutoMatch default on).
+    const toggle = screen.getByLabelText(en['roleAutoMatch.label']) as HTMLInputElement
+    expect(toggle.checked).toBe(true)
+  })
+
+  it('writes the toggle to the scalar and persists roleAutoMatch:false through a save', async () => {
+    const { view, props, scripted } = await mountCard({ config: ENABLED_CONFIG })
+    toggleCard()
+    expandAdvanced()
+    view.rerender(<FallbacksCard {...props} />)
+    // Flipping the toggle off makes the draft dirty (scalar roleAutoMatch
+    // true → false) and a save persists it through assembleConfig → draft.
+    fireEvent.click(screen.getByLabelText(en['roleAutoMatch.label']))
+    view.rerender(<FallbacksCard {...props} />)
+    expect((screen.getByLabelText(en['roleAutoMatch.label']) as HTMLInputElement).checked).toBe(false)
+    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    await waitFor(() => expect(scripted.set).toHaveBeenCalled())
+    expect(scripted.set).toHaveBeenCalledWith(expect.objectContaining({
+      args: { patch: expect.objectContaining({ roleAutoMatch: false }) },
+    }))
+  })
+
+  it('hides the toggle when the config lacks roleAutoMatch (pre-Plan-A / legacy, AC-7)', async () => {
+    const { view, props } = await mountCard({ config: LEGACY_CONFIG })
+    toggleCard()
+    expandAdvanced()
+    view.rerender(<FallbacksCard {...props} />)
+    // AC-7: a config that never declared the key renders WITHOUT the toggle
+    // (today's behavior) — the advanced options still render the rest.
+    expect(screen.queryByLabelText(en['roleAutoMatch.label'])).toBeNull()
+    expect(screen.getByLabelText(en['cooldownMs.label'])).toBeTruthy()
+  })
+
+  it('loads a legacy config clean (no unsaved pill) even though the parse folds roleAutoMatch to true', async () => {
+    // The dirty-check invariant must hold for legacy configs too: the
+    // accepted config-basis omits the invented `roleAutoMatch` key (the
+    // store strips the parse fold), so a clean draft equals it and the card
+    // does NOT show a spurious "unsaved" state the moment it loads.
+    const { view, props } = await mountCard({ config: LEGACY_CONFIG })
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    expect(screen.queryByText(en.unsaved)).toBeNull()
+    expect((screen.getByRole('button', { name: en.save }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('does not invent roleAutoMatch in a legacy-config save (key omitted from the patch)', async () => {
+    const { view, props, scripted } = await mountCard({ config: LEGACY_CONFIG })
+    toggleCard()
+    expandAdvanced()
+    view.rerender(<FallbacksCard {...props} />)
+    // An unrelated edit makes the draft dirty (a clean draft's Save button
+    // is disabled); the hidden toggle stays untouched, so the assembled
+    // draft must NOT add a roleAutoMatch key the legacy config never had —
+    // the schema default `true` rules the resolved config on the round-trip.
+    fireEvent.change(screen.getByLabelText(en['cooldownMs.label']), { target: { value: '7000' } })
+    view.rerender(<FallbacksCard {...props} />)
+    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    await waitFor(() => expect(scripted.set).toHaveBeenCalled())
+    const patch = scripted.set.mock.calls[0]![0].args.patch as Record<string, unknown>
+    expect('roleAutoMatch' in patch).toBe(false)
+  })
+
+  it('keeps the roleAutoMatch label + hint/tooltip keys in both zh and en dictionaries', () => {
+    // Bilingual-pair constraint (plan Global Constraints).
+    expect(zh['roleAutoMatch.label']).toBeTruthy()
+    expect(en['roleAutoMatch.label']).toBeTruthy()
+    expect(zh['roleAutoMatch.hint']).toBeTruthy()
+    expect(en['roleAutoMatch.hint']).toBeTruthy()
+    expect(zh['roleAutoMatch.tooltip']).toBeTruthy()
+    expect(en['roleAutoMatch.tooltip']).toBeTruthy()
+  })
+
+  it('keeps the toggle inert under the global read-only gate (!writable)', async () => {
+    const { view, props } = await mountCard({ config: ENABLED_CONFIG, writable: false })
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    // Read-only forces the advanced options open and the wrapping fieldset
+    // + explicit disabled term make the toggle inert (F-002 precedent).
+    const toggle = screen.getByLabelText(en['roleAutoMatch.label']) as HTMLInputElement
+    expect(toggle.disabled).toBe(true)
   })
 })
 

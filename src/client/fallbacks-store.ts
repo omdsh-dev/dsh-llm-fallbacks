@@ -1048,6 +1048,21 @@ export class FallbacksSettingsController {
    */
   private accept(config: unknown, writable: boolean, legacyKeys: string[], seeds: SeedsWireStatus[]): void {
     const parsed = config === undefined ? undefined : parseFallbacksConfig(config)
+    // `parseFallbacksConfig` FOLDS the optional `roleAutoMatch` key to the
+    // schema default `true` (pinned against `defaultFallbacksConfig`), so
+    // the parsed value always carries it. That fold is the RESOLVED config's
+    // value, but a pre-Plan-A / legacy descriptor that never declared the
+    // key must still round-trip as "key absent": the card hides the toggle
+    // and a save must not re-invent the key (AC-7 — plan fallbacks-settings-
+    // visibility Task 3). Here we drop the invented key from the stored
+    // config-basis so it stays honest to server truth AND a clean draft
+    // equals the accepted config (the dirty-check invariant). The key is
+    // only removed when the raw descriptor genuinely omitted it — a config
+    // that declares `roleAutoMatch` (true or false) keeps it. Removing an
+    // optional property keeps `FallbacksConfig` well-typed.
+    if (parsed !== undefined && isRecord(config) && config.roleAutoMatch === undefined) {
+      delete parsed.roleAutoMatch
+    }
     this.store.update((state) => {
       state.status = 'ready'
       state.error = null
