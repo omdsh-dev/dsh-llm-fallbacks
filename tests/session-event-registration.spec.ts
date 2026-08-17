@@ -1,84 +1,108 @@
 /**
- * issue #52 regression pins — the runtime registration seam and the mirrored
- * persistence predicate.
+ * issue #52 stop-write pins (commit path) — the plugin NO LONGER writes the
+ * durable `fallbacks/switch` session event.
  *
- * `fallbacks/switch` is a type-only augmentation (`src/events.ts`), erased at
- * runtime. The persistence read path (`dsh-session-persistence`
- * `assertEventsSupported`) refuses a log containing an event type outside the
- * host's baked `KNOWN_SESSION_EVENT_TYPES` catalog unless the event carries
- * the envelope's `ignorable` marker — which `Session.append` can never write.
- * The plugin therefore registers the type into the ROOT-exported catalog at
- * apply time; these pins freeze the exact predicate the read path uses, so a
- * future dsh that drops or freezes the mutable root export fails loudly here.
- * The append guard (registration unavailable → durable event skipped) lives
- * in `tests/session-event-registration-guard.spec.ts`.
+ * RCA (verified): `fallbacks/switch` is a type-only augmentation
+ * (`src/events.ts`), erased at runtime. The persistence read path
+ * (`dsh-session-persistence` `assertEventsSupported`) refuses a log whose
+ * event type is outside the host's baked `KNOWN_SESSION_EVENT_TYPES` catalog
+ * unless the event carries the envelope's `ignorable` marker — which
+ * `Session.append` can never write (seed-only field). The previous fix
+ * registered the type into the host's catalog from `apply()`, but that
+ * registration was PROVEN INEFFECTIVE at runtime: the plugin's
+ * `@deepseek-ai/dsh-session` resolves to its own node_modules copy, a
+ * DIFFERENT module instance from the host's pnpm-store copy, so the `.add()`
+ * mutated a private Set the read path never consults — a session containing
+ * `fallbacks/switch` still refused to load after a dsh restart.
  *
- * Vitest isolates each test file, so `KNOWN_SESSION_EVENT_TYPES` starts
- * UNREGISTERED in this file — the pre-registration assertions below must
- * stay before any `.add` in this file.
+ * Decision: the plugin fully stops writing durable `fallbacks/switch` events.
+ * Switch decisions / cooldown / failure bookkeeping / switchCount / info
+ * logs remain; only the durable event is gone. These pins freeze the commit
+ * path (`agent/request-error`): after `commit()` fires a switch,
+ * `agent.session.append` is NOT called and the session event stream
+ * (`agent.session.events`) contains no `fallbacks/switch` entry — while
+ * pending/cooldown/failure/switchCount bookkeeping and the
+ * `{ kind: 'retry' }` action behave exactly as before. The role-inject
+ * append site is pinned in `session-event-registration-guard.spec.ts`.
  */
 
-import { describe, expect, it } from 'vitest'
-import { KNOWN_SESSION_EVENT_TYPES } from '@deepseek-ai/dsh-session'
-import type { SessionEvent } from '@deepseek-ai/dsh-session'
-import { makeAgent, switchEvents } from './support/harness.ts'
-import type { FallbacksSwitchEventData } from '../src/events.ts'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { Context } from '@deepseek-ai/cordis'
+import { apply, stateStore } from '../src/index.ts'
+import { MemorySettings } from './support/memory-settings.ts'
+import { cfg, dispatchRequest, dispatchRequestError, makeAgent, switchEvents } from './support/harness.ts'
 
-/**
- * The exact read-path refusal predicate, mirrored from
- * `dsh-session-persistence` `assertEventsSupported`: a log is refused when
- * the type is unknown AND the event is not marked ignorable.
- */
-function refusedByReadPath(type: string, event: { ignorable?: true }): boolean {
-  return !KNOWN_SESSION_EVENT_TYPES.has(type) && event.ignorable !== true
-}
+let ctx: Context
 
-function switchData(): FallbacksSwitchEventData {
-  return {
-    turn: 1,
-    step: 1,
-    from: { provider: 'mock', model: 'gpt-4o' },
-    to: { provider: 'other', model: 'gpt-4o' },
-    role: 'inherit',
-    reason: 'trigger-code',
-  }
-}
+beforeEach(() => {
+  ctx = new Context()
+  ctx.plugin(MemorySettings)
+})
 
-describe('fallbacks/switch registration predicate (issue #52)', () => {
-  it('appended switch events carry no ignorable marker and are unknown pre-registration', () => {
-    const { agent } = makeAgent('registration-pre', { provider: 'mock', model: 'gpt-4o' })
-    agent.session.append('fallbacks/switch', switchData())
-    const event = switchEvents(agent)[0] as SessionEvent<'fallbacks/switch'>
-    // `Session.append` has no way to write the envelope's `ignorable` marker
-    // (seed-only field) — a persisted `fallbacks/switch` is always "required".
-    expect(event.ignorable).toBeUndefined()
-    // Before the plugin's apply() registration, the baked catalog does not
-    // know the type — the read path would refuse the whole session log.
-    expect(KNOWN_SESSION_EVENT_TYPES.has('fallbacks/switch')).toBe(false)
-    expect(refusedByReadPath('fallbacks/switch', event)).toBe(true)
+afterEach(async () => {
+  await ctx.fiber.dispose()
+})
+
+describe('does not write durable fallbacks/switch (commit path, issue #52)', () => {
+  it('fires a trigger-code switch WITHOUT calling agent.session.append and writes no event', async () => {
+    const { agent } = makeAgent('stop-write-commit', { provider: 'mock', model: 'gpt-4o' })
+    const session = agent.session as unknown as { append: (type: string, data: Record<string, unknown>) => unknown }
+    const originalAppend = session.append
+    const append = vi.fn((type: string, data: Record<string, unknown>) => originalAppend(type, data))
+    session.append = append
+    apply(ctx, cfg({ rootChain: ['other/gpt-4o'] }))
+
+    try {
+      const action = await dispatchRequestError(ctx, agent, {
+        failure: { message: 'quota exceeded', code: 'QUOTA' },
+      })
+      expect(action).toEqual({ kind: 'retry' })
+    } finally {
+      session.append = originalAppend
+    }
+
+    // `agent.session.append` is NOT called — no durable event is ever written.
+    expect(append).not.toHaveBeenCalled()
+    // And the session event stream gains no fallbacks/switch entry.
+    expect(switchEvents(agent)).toHaveLength(0)
   })
 
-  it('registers into the mutable root-exported Set (the persistence predicate)', () => {
-    // The root export is a plain, unfrozen Set at runtime (the .d.ts only
-    // types it as ReadonlySet).
-    expect(KNOWN_SESSION_EVENT_TYPES).toBeInstanceOf(Set)
-    // Same cast the runtime uses in apply() (src/index.ts).
-    const known = KNOWN_SESSION_EVENT_TYPES as Set<string>
-    known.add('fallbacks/switch')
-    expect(known.has('fallbacks/switch')).toBe(true)
-    // Registration flips the mirrored refusal predicate to false — a log
-    // written with this event now passes `assertEventsSupported` on load.
-    const { agent } = makeAgent('registration-post', { provider: 'mock', model: 'gpt-4o' })
-    agent.session.append('fallbacks/switch', switchData())
-    const event = switchEvents(agent)[0] as SessionEvent<'fallbacks/switch'>
-    expect(event.ignorable).toBeUndefined()
-    expect(refusedByReadPath('fallbacks/switch', event)).toBe(false)
-  })
+  it('keeps pending/cooldown/failure/switchCount bookkeeping and the retry action', async () => {
+    const { agent, setRoute } = makeAgent('stop-write-books', { provider: 'mock', model: 'gpt-4o' })
+    apply(ctx, cfg({ rootChain: ['other/gpt-4o'] }))
 
-  it('registration is idempotent (multi-fiber / re-apply safe)', () => {
-    const known = KNOWN_SESSION_EVENT_TYPES as Set<string>
-    known.add('fallbacks/switch')
-    known.add('fallbacks/switch')
-    expect(known.has('fallbacks/switch')).toBe(true)
+    const action = await dispatchRequestError(ctx, agent, {
+      failure: { message: 'quota exceeded', code: 'QUOTA' },
+    })
+    expect(action).toEqual({ kind: 'retry' })
+
+    // The switch bookkeeping is untouched by the removal: the pending switch
+    // is written, the failed model is recorded, switchCount is bumped, and
+    // cooldown/suppression is applied.
+    const state = stateStore(ctx)?.peek(agent.id)
+    expect(state?.pendingSwitch).toEqual({
+      from: { provider: 'mock', model: 'gpt-4o' },
+      to: { provider: 'other', model: 'gpt-4o' },
+      role: 'inherit',
+      reason: 'trigger-code',
+    })
+    expect(state?.stepFailures.failed.has('mock/gpt-4o')).toBe(true)
+    expect(state?.stepFailures.switchCount).toBe(1)
+    expect(state?.cooldown.isSuppressed('mock/gpt-4o')).toBe(true)
+
+    // The pending switch still applies at the next request of the same
+    // (turn, step) — the decision path is unchanged.
+    const next = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
+    expect(next).toEqual({ provider: 'other', model: 'gpt-4o' })
+
+    // Cooldown + step-failed still double-suppress the failed model: a failure
+    // on the target cannot switch back to the cooled mock (no candidate →
+    // passthrough) — and still no event is written.
+    setRoute('other', 'gpt-4o')
+    expect(await dispatchRequestError(ctx, agent, {
+      provider: 'other',
+      failure: { message: 'boom', code: 'AUTH' },
+    })).toBeUndefined()
+    expect(switchEvents(agent)).toHaveLength(0)
   })
 })

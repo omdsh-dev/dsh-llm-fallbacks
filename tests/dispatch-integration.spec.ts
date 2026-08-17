@@ -10,17 +10,18 @@
  *
  * - the three-stage path on ONE subagent first request: explicit preset miss →
  *   rules miss → auto-match picks a declared role → injects its chain head →
- *   `fallbacks/switch` (`reason: 'role-inject'`, from/to/role populated), plus
+ *   the role-inject override (NO durable `fallbacks/switch` event, issue #52 —
+ *   the plugin fully stopped writing it), plus
  *   the stage-precedence wiring (explicit > rules > auto-match; the hook is not
  *   invoked when an earlier stage resolves);
  * - `roleAutoMatch: false` reproduces today's behavior (no auto-match, no
  *   injection, no event), even when the llm would answer;
  * - dedicated regression assertions that the failure-time fallback path
- *   (trigger-code / always-cap) stays byte-identical AFTER a dispatch injection
+ *   (trigger-code / always-cap) stays intact AFTER a dispatch injection
  *   has occurred on the same agent: the dispatch path writes no pending /
  *   cooldown / failure bookkeeping, never re-evaluates (once-marker), and so
- *   failure decisions keep their exact pre-feature event shape and override
- *   semantics.
+ *   failure decisions keep their exact pre-feature override semantics (no
+ *   durable event, issue #52).
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -83,16 +84,8 @@ describe('end-to-end dispatch resolution + injection (three-stage path)', () => 
     const config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
     expect(config).toEqual({ provider: 'anthropic', model: 'claude-sonnet-4' })
 
-    const events = switchEvents(agent)
-    expect(events).toHaveLength(1)
-    expect(events[0]?.data).toEqual({
-      turn: 1,
-      step: 1,
-      from: { provider: 'mock', model: 'gpt-4o' },
-      to: { provider: 'anthropic', model: 'claude-sonnet-4' },
-      role: 'coder',
-      reason: 'role-inject',
-    })
+    // Stop-write (issue #52): no durable fallbacks/switch event is written.
+    expect(switchEvents(agent)).toHaveLength(0)
   })
 
   it('lets a rules match win before the auto-match stage (hook not invoked)', async () => {
@@ -108,7 +101,7 @@ describe('end-to-end dispatch resolution + injection (three-stage path)', () => 
 
     const config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
     expect(config).toEqual({ provider: 'anthropic', model: 'claude-sonnet-4' })
-    expect(switchEvents(agent)[0]?.data.role).toBe('coder')
+    expect(switchEvents(agent)).toHaveLength(0)
     // Stage 2 short-circuited before the auto-match stage — the stub was never streamed.
     expect(automatch).not.toHaveBeenCalled()
   })
@@ -129,7 +122,7 @@ describe('end-to-end dispatch resolution + injection (three-stage path)', () => 
 
     const config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
     expect(config).toEqual({ provider: 'anthropic', model: 'claude-sonnet-4' })
-    expect(switchEvents(agent)[0]?.data.role).toBe('coder')
+    expect(switchEvents(agent)).toHaveLength(0)
     // Stage 1 resolved the declared preset — rules and auto-match never ran.
     expect(automatch).not.toHaveBeenCalled()
   })
@@ -155,22 +148,13 @@ describe('failure-time fallback path byte-identical after dispatch injection (re
     // First request: role-inject applies (explicit 'coder' → its chain head).
     const injected = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
     expect(injected).toEqual({ provider: 'anthropic', model: 'claude-sonnet-4' })
-    expect(switchEvents(agent)[0]?.data.reason).toBe('role-inject')
 
-    // Failure on the injected route: the trigger-code decision + event shape is
-    // byte-identical to the pre-feature path (same role/from/to/reason), and the
-    // dispatch block does not re-evaluate (once-marker).
+    // Failure on the injected route: the trigger-code decision still applies
+    // (no durable event, issue #52), and the dispatch block does not
+    // re-evaluate (once-marker).
     const action = await dispatchRequestError(ctx, agent, { provider: 'anthropic' })
     expect(action).toEqual({ kind: 'retry' })
-    expect(switchEvents(agent)).toHaveLength(2)
-    expect(switchEvents(agent)[1]?.data).toEqual({
-      turn: 1,
-      step: 1,
-      from: { provider: 'anthropic', model: 'claude-sonnet-4' },
-      to: { provider: 'other', model: 'gpt-4o' },
-      role: 'inherit',
-      reason: 'trigger-code',
-    })
+    expect(switchEvents(agent)).toHaveLength(0)
 
     // The pending switch still applies at the next request (failure path intact).
     const retried = await dispatchRequest(ctx, agent, { provider: 'anthropic', model: 'claude-sonnet-4' })
@@ -183,24 +167,15 @@ describe('failure-time fallback path byte-identical after dispatch injection (re
 
     // First request: role-inject to anthropic/claude-sonnet-4.
     await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
-    expect(switchEvents(agent)[0]?.data.reason).toBe('role-inject')
 
     // Always-mode retries accumulate on the injected route → the cap trips at
-    // the next request boundary with the exact always-cap shape (role 'inherit',
-    // rootChain target, from = the injected route).
+    // the next request boundary and routes to the rootChain target.
     for (let retry = 1; retry <= 3; retry += 1) {
       appendLlmRetry(agent, { turn: 1, step: 1, provider: 'anthropic', mode: 'always', policyKey: 'always', retry })
     }
     const switched = await dispatchRequest(ctx, agent, { provider: 'anthropic', model: 'claude-sonnet-4' })
     expect(switched).toEqual({ provider: 'other', model: 'gpt-4o' })
-    expect(switchEvents(agent)).toHaveLength(2)
-    expect(switchEvents(agent)[1]?.data).toEqual({
-      turn: 1,
-      step: 1,
-      from: { provider: 'anthropic', model: 'claude-sonnet-4' },
-      to: { provider: 'other', model: 'gpt-4o' },
-      role: 'inherit',
-      reason: 'always-cap',
-    })
+    // Stop-write: the always-cap switch applies with no durable event.
+    expect(switchEvents(agent)).toHaveLength(0)
   })
 })

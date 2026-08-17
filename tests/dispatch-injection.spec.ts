@@ -5,8 +5,9 @@
  * role (explicit → rules → auto-match hook) and injects the resolved role's
  * chain head — the first exact (non-wildcard) candidate of the concatenated
  * chain — when it differs from the request's current model: via
- * `overrideConfig` + a `fallbacks/switch` event (`reason: 'role-inject'`,
- * `from`/`to`/`role` populated) + an explicit `role → model` log line.
+ * `overrideConfig` + an explicit `role → model` log line. No durable
+ * `fallbacks/switch` session event is written (issue #52 — the plugin fully
+ * stopped writing it; see `tests/session-event-registration-guard.spec.ts`).
  *
  * This is NOT a failure decision: no `commit()`, no pending switch, no
  * cooldown, no failure bookkeeping (agent state untouched). Evaluation is
@@ -74,16 +75,8 @@ describe('dispatch-time role injection', () => {
     const config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
     expect(config).toEqual({ provider: 'anthropic', model: 'claude-sonnet-4' })
 
-    const events = switchEvents(agent)
-    expect(events).toHaveLength(1)
-    expect(events[0]?.data).toEqual({
-      turn: 1,
-      step: 1,
-      from: { provider: 'mock', model: 'gpt-4o' },
-      to: { provider: 'anthropic', model: 'claude-sonnet-4' },
-      role: 'coder',
-      reason: 'role-inject',
-    })
+    // Stop-write (issue #52): no durable fallbacks/switch event is written.
+    expect(switchEvents(agent)).toHaveLength(0)
     // Direction-3 visibility: the explicit role → model log line. The exporter
     // keeps the format string in args[0] and the interpolated values after it.
     expect(logs.some((message) => message.type === 'info'
@@ -105,7 +98,7 @@ describe('dispatch-time role injection', () => {
 
     const config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
     expect(config).toEqual({ provider: 'anthropic', model: 'claude-sonnet-4' })
-    expect(switchEvents(agent)[0]?.data.role).toBe('coder')
+    expect(switchEvents(agent)).toHaveLength(0)
   })
 
   it('does not inject when the chain head equals the current model', async () => {
@@ -126,7 +119,7 @@ describe('dispatch-time role injection', () => {
     // A second request (route already folded back) is not re-evaluated.
     const second = await dispatchRequest(ctx, agent, { provider: 'anthropic', model: 'claude-sonnet-4' })
     expect(second).toEqual({ provider: 'anthropic', model: 'claude-sonnet-4' })
-    expect(switchEvents(agent)).toHaveLength(1)
+    expect(switchEvents(agent)).toHaveLength(0)
   })
 
   it('never re-evaluates after a first request that did not inject (marker set regardless)', async () => {
@@ -203,14 +196,8 @@ describe('dispatch-time role injection', () => {
 
     const config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
     expect(config).toEqual({ provider: 'anthropic', model: 'claude-sonnet-4' })
-    expect(switchEvents(agent)[0]?.data).toEqual({
-      turn: 1,
-      step: 1,
-      from: { provider: 'mock', model: 'gpt-4o' },
-      to: { provider: 'anthropic', model: 'claude-sonnet-4' },
-      role: 'coder',
-      reason: 'role-inject',
-    })
+    // Stop-write: the explicit-preset role-inject applies with no durable event.
+    expect(switchEvents(agent)).toHaveLength(0)
   })
 
   it('is a no-op when disabled (AC-8)', async () => {
@@ -231,9 +218,8 @@ describe('dispatch-time role injection', () => {
     // First request: the pending switch applies and wins over the role-inject.
     const config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
     expect(config).toEqual({ provider: 'other', model: 'gpt-4o' })
-    const events = switchEvents(agent)
-    expect(events).toHaveLength(1)
-    expect(events[0]?.data.reason).toBe('trigger-code')
+    // Stop-write: the trigger-code switch wins with no durable event.
+    expect(switchEvents(agent)).toHaveLength(0)
   })
 
   it('clears the once-marker on agent/disposed (a re-created agent re-evaluates)', async () => {
@@ -241,28 +227,26 @@ describe('dispatch-time role injection', () => {
     apply(ctx, cfg({ roles: coderRoles() }))
 
     await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
-    expect(switchEvents(agent)).toHaveLength(1)
+    expect(switchEvents(agent)).toHaveLength(0)
 
     ctx.emit('agent/disposed', { agent })
     const { agent: second } = makeAgent('t4-recreate', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent', agentPreset: 'coder' })
     await dispatchRequest(ctx, second, { provider: 'mock', model: 'gpt-4o' })
-    expect(switchEvents(second)).toHaveLength(1)
+    expect(switchEvents(second)).toHaveLength(0)
   })
 
-  it('proceeds with the request unchanged when injection fails (defensive)', async () => {
-    const logs = captureLogs()
+  it('applies the injection even when session.append would throw (never called — stop-write, issue #52)', async () => {
     const { agent } = makeAgent('t4-defensive', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent', agentPreset: 'coder' })
     apply(ctx, cfg({ roles: coderRoles() }))
-    // A session.append failure (the defensive pattern's example throw source):
-    // the whole injection path must degrade to a warn + unchanged request.
+    // The durable append is gone — the injection path never touches
+    // session.append, so a hostile append cannot degrade the request.
     ;(agent as unknown as { session: { append: () => never } }).session.append = () => {
       throw new Error('session log refused')
     }
 
     const config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
-    expect(config).toEqual({ provider: 'mock', model: 'gpt-4o' })
-    expect(logs.some((message) => message.type === 'warn'
-      && String(message.args[0]).includes('dispatch role-injection failed'))).toBe(true)
+    expect(config).toEqual({ provider: 'anthropic', model: 'claude-sonnet-4' })
+    expect(switchEvents(agent)).toHaveLength(0)
   })
 })
 
@@ -279,7 +263,8 @@ describe('dispatch auto-match stage (wired through pickRoleByLlm)', () => {
 
     const config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
     expect(config).toEqual({ provider: 'anthropic', model: 'claude-sonnet-4' })
-    expect(switchEvents(agent)[0]?.data.role).toBe('coder')
+    // Stop-write: the auto-match injection applies with no durable event.
+    expect(switchEvents(agent)).toHaveLength(0)
   })
 
   it('does not inject when no llm service is available for auto-match (inherit)', async () => {

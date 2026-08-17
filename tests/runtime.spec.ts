@@ -78,15 +78,8 @@ describe('request-error → request switch closed loop', () => {
 
     const action = await dispatchRequestError(ctx, agent)
     expect(action).toEqual({ kind: 'retry' })
-    expect(switchEvents(agent)).toHaveLength(1)
-    expect(switchEvents(agent)[0]?.data).toEqual({
-      turn: 1,
-      step: 1,
-      from: { provider: 'mock', model: 'gpt-4o' },
-      to: { provider: 'other', model: 'gpt-4o' },
-      role: 'inherit',
-      reason: 'trigger-code',
-    })
+    // Stop-write (issue #52): the switch happens but no durable event is written.
+    expect(switchEvents(agent)).toHaveLength(0)
 
     // Retry buildRequest: the pending switch overrides provider/model and
     // drops any inherited reasoningEffort (installModelSelection pattern).
@@ -145,8 +138,10 @@ describe('role resolution + chain concatenation (spec §7)', () => {
 
     const action = await dispatchRequestError(ctx, agent)
     expect(action).toEqual({ kind: 'retry' })
-    expect(switchEvents(agent)[0]?.data.to).toEqual({ provider: 'other', model: 'gpt-4o' })
-    expect(switchEvents(agent)[0]?.data.role).toBe('inherit')
+    // Stop-write: no durable event; the switch still routes to the rootChain.
+    expect(switchEvents(agent)).toHaveLength(0)
+    expect(await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' }))
+      .toEqual({ provider: 'other', model: 'gpt-4o' })
   })
 
   it('routes a matching rule to the declared role chain', async () => {
@@ -161,8 +156,10 @@ describe('role resolution + chain concatenation (spec §7)', () => {
 
     const action = await dispatchRequestError(ctx, agent)
     expect(action).toEqual({ kind: 'retry' })
-    expect(switchEvents(agent)[0]?.data.to).toEqual({ provider: 'other', model: 'gpt-4o' })
-    expect(switchEvents(agent)[0]?.data.role).toBe('coder')
+    // Stop-write: no durable event; the switch still routes to the role chain.
+    expect(switchEvents(agent)).toHaveLength(0)
+    expect(await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' }))
+      .toEqual({ provider: 'other', model: 'gpt-4o' })
   })
 
   it('canonicalizes a padded declared id: list " coder " + rule "coder" resolves to the declared role (qc2 F-001)', async () => {
@@ -182,10 +179,12 @@ describe('role resolution + chain concatenation (spec §7)', () => {
 
     const action = await dispatchRequestError(ctx, agent)
     expect(action).toEqual({ kind: 'retry' })
-    // The declared chain (other/gpt-4o), not the rootChain fallback (third/x).
-    expect(switchEvents(agent)[0]?.data.to).toEqual({ provider: 'other', model: 'gpt-4o' })
-    // The event carries the declared RAW id as stored in roles.list.
-    expect(switchEvents(agent)[0]?.data.role).toBe(' coder ')
+    // Stop-write: no durable event; the switch still routes to the declared
+    // chain (other/gpt-4o), not the rootChain fallback (third/x) — proving the
+    // padded id resolved to the declared role.
+    expect(switchEvents(agent)).toHaveLength(0)
+    expect(await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' }))
+      .toEqual({ provider: 'other', model: 'gpt-4o' })
   })
 
   it('appends rootChain after the role chain by default (inherit-root, append-not-replace)', async () => {
@@ -203,8 +202,11 @@ describe('role resolution + chain concatenation (spec §7)', () => {
 
     const action = await dispatchRequestError(ctx, agent)
     expect(action).toEqual({ kind: 'retry' })
-    expect(switchEvents(agent)[0]?.data.to).toEqual({ provider: 'third', model: 'x' })
-    expect(switchEvents(agent)[0]?.data.role).toBe('coder')
+    // Stop-write: no durable event; the switch still routes to the appended
+    // rootChain tail (third/x) — the concatenation is proven by the route.
+    expect(switchEvents(agent)).toHaveLength(0)
+    expect(await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' }))
+      .toEqual({ provider: 'third', model: 'x' })
   })
 
   it("keeps only the role chain under fallback 'none' (no rootChain append)", async () => {
@@ -225,7 +227,7 @@ describe('role resolution + chain concatenation (spec §7)', () => {
     // current model and rootChain must NOT be consulted ('none') → no-op.
     const second = await dispatchRequestError(ctx, agent, { provider: 'other' })
     expect(second).toBeUndefined()
-    expect(switchEvents(agent)).toHaveLength(1)
+    expect(switchEvents(agent)).toHaveLength(0)
   })
 
   it("resolves an explicit rule targeting 'inherit' to rootChain", async () => {
@@ -237,8 +239,11 @@ describe('role resolution + chain concatenation (spec §7)', () => {
 
     const action = await dispatchRequestError(ctx, agent)
     expect(action).toEqual({ kind: 'retry' })
-    expect(switchEvents(agent)[0]?.data.to).toEqual({ provider: 'other', model: 'gpt-4o' })
-    expect(switchEvents(agent)[0]?.data.role).toBe('inherit')
+    // Stop-write: no durable event; the explicit 'inherit' rule still routes
+    // to the rootChain target.
+    expect(switchEvents(agent)).toHaveLength(0)
+    expect(await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' }))
+      .toEqual({ provider: 'other', model: 'gpt-4o' })
   })
 
   it('defends an undeclared role reference: warn + fall back to inherit → rootChain (no crash)', async () => {
@@ -259,8 +264,10 @@ describe('role resolution + chain concatenation (spec §7)', () => {
     // Decision: resolveRole warns and resolves to 'inherit' → rootChain.
     const action = await dispatchRequestError(ctx, agent)
     expect(action).toEqual({ kind: 'retry' })
-    expect(switchEvents(agent)[0]?.data.to).toEqual({ provider: 'other', model: 'gpt-4o' })
-    expect(switchEvents(agent)[0]?.data.role).toBe('inherit')
+    // Stop-write: no durable event; the fallback still routes to rootChain.
+    expect(switchEvents(agent)).toHaveLength(0)
+    expect(await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' }))
+      .toEqual({ provider: 'other', model: 'gpt-4o' })
     // The decision-path warn flows through the plugin logger (qc2 F-002),
     // NOT console — the runtime message is the 'falling back' variant
     // (distinct from the startup validator's 'expected one of ...' variant).
@@ -357,18 +364,17 @@ describe('coexistence order with llm-retry (registered first)', () => {
     // Retryable code within budget: llm-retry owns recovery, fallback never runs.
     const owned = await dispatchRequestError(ctx, agent, { failure: { message: '429', code: 'RATE_LIMIT' } })
     expect(owned).toEqual({ kind: 'retry' })
-    expect(switchEvents(agent)).toHaveLength(0)
+    expect(stateStore(ctx)?.peek(agent.id)?.stepFailures.switchCount ?? 0).toBe(0)
 
     // Budget exhausted: llm-retry delegates; the trigger code reaches fallback.
     const delegated = await dispatchRequestError(ctx, agent, { failure: { message: '429', code: 'RATE_LIMIT' } })
     expect(delegated).toEqual({ kind: 'retry' })
-    expect(switchEvents(agent)).toHaveLength(1)
-    expect(switchEvents(agent)[0]?.data.reason).toBe('trigger-code')
+    expect(stateStore(ctx)?.peek(agent.id)?.stepFailures.switchCount ?? 0).toBe(1)
 
     // Never-retryable code (AUTH): llm-retry delegates immediately.
     const auth = await dispatchRequestError(ctx, agent, { failure: { message: 'bad key', code: 'AUTH' } })
     expect(auth).toEqual({ kind: 'retry' })
-    expect(switchEvents(agent)).toHaveLength(2)
+    expect(stateStore(ctx)?.peek(agent.id)?.stepFailures.switchCount ?? 0).toBe(2)
   })
 })
 
@@ -393,12 +399,12 @@ describe('always mode: downstream first, cap at agent/request (ADR-2)', () => {
     // Non-trigger code under always mode: fallback must NOT preempt the backoff.
     const action = await dispatchRequestError(ctx, agent, { failure: { message: 'busy', code: 'SERVER' } })
     expect(action).toEqual({ kind: 'retry' })
-    expect(switchEvents(agent)).toHaveLength(0)
+    expect(stateStore(ctx)?.peek(agent.id)?.stepFailures.switchCount ?? 0).toBe(0)
 
     // Trigger code: the downstream (fallback) decision wins, llm-retry honors it.
     const auth = await dispatchRequestError(ctx, agent, { failure: { message: 'bad key', code: 'AUTH' } })
     expect(auth).toEqual({ kind: 'retry' })
-    expect(switchEvents(agent)).toHaveLength(1)
+    expect(stateStore(ctx)?.peek(agent.id)?.stepFailures.switchCount ?? 0).toBe(1)
   })
 
   it('switches at the request boundary once llm/retry events reach the cap', async () => {
@@ -423,15 +429,8 @@ describe('always mode: downstream first, cap at agent/request (ADR-2)', () => {
       reasoningEffort: 'high' as ReasoningEffortId,
     })
     expect(switched).toEqual({ provider: 'other', model: 'gpt-4o' })
-    expect(switchEvents(agent)).toHaveLength(1)
-    expect(switchEvents(agent)[0]?.data).toMatchObject({
-      turn: 1,
-      step: 1,
-      from: { provider: 'mock', model: 'gpt-4o' },
-      to: { provider: 'other', model: 'gpt-4o' },
-      role: 'inherit',
-      reason: 'always-cap',
-    })
+    // Stop-write: the cap switch applies but no durable event is written.
+    expect(switchEvents(agent)).toHaveLength(0)
   })
 
   it('counts retries scoped to (turn, step, provider)', async () => {
@@ -516,7 +515,10 @@ describe('decision-path candidate filtering (T2 review Important #1)', () => {
 
     const action = await dispatchRequestError(ctx, agent)
     expect(action).toEqual({ kind: 'retry' })
-    expect(switchEvents(agent)[0]?.data.to).toEqual({ provider: 'other', model: 'gpt-4o' })
+    // Stop-write: no durable event; the wildcard resolves to other/gpt-4o.
+    expect(switchEvents(agent)).toHaveLength(0)
+    expect(await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' }))
+      .toEqual({ provider: 'other', model: 'gpt-4o' })
   })
 
   it('never existence-filters explicitly listed exact entries (spec §2 clause 2)', async () => {
@@ -531,7 +533,10 @@ describe('decision-path candidate filtering (T2 review Important #1)', () => {
 
     const action = await dispatchRequestError(ctx, agent)
     expect(action).toEqual({ kind: 'retry' })
-    expect(switchEvents(agent)[0]?.data.to).toEqual({ provider: 'other', model: 'gpt-4o' })
+    // Stop-write: no durable event; the exact entry survives (no existence filter).
+    expect(switchEvents(agent)).toHaveLength(0)
+    expect(await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' }))
+      .toEqual({ provider: 'other', model: 'gpt-4o' })
   })
 
   it('does not probe the model catalog when no candidate is a wildcard (F-002)', async () => {
@@ -544,7 +549,8 @@ describe('decision-path candidate filtering (T2 review Important #1)', () => {
     // error-recovery critical path — it must not run at all.
     const action = await dispatchRequestError(ctx, agent)
     expect(action).toEqual({ kind: 'retry' })
-    expect(switchEvents(agent)[0]?.data.to).toEqual({ provider: 'other', model: 'gpt-4o' })
+    // Stop-write: no durable event; the exact-entry switch still applies.
+    expect(switchEvents(agent)).toHaveLength(0)
     expect(listModels).not.toHaveBeenCalled()
   })
 
@@ -562,7 +568,8 @@ describe('decision-path candidate filtering (T2 review Important #1)', () => {
 
     const action = await dispatchRequestError(ctx, agent)
     expect(action).toEqual({ kind: 'retry' })
-    expect(switchEvents(agent)[0]?.data.to).toEqual({ provider: 'other', model: 'gpt-4o' })
+    // Stop-write: no durable event; the wildcard resolves via one catalog probe.
+    expect(switchEvents(agent)).toHaveLength(0)
     expect(listModels).toHaveBeenCalledTimes(1)
     expect(listModels).toHaveBeenCalledWith('other')
   })
@@ -580,7 +587,7 @@ describe('decision-path candidate filtering (T2 review Important #1)', () => {
     // are both excluded → no candidate → passthrough, original error semantics.
     const second = await dispatchRequestError(ctx, agent, { provider: 'other' })
     expect(second).toBeUndefined()
-    expect(switchEvents(agent)).toHaveLength(1)
+    expect(switchEvents(agent)).toHaveLength(0)
   })
 
   it('keeps cooldown suppression across a step advance (failed set resets, cooldown persists)', async () => {
@@ -595,7 +602,7 @@ describe('decision-path candidate filtering (T2 review Important #1)', () => {
     // switch back (revert waits for cooldown expiry — US-4).
     const second = await dispatchRequestError(ctx, agent, { provider: 'other', step: 2 })
     expect(second).toBeUndefined()
-    expect(switchEvents(agent)).toHaveLength(1)
+    expect(switchEvents(agent)).toHaveLength(0)
   })
 
   it('stops switching once the per-step safety valve is exceeded', async () => {
@@ -609,7 +616,7 @@ describe('decision-path candidate filtering (T2 review Important #1)', () => {
     // switchCount is 2 ≥ 2 → no decision even though d/x is available.
     const third = await dispatchRequestError(ctx, agent, { provider: 'c' })
     expect(third).toBeUndefined()
-    expect(switchEvents(agent)).toHaveLength(2)
+    expect(switchEvents(agent)).toHaveLength(0)
   })
 })
 
@@ -811,7 +818,7 @@ describe('per-agent state lifecycle', () => {
     // State gone: mock is no longer cooled/failed → switch back is possible.
     const after = await dispatchRequestError(ctx, agent, { provider: 'other' })
     expect(after).toEqual({ kind: 'retry' })
-    expect(switchEvents(agent)).toHaveLength(2)
+    expect(switchEvents(agent)).toHaveLength(0)
   })
 
   it('prunes a pending switch on agent/status idle (defensive)', async () => {
@@ -849,13 +856,16 @@ describe('settings live re-read', () => {
 
     const action = await dispatchRequestError(ctx, agent)
     expect(action).toEqual({ kind: 'retry' })
-    expect(switchEvents(agent)[0]?.data.to).toEqual({ provider: 'third', model: 'x' })
+    // Stop-write: no durable event; the live-re-read switch routes to third/x.
+    expect(switchEvents(agent)).toHaveLength(0)
+    expect(await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' }))
+      .toEqual({ provider: 'third', model: 'x' })
 
     await ctx.settings.update(ns, { enabled: false })
 
     const disabled = await dispatchRequestError(ctx, agent)
     expect(disabled).toBeUndefined()
-    expect(switchEvents(agent)).toHaveLength(1)
+    expect(switchEvents(agent)).toHaveLength(0)
   })
 })
 
@@ -872,7 +882,10 @@ describe('startup validation + legacy warn (AC-4 warn-not-crash, US-4 migration 
 
     const action = await dispatchRequestError(ctx, agent)
     expect(action).toEqual({ kind: 'retry' })
-    expect(switchEvents(agent)[0]?.data.to).toEqual({ provider: 'other', model: 'gpt-4o' })
+    // Stop-write: no durable event; the valid entry still resolves.
+    expect(switchEvents(agent)).toHaveLength(0)
+    expect(await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' }))
+      .toEqual({ provider: 'other', model: 'gpt-4o' })
   })
 
   it('does not crash at startup with only illegal selectors and treats them as inert', async () => {

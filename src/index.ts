@@ -13,7 +13,7 @@
  *   (**always mode included**) → `next()`; otherwise resolve role + chain,
  *   and when a candidate survives the filter (current / cooldown /
  *   step-failed / `provider/*`-missing-id) write the pending switch +
- *   cooldown + failure bookkeeping + append `fallbacks/switch`, then return
+ *   cooldown + failure bookkeeping, then return
  *   `{ kind: 'retry' }` (own recovery, no `next()`).
  * - `agent/request` waterfall: apply a pending switch after `await next()`
  *   (provider/model override, inherited `reasoningEffort` dropped — the
@@ -34,14 +34,6 @@ import { installSettingsSection } from '@deepseek-ai/dsh-settings'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { LlmCallConfig } from '@deepseek-ai/dsh-llm'
 import type { Session } from '@deepseek-ai/dsh-session'
-// issue #52 runtime registration seam: VALUE import of the dsh-session module
-// namespace, resolved from the package ROOT (same specifier as the type
-// import above — NOT the `./types` subpath, which is a divergent copy the
-// persistence read path never consults). Namespace import so that if a
-// future dsh removes `KNOWN_SESSION_EVENT_TYPES`, the plugin still loads
-// (namespace access yields `undefined`; a named import would fail at link
-// time and kill the whole plugin). Details/upstream tracking in apply().
-import * as dshSession from '@deepseek-ai/dsh-session'
 import { defaultFallbacksConfig, detectLegacyKeys, INHERIT_ROLE_ID, validateFallbacksConfig, type FallbacksConfig } from './config.ts'
 import { Config } from './schema.ts'
 import { pickRoleByLlm } from './automatch.ts'
@@ -310,34 +302,6 @@ function overrideConfig(seed: LlmCallConfig, to: { provider: string; model: stri
 
 export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksConfig): void {
   const logger = ctx.logger('llm-fallbacks')
-  // issue #52 (a session containing `fallbacks/switch` refuses to load after
-  // a dsh restart): the persistence read path
-  // (`dsh-session-persistence` `assertEventsSupported`) refuses a log whose
-  // event type is outside the host's baked `KNOWN_SESSION_EVENT_TYPES`
-  // catalog unless the event carries the envelope's `ignorable` marker —
-  // which `Session.append` cannot write (seed-only field). `fallbacks/switch`
-  // is a TYPE-ONLY augmentation (`src/events.ts` `declare module`), erased at
-  // runtime, so the type is registered HERE into the ROOT-exported catalog
-  // (not the `./types` subpath — a divergent copy): persistence imports the
-  // root export (`@deepseek-ai/dsh-session` main), and the plugin bundle
-  // externalizes `@deepseek-ai/*` (tsdown `neverBundle`), so at runtime this
-  // namespace IS the host's in-box module — the same Set the read path
-  // consults. Apply time, not module scope: session loads are LAZY
-  // (per open/resume via `ensureSession`, request-triggered post-boot), so
-  // registration here always precedes any load, and a module-level side
-  // effect is deliberately avoided (multi-fiber re-apply stays safe — the
-  // check + Set.add are idempotent). Registration failure is tolerated: the
-  // commit() guard below skips the durable event rather than writing one the
-  // read path would refuse. STOPGAP — remove when the upstream registration
-  // surface lands (tracked in
-  // .mstar/plans/llm-fallbacks-session-event-format/UPSTREAM-ISSUE.md).
-  const known = (dshSession as { KNOWN_SESSION_EVENT_TYPES?: ReadonlySet<string> }).KNOWN_SESSION_EVENT_TYPES
-  let sessionEventRegistered = false
-  if (known instanceof Set) {
-    try { (known as Set<string>).add('fallbacks/switch'); sessionEventRegistered = known.has('fallbacks/switch') } catch { sessionEventRegistered = false }
-  }
-  // Rate-limits the commit() guard warn to once per apply.
-  let sessionEventWarned = false
   // Cordis resolves the entry through the schema before apply, so `config` is
   // already defaulted; re-resolving keeps direct calls (tests) normalized.
   const entry = Config(config)
@@ -607,8 +571,8 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     }
   }
 
-  /** Commit a decision: pending switch + cooldown + failure bookkeeping + durable event (spec §5.1 step 1). */
-  function commit(agent: Agent, state: AgentFallbackState, pending: PendingSwitch, turn: number, step: number): void {
+  /** Commit a decision: pending switch + cooldown + failure bookkeeping (spec §5.1 step 1). */
+  function commit(state: AgentFallbackState, pending: PendingSwitch, turn: number, step: number): void {
     const config = source()
     const fromKey = selectorKey(pending.from.provider, pending.from.model)
     const until = config.revertPolicy === 'never' ? Number.POSITIVE_INFINITY : Date.now() + config.cooldownMs
@@ -621,33 +585,13 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     states.suppress(state, fromKey, until)
     states.recordFailure(state, fromKey)
     states.recordSwitch(state)
-    // issue #52 append guard: never write an event the host read path would
-    // refuse. The apply() registration is the ONLY runtime seam that makes
-    // `fallbacks/switch` loadable after a restart; when it failed (export
-    // removed / catalog frozen), the durable event is SKIPPED — the switch
-    // decision, cooldown and step bookkeeping above stay intact, only the
-    // event is dropped, so a session log can never be poisoned by an
-    // unregistered type. Warn at most once per apply (rate-limited). STOPGAP
-    // — remove with the upstream registration surface (see the apply()
-    // comment / .mstar/plans/llm-fallbacks-session-event-format/
-    // UPSTREAM-ISSUE.md).
-    if (!sessionEventRegistered) {
-      if (!sessionEventWarned) {
-        sessionEventWarned = true
-        logger.warn(
-          'llm-fallbacks: session event type "fallbacks/switch" is not registered with this harness — skipping the durable event (the switch itself is applied)',
-        )
-      }
-      return
-    }
-    agent.session.append('fallbacks/switch', {
-      turn,
-      step,
-      from: pending.from,
-      to: pending.to,
-      role: pending.role,
-      reason: pending.reason,
-    })
+    // issue #52: no durable `fallbacks/switch` session event is written — the
+    // registration seam was proven ineffective at runtime (the plugin's
+    // `@deepseek-ai/dsh-session` is a different module instance than the host's,
+    // so the catalog `.add()` never reached the persistence read path), so a
+    // session containing the event refused to load after a dsh restart. The
+    // switch decision is still recorded by the decide() info log; only the
+    // durable event is dropped (never poison a session log).
   }
 
   ctx.on('agent/request-error', async (
@@ -662,14 +606,14 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     const current = currentModel(agent, provider)
     if (!current.model) return next()
     // F-005: the decision path is defensive — an unexpected throw (e.g. a
-    // session.append failure, a future refactor) must not replace the original
-    // failure semantics (spec §6); log and delegate instead.
+    // future refactor) must not replace the original failure semantics
+    // (spec §6); log and delegate instead.
     try {
       // F-004: peek, never create — a null decision must not grow the store.
       const state = states.peek(agent.id)
       const pending = await decide(agent, turn, step, current, 'trigger-code', state)
       if (pending === null) return next()
-      commit(agent, states.get(agent.id), pending, turn, step)
+      commit(states.get(agent.id), pending, turn, step)
       return { kind: 'retry' }
     } catch (error) {
       logger.warn(
@@ -740,28 +684,11 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
           const head = firstExactCandidate(all, wildcard)
           if (head !== undefined && head.model !== undefined && !(head.provider === seed.provider && head.model === seed.model)) {
             const to = { provider: head.provider, model: head.model }
-            // issue #52 append guard (mirror commit()): never write an event
-            // the host read path would refuse — the override still applies.
-            // Warn at most once per apply (the shared sessionEventWarned
-            // rate-limiter), so a silently-skipped role-inject event is not
-            // completely silent (qc1 N-2).
-            if (!sessionEventRegistered) {
-              if (!sessionEventWarned) {
-                sessionEventWarned = true
-                logger.warn(
-                  'llm-fallbacks: session event type "fallbacks/switch" is not registered with this harness — skipping the durable role-inject event (the override itself is applied)',
-                )
-              }
-            } else {
-              agent.session.append('fallbacks/switch', {
-                turn,
-                step,
-                from: { provider: seed.provider, model: seed.model },
-                to,
-                role,
-                reason: 'role-inject',
-              })
-            }
+            // issue #52: no durable `fallbacks/switch` role-inject event is
+            // written (same reason as commit() — the registration seam was
+            // ineffective, and a session containing the event would refuse to
+            // load after a dsh restart). The override still applies below and
+            // the role→model info log still fires.
             logger.info(
               'llm-fallbacks: agent "%s" role-inject role=%s model=%s/%s',
               agent.id,
@@ -799,7 +726,7 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
       )
       if (pending !== null) {
         const commitState = states.get(agent.id)
-        commit(agent, commitState, pending, turn, step)
+        commit(commitState, pending, turn, step)
         const appliedCap = states.applyPending(commitState, turn, step)
         if (appliedCap !== undefined) {
           // Same host-native routing as the trigger-code path above.
