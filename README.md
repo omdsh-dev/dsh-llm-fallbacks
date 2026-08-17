@@ -72,11 +72,27 @@ Save and restart the session, then type `/fallbacks` — the read-only in-sessio
 
 - **Automatic fallback for root and subagents**: any agent switches down the chain to the next available provider/model on model failure — no manual model switching.
 - **Two-block config**: `rootChain` for the root agent; declared role entities (`roles.list`) referenced by `roles.rules` (or the built-in `inherit`).
+- **Chain as root primary from the picker**: when `enabled` is on and the all-day `rootChain` is conforming, the host model picker (web and TUI alike) shows a virtual `FallbacksChain` row — selecting it uses the configured chain as the root primary; selecting a real model keeps fallback-only (see [FallbacksChain in the model picker](#fallbackschain-in-the-model-picker)).
 - **Dispatch-time role resolution**: on a subagent's first request its role is resolved in three stages — explicit (`agentPreset` matches a declared role id) → deterministic rules (unchanged) → LLM auto-match from the declared role taxonomy (`fallbacks.roleAutoMatch`, default `true`). The resolved role's chain-head model is injected into the first request and recorded via an explicit `role → model` log line (no durable `fallbacks/switch` event is written — issue #52 stop-write); set `roleAutoMatch: false` to disable the LLM auto-match stage (the explicit `agentPreset` stage still applies — with no explicit role this reproduces the previous rules-only behavior). The settings card always renders an **Enable role auto-match** switch (default `true`) to toggle it — the schema default applies even to legacy configs that never declared the key.
 - **Cooldown and revert**: failed / switched-away models are not re-selected during cooldown; `revertPolicy: cooldown-expiry` returns to the primary model automatically.
 - **Visible behavior**: every switch is recorded in an info-level log line (from/to/role/reason) — no silent model switching. The plugin deliberately writes **no** durable `fallbacks/switch` session events (issue #52: the apply()-time event-type registration was proven ineffective, and a session containing the event refused to load after a dsh restart). Sessions written by older plugin versions that contain such events are repaired by `scripts/repair-fallbacks-switch-logs.ts`, which marks legacy events ignorable so affected sessions load again.
 - **Safety valves**: `maxSwitchesPerStep` caps switches per step and `alwaysModeRetryCap` caps always-mode retries — chain loops cannot amplify latency.
 - **No-config no-op**: `enabled` defaults to off; with no chains configured the plugin behaves exactly like not being installed.
+
+## FallbacksChain in the model picker
+
+When `enabled: true` and the all-day `rootChain` is **conforming** — exactly one official V4 model, `deepseek-official/deepseek-v4-flash` or `deepseek-official/deepseek-v4-pro` — the plugin registers a virtual provider, `fallbacks`, with a single catalog row: **FallbacksChain**. The web profile and dsh-tui both see the row: they share the same adapter catalog, so no TUI settings page or host patch is involved.
+
+Selecting **FallbacksChain** uses the configured chain as the root **primary**: root requests route to the effective chain's first exact `provider/model` at request time, and the fallback engine degrades from that head as usual. Selecting any real catalog model keeps the v0.2.2 fallback-only behavior — the session model is primary and the chain engages only after it fails.
+
+There is **no `rootMode` switch** — no config key, YAML field, settings toggle, or gateway flag. The mode is the session's `{provider, model}` selection itself: `FallbacksChain` = chain primary; any real model = fallback-only.
+
+Notes:
+
+- **Root only**: the row is about the root agent. Subagent role resolution and injection are unchanged; a subagent session that inherits the selection still routes through the chain head — the virtual row is a thin delegate, never a second routing engine.
+- **Conformance gate**: a legacy multi-model `rootChain` earns no row; the all-day chain must be exactly one official V4 model. Disabling the plugin or losing conformance hides the row again (slot-row edits never churn it).
+- **Stale selection**: if the row disappears (plugin disabled / all-day chain emptied or non-conforming) while `FallbacksChain` is selected, the session keeps showing it as the current model with `routable: false` — pick a real model from the catalog to continue (host-native catalog semantics).
+- **Capabilities follow the head**: the row's model metadata (context window, modalities, reasoning) mirrors the current effective head; retry attribution follows the permissive default — retries/failures are accounted to the real head pair, not to `fallbacks`. Full semantics → [docs/configuration.md](docs/configuration.md).
 
 ## Preset roles
 
