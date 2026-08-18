@@ -72,7 +72,7 @@ The workflow then runs, in order:
 3. `pnpm release:validate -- v<v>`: package.json version matches the tag + the tag does not already exist (belt and suspenders).
 4. `pnpm build` smoke test.
 5. Commits `chore(release): prepare v<v>` to the `release/v<v>` branch and pushes (force-with-lease).
-6. Opens the PR `release v<v>` (base `main`, label `release`); **updates it if an open PR already exists**, **reopens then updates a closed PR if one exists**, and only creates a new PR when neither exists.
+6. Opens the PR `release v<v>` (base `main`, label `release`); **updates it if an open PR already exists**, otherwise **creates a new PR** (including when a closed PR exists for the same head branch — closed release PRs are never reopened).
 
 ### 3. Review the release PR
 
@@ -121,7 +121,7 @@ Each fragment focuses on one user-visible change.
 
 ## Rollback / re-run
 
-- **PR stage (not merged)**: wrong version or content → simply **close the PR**, or **re-run Release prep**. Re-running is idempotent: re-running with the same version regenerates the `release/v<v>` branch (force-with-lease push) and handles the PR — **updates it if an open PR exists**; **reopens the PR with `gh pr reopen` and updates the body if a closed PR exists**; creates a new one only when neither exists. **A closed PR is never edited in place** (that would silently stall the release).
+- **PR stage (not merged)**: wrong version or content → simply **close the PR**, or **re-run Release prep**. Re-running is idempotent: re-running with the same version regenerates the `release/v<v>` branch (force-with-lease push) and handles the PR — **updates it if an open PR exists**; **creates a new PR if none is open** (a previously closed release PR stays closed and is never reopened).
 - **Failed mid-publish after merge**: if `npm publish` succeeded but the tag / GitHub Release steps failed — **do not re-run the Release workflow directly**: `npm publish` would fail because the version already exists on the registry. Fixes:
   - manually add the tag and Release: `git tag -a -m "release v<v>" v<v> && git push origin v<v>`, then create the GitHub Release manually from the changelog section; or
   - fix-forward: go straight to the next version (see below).
