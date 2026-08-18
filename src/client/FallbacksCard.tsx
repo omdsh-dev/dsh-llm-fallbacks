@@ -2048,15 +2048,16 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                                 size="sm"
                                 disabled={!writable || saving}
                                 onClick={() => {
-                                  // PR #62 UX round 3: the revert is a
-                                  // user-initiated NON-section write — the
-                                  // accepted config is the new truth, so the
-                                  // next config reseed must bypass the
-                                  // per-section dirty gates (the editor
-                                  // holds the pre-revert value and would
-                                  // otherwise look "dirty").
+                                  // Issue #59: revert must also snap the
+                                  // **draft** persona. The RPC no-ops when
+                                  // persisted already equals the seed, so
+                                  // the reseed effect never fires — apply
+                                  // the returned seed persona locally.
                                   forceReseed.current = true
-                                  void controller.revertSeed(row.id.trim())
+                                  void controller.revertSeed(row.id.trim()).then(persona => {
+                                    if (persona === undefined) return
+                                    updateRoleRow(index, { persona })
+                                  })
                                 }}
                               >
                                 {t('roles.revertPersona')}

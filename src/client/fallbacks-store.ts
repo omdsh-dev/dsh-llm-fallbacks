@@ -179,6 +179,17 @@ function parseSeedsWire(value: unknown): SeedsWireStatus[] {
   })
 }
 
+/** Seed-default persona from a revert-seed wire body (issue #59). */
+function revertOutcomePersona(value: unknown): string | undefined {
+  if (value === null || typeof value !== 'object' || !('outcome' in value)) return undefined
+  const outcome: unknown = value.outcome
+  if (outcome === null || typeof outcome !== 'object') return undefined
+  if (!('reverted' in outcome) || outcome.reverted !== true) return undefined
+  if (!('persona' in outcome) || typeof outcome.persona !== 'string') return undefined
+  return outcome.persona
+}
+
+
 /**
  * The provider dropdown's offer set (spec §2.5 D-4): catalog providers whose
  * settings profile resolves in the describe namespaces — the Models page's
@@ -1095,12 +1106,17 @@ export class FallbacksSettingsController {
    * reason }` outcome is still a successful RPC — the post-write read
    * result (config / legacyKeys / seeds) lands either way, and the revert
    * button stays disabled while the write is in flight.
+   *
+   * Returns the seed-default persona when the outcome is `{ reverted:
+   * true, persona }` — including the persist no-op (persisted already
+   * equals the seed). The card applies that string to the row's **draft**
+   * so an unsaved persona edit still snaps back (issue #59).
    * @param id - the seeded role id; the host matches it by trimmed id
    *   against the seed registry (spec §9.3).
    */
-  async revertSeed(id: string): Promise<void> {
+  async revertSeed(id: string): Promise<string | undefined> {
     const state = this.store.getSnapshot()
-    if (!state.writable || state.status === 'saving') return
+    if (!state.writable || state.status === 'saving') return undefined
     const generation = ++this.writeGeneration
     this.store.update((draft) => {
       draft.status = 'saving'
@@ -1108,7 +1124,7 @@ export class FallbacksSettingsController {
     })
     try {
       const result = await this.rpc.call('/api', 'fallbacks/revert-seed', { args: { id } })
-      if (generation !== this.writeGeneration) return
+      if (generation !== this.writeGeneration) return undefined
       if (!result.ok) throw result.error
       const value: unknown = result.value
       const config = value !== null && typeof value === 'object' && 'config' in value
@@ -1132,9 +1148,11 @@ export class FallbacksSettingsController {
         }
       }
       this.accept(config, true, legacyKeys, seeds)
+      return revertOutcomePersona(value)
     } catch (error) {
-      if (generation !== this.writeGeneration) return
+      if (generation !== this.writeGeneration) return undefined
       this.fail(error)
+      return undefined
     }
   }
 

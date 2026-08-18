@@ -2368,6 +2368,33 @@ describe('FallbacksCard seeded roles (plan fallbacks-role-seeds T5)', () => {
     expect(scripted.revertSeed).toHaveBeenCalledTimes(1)
   })
 
+  it('revert snaps an unsaved persona draft back to the seed default (issue #59)', async () => {
+    // Persisted persona IS the seed default — gateway revert is a persist
+    // no-op. The button must still restore the in-card draft.
+    const { view, props, scripted } = await mountCard({
+      config: SEEDED_CONFIG,
+      seeds: [{ id: 'architect', overridden: false }],
+    })
+    toggleCard()
+    expandAllRoles()
+    view.rerender(<FallbacksCard {...props} />)
+    const personas = screen.getAllByLabelText(en['roles.persona']) as HTMLTextAreaElement[]
+    fireEvent.change(personas[0]!, { target: { value: 'Edited, not saved' } })
+    view.rerender(<FallbacksCard {...props} />)
+    expect(personas[0]!.value).toBe('Edited, not saved')
+    scripted.revertSeed.mockReturnValueOnce(okResult({
+      config: SEEDED_CONFIG,
+      seeds: [{ id: 'architect', overridden: false }],
+      outcome: { reverted: true, persona: 'Designs systems' },
+    }))
+    fireEvent.click(screen.getByRole('button', { name: en['roles.revertPersona'] }))
+    await waitFor(() => {
+      expect((screen.getAllByLabelText(en['roles.persona'])[0] as HTMLTextAreaElement).value).toBe('Designs systems')
+    })
+    expect(scripted.revertSeed).toHaveBeenCalledTimes(1)
+  })
+
+
   it('disables the revert affordance when the card cannot write or a write is in flight', async () => {
     // Read-only describe: the revert button is inert (the wrapping fieldset
     // also propagates disabled, but the button carries its own term).
