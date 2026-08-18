@@ -51,7 +51,7 @@ export const FALLBACKS_PROVIDER = 'FallbacksChain'
  * Model id of the virtual catalog row (exact string, spec lock). "Auto" is
  * the hardcoded picker id (not i18n — user decision 2026-08-18). The
  * catalog `name` the host picker renders is dynamic — see
- * {@link pickerDisplayName} (`Auto: <slot>[<model>]`).
+ * {@link pickerDisplayName} (`Auto: <model>[<slot>]`).
  */
 export const FALLBACKS_CHAIN_MODEL = 'Auto'
 
@@ -122,10 +122,10 @@ function effectiveHeadOf(config: FallbacksConfig, now: Date): EffectiveHead | un
 }
 
 /**
- * Host picker label (user 2026-08-18): `Auto: <slot_label>[<model>]`.
- * The host ModelSelect trigger renders `model.name` from `listModels`,
- * so this is the only mount-only path that can annotate the row. Bare
- * `Auto` when there is no dispatchable head (non-conforming all-day).
+ * Host picker label (user 2026-08-18): `Auto: <model>[<slot>]`.
+ * Model first so the trigger stays readable when the slot label is long.
+ * The host ModelSelect trigger renders `model.name` from `listModels`.
+ * Bare `Auto` when there is no dispatchable head (non-conforming all-day).
  * Slot label comes from {@link resolveSlotState} (`Liang Peak` / `all-day`
  * / custom name) — same source as the 分时切换 log.
  */
@@ -133,7 +133,7 @@ export function pickerDisplayName(config: FallbacksConfig, now: Date = new Date(
   const head = effectiveHeadOf(config, now)
   if (head === undefined) return FALLBACKS_CHAIN_MODEL
   const slot = resolveSlotState(config, now, config.tz ?? 'Asia/Shanghai')
-  return `${FALLBACKS_CHAIN_MODEL}: ${slot.label}[${head.model}]`
+  return `${FALLBACKS_CHAIN_MODEL}: ${head.model}[${slot.label}]`
 }
 
 

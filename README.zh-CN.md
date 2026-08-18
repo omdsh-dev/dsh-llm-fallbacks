@@ -100,7 +100,7 @@ fallbacks:
 
 注意：
 
-- **选择器文案**：目录行的 `name`（composer 触发器显示）是动态的——`Auto: Liang Peak[deepseek-v4-flash]` / `Auto: all-day[deepseek-v4-flash]`；id 仍是 `Auto`。all-day 链头不合规则只显示 `Auto`。重新打开选择器即可刷新。
+- **选择器文案**：目录行的 `name`（composer 触发器显示）是动态的——`Auto: deepseek-v4-flash[Liang Peak]` / `Auto: deepseek-v4-flash[all-day]`；id 仍是 `Auto`。all-day 链头不合规则只显示 `Auto`。重新打开选择器即可刷新。
 - **仅 root**：这一行只关乎 root 代理。subagent 的角色解析与注入不变；继承了该选择的 subagent 会话仍经链头路由——虚拟行只是薄委托，绝不是第二个路由引擎。
 - **链头合规门槛**：覆盖/委托成功要求 all-day 链**链头合规**——第一项必须是恰好一个官方 V4 模型（`deepseek-official/deepseek-v4-flash` 或 `deepseek-official/deepseek-v4-pro`，即设置卡的「默认模型」面板）；后续条目（「默认降级链」）允许。禁用插件后该行隐藏（slot/链编辑不会触发注册抖动）。
 - **过期选择**：行消失（插件禁用）而会话仍选中 `FallbacksChain / Auto` 时，会话继续把它显示为当前模型，但 `routable: false`——从目录选一个真实模型即可继续（宿主原生目录语义）。

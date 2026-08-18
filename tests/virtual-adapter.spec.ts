@@ -182,7 +182,7 @@ describe('adapter contract (P1/P3)', () => {
         provider: FALLBACKS_PROVIDER,
         id: FALLBACKS_CHAIN_MODEL,
         // All-day winner (no extra slots) — host picker trigger is this name.
-        name: `${FALLBACKS_CHAIN_MODEL}: all-day[${HEAD_MODEL}]`,
+        name: `${FALLBACKS_CHAIN_MODEL}: ${HEAD_MODEL}[all-day]`,
       },
     ])
   })
@@ -193,7 +193,7 @@ describe('adapter contract (P1/P3)', () => {
       rootChain: [OFFICIAL_V4_FLASH],
       timeSlots: [{ kind: 'preset', preset: 'liang-peak', days: [], chain: [OFFICIAL_V4_FLASH] }],
     }), now)
-    expect(name).toBe(`${FALLBACKS_CHAIN_MODEL}: Liang Peak[${HEAD_MODEL}]`)
+    expect(name).toBe(`${FALLBACKS_CHAIN_MODEL}: ${HEAD_MODEL}[Liang Peak]`)
   })
 
   it('pickerDisplayName stays bare Auto when the all-day chain is non-conforming', () => {

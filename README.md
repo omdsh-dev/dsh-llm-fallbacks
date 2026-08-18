@@ -101,7 +101,7 @@ There is **no `rootMode` switch** — no config key, YAML field, settings toggle
 
 Notes:
 
-- **Picker label**: the row's catalog `name` (what the composer trigger shows) is live — `Auto: Liang Peak[deepseek-v4-flash]` / `Auto: all-day[deepseek-v4-flash]`; the id stays `Auto`. Bare `Auto` if the all-day head is not conforming. Refresh by reopening the picker.
+- **Picker label**: the row's catalog `name` (what the composer trigger shows) is live — `Auto: deepseek-v4-flash[Liang Peak]` / `Auto: deepseek-v4-flash[all-day]`; the id stays `Auto`. Bare `Auto` if the all-day head is not conforming. Refresh by reopening the picker.
 - **Root only**: the row is about the root agent. Subagent role resolution and injection are unchanged; a subagent session that inherits the selection still routes through the chain head — the virtual row is a thin delegate, never a second routing engine.
 - **Conformance gate on the head**: a successful override/delegate requires the all-day chain to be **head-conforming** — its first entry must be exactly one official V4 model (`deepseek-official/deepseek-v4-flash` or `deepseek-official/deepseek-v4-pro`, the card's 默认模型 panel); trailing entries (默认降级链) are allowed. Disabling the plugin hides the row again (slot-row/chain edits never churn registration).
 - **Stale selection**: if the row disappears (plugin disabled) while `FallbacksChain / Auto` is selected, the session keeps showing it as the current model with `routable: false` — pick a real model from the catalog to continue (host-native catalog semantics).
