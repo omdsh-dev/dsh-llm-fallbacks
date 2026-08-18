@@ -26,7 +26,9 @@ Four frozen UTC+8 presets (windows are code constants; preset rows lock `tz` to 
 | `liang-peak` | 09:00–12:00 and 14:00–18:00, every day |
 | `liang-valley` | every other UTC+8 time (complement of Liang Peak) |
 | `glm-peak` | Monday–Friday 14:00–18:00 |
-| `glm-valley` | every other time (complement of GLM Peak; offered only when `zai-coding-cn` is among the configured providers) |
+| `glm-valley` | every other time (complement of GLM Peak) |
+
+GLM Peak and GLM Valley are offered in the card picker only when `zai-coding-cn` is configured.
 
 The first extra row whose window contains the current moment (in `fallbacks.tz`, default Asia/Shanghai) wins; no match → the all-day `rootChain`, whose tail (默认模型) must be exactly one official V4 model — `deepseek-official/deepseek-v4-flash` XOR `deepseek-official/deepseek-v4-pro`. Slot rotation is a routing seed, not a failure decision: it applies on the next root request, consumes no cooldown, and is logged as a time-slot switch (分时切换) — failure walks keep 降级切换. Full semantics → [Time-slot presets (分时切换)](#time-slot-presets-分时切换) and [docs/configuration.md](docs/configuration.md).
 

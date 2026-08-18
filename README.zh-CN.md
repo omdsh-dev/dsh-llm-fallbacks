@@ -26,7 +26,9 @@ dsh（DeepSeek Harness）的自动模型降级插件：当 root agent 或 subage
 | `liang-peak` | 每天 09:00–12:00 与 14:00–18:00 |
 | `liang-valley` | 其它所有 UTC+8 时间（Liang Peak 的补集） |
 | `glm-peak` | 周一至周五 14:00–18:00 |
-| `glm-valley` | 其余时间（GLM Peak 的补集；仅当配置的 provider 含 `zai-coding-cn` 时才提供） |
+| `glm-valley` | 其余时间（GLM Peak 的补集） |
+
+GLM 峰与 GLM 谷仅在已配置 `zai-coding-cn` 时出现在设置卡选择器中。
 
 每个 root 请求时刻，第一条窗口包含当前时刻（按 `fallbacks.tz`，默认 Asia/Shanghai）的额外行生效；无行命中 → 全时段 `rootChain`——其链尾（默认模型）必须是恰好一个官方 V4 模型：`deepseek-official/deepseek-v4-flash` 或 `deepseek-official/deepseek-v4-pro`（二选一）。分时切换是路由种子而非失败决策：在下一个 root 请求生效、不消耗冷却、不计入 `maxSwitchesPerStep`，日志记为**分时切换**；失败降级保持**降级切换**。完整语义 → [分时槽预设（分时切换）](#分时槽预设分时切换) 与 [docs/configuration.md](docs/configuration.md)。
 
