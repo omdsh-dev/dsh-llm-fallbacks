@@ -59,6 +59,20 @@ afterEach(cleanup)
 const t: FallbacksCardProps['t'] = key => en[key as keyof typeof en]
 
 /**
+ * An interpolating `t` seat (status-block pattern) for copy that carries
+ * `{n}`-style placeholders — the module `t` returns the raw template, so
+ * the PR #62 UX round 4 tag assertions (the x2/x3 multiplier) need this
+ * variant to render the concrete factor.
+ */
+const interpolatingT: FallbacksCardProps['t'] = (key, params) => {
+  let text: string = en[key as keyof typeof en]
+  if (params !== undefined) {
+    for (const [name, value] of Object.entries(params)) text = text.split(`{${name}}`).join(value)
+  }
+  return text
+}
+
+/**
  * Full card props the renderer would bind: the registrant's business inject
  * face (controller + useSnapshot), the framework-synthesized `t` seat, and
  * the runtime's global seat (session-list / workspace-list selector hooks —
@@ -2117,6 +2131,86 @@ describe('FallbacksCard time-slot rows (plan fallbacks-timeslots Task 3)', () =>
     view.rerender(<FallbacksCard {...props} />)
     expect(scripted.set).not.toHaveBeenCalled()
     expect(screen.getByRole('alert').textContent).toContain(en['validation.slotPresetFrozen'])
+  })
+
+  it('renders cost/multiplier tags on peak preset rows only (PR #62 UX round 4)', async () => {
+    const config: typeof defaultFallbacksConfig = {
+      ...SLOT_CONFIG,
+      timeSlots: [
+        { kind: 'preset', preset: 'liang-peak', days: [], chain: ['openai/gpt-4o'] },
+        { kind: 'preset', preset: 'glm-peak', days: [], chain: ['openai/gpt-4o'] },
+        { kind: 'preset', preset: 'liang-valley', days: [], chain: ['openai/gpt-4o'] },
+        { kind: 'custom', start: '22:00', end: '02:00', days: [], chain: ['openai/gpt-4o'] },
+      ],
+    }
+    const { view, props } = await mountCard({ config })
+    // The multiplier copy carries `{n}` — bind the interpolating seat so the
+    // concrete x2/x3 factor renders (the module `t` returns raw templates).
+    toggleCard()
+    view.rerender(<FallbacksCard {...{ ...props, t: interpolatingT }} />)
+    const group = slotsGroup()
+    // Both PEAK rows carry the red 高消耗 chip…
+    expect(within(group).getAllByText(en['timeSlots.preset.highCost'])).toHaveLength(2)
+    // …and the yellow multiplier chip: x2 on liang-peak, x3 on glm-peak.
+    expect(within(group).getAllByText('x2')).toHaveLength(1)
+    expect(within(group).getAllByText('x3')).toHaveLength(1)
+    // The valley + custom rows render NO chips: the tags live only in the
+    // peak rows' collapsed titles.
+    const toggles = within(group).getAllByRole('button', { name: en['timeSlots.collapse'] })
+    expect(toggles).toHaveLength(4)
+    expect(within(toggles[2]!).queryByText(en['timeSlots.preset.highCost'])).toBeNull() // liang-valley
+    expect(within(toggles[2]!).queryByText(/^x\d$/)).toBeNull()
+    expect(within(toggles[3]!).queryByText(en['timeSlots.preset.highCost'])).toBeNull() // custom
+    expect(within(toggles[3]!).queryByText(/^x\d$/)).toBeNull()
+  })
+
+  it('tags the currently-active slot row with the Active chip (PR #62 UX round 4)', async () => {
+    // The active slot is resolved with the RUNTIME helper (P5): freeze the
+    // clock at 10:00 Asia/Shanghai — inside the liang-peak window
+    // (09:00–12:00) — so the first row wins deterministically.
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026-08-18T02:00:00Z'))
+      const config: typeof defaultFallbacksConfig = {
+        ...SLOT_CONFIG,
+        timeSlots: [
+          { kind: 'preset', preset: 'liang-peak', days: [], chain: ['openai/gpt-4o'] },
+          { kind: 'custom', start: '22:00', end: '02:00', days: [], chain: ['anthropic/claude-3-5-sonnet'] },
+        ],
+      }
+      const { view, props } = await mountCard({ config })
+      toggleCard()
+      view.rerender(<FallbacksCard {...{ ...props, t: interpolatingT }} />)
+      const group = slotsGroup()
+      const toggles = within(group).getAllByRole('button', { name: en['timeSlots.collapse'] })
+      // The ACTIVE (liang-peak) row's title carries the 激活 chip…
+      expect(within(toggles[0]!).getByText(en['timeSlots.active'])).toBeTruthy()
+      // …the non-active custom row does not.
+      expect(within(toggles[1]!).queryByText(en['timeSlots.active'])).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('tags NO slot row when the active surface is all-day (PR #62 UX round 4)', async () => {
+    // 13:00 Asia/Shanghai is OUTSIDE the liang-peak windows (09:00–12:00
+    // & 14:00–18:00) and no valley row is configured → the winner is
+    // 'all-day' → no row is tagged (the all-day surface is the 默认模型
+    // panel, out of scope for the slot-row indicator).
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026-08-18T05:00:00Z'))
+      const config: typeof defaultFallbacksConfig = {
+        ...SLOT_CONFIG,
+        timeSlots: [{ kind: 'preset', preset: 'liang-peak', days: [], chain: ['openai/gpt-4o'] }],
+      }
+      const { view, props } = await mountCard({ config })
+      toggleCard()
+      view.rerender(<FallbacksCard {...{ ...props, t: interpolatingT }} />)
+      expect(screen.queryByText(en['timeSlots.active'])).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 

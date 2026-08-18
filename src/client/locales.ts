@@ -106,6 +106,12 @@ export const zh = {
   // PR #62 feedback: the GLM presets route to zai-coding-cn models — the
   // caveat rides every GLM preset row (shared by both GLM presets).
   'timeSlots.preset.glm.note': '仅配置了 zai-coding-cn 时有效',
+  // PR #62 UX round 4: cost/multiplier tags on the peak preset rows (red
+  // 高消耗 + yellow x2/x3) and the active-slot indicator — literal product
+  // strings, zh source of truth.
+  'timeSlots.preset.highCost': '高消耗',
+  'timeSlots.preset.multiplier': 'x{n}',
+  'timeSlots.active': '激活',
   'timeSlots.day.sun': '日',
   'timeSlots.day.mon': '一',
   'timeSlots.day.tue': '二',
@@ -326,6 +332,12 @@ export const en = {
   // PR #62 feedback: the GLM presets route to zai-coding-cn models — the
   // caveat rides every GLM preset row (shared by both GLM presets).
   'timeSlots.preset.glm.note': 'Only effective when zai-coding-cn is configured',
+  // PR #62 UX round 4: cost/multiplier tags on the peak preset rows and
+  // the active-slot indicator — literal product strings (zh source of
+  // truth); the multiplier carries the `{n}` factor.
+  'timeSlots.preset.highCost': 'High Cost',
+  'timeSlots.preset.multiplier': 'x{n}',
+  'timeSlots.active': 'Active',
   'timeSlots.day.sun': 'Sun',
   'timeSlots.day.mon': 'Mon',
   'timeSlots.day.tue': 'Tue',

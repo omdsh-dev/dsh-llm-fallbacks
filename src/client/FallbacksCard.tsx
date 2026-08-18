@@ -90,6 +90,7 @@ import type { SnapshotSelectorHook } from '@deepseek-ai/dsh-client-web-react'
 import type { FallbacksConfig, FallbacksRole, FallbackStrategy, RevertPolicy } from '../config.ts'
 import { defaultFallbacksConfig, INHERIT_ROLE_ID, ROLE_ID_PATTERN } from '../config.ts'
 import { parseSelector } from '../selectors.ts'
+import { resolveSlotState } from '../time-slots.ts'
 import {
   FallbacksSettingsController,
   classifyModel,
@@ -123,9 +124,13 @@ import {
 import css from './FallbacksCard.module.css'
 
 // Frozen strings mirrored from `src/time-slots.ts` (OFFICIAL_V4_FLASH /
-// OFFICIAL_V4_PRO / PRESET_IDS) — the card keeps the resolver module out of
-// the client bundle (type-only seam, time-slots.ts docblock), so these
-// product-locked exact strings live here too.
+// OFFICIAL_V4_PRO / PRESET_IDS) — the card historically kept the resolver
+// module out of the client bundle (type-only seam, time-slots.ts docblock),
+// so these product-locked exact strings live here too. PR #62 UX round 4:
+// the card now ALSO imports the pure `resolveSlotState` helper (the
+// time-slots module has no `@deepseek-ai/*` imports — bundling it into the
+// client is safe) for the active-slot indicator; the mirrored constants
+// stay for validation + the 默认模型 panel.
 const ALL_DAY_FLASH = 'deepseek-official/deepseek-v4-flash'
 const ALL_DAY_PRO = 'deepseek-official/deepseek-v4-pro'
 const SLOT_PRESET_IDS = ['liang-peak', 'liang-valley', 'glm-peak', 'glm-valley'] as const
@@ -966,6 +971,20 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
   // PR #62 feedback round: preset rows lock the tz to UTC+8 / Asia/Shanghai
   // (frozen windows) — the picker is disabled and the assembled tz is forced.
   const presetsPresent = timeSlotRows.some(row => row.kind === 'preset')
+  // PR #62 UX round 4: the currently-ACTIVE slot row (P5), resolved with
+  // the SAME pure helper the runtime uses (`resolveSlotState` — the single
+  // source; never derived from switch history), against the ACCEPTED config
+  // + the live tz scalar (a live draft snapshot at render is fine). The
+  // winner is the matching row OBJECT from the accepted config, or
+  // 'all-day'; a row winner is tagged by INDEX — the editor rows preserve
+  // the accepted order through load/save, so `timeSlotRows[winnerIndex]`
+  // is the matching row. 'all-day' means no slot row matches (the all-day
+  // surface is the 默认模型 panel — out of scope), so no row is tagged;
+  // a malformed config also resolves 'all-day' → no tag, which is correct.
+  const slotState = resolveSlotState(state.config, new Date(), scalars.tz)
+  const activeSlotIndex = slotState.winner === 'all-day'
+    ? -1
+    : (state.config.timeSlots?.indexOf(slotState.winner) ?? -1)
 
   // The rules role dropdown's offer set — derived ONCE per render and shared
   // by every rule row (qc3 F-3; previously recomputed inside the render
@@ -1519,6 +1538,25 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                               ? t(`timeSlots.preset.${row.preset}.label` as FallbacksKey)
                               : (row.name !== '' ? row.name : `custom ${row.start}-${row.end}`)}
                           </span>
+                          {/* PR #62 UX round 4: cost/multiplier tags on the
+                           * peak presets (red 高消耗 + yellow x2/x3) and the
+                           * 激活 tag on the currently-active row (resolved by
+                           * index — see `activeSlotIndex`). The chips sit
+                           * AFTER the ellipsizing title span (never inside it
+                           * — an in-title chip would be clipped by the
+                           * title's text-overflow) and before the first-model
+                           * meta, in the same title flex row. */}
+                          {row.kind === 'preset' && (row.preset === 'liang-peak' || row.preset === 'glm-peak') && (
+                            <>
+                              <span className={`${css.slotTag} ${css.slotTagHighCost}`}>{t('timeSlots.preset.highCost')}</span>
+                              <span className={`${css.slotTag} ${css.slotTagMultiplier}`}>
+                                {t('timeSlots.preset.multiplier', { n: row.preset === 'liang-peak' ? '2' : '3' })}
+                              </span>
+                            </>
+                          )}
+                          {activeSlotIndex === index && (
+                            <span className={`${css.slotTag} ${css.slotTagActive}`}>{t('timeSlots.active')}</span>
+                          )}
                           {firstModel !== undefined && (
                             <span className={css.collapseMeta}>{firstModel}</span>
                           )}

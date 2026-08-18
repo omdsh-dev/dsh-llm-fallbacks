@@ -657,6 +657,37 @@ select.input {
   white-space: nowrap;
 }
 
+/* PR #62 UX round 4: compact non-interactive chips in the collapsed slot
+   title row — the cost/multiplier tags on the peak presets and the
+   active-slot indicator. The chip geometry mirrors `.pending` (pill);
+   the tones ride the state tokens (error = 高消耗, warn = x2/x3,
+   success = 激活), light/dark adaptive through the alias tokens like the
+   card's other badges. */
+.slotTag {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0 6px;
+  font-size: 11px;
+  line-height: 17px;
+  font-weight: 500;
+  white-space: nowrap;
+  background: var(--dsw-alias-bg-module-platform);
+}
+
+.slotTagHighCost {
+  color: var(--dsw-alias-state-error-primary);
+}
+
+.slotTagMultiplier {
+  color: var(--dsw-alias-state-warn-primary);
+}
+
+.slotTagActive {
+  color: var(--dsw-alias-state-success-primary);
+}
+
 /* The slot-row drag handle (PR #62 UX round 2): a quiet grip button beside
    the collapse header — the ONLY draggable element of the row, so it works
    while the row is collapsed AND a click on the header never starts a
