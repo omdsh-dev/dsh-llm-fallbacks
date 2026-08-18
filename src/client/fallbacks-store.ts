@@ -575,7 +575,12 @@ export function timeSlotsToRows(timeSlots: readonly SlotRowConfig[], catalog?: C
     end: row.end ?? '',
     days: [...(row.days ?? [])],
     name: row.name ?? '',
-    collapsed: false,
+    // UI-only collapse state — never serialized (dropped by rowsToTimeSlots).
+    // PR #62 UX round 4 part C: time-slot rows default COLLAPSED like role
+    // cards (every re-seed — mount, save, catalog refresh — comes back
+    // collapsed); only a freshly ADDED row starts expanded (addPresetSlotRow
+    // / addCustomSlotRow set collapsed: false explicitly).
+    collapsed: true,
     selectors: (row.chain ?? []).map(entry => entryToSelectorRow(entry, catalog)),
   }))
 }

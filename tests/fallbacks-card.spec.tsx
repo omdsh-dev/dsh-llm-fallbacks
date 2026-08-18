@@ -409,6 +409,19 @@ function expandAllRoles(): void {
 }
 
 /**
+ * Expand every collapsed time-slot row (PR #62 UX round 4 part C: slot rows
+ * default collapsed like role cards). Same re-query rhythm as
+ * `expandAllRoles` — expanding one row re-renders the list.
+ */
+function expandAllSlots(): void {
+  let expand = screen.queryAllByRole('button', { name: en['timeSlots.expand'] })
+  while (expand.length > 0) {
+    fireEvent.click(expand[0]!)
+    expand = screen.queryAllByRole('button', { name: en['timeSlots.expand'] })
+  }
+}
+
+/**
  * The error surface rendered DIRECTLY under the 子代理 heading (validation
  * or store error — PR #62 UX round 2 splits the old single banner by
  * owning section, so a 主代理 violation and a 子代理 violation are two
@@ -1890,6 +1903,10 @@ describe('FallbacksCard time-slot rows (plan fallbacks-timeslots Task 3)', () =>
     const { view, props, scripted } = await mountCard({ config })
     toggleCard()
     view.rerender(<FallbacksCard {...props} />)
+    // Slot rows default collapsed — expand them so the move/remove cluster
+    // is mounted.
+    expandAllSlots()
+    view.rerender(<FallbacksCard {...props} />)
     const group = slotsGroup()
     // Both rows render with move-up/move-down/remove; the ends are
     // correctly disabled (first row has no up, last row has no down).
@@ -1914,6 +1931,10 @@ describe('FallbacksCard time-slot rows (plan fallbacks-timeslots Task 3)', () =>
         }) },
       }))
     })
+    // The save re-seeds the rows COLLAPSED (default) — expand again before
+    // driving the remove cluster.
+    expandAllSlots()
+    view.rerender(<FallbacksCard {...props} />)
     // Remove the (now first) custom row → only the preset row remains.
     fireEvent.click(within(group).getAllByRole('button', { name: en['timeSlots.remove'] })[0]!)
     view.rerender(<FallbacksCard {...props} />)
@@ -1942,6 +1963,10 @@ describe('FallbacksCard time-slot rows (plan fallbacks-timeslots Task 3)', () =>
     // The accepted rows round-trip through the editor: no spurious unsaved
     // pill (dirty-check invariant).
     expect(screen.queryByText(en.unsaved)).toBeNull()
+    // Slot rows default collapsed — expand so the frozen-name cells / day
+    // toggles (expanded-body content) are readable.
+    expandAllSlots()
+    view.rerender(<FallbacksCard {...props} />)
     const group = slotsGroup()
     // The preset name appears twice: the collapse header + the frozen-name
     // cell (PR #62 feedback round).
@@ -1967,6 +1992,10 @@ describe('FallbacksCard time-slot rows (plan fallbacks-timeslots Task 3)', () =>
     }
     const { view, props } = await mountCard({ config })
     toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    // Slot rows default collapsed (PR #62 UX round 4 part C) — expand them
+    // to reach the editors this test drives.
+    expandAllSlots()
     view.rerender(<FallbacksCard {...props} />)
     const group = slotsGroup()
     // Custom rows carry an editable name field (read back from the wire).
@@ -2002,6 +2031,10 @@ describe('FallbacksCard time-slot rows (plan fallbacks-timeslots Task 3)', () =>
     }
     const { view, props, scripted } = await mountCard({ config })
     toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    // Slot rows default collapsed — expand them so the move-cluster
+    // assertion after the drop can see the up buttons.
+    expandAllSlots()
     view.rerender(<FallbacksCard {...props} />)
     const group = slotsGroup()
     // PR #62 UX round 2: the drag HANDLE is the only draggable element
@@ -2044,10 +2077,8 @@ describe('FallbacksCard time-slot rows (plan fallbacks-timeslots Task 3)', () =>
     toggleCard()
     view.rerender(<FallbacksCard {...props} />)
     const group = slotsGroup()
-    // Collapse BOTH rows: the editors unmount, the summary rows remain.
-    fireEvent.click(within(group).getAllByRole('button', { name: en['timeSlots.collapse'] })[0]!)
-    fireEvent.click(within(group).getAllByRole('button', { name: en['timeSlots.collapse'] })[0]!)
-    view.rerender(<FallbacksCard {...props} />)
+    // Slot rows default COLLAPSED (PR #62 UX round 4 part C) — the editors
+    // are unmounted from the start, the summary rows remain.
     expect(within(group).queryByLabelText(en['timeSlots.start'])).toBeNull()
     // The drag handles are still there and still draggable while collapsed:
     // grab the SECOND row's handle and drop it onto the FIRST row's card.
@@ -2115,6 +2146,10 @@ describe('FallbacksCard time-slot rows (plan fallbacks-timeslots Task 3)', () =>
     const { view, props, scripted } = await mountCard({ config })
     toggleCard()
     view.rerender(<FallbacksCard {...props} />)
+    // Slot rows default collapsed — expand so the frozen-name cell (the
+    // second label occurrence) is mounted.
+    expandAllSlots()
+    view.rerender(<FallbacksCard {...props} />)
     // The row loads clean (days round-trips through the editor — the
     // dirty-check invariant holds; no unsaved pill).
     expect(screen.queryByText(en.unsaved)).toBeNull()
@@ -2156,8 +2191,9 @@ describe('FallbacksCard time-slot rows (plan fallbacks-timeslots Task 3)', () =>
     expect(within(group).getAllByText('x2')).toHaveLength(1)
     expect(within(group).getAllByText('x3')).toHaveLength(1)
     // The valley + custom rows render NO chips: the tags live only in the
-    // peak rows' collapsed titles.
-    const toggles = within(group).getAllByRole('button', { name: en['timeSlots.collapse'] })
+    // peak rows' collapsed titles (rows default collapsed — the header
+    // toggle reads as an expand button).
+    const toggles = within(group).getAllByRole('button', { name: en['timeSlots.expand'] })
     expect(toggles).toHaveLength(4)
     expect(within(toggles[2]!).queryByText(en['timeSlots.preset.highCost'])).toBeNull() // liang-valley
     expect(within(toggles[2]!).queryByText(/^x\d$/)).toBeNull()
@@ -2183,7 +2219,9 @@ describe('FallbacksCard time-slot rows (plan fallbacks-timeslots Task 3)', () =>
       toggleCard()
       view.rerender(<FallbacksCard {...{ ...props, t: interpolatingT }} />)
       const group = slotsGroup()
-      const toggles = within(group).getAllByRole('button', { name: en['timeSlots.collapse'] })
+      // Rows default collapsed — the header toggles read as expand buttons
+      // and carry the chips (the 激活 chip rides the active row's title).
+      const toggles = within(group).getAllByRole('button', { name: en['timeSlots.expand'] })
       // The ACTIVE (liang-peak) row's title carries the 激活 chip…
       expect(within(toggles[0]!).getByText(en['timeSlots.active'])).toBeTruthy()
       // …the non-active custom row does not.
@@ -2241,7 +2279,7 @@ describe('FallbacksCard time-slot rows (plan fallbacks-timeslots Task 3)', () =>
     view.rerender(<FallbacksCard {...props} />)
     fireEvent.click(within(group).getByRole('button', { name: en['timeSlots.addPreset'] }))
     view.rerender(<FallbacksCard {...props} />)
-    expect(within(group).queryAllByRole('button', { name: en['timeSlots.collapse'] })).toHaveLength(0)
+    expect(within(group).queryAllByRole('button', { name: en['timeSlots.expand'] })).toHaveLength(0)
   })
 
   it('enables the GLM preset options once zai-coding-cn is configured (PR #62 UX round 4 part B)', async () => {

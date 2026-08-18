@@ -1508,6 +1508,13 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                     const invalidWindow = invalidSlotRows?.has(index) ?? false
                     const chainEmpty = row.selectors.every(selector => selectorRowToRaw(selector) === '')
                     const firstModel = row.selectors.map(selectorRowToRaw).find(entry => entry !== '')
+                    // PR #62 UX round 4 part C: slot rows default COLLAPSED
+                    // (same rule as role cards) but a read-only view FORCES
+                    // them open — the collapse toggle is disabled when
+                    // `!writable`, so without the forced-open term the slot
+                    // configs would be unreachable in read-only (mirror of
+                    // `roleExpanded` below).
+                    const slotExpanded = !row.collapsed || !writable
                     return (
                     <div
                       key={index}
@@ -1538,12 +1545,12 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                         <button
                           type="button"
                           className={css.collapseToggle}
-                          aria-expanded={!row.collapsed}
-                          aria-label={t(row.collapsed ? 'timeSlots.expand' : 'timeSlots.collapse')}
+                          aria-expanded={slotExpanded}
+                          aria-label={t(slotExpanded ? 'timeSlots.collapse' : 'timeSlots.expand')}
                           disabled={!writable}
                           onClick={() => { updateTimeSlotRow(index, { collapsed: !row.collapsed }) }}
                         >
-                          <IconChevronDownOutline14 className={!row.collapsed ? `${css.chevron} ${css.chevronOpen}` : css.chevron} />
+                          <IconChevronDownOutline14 className={slotExpanded ? `${css.chevron} ${css.chevronOpen}` : css.chevron} />
                           <span className={css.collapseTitle}>
                             {row.kind === 'preset'
                               ? t(`timeSlots.preset.${row.preset}.label` as FallbacksKey)
@@ -1589,7 +1596,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                           <IconEllipsisOutline16 className={css.dragHandleIcon} />
                         </button>
                       </div>
-                      {!row.collapsed && (
+                      {slotExpanded && (
                       <>
                       {row.kind === 'preset' ? (
                         <>

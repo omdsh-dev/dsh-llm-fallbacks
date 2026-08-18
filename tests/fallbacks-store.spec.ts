@@ -574,6 +574,9 @@ describe('catalog classification (spec §2.5 D-3)', () => {
     expect(rows[0]!.kind).toBe('preset')
     expect(rows[0]!.preset).toBe('liang-peak')
     expect(rows[0]!.days).toEqual([])
+    // UI-only collapse state (PR #62 UX round 4 part C) — slot rows default
+    // collapsed like role cards; the flag never serializes back.
+    expect(rows[0]!.collapsed).toBe(true)
     // The wildcard entry reads back as a wildcard selector row (the GUI
     // conversion hint path, same as role chains).
     expect(rows[0]!.selectors[1]).toEqual({ wildcard: true, provider: { kind: 'catalog', id: 'openai' }, model: null })
