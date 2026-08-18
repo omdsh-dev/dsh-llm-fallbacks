@@ -31,6 +31,7 @@ import {
   FALLBACKS_CHAIN_MODEL,
   FALLBACKS_PROVIDER,
   installFallbacksAdapter,
+  pickerDisplayName,
   UNDISPATCHABLE_HEAD_CODE,
 } from '../src/virtual-adapter.ts'
 import { FALLBACKS_SETTINGS_NAMESPACE } from '../src/gateway.ts'
@@ -177,8 +178,27 @@ describe('adapter contract (P1/P3)', () => {
     apply(ctx, cfg({ rootChain: [OFFICIAL_V4_FLASH] }))
     await vi.waitFor(() => expect(listed()).toBe(true))
     expect(await ctx.llm.listModels(FALLBACKS_PROVIDER)).toEqual([
-      { provider: FALLBACKS_PROVIDER, id: FALLBACKS_CHAIN_MODEL, name: FALLBACKS_CHAIN_MODEL },
+      {
+        provider: FALLBACKS_PROVIDER,
+        id: FALLBACKS_CHAIN_MODEL,
+        // All-day winner (no extra slots) — host picker trigger is this name.
+        name: `${FALLBACKS_CHAIN_MODEL}: all-day[${HEAD_MODEL}]`,
+      },
     ])
+  })
+  it('pickerDisplayName annotates the matching slot + head model', () => {
+    // 10:00 Asia/Shanghai = 02:00Z — inside Liang Peak (09:00–12:00).
+    const now = new Date('2026-08-18T02:00:00Z')
+    const name = pickerDisplayName(cfg({
+      rootChain: [OFFICIAL_V4_FLASH],
+      timeSlots: [{ kind: 'preset', preset: 'liang-peak', days: [], chain: [OFFICIAL_V4_FLASH] }],
+    }), now)
+    expect(name).toBe(`${FALLBACKS_CHAIN_MODEL}: Liang Peak[${HEAD_MODEL}]`)
+  })
+
+  it('pickerDisplayName stays bare Auto when the all-day chain is non-conforming', () => {
+    expect(pickerDisplayName(cfg({ rootChain: ['openai/gpt-4o'] }))).toBe(FALLBACKS_CHAIN_MODEL)
+    expect(pickerDisplayName(cfg({ rootChain: [] }))).toBe(FALLBACKS_CHAIN_MODEL)
   })
 
   it('resolveModel proxies the current effective head metadata', async () => {

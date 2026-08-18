@@ -43,15 +43,15 @@ import {
 } from '@deepseek-ai/dsh-llm'
 import type { FallbacksConfig } from './config.ts'
 import { parseSelector, type Selector } from './selectors.ts'
-import { isAllDayConforming, resolveEffectiveChain } from './time-slots.ts'
+import { isAllDayConforming, resolveEffectiveChain, resolveSlotState } from './time-slots.ts'
 
 /** Provider route of the virtual adapter (exact string, spec lock). */
 export const FALLBACKS_PROVIDER = 'FallbacksChain'
 /**
  * Model id of the virtual catalog row (exact string, spec lock). "Auto" is
- * the literal picker row the host renders (hardcoded, not i18n — user
- * decision 2026-08-18): the catalog row's `id` and `name` both come from
- * this constant, so the row reads `FallbacksChain/Auto`.
+ * the hardcoded picker id (not i18n — user decision 2026-08-18). The
+ * catalog `name` the host picker renders is dynamic — see
+ * {@link pickerDisplayName} (`Auto: <slot>[<model>]`).
  */
 export const FALLBACKS_CHAIN_MODEL = 'Auto'
 
@@ -122,6 +122,22 @@ function effectiveHeadOf(config: FallbacksConfig, now: Date): EffectiveHead | un
 }
 
 /**
+ * Host picker label (user 2026-08-18): `Auto: <slot_label>[<model>]`.
+ * The host ModelSelect trigger renders `model.name` from `listModels`,
+ * so this is the only mount-only path that can annotate the row. Bare
+ * `Auto` when there is no dispatchable head (non-conforming all-day).
+ * Slot label comes from {@link resolveSlotState} (`Liang Peak` / `all-day`
+ * / custom name) — same source as the 分时切换 log.
+ */
+export function pickerDisplayName(config: FallbacksConfig, now: Date = new Date()): string {
+  const head = effectiveHeadOf(config, now)
+  if (head === undefined) return FALLBACKS_CHAIN_MODEL
+  const slot = resolveSlotState(config, now, config.tz ?? 'Asia/Shanghai')
+  return `${FALLBACKS_CHAIN_MODEL}: ${slot.label}[${head.model}]`
+}
+
+
+/**
  * The virtual adapter (P1/P3). `stream()` is a thin head-delegate, never a
  * second routing engine: no chain walk, cooldown, caps, revert bookkeeping,
  * or state writes live here — those stay in the `agent/request` /
@@ -140,9 +156,13 @@ class FallbacksChainAdapter extends LlmAdapter {
     return { id: provider, name: FALLBACKS_PROVIDER }
   }
 
-  /** Advisory catalog: exactly the one virtual row (P1). */
+  /** Advisory catalog: one virtual row; `name` is the live picker label. */
   override listModels(provider: string): Promise<readonly LlmModelInfo[]> {
-    return Promise.resolve([{ provider, id: FALLBACKS_CHAIN_MODEL, name: FALLBACKS_CHAIN_MODEL }])
+    return Promise.resolve([{
+      provider,
+      id: FALLBACKS_CHAIN_MODEL,
+      name: pickerDisplayName(this.readConfig()),
+    }])
   }
 
   /**
