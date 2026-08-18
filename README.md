@@ -13,6 +13,25 @@ Automatic provider/model fallback chains for dsh (DeepSeek Harness): when an age
 
 Works in both dsh front ends: the **web** profile (Settings → 插件配置 → Fallbacks card) and the **dsh-tui** terminal profile (`/fallbacks` + `/fallbacks config`).
 
+## Time slots
+
+Time slots (分时切换) rotate the **effective root chain** by wall-clock windows: each slot row carries its own fallback chain, and the first row whose window contains the current moment replaces the all-day chain for the next root request — the all-day chain stays as the last resort when no slot matches. Peak and valley windows can therefore use different chains while the failure walk (降级切换) remains untouched.
+
+![Time slots](docs/assets/screenshot-1-en.png)
+
+Four frozen UTC+8 presets (windows are code constants; preset rows lock `tz` to Asia/Shanghai):
+
+| Preset | Window |
+|---|---|
+| `liang-peak` | 09:00–12:00 and 14:00–18:00, every day |
+| `liang-valley` | every other UTC+8 time (complement of Liang Peak) |
+| `glm-peak` | Monday–Friday 14:00–18:00 |
+| `glm-valley` | every other time (complement of GLM Peak) |
+
+GLM Peak and GLM Valley are offered in the card picker only when `zai-coding-cn` is configured.
+
+The first extra row whose window contains the current moment (in `fallbacks.tz`, default Asia/Shanghai) wins; no match → the all-day `rootChain`, whose tail (默认模型) must be exactly one official V4 model — `deepseek-official/deepseek-v4-flash` XOR `deepseek-official/deepseek-v4-pro`. Slot rotation is a routing seed, not a failure decision: it applies on the next root request, consumes no cooldown, and is logged as a time-slot switch (分时切换) — failure walks keep 降级切换. Full semantics → [Time-slot presets (分时切换)](#time-slot-presets-分时切换) and [docs/configuration.md](docs/configuration.md).
+
 ## Quick start
 
 ### Install
@@ -84,7 +103,7 @@ Save and restart the session, then type `/fallbacks` — the read-only in-sessio
 - **Automatic fallback for root and subagents**: any agent switches down the chain to the next available provider/model on model failure — no manual model switching.
 - **Two-block config**: `rootChain` for the root agent; declared role entities (`roles.list`) referenced by `roles.rules` (or the built-in `inherit`).
 - **Chain as root primary from the picker**: when `enabled` is on, the host model picker (web and TUI alike) shows a virtual `FallbacksChain` / `Auto` row — selecting it uses the configured chain as the root primary (a conforming all-day head is required for the override to succeed); selecting a real model keeps fallback-only (see [FallbacksChain in the model picker](#fallbackschain-in-the-model-picker)).
-- **Time-slot rotation (分时切换)**: optional `fallbacks.timeSlots` rows rotate the effective root chain by wall-clock windows in the config-level `tz` timezone (default `Asia/Shanghai`) — four frozen UTC+8 presets (`liang-peak` / `liang-valley` / `glm-peak` / `glm-valley`, windows are code constants, models-only edits) or custom `start`/`end`/`days` windows. The first matching row wins; the all-day row is always last. A slot change applies on the **next** root request and is logged as a **time-slot switch** (分时切换) — a routing seed, never a failure decision: it consumes no cooldown and does not count against `maxSwitchesPerStep`. Failure walks keep the **降级切换** / fallback-switch copy (see [Time-slot presets](#time-slot-presets-分时切换)).
+- **Time slots (分时切换)**: optional `fallbacks.timeSlots` rows rotate the effective root chain by wall-clock windows in the config-level `tz` timezone (default `Asia/Shanghai`) — four frozen UTC+8 presets (`liang-peak` / `liang-valley` / `glm-peak` / `glm-valley`, windows are code constants, models-only edits) or custom `start`/`end`/`days` windows. The first matching row wins; the all-day row is always last. A slot change applies on the **next** root request and is logged as a **time-slot switch** (分时切换) — a routing seed, never a failure decision: it consumes no cooldown and does not count against `maxSwitchesPerStep`. Failure walks keep the **降级切换** / fallback-switch copy (see [Time-slot presets](#time-slot-presets-分时切换)).
 - **Dispatch-time role resolution**: on a subagent's first request its role is resolved in three stages — explicit (`agentPreset` matches a declared role id) → deterministic rules (unchanged) → LLM auto-match from the declared role taxonomy (`fallbacks.roleAutoMatch`, default `true`). The resolved role's chain-head model is injected into the first request and recorded via an explicit `role → model` log line (no durable `fallbacks/switch` event is written — issue #52 stop-write); set `roleAutoMatch: false` to disable the LLM auto-match stage (the explicit `agentPreset` stage still applies — with no explicit role this reproduces the previous rules-only behavior). The settings card always renders an **Enable role auto-match** switch (default `true`) to toggle it — the schema default applies even to legacy configs that never declared the key.
 - **Cooldown and revert**: failed / switched-away models are not re-selected during cooldown; `revertPolicy: cooldown-expiry` returns to the primary model automatically.
 - **Visible behavior**: every switch is recorded in an info-level log line (from/to/role/reason) — no silent model switching. The plugin deliberately writes **no** durable `fallbacks/switch` session events (issue #52: the apply()-time event-type registration was proven ineffective, and a session containing the event refused to load after a dsh restart). Sessions written by older plugin versions that contain such events are repaired by `scripts/repair-fallbacks-switch-logs.ts`, which marks legacy events ignorable so affected sessions load again.
@@ -109,7 +128,7 @@ Notes:
 
 ## Time-slot presets (分时切换)
 
-Time-slot rows rotate the **effective root chain** by wall-clock windows — useful for peak/valley pricing without confusing wall-clock rotation with failure fallback. The copy split is strict: slot rotation logs and UI say **分时切换** (time-slot switch); the failure walk keeps **降级切换** (fallback switch); the conversation notice 模型已降级 / Model downgraded stays on the failure path only.
+Time slots (分时切换) are introduced in the [featured overview](#time-slots) above; this section is the reference. Time-slot rows rotate the **effective root chain** by wall-clock windows — useful for peak/valley pricing without confusing wall-clock rotation with failure fallback. The copy split is strict: slot rotation logs and UI say **分时切换** (time-slot switch); the failure walk keeps **降级切换** (fallback switch); the conversation notice 模型已降级 / Model downgraded stays on the failure path only.
 
 - **Match order**: at every root request, the first extra row whose window contains the current moment (in `fallbacks.tz`, default `Asia/Shanghai` / UTC+8) wins — that row's chain **replaces** the all-day chain. No row matches → the all-day `rootChain` is used. The all-day row is always last and **required**: its last entry must be exactly one official V4 model (Flash XOR Pro; leading 默认降级链 entries are walked first).
 - **Presets** (frozen, not user-editable): `liang-peak` = 09:00–12:00 **and** 14:00–18:00 every day; `liang-valley` = every other UTC+8 time; `glm-peak` = Monday–Friday 14:00–18:00; `glm-valley` = every other time. One preset id = one row; the card picker never offers a duplicate.
