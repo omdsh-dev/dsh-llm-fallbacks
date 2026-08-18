@@ -164,6 +164,14 @@ function tzDisplayLabel(tz: string): string {
   const offset = tzUtcOffset(tz)
   return offset === '' ? tz : `${tz} (${offset})`
 }
+
+/** Persist tz: presets lock UTC+8; custom-only uses the host zone; else keep the accepted value. */
+function resolvedSlotTz(rows: readonly SlotEditorRow[], fallback: string): string {
+  if (rows.some(row => row.kind === 'preset')) return 'Asia/Shanghai'
+  if (rows.some(row => row.kind === 'custom')) return hostTimeZone()
+  return fallback === '' ? 'Asia/Shanghai' : fallback
+}
+
 /** Strict 24h `HH:mm` — the resolver's HHMM_RE twin (drift-guarded by the gateway reject-on-save). */
 const HHMM_RE = /^([01]\d|2[0-3]):[0-5]\d$/
 
@@ -273,7 +281,7 @@ function assembleConfig(
 ): FallbacksConfig {
   const list = mergeRoleExtras(roleRows, originalRoles)
   const trailingChain = rowsToRootChain([allDayChainRow])
-  const tz = timeSlotRows.some(row => row.kind === 'preset') ? 'Asia/Shanghai' : hostTimeZone()
+  const tz = resolvedSlotTz(timeSlotRows, scalars.tz)
   return {
     enabled: scalars.enabled,
     triggerCodes: [...scalars.triggerCodes],
@@ -746,9 +754,12 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
   // (qc3 F-4).
   const hasEmptyRuleRows = ruleRows.some(row => row.role === '')
   const enabledDirty = scalars.enabled !== state.config.enabled
+  // Timezone is not a user control (host tz for custom-only, Asia/Shanghai
+  // with presets). Do not include it in dirty — otherwise a UTC CI host
+  // vs the Asia/Shanghai default lights the unsaved pill on a clean load.
   const mainDirty = enabledDirty
-    || JSON.stringify([...draft.rootChain, draft.timeSlots, draft.tz])
-      !== JSON.stringify([...state.config.rootChain, state.config.timeSlots ?? [], state.config.tz ?? 'Asia/Shanghai'])
+    || JSON.stringify([...draft.rootChain, draft.timeSlots])
+      !== JSON.stringify([...state.config.rootChain, state.config.timeSlots ?? []])
   const subDirty = hasEmptyRuleRows || JSON.stringify(draft.roles) !== JSON.stringify(state.config.roles)
   const advancedDirty = JSON.stringify([
     draft.triggerCodes, draft.cooldownMs, draft.revertPolicy,
