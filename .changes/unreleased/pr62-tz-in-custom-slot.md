@@ -1,4 +1,4 @@
 ---
 category: Changed
 ---
-- The timezone picker now lives inside expanded custom time-slot rows (not the section header). The label includes a UTC± cue and each option shows its current offset (e.g. `Asia/Shanghai (UTC+8)`). Preset-only configs hide the picker; mixed configs keep it locked to Asia/Shanghai.
+- Custom time-slot rows show the host timezone as a read-only label (`Asia/Shanghai (UTC+8)`); there is no timezone picker. Preset-only configs hide the label; mixed configs show Asia/Shanghai. Saving a custom-only config persists the host timezone.

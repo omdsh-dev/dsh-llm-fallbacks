@@ -74,7 +74,6 @@ export const zh = {
   'timeSlots.label': '分时槽设置',
   'timeSlots.hint': '自上而下第一条命中生效；全时段行固定最后',
   'timeSlots.tz.label': '时区（UTC±）',
-  'timeSlots.tz.hint': '仅自定义时段使用。预设窗口固定 UTC+8（Asia/Shanghai）。',
   'timeSlots.drag': '拖拽排序（或使用上下按钮）',
   // PR #62 feedback round: collapsible slot rows — collapsed shows the
   // row name + its first model; custom rows carry an editable name.
@@ -302,7 +301,6 @@ export const en = {
   'timeSlots.label': 'Time slots',
   'timeSlots.hint': 'First match from top to bottom wins; the all-day row is always last',
   'timeSlots.tz.label': 'Timezone (UTC±)',
-  'timeSlots.tz.hint': 'Applies to custom slots only. Preset windows stay UTC+8 (Asia/Shanghai).',
   'timeSlots.drag': 'Drag to reorder (or use the up/down buttons)',
   // PR #62 feedback round: collapsible slot rows — collapsed shows the
   // row name + its first model; custom rows carry an editable name.

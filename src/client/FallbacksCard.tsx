@@ -136,20 +136,15 @@ const ALL_DAY_PRO = 'deepseek-official/deepseek-v4-pro'
 const SLOT_PRESET_IDS = ['liang-peak', 'liang-valley', 'glm-peak', 'glm-valley'] as const
 /** Custom-row day toggle order (index = weekday, 0=Sunday); display copy lives in the dictionaries. */
 const SLOT_WEEKDAYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'] as const
-/** Timezone picker offer set (PR #62 feedback round) — a small curated list
- * of IANA ids; the accepted tz outside the list renders as a synthetic
- * option so the value is never lost. Preset rows lock the value to
- * Asia/Shanghai (their windows are frozen UTC+8 constants). */
-const TZ_OPTIONS = [
-  'Asia/Shanghai',
-  'UTC',
-  'Asia/Tokyo',
-  'Asia/Singapore',
-  'Europe/London',
-  'America/New_York',
-  'America/Los_Angeles',
-  'Australia/Sydney',
-] as const
+/** IANA timezone of this renderer (browser / host). */
+function hostTimeZone(): string {
+  try {
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
+    return typeof tz === 'string' && tz !== '' ? tz : 'UTC'
+  } catch {
+    return 'UTC'
+  }
+}
 
 /** `UTC+8` / `UTC-4` for an IANA id (current offset, DST-honest). */
 function tzUtcOffset(tz: string): string {
@@ -164,8 +159,8 @@ function tzUtcOffset(tz: string): string {
   }
 }
 
-/** Select option copy: `Asia/Shanghai (UTC+8)`. */
-function tzOptionLabel(tz: string): string {
+/** Read-only custom-row copy: `Asia/Shanghai (UTC+8)`. */
+function tzDisplayLabel(tz: string): string {
   const offset = tzUtcOffset(tz)
   return offset === '' ? tz : `${tz} (${offset})`
 }
@@ -278,7 +273,7 @@ function assembleConfig(
 ): FallbacksConfig {
   const list = mergeRoleExtras(roleRows, originalRoles)
   const trailingChain = rowsToRootChain([allDayChainRow])
-  const tz = timeSlotRows.some(row => row.kind === 'preset') ? 'Asia/Shanghai' : scalars.tz
+  const tz = timeSlotRows.some(row => row.kind === 'preset') ? 'Asia/Shanghai' : hostTimeZone()
   return {
     enabled: scalars.enabled,
     triggerCodes: [...scalars.triggerCodes],
@@ -1632,21 +1627,9 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                           </div>
                           <div className={css.field}>
                             <span className={css.ruleCellLabel}>{t('timeSlots.tz.label')}</span>
-                            <select
-                              className={`${css.input} ${css.selectInput}`}
-                              aria-label={t('timeSlots.tz.label')}
-                              value={presetsPresent ? 'Asia/Shanghai' : scalars.tz}
-                              disabled={!writable || presetsPresent}
-                              onChange={event => { updateScalars(draft => { draft.tz = event.target.value }) }}
-                            >
-                              {TZ_OPTIONS.map(tz => (
-                                <option key={tz} value={tz}>{tzOptionLabel(tz)}</option>
-                              ))}
-                              {scalars.tz !== '' && !(TZ_OPTIONS as readonly string[]).includes(scalars.tz) && (
-                                <option value={scalars.tz}>{tzOptionLabel(scalars.tz)}</option>
-                              )}
-                            </select>
-                            <span className={css.hint}>{t('timeSlots.tz.hint')}</span>
+                            <span className={css.hint} aria-label={t('timeSlots.tz.label')}>
+                              {tzDisplayLabel(presetsPresent ? 'Asia/Shanghai' : hostTimeZone())}
+                            </span>
                           </div>
                           <div className={css.ruleGrid}>
                             <label className={css.ruleCell}>
