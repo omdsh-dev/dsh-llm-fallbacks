@@ -49,6 +49,8 @@ export interface SlotRowConfig {
   end?: string
   /** Custom-only: day mask 0=Sunday…6=Saturday; omitted/empty = all days. */
   days?: number[]
+  /** Custom-only display name (PR #62 feedback round, collapsed rows). */
+  name?: string
   /** Models for this row (editable even on preset rows). */
   chain: string[]
 }
@@ -209,22 +211,27 @@ function describeRow(row: SlotRowConfig): RowDescriptor | undefined {
   return undefined
 }
 
-/** Display label for a winning row (preset rows use the frozen label). */
+/** Display label for a winning row (preset rows use the frozen label;
+ * custom rows prefer their display name, falling back to the window). */
 function labelOf(row: SlotRowConfig): string {
   if (row.kind === 'preset' && typeof row.preset === 'string' && Object.hasOwn(PRESETS, row.preset)) {
     return PRESETS[row.preset as PresetId].label
   }
-  return `custom ${row.start}-${row.end}`
+  return row.name !== undefined && row.name.trim() !== '' ? row.name : `custom ${row.start}-${row.end}`
 }
 
 /**
- * All-day conformance (P6): exactly ONE official V4 model — Flash XOR Pro.
- * A legacy multi-model (or otherwise non-conforming) `rootChain` earns no
- * virtual picker row and keeps slot rows inert; the v0.2.2 failure walk
- * over the raw chain stays verbatim.
+ * All-day conformance (P6; PR #62 feedback round): the all-day chain is
+ * conforming when its FIRST entry (the head — the card's 默认模型 panel) is
+ * exactly one official V4 model — Flash XOR Pro. Trailing entries (the
+ * card's 默认降级链 block) are allowed: the head is the primary the virtual
+ * picker row resolves to, and the rest are the ordered fallback targets.
+ * An empty chain or a chain whose head is not an official V4 model keeps
+ * slot rows inert and refuses the virtual-row override/delegate; the
+ * v0.2.2 failure walk over the raw chain stays verbatim.
  */
 export function isAllDayConforming(chain: readonly string[]): boolean {
-  return chain.length === 1 && (chain[0] === OFFICIAL_V4_FLASH || chain[0] === OFFICIAL_V4_PRO)
+  return chain.length >= 1 && (chain[0] === OFFICIAL_V4_FLASH || chain[0] === OFFICIAL_V4_PRO)
 }
 
 /**

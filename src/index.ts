@@ -18,7 +18,7 @@
  * - `agent/request` waterfall: apply a pending switch after `await next()`
  *   (provider/model override, inherited `reasoningEffort` dropped — the
  *   `installModelSelection` `withoutInheritedEffort` pattern); a
- *   root-origin `fallbacks/FallbacksChain` seed then overrides to the
+ *   root-origin `FallbacksChain/自动选择` seed then overrides to the
  *   effective chain's first exact head (select-is-primary, plan
  *   fallbacks-virtual-chain Task 2); then the always-mode cap check (count
  *   `llm/retry` events for the current turn/step/provider; ≥
@@ -406,16 +406,18 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     ctx.logger('llm-fallbacks').debug('fallbacks service already registered — no service on this fiber (multi-fiber dedupe)')
   }
   let source: () => FallbacksConfig = () => entry
-  // Virtual FallbacksChain adapter (plan fallbacks-virtual-chain Task 1, P2):
-  // ONE conditional `ctx.inject(['llm'])` child — the picker row registers
-  // only when `enabled` AND the all-day chain conforms (`isAllDayConforming`
-  // from `src/time-slots.ts`; a legacy multi-model rootChain earns no row,
-  // warn-not-crash — spec § Technical pins item 4), and hides on disable /
-  // conformance loss. The returned reconcile thunk is wired into the
-  // settings onChange below: transition-reconcile over COMMITTED composed
-  // snapshots only (card drafts are client-side until gateway save), so the
-  // catalog never flickers; the condition deliberately ignores timeSlots,
-  // so slot-row edits never churn registration.
+  // Virtual FallbacksChain/自动选择 adapter (plan fallbacks-virtual-chain
+  // Task 1, P2; PR #62 feedback): ONE conditional `ctx.inject(['llm'])`
+  // child — the picker row registers whenever `enabled` (conformance of
+  // the all-day chain is NOT part of registration: a legacy multi-model or
+  // empty rootChain still earns the row; the override below and the
+  // adapter's delegate still refuse a non-conforming all-day), and hides
+  // on disable. The returned reconcile thunk is wired into the settings
+  // onChange below: transition-reconcile over COMMITTED composed
+  // snapshots only (card drafts are client-side until gateway save), so
+  // the catalog never flickers; the condition deliberately ignores
+  // timeSlots and conformance, so slot-row / chain edits never churn
+  // registration.
   // `() => source()` — the mutable binding, not the initial thunk: the
   // settings section's setSource swaps `source` for the composed scope, and
   // reconcile must read the LIVE composed snapshot (same pattern as the
@@ -767,10 +769,10 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
       }
       slotWinners.set(agent.id, { key, label: slot.label })
     }
-    // Select-is-primary (plan fallbacks-virtual-chain Task 2, P3): a
-    // ROOT-origin seed of the virtual `fallbacks/FallbacksChain` row means
-    // "use the chain as the root primary" — override the seed to the
-    // effective chain's FIRST DISPATCHABLE EXACT head (the shared
+    // Select-is-primary (plan fallbacks-virtual-chain Task 2, P3; PR #62
+    // feedback): a ROOT-origin seed of the virtual `FallbacksChain/自动选择`
+    // row means "use the chain as the root primary" — override the seed to
+    // the effective chain's FIRST DISPATCHABLE EXACT head (the shared
     // `firstDispatchableExactHead` the virtual adapter's delegate paths
     // also use — ONE skip/walk rule for override and delegate; the chain
     // comes from `resolveEffectiveChain`, the single source — no
@@ -779,27 +781,36 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     // past the head and wins. Root-origin only (mirror the role-inject
     // gate — a subagent seed that still carries the virtual pair is NOT
     // overridden here; P1's thin stream() delegate handles those), plugin
-    // `enabled`, and the effective chain must yield a dispatchable head —
-    // an empty / wildcard-only / self-route chain warns once and skips.
+    // `enabled`, a CONFORMING all-day rootChain (the row is visible for a
+    // legacy/empty chain but the override refuses it — conformance still
+    // required for a successful primary, PR #62 feedback), and the
+    // effective chain must yield a dispatchable head — an empty /
+    // wildcard-only / self-route chain warns once and skips.
     if (
       config.enabled
       && seed.provider === FALLBACKS_PROVIDER
       && seed.model === FALLBACKS_CHAIN_MODEL
       && agent.session?.header?.origin !== 'subagent'
     ) {
-      const effective = resolveEffectiveChain(config, new Date(), config.tz ?? 'Asia/Shanghai')
-      const head = firstDispatchableExactHead(effective)
-      if (head === undefined) {
+      if (!isAllDayConforming(config.rootChain)) {
         logger.warn(
-          'llm-fallbacks: FallbacksChain selected but the effective chain has no exact head (empty, wildcard-only, or self-route) — no primary override',
+          'llm-fallbacks: FallbacksChain/自动选择 selected but the all-day rootChain is not conforming (exactly one official V4 model) — no primary override',
         )
       } else {
-        logger.info(
-          'llm-fallbacks: FallbacksChain selection overrides to the effective head %s/%s',
-          head.provider,
-          head.model,
-        )
-        return overrideConfig(seed, head)
+        const effective = resolveEffectiveChain(config, new Date(), config.tz ?? 'Asia/Shanghai')
+        const head = firstDispatchableExactHead(effective)
+        if (head === undefined) {
+          logger.warn(
+            'llm-fallbacks: FallbacksChain/自动选择 selected but the effective chain has no exact head (empty, wildcard-only, or self-route) — no primary override',
+          )
+        } else {
+          logger.info(
+            'llm-fallbacks: FallbacksChain/自动选择 selection overrides to the effective head %s/%s',
+            head.provider,
+            head.model,
+          )
+          return overrideConfig(seed, head)
+        }
       }
     }
     // Dispatch-time role injection (plan fallbacks-role-automatch Task 4): a

@@ -249,8 +249,8 @@ function withoutRoleAutoMatch(config: typeof defaultFallbacksConfig): typeof def
 
 /**
  * A two-block config (spec §8) exercising every new editing surface: a
- * CONFORMING all-day rootChain (exactly one official V4 model — the Task 3
- * 2-choose-1 rule), two declared role entities (one `inherit-root`, one
+ * CONFORMING all-day rootChain (official V4 head — the 默认模型 panel),
+ * two declared role entities (one `inherit-root`, one
  * `fallback: none` — both with their own chains so the draft is save-valid
  * under the role model-config rule, plan fallbacks-feedback-round T2), and
  * role rules referencing a declared id and the built-in `inherit`. The
@@ -273,11 +273,12 @@ const TWO_BLOCK_CONFIG: typeof defaultFallbacksConfig = {
 }
 
 /**
- * A legacy two-block config whose all-day `rootChain` is NOT the 2-choose-1
- * (a multi-model chain from the pre-Task-3 era): the chooser reads back
- * with no selection + the nonconforming notice, and save validation blocks
- * the value until the user picks Flash or Pro (plan fallbacks-timeslots
- * Task 3 — no migration wizard).
+ * A legacy two-block config whose all-day `rootChain` has a NON-official
+ * head (a multi-model chain from the pre-Task-3 era): the 默认模型 panel
+ * reads back with no selection + the nonconforming notice, the chain
+ * entries ride the 默认降级链 editor, and save validation blocks the value
+ * until the user picks Flash or Pro (plan fallbacks-timeslots Task 3 — no
+ * migration wizard).
  */
 const LEGACY_ALL_DAY_CONFIG: typeof defaultFallbacksConfig = {
   ...TWO_BLOCK_CONFIG,
@@ -771,45 +772,52 @@ describe('FallbacksCard chrome (upstream PluginCard contract)', () => {
 })
 
 describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-model T3)', () => {
-  it('renders the all-day block as the exclusive Flash | Pro chooser with no key input', async () => {
+  it('renders the default-chain selector list + the separate default-model Flash | Pro panel', async () => {
     const { view, props } = await mountCard({ config: TWO_BLOCK_CONFIG })
     toggleCard()
     view.rerender(<FallbacksCard {...props} />)
-    // Block 1 (plan fallbacks-timeslots Task 3): title + the
-    // session-model-first hint (TWO_BLOCK_CONFIG is enabled + configured, so
-    // the conditional hint renders); the chain-key text input of the old
-    // model is gone and so is the multi-row chain editor — the all-day row
-    // is the exclusive 2-choose-1 (Flash XOR Pro), not removable, no
-    // add-selector affordance.
+    // PR #62 feedback round: 默认降级链 is a configurable selector list
+    // (add-selector affordance present, no radios inside); the official
+    // Flash | Pro radios live in the separate 默认模型 panel. The
+    // chain-key text input of the old model is gone.
     expect(screen.getByText(en['rootChain.label'])).toBeTruthy()
-    expect(screen.getByText(en['rootChain.hint'])).toBeTruthy()
     expect(screen.queryByLabelText('Key')).toBeNull()
-    const rootChainGroup = screen.getByText(en['rootChain.label']).closest('[role="group"]') as HTMLElement
-    expect(within(rootChainGroup).queryByRole('button', { name: en['rootChain.selector.add'] })).toBeNull()
-    expect(within(rootChainGroup).queryByLabelText(en['roles.rule.provider'])).toBeNull()
-    // Exactly the two official radios; the accepted conforming chain is
-    // pre-selected (Flash) and no nonconforming notice shows.
+    const chainGroup = screen.getByText(en['rootChain.label']).closest('[role="group"]') as HTMLElement
+    expect(within(chainGroup).getByRole('button', { name: en['timeSlots.selector.add'] })).toBeTruthy()
+    // TWO_BLOCK_CONFIG's conforming head is consumed by the 默认模型 panel →
+    // the chain editor starts with no trailing selectors.
+    expect(within(chainGroup).queryByLabelText(en['roles.rule.provider'])).toBeNull()
+    // Exactly the two official radios in the default-model panel; the
+    // accepted conforming head is pre-selected (Flash) and no
+    // nonconforming notice shows.
+    expect(screen.getByText(en['defaultModel.label'])).toBeTruthy()
     const flash = flashRadio()
     const pro = proRadio()
     expect(flash.type).toBe('radio')
     expect(pro.type).toBe('radio')
     expect(flash.checked).toBe(true)
     expect(pro.checked).toBe(false)
-    expect(within(rootChainGroup).queryByText(en['allDay.nonconforming'])).toBeNull()
+    const modelGroup = screen.getByText(en['defaultModel.label']).closest('[role="group"]') as HTMLElement
+    expect(within(modelGroup).queryByText(en['allDay.nonconforming'])).toBeNull()
   })
 
-  it('reads back a legacy non-conforming all-day chain with no selection + the notice (no migration wizard)', async () => {
+  it('reads back a legacy non-official-head chain: chain entries + unselected default model + the notice (no migration wizard)', async () => {
     const { view, props } = await mountCard({ config: LEGACY_ALL_DAY_CONFIG })
     toggleCard()
     view.rerender(<FallbacksCard {...props} />)
-    const rootChainGroup = screen.getByText(en['rootChain.label']).closest('[role="group"]') as HTMLElement
+    // PR #62 feedback round: the legacy entry rides the 默认降级链 editor
+    // (its head is not official → not consumed by the 默认模型 panel).
+    const chainGroup = screen.getByText(en['rootChain.label']).closest('[role="group"]') as HTMLElement
+    expect(within(chainGroup).getByLabelText(en['roles.rule.provider'])).toBeTruthy()
     const flash = flashRadio()
     const pro = proRadio()
-    // The legacy chain is NOT one of the two official ids → nothing is
-    // selected (the draft rides the accepted value until a pick).
+    // The legacy head is not one of the two official ids → nothing is
+    // selected in the default-model panel (the draft rides the accepted
+    // value until a pick) and the notice shows in THAT panel.
     expect(flash.checked).toBe(false)
     expect(pro.checked).toBe(false)
-    expect(within(rootChainGroup).getByText(en['allDay.nonconforming'])).toBeTruthy()
+    const modelGroup = screen.getByText(en['defaultModel.label']).closest('[role="group"]') as HTMLElement
+    expect(within(modelGroup).getByText(en['allDay.nonconforming'])).toBeTruthy()
     // Picking Flash selects it; the nonconforming notice clears.
     pickAllDayFlash()
     view.rerender(<FallbacksCard {...props} />)
@@ -821,18 +829,26 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     const { view, props } = await mountCard({ config: TWO_BLOCK_CONFIG })
     toggleCard()
     view.rerender(<FallbacksCard {...props} />)
-    // Section order: time slots (extra rows ABOVE the all-day row — plan
-    // fallbacks-timeslots Task 3) → all-day root chain → role entities →
-    // role rules → advanced options (trigger codes / cooldown / switch caps)
-    // at the end. The advanced group is reachable while collapsed — the
-    // disclosure button's label text stays mounted.
+    // Section order (PR #62 feedback round): 主代理 heading → 分时槽设置
+    // (extra rows — plan fallbacks-timeslots Task 3) → 默认降级链 → 默认模型
+    // → 子代理 heading → role entities → role rules → advanced options
+    // (trigger codes / cooldown / switch caps) at the end. The advanced
+    // group is reachable while collapsed — the disclosure button's label
+    // text stays mounted. The headings are static section labels (not
+    // role=group); their position pins the grouping.
     const groups = [
       screen.getByText(en['timeSlots.label']).closest('[role="group"]')!,
       screen.getByText(en['rootChain.label']).closest('[role="group"]')!,
+      screen.getByText(en['defaultModel.label']).closest('[role="group"]')!,
       screen.getByText(en['roles.list.label']).closest('[role="group"]')!,
       screen.getByText(en['roles.rules']).closest('[role="group"]')!,
       screen.getByText(en['advanced.label']).closest('[role="group"]')!,
     ]
+    const mainHeading = screen.getByText(en['mainAgent.label'])
+    const subHeading = screen.getByText(en['subagents.label'])
+    expect(mainHeading.compareDocumentPosition(groups[0]!)).toBe(Node.DOCUMENT_POSITION_FOLLOWING)
+    expect(groups[2]!.compareDocumentPosition(subHeading)).toBe(Node.DOCUMENT_POSITION_FOLLOWING)
+    expect(subHeading.compareDocumentPosition(groups[3]!)).toBe(Node.DOCUMENT_POSITION_FOLLOWING)
     for (let i = 1; i < groups.length; i += 1) {
       expect(groups[i - 1]!.compareDocumentPosition(groups[i]!)).toBe(Node.DOCUMENT_POSITION_FOLLOWING)
     }
@@ -883,12 +899,13 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     expect((screen.getByLabelText(en['enabled.label']) as HTMLInputElement).disabled).toBe(true)
   })
 
-  it('rejects a legacy wildcard all-day chain: no chooser selection, save blocked until Flash | Pro is picked', async () => {
-    // The all-day editor is no longer a chain editor (Task 3): a legacy
-    // `provider/*` rootChain reads back with NO selection + the notice —
-    // there is no wildcard-conversion affordance on the all-day row. The
-    // save stays blocked (validation.allDayRequired) until the user picks
-    // one of the two official V4 models.
+  it('rejects a legacy wildcard all-day chain: chain editor keeps the entry, save blocked until a default model is picked', async () => {
+    // PR #62 feedback round: the all-day chain is a selector list again —
+    // a legacy `provider/*` rootChain reads back INTO the 默认降级链 editor
+    // (wildcard entry + conversion hint) while the 默认模型 panel shows no
+    // selection + the notice. The save stays blocked
+    // (validation.allDayRequired) until the user picks Flash or Pro; the
+    // pick composes rootChain = [default model, ...chain entries].
     const config: typeof defaultFallbacksConfig = {
       ...defaultFallbacksConfig,
       enabled: true,
@@ -898,12 +915,16 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     await controller.loadCatalog()
     toggleCard()
     view.rerender(<FallbacksCard {...props} />)
-    const rootGroup = screen.getByText(en['rootChain.label']).closest('[role="group"]') as HTMLElement
-    expect(within(rootGroup).queryByText(en['chains.selector.wildcardLegacy'])).toBeNull()
-    expect(within(rootGroup).queryByLabelText(en['roles.rule.model'])).toBeNull()
-    expect(within(rootGroup).getByText(en['allDay.nonconforming'])).toBeTruthy()
-    // An unrelated edit dirties the draft; save is blocked with the all-day
-    // requirement — the legacy value never crosses the wire.
+    const chainGroup = screen.getByText(en['rootChain.label']).closest('[role="group"]') as HTMLElement
+    // The wildcard rides the chain editor with its conversion hint and an
+    // enabled model select (openai is on the catalog).
+    expect(within(chainGroup).getByText(en['chains.selector.wildcardLegacy'])).toBeTruthy()
+    expect(within(chainGroup).getByLabelText(en['roles.rule.model'])).toBeTruthy()
+    // The nonconforming notice lives in the 默认模型 panel.
+    const modelGroup = screen.getByText(en['defaultModel.label']).closest('[role="group"]') as HTMLElement
+    expect(within(modelGroup).getByText(en['allDay.nonconforming'])).toBeTruthy()
+    // An unrelated edit dirties the draft; save is blocked with the
+    // default-model requirement — the legacy value never crosses the wire.
     expandAdvanced()
     fireEvent.change(screen.getByLabelText(en['cooldownMs.label']), { target: { value: '7000' } })
     view.rerender(<FallbacksCard {...props} />)
@@ -911,14 +932,14 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     view.rerender(<FallbacksCard {...props} />)
     expect(scripted.set).not.toHaveBeenCalled()
     expect(screen.getByRole('alert').textContent).toContain(en['validation.allDayRequired'])
-    // Picking Flash makes the draft valid → the save patch carries exactly
-    // one official V4 model (never the legacy wildcard).
+    // Picking Flash makes the draft valid → the save patch composes the
+    // head + the legacy chain entry (head-conforming).
     pickAllDayFlash()
     view.rerender(<FallbacksCard {...props} />)
     fireEvent.click(screen.getByRole('button', { name: en.save }))
     await waitFor(() => {
       expect(scripted.call).toHaveBeenCalledWith('/api', 'fallbacks/set', expect.objectContaining({
-        args: { patch: expect.objectContaining({ rootChain: [OFFICIAL_V4_FLASH] }) },
+        args: { patch: expect.objectContaining({ rootChain: [OFFICIAL_V4_FLASH, 'openai/*'] }) },
       }))
     })
   })
@@ -1025,6 +1046,41 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     expect(screen.getByRole('button', { name: en['roles.add'] })).toBeTruthy()
   })
 
+  it('collapses role panels to id + first chain model (or inherit-root) and expands back (PR #62 feedback round)', async () => {
+    const config: typeof defaultFallbacksConfig = {
+      ...defaultFallbacksConfig,
+      enabled: true,
+      rootChain: [OFFICIAL_V4_FLASH],
+      roles: {
+        list: [
+          { id: 'reviewer', persona: 'Reviews code', chain: ['anthropic/claude-3-5-sonnet'], fallback: 'inherit-root' },
+          { id: 'empty', persona: '', chain: [], fallback: 'inherit-root' },
+        ],
+        rules: [],
+      },
+    }
+    const { view, props } = await mountCard({ config })
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    const rolesGroup = screen.getByText(en['roles.list.label']).closest('[role="group"]') as HTMLElement
+    expect(within(rolesGroup).getAllByLabelText(en['roles.id'])).toHaveLength(2)
+    // Collapse both panels: reviewer shows id + first chain model; the
+    // empty-chain role shows id + inherit-root (its chain falls back to the
+    // root chain).
+    fireEvent.click(within(rolesGroup).getAllByRole('button', { name: en['roles.collapse'] })[0]!)
+    fireEvent.click(within(rolesGroup).getAllByRole('button', { name: en['roles.collapse'] })[0]!)
+    view.rerender(<FallbacksCard {...props} />)
+    expect(within(rolesGroup).queryByLabelText(en['roles.persona'])).toBeNull()
+    expect(within(rolesGroup).getByText('reviewer')).toBeTruthy()
+    expect(within(rolesGroup).getByText('anthropic/claude-3-5-sonnet')).toBeTruthy()
+    expect(within(rolesGroup).getByText('empty')).toBeTruthy()
+    expect(within(rolesGroup).getByText('inherit-root')).toBeTruthy()
+    // Expand the first back: its id input returns.
+    fireEvent.click(within(rolesGroup).getAllByRole('button', { name: en['roles.expand'] })[0]!)
+    view.rerender(<FallbacksCard {...props} />)
+    expect(within(rolesGroup).getAllByLabelText(en['roles.id'])).toHaveLength(1)
+  })
+
   it('binds the rules role field to a dropdown of inherit + declared ids', async () => {
     const { view, props } = await mountCard({ config: TWO_BLOCK_CONFIG })
     toggleCard()
@@ -1041,6 +1097,24 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     // The old free-text role input is gone (the placeholder text it used).
     expect(screen.queryByLabelText('Role name')).toBeNull()
     expect(screen.getByRole('button', { name: en['roles.addRule'] })).toBeTruthy()
+  })
+
+  it('renders rule rows without an origin control — rules are subagent-only (PR #62 feedback)', async () => {
+    const { view, props } = await mountCard({ config: TWO_BLOCK_CONFIG })
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    // The legacy origin cell (root/subagent/any) is gone; each rule row
+    // carries exactly provider + model + role selects (TWO_BLOCK_CONFIG
+    // persists two rules, one with a legacy `origin` — ignored by the row
+    // projection). Scoped to the rules group: the chain editors share the
+    // provider/model labels.
+    expect(screen.queryByLabelText('Origin')).toBeNull()
+    const rulesGroup = screen.getByText(en['roles.rules']).closest('[role="group"]') as HTMLElement
+    expect(within(rulesGroup).getAllByLabelText(en['roles.rule.provider'])).toHaveLength(2)
+    expect(within(rulesGroup).getAllByLabelText(en['roles.rule.model'])).toHaveLength(2)
+    expect(within(rulesGroup).getAllByLabelText(en['roles.rule.role'])).toHaveLength(2)
+    // The subagent-only hint renders for the rules section.
+    expect(screen.getByText(en['roles.rules.hint'])).toBeTruthy()
   })
 
   it('reflects role add/remove in the rules role dropdown on the same page', async () => {
@@ -1426,7 +1500,8 @@ describe('FallbacksCard time-slot rows (plan fallbacks-timeslots Task 3)', () =>
     view.rerender(<FallbacksCard {...props} />)
     // The preset row renders its frozen name + read-only window summary; the
     // window is NOT editable (no start/end/days controls — code constants).
-    expect(within(group).getByText(en['timeSlots.preset.liang-peak.label'])).toBeTruthy()
+    // The name appears twice: the collapse header + the frozen-name cell.
+    expect(within(group).getAllByText(en['timeSlots.preset.liang-peak.label'])).toHaveLength(2)
     expect(within(group).getByText(en['timeSlots.preset.liang-peak.window'])).toBeTruthy()
     expect(within(group).getByText(en['timeSlots.preset.chainsOnly'])).toBeTruthy()
     expect(within(group).queryByLabelText(en['timeSlots.start'])).toBeNull()
@@ -1575,13 +1650,86 @@ describe('FallbacksCard time-slot rows (plan fallbacks-timeslots Task 3)', () =>
     // pill (dirty-check invariant).
     expect(screen.queryByText(en.unsaved)).toBeNull()
     const group = slotsGroup()
-    expect(within(group).getByText(en['timeSlots.preset.glm-valley.label'])).toBeTruthy()
+    // The preset name appears twice: the collapse header + the frozen-name
+    // cell (PR #62 feedback round).
+    expect(within(group).getAllByText(en['timeSlots.preset.glm-valley.label'])).toHaveLength(2)
     expect(within(group).getByText(en['timeSlots.preset.glm-valley.window'])).toBeTruthy()
+    // PR #62 feedback: GLM preset rows carry the zai-coding-cn validity
+    // caveat.
+    expect(within(group).getByText(en['timeSlots.preset.glm.note'])).toBeTruthy()
     // The custom row's stored days render as checked day toggles (Fri = 5).
     const dayCells = within(group).getAllByRole('checkbox')
     expect(dayCells).toHaveLength(7)
     expect((dayCells[5] as HTMLInputElement).checked).toBe(true)
     expect(dayCells.every((cell, index) => index === 5 || !(cell as HTMLInputElement).checked)).toBe(true)
+  })
+
+  it('collapses a slot row to name + first model and expands it back (PR #62 feedback round)', async () => {
+    const config: typeof defaultFallbacksConfig = {
+      ...SLOT_CONFIG,
+      timeSlots: [
+        { kind: 'preset', preset: 'liang-peak', days: [], chain: ['openai/gpt-4o'] },
+        { kind: 'custom', start: '22:00', end: '02:00', days: [], name: '晚班', chain: ['anthropic/claude-3-5-sonnet'] },
+      ],
+    }
+    const { view, props } = await mountCard({ config })
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    const group = slotsGroup()
+    // Custom rows carry an editable name field (read back from the wire).
+    const nameInput = within(group).getByLabelText(en['timeSlots.name']) as HTMLInputElement
+    expect(nameInput.value).toBe('晚班')
+    // Collapse the preset row: header shows the frozen name + first model;
+    // the window summary, the chainsOnly hint, and the chain editor hide.
+    fireEvent.click(within(group).getAllByRole('button', { name: en['timeSlots.collapse'] })[0]!)
+    view.rerender(<FallbacksCard {...props} />)
+    expect(within(group).getAllByText(en['timeSlots.preset.liang-peak.label'])).toHaveLength(1)
+    expect(within(group).queryByText(en['timeSlots.preset.liang-peak.window'])).toBeNull()
+    expect(within(group).queryByText(en['timeSlots.preset.chainsOnly'])).toBeNull()
+    expect(within(group).getByText('openai/gpt-4o')).toBeTruthy()
+    // Expand it back: the full editor returns (name appears twice again).
+    fireEvent.click(within(group).getAllByRole('button', { name: en['timeSlots.expand'] })[0]!)
+    view.rerender(<FallbacksCard {...props} />)
+    expect(within(group).getAllByText(en['timeSlots.preset.liang-peak.label'])).toHaveLength(2)
+    expect(within(group).getByText(en['timeSlots.preset.liang-peak.window'])).toBeTruthy()
+  })
+
+  it('drag-reorders slot rows; the reorder persists on save (PR #62 feedback round)', async () => {
+    const config: typeof defaultFallbacksConfig = {
+      ...SLOT_CONFIG,
+      timeSlots: [
+        { kind: 'preset', preset: 'liang-peak', days: [], chain: ['openai/gpt-4o'] },
+        { kind: 'custom', start: '22:00', end: '02:00', days: [], chain: ['anthropic/claude-3-5-sonnet'] },
+      ],
+    }
+    const { view, props, scripted } = await mountCard({ config })
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    const group = slotsGroup()
+    // The row cards are the draggable containers: grab the SECOND row and
+    // drop it onto the FIRST.
+    const cards = within(group).getAllByRole('button', { name: en['timeSlots.collapse'] })
+      .map(button => button.closest('[draggable="true"]') as HTMLElement)
+    expect(cards).toHaveLength(2)
+    fireEvent.dragStart(cards[1]!)
+    fireEvent.dragOver(cards[0]!)
+    fireEvent.drop(cards[0]!)
+    view.rerender(<FallbacksCard {...props} />)
+    // The custom row now sits first (its up button is disabled) and the
+    // preset row follows — the save patch carries the new order.
+    const upButtons = within(group).getAllByRole('button', { name: en['timeSlots.moveUp'] })
+    expect((upButtons[0] as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    await waitFor(() => {
+      expect(scripted.call).toHaveBeenCalledWith('/api', 'fallbacks/set', expect.objectContaining({
+        args: { patch: expect.objectContaining({
+          timeSlots: [
+            { kind: 'custom', start: '22:00', end: '02:00', days: [], chain: ['anthropic/claude-3-5-sonnet'] },
+            { kind: 'preset', preset: 'liang-peak', days: [], chain: ['openai/gpt-4o'] },
+          ],
+        }) },
+      }))
+    })
   })
 
   it('blocks save on an empty preset row chain even when other edits are valid (chain required)', async () => {
@@ -1623,7 +1771,9 @@ describe('FallbacksCard time-slot rows (plan fallbacks-timeslots Task 3)', () =>
     // The row loads clean (days round-trips through the editor — the
     // dirty-check invariant holds; no unsaved pill).
     expect(screen.queryByText(en.unsaved)).toBeNull()
-    expect(within(slotsGroup()).getByText(en['timeSlots.preset.liang-peak.label'])).toBeTruthy()
+    // The preset name appears twice: the collapse header + the frozen-name
+    // cell (PR #62 feedback round).
+    expect(within(slotsGroup()).getAllByText(en['timeSlots.preset.liang-peak.label'])).toHaveLength(2)
     // An unrelated edit dirties the draft (a clean draft's save button is
     // disabled), then Save is blocked by the frozen-window guard with an
     // inline explanation — the gateway error never becomes the first word.
@@ -1965,77 +2115,69 @@ describe('FallbacksCard seeded roles (plan fallbacks-role-seeds T5)', () => {
   })
 })
 
-describe('FallbacksCard rootChain first-line copy + conditional hint (plan fallbacks-settings-visibility T1)', () => {
-  it('renders the engages-after-failure first line when the section is shown', async () => {
+describe('FallbacksCard 主代理 layout (PR #62 feedback round)', () => {
+  const slotGroup = (): HTMLElement =>
+    screen.getByText(en['timeSlots.label']).closest('[role="group"]') as HTMLElement
+
+  it('removes the preemption hints from the default-chain block', async () => {
     const { view, props } = await mountCard({ config: TWO_BLOCK_CONFIG })
     toggleCard()
     view.rerender(<FallbacksCard {...props} />)
-    // Compass AC-1: the rootChain section's first descriptive line states the
-    // chain engages only after the current session's selected model fails —
-    // it never preempts the session model.
-    expect(screen.getByText(en['rootChain.firstLine'])).toBeTruthy()
+    // PR #62 feedback round: the old "engages only after the session model
+    // fails" first line and the prefer-session-model hint are removed
+    // entirely from the 默认降级链 block.
+    expect(screen.queryByText(/Engages only after the current session/)).toBeNull()
+    expect(screen.queryByText(/Prefer the current session/)).toBeNull()
   })
 
-  it('shows the session-model-first hint when enabled and rootChain is configured', async () => {
-    const { view, props } = await mountCard({ config: TWO_BLOCK_CONFIG })
+  it('locks the timezone picker to Asia/Shanghai while a preset row exists', async () => {
+    const config: typeof defaultFallbacksConfig = {
+      ...ENABLED_CONFIG,
+      rootChain: [OFFICIAL_V4_FLASH],
+      timeSlots: [{ kind: 'preset', preset: 'liang-peak', days: [], chain: [OFFICIAL_V4_FLASH] }],
+    }
+    const { view, props } = await mountCard({ config })
     toggleCard()
     view.rerender(<FallbacksCard {...props} />)
-    // The conditional hint renders for the enabled + configured case and
-    // carries the prefer-session-model copy (compass AC-1).
-    expect(screen.getByText(en['rootChain.hint'])).toBeTruthy()
+    const group = slotGroup()
+    const tz = within(group).getByLabelText(en['timeSlots.tz.label']) as HTMLSelectElement
+    // Preset windows are frozen UTC+8 constants — the picker is locked to
+    // Asia/Shanghai and never follows the host timezone.
+    expect(tz.value).toBe('Asia/Shanghai')
+    expect(tz.disabled).toBe(true)
+    expect(within(group).getByText(en['timeSlots.tz.hint'])).toBeTruthy()
   })
 
-  it('hides the hint when enabled but rootChain is empty (unset)', async () => {
-    const { view, props } = await mountCard({ config: ENABLED_CONFIG })
+  it('lets custom-only configs pick the timezone and persists it on save', async () => {
+    const { view, props, scripted } = await mountCard({ config: { ...ENABLED_CONFIG, rootChain: [OFFICIAL_V4_FLASH] } })
     toggleCard()
     view.rerender(<FallbacksCard {...props} />)
-    // The first line still explains the section semantics...
-    expect(screen.getByText(en['rootChain.firstLine'])).toBeTruthy()
-    // ...but the conditional hint is hidden while the chain is unset.
-    expect(screen.queryByText(en['rootChain.hint'])).toBeNull()
+    const group = slotGroup()
+    const tz = within(group).getByLabelText(en['timeSlots.tz.label']) as HTMLSelectElement
+    expect(tz.disabled).toBe(false)
+    fireEvent.change(tz, { target: { value: 'UTC' } })
+    view.rerender(<FallbacksCard {...props} />)
+    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    await waitFor(() => {
+      expect(scripted.call).toHaveBeenCalledWith('/api', 'fallbacks/set', expect.objectContaining({
+        args: { patch: expect.objectContaining({ tz: 'UTC' }) },
+      }))
+    })
   })
 
-  it('keeps the hint hidden while no all-day model is picked and shows it once the chooser selects one (qc2 F-002)', async () => {
-    const { view, props } = await mountCard({ config: ENABLED_CONFIG })
-    toggleCard()
-    view.rerender(<FallbacksCard {...props} />)
-    // ENABLED_CONFIG has an empty rootChain → no chooser selection → hint
-    // hidden (unset case).
-    expect(screen.queryByText(en['rootChain.hint'])).toBeNull()
-
-    // The all-day row has no blank-selector state to leak: only a real
-    // chooser selection counts as "configured" (the old `selectors.length >
-    // 0` derivation leak is gone with the multi-row editor — qc2 F-002).
-    pickAllDayFlash()
-    view.rerender(<FallbacksCard {...props} />)
-    expect(screen.getByText(en['rootChain.hint'])).toBeTruthy()
-
-    // Switching to Pro keeps the hint (any of the two official models is a
-    // valid configuration).
-    pickAllDayPro()
-    view.rerender(<FallbacksCard {...props} />)
-    expect(screen.getByText(en['rootChain.hint'])).toBeTruthy()
-    expect((proRadio()).checked).toBe(true)
-    expect((flashRadio()).checked).toBe(false)
-  })
-
-  it('hides the hint (and the section) when the plugin is disabled', async () => {
-    // defaultFallbacksConfig → enabled: false: the whole rootChain section
-    // (first line + hint) is gated off with the form body.
-    const { view, props } = await mountCard()
-    toggleCard()
-    view.rerender(<FallbacksCard {...props} />)
-    expect(screen.queryByText(en['rootChain.hint'])).toBeNull()
-    expect(screen.queryByText(en['rootChain.firstLine'])).toBeNull()
-  })
-
-  it('keeps the rootChain first-line and hint keys in both zh and en dictionaries', () => {
+  it('keeps the 主代理 layout keys in both zh and en dictionaries', () => {
     // Bilingual-pair constraint (plan Global Constraints): every locale
     // change lands in both zh and en, non-empty.
-    expect(zh['rootChain.firstLine']).toBeTruthy()
-    expect(en['rootChain.firstLine']).toBeTruthy()
-    expect(zh['rootChain.hint']).toBeTruthy()
-    expect(en['rootChain.hint']).toBeTruthy()
+    expect(zh['mainAgent.label']).toBeTruthy()
+    expect(en['mainAgent.label']).toBeTruthy()
+    expect(zh['rootChain.label']).toBeTruthy()
+    expect(en['rootChain.label']).toBeTruthy()
+    expect(zh['defaultModel.label']).toBeTruthy()
+    expect(en['defaultModel.label']).toBeTruthy()
+    expect(zh['timeSlots.tz.label']).toBeTruthy()
+    expect(en['timeSlots.tz.label']).toBeTruthy()
+    expect(zh['timeSlots.name']).toBeTruthy()
+    expect(en['timeSlots.name']).toBeTruthy()
   })
 })
 

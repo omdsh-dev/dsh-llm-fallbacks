@@ -51,20 +51,36 @@ export const zh = {
   'roleAutoMatch.label': '启用角色自动匹配',
   'roleAutoMatch.hint': '规则未命中时，由模型自选最贴近的已声明角色',
   'roleAutoMatch.tooltip': '规则未命中时，模型会自动从已声明角色（id + persona）中选择最匹配者并注入该角色的链；关闭后未命中规则时按现状回落（inherit / rootChain）。',
-  'rootChain.label': 'root 主代理降级链',
-  'rootChain.firstLine': '仅当当前会话所选模型失败后才启用降级——不抢占会话模型',
-  'rootChain.hint': '优先使用当前会话的模型；失败后才降级到该全时段模型',
-  'rootChain.tooltip': 'root 主代理失败时降级到该全时段模型；未命中任何分时槽时使用。全时段必须二选一：官方 V4 Flash 或官方 V4 Pro。',
+  // PR #62 feedback round: 默认降级链 is the all-day fallback chain as a
+  // configurable selector list (no Flash|Pro radio — that panel moved to
+  // 默认模型); the preemption hints are removed.
+  'rootChain.label': '默认降级链',
+  'rootChain.tooltip': '未命中任何分时槽时使用的降级链。链头必须是官方 V4 Flash 或 V4 Pro（默认模型），后续条目为追加的降级目标。',
+  'defaultModel.label': '默认模型',
   'chains.selector.remove': '删除该选择器',
   'chains.selector.providerPlaceholder': '选择 provider',
   'chains.selector.modelPlaceholder': '选择 model',
   'chains.selector.wildcardLegacy': '该条目为通配（provider/*）：选择具体模型后将转为精确条目',
   'chains.selector.noModelsStrict': '该 provider 暂无可用模型（目录查询失败），请改选其他 provider。',
-  // Time-slot rows (plan fallbacks-timeslots Task 3): the extra-row list
-  // sits ABOVE the all-day chooser; preset windows are frozen (read-only,
-  // models-only edits).
-  'timeSlots.label': '分时槽',
-  'timeSlots.hint': '按 tz 时区匹配当前时刻；第一条命中的行生效，全时段行固定最后',
+  // PR #62 feedback: the main-agent section heading groups the time-slot
+  // rows + the all-day chooser; the subagents heading groups roles list +
+  // rules.
+  'mainAgent.label': '主代理',
+  'subagents.label': '子代理',
+  // Time-slot rows (plan fallbacks-timeslots Task 3; PR #62 feedback
+  // round): the extra-row list sits under the 主代理 section; preset
+  // windows are frozen (read-only, models-only edits). The tz picker lives
+  // INSIDE this block; preset rows lock it to UTC+8 (Asia/Shanghai).
+  'timeSlots.label': '分时槽设置',
+  'timeSlots.hint': '自上而下第一条命中生效；全时段行固定最后',
+  'timeSlots.tz.label': '时区',
+  'timeSlots.tz.hint': '预设行锁定 UTC+8（Asia/Shanghai），不跟随宿主时区；自定义行跟随所选时区',
+  'timeSlots.drag': '拖拽排序（或使用上下按钮）',
+  // PR #62 feedback round: collapsible slot rows — collapsed shows the
+  // row name + its first model; custom rows carry an editable name.
+  'timeSlots.name': '名称',
+  'timeSlots.expand': '展开该行',
+  'timeSlots.collapse': '收起该行',
   'timeSlots.tooltip': '命中行的模型链成为 root 生效链（取代全时段链）；未命中任何行时使用全时段链。分时切换是路由种子而非失败决策：不消耗冷却、不计入单步切换上限。',
   'timeSlots.addPreset': '添加预设',
   'timeSlots.addCustom': '添加自定义时段',
@@ -79,14 +95,17 @@ export const zh = {
   'timeSlots.preset.name': '预设',
   'timeSlots.preset.windowLabel': '时段（只读）',
   'timeSlots.preset.chainsOnly': '预设窗口已锁定：仅可编辑模型链',
-  'timeSlots.preset.liang-peak.label': 'Liang Peak',
+  'timeSlots.preset.liang-peak.label': '梁文峰',
   'timeSlots.preset.liang-peak.window': '09:00–12:00 与 14:00–18:00（每天，UTC+8）',
-  'timeSlots.preset.liang-valley.label': 'Liang Valley',
+  'timeSlots.preset.liang-valley.label': '梁文谷',
   'timeSlots.preset.liang-valley.window': 'Liang Peak 之外的所有时间（每天，UTC+8）',
-  'timeSlots.preset.glm-peak.label': 'GLM Peak',
+  'timeSlots.preset.glm-peak.label': 'GLM峰',
   'timeSlots.preset.glm-peak.window': '周一至周五 14:00–18:00（UTC+8）',
-  'timeSlots.preset.glm-valley.label': 'GLM Valley',
+  'timeSlots.preset.glm-valley.label': 'GLM谷',
   'timeSlots.preset.glm-valley.window': 'GLM Peak 之外的所有时间（UTC+8）',
+  // PR #62 feedback: the GLM presets route to zai-coding-cn models — the
+  // caveat rides every GLM preset row (shared by both GLM presets).
+  'timeSlots.preset.glm.note': '仅配置了 zai-coding-cn 时有效',
   'timeSlots.day.sun': '日',
   'timeSlots.day.mon': '一',
   'timeSlots.day.tue': '二',
@@ -95,12 +114,13 @@ export const zh = {
   'timeSlots.day.fri': '五',
   'timeSlots.day.sat': '六',
   'timeSlots.selector.add': '添加选择器',
-  // All-day 2-choose-1 (plan fallbacks-timeslots Task 3): the rootChain
-  // editor narrows to exactly one official V4 model — Flash XOR Pro.
-  'allDay.hint': '未命中任何分时槽时使用该模型；必须二选一',
+  // All-day head (plan fallbacks-timeslots Task 3; PR #62 feedback round):
+  // the 默认模型 panel is the official V4 Flash XOR Pro head of the
+  // default fallback chain — separate from the 默认降级链 selector list.
+  'allDay.hint': '默认降级链的链头模型：官方 V4 Flash 或 V4 Pro 二选一',
   'allDay.flash': '官方 V4 Flash（deepseek-official/deepseek-v4-flash）',
   'allDay.pro': '官方 V4 Pro（deepseek-official/deepseek-v4-pro）',
-  'allDay.nonconforming': '当前全时段链不合法：请选择上方任一官方 V4 模型后保存',
+  'allDay.nonconforming': '当前默认模型不合法：请选择官方 V4 Flash 或 V4 Pro 后保存',
   'roles.list.label': '角色实体',
   'roles.list.hint': '先声明角色，规则才能引用',
   'roles.list.tooltip': '角色 id 须匹配 /^[a-z0-9-]{1,32}$/ 且唯一；"inherit" 为保留字，不能用作角色 id。',
@@ -118,14 +138,17 @@ export const zh = {
   'roles.fallback.none': '仅角色链（不追加 rootChain）',
   'roles.add': '添加角色',
   'roles.remove': '删除该角色',
+  // PR #62 feedback round: collapsible role panels — collapsed shows the
+  // role id + its first chain model (or inherit-root when the chain is
+  // empty under the inherit-root strategy).
+  'roles.expand': '展开该角色',
+  'roles.collapse': '收起该角色',
   'roles.selector.add': '添加选择器',
   'roles.rules': '角色规则',
-  'roles.rules.hint': '顺序匹配 origin/provider/model，未命中 → inherit（root 链）',
-  'roles.rules.tooltip': '规则命中后走对应角色的链；未命中走内置 inherit（rootChain）。',
-  'roles.rule.origin': '来源',
-  'roles.rule.origin.any': '任意',
-  'roles.rule.origin.root': 'root',
-  'roles.rule.origin.subagent': 'subagent',
+  // PR #62 feedback: rules are subagent-only — no origin constraint; root
+  // requests never match rules (inherit → rootChain).
+  'roles.rules.hint': '仅对子代理生效：顺序匹配 provider/model，未命中 → inherit（root 链）',
+  'roles.rules.tooltip': '规则仅对子代理生效（root 请求不匹配规则）：命中后走对应角色的链；未命中走内置 inherit（rootChain）。',
   'roles.rule.provider': 'provider',
   'roles.rule.provider.any': '任意',
   'roles.rule.model': 'model',
@@ -143,7 +166,7 @@ export const zh = {
   'validation.ruleRoleUndeclared': '规则引用了未声明的角色 "{role}"',
   'validation.ruleRoleRequired': '规则未选择角色：请选择目标角色，或删除该行',
   'validation.roleChainRequired': '角色 "{id}" 未配置模型：请至少添加一条链选择器（模型配置）',
-  'validation.allDayRequired': '全时段链必须恰好是一个官方 V4 模型（V4 Flash 或 V4 Pro）',
+  'validation.allDayRequired': '默认模型必须二选一：官方 V4 Flash 或 V4 Pro',
   'validation.slotChainRequired': '分时槽未配置模型：请至少添加一条链选择器',
   'validation.slotWindow': '分时槽开始/结束时间须为 HH:mm 格式',
   'validation.slotDays': '星期取值须为 0–6 的整数',
@@ -254,20 +277,36 @@ export const en = {
   'roleAutoMatch.label': 'Enable role auto-match',
   'roleAutoMatch.hint': 'On rules-miss, the model picks the closest declared role',
   'roleAutoMatch.tooltip': 'When no rule matches, the model auto-selects the best-fit declared role (id + persona) and uses its chain; turn off to keep today\'s fallback (inherit / rootChain) on a rules-miss.',
-  'rootChain.label': 'Root agent fallback chain',
-  'rootChain.firstLine': 'Engages only after the current session\'s selected model fails — it never preempts the session model',
-  'rootChain.hint': 'Prefer the current session\'s model; fall back to this all-day model only after it fails',
-  'rootChain.tooltip': 'When the root agent fails it falls back to this all-day model; used whenever no time slot matches. The all-day chain must be exactly one official V4 model (Flash or Pro).',
+  // PR #62 feedback round: the default fallback chain is the all-day chain
+  // as a configurable selector list (no Flash|Pro radio — that panel moved
+  // to 默认模型); the preemption hints are removed.
+  'rootChain.label': 'Default fallback chain',
+  'rootChain.tooltip': 'The fallback chain used whenever no time slot matches. Its head must be an official V4 model (Flash or Pro — the default model); trailing entries are additional fallback targets.',
+  'defaultModel.label': 'Default model',
   'chains.selector.remove': 'Remove this selector',
   'chains.selector.providerPlaceholder': 'Select provider',
   'chains.selector.modelPlaceholder': 'Select model',
   'chains.selector.wildcardLegacy': 'This entry is a wildcard (provider/*): picking a model converts it to an exact entry',
   'chains.selector.noModelsStrict': 'No models available for this provider (catalog lookup failed); pick another provider.',
-  // Time-slot rows (plan fallbacks-timeslots Task 3): the extra-row list
-  // sits ABOVE the all-day chooser; preset windows are frozen (read-only,
-  // models-only edits).
-  'timeSlots.label': 'Time slots',
-  'timeSlots.hint': 'Rows match the current moment in the tz timezone; the first hit wins, the all-day row is always last',
+  // PR #62 feedback: the main-agent section heading groups the time-slot
+  // rows + the all-day chooser; the subagents heading groups roles list +
+  // rules.
+  'mainAgent.label': 'Main agent',
+  'subagents.label': 'Subagents',
+  // Time-slot rows (plan fallbacks-timeslots Task 3; PR #62 feedback
+  // round): the extra-row list sits under the Main agent section; preset
+  // windows are frozen (read-only, models-only edits). The tz picker lives
+  // INSIDE this block; preset rows lock it to UTC+8 (Asia/Shanghai).
+  'timeSlots.label': 'Time-slot settings',
+  'timeSlots.hint': 'First match from top to bottom wins; the all-day row is always last',
+  'timeSlots.tz.label': 'Timezone',
+  'timeSlots.tz.hint': 'Preset rows lock UTC+8 (Asia/Shanghai) regardless of the host timezone; custom rows follow the selected timezone',
+  'timeSlots.drag': 'Drag to reorder (or use the up/down buttons)',
+  // PR #62 feedback round: collapsible slot rows — collapsed shows the
+  // row name + its first model; custom rows carry an editable name.
+  'timeSlots.name': 'Name',
+  'timeSlots.expand': 'Expand this row',
+  'timeSlots.collapse': 'Collapse this row',
   'timeSlots.tooltip': 'A matched row\'s model chain becomes the effective root chain (replacing the all-day chain); no match uses the all-day chain. A time-slot switch is a routing seed, not a failure decision: it consumes no cooldown and does not count against the per-step switch cap.',
   'timeSlots.addPreset': 'Add preset',
   'timeSlots.addCustom': 'Add custom time slot',
@@ -290,6 +329,9 @@ export const en = {
   'timeSlots.preset.glm-peak.window': 'Monday–Friday 14:00–18:00 (UTC+8)',
   'timeSlots.preset.glm-valley.label': 'GLM Valley',
   'timeSlots.preset.glm-valley.window': 'All times outside GLM Peak (UTC+8)',
+  // PR #62 feedback: the GLM presets route to zai-coding-cn models — the
+  // caveat rides every GLM preset row (shared by both GLM presets).
+  'timeSlots.preset.glm.note': 'Only effective when zai-coding-cn is configured',
   'timeSlots.day.sun': 'Sun',
   'timeSlots.day.mon': 'Mon',
   'timeSlots.day.tue': 'Tue',
@@ -298,12 +340,13 @@ export const en = {
   'timeSlots.day.fri': 'Fri',
   'timeSlots.day.sat': 'Sat',
   'timeSlots.selector.add': 'Add selector',
-  // All-day 2-choose-1 (plan fallbacks-timeslots Task 3): the rootChain
-  // editor narrows to exactly one official V4 model — Flash XOR Pro.
-  'allDay.hint': 'Used whenever no time slot matches; pick exactly one',
+  // All-day head (plan fallbacks-timeslots Task 3; PR #62 feedback round):
+  // the default-model panel is the official V4 Flash XOR Pro head of the
+  // default fallback chain — separate from the default-chain selector list.
+  'allDay.hint': 'Head model of the default fallback chain: official V4 Flash or Pro (pick exactly one)',
   'allDay.flash': 'Official V4 Flash (deepseek-official/deepseek-v4-flash)',
   'allDay.pro': 'Official V4 Pro (deepseek-official/deepseek-v4-pro)',
-  'allDay.nonconforming': 'The current all-day chain is not valid: pick one of the official V4 models above before saving',
+  'allDay.nonconforming': 'The current default model is not valid: pick official V4 Flash or Pro before saving',
   'roles.list.label': 'Declared roles',
   'roles.list.hint': 'Declare roles before rules can reference them',
   'roles.list.tooltip': 'Role ids must match /^[a-z0-9-]{1,32}$/ and be unique; "inherit" is reserved and cannot be used as a role id.',
@@ -321,14 +364,17 @@ export const en = {
   'roles.fallback.none': 'Role chain only (no rootChain)',
   'roles.add': 'Add role',
   'roles.remove': 'Remove this role',
+  // PR #62 feedback round: collapsible role panels — collapsed shows the
+  // role id + its first chain model (or inherit-root when the chain is
+  // empty under the inherit-root strategy).
+  'roles.expand': 'Expand this role',
+  'roles.collapse': 'Collapse this role',
   'roles.selector.add': 'Add selector',
   'roles.rules': 'Role rules',
-  'roles.rules.hint': 'Matches origin/provider/model in order; no match → inherit (root chain)',
-  'roles.rules.tooltip': 'A matched rule uses that role\'s chain; no match uses the built-in inherit (rootChain).',
-  'roles.rule.origin': 'Origin',
-  'roles.rule.origin.any': 'Any',
-  'roles.rule.origin.root': 'root',
-  'roles.rule.origin.subagent': 'subagent',
+  // PR #62 feedback: rules are subagent-only — no origin constraint; root
+  // requests never match rules (inherit → rootChain).
+  'roles.rules.hint': 'Subagents only: matches provider/model in order; no match → inherit (root chain)',
+  'roles.rules.tooltip': 'Rules apply to subagents only (root requests never match): a matched rule uses that role\'s chain; no match uses the built-in inherit (rootChain).',
   'roles.rule.provider': 'provider',
   'roles.rule.provider.any': 'Any',
   'roles.rule.model': 'model',
@@ -346,7 +392,7 @@ export const en = {
   'validation.ruleRoleUndeclared': 'Rule references undeclared role "{role}"',
   'validation.ruleRoleRequired': 'Rule has no role selected: pick a target role, or remove the row',
   'validation.roleChainRequired': 'Role "{id}" has no model config: add at least one chain entry',
-  'validation.allDayRequired': 'The all-day chain must be exactly one official V4 model (V4 Flash or V4 Pro)',
+  'validation.allDayRequired': 'The default model must be exactly one official V4 model (V4 Flash or V4 Pro)',
   'validation.slotChainRequired': 'Time-slot row has no models: add at least one chain entry',
   'validation.slotWindow': 'Time-slot start/end must use HH:mm format',
   'validation.slotDays': 'Days must be integers 0–6',

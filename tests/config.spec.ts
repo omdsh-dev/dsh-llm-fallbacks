@@ -343,7 +343,7 @@ describe('validateFallbacksConfig — selector legality (rootChain + role chains
     // P6 (plan fallbacks-timeslots): a non-empty non-conforming all-day
     // chain earns the conformance warn FIRST, then per-entry selector warns.
     expect(messages).toHaveLength(3)
-    expect(messages[0]).toContain('rootChain must be exactly one official V4 model')
+    expect(messages[0]).toContain('rootChain must start with exactly one official V4 model')
     expect(messages[1]).toContain('ignoring invalid rootChain entry "bogus"')
     expect(messages[2]).toContain('ignoring invalid rootChain entry "provider/"')
   })

@@ -577,7 +577,7 @@ describe('set validation (Config schema, unknown-key rejection unchanged)', () =
 })
 
 // ---------------------------------------------------------------------------
-// ⑩ plan fallbacks-timeslots Task 3: time-slot rows + all-day 2-choose-1
+// ⑩ plan fallbacks-timeslots Task 3: time-slot rows + all-day head
 //    (gateway reject-on-save guards — the load side stays warn-not-crash)
 // ---------------------------------------------------------------------------
 
@@ -602,12 +602,12 @@ describe('timeSlots + all-day set guards (plan fallbacks-timeslots Task 3)', () 
   it('rejects a non-conforming all-day chain on save (legacy multi-model AND empty — P6)', async () => {
     const { gateway } = await mountGateway()
     await expect(gateway.set({ rootChain: ['openai/gpt-4o', 'anthropic/claude-3-5-sonnet'] })).rejects
-      .toThrow(/rootChain must be exactly one official V4 model/)
+      .toThrow(/rootChain must start with exactly one official V4 model/)
     await expect(gateway.set({ rootChain: ['openai/gpt-4o'] })).rejects
-      .toThrow(/rootChain must be exactly one official V4 model/)
+      .toThrow(/rootChain must start with exactly one official V4 model/)
     // The empty default is the "no all-day" state — also rejected on save:
-    // everything saved through the gateway is conforming (spec pin 4).
-    await expect(gateway.set({ rootChain: [] })).rejects.toThrow(/rootChain must be exactly one official V4 model/)
+    // everything saved through the gateway is head-conforming (spec pin 4).
+    await expect(gateway.set({ rootChain: [] })).rejects.toThrow(/rootChain must start with exactly one official V4 model/)
     // Nothing was persisted: the composed rootChain stays the entry default.
     expect(gateway.get().config.rootChain).toEqual([])
   })

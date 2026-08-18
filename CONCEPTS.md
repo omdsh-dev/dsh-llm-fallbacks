@@ -89,5 +89,5 @@ companion 插件经释放面声明 `[{id, persona}]`、由本插件自动补全�
 *Avoid:* 默认 none（bundled 语义开箱即有）· async 化 apply 自声明（fiber FAILED）· 复用早注册注入子 fire（base-only 基线覆盖 operator 行）
 
 ### 三段式分发角色解析（three-stage dispatch role resolution）
-subagent 分发时（首请求）解析角色的三段流程：显式角色（session header `agentPreset` 精确匹配已声明角色 id）→ 确定性规则匹配（`roles.rules`，与失败时共用 resolveRole）→ LLM 自动匹配（`roleAutoMatch` 默认开启；模型从已声明角色 taxonomy 中自选，超时/失败/无合法答案回退 inherit）。解析角色的链首 exact 候选在分发时注入首请求（不写 `fallbacks/switch` 事件——issue #52 停写，仅 info 日志记录 role → model；非失败决策——无冷却/记账，仅 subagent origin，首请求幂等）。
+subagent 分发时（首请求）解析角色的三段流程：显式角色（session header `agentPreset` 精确匹配已声明角色 id）→ 确定性规则匹配（`roles.rules`，与失败时共用 resolveRole；**仅对子代理生效**——root 请求不匹配规则、直落 inherit，遗留 rule `origin` 字段被忽略，PR #62 feedback）→ LLM 自动匹配（`roleAutoMatch` 默认开启；模型从已声明角色 taxonomy 中自选，超时/失败/无合法答案回退 inherit）。解析角色的链首 exact 候选在分发时注入首请求（不写 `fallbacks/switch` 事件——issue #52 停写，仅 info 日志记录 role → model；非失败决策——无冷却/记账，仅 subagent origin，首请求幂等）。
 *Avoid:* 把「模型自选角色」当作既有机制（角色解析是确定性规则匹配，模型自选仅存在于自动匹配兜底段）

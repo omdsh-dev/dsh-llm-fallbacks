@@ -82,6 +82,8 @@ import {
   classifyProvider,
   mergeRoleExtras,
   rolesToRows,
+  rootChainToRows,
+  rowsToRootChain,
   rowsToRules,
   rowsToTimeSlots,
   rulesToRows,
@@ -94,6 +96,7 @@ import {
   type FallbacksSettingsState,
   type RoleRow,
   type RoleRuleRow,
+  type RootChainRow,
   type SlotEditorRow,
 } from './fallbacks-store.ts'
 import {
@@ -114,18 +117,44 @@ const ALL_DAY_PRO = 'deepseek-official/deepseek-v4-pro'
 const SLOT_PRESET_IDS = ['liang-peak', 'liang-valley', 'glm-peak', 'glm-valley'] as const
 /** Custom-row day toggle order (index = weekday, 0=Sunday); display copy lives in the dictionaries. */
 const SLOT_WEEKDAYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'] as const
+/** Timezone picker offer set (PR #62 feedback round) — a small curated list
+ * of IANA ids; the accepted tz outside the list renders as a synthetic
+ * option so the value is never lost. Preset rows lock the value to
+ * Asia/Shanghai (their windows are frozen UTC+8 constants). */
+const TZ_OPTIONS = [
+  'Asia/Shanghai',
+  'UTC',
+  'Asia/Tokyo',
+  'Asia/Singapore',
+  'Europe/London',
+  'America/New_York',
+  'America/Los_Angeles',
+  'Australia/Sydney',
+] as const
 /** Strict 24h `HH:mm` — the resolver's HHMM_RE twin (drift-guarded by the gateway reject-on-save). */
 const HHMM_RE = /^([01]\d|2[0-3]):[0-5]\d$/
 
 /**
- * The all-day chooser value for a chain: the official V4 id when the chain
- * is EXACTLY one official V4 model (Flash XOR Pro — the 2-choose-1 rule,
- * plan fallbacks-timeslots Task 3); `''` for an empty or legacy
- * non-conforming chain (the chooser reads back unselected and save
- * validation blocks the value).
+ * The 默认模型 (default model) value for a chain: the official V4 id when
+ * the chain HEAD is that model (Flash XOR Pro — trailing entries allowed,
+ * PR #62 feedback round); `''` for an empty chain or a chain whose head is
+ * not official (the panel reads back unselected and save validation blocks
+ * the value).
  */
 function allDayModelOf(chain: readonly string[]): string {
-  return chain.length === 1 && (chain[0] === ALL_DAY_FLASH || chain[0] === ALL_DAY_PRO) ? chain[0] : ''
+  return chain.length >= 1 && (chain[0] === ALL_DAY_FLASH || chain[0] === ALL_DAY_PRO) ? chain[0] : ''
+}
+
+/**
+ * The 默认降级链 editor row for a chain (PR #62 feedback round): the
+ * trailing entries AFTER the official-V4 head, or the whole chain while
+ * the head is not official (the draft rides the accepted value until a
+ * 默认模型 pick).
+ */
+function allDayChainRowOf(chain: readonly string[], catalog: CatalogLookup | undefined): RootChainRow {
+  const head = allDayModelOf(chain)
+  const rest = head === '' ? chain : chain.slice(1)
+  return rootChainToRows(rest, catalog)[0]!
 }
 
 /** Injected dependencies of {@link FallbacksCard} (slot `inject`). */
@@ -148,6 +177,10 @@ interface FallbacksScalars {
   revertPolicy: RevertPolicy
   maxSwitchesPerStep: number
   alwaysModeRetryCap: number
+  // PR #62 feedback round: the tz picker lives in the 分时槽设置 block.
+  // Preset rows lock it to Asia/Shanghai at assembly time (UTC+8 frozen
+  // windows), so a preset-bearing config always assembles tz Asia/Shanghai.
+  tz: string
   // `roleAutoMatch` is ALWAYS defined at runtime (default `true`): the
   // schema default is folded on the real wire (gateway composition + client
   // parse fold), so absent ≡ true (AC-7 re-scope, PM decision 2026-08-17
@@ -167,6 +200,7 @@ function scalarsOf(config: FallbacksConfig): FallbacksScalars {
     maxSwitchesPerStep: config.maxSwitchesPerStep,
     alwaysModeRetryCap: config.alwaysModeRetryCap,
     roleAutoMatch: config.roleAutoMatch,
+    tz: config.tz ?? 'Asia/Shanghai',
   }
 }
 
@@ -186,31 +220,37 @@ function scalarsOf(config: FallbacksConfig): FallbacksScalars {
  * toggle always renders (default on) and a save persists the resolved value
  * (AC-7 re-scope, PM decision 2026-08-17 Option A).
  *
- * All-day (plan fallbacks-timeslots Task 3): the rootChain editor is the
- * exclusive chooser — exactly one official V4 model (Flash XOR Pro). While
- * nothing is selected the ACCEPTED chain rides through untouched, so a
- * clean legacy draft still equals the accepted config (dirty-check
+ * All-day (plan fallbacks-timeslots Task 3; PR #62 feedback round): the
+ * rootChain is composed from the 默认模型 head (exactly one official V4
+ * model — Flash XOR Pro) plus the 默认降级链 editor's trailing selectors.
+ * While no head is selected the ACCEPTED chain rides through untouched, so
+ * a clean legacy draft still equals the accepted config (dirty-check
  * invariant) and save validation blocks the non-conforming value with
  * `validation.allDayRequired`. `timeSlots` is rebuilt from the slot rows
- * every render (the P5 pass-through ends here — Task 3 edits rows).
+ * every render (the P5 pass-through ends here — Task 3 edits rows). `tz`
+ * is a card scalar now: preset rows LOCK it to Asia/Shanghai (their
+ * windows are frozen UTC+8 constants, PR #62 feedback); custom rows follow
+ * the selected timezone.
  */
 function assembleConfig(
   scalars: FallbacksScalars,
   allDayModel: string,
   acceptedRootChain: readonly string[],
+  allDayChainRow: RootChainRow,
   roleRows: readonly RoleRow[],
   ruleRows: readonly RoleRuleRow[],
   originalRoles: readonly FallbacksRole[],
   presets: FallbacksConfig['presets'],
   roleAutoMatch: FallbacksConfig['roleAutoMatch'],
   timeSlotRows: readonly SlotEditorRow[],
-  tz: FallbacksConfig['tz'],
 ): FallbacksConfig {
   const list = mergeRoleExtras(roleRows, originalRoles)
+  const trailingChain = rowsToRootChain([allDayChainRow])
+  const tz = timeSlotRows.some(row => row.kind === 'preset') ? 'Asia/Shanghai' : scalars.tz
   return {
     enabled: scalars.enabled,
     triggerCodes: [...scalars.triggerCodes],
-    rootChain: allDayModel === '' ? [...acceptedRootChain] : [allDayModel],
+    rootChain: allDayModel === '' ? [...acceptedRootChain] : [allDayModel, ...trailingChain],
     roles: { list, rules: rowsToRules(ruleRows) },
     cooldownMs: scalars.cooldownMs,
     revertPolicy: scalars.revertPolicy,
@@ -219,10 +259,7 @@ function assembleConfig(
     ...(presets === undefined ? {} : { presets }),
     roleAutoMatch,
     timeSlots: rowsToTimeSlots(timeSlotRows),
-    // `tz` is config-level (P5) and has no per-slot control this iteration
-    // (spec Settings UX notes — no large tz picker); it rides the accepted
-    // config untouched.
-    ...(tz === undefined ? {} : { tz }),
+    tz,
   }
 }
 
@@ -278,12 +315,13 @@ function validateDraft(
       errors.push(t('validation.roleChainRequired', { id: role.id }))
     }
   }
-  // All-day 2-choose-1 (plan fallbacks-timeslots Task 3, product AC — the
-  // all-day row is required and NOT removable): the chain must be exactly
-  // one official V4 model. An empty default or a legacy multi-model chain
-  // (which rides the draft untouched while the chooser is unselected)
-  // blocks the save — the user picks Flash or Pro.
-  if (draft.rootChain.length !== 1 || (draft.rootChain[0] !== ALL_DAY_FLASH && draft.rootChain[0] !== ALL_DAY_PRO)) {
+  // 默认模型 head (plan fallbacks-timeslots Task 3, product AC — the head
+  // is required and NOT removable; PR #62 feedback round: trailing
+  // 默认降级链 entries are allowed): the chain must START with exactly one
+  // official V4 model. An empty default or a legacy chain with a
+  // non-official head (which rides the draft untouched while the panel is
+  // unselected) blocks the save — the user picks Flash or Pro.
+  if (draft.rootChain.length < 1 || (draft.rootChain[0] !== ALL_DAY_FLASH && draft.rootChain[0] !== ALL_DAY_PRO)) {
     errors.push(t('validation.allDayRequired'))
   }
   for (const entry of draft.rootChain) {
@@ -614,10 +652,12 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
   // next content-changing ready: unsaved drafts are not preserved across
   // the unreachable→ready upgrade.
   const [scalars, setScalars] = useState<FallbacksScalars>(() => scalarsOf(defaultFallbacksConfig))
-  // All-day 2-choose-1 (plan fallbacks-timeslots Task 3): the exclusive
-  // chooser value — the official V4 id, or '' while the accepted chain is
-  // empty/legacy (the draft rides the accepted value until a pick).
+  // 默认模型 head (plan fallbacks-timeslots Task 3; PR #62 feedback round):
+  // the official V4 id, or '' while the accepted chain has no official head
+  // (the draft rides the accepted value until a pick). The 默认降级链 editor
+  // holds the TRAILING entries after that head.
   const [allDayModel, setAllDayModel] = useState<string>(() => allDayModelOf(defaultFallbacksConfig.rootChain))
+  const [allDayChainRow, setAllDayChainRow] = useState<RootChainRow>(() => allDayChainRowOf(defaultFallbacksConfig.rootChain, undefined))
   const [timeSlotRows, setTimeSlotRows] = useState<SlotEditorRow[]>(() => timeSlotsToRows(defaultFallbacksConfig.timeSlots ?? []))
   const [roleRows, setRoleRows] = useState<RoleRow[]>(() => rolesToRows(defaultFallbacksConfig.roles.list))
   const [ruleRows, setRuleRows] = useState<RoleRuleRow[]>(() => rulesToRows(defaultFallbacksConfig.roles.rules))
@@ -639,6 +679,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
     seededConfigKey.current = key
     setScalars(scalarsOf(state.config))
     setAllDayModel(allDayModelOf(state.config.rootChain))
+    setAllDayChainRow(allDayChainRowOf(state.config.rootChain, catalogOf(state)))
     setTimeSlotRows(timeSlotsToRows(state.config.timeSlots ?? [], catalogOf(state)))
     setRoleRows(rolesToRows(state.config.roles.list, catalogOf(state)))
     setRuleRows(rulesToRows(state.config.roles.rules, catalogOf(state)))
@@ -702,12 +743,12 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
 
   const addPresetSlotRow = (): void => {
     if (presetToAdd === '') return
-    setTimeSlotRows(rows => [...rows, { kind: 'preset', preset: presetToAdd, start: '', end: '', days: [], selectors: [] }])
+    setTimeSlotRows(rows => [...rows, { kind: 'preset', preset: presetToAdd, start: '', end: '', days: [], name: '', collapsed: false, selectors: [] }])
     setPresetToAdd('')
   }
 
   const addCustomSlotRow = (): void => {
-    setTimeSlotRows(rows => [...rows, { kind: 'custom', start: '', end: '', days: [], selectors: [] }])
+    setTimeSlotRows(rows => [...rows, { kind: 'custom', start: '', end: '', days: [], name: '', collapsed: false, selectors: [] }])
   }
 
   const removeTimeSlotRow = (index: number): void => {
@@ -724,6 +765,45 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
       next[target] = moved
       return next
     })
+  }
+
+  // Drag-reorder (PR #62 feedback round): HTML5 DnD on the slot row cards —
+  // the dragged index is card-local state (no DataTransfer needed, which
+  // keeps the flow jsdom-testable). The up/down buttons stay as the
+  // keyboard/precise affordance.
+  const [draggedSlotIndex, setDraggedSlotIndex] = useState<number | null>(null)
+  const [overSlotIndex, setOverSlotIndex] = useState<number | null>(null)
+
+  const reorderTimeSlotRow = (from: number, to: number): void => {
+    setTimeSlotRows(rows => {
+      if (from === to || from < 0 || to < 0 || from >= rows.length || to >= rows.length) return rows
+      const next = rows.map(row => ({ ...row }))
+      const [moved] = next.splice(from, 1)
+      next.splice(to, 0, moved!)
+      return next
+    })
+  }
+
+  // 默认降级链 trailing-selector editor (PR #62 feedback round).
+  const updateAllDayChainSelector = (selectorIndex: number, patch: Partial<ChainSelectorRow>): void => {
+    setAllDayChainRow(row => ({
+      ...row,
+      selectors: row.selectors.map((selector, index) => index === selectorIndex ? { ...selector, ...patch } : selector),
+    }))
+  }
+
+  const addAllDayChainSelector = (): void => {
+    setAllDayChainRow(row => ({
+      ...row,
+      selectors: [...row.selectors, { wildcard: false, provider: null, model: null }],
+    }))
+  }
+
+  const removeAllDayChainSelector = (selectorIndex: number): void => {
+    setAllDayChainRow(row => ({
+      ...row,
+      selectors: row.selectors.filter((_, index) => index !== selectorIndex),
+    }))
   }
 
   const updateRoleRow = (index: number, patch: Partial<RoleRow>): void => {
@@ -756,7 +836,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
   }
 
   const addRole = (): void => {
-    setRoleRows(rows => [...rows, { id: '', persona: '', selectors: [], fallback: 'inherit-root' }])
+    setRoleRows(rows => [...rows, { id: '', persona: '', selectors: [], fallback: 'inherit-root', collapsed: false }])
   }
 
   const removeRole = (index: number): void => {
@@ -782,10 +862,10 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
   // A clean legacy draft still equals the accepted config (both carry the
   // key), preserving the dirty-check invariant.
   const draft = assembleConfig(
-    scalars, allDayModel, state.config.rootChain,
+    scalars, allDayModel, state.config.rootChain, allDayChainRow,
     roleRows, ruleRows,
     state.config.roles.list, state.config.presets, scalars.roleAutoMatch,
-    timeSlotRows, state.config.tz,
+    timeSlotRows,
   )
   // Empty rule rows (role still on the "select role" placeholder) never
   // reach the assembled draft — rowsToRules drops them — so validateDraft
@@ -800,13 +880,9 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
   const saving = state.status === 'saving'
   const writable = state.writable
   const unknownCodes = scalars.triggerCodes.filter(code => !KNOWN_TRIGGER_CODES.includes(code))
-  // Compass AC-1: the rootChain hint is conditional — shown only when the
-  // plugin is enabled AND the all-day chain is configured; hidden when off
-  // or unset. "Configured" follows the 2-choose-1 rule: the chooser has a
-  // selection (exactly one official V4 model) — an empty or legacy
-  // non-conforming chain does NOT count (the hint stays hidden until a
-  // model is picked).
-  const rootChainConfigured = allDayModel !== ''
+  // PR #62 feedback round: preset rows lock the tz to UTC+8 / Asia/Shanghai
+  // (frozen windows) — the picker is disabled and the assembled tz is forced.
+  const presetsPresent = timeSlotRows.some(row => row.kind === 'preset')
 
   // The rules role dropdown's offer set — derived ONCE per render and shared
   // by every rule row (qc3 F-3; previously recomputed inside the render
@@ -877,6 +953,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
     if (dirty) return
     catalogSeededEpoch.current = state.catalogEpoch
     setAllDayModel(allDayModelOf(state.config.rootChain))
+    setAllDayChainRow(allDayChainRowOf(state.config.rootChain, catalogOf(state)))
     setTimeSlotRows(timeSlotsToRows(state.config.timeSlots ?? [], catalogOf(state)))
     setRoleRows(rolesToRows(state.config.roles.list, catalogOf(state)))
     setRuleRows(rulesToRows(state.config.roles.rules, catalogOf(state)))
@@ -912,6 +989,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
   const discard = (): void => {
     setScalars(scalarsOf(state.config))
     setAllDayModel(allDayModelOf(state.config.rootChain))
+    setAllDayChainRow(allDayChainRowOf(state.config.rootChain, catalogOf(state)))
     setTimeSlotRows(timeSlotsToRows(state.config.timeSlots ?? [], catalogOf(state)))
     setRoleRows(rolesToRows(state.config.roles.list, catalogOf(state)))
     setRuleRows(rulesToRows(state.config.roles.rules, catalogOf(state)))
@@ -1121,25 +1199,97 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
              * labels the previous per-group legends provided via role="group" +
              * aria-labelledby. */
             <fieldset className={css.fieldset} disabled={!writable}>
-              {/* Extra time-slot rows (plan fallbacks-timeslots Task 3): the
-               * list sits ABOVE the all-day row — first matching row wins,
-               * all-day is always last. Preset rows freeze their windows
-               * (read-only summary; models-only edits); custom rows edit
-               * start/end/days + models. Rows can be removed and reordered
-               * (the all-day row cannot). No `timeSlots.enabled` master
-               * switch — adding a row IS the opt-in (spec Settings UX). */}
+              {/* PR #62 feedback round: the 主代理 (main agent) section
+               * heading groups 分时槽设置 / 默认降级链 / 默认模型 below. */}
+              <div className={css.sectionHeading} id="fallbacks-main-agent">{t('mainAgent.label')}</div>
+              {/* 分时槽设置 (plan fallbacks-timeslots Task 3; PR #62 feedback
+               * round): the extra-row list — first matching row wins, the
+               * all-day (默认降级链) row is always last. Preset rows freeze
+               * their windows (read-only summary; models-only edits); custom
+               * rows edit start/end/days + models. Rows can be removed,
+               * reordered with the buttons, or DRAG-reordered. No
+               * `timeSlots.enabled` master switch — adding a row IS the
+               * opt-in (spec Settings UX). */}
               <div className={css.field} role="group" aria-labelledby="fallbacks-time-slots">
                 <span className={css.fieldLabel}>
                   <span id="fallbacks-time-slots">{t('timeSlots.label')}</span>
                   <InfoHint label={t('timeSlots.tooltip')} disabled={!writable} />
                 </span>
                 <span className={css.hint}>{t('timeSlots.hint')}</span>
+                {/* The tz picker lives INSIDE this block (PR #62 feedback
+                 * round). Preset rows LOCK it to UTC+8 / Asia/Shanghai —
+                 * their windows are frozen UTC+8 constants and never follow
+                 * the host timezone; custom rows follow the selection. */}
+                <div className={css.field}>
+                  <span className={css.ruleCellLabel}>{t('timeSlots.tz.label')}</span>
+                  <select
+                    className={`${css.input} ${css.selectInput}`}
+                    aria-label={t('timeSlots.tz.label')}
+                    value={presetsPresent ? 'Asia/Shanghai' : scalars.tz}
+                    disabled={!writable || presetsPresent}
+                    onChange={event => { updateScalars(draft => { draft.tz = event.target.value }) }}
+                  >
+                    {TZ_OPTIONS.map(tz => <option key={tz} value={tz}>{tz}</option>)}
+                    {scalars.tz !== '' && !(TZ_OPTIONS as readonly string[]).includes(scalars.tz) && (
+                      <option value={scalars.tz}>{scalars.tz}</option>
+                    )}
+                  </select>
+                  <span className={css.hint}>{t('timeSlots.tz.hint')}</span>
+                </div>
                 <div className={css.list}>
                   {timeSlotRows.map((row, index) => {
                     const invalidWindow = invalidSlotRows?.has(index) ?? false
                     const chainEmpty = row.selectors.every(selector => selectorRowToRaw(selector) === '')
+                    const firstModel = row.selectors.map(selectorRowToRaw).find(entry => entry !== '')
                     return (
-                    <div key={index} className={css.editorCard}>
+                    <div
+                      key={index}
+                      className={`${css.editorCard} ${draggedSlotIndex === index ? css.slotCardDragging : ''} ${overSlotIndex === index && draggedSlotIndex !== null && draggedSlotIndex !== index ? css.slotCardOver : ''}`}
+                      draggable={writable && !row.collapsed}
+                      data-tip={t('timeSlots.drag')}
+                      onDragStart={() => {
+                        if (!writable) return
+                        setDraggedSlotIndex(index)
+                        setOverSlotIndex(index)
+                      }}
+                      onDragEnd={() => { setDraggedSlotIndex(null); setOverSlotIndex(null) }}
+                      onDragOver={(event) => {
+                        if (draggedSlotIndex === null) return
+                        event.preventDefault()
+                        if (overSlotIndex !== index) setOverSlotIndex(index)
+                      }}
+                      onDrop={(event) => {
+                        event.preventDefault()
+                        const from = draggedSlotIndex
+                        setDraggedSlotIndex(null)
+                        setOverSlotIndex(null)
+                        if (from !== null && from !== index) reorderTimeSlotRow(from, index)
+                      }}
+                    >
+                      {/* Collapse header (PR #62 feedback round): collapsed
+                       * rows show the row name + its first model only. */}
+                      <div className={css.collapseRow}>
+                        <button
+                          type="button"
+                          className={css.collapseToggle}
+                          aria-expanded={!row.collapsed}
+                          aria-label={t(row.collapsed ? 'timeSlots.expand' : 'timeSlots.collapse')}
+                          disabled={!writable}
+                          onClick={() => { updateTimeSlotRow(index, { collapsed: !row.collapsed }) }}
+                        >
+                          <IconChevronDownOutline14 className={!row.collapsed ? `${css.chevron} ${css.chevronOpen}` : css.chevron} />
+                        </button>
+                        <span className={css.collapseTitle}>
+                          {row.kind === 'preset'
+                            ? t(`timeSlots.preset.${row.preset}.label` as FallbacksKey)
+                            : (row.name !== '' ? row.name : `custom ${row.start}-${row.end}`)}
+                        </span>
+                        {firstModel !== undefined && (
+                          <span className={css.collapseMeta}>{firstModel}</span>
+                        )}
+                      </div>
+                      {!row.collapsed && (
+                      <>
                       {row.kind === 'preset' ? (
                         <>
                           <div className={css.ruleGrid}>
@@ -1157,9 +1307,29 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                             </div>
                           </div>
                           <span className={css.hint}>{t('timeSlots.preset.chainsOnly')}</span>
+                          {(row.preset === 'glm-peak' || row.preset === 'glm-valley') && (
+                            // PR #62 feedback: GLM presets route to
+                            // zai-coding-cn models — the caveat rides both
+                            // GLM preset rows.
+                            <span className={css.hint}>{t('timeSlots.preset.glm.note')}</span>
+                          )}
                         </>
                       ) : (
                         <>
+                          {/* Custom rows carry an editable display name (PR
+                           * #62 feedback round — the collapsed header shows
+                           * it). */}
+                          <div className={css.field}>
+                            <span className={css.ruleCellLabel}>{t('timeSlots.name')}</span>
+                            <input
+                              className={css.input}
+                              value={row.name}
+                              placeholder={t('timeSlots.name')}
+                              aria-label={t('timeSlots.name')}
+                              disabled={!writable}
+                              onChange={event => { updateTimeSlotRow(index, { name: event.target.value }) }}
+                            />
+                          </div>
                           <div className={css.ruleGrid}>
                             <label className={css.ruleCell}>
                               <span className={css.ruleCellLabel}>{t('timeSlots.start')}</span>
@@ -1275,6 +1445,8 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                           </button>
                         </div>
                       </div>
+                      </>
+                      )}
                     </div>
                     )
                   })}
@@ -1315,22 +1487,15 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                 </div>
               </div>
 
+              {/* 默认降级链 (PR #62 feedback round): the all-day fallback
+               * chain as a configurable selector list (add/remove) — the
+               * Flash|Pro panel lives in the separate 默认模型 block below.
+               * The preemption hints are removed. */}
               <div className={css.field} role="group" aria-labelledby="fallbacks-root-chain">
                 <span className={css.fieldLabel}>
                   <span id="fallbacks-root-chain">{t('rootChain.label')}</span>
                   <InfoHint label={t('rootChain.tooltip')} disabled={!writable} />
                 </span>
-                {/* The first line is the section's engagement semantics
-                 * (compass AC-1): the root chain is a safety net that only
-                 * kicks in AFTER the current session's selected model fails —
-                 * it never preempts the session model. */}
-                <span className={css.hint}>{t('rootChain.firstLine')}</span>
-                {/* The prefer-session-model hint is conditional (compass AC-1):
-                 * rendered only when the plugin is enabled AND the chain is
-                 * configured — hidden when off or unset. */}
-                {scalars.enabled && rootChainConfigured && (
-                  <span className={css.hint}>{t('rootChain.hint')}</span>
-                )}
                 {/* Catalog state is an enrichment of the dropdowns, never a blocker:
                  * a failed read (or an empty directory) only adds a hint line and
                  * leaves every other field editable and saveable (spec §2.3 R-3a). */}
@@ -1343,15 +1508,48 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                 {state.catalogStatus === 'ready' && (state.groups.length === 0 || state.configuredProviders.length === 0) && (
                   <span className={css.hint}>{t('catalog.empty')}</span>
                 )}
-                {/* All-day (plan fallbacks-timeslots Task 3): the exclusive
-                 * 2-choose-1 chooser — exactly one official V4 model (Flash
-                 * XOR Pro). NOT a multi-row chain editor, NOT removable,
-                 * and required: an empty or legacy chain reads back with no
-                 * selection plus the nonconforming notice, and save
-                 * validation blocks the value (validation.allDayRequired). */}
                 <div className={css.list}>
                   <div className={css.editorCard}>
-                    <span className={css.hint}>{t('allDay.hint')}</span>
+                    <div className={css.chainSelectors}>
+                      {allDayChainRow.selectors.map((selector, selectorIndex) => (
+                        <ChainSelectorEditor
+                          key={selectorIndex}
+                          selector={selector}
+                          catalog={catalogOf(state)}
+                          configuredProviders={state.configuredProviders}
+                          disabled={!writable}
+                          t={t}
+                          onChange={patch => { updateAllDayChainSelector(selectorIndex, patch) }}
+                          onRemove={() => { removeAllDayChainSelector(selectorIndex) }}
+                        />
+                      ))}
+                    </div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      icon={<IconPlusOutline16 size={14} />}
+                      className={css.addButton}
+                      onClick={addAllDayChainSelector}
+                    >
+                      {t('timeSlots.selector.add')}
+                    </Button>
+                  </div>
+                </div>
+              </div>
+
+              {/* 默认模型 (PR #62 feedback round): the official V4 Flash |
+               * Pro 二选一 panel — the HEAD of the default fallback chain,
+               * separate from the 默认降级链 selector list. Required: an
+               * empty or legacy head reads back with no selection plus the
+               * nonconforming notice, and save validation blocks the value
+               * (validation.allDayRequired). */}
+              <div className={css.field} role="group" aria-labelledby="fallbacks-default-model">
+                <span className={css.fieldLabel}>
+                  <span id="fallbacks-default-model">{t('defaultModel.label')}</span>
+                </span>
+                <span className={css.hint}>{t('allDay.hint')}</span>
+                <div className={css.list}>
+                  <div className={css.editorCard}>
                     <label className={css.optionRow}>
                       <input
                         type="radio"
@@ -1379,6 +1577,9 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                 </div>
               </div>
 
+              {/* PR #62 feedback: the 子代理 (subagents) section heading
+               * groups the roles list + the role rules below. */}
+              <div className={css.sectionHeading} id="fallbacks-subagents">{t('subagents.label')}</div>
               <div className={css.field} role="group" aria-labelledby="fallbacks-roles-list">
                 <span className={css.fieldLabel}>
                   <span id="fallbacks-roles-list">{t('roles.list.label')}</span>
@@ -1411,8 +1612,32 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                     // no longer matches the wire's seed declaration renders
                     // as an ordinary row.
                     const seed = seededIds.get(row.id.trim())
+                    // Collapse summary (PR #62 feedback round): the first
+                    // chain model, or the raw strategy token when the chain
+                    // is empty (inherit-root = the role rides the root
+                    // chain).
+                    const roleFirstModel = row.selectors.map(selectorRowToRaw).find(entry => entry !== '')
+                    const roleSummary = roleFirstModel ?? row.fallback
                     return (
                     <div key={index} className={css.editorCard}>
+                      {/* Collapse header: collapsed roles show id + first
+                       * chain model (or inherit-root / none). */}
+                      <div className={css.collapseRow}>
+                        <button
+                          type="button"
+                          className={css.collapseToggle}
+                          aria-expanded={!row.collapsed}
+                          aria-label={t(row.collapsed ? 'roles.expand' : 'roles.collapse')}
+                          disabled={!writable}
+                          onClick={() => { updateRoleRow(index, { collapsed: !row.collapsed }) }}
+                        >
+                          <IconChevronDownOutline14 className={!row.collapsed ? `${css.chevron} ${css.chevronOpen}` : css.chevron} />
+                        </button>
+                        <span className={css.collapseTitle}>{row.id}</span>
+                        <span className={css.collapseMeta}>{roleSummary}</span>
+                      </div>
+                      {!row.collapsed && (
+                      <>
                       <div className={css.ruleGrid}>
                         <div className={css.ruleCell}>
                           <span className={css.ruleCellLabel}>{t('roles.id')}</span>
@@ -1535,6 +1760,8 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                           <IconTrashOutline16 />
                         </button>
                       </div>
+                      </>
+                      )}
                     </div>
                     )
                   })}
@@ -1591,19 +1818,9 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                     const roleOutside = row.role !== '' && !roleOptions.includes(row.role)
                     return (
                     <div key={index} className={css.editorCard}>
+                      {/* PR #62 feedback: no origin cell — rules are
+                       * subagent-only; a persisted wire `origin` is ignored. */}
                       <div className={css.ruleGrid}>
-                        <label className={css.ruleCell}>
-                          <span className={css.ruleCellLabel}>{t('roles.rule.origin')}</span>
-                          <select
-                            className={`${css.input} ${css.selectInput}`}
-                            value={row.origin}
-                            onChange={event => { updateRuleRow(index, { origin: event.target.value }) }}
-                          >
-                            <option value="">{t('roles.rule.origin.any')}</option>
-                            <option value="root">{t('roles.rule.origin.root')}</option>
-                            <option value="subagent">{t('roles.rule.origin.subagent')}</option>
-                          </select>
-                        </label>
                         <label className={css.ruleCell}>
                           <span className={css.ruleCellLabel}>{t('roles.rule.provider')}</span>
                           <select
@@ -1700,7 +1917,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                   icon={<IconPlusOutline16 size={14} />}
                   className={css.addButton}
                   onClick={() => {
-                    setRuleRows(rows => [...rows, { origin: '', provider: null, model: null, role: '' }])
+                    setRuleRows(rows => [...rows, { provider: null, model: null, role: '' }])
                   }}
                 >
                   {t('roles.addRule')}

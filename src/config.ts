@@ -35,8 +35,14 @@ import type { SlotRowConfig } from './time-slots.ts'
 /** How a cooled-down model comes back (spec §4). */
 export type RevertPolicy = 'cooldown-expiry' | 'never'
 
-/** A single role rule: match on origin/provider/model patterns (spec §3). */
+/** A single role rule: match on provider/model patterns (spec §3). */
 export interface FallbacksRoleRule {
+  /**
+   * Legacy persisted wire field (PR #62 feedback): rules are subagent-only,
+   * so this constraint is IGNORED at match time — root requests never
+   * match rules. Kept in the type/schema so pre-feedback `settings.yaml`
+   * files that carry `origin` still parse, validate, and save unchanged.
+   */
   origin?: 'root' | 'subagent'
   provider?: string
   model?: string
@@ -114,7 +120,7 @@ export interface FallbacksConfig {
   /**
    * Extra time-slot rows (plan fallbacks-timeslots Task 1, P5): the FIRST
    * matching row's chain becomes the effective root chain at request time;
-   * `rootChain` (the all-day 2-choose-1 field) is always the last row.
+   * `rootChain` (the all-day chain) is always the last row.
    * Optional on purpose, mirroring `presets` — additive, non-breaking for
    * library consumers. Malformed rows warn once and are skipped by the
    * resolver; the gateway rejects them on save (Task 3).
@@ -224,15 +230,16 @@ export function validateFallbacksConfig(config: FallbacksConfig, logger: Fallbac
       )
     }
   }
-  // P6: `rootChain` is the all-day 2-choose-1 field — exactly one official
-  // V4 model (Flash XOR Pro). A non-empty non-conforming chain (e.g. a
-  // legacy multi-model chain) earns ONE startup warn; slot rows stay inert
-  // and the virtual picker row stays hidden until it conforms (the v0.2.2
-  // failure walk over the raw chain keeps working verbatim). The empty
+  // P6: `rootChain` is the all-day chain — its HEAD must be exactly one
+  // official V4 model (Flash XOR Pro; trailing entries allowed). A
+  // non-empty chain with a non-official head (e.g. a legacy multi-model
+  // chain) earns ONE startup warn; slot rows stay inert and the virtual
+  // picker row refuses override/delegate until the head conforms (the
+  // v0.2.2 failure walk over the raw chain keeps working verbatim). The empty
   // default ("no degradation") stays quiet.
   if (config.rootChain.length > 0 && !isAllDayConforming(config.rootChain)) {
     logger.warn(
-      'llm-fallbacks: rootChain must be exactly one official V4 model (deepseek-official/deepseek-v4-flash or deepseek-official/deepseek-v4-pro) — time-slot rows are inert until the all-day chain conforms',
+      'llm-fallbacks: rootChain must start with exactly one official V4 model (deepseek-official/deepseek-v4-flash or deepseek-official/deepseek-v4-pro) — time-slot rows and the virtual picker row stay inert until the all-day chain head conforms',
     )
   }
   for (const entry of config.rootChain) {

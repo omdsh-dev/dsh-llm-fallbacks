@@ -359,15 +359,18 @@ describe('rootChain/role/rule row editors (pure round-trips)', () => {
   })
 
   it('round-trips role rules through rows; empty optional fields drop out', () => {
+    // PR #62 feedback: the editor rows carry no origin (rules are
+    // subagent-only); a persisted wire `origin` on the source rules is
+    // ignored by the row projection.
     const rules = [
       { origin: 'subagent' as const, provider: 'openai', model: '', role: 'reviewer' },
-      { origin: undefined, provider: undefined, model: undefined, role: 'default' },
+      { provider: undefined, model: undefined, role: 'default' },
     ]
     const rows = rulesToRows(rules)
-    expect(rows[0]).toEqual({ origin: 'subagent', provider: { kind: 'outside', raw: 'openai' }, model: null, role: 'reviewer' })
-    expect(rows[1]).toEqual({ origin: '', provider: null, model: null, role: 'default' })
+    expect(rows[0]).toEqual({ provider: { kind: 'outside', raw: 'openai' }, model: null, role: 'reviewer' })
+    expect(rows[1]).toEqual({ provider: null, model: null, role: 'default' })
     expect(rowsToRules(rows)).toEqual([
-      { origin: 'subagent', provider: 'openai', role: 'reviewer' },
+      { provider: 'openai', role: 'reviewer' },
       { role: 'default' },
     ])
   })
@@ -397,8 +400,11 @@ describe('rootChain/role/rule row editors (pure round-trips)', () => {
           { wildcard: true, provider: { kind: 'outside', raw: 'openai' }, model: null },
         ],
         fallback: 'none',
+        // UI-only collapse state (PR #62 feedback round) — rows start
+        // expanded and the flag never serializes back.
+        collapsed: false,
       },
-      { id: 'architect', persona: '', selectors: [], fallback: 'inherit-root' },
+      { id: 'architect', persona: '', selectors: [], fallback: 'inherit-root', collapsed: false },
     ])
     expect(rowsToRoles(rows)).toEqual(roles)
   })
@@ -534,14 +540,16 @@ describe('catalog classification (spec §2.5 D-3)', () => {
   })
 
   it('round-trips role rules with outside values losslessly', () => {
+    // PR #62 feedback: the editor drops the legacy `origin` field — a
+    // persisted `origin: root` rule re-serializes WITHOUT it.
     const catalog = catalogFixture()
     const rules = [
-      { origin: 'root' as const, provider: 'other', model: 'gpt-4o', role: 'x' },
+      { provider: 'other', model: 'gpt-4o', role: 'x' },
       { role: 'y', provider: 'openai', model: 'gpt-4o' },
     ]
     const rows = rulesToRows(rules, catalog)
-    expect(rows[0]).toEqual({ origin: 'root', provider: { kind: 'outside', raw: 'other' }, model: { kind: 'outside', raw: 'gpt-4o' }, role: 'x' })
-    expect(rows[1]).toEqual({ origin: '', provider: { kind: 'catalog', id: 'openai' }, model: { kind: 'catalog', id: 'gpt-4o' }, role: 'y' })
+    expect(rows[0]).toEqual({ provider: { kind: 'outside', raw: 'other' }, model: { kind: 'outside', raw: 'gpt-4o' }, role: 'x' })
+    expect(rows[1]).toEqual({ provider: { kind: 'catalog', id: 'openai' }, model: { kind: 'catalog', id: 'gpt-4o' }, role: 'y' })
     expect(rowsToRules(rows)).toEqual(rules)
   })
 

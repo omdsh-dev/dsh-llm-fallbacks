@@ -49,6 +49,9 @@ export const Config = z.object({
       rules: z
         .array(
           z.object({
+            // Legacy wire field (PR #62 feedback): accepted so pre-feedback
+            // configs parse/save unchanged; ignored at match time — rules
+            // are subagent-only.
             origin: z.union([z.const('root'), z.const('subagent')]),
             provider: z.string(),
             model: z.string(),
@@ -72,7 +75,7 @@ export const Config = z.object({
   // carries `roleAutoMatch: true` and every resolved config has a value.
   roleAutoMatch: z.boolean().default(true),
   // 11th/12th fields (plan fallbacks-timeslots Task 1, P5): extra time-slot
-  // rows (the all-day 2-choose-1 chain keeps `rootChain`'s name) and the
+  // rows (the all-day chain keeps `rootChain`'s name) and the
   // config-level timezone. The row shape is deliberately PERMISSIVE (plain
   // strings, no const unions) — malformed rows (bad kind/preset/window)
   // must WARN at load and be skipped by the resolver, never fail schema

@@ -1,19 +1,23 @@
 /**
- * Virtual `fallbacks/FallbacksChain` LLM adapter (plan fallbacks-virtual-chain
- * Task 1, technical pins P1–P3): a mount-only catalog row that makes the
- * configured effective chain selectable as the session **primary** in the
- * host model picker, without patching dsh or dsh-TUI (web and TUI share the
- * adapter catalog).
+ * Virtual `FallbacksChain/自动选择` LLM adapter (plan fallbacks-virtual-chain
+ * Task 1, technical pins P1–P3; PR #62 feedback round): a mount-only
+ * catalog row that makes the configured effective chain selectable as the
+ * session **primary** in the host model picker, without patching dsh or
+ * dsh-TUI (web and TUI share the adapter catalog).
  *
  * Wiring (P2): `installFallbacksAdapter` installs ONE conditional
  * `ctx.inject(['llm'])` child — absent `llm` service (test harness) is a
  * clean no-op, and fiber unload ⇒ the child's disposer unregisters the
  * route. Registration is an idempotent transition-reconcile on COMMITTED
- * config snapshots: register only on `enabled && isAllDayConforming(...)`
- * false→true, unregister only on true→false, driven by the settings
- * `onChange` hook (the returned reconcile thunk, wired by `apply()`) plus
- * child activation. The condition deliberately ignores `timeSlots`, so
- * slot-row edits never churn registration.
+ * config snapshots: register on `enabled` false→true, unregister on
+ * true→false, driven by the settings `onChange` hook (the returned
+ * reconcile thunk, wired by `apply()`) plus child activation. The row is
+ * visible whenever the plugin is enabled — a non-conforming all-day chain
+ * does NOT hide it (PR #62 feedback); conformance still gates a
+ * successful override/delegate (`effectiveHeadOf` below refuses a
+ * non-conforming all-day). The condition deliberately ignores `timeSlots`
+ * and conformance, so slot-row edits and chain edits never churn
+ * registration.
  *
  * Adapter behavior (P1/P3): `listModels` advertises exactly the one virtual
  * row; `stream()` is a THIN single-hop delegate to the effective chain head
@@ -42,9 +46,9 @@ import { parseSelector, type Selector } from './selectors.ts'
 import { isAllDayConforming, resolveEffectiveChain } from './time-slots.ts'
 
 /** Provider route of the virtual adapter (exact string, spec lock). */
-export const FALLBACKS_PROVIDER = 'fallbacks'
+export const FALLBACKS_PROVIDER = 'FallbacksChain'
 /** Model id of the virtual catalog row (exact string, spec lock). */
-export const FALLBACKS_CHAIN_MODEL = 'FallbacksChain'
+export const FALLBACKS_CHAIN_MODEL = '自动选择'
 
 /**
  * `LlmError` code: the effective chain is empty — the virtual route has no
@@ -53,8 +57,8 @@ export const FALLBACKS_CHAIN_MODEL = 'FallbacksChain'
 export const EMPTY_EFFECTIVE_CHAIN_CODE = 'EMPTY_EFFECTIVE_CHAIN'
 /**
  * `LlmError` code: the effective chain head is not a dispatchable real pair
- * (wildcard selector, malformed selector, or a self-route back to
- * `fallbacks/*` — the P1 recursion guard).
+ * (non-conforming all-day, wildcard selector, malformed selector, or a
+ * self-route back to `FallbacksChain/*` — the P1 recursion guard).
  */
 export const UNDISPATCHABLE_HEAD_CODE = 'UNDISPATCHABLE_EFFECTIVE_HEAD'
 /** `LlmError` code (defensive): the `llm` runtime disappeared mid-flight. */
@@ -72,9 +76,9 @@ export interface EffectiveHead {
  * (`src/index.ts`) and the virtual adapter's delegate paths. Walks the SAME
  * chain `resolveEffectiveChain` produces, skipping entries that can never
  * be dispatched: malformed selectors (config-warning path), `provider/*`
- * wildcards (no real pair), and self-routes back to `fallbacks/*` (the P1
- * recursion guard). `undefined` when the chain is empty or no entry is
- * dispatchable.
+ * `provider/*` wildcards (no real pair), and self-routes back to
+ * `FallbacksChain/*` (the P1 recursion guard). `undefined` when the chain
+ * is empty or no entry is dispatchable.
  */
 export function firstDispatchableExactHead(chain: readonly string[]): EffectiveHead | undefined {
   for (const entry of chain) {
@@ -96,10 +100,18 @@ export function firstDispatchableExactHead(chain: readonly string[]): EffectiveH
  * of the SAME `resolveEffectiveChain` the routing engine uses — thin
  * config+clock entry into the shared {@link firstDispatchableExactHead} (no
  * divergent skip/walk rules). `undefined` when the chain is empty or no
- * entry is dispatchable (wildcard, self-route to `fallbacks/*`, malformed
- * selector).
+ * entry is dispatchable (wildcard, self-route to `FallbacksChain/*`,
+ * malformed selector).
+ *
+ * Conformance gate (PR #62 feedback): the all-day `rootChain` must be
+ * conforming (exactly one official V4 model) for a successful delegate —
+ * a legacy multi-model (or empty) all-day chain earns no primary
+ * semantics even though the picker row is visible. `resolveModel` then
+ * falls back to the permissive default and `stream()` throws
+ * {@link UNDISPATCHABLE_HEAD_CODE}.
  */
 function effectiveHeadOf(config: FallbacksConfig, now: Date): EffectiveHead | undefined {
+  if (!isAllDayConforming(config.rootChain)) return undefined
   const chain = resolveEffectiveChain(config, now, config.tz ?? 'Asia/Shanghai')
   return firstDispatchableExactHead(chain)
 }
@@ -118,9 +130,9 @@ class FallbacksChainAdapter extends LlmAdapter {
     super()
   }
 
-  /** Minimal honest descriptor (P3). */
+  /** Minimal honest descriptor (P3) — the provider route IS the display name. */
   override providerInfo(provider: string) {
-    return { id: provider, name: 'Fallbacks' }
+    return { id: provider, name: FALLBACKS_PROVIDER }
   }
 
   /** Advisory catalog: exactly the one virtual row (P1). */
@@ -184,7 +196,7 @@ class FallbacksChainAdapter extends LlmAdapter {
     const head = effectiveHeadOf(config, now)
     if (head === undefined) {
       throw new LlmError(
-        'llm-fallbacks: the effective chain head cannot be dispatched (wildcard, malformed, or self-route) — refusing to delegate',
+        'llm-fallbacks: the effective chain head cannot be dispatched (non-conforming all-day, wildcard, malformed, or self-route) — refusing to delegate',
         UNDISPATCHABLE_HEAD_CODE,
       )
     }
@@ -221,13 +233,17 @@ export function installFallbacksAdapter(ctx: Context, readConfig: () => Fallback
 
   const reconcile = () => {
     const config = readConfig()
-    const shouldRegister = config.enabled && isAllDayConforming(config.rootChain)
+    // PR #62 feedback: the row is visible whenever the plugin is enabled —
+    // conformance of the all-day chain is NOT part of registration (a
+    // legacy/empty chain still earns the row; the override/delegate paths
+    // refuse it via `effectiveHeadOf`).
+    const shouldRegister = config.enabled
     if (shouldRegister && !registered) {
       if (llm === undefined) return
       try {
         disposeAdapter = llm.registerAdapter([FALLBACKS_PROVIDER], adapter)
         registered = true
-        logger.info('llm-fallbacks: virtual adapter registered — FallbacksChain is selectable in the model picker')
+        logger.info('llm-fallbacks: virtual adapter registered — FallbacksChain/自动选择 is selectable in the model picker')
       } catch (error) {
         // Multi-fiber dedupe (P2, mirroring the service/gateway/typert
         // children): a later fiber applying over a shared context root hits
@@ -242,7 +258,7 @@ export function installFallbacksAdapter(ctx: Context, readConfig: () => Fallback
       disposeAdapter?.()
       disposeAdapter = undefined
       registered = false
-      logger.info('llm-fallbacks: virtual adapter unregistered — FallbacksChain hidden from the model picker')
+      logger.info('llm-fallbacks: virtual adapter unregistered — FallbacksChain/自动选择 hidden from the model picker')
     }
   }
 

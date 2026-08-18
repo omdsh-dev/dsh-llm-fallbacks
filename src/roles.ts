@@ -9,8 +9,13 @@
  * `session.header.agentPreset?` carrier for that explicit stage.
  *
  * Precedence (first hit wins):
- * 1. the first `rules` entry whose specified origin/provider/model patterns
- *    all match the agent;
+ * 1. the first `rules` entry whose specified provider/model patterns match
+ *    the agent — rules are SUBAGENT-ONLY (PR #62 feedback): a root-origin
+ *    agent never matches rules and resolves straight to the built-in
+ *    `'inherit'` (→ `rootChain`). The legacy per-rule `origin` field (a
+ *    pre-feedback config may still carry `origin: root|subagent`) is
+ *    IGNORED at match time — every rule applies to subagents regardless
+ *    of the stored origin value;
  * 2. the built-in `'inherit'` role (no-rule-match default, spec §7.1 / D4).
  *
  * A matched rule must target a declared role id (`roleIds`, derived from
@@ -27,8 +32,9 @@
  * (`' coder '`) with a trimmed rule reference (`'coder'`) resolves to the
  * same role instead of silently degrading to `'inherit'`.
  *
- * A missing agent origin is treated as `'root'`. Origin is read from
- * `session.header.origin` — a native `SessionHeader` field the store folds
+ * A missing agent origin is treated as `'root'` — and root agents never
+ * match rules (rules are subagent-only, PR #62 feedback). Origin is read
+ * from `session.header.origin` — a native `SessionHeader` field the store folds
  * from `CreateSessionOptions.meta.origin` (`packages/core/session/src/
  * index.ts:884`); subagent children set it via `childSessionMeta`
  * (`packages/subagent/subagent/src/child-agent.ts:115`), root agents carry
@@ -45,7 +51,8 @@ import { INHERIT_ROLE_ID, type FallbacksRoleRule } from './config.ts'
 
 export type { FallbacksRoleRule } from './config.ts'
 
-/** Agent origins understood by role rules (spec §3). */
+/** Agent origins (spec §3) — an agent property, not a rule constraint:
+ * rules are subagent-only (PR #62 feedback). */
 export type Origin = 'root' | 'subagent'
 
 /** Loose agent shape sufficient for role resolution (spec §3 / brief). */
@@ -87,8 +94,13 @@ export function resolveRole(
   warn: (message: string) => void = console.warn,
 ): string {
   const origin = agent.session?.header?.origin ?? 'root'
+  // PR #62 feedback: rules are subagent-only. Root requests never match
+  // rules (they resolve to the built-in 'inherit' → rootChain), and the
+  // legacy per-rule `origin` field is ignored — a persisted `origin: root`
+  // rule does not make root match, and a persisted `origin: subagent`
+  // constraint does not restrict a subagent.
+  if (origin !== 'subagent') return INHERIT_ROLE_ID
   for (const rule of rules) {
-    if (rule.origin && rule.origin !== origin) continue
     if (rule.provider && rule.provider !== agent.options?.provider) continue
     if (rule.model && rule.model !== agent.options?.model) continue
     const target = rule.role.trim()

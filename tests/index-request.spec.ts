@@ -3,17 +3,20 @@
  *
  * At `agent/request` — after `await next()` and AFTER pending-switch
  * application (a failure decision always wins) — a ROOT-origin seed of
- * `fallbacks/FallbacksChain` (the virtual picker row) overrides to the
+ * `FallbacksChain/自动选择` (the virtual picker row) overrides to the
  * FIRST EXACT head of the effective chain, via the existing
  * `overrideConfig` path. The effective chain comes from
  * `resolveEffectiveChain` (src/time-slots.ts) — the single source: the
  * winning slot row's chain replaces the all-day chain, and there is NO
  * `rootChain[0]` fallback branch here. `provider/*` wildcards are never
  * seeds; a wildcard-only (or empty) effective chain yields one warn and no
- * override. Any real catalog model selection keeps v0.2.2 fallback-only
- * semantics (no override). Subagent-origin seeds that still carry the
- * virtual pair are NOT overridden here — P1's thin `stream()` delegate
- * handles them.
+ * override. A non-conforming all-day rootChain (empty or legacy
+ * multi-model) also yields one warn and no override (PR #62 feedback —
+ * the row is visible whenever enabled, but conformance is still required
+ * for a successful primary). Any real catalog model selection keeps
+ * v0.2.2 fallback-only semantics (no override). Subagent-origin seeds that
+ * still carry the virtual pair are NOT overridden here — P1's thin
+ * `stream()` delegate handles them.
  *
  * Uses the real plugin `apply()` against the harness fake agent/session —
  * no LLM runtime needed (this override is pure routing; the virtual
@@ -146,14 +149,24 @@ describe('select-is-primary routing (P3)', () => {
     expect(logs.some((message) => message.type === 'warn' && String(message.args[0]).includes('no exact head'))).toBe(true)
   })
 
-  it('warns once and skips when the effective chain is empty', async () => {
+  it('warns once and skips when the all-day chain is empty (non-conforming, PR #62 feedback)', async () => {
     const logs = captureLogs()
     const { agent } = makeAgent('t2-empty', { provider: 'mock', model: 'gpt-4o' }, { origin: 'root' })
     apply(ctx, cfg({ rootChain: [] }))
 
     const config = await dispatchRequest(ctx, agent, virtualSeed)
     expect(config).toEqual(virtualSeed)
-    expect(logs.some((message) => message.type === 'warn' && String(message.args[0]).includes('no exact head'))).toBe(true)
+    expect(logs.some((message) => message.type === 'warn' && String(message.args[0]).includes('not conforming'))).toBe(true)
+  })
+
+  it('does not override for a legacy multi-model all-day chain (conformance gate, PR #62 feedback)', async () => {
+    const logs = captureLogs()
+    const { agent } = makeAgent('t2-legacy', { provider: 'mock', model: 'gpt-4o' }, { origin: 'root' })
+    apply(ctx, cfg({ rootChain: ['other/gpt-4o', 'other/gpt-5'] }))
+
+    const config = await dispatchRequest(ctx, agent, virtualSeed)
+    expect(config).toEqual(virtualSeed)
+    expect(logs.some((message) => message.type === 'warn' && String(message.args[0]).includes('not conforming'))).toBe(true)
   })
 
   it('a pending failure switch wins over the FallbacksChain primary (detection after pending-switch application)', async () => {

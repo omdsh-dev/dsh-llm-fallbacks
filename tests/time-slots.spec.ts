@@ -157,17 +157,18 @@ describe('resolveEffectiveChain — all-day last', () => {
   })
 })
 
-describe('isAllDayConforming — official V4 Flash XOR Pro, length 1', () => {
-  it('accepts exactly one official V4 model', () => {
+describe('isAllDayConforming — official V4 Flash XOR Pro head (PR #62 feedback round)', () => {
+  it('accepts an official V4 head, with or without trailing fallback entries', () => {
     expect(isAllDayConforming([OFFICIAL_V4_FLASH])).toBe(true)
     expect(isAllDayConforming([OFFICIAL_V4_PRO])).toBe(true)
+    expect(isAllDayConforming([OFFICIAL_V4_FLASH, 'openai/gpt-4o'])).toBe(true)
+    expect(isAllDayConforming([OFFICIAL_V4_PRO, OFFICIAL_V4_FLASH, 'openai/gpt-4o'])).toBe(true)
   })
 
-  it('rejects empty, multi-model, and non-official chains', () => {
+  it('rejects empty chains and chains whose head is not an official V4 model', () => {
     expect(isAllDayConforming([])).toBe(false)
-    expect(isAllDayConforming([OFFICIAL_V4_FLASH, OFFICIAL_V4_PRO])).toBe(false)
-    expect(isAllDayConforming([OFFICIAL_V4_FLASH, 'openai/gpt-4o'])).toBe(false)
     expect(isAllDayConforming(['openai/gpt-4o'])).toBe(false)
+    expect(isAllDayConforming(['openai/gpt-4o', 'anthropic/claude-3-5-sonnet'])).toBe(false)
     expect(isAllDayConforming(['deepseek-official/deepseek-v4-ultra'])).toBe(false)
   })
 })
@@ -394,7 +395,7 @@ describe('validateFallbacksConfig — time-slot guards (P4/P6)', () => {
     }, logger)
     const messages = messagesOf({ warn: logger.warn })
     expect(messages).toHaveLength(1)
-    expect(messages[0]).toContain('rootChain must be exactly one official V4 model')
+    expect(messages[0]).toContain('rootChain must start with exactly one official V4 model')
   })
 
   it('does not warn for a conforming all-day chain or the empty default', () => {

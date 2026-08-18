@@ -273,6 +273,17 @@
   color: var(--dsw-alias-label-secondary);
 }
 
+/* PR #62 feedback: static section headings (主代理 / 子代理) that group
+   related fields — field-label typography on the primary label color, with
+   the section-toggle vertical rhythm. No disclosure interaction. */
+.sectionHeading {
+  padding: 4px 0;
+  font-size: 12px;
+  line-height: 18px;
+  font-weight: 600;
+  color: var(--dsw-alias-label-primary);
+}
+
 /* The advanced-section disclosure: a full-width quiet button at the
    field-label typography, mirroring the card header's chevron interaction
    (hover brighten, brand focus ring). The section body is the
@@ -576,6 +587,60 @@ select.input {
   gap: 4px;
   min-width: 120px;
   flex: 1;
+}
+
+/* Collapsible row/panel headers (PR #62 feedback round): a quiet chevron
+   toggle + the collapsed summary (name/id + first model) on one line. */
+.collapseRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.collapseToggle {
+  appearance: none;
+  border: 0;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+  color: var(--dsw-alias-label-secondary);
+  display: inline-flex;
+  align-items: center;
+}
+
+.collapseToggle:disabled {
+  cursor: default;
+}
+
+.collapseTitle {
+  font-size: 12px;
+  line-height: 18px;
+  font-weight: 500;
+  color: var(--dsw-alias-label-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.collapseMeta {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Drag-reorder (PR #62 feedback round): the dragged slot card dims, the
+   drop target gets a dashed brand outline. */
+.slotCardDragging {
+  opacity: 0.45;
+}
+
+.slotCardOver {
+  outline: 1px dashed var(--dsw-alias-brand-primary);
+  outline-offset: 2px;
 }
 
 .ruleCellLabel {

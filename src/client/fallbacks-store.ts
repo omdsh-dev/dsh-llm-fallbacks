@@ -261,6 +261,9 @@ export function parseFallbacksConfig(value: unknown): FallbacksConfig {
     if (!isRecord(rule) || typeof rule.role !== 'string') {
       throw new TypeError(`fallbacks descriptor roles.rules[${String(index)}] must have a string role`)
     }
+    // Legacy wire field (PR #62 feedback): accepted for config
+    // compatibility (pre-feedback settings.yaml may carry it) but ignored
+    // at match time — rules are subagent-only.
     const origin = rule.origin
     if (origin !== undefined && origin !== 'root' && origin !== 'subagent') {
       throw new TypeError(`fallbacks descriptor roles.rules[${String(index)}].origin must be root|subagent`)
@@ -556,6 +559,10 @@ export interface SlotEditorRow {
   end: string
   /** Custom rows: day mask 0=Sunday…6=Saturday; [] = every day. */
   days: number[]
+  /** Custom rows: display name (PR #62 feedback round — collapsed rows). */
+  name: string
+  /** UI-only collapse state — never serialized (dropped by rowsToTimeSlots). */
+  collapsed: boolean
   selectors: ChainSelectorRow[]
 }
 
@@ -567,6 +574,8 @@ export function timeSlotsToRows(timeSlots: readonly SlotRowConfig[], catalog?: C
     start: row.start ?? '',
     end: row.end ?? '',
     days: [...(row.days ?? [])],
+    name: row.name ?? '',
+    collapsed: false,
     selectors: (row.chain ?? []).map(entry => entryToSelectorRow(entry, catalog)),
   }))
 }
@@ -590,6 +599,7 @@ export function rowsToTimeSlots(rows: readonly SlotEditorRow[]): SlotRowConfig[]
       start: row.start,
       end: row.end,
       days: row.days,
+      ...(row.name === '' ? {} : { name: row.name }),
       chain,
     }
   })
@@ -606,6 +616,8 @@ export interface RoleRow {
   persona: string
   selectors: ChainSelectorRow[]
   fallback: FallbackStrategy
+  /** UI-only collapse state — never serialized (dropped by rowsToRoles). */
+  collapsed: boolean
 }
 
 /** Project the declared roles into editable rows (chain selectors classified). */
@@ -615,6 +627,7 @@ export function rolesToRows(roles: readonly FallbacksRole[], catalog?: CatalogLo
     persona: role.persona,
     selectors: (role.chain ?? []).map(entry => entryToSelectorRow(entry, catalog)),
     fallback: role.fallback ?? 'inherit-root',
+    collapsed: false,
   }))
 }
 
@@ -688,9 +701,11 @@ export function detectLegacyClientKeys(config: FallbacksConfig): string[] {
   return keys
 }
 
-/** One role-rule row in the editor; empty origin means "any". */
+/**
+ * One role-rule row in the editor (PR #62 feedback: no origin control —
+ * rules are subagent-only; a persisted wire `origin` is ignored).
+ */
 export interface RoleRuleRow {
-  origin: string
   provider: CatalogSelection
   model: CatalogSelection
   role: string
@@ -699,18 +714,16 @@ export interface RoleRuleRow {
 /** Project the role rules into editable rows (provider/model classified). */
 export function rulesToRows(rules: readonly FallbacksRoleRule[], catalog?: CatalogLookup): RoleRuleRow[] {
   return rules.map(rule => ({
-    origin: rule.origin ?? '',
     provider: classifyProvider(rule.provider ?? '', catalog),
     model: classifyModel(rule.provider ?? '', rule.model ?? '', catalog),
     role: rule.role,
   }))
 }
 
-/** Rebuild the role rules from edited rows; empty origin/provider/model drop out. */
+/** Rebuild the role rules from edited rows; empty provider/model drop out. */
 export function rowsToRules(rows: readonly RoleRuleRow[]): FallbacksRoleRule[] {
   return rows
     .map(row => ({
-      ...(row.origin === '' ? {} : { origin: row.origin as 'root' | 'subagent' }),
       ...(row.provider === null ? {} : { provider: selectionToRaw(row.provider) }),
       ...(row.model === null ? {} : { model: selectionToRaw(row.model) }),
       role: row.role.trim(),

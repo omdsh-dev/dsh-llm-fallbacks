@@ -135,13 +135,15 @@ const ROLES_KEYS: Record<string, true> = {
 }
 
 /** Declared nested keys of one `timeSlots` row — anything else is rejected
- * (plan fallbacks-timeslots Task 3, the `ROLES_KEYS` pattern). */
+ * (plan fallbacks-timeslots Task 3, the `ROLES_KEYS` pattern; `name` is the
+ * custom-row display name, PR #62 feedback round). */
 const SLOT_ROW_KEYS: Record<string, true> = {
   kind: true,
   preset: true,
   start: true,
   end: true,
   days: true,
+  name: true,
   chain: true,
 }
 
@@ -384,7 +386,7 @@ function normalizeRoles(value: unknown): unknown {
  * guards the permissive schema deliberately does not carry: nested `roles`
  * keys, `timeSlots` row shapes (unknown preset ids, duplicate presets, preset
  * rows carrying windows, non-`HH:mm` custom bounds, out-of-range days, empty
- * chains), and the all-day 2-choose-1 `rootChain` conformance.
+ * chains), and the all-day `rootChain` head conformance.
  */
 function validateConfigPatch(patch: unknown): void {
   if (patch === null || typeof patch !== 'object' || Array.isArray(patch)) {
@@ -426,16 +428,18 @@ function validateConfigPatch(patch: unknown): void {
         validateTimeSlotsPatch(rows)
       }
     }
-    // All-day 2-choose-1 (P6 save gate): `rootChain` is exactly one official
-    // V4 model — Flash XOR Pro. An empty default or a legacy multi-model
-    // chain is rejected on save (the card forces the pick; hand-written YAML
-    // stays warn-only at load). `null` is the wire's "absent" signal and is
-    // dropped by the caller's normalization — not validated.
+    // All-day head gate (P6 save gate; PR #62 feedback round): `rootChain`
+    // must START with exactly one official V4 model — Flash XOR Pro (the
+    // card's 默认模型 panel); trailing entries (默认降级链) are allowed. An
+    // empty default or a chain whose head is not official is rejected on
+    // save (the card forces the pick; hand-written YAML stays warn-only at
+    // load). `null` is the wire's "absent" signal and is dropped by the
+    // caller's normalization — not validated.
     if (key === 'rootChain') {
       const chain = (patch as Record<string, unknown>)[key]
       if (chain !== null && chain !== undefined && (!Array.isArray(chain) || !isAllDayConforming(chain))) {
         throw new Error(
-          'dsh-llm-fallbacks: rootChain must be exactly one official V4 model (deepseek-official/deepseek-v4-flash or deepseek-official/deepseek-v4-pro)',
+          'dsh-llm-fallbacks: rootChain must start with exactly one official V4 model (deepseek-official/deepseek-v4-flash or deepseek-official/deepseek-v4-pro)',
         )
       }
     }
@@ -488,6 +492,9 @@ function validateTimeSlotsPatch(rows: unknown): void {
           `dsh-llm-fallbacks: ${at} preset "${preset}" cannot carry start/end/days — preset windows are frozen code constants`,
         )
       }
+      if (record.name !== undefined) {
+        throw new Error(`dsh-llm-fallbacks: ${at} preset "${preset}" cannot carry a name — preset rows are named by the frozen label`)
+      }
     } else if (record.kind === 'custom') {
       const { start, end } = record
       if (typeof start !== 'string' || typeof end !== 'string' || !SLOT_HHMM_RE.test(start) || !SLOT_HHMM_RE.test(end)) {
@@ -499,6 +506,9 @@ function validateTimeSlotsPatch(rows: unknown): void {
         if (!Array.isArray(record.days) || record.days.some(day => !Number.isInteger(day) || day < 0 || day > 6)) {
           throw new Error(`dsh-llm-fallbacks: ${at}.days must be an array of integers 0–6`)
         }
+      }
+      if (record.name !== undefined && typeof record.name !== 'string') {
+        throw new Error(`dsh-llm-fallbacks: ${at}.name must be a string`)
       }
     } else {
       throw new Error(`dsh-llm-fallbacks: ${at}.kind must be "preset" or "custom" (got ${JSON.stringify(record.kind)})`)

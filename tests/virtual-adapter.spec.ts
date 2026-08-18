@@ -1,10 +1,12 @@
 /**
- * Virtual `fallbacks/FallbacksChain` adapter tests (plan fallbacks-virtual-chain
- * Task 1): the P2 registration lifecycle (listed iff enabled + conforming
- * all-day; idempotent transition-reconcile; multi-fiber dedupe; slot edits
- * never churn) and the P1/P3 adapter contract (one catalog row; `stream()`
- * is a thin head-delegate through the host LLM runtime; `resolveModel`
- * proxies the current effective head with a permissive fallback).
+ * Virtual `FallbacksChain/自动选择` adapter tests (plan fallbacks-virtual-chain
+ * Task 1; PR #62 feedback round): the P2 registration lifecycle (listed
+ * whenever enabled — conformance is NOT part of registration; idempotent
+ * transition-reconcile; multi-fiber dedupe; slot/chain edits never churn)
+ * and the P1/P3 adapter contract (one catalog row; `stream()` is a thin
+ * head-delegate through the host LLM runtime, gated on a conforming
+ * all-day; `resolveModel` proxies the current effective head with a
+ * permissive fallback).
  *
  * Runs against the REAL `LlmRuntime` (`@deepseek-ai/dsh-llm`) with a stub
  * head adapter for `deepseek-official`, so the registration boundary, the
@@ -95,12 +97,12 @@ afterEach(async () => {
 })
 
 describe('registration lifecycle (P2)', () => {
-  it('registers the virtual route iff enabled + conforming all-day', async () => {
+  it('registers the virtual route whenever enabled (conformance-independent)', async () => {
     apply(ctx, cfg({ rootChain: [OFFICIAL_V4_FLASH] }))
     await vi.waitFor(() => expect(listed()).toBe(true))
     expect(ctx.llm.listProviders().find((provider) => provider.id === FALLBACKS_PROVIDER)).toEqual({
       id: FALLBACKS_PROVIDER,
-      name: 'Fallbacks',
+      name: 'FallbacksChain',
     })
   })
 
@@ -109,14 +111,14 @@ describe('registration lifecycle (P2)', () => {
     expect(listed()).toBe(false)
   })
 
-  it('hides the row for an empty all-day chain', () => {
+  it('shows the row for an empty all-day chain (enabled-only gate, PR #62 feedback)', async () => {
     apply(ctx, cfg({ rootChain: [] }))
-    expect(listed()).toBe(false)
+    await vi.waitFor(() => expect(listed()).toBe(true))
   })
 
-  it('hides the row for a legacy multi-model rootChain (no conformance, no row)', () => {
+  it('shows the row for a legacy multi-model rootChain (enabled-only gate, PR #62 feedback)', async () => {
     apply(ctx, cfg({ rootChain: ['other/gpt-4o', 'other/gpt-5'] }))
-    expect(listed()).toBe(false)
+    await vi.waitFor(() => expect(listed()).toBe(true))
   })
 
   it('is a clean no-op without an llm service', async () => {
@@ -147,12 +149,12 @@ describe('registration lifecycle (P2)', () => {
     expect(listed()).toBe(true)
   })
 
-  it('all-day conformance loss unregisters the row', async () => {
+  it('all-day conformance loss keeps the row registered (enabled-only gate)', async () => {
     apply(ctx, cfg({ rootChain: [OFFICIAL_V4_FLASH] }))
     await vi.waitFor(() => expect(listed()).toBe(true))
 
     await ctx.settings.update(FALLBACKS_SETTINGS_NAMESPACE, { rootChain: ['other/gpt-4o', 'other/gpt-5'] })
-    expect(listed()).toBe(false)
+    expect(listed()).toBe(true)
   })
 
   it('slot-row edits never churn registration', async () => {
@@ -307,7 +309,10 @@ describe('adapter contract (P1/P3)', () => {
       ctx,
       cfg({
         rootChain: [OFFICIAL_V4_FLASH],
-        timeSlots: [{ kind: 'custom', start: '00:00', end: '23:59', chain: ['fallbacks/FallbacksChain'] }],
+        timeSlots: [{
+          kind: 'custom', start: '00:00', end: '23:59',
+          chain: [`${FALLBACKS_PROVIDER}/${FALLBACKS_CHAIN_MODEL}`],
+        }],
       }),
     )
     await vi.waitFor(() => expect(listed()).toBe(true))
@@ -323,6 +328,30 @@ describe('adapter contract (P1/P3)', () => {
       reason: { kind: 'error', failure: { code: UNDISPATCHABLE_HEAD_CODE } },
     })
     expect(stub.calls).toHaveLength(0)
+  })
+
+  it('stream() refuses a legacy non-conforming all-day chain (conformance gate, PR #62 feedback)', async () => {
+    // The row is visible whenever enabled, but a successful delegate still
+    // requires a conforming all-day: the effective head is undefined for a
+    // legacy multi-model rootChain, so stream() throws UNDISPATCHABLE and
+    // resolveModel falls back to the permissive default.
+    apply(ctx, cfg({ rootChain: ['other/gpt-4o', 'other/gpt-5'] }))
+    await vi.waitFor(() => expect(listed()).toBe(true))
+
+    const chunks = await collect(
+      ctx.llm.stream({ provider: FALLBACKS_PROVIDER, model: FALLBACKS_CHAIN_MODEL, messages: [] }),
+    )
+    expect(chunks.at(-1)).toMatchObject({
+      type: 'finish',
+      reason: { kind: 'error', failure: { code: UNDISPATCHABLE_HEAD_CODE } },
+    })
+    expect(stub.calls).toHaveLength(0)
+
+    expect(await ctx.llm.resolveModelInfo(FALLBACKS_PROVIDER, FALLBACKS_CHAIN_MODEL)).toEqual({
+      provider: FALLBACKS_PROVIDER,
+      id: FALLBACKS_CHAIN_MODEL,
+      name: FALLBACKS_CHAIN_MODEL,
+    })
   })
 
   it('stream() refuses a wildcard head (no real pair to delegate)', async () => {
