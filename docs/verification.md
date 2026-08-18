@@ -90,7 +90,7 @@ Then restart the dsh web session so the host half and the client half load.
 
 1. Open the web settings GUI → Settings → **插件配置** (**Plugin Settings**), confirm the **Fallbacks card** appears (same list as the bash / agent-loop / web-search / advisor cards).
 2. **First open (no `fallbacks` config yet)**: the card shows its skeleton (card header / intro / read-only status block /
-   feature switch / save / reset to defaults), the feature switch `enabled` is **OFF by default**, the configuration form body is hidden
+   feature switch / save actions), the feature switch `enabled` is **OFF by default**, the configuration form body is hidden
    and the "Feature disabled" hint shows — the card is always usable and never blank just because the namespace is missing.
 3. Turn on the `enabled` switch → the configuration form body appears (`triggerCodes` / `rootChain` / `roles` /
    `cooldownMs` / `revertPolicy` / `maxSwitchesPerStep` / `alwaysModeRetryCap`).
@@ -100,7 +100,8 @@ Then restart the dsh web session so the host half and the client half load.
    still ON, and a concurrent modification from another session surfaces as a truthful error banner on save — the gateway
    `set` has no revision guard, so there is no "Reload" prompt and no silent overwrite (KD-G3).
 6. Turn off the `enabled` switch → the form body hides again (an in-progress draft is kept and still there when reopened);
-   after one-click "Reset to defaults" confirm the config is back to the composed defaults (`enabled` back to `false`).
+   the compact row's Save/Discard operate on `enabled` only (PR #62 UX round 3 — hidden section drafts are never persisted,
+   and the card's Reset-to-defaults button is gone; the gateway `fallbacks/reset` RPC remains a host API).
 
 ### 3. Runtime fallback verification (simulated failures)
 

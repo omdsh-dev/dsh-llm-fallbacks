@@ -939,20 +939,6 @@ select.input {
   text-align: center;
 }
 
-/* Reset-to-defaults confirmation dialog (the Models delete-confirm width). */
-.resetDialog {
-  width: min(480px, 100%);
-}
-
-.confirmDanger:not(:disabled) {
-  border-color: var(--dsw-alias-state-error-primary);
-  color: var(--dsw-alias-state-error-primary);
-}
-
-.confirmDanger:hover:not(:disabled) {
-  background: var(--dsw-alias-interactive-bg-hover-danger);
-}
-
 @media (prefers-reduced-motion: reduce) {
   .iconButton::after {
     transition: none;

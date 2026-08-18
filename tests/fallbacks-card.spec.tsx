@@ -340,10 +340,11 @@ function expandAdvanced(): void {
 }
 
 // PR #62 UX round 2: the card footer is gone — Save/Discard live beside the
-// 主代理 / 子代理 headings and inside the expanded 高级选项 body (Reset lives
-// there too). The helpers below anchor on the section ids so a test can
-// click the exact section's action even though every section's Save shares
-// the same label.
+// 主代理 / 子代理 headings and inside the expanded 高级选项 body. PR #62 UX
+// round 3: the Reset affordance is gone from the card entirely (the gateway
+// RPC + store method stay as host APIs). The helpers below anchor on the
+// section ids so a test can click the exact section's action even though
+// every section's Save shares the same label.
 
 /** The 主代理 section heading (id anchor — the heading div carries the actions). */
 function mainAgentHeading(): HTMLElement {
@@ -378,11 +379,6 @@ function advancedSave(): HTMLButtonElement {
 /** The advanced section's Discard button (inside the expanded body). */
 function advancedDiscard(): HTMLButtonElement {
   return within(document.getElementById('fallbacks-advanced-body')!).getByRole('button', { name: en.discard }) as HTMLButtonElement
-}
-
-/** The advanced section's Reset button (inside the expanded body). */
-function advancedReset(): HTMLButtonElement {
-  return within(document.getElementById('fallbacks-advanced-body')!).getByRole('button', { name: en.reset }) as HTMLButtonElement
 }
 
 /**
@@ -580,8 +576,8 @@ describe('FallbacksCard chrome (upstream PluginCard contract)', () => {
     // Expanding reveals the enabled row. The default config is DISABLED, so
     // the form (and its per-section actions) is hidden — the compact
     // disabled-state row (Discard + Save) keeps the enabled flip saveable
-    // (PR #62 UX round 2: the card footer is gone; Reset lives inside the
-    // expanded advanced section, which only exists in the enabled form).
+    // (PR #62 UX round 2: the card footer is gone; the per-section actions
+    // only exist inside the enabled form).
     toggleCard()
     view.rerender(<FallbacksCard {...props} />)
     expect(headerButton(true).getAttribute('aria-expanded')).toBe('true')
@@ -591,19 +587,18 @@ describe('FallbacksCard chrome (upstream PluginCard contract)', () => {
     expect(screen.getByText(en['enabled.off'])).toBeTruthy()
     expect(screen.getAllByRole('button', { name: en.save })).toHaveLength(1)
     expect(screen.getAllByRole('button', { name: en.discard })).toHaveLength(1)
-    expect(screen.queryByRole('button', { name: en.reset })).toBeNull()
     // Flipping the switch on reveals the form: Save/Discard beside the
-    // 主代理 / 子代理 headings, Reset inside the advanced body.
+    // 主代理 / 子代理 headings, then a third pair inside the expanded
+    // advanced body. The Reset button never exists on the card (PR #62 UX
+    // round 3).
     fireEvent.click(toggle)
     view.rerender(<FallbacksCard {...props} />)
     expect(screen.getAllByRole('button', { name: en.save })).toHaveLength(2)
     expect(screen.getAllByRole('button', { name: en.discard })).toHaveLength(2)
-    expect(screen.queryByRole('button', { name: en.reset })).toBeNull()
     expandAdvanced()
     view.rerender(<FallbacksCard {...props} />)
     expect(screen.getAllByRole('button', { name: en.save })).toHaveLength(3)
     expect(screen.getAllByRole('button', { name: en.discard })).toHaveLength(3)
-    expect(screen.getByRole('button', { name: en.reset })).toBeTruthy()
   })
 
   it('flips aria-expanded and toggles the body on repeated header clicks', async () => {
@@ -637,7 +632,8 @@ describe('FallbacksCard chrome (upstream PluginCard contract)', () => {
     view.rerender(<FallbacksCard {...props} />)
     expect(screen.getByText(en.unsaved)).toBeTruthy()
     // Discard lives beside the section headings (and inside the advanced
-    // body) — any section's Discard reverts the whole draft.
+    // body) — the advanced Discard reverts the advanced section (the only
+    // dirty one here).
     fireEvent.click(advancedDiscard())
     view.rerender(<FallbacksCard {...props} />)
     expect(screen.queryByText(en.unsaved)).toBeNull()
@@ -647,36 +643,83 @@ describe('FallbacksCard chrome (upstream PluginCard contract)', () => {
     )
   })
 
-  it('disables Save and Discard when clean, enables both once the draft is dirty', async () => {
+  it('a 主代理 Discard reverts ONLY main fields — unsaved 子代理 edits survive (PR #62 UX round 3)', async () => {
+    const { view, props } = await mountCard({ config: TWO_BLOCK_CONFIG })
+    toggleCard()
+    // Edit a 主代理 field (timezone) and a 子代理 field (role persona).
+    const group = screen.getByText(en['timeSlots.label']).closest('[role="group"]') as HTMLElement
+    fireEvent.change(within(group).getByLabelText(en['timeSlots.tz.label']), { target: { value: 'UTC' } })
+    expandAllRoles()
+    fireEvent.change(screen.getAllByLabelText(en['roles.persona'])[0]!, { target: { value: 'Edited persona' } })
+    view.rerender(<FallbacksCard {...props} />)
+    // 主代理 Discard reverts the timezone (and only the main section)…
+    fireEvent.click(mainDiscard())
+    view.rerender(<FallbacksCard {...props} />)
+    expect((within(group).getByLabelText(en['timeSlots.tz.label']) as HTMLSelectElement).value).toBe('Asia/Shanghai')
+    // …but the 子代理 edit stays staged — the pill remains.
+    expect(screen.getByText(en.unsaved)).toBeTruthy()
+    expect((screen.getAllByLabelText(en['roles.persona'])[0] as HTMLTextAreaElement).value).toBe('Edited persona')
+  })
+
+  it('compact Discard while enabled is OFF reverts enabled only — hidden section edits survive (PR #62 UX round 3)', async () => {
+    const { view, props } = await mountCard({ config: ENABLED_CONFIG })
+    toggleCard()
+    // Edit a 主代理 field (timezone) while the form is on.
+    const group = screen.getByText(en['timeSlots.label']).closest('[role="group"]') as HTMLElement
+    fireEvent.change(within(group).getByLabelText(en['timeSlots.tz.label']), { target: { value: 'UTC' } })
+    // Flip the switch off → the form hides, the compact disabled-state row
+    // appears.
+    fireEvent.click(screen.getByLabelText(en['enabled.label']))
+    view.rerender(<FallbacksCard {...props} />)
+    expect(screen.getByText(en['enabled.off'])).toBeTruthy()
+    // The compact Discard reverts ONLY `enabled` (the smallest correct
+    // behavior): the hidden tz edit survives.
+    fireEvent.click(screen.getAllByRole('button', { name: en.discard })[0]!)
+    view.rerender(<FallbacksCard {...props} />)
+    expect((screen.getByLabelText(en['enabled.label']) as HTMLInputElement).checked).toBe(true)
+    const groupAfter = screen.getByText(en['timeSlots.label']).closest('[role="group"]') as HTMLElement
+    expect((within(groupAfter).getByLabelText(en['timeSlots.tz.label']) as HTMLSelectElement).value).toBe('UTC')
+    expect(screen.getByText(en.unsaved)).toBeTruthy()
+  })
+
+  it('disables Save and Discard when clean; a dirty section enables ONLY its own Save/Discard (PR #62 UX round 3)', async () => {
     const { view, props } = await mountCard({ config: ENABLED_CONFIG })
     toggleCard()
     expandAdvanced()
     // Clean (no edits): neither action is offered (upstream semantics —
-    // save = !dirty || saving || !writable; discard = !dirty || saving).
-    // Every section's Save/Discard shares the disabled terms (PR #62 UX
-    // round 2 — the actions moved beside the headings, the semantics stay).
+    // save = !sectionDirty || saving || !writable; discard = !sectionDirty
+    // || saving). Every section's Save/Discard gates on ITS OWN dirty term
+    // (PR #62 UX round 3 — a 子代理 edit never enables 主代理 Save).
     expect(mainSave().disabled).toBe(true)
     expect(mainDiscard().disabled).toBe(true)
     expect(advancedSave().disabled).toBe(true)
-    // One staged edit → both actions become available.
+    // One staged ADVANCED edit → only the advanced actions become
+    // available; 主代理 stays disabled (its fields are still clean).
     fireEvent.change(screen.getByLabelText(en['cooldownMs.label']), { target: { value: '5000' } })
+    view.rerender(<FallbacksCard {...props} />)
+    expect(mainSave().disabled).toBe(true)
+    expect(mainDiscard().disabled).toBe(true)
+    expect(advancedSave().disabled).toBe(false)
+    expect(advancedDiscard().disabled).toBe(false)
+    // A 主代理 edit (timezone) enables the main actions — and only them.
+    const group = screen.getByText(en['timeSlots.label']).closest('[role="group"]') as HTMLElement
+    fireEvent.change(within(group).getByLabelText(en['timeSlots.tz.label']), { target: { value: 'UTC' } })
     view.rerender(<FallbacksCard {...props} />)
     expect(mainSave().disabled).toBe(false)
     expect(mainDiscard().disabled).toBe(false)
-    expect(advancedSave().disabled).toBe(false)
+    expect(advancedSave().disabled).toBe(false) // advanced is still dirty too
   })
 
-  it('saves the assembled draft through the store face and clears the pill', async () => {
+  it('saves the advanced section through the store face and clears the pill', async () => {
     const { view, props, controller, scripted } = await mountCard({ config: ENABLED_CONFIG })
     toggleCard()
-    // ENABLED_CONFIG has an empty all-day chain — the 2-choose-1 chooser is
-    // required (Task 3): pick Flash so the save passes validation.
-    pickAllDayFlash()
     expandAdvanced()
     fireEvent.change(screen.getByLabelText(en['cooldownMs.label']), { target: { value: '5000' } })
     view.rerender(<FallbacksCard {...props} />)
     expect(screen.getByText(en.unsaved)).toBeTruthy()
-    // The advanced section's Save writes the whole draft (one gateway).
+    // The advanced section's Save writes ONLY the advanced fields (plus
+    // the card-level `enabled`) — it neither needs a 主代理 all-day pick
+    // (per-section validation) nor persists one.
     fireEvent.click(advancedSave())
     await waitFor(() => {
       expect(scripted.call).toHaveBeenCalledWith('/api', 'fallbacks/set', expect.objectContaining({
@@ -714,24 +757,102 @@ describe('FallbacksCard chrome (upstream PluginCard contract)', () => {
     expect(screen.getByRole('alert').textContent).toBe(en['error.generic']) // the test `t` does not interpolate
   })
 
-  it('every section Save writes the SAME whole draft through the one gateway (placement only)', async () => {
-    // PR #62 UX round 2: the section placement is cosmetic — clicking the
-    // 子代理 Save persists a 主代理 edit AND an advanced edit in one patch.
-    const { view, props, scripted } = await mountCard({ config: { ...ENABLED_CONFIG, rootChain: [OFFICIAL_V4_FLASH] } })
+  it('a 子代理 Save persists ONLY the roles section — sibling 主代理/高级 edits stay unsaved (PR #62 UX round 3)', async () => {
+    // PR #62 UX round 3: section placement is ownership — clicking the
+    // 子代理 Save persists only the roles; a 主代理 tz edit and an advanced
+    // cooldown edit ride NEITHER (their drafts stay in the editors).
+    const { view, props, scripted } = await mountCard({ config: TWO_BLOCK_CONFIG })
     toggleCard()
-    view.rerender(<FallbacksCard {...props} />)
-    // Edit a 主代理 field (timezone) and an advanced field (cooldown).
+    // Edit a 主代理 field (timezone), an advanced field (cooldown), and a
+    // 子代理 field (role persona).
     const group = screen.getByText(en['timeSlots.label']).closest('[role="group"]') as HTMLElement
     fireEvent.change(within(group).getByLabelText(en['timeSlots.tz.label']), { target: { value: 'UTC' } })
     expandAdvanced()
     fireEvent.change(screen.getByLabelText(en['cooldownMs.label']), { target: { value: '5000' } })
+    expandAllRoles()
+    fireEvent.change(screen.getAllByLabelText(en['roles.persona'])[0]!, { target: { value: 'Edited persona' } })
     view.rerender(<FallbacksCard {...props} />)
     fireEvent.click(subSave())
     await waitFor(() => {
       expect(scripted.call).toHaveBeenCalledWith('/api', 'fallbacks/set', expect.objectContaining({
-        args: { patch: expect.objectContaining({ tz: 'UTC', cooldownMs: 5000 }) },
+        args: { patch: expect.objectContaining({
+          // The sub edit persists…
+          roles: {
+            list: [
+              expect.objectContaining({ id: 'reviewer', persona: 'Edited persona' }),
+              expect.objectContaining({ id: 'architect', persona: 'Designs systems' }),
+            ],
+            rules: expect.anything(),
+          },
+          // …but the main + advanced edits do NOT ride along (the patch
+          // carries the last ACCEPTED values for every other section).
+          tz: 'Asia/Shanghai',
+          cooldownMs: defaultFallbacksConfig.cooldownMs,
+        }) },
       }))
     })
+    // The unsaved 主代理 + 高级 edits survive in the editors; the pill stays.
+    view.rerender(<FallbacksCard {...props} />)
+    expect(screen.getByText(en.unsaved)).toBeTruthy()
+    expect((within(group).getByLabelText(en['timeSlots.tz.label']) as HTMLSelectElement).value).toBe('UTC')
+    expect((screen.getByLabelText(en['cooldownMs.label']) as HTMLInputElement).value).toBe('5000')
+  })
+
+  it('a 主代理 Save writes new main fields + ACCEPTED roles; the unsaved 子代理 edit survives until its own Save (PR #62 UX round 3)', async () => {
+    const { view, props, controller, scripted } = await mountCard({ config: TWO_BLOCK_CONFIG })
+    toggleCard()
+    // Edit a 主代理 field (timezone) and a 子代理 field (role persona).
+    const group = screen.getByText(en['timeSlots.label']).closest('[role="group"]') as HTMLElement
+    fireEvent.change(within(group).getByLabelText(en['timeSlots.tz.label']), { target: { value: 'UTC' } })
+    expandAllRoles()
+    fireEvent.change(screen.getAllByLabelText(en['roles.persona'])[0]!, { target: { value: 'Edited persona' } })
+    view.rerender(<FallbacksCard {...props} />)
+    fireEvent.click(mainSave())
+    await waitFor(() => {
+      expect(scripted.call).toHaveBeenCalledWith('/api', 'fallbacks/set', expect.objectContaining({
+        args: { patch: expect.objectContaining({
+          // The main edit persists…
+          tz: 'UTC',
+          // …but the roles stay the ACCEPTED config — the unsaved sub edit
+          // never rides along (and the card never validates it here).
+          roles: {
+            list: [
+              expect.objectContaining({ id: 'reviewer', persona: 'Reviews code' }),
+              expect.objectContaining({ id: 'architect', persona: 'Designs systems' }),
+            ],
+            rules: expect.anything(),
+          },
+        }) },
+      }))
+    })
+    // The unsaved 子代理 edit survives the reseed (only clean sections
+    // re-seed): the role editor still shows it and the pill stays.
+    view.rerender(<FallbacksCard {...props} />)
+    expect(screen.getByText(en.unsaved)).toBeTruthy()
+    expect((screen.getAllByLabelText(en['roles.persona'])[0] as HTMLTextAreaElement).value).toBe('Edited persona')
+    // The follow-up 子代理 Save persists the roles on top of the accepted
+    // main fields.
+    fireEvent.click(subSave())
+    await waitFor(() => {
+      expect(scripted.call).toHaveBeenCalledWith('/api', 'fallbacks/set', expect.objectContaining({
+        args: { patch: expect.objectContaining({
+          tz: 'UTC',
+          roles: {
+            list: [
+              expect.objectContaining({ id: 'reviewer', persona: 'Edited persona' }),
+              expect.objectContaining({ id: 'architect', persona: 'Designs systems' }),
+            ],
+            rules: expect.anything(),
+          },
+        }) },
+      }))
+    })
+    // Both sections saved → the pill clears.
+    await waitFor(() => {
+      expect(controller.store.getSnapshot().status).toBe('ready')
+    })
+    view.rerender(<FallbacksCard {...props} />)
+    expect(screen.queryByText(en.unsaved)).toBeNull()
   })
 
   it('loads on mount when the store has not loaded yet (status idle → load)', async () => {
@@ -845,9 +966,6 @@ describe('FallbacksCard chrome (upstream PluginCard contract)', () => {
   it('a failed save shows the error notice and keeps the form editable (qc2 S-4)', async () => {
     const { view, props, controller, scripted } = await mountCard({ config: ENABLED_CONFIG })
     toggleCard()
-    // Required all-day pick (Task 3) so the draft passes validation and the
-    // failure comes from the gateway wire.
-    pickAllDayFlash()
     expandAdvanced()
     fireEvent.change(screen.getByLabelText(en['cooldownMs.label']), { target: { value: '5000' } })
     view.rerender(<FallbacksCard {...props} />)
@@ -870,39 +988,6 @@ describe('FallbacksCard chrome (upstream PluginCard contract)', () => {
     view.rerender(<FallbacksCard {...props} />)
     expect(screen.queryByText(en.unsaved)).toBeNull()
     expect(advancedSave().disabled).toBe(true)
-  })
-
-  it('reset asks for confirmation in the Modal and only resets on confirm (qc2 S-4)', async () => {
-    const { view, props, controller, scripted } = await mountCard({ config: ENABLED_CONFIG })
-    toggleCard()
-    // PR #62 UX round 2: Reset (global) lives inside the expanded advanced
-    // section — it is not reachable while the section is collapsed.
-    expect(screen.queryByRole('button', { name: en.reset })).toBeNull()
-    expandAdvanced()
-    view.rerender(<FallbacksCard {...props} />)
-    // Reset opens the confirmation dialog (portal to document.body).
-    fireEvent.click(advancedReset())
-    const dialog = screen.getByRole('dialog', { name: en['reset.confirmTitle'] })
-    expect(dialog).toBeTruthy()
-    expect(within(dialog).getByText(en['reset.confirm'])).toBeTruthy()
-    // Cancel closes the dialog without touching the gateway.
-    fireEvent.click(within(dialog).getByRole('button', { name: en['reset.confirm.cancel'] }))
-    expect(screen.queryByRole('dialog')).toBeNull()
-    expect(scripted.reset).not.toHaveBeenCalled()
-    // Confirm runs the reset through the store face and closes the dialog.
-    fireEvent.click(advancedReset())
-    fireEvent.click(screen.getByRole('button', { name: en['reset.confirm.action'] }))
-    await waitFor(() => {
-      expect(scripted.call).toHaveBeenCalledWith('/api', 'fallbacks/reset', { args: {} })
-    })
-    await waitFor(() => expect(controller.store.getSnapshot().status).toBe('ready'))
-    view.rerender(<FallbacksCard {...props} />)
-    expect(screen.queryByRole('dialog')).toBeNull()
-    // The draft re-seeded from the reset defaults: the switch flips back to
-    // off (default enabled: false → the off-notice body replaces the form).
-    const toggle = screen.getByLabelText(en['enabled.label']) as HTMLInputElement
-    expect(toggle.checked).toBe(false)
-    expect(screen.getByText(en['enabled.off'])).toBeTruthy()
   })
 
   it('shows the read-only notice only once a settled describe reports read-only', async () => {
@@ -1072,10 +1157,12 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     // The nonconforming notice lives in the 默认模型 panel.
     const modelGroup = screen.getByText(en['defaultModel.label']).closest('[role="group"]') as HTMLElement
     expect(within(modelGroup).getByText(en['allDay.nonconforming'])).toBeTruthy()
-    // An unrelated edit dirties the draft; save is blocked with the
-    // default-model requirement — the legacy value never crosses the wire.
-    expandAdvanced()
-    fireEvent.change(screen.getByLabelText(en['cooldownMs.label']), { target: { value: '7000' } })
+    // A 主代理 edit (timezone) dirties the MAIN section; save is blocked
+    // with the default-model requirement — the legacy value never crosses
+    // the wire (per-section dirty: an advanced-only edit would not enable
+    // 主代理 Save at all).
+    const group = screen.getByText(en['timeSlots.label']).closest('[role="group"]') as HTMLElement
+    fireEvent.change(within(group).getByLabelText(en['timeSlots.tz.label']), { target: { value: 'UTC' } })
     view.rerender(<FallbacksCard {...props} />)
     // The 主代理 section's Save is blocked; the all-day violation renders
     // under the 主代理 heading (its owning section).
@@ -1101,8 +1188,9 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     // the interaction (the mount-effect load is asynchronous).
     await controller.loadCatalog()
     toggleCard()
-    // Required all-day pick (Task 3 — WILDCARD_ROLE_CONFIG carries the
-    // empty default chain) so the save passes validation.
+    // The unsaved 默认模型 pick (Flash) stays a MAIN-section edit: the
+    // sub Save must NOT persist it (per-section save — PR #62 UX round 3),
+    // and the sub save needs no all-day pick to pass validation.
     pickAllDayFlash()
     // Role cards default collapsed (PR #62 UX round 2) — open the role
     // editor first.
@@ -1116,7 +1204,9 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     const model = within(rolesGroup).getByLabelText(en['roles.rule.model']) as HTMLSelectElement
     expect(model.disabled).toBe(false)
     // Picking a concrete model converts the wildcard row → the save patch
-    // carries the exact entry, never a `provider/*` line.
+    // carries the exact entry, never a `provider/*` line — and the rootChain
+    // stays the ACCEPTED (empty) chain: the unsaved Flash pick does not
+    // ride along.
     fireEvent.change(model, { target: { value: 'gpt-4o' } })
     view.rerender(<FallbacksCard {...props} />)
     fireEvent.click(subSave())
@@ -1127,6 +1217,7 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
             list: [expect.objectContaining({ chain: ['openai/gpt-4o'] })],
             rules: [],
           },
+          rootChain: [],
         }) },
       }))
     })
@@ -1421,8 +1512,10 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     toggleCard()
     view.rerender(<FallbacksCard {...props} />)
     expect(screen.getByText(en['allDay.nonconforming'])).toBeTruthy()
-    expandAdvanced()
-    fireEvent.change(screen.getByLabelText(en['cooldownMs.label']), { target: { value: '7000' } })
+    // A 主代理 edit (timezone) dirties the main section so the save attempt
+    // fires (per-section dirty).
+    const group = screen.getByText(en['timeSlots.label']).closest('[role="group"]') as HTMLElement
+    fireEvent.change(within(group).getByLabelText(en['timeSlots.tz.label']), { target: { value: 'UTC' } })
     view.rerender(<FallbacksCard {...props} />)
     fireEvent.click(mainSave())
     view.rerender(<FallbacksCard {...props} />)
@@ -1480,9 +1573,8 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     // The card starts CLEAN: the merged draft equals the accepted config
     // (no unsaved pill), proving the merge participates in dirty.
     expect(screen.queryByText(en.unsaved)).toBeNull()
-    // Required all-day pick (Task 3 — this fixture carries the empty
-    // default chain) so the save passes validation.
-    pickAllDayFlash()
+    // An advanced edit dirties the advanced section; the Save needs no
+    // 主代理 all-day pick (per-section validation — PR #62 UX round 3).
     fireEvent.change(screen.getByLabelText(en['cooldownMs.label']), { target: { value: '7000' } })
     view.rerender(<FallbacksCard {...props} />)
     fireEvent.click(advancedSave())
@@ -1512,10 +1604,9 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     expect(controller.store.getSnapshot().legacyKeys).toEqual(['chains', 'roles.default'])
     expect(screen.getByText(en['legacy.banner'])).toBeTruthy()
     // The banner never blocks editing: the form stays writable and a save
-    // still crosses the wire (informational only, spec §8). The required
-    // all-day pick (Task 3) makes the empty-default draft save-valid.
+    // still crosses the wire (informational only, spec §8). The advanced
+    // Save needs no 主代理 all-day pick (per-section validation).
     expect((screen.getByLabelText(en['enabled.label']) as HTMLInputElement).disabled).toBe(false)
-    pickAllDayFlash()
     fireEvent.change(screen.getByLabelText(en['cooldownMs.label']), { target: { value: '7000' } })
     view.rerender(<FallbacksCard {...props} />)
     fireEvent.click(advancedSave())
@@ -1540,13 +1631,12 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     const { view, props, scripted } = await mountCard({ config })
     toggleCard()
     expandAllRoles()
-    expandAdvanced()
     view.rerender(<FallbacksCard {...props} />)
     // The inline hint explains the chain-less role before any save attempt.
     expect(screen.getAllByText(en['validation.roleChainRequired'])).toHaveLength(1)
-    // An unrelated edit makes the draft dirty (a clean draft's save button
-    // is disabled) before the save attempt.
-    fireEvent.change(screen.getByLabelText(en['cooldownMs.label']), { target: { value: '7000' } })
+    // A persona edit dirties the SUB section (a clean section's Save button
+    // is disabled — per-section dirty) before the save attempt.
+    fireEvent.change(screen.getAllByLabelText(en['roles.persona'])[0]!, { target: { value: 'Edited' } })
     view.rerender(<FallbacksCard {...props} />)
     // Save is blocked: the role has no model config (the violation renders
     // under the 子代理 heading — the non-official all-day head earns its
@@ -1575,15 +1665,18 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     await controller.loadCatalog()
     toggleCard()
     expandAllRoles()
-    expandAdvanced()
     view.rerender(<FallbacksCard {...props} />)
-    // Required all-day pick (Task 3 — this fixture carries the empty
-    // default chain) so the only block is the chain-less role.
+    // A 子代理 edit (persona) makes the sub section dirty so the save
+    // attempt fires — per-section dirty: the sub Save itself needs no
+    // 主代理 all-day pick (PR #62 UX round 3). The Flash pick below is NOT
+    // a save requirement — it only isolates the blocked-save banner: the
+    // live-clear assertion below needs a fully valid draft (an empty
+    // rootChain would keep a 主代理 allDayRequired alert on screen).
     pickAllDayFlash()
-    // Chain area empty → inline hint shown; save is blocked (an unrelated
-    // edit first makes the draft dirty so the save button is enabled).
+    // Chain area empty → inline hint shown; save is blocked by the
+    // chain-less role.
     expect(screen.getAllByText(en['validation.roleChainRequired'])).toHaveLength(1)
-    fireEvent.change(screen.getByLabelText(en['cooldownMs.label']), { target: { value: '7000' } })
+    fireEvent.change(screen.getAllByLabelText(en['roles.persona'])[0]!, { target: { value: 'Edited' } })
     view.rerender(<FallbacksCard {...props} />)
     fireEvent.click(subSave())
     view.rerender(<FallbacksCard {...props} />)
@@ -1625,7 +1718,6 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     const { view, props, scripted } = await mountCard({ config })
     toggleCard()
     expandAllRoles()
-    expandAdvanced()
     view.rerender(<FallbacksCard {...props} />)
     // Chain area empty → inline hint shown.
     expect(screen.getAllByText(en['validation.roleChainRequired'])).toHaveLength(1)
@@ -1636,10 +1728,10 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     // A blank placeholder row serializes to '' — the role still has no
     // model config, so the inline hint stays (the transient gap T2 M-1).
     expect(screen.getAllByText(en['validation.roleChainRequired'])).toHaveLength(1)
-    // Save is still blocked with only blank rows (an unrelated edit first
-    // makes the draft dirty so the save button is enabled — a blank row
-    // serializes to '' and leaves the assembled draft unchanged).
-    fireEvent.change(screen.getByLabelText(en['cooldownMs.label']), { target: { value: '7000' } })
+    // Save is still blocked with only blank rows (a persona edit dirties
+    // the SUB section so the save attempt fires — per-section dirty; the
+    // blank row serializes to '' and leaves the assembled draft unchanged).
+    fireEvent.change(screen.getAllByLabelText(en['roles.persona'])[0]!, { target: { value: 'Edited' } })
     view.rerender(<FallbacksCard {...props} />)
     fireEvent.click(subSave())
     view.rerender(<FallbacksCard {...props} />)
@@ -2014,11 +2106,12 @@ describe('FallbacksCard time-slot rows (plan fallbacks-timeslots Task 3)', () =>
     // The preset name appears twice: the collapse header + the frozen-name
     // cell (PR #62 feedback round).
     expect(within(slotsGroup()).getAllByText(en['timeSlots.preset.liang-peak.label'])).toHaveLength(2)
-    // An unrelated edit dirties the draft (a clean draft's save button is
-    // disabled), then Save is blocked by the frozen-window guard with an
-    // inline explanation — the gateway error never becomes the first word.
-    expandAdvanced()
-    fireEvent.change(screen.getByLabelText(en['cooldownMs.label']), { target: { value: '7000' } })
+    // A 主代理 edit (a fresh custom slot row) dirties the MAIN section so
+    // the save attempt fires (per-section dirty — an advanced-only edit
+    // would not enable 主代理 Save), then Save is blocked by the
+    // frozen-window guard with an inline explanation — the gateway error
+    // never becomes the first word.
+    fireEvent.click(screen.getByRole('button', { name: en['timeSlots.addCustom'] }))
     view.rerender(<FallbacksCard {...props} />)
     fireEvent.click(mainSave())
     view.rerender(<FallbacksCard {...props} />)
@@ -2111,10 +2204,8 @@ describe('FallbacksCard seeded roles (plan fallbacks-role-seeds T5)', () => {
     view.rerender(<FallbacksCard {...props} />)
     const gate = Promise.withResolvers<unknown>()
     scripted.set.mockReturnValueOnce(gate.promise as never)
-    // Required all-day pick (Task 3 — SEEDED_CONFIG carries the empty
-    // default chain) so the save reaches the wire.
-    pickAllDayFlash()
-    // An unrelated edit makes the draft dirty so Save is enabled; the
+    // An advanced edit makes the advanced section dirty so Save is enabled
+    // (no 主代理 all-day pick needed — per-section validation); the
     // in-flight write flips the store to 'saving'.
     fireEvent.change(screen.getByLabelText(en['cooldownMs.label']), { target: { value: '7000' } })
     view.rerender(<FallbacksCard {...props} />)
@@ -2136,20 +2227,18 @@ describe('FallbacksCard seeded roles (plan fallbacks-role-seeds T5)', () => {
     })
     toggleCard()
     expandAllRoles()
-    expandAdvanced()
     view.rerender(<FallbacksCard {...props} />)
     // The seeded row shows the non-blocking chain hint instead of the
     // blocking one.
     expect(screen.getByText(en['roles.seedChainOptional'])).toBeTruthy()
     expect(screen.queryByText(en['validation.roleChainRequired'])).toBeNull()
-    // Required all-day pick (Task 3 — SEEDED_CONFIG carries the empty
-    // default chain) so the save passes validation.
-    pickAllDayFlash()
-    // An unrelated edit makes the draft dirty (a clean draft's Save button
-    // is disabled), then Save passes validation and writes.
-    fireEvent.change(screen.getByLabelText(en['cooldownMs.label']), { target: { value: '7000' } })
+    // A persona edit dirties the SUB section so its Save is enabled (no
+    // 主代理 all-day pick needed — per-section validation), then Save
+    // passes validation (the seeded relax) and writes.
+    const rolesGroup = screen.getByText(en['roles.list.label']).closest('[role="group"]') as HTMLElement
+    fireEvent.change(within(rolesGroup).getAllByLabelText(en['roles.persona'])[0]!, { target: { value: 'Edited' } })
     view.rerender(<FallbacksCard {...props} />)
-    fireEvent.click(advancedSave())
+    fireEvent.click(subSave())
     await waitFor(() => expect(scripted.set).toHaveBeenCalled())
     expect(screen.queryByRole('alert')).toBeNull()
   })
@@ -2178,15 +2267,16 @@ describe('FallbacksCard seeded roles (plan fallbacks-role-seeds T5)', () => {
     })
     toggleCard()
     expandAllRoles()
-    expandAdvanced()
     view.rerender(<FallbacksCard {...props} />)
     // architect is seeded → the seeded (non-blocking) hint; reviewer is NOT
     // seeded → the blocking chain-required hint stays.
     expect(screen.getByText(en['roles.seedChainOptional'])).toBeTruthy()
     expect(screen.getAllByText(en['validation.roleChainRequired'])).toHaveLength(1)
     // Save is blocked: the non-seeded empty-chain role keeps the draft off
-    // the wire (the violation renders under the 子代理 heading).
-    fireEvent.change(screen.getByLabelText(en['cooldownMs.label']), { target: { value: '7000' } })
+    // the wire (the violation renders under the 子代理 heading). A persona
+    // edit dirties the SUB section so its Save attempt fires (per-section
+    // dirty — PR #62 UX round 3).
+    fireEvent.change(screen.getAllByLabelText(en['roles.persona'])[1]!, { target: { value: 'Edited' } })
     view.rerender(<FallbacksCard {...props} />)
     fireEvent.click(subSave())
     view.rerender(<FallbacksCard {...props} />)
@@ -2206,9 +2296,6 @@ describe('FallbacksCard seeded roles (plan fallbacks-role-seeds T5)', () => {
     })
     toggleCard()
     expandAllRoles()
-    // Required all-day pick (Task 3 — SEEDED_CONFIG carries the empty
-    // default chain) so the save passes validation.
-    pickAllDayFlash()
     view.rerender(<FallbacksCard {...props} />)
     const rolesGroup = screen.getByText(en['roles.list.label']).closest('[role="group"]') as HTMLElement
     const personas = within(rolesGroup).getAllByLabelText(en['roles.persona'])
@@ -2462,12 +2549,11 @@ describe('FallbacksCard roleAutoMatch toggle (plan fallbacks-settings-visibility
   it('writes the toggle to the scalar and persists roleAutoMatch:false through a save', async () => {
     const { view, props, scripted } = await mountCard({ config: ENABLED_CONFIG })
     toggleCard()
-    // Required all-day pick (Task 3) so the save passes validation.
-    pickAllDayFlash()
     expandAdvanced()
     view.rerender(<FallbacksCard {...props} />)
-    // Flipping the toggle off makes the draft dirty (scalar roleAutoMatch
-    // true → false) and a save persists it through assembleConfig → draft.
+    // Flipping the toggle off makes the advanced section dirty (scalar
+    // roleAutoMatch true → false); the advanced Save persists it without
+    // any 主代理 all-day pick (per-section validation — PR #62 UX round 3).
     fireEvent.click(screen.getByLabelText(en['roleAutoMatch.label']))
     view.rerender(<FallbacksCard {...props} />)
     expect((screen.getByLabelText(en['roleAutoMatch.label']) as HTMLInputElement).checked).toBe(false)
@@ -2508,14 +2594,12 @@ describe('FallbacksCard roleAutoMatch toggle (plan fallbacks-settings-visibility
   it('a legacy-config save persists roleAutoMatch: true (the schema default is pinned, not invented)', async () => {
     const { view, props, scripted } = await mountCard({ config: LEGACY_CONFIG })
     toggleCard()
-    // Required all-day pick (Task 3) so the save passes validation.
-    pickAllDayFlash()
     expandAdvanced()
     view.rerender(<FallbacksCard {...props} />)
-    // An unrelated edit makes the draft dirty (a clean draft's Save button
-    // is disabled); the always-rendered toggle stays on, so the assembled
-    // draft carries `roleAutoMatch: true` and the save pins it — semantically
-    // identical to the schema default (AC-7 re-scope Option A).
+    // An advanced edit makes the advanced section dirty (a clean draft's
+    // Save button is disabled); the always-rendered toggle stays on, so the
+    // saved section carries `roleAutoMatch: true` and the save pins it —
+    // semantically identical to the schema default (AC-7 re-scope Option A).
     fireEvent.change(screen.getByLabelText(en['cooldownMs.label']), { target: { value: '7000' } })
     view.rerender(<FallbacksCard {...props} />)
     fireEvent.click(advancedSave())

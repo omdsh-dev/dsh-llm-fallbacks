@@ -15,10 +15,17 @@
  * under the header; then the form content. PR #62 UX round 2: the card
  * footer is gone — each big section (主代理 / 子代理 / 高级选项) carries its
  * own Save/Discard actions beside its heading (高级选项: inside the expanded
- * body, with the global Reset) and its own validation / save-error surface,
- * all writing the same whole draft through the one `save()` gateway with
- * the upstream disabled semantics — save = `!dirty || saving || !writable`,
- * discard = `!dirty || saving` (KD-U1). Disclosure is card-local state:
+ * body) and its own validation / save-error surface. PR #62 UX round 3:
+ * each section's Save writes ONLY that section's fields — 主代理 owns
+ * rootChain / timeSlots / tz (+ the card-level `enabled`), 子代理 owns
+ * roles, 高级选项 owns the advanced scalars; the patch spreads the last
+ * ACCEPTED config for every other section, so a 主代理 Save can never
+ * ride along an unsaved 子代理 edit (and vice versa) — and validation /
+ * the dirty gate apply per section too (a bad role id never blocks 主代理,
+ * and only the saved section's Discard reverts that section's edits).
+ * Save/discard disabled terms: save = `!sectionDirty || saving ||
+ * !writable`, discard = `!sectionDirty || saving` (KD-U1). Disclosure is
+ * card-local state:
  * which card a user has open is a reading gesture, and staged edits outlive
  * collapsing — the pill rides the header (upstream rationale).
  *
@@ -36,8 +43,9 @@
  * non-empty `state.legacyKeys` renders the migration banner at the top of
  * the card body. The row editors keep their filled editorCard surface
  * inside the card, with `--dsw-alias-*` tokens throughout. The reset-
- * to-defaults confirmation stays a `Modal` (the delete-confirm pattern of
- * the Models page) — no `window.confirm`.
+ * to-defaults affordance is GONE from the card (PR #62 UX round 3) — the
+ * gateway RPC `fallbacks/reset` and the store `resetToDefaults()` stay as
+ * host APIs (store/gateway tests unchanged), only the card UI was removed.
  *
  * The page-only chrome is gone (720px column wrapper, title/intro banners,
  * page-bottom status block): the AC-7 read-only status (derived effective
@@ -75,7 +83,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { ConfigurableProviderView } from '@deepseek-ai/dsh-client-connection/client'
 import {
-  Button, IconChevronDownOutline14, IconChevronUpOutline14, IconEllipsisOutline16, IconPlusOutline16, IconTrashOutline16, Modal, Tooltip,
+  Button, IconChevronDownOutline14, IconChevronUpOutline14, IconEllipsisOutline16, IconPlusOutline16, IconTrashOutline16, Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { SnapshotSelectorHook } from '@deepseek-ai/dsh-client-web-react'
@@ -705,25 +713,86 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
   const [lastSaveSection, setLastSaveSection] = useState<ValidationSection | null>(null)
   const seededConfigKey = useRef<string | null>(null)
 
+  // PR #62 UX round 3 — the assembled draft + the PER-SECTION dirty flags,
+  // computed once per render and shared by the reseed effects, the header
+  // pill, the per-section Save/Discard gates, and save(). Field ownership:
+  // 主代理 owns rootChain / timeSlots / tz (+ the card-level `enabled`
+  // while the form is shown), 子代理 owns roles (incl. empty rule rows —
+  // they serialize away but still count as pending UI), 高级选项 owns the
+  // advanced scalars. Each section's dirty term gates ONLY that section's
+  // Save/Discard, so a 子代理 edit never enables 主代理 Save (and vice
+  // versa); the header pill is the union.
+  const draft = assembleConfig(
+    scalars, allDayModel, state.config.rootChain, allDayChainRow,
+    roleRows, ruleRows,
+    state.config.roles.list, state.config.presets, scalars.roleAutoMatch,
+    timeSlotRows,
+  )
+  // Empty rule rows (role still on the "select role" placeholder) never
+  // reach the assembled draft — rowsToRules drops them — so they surface as
+  // an edit + a validation error instead of silently discarding on save
+  // (qc3 F-4).
+  const hasEmptyRuleRows = ruleRows.some(row => row.role === '')
+  const enabledDirty = scalars.enabled !== state.config.enabled
+  const mainDirty = enabledDirty
+    || JSON.stringify([...draft.rootChain, draft.timeSlots, draft.tz])
+      !== JSON.stringify([...state.config.rootChain, state.config.timeSlots ?? [], state.config.tz ?? 'Asia/Shanghai'])
+  const subDirty = hasEmptyRuleRows || JSON.stringify(draft.roles) !== JSON.stringify(state.config.roles)
+  const advancedDirty = JSON.stringify([
+    draft.triggerCodes, draft.cooldownMs, draft.revertPolicy,
+    draft.maxSwitchesPerStep, draft.alwaysModeRetryCap, draft.roleAutoMatch,
+  ]) !== JSON.stringify([
+    state.config.triggerCodes, state.config.cooldownMs, state.config.revertPolicy,
+    state.config.maxSwitchesPerStep, state.config.alwaysModeRetryCap, state.config.roleAutoMatch,
+  ])
+  const dirty = mainDirty || subDirty || advancedDirty
+
+  // Editors seed from the accepted config on every content-changing ready
+  // (PR #62 UX round 3): the reseed is PER-SECTION — only CLEAN sections
+  // re-seed, so a 主代理 save can never clobber unsaved 子代理 rows (and
+  // vice versa). The FIRST ready is the mount seed (the useState
+  // placeholders came from `defaultFallbacksConfig`), which must always
+  // land the real config — `firstSeed` bypasses the dirty gates once.
+  const firstSeedDone = useRef(false)
+  // PR #62 UX round 3: a write that is NOT one of the card's per-section
+  // saves (the seed-revert — `controller.revertSeed`) must still re-seed
+  // the WHOLE form: the accepted config is the new truth, and the
+  // per-section gates exist to protect UNSAVED user edits, not to keep
+  // stale editor state after a user-initiated revert. The revert click
+  // sets this flag; the next config reseed consumes it as a full reseed.
+  const forceReseed = useRef(false)
   useEffect(() => {
     if (state.status !== 'ready') return
     const key = JSON.stringify(state.config)
     if (seededConfigKey.current === key) return
     seededConfigKey.current = key
-    setScalars(scalarsOf(state.config))
-    setAllDayModel(allDayModelOf(state.config.rootChain))
-    setAllDayChainRow(allDayChainRowOf(state.config.rootChain, catalogOf(state)))
-    setTimeSlotRows(timeSlotsToRows(state.config.timeSlots ?? [], catalogOf(state)))
-    setRoleRows(rolesToRows(state.config.roles.list, catalogOf(state)))
-    setRuleRows(rulesToRows(state.config.roles.rules, catalogOf(state)))
-  }, [state.status, state.config])
-
-  // Reset-to-defaults confirmation (replaces `window.confirm`): the dialog
-  // stays open while the replace is in flight — the Models page's
-  // delete-confirm pattern. The store's `saving` state also disables the
-  // card actions, so a regular save and a reset cannot overlap.
-  const [confirmingReset, setConfirmingReset] = useState(false)
-  const [resetting, setResetting] = useState(false)
+    const firstSeed = !firstSeedDone.current
+    firstSeedDone.current = true
+    const force = forceReseed.current
+    forceReseed.current = false
+    const catalog = catalogOf(state)
+    if (firstSeed || force || !mainDirty) {
+      setAllDayModel(allDayModelOf(state.config.rootChain))
+      setAllDayChainRow(allDayChainRowOf(state.config.rootChain, catalog))
+      setTimeSlotRows(timeSlotsToRows(state.config.timeSlots ?? [], catalog))
+      setScalars(prev => ({ ...prev, enabled: state.config.enabled, tz: state.config.tz ?? 'Asia/Shanghai' }))
+    }
+    if (firstSeed || force || !subDirty) {
+      setRoleRows(rolesToRows(state.config.roles.list, catalog))
+      setRuleRows(rulesToRows(state.config.roles.rules, catalog))
+    }
+    if (firstSeed || force || !advancedDirty) {
+      setScalars(prev => ({
+        ...prev,
+        triggerCodes: [...state.config.triggerCodes],
+        cooldownMs: state.config.cooldownMs,
+        revertPolicy: state.config.revertPolicy,
+        maxSwitchesPerStep: state.config.maxSwitchesPerStep,
+        alwaysModeRetryCap: state.config.alwaysModeRetryCap,
+        roleAutoMatch: state.config.roleAutoMatch,
+      }))
+    }
+  }, [state.status, state.config, mainDirty, subDirty, advancedDirty])
 
   // The skeleton always renders inside the open body (readme-settings spec
   // §1.2): the `enabled` switch, the form body (or its off-notice), the
@@ -886,36 +955,11 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
     })
   }
 
-  // The draft is assembled once per render and reused by the dirty check,
-  // the validation gate, and save — `state.config.roles.list` supplies the
-  // prompt/permissions merge so a clean draft equals the accepted config.
-  // `roleAutoMatch` rides the scalar, which the store ALWAYS defines (the
-  // parse folds the schema default `true` and the gateway wire always
-  // carries the key): `assembleConfig` always includes it, so the toggle
-  // always renders and a legacy config's first save persists
-  // `roleAutoMatch: true` (AC-7 re-scope, PM decision 2026-08-17 Option A).
-  // A clean legacy draft still equals the accepted config (both carry the
-  // key), preserving the dirty-check invariant.
-  const draft = assembleConfig(
-    scalars, allDayModel, state.config.rootChain, allDayChainRow,
-    roleRows, ruleRows,
-    state.config.roles.list, state.config.presets, scalars.roleAutoMatch,
-    timeSlotRows,
-  )
-  // Empty rule rows (role still on the "select role" placeholder) never
-  // reach the assembled draft — rowsToRules drops them — so validateDraft
-  // cannot see them. Surface them as a validation error instead of
-  // silently discarding the row on save (qc3 F-4).
-  const hasEmptyRuleRows = ruleRows.some(row => row.role === '')
   // The joined validation errors across all sections — the disabled-state
   // row's single error surface (the per-section surfaces are unmounted
-  // while the form is hidden).
+  // while the form is hidden). The per-section dirty flags live with the
+  // draft at the top of the component (shared by the reseed effects).
   const allValidationErrors = [...validationErrors.main, ...validationErrors.sub, ...validationErrors.advanced]
-  // An empty rule row makes no config difference, but it IS an unsaved UI
-  // change: count it so the unsaved pill, Discard, and Save all treat the
-  // row as pending (otherwise Save stays disabled and the row vanishes on
-  // the next successful save with no chance to explain itself).
-  const dirty = JSON.stringify(draft) !== JSON.stringify(state.config) || hasEmptyRuleRows
   const saving = state.status === 'saving'
   const writable = state.writable
   const unknownCodes = scalars.triggerCodes.filter(code => !KNOWN_TRIGGER_CODES.includes(code))
@@ -980,40 +1024,75 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
 
   // Catalog refresh (llm/adapters-updated) re-classifies rows against the fresh
   // directory: a value that was outside when the settings seeded becomes a
-  // catalog option, and the empty-catalog guidance clears (R-3a). Only
-  // untouched drafts are re-seeded — in-progress edits are never clobbered.
-  // The epoch is recorded only on an actual re-seed (S-d): a dirty draft skips
-  // without consuming the epoch, so the effect re-runs after save (dirty →
-  // false) and re-seeds the just-saved values against the fresh catalog.
-  const catalogSeededEpoch = useRef<number | null>(null)
+  // catalog option, and the empty-catalog guidance clears (R-3a). PR #62 UX
+  // round 3: the re-seed is PER-SECTION like the config reseed — only CLEAN
+  // sections re-classify, in-progress edits are never clobbered. The
+  // per-section epoch flags are consumed only on an actual re-seed (S-d): a
+  // dirty section skips without consuming, so the effect re-runs after its
+  // save (dirty → false) and re-seeds the just-saved values against the
+  // fresh catalog.
+  const catalogSeededSections = useRef<{ epoch: number | null; main: boolean; sub: boolean }>({ epoch: null, main: false, sub: false })
   useEffect(() => {
     if (state.catalogStatus !== 'ready') return
-    if (catalogSeededEpoch.current === state.catalogEpoch) return
-    if (dirty) return
-    catalogSeededEpoch.current = state.catalogEpoch
-    setAllDayModel(allDayModelOf(state.config.rootChain))
-    setAllDayChainRow(allDayChainRowOf(state.config.rootChain, catalogOf(state)))
-    setTimeSlotRows(timeSlotsToRows(state.config.timeSlots ?? [], catalogOf(state)))
-    setRoleRows(rolesToRows(state.config.roles.list, catalogOf(state)))
-    setRuleRows(rulesToRows(state.config.roles.rules, catalogOf(state)))
-  }, [state.catalogStatus, state.catalogEpoch, state.config, dirty])
+    const seed = catalogSeededSections.current
+    if (seed.epoch !== state.catalogEpoch) {
+      seed.epoch = state.catalogEpoch
+      seed.main = false
+      seed.sub = false
+    }
+    const catalog = catalogOf(state)
+    if (!mainDirty && !seed.main) {
+      seed.main = true
+      setAllDayModel(allDayModelOf(state.config.rootChain))
+      setAllDayChainRow(allDayChainRowOf(state.config.rootChain, catalog))
+      setTimeSlotRows(timeSlotsToRows(state.config.timeSlots ?? [], catalog))
+    }
+    if (!subDirty && !seed.sub) {
+      seed.sub = true
+      setRoleRows(rolesToRows(state.config.roles.list, catalog))
+      setRuleRows(rulesToRows(state.config.roles.rules, catalog))
+    }
+  }, [state.catalogStatus, state.catalogEpoch, state.config, mainDirty, subDirty])
 
-  // PR #62 UX round 2: every section's Save writes the SAME whole draft
-  // through the one gateway (`controller.save`) — placement only. The
-  // section is recorded so a store write failure renders under the section
-  // whose Save was clicked; validation violations render under their OWNING
-  // section (validateDraft buckets them).
+  // PR #62 UX round 3: every section's Save writes ONLY that section's
+  // fields through the one gateway (`controller.save`), with the other
+  // sections' values taken from the last ACCEPTED config — a 子代理 Save
+  // of a 主代理 edit persists neither (the unsaved sibling drafts stay in
+  // the editors). The saved section is recorded so a store write failure
+  // renders under the section whose Save was clicked; validation violations
+  // render under their OWNING section (validateDraft buckets them), and
+  // ONLY the saved section's bucket blocks the write.
+  const sectionPatch = (section: ValidationSection): FallbacksConfig => {
+    const base = { ...state.config, enabled: scalars.enabled }
+    switch (section) {
+      case 'main':
+        return { ...base, rootChain: draft.rootChain, timeSlots: draft.timeSlots, tz: draft.tz }
+      case 'sub':
+        return { ...base, roles: draft.roles }
+      case 'advanced':
+        return {
+          ...base,
+          triggerCodes: draft.triggerCodes,
+          cooldownMs: draft.cooldownMs,
+          revertPolicy: draft.revertPolicy,
+          maxSwitchesPerStep: draft.maxSwitchesPerStep,
+          alwaysModeRetryCap: draft.alwaysModeRetryCap,
+          roleAutoMatch: draft.roleAutoMatch,
+        }
+    }
+  }
+
   const save = (section: ValidationSection): void => {
     setLastSaveSection(section)
     const errors = validateDraft(draft, t, seededIds)
     // An empty rule row is invisible to validateDraft (rowsToRules dropped
     // it from the draft) — the row would vanish on a successful save with no
-    // explanation. Block it alongside the draft violations (qc3 F-4); the
-    // row keeps its inline hint so the user sees why.
-    if (hasEmptyRuleRows) {
+    // explanation. Block the SUB save alongside the draft violations (qc3
+    // F-4); the row keeps its inline hint so the user sees why.
+    if (section === 'sub' && hasEmptyRuleRows) {
       errors.sub.push(t('validation.ruleRoleRequired'))
     }
-    if (errors.main.length > 0 || errors.sub.length > 0 || errors.advanced.length > 0) {
+    if (errors[section].length > 0) {
       // Validation blocks the write: the draft is never sent to the gateway,
       // and the violations surface under their owning sections + inline red
       // borders (spec §8 — the store's `state.error` data path stays
@@ -1024,23 +1103,66 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
     }
     setValidationErrors(emptyValidationErrors())
     setValidationAttempted(false)
-    void controller.save(draft)
+    void controller.save(sectionPatch(section))
+  }
+
+  // The compact disabled-state row (PR #62 UX round 3): the `enabled`
+  // master switch is card-level, NOT a section — while the plugin is OFF
+  // the row's Save writes ONLY `enabled` merged onto the accepted config
+  // (hidden in-memory edits of the other sections are never persisted).
+  const saveEnabled = (): void => {
+    setLastSaveSection('main')
+    setValidationErrors(emptyValidationErrors())
+    setValidationAttempted(false)
+    void controller.save({ ...state.config, enabled: scalars.enabled })
   }
 
   // Discard is a pure client-side revert to the last accepted config (no
-  // gateway write — upstream semantics); the upstream disabled term
-  // `!dirty || saving` applies (no `!writable`: in read-only the draft can
-  // still hold staged edits from before a mid-session writable flip, and a
-  // client-side revert is always safe).
-  const discard = (): void => {
-    setScalars(scalarsOf(state.config))
-    setAllDayModel(allDayModelOf(state.config.rootChain))
-    setAllDayChainRow(allDayChainRowOf(state.config.rootChain, catalogOf(state)))
-    setTimeSlotRows(timeSlotsToRows(state.config.timeSlots ?? [], catalogOf(state)))
-    setRoleRows(rolesToRows(state.config.roles.list, catalogOf(state)))
-    setRuleRows(rulesToRows(state.config.roles.rules, catalogOf(state)))
-    // The draft reverted to the accepted config: any blocked-validation
-    // banner/inline marks no longer describe the current draft.
+  // gateway write — upstream semantics), now PER-SECTION: 主代理 Discard
+  // reverts main fields (+ the card-level `enabled`), 子代理 Discard reverts
+  // roles, 高级选项 Discard reverts the advanced scalars — a 主代理 Discard
+  // never reverts 子代理 edits. The upstream disabled term
+  // `!sectionDirty || saving` applies (no `!writable`: in read-only the
+  // draft can still hold staged edits from before a mid-session writable
+  // flip, and a client-side revert is always safe).
+  const discardSection = (section: ValidationSection): void => {
+    switch (section) {
+      case 'main': {
+        setAllDayModel(allDayModelOf(state.config.rootChain))
+        setAllDayChainRow(allDayChainRowOf(state.config.rootChain, catalogOf(state)))
+        setTimeSlotRows(timeSlotsToRows(state.config.timeSlots ?? [], catalogOf(state)))
+        setScalars(prev => ({ ...prev, enabled: state.config.enabled, tz: state.config.tz ?? 'Asia/Shanghai' }))
+        break
+      }
+      case 'sub': {
+        setRoleRows(rolesToRows(state.config.roles.list, catalogOf(state)))
+        setRuleRows(rulesToRows(state.config.roles.rules, catalogOf(state)))
+        break
+      }
+      case 'advanced': {
+        setScalars(prev => ({
+          ...prev,
+          triggerCodes: [...state.config.triggerCodes],
+          cooldownMs: state.config.cooldownMs,
+          revertPolicy: state.config.revertPolicy,
+          maxSwitchesPerStep: state.config.maxSwitchesPerStep,
+          alwaysModeRetryCap: state.config.alwaysModeRetryCap,
+          roleAutoMatch: state.config.roleAutoMatch,
+        }))
+        break
+      }
+    }
+    // The draft (section) reverted to the accepted config: any blocked-
+    // validation banner/inline marks no longer describe the current draft.
+    setValidationErrors(emptyValidationErrors())
+    setValidationAttempted(false)
+  }
+
+  // The compact disabled-state row's Discard (PR #62 UX round 3): reverts
+  // `enabled` only — the smallest correct behavior (hidden drafts of other
+  // sections stay staged, matching the save side that never persisted them).
+  const discardEnabled = (): void => {
+    setScalars(prev => ({ ...prev, enabled: state.config.enabled }))
     setValidationErrors(emptyValidationErrors())
     setValidationAttempted(false)
   }
@@ -1069,21 +1191,14 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
   // PR #62 UX round 2: a store write failure renders under the section
   // whose Save was clicked; once the store settles READY (a successful
   // write or load) the section anchor is no longer meaningful — a later
-  // load failure must go back to the card-top notice + Retry.
+  // load failure must go back to the card-top notice + Retry. A write
+  // ERROR also clears the revert's force-reseed flag: a failed revert
+  // leaves the config untouched, so the flag must not leak into the next
+  // (section) save's reseed and clobber unrelated unsaved edits.
   useEffect(() => {
     if (state.status === 'ready') setLastSaveSection(null)
+    if (state.status === 'error') forceReseed.current = false
   }, [state.status])
-
-  const confirmReset = (): void => {
-    setResetting(true)
-    // The controller never rejects — failures land in the store as the
-    // `error` state and surface in the card's error notice; either way
-    // the dialog closes once the store settles.
-    void controller.resetToDefaults().finally(() => {
-      setResetting(false)
-      setConfirmingReset(false)
-    })
-  }
 
   // Disclosure is card-local USER state (upstream rationale): the healthy
   // card starts collapsed and opens on the header click only. The degraded
@@ -1244,8 +1359,12 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                  * compact row keeps the enabled flip saveable/discardable
                  * (the old footer's always-visible role; the section
                  * actions themselves live beside the headings once the form
-                 * is shown). Blocked-save and store errors surface right
-                 * here (the per-section surfaces are unmounted). */}
+                 * is shown). PR #62 UX round 3: the row writes ONLY
+                 * `enabled` merged onto the accepted config (never the
+                 * hidden in-memory edits of the other sections); its
+                 * Save/Discard gate on the enabled flip alone. Blocked-save
+                 * and store errors surface right here (the per-section
+                 * surfaces are unmounted). */}
                 {allValidationErrors.length > 0 && (
                   <p className={css.error} role="alert">
                     {`${t('validation.blocked')}${allValidationErrors.join('; ')}`}
@@ -1258,16 +1377,16 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                   <button
                     type="button"
                     className={`${css.secondaryButton} ${css.sectionAction}`}
-                    disabled={!dirty || saving}
-                    onClick={discard}
+                    disabled={!enabledDirty || saving}
+                    onClick={discardEnabled}
                   >
                     {t('discard')}
                   </button>
                   <button
                     type="button"
                     className={`${css.primaryButton} ${css.sectionAction}`}
-                    disabled={!writable || saving || !dirty}
-                    onClick={() => { save('main') }}
+                    disabled={!writable || saving || !enabledDirty}
+                    onClick={saveEnabled}
                   >
                     {saving ? t('save.saving') : t('save')}
                   </button>
@@ -1288,22 +1407,24 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                * heading groups 分时槽设置 / 默认降级链 / 默认模型 below.
                * PR #62 UX round 2: Save/Discard sit BESIDE the heading and
                * this section's validation / save errors render directly
-               * under it (the card footer is gone). */}
+               * under it (the card footer is gone). PR #62 UX round 3: the
+               * actions gate on the MAIN section's dirty term (its fields +
+               * the card-level `enabled`) and save only main fields. */}
               <div className={css.sectionHeading} id="fallbacks-main-agent">
                 <span className={css.sectionHeadingText}>{t('mainAgent.label')}</span>
                 <div className={css.sectionActions}>
                   <button
                     type="button"
                     className={`${css.secondaryButton} ${css.sectionAction}`}
-                    disabled={!dirty || saving}
-                    onClick={discard}
+                    disabled={!mainDirty || saving}
+                    onClick={() => { discardSection('main') }}
                   >
                     {t('discard')}
                   </button>
                   <button
                     type="button"
                     className={`${css.primaryButton} ${css.sectionAction}`}
-                    disabled={!writable || saving || !dirty}
+                    disabled={!writable || saving || !mainDirty}
                     onClick={() => { save('main') }}
                   >
                     {saving ? t('save.saving') : t('save')}
@@ -1712,22 +1833,24 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                * groups the roles list + the role rules below. PR #62 UX
                * round 2: Save/Discard sit BESIDE the heading and this
                * section's validation / save errors render directly under it
-               * (the card footer is gone). */}
+               * (the card footer is gone). PR #62 UX round 3: the actions
+               * gate on the SUB section's dirty term (roles/rules + empty
+               * rule rows) and save only the roles section. */}
               <div className={css.sectionHeading} id="fallbacks-subagents">
                 <span className={css.sectionHeadingText}>{t('subagents.label')}</span>
                 <div className={css.sectionActions}>
                   <button
                     type="button"
                     className={`${css.secondaryButton} ${css.sectionAction}`}
-                    disabled={!dirty || saving}
-                    onClick={discard}
+                    disabled={!subDirty || saving}
+                    onClick={() => { discardSection('sub') }}
                   >
                     {t('discard')}
                   </button>
                   <button
                     type="button"
                     className={`${css.primaryButton} ${css.sectionAction}`}
-                    disabled={!writable || saving || !dirty}
+                    disabled={!writable || saving || !subDirty}
                     onClick={() => { save('sub') }}
                   >
                     {saving ? t('save.saving') : t('save')}
@@ -1856,7 +1979,17 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                                 variant="outline"
                                 size="sm"
                                 disabled={!writable || saving}
-                                onClick={() => { void controller.revertSeed(row.id.trim()) }}
+                                onClick={() => {
+                                  // PR #62 UX round 3: the revert is a
+                                  // user-initiated NON-section write — the
+                                  // accepted config is the new truth, so the
+                                  // next config reseed must bypass the
+                                  // per-section dirty gates (the editor
+                                  // holds the pre-revert value and would
+                                  // otherwise look "dirty").
+                                  forceReseed.current = true
+                                  void controller.revertSeed(row.id.trim())
+                                }}
                               >
                                 {t('roles.revertPersona')}
                               </Button>
@@ -2249,8 +2382,10 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                     </div>
                     {/* PR #62 UX round 2: the advanced section's Save/Discard
                      * live INSIDE the expanded body (not next to the collapsed
-                     * toggle); Reset (global) lives here too. This section's
-                     * validation / save errors render right above the actions. */}
+                     * toggle). PR #62 UX round 3: they gate on the advanced
+                     * section's own dirty term only; the global Reset is gone
+                     * from the card. This section's validation / save errors
+                     * render right above the actions. */}
                     {validationErrors.advanced.length > 0 && (
                       <p className={css.error} role="alert">
                         {`${t('validation.blocked')}${validationErrors.advanced.join('; ')}`}
@@ -2263,23 +2398,15 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                       <button
                         type="button"
                         className={`${css.secondaryButton} ${css.sectionAction}`}
-                        disabled={!dirty || saving}
-                        onClick={discard}
+                        disabled={!advancedDirty || saving}
+                        onClick={() => { discardSection('advanced') }}
                       >
                         {t('discard')}
                       </button>
                       <button
                         type="button"
-                        className={`${css.secondaryButton} ${css.sectionAction}`}
-                        disabled={!writable || saving}
-                        onClick={() => { setConfirmingReset(true) }}
-                      >
-                        {t('reset')}
-                      </button>
-                      <button
-                        type="button"
                         className={`${css.primaryButton} ${css.sectionAction}`}
-                        disabled={!writable || saving || !dirty}
+                        disabled={!writable || saving || !advancedDirty}
                         onClick={() => { save('advanced') }}
                       >
                         {saving ? t('save.saving') : t('save')}
@@ -2313,36 +2440,6 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
         </div>
       )}
 
-      {/* Reset-to-defaults confirmation: the Models page's delete-confirm
-       * pattern — outline cancel + danger-styled outline confirm. */}
-      <Modal
-        open={confirmingReset}
-        onClose={() => { if (!resetting) setConfirmingReset(false) }}
-        title={t('reset.confirmTitle')}
-        closeLabel={t('close')}
-        description={t('reset.confirm')}
-        className={css.resetDialog}
-        footer={(
-          <>
-            <Button
-              variant="outline"
-              autoFocus
-              disabled={resetting}
-              onClick={() => { setConfirmingReset(false) }}
-            >
-              {t('reset.confirm.cancel')}
-            </Button>
-            <Button
-              variant="outline"
-              className={css.confirmDanger}
-              disabled={resetting}
-              onClick={confirmReset}
-            >
-              {resetting ? t('reset.saving') : t('reset.confirm.action')}
-            </Button>
-          </>
-        )}
-      />
     </li>
   )
 }
