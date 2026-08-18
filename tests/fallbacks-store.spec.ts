@@ -45,9 +45,11 @@ import {
   rowsToRoles,
   rowsToRootChain,
   rowsToRules,
+  rowsToTimeSlots,
   ruleRoleOptions,
   rulesToRows,
   selectorRowToRaw,
+  timeSlotsToRows,
   RECENT_SWITCH_LIMIT,
   SWITCHES_HISTORY_PAGE,
   type CatalogLookup,
@@ -55,6 +57,7 @@ import {
   type RoleRow,
   type RootChainRow,
 } from '../src/client/fallbacks-store.ts'
+import type { SlotRowConfig } from '../src/time-slots.ts'
 
 /** One gateway RPC success (the channel returns the unwrapped result). */
 function okResult<T>(value: T): { ok: true; value: T } {
@@ -264,6 +267,10 @@ describe('parseFallbacksConfig (descriptor read, redactSecrets face)', () => {
       alwaysModeRetryCap: 0,
       presets: 'bundled',
       roleAutoMatch: true,
+      // P5 keys (plan fallbacks-timeslots Task 1): the fold mirrors the
+      // host defaults, so a truly complete config carries them.
+      timeSlots: [],
+      tz: 'Asia/Shanghai',
     }
     expect(parseFallbacksConfig(config)).toEqual(config)
   })
@@ -352,15 +359,18 @@ describe('rootChain/role/rule row editors (pure round-trips)', () => {
   })
 
   it('round-trips role rules through rows; empty optional fields drop out', () => {
+    // PR #62 feedback: the editor rows carry no origin (rules are
+    // subagent-only); a persisted wire `origin` on the source rules is
+    // ignored by the row projection.
     const rules = [
       { origin: 'subagent' as const, provider: 'openai', model: '', role: 'reviewer' },
-      { origin: undefined, provider: undefined, model: undefined, role: 'default' },
+      { provider: undefined, model: undefined, role: 'default' },
     ]
     const rows = rulesToRows(rules)
-    expect(rows[0]).toEqual({ origin: 'subagent', provider: { kind: 'outside', raw: 'openai' }, model: null, role: 'reviewer' })
-    expect(rows[1]).toEqual({ origin: '', provider: null, model: null, role: 'default' })
+    expect(rows[0]).toEqual({ provider: { kind: 'outside', raw: 'openai' }, model: null, role: 'reviewer' })
+    expect(rows[1]).toEqual({ provider: null, model: null, role: 'default' })
     expect(rowsToRules(rows)).toEqual([
-      { origin: 'subagent', provider: 'openai', role: 'reviewer' },
+      { provider: 'openai', role: 'reviewer' },
       { role: 'default' },
     ])
   })
@@ -390,8 +400,11 @@ describe('rootChain/role/rule row editors (pure round-trips)', () => {
           { wildcard: true, provider: { kind: 'outside', raw: 'openai' }, model: null },
         ],
         fallback: 'none',
+        // UI-only collapse state (PR #62 UX round 2) — role cards start
+        // collapsed and the flag never serializes back.
+        collapsed: true,
       },
-      { id: 'architect', persona: '', selectors: [], fallback: 'inherit-root' },
+      { id: 'architect', persona: '', selectors: [], fallback: 'inherit-root', collapsed: true },
     ])
     expect(rowsToRoles(rows)).toEqual(roles)
   })
@@ -527,14 +540,16 @@ describe('catalog classification (spec §2.5 D-3)', () => {
   })
 
   it('round-trips role rules with outside values losslessly', () => {
+    // PR #62 feedback: the editor drops the legacy `origin` field — a
+    // persisted `origin: root` rule re-serializes WITHOUT it.
     const catalog = catalogFixture()
     const rules = [
-      { origin: 'root' as const, provider: 'other', model: 'gpt-4o', role: 'x' },
+      { provider: 'other', model: 'gpt-4o', role: 'x' },
       { role: 'y', provider: 'openai', model: 'gpt-4o' },
     ]
     const rows = rulesToRows(rules, catalog)
-    expect(rows[0]).toEqual({ origin: 'root', provider: { kind: 'outside', raw: 'other' }, model: { kind: 'outside', raw: 'gpt-4o' }, role: 'x' })
-    expect(rows[1]).toEqual({ origin: '', provider: { kind: 'catalog', id: 'openai' }, model: { kind: 'catalog', id: 'gpt-4o' }, role: 'y' })
+    expect(rows[0]).toEqual({ provider: { kind: 'outside', raw: 'other' }, model: { kind: 'outside', raw: 'gpt-4o' }, role: 'x' })
+    expect(rows[1]).toEqual({ provider: { kind: 'catalog', id: 'openai' }, model: { kind: 'catalog', id: 'gpt-4o' }, role: 'y' })
     expect(rowsToRules(rows)).toEqual(rules)
   })
 
@@ -544,6 +559,43 @@ describe('catalog classification (spec §2.5 D-3)', () => {
     const rows = rootChainToRows(['gpt-4o'], catalogFixture())
     expect(rows[0]!.selectors[0]).toEqual({ wildcard: false, provider: { kind: 'outside', raw: 'gpt-4o' }, model: null })
     expect(rowsToRootChain(rows)).toEqual(['gpt-4o'])
+  })
+
+  it('round-trips time-slot rows losslessly (Task 3 editor carrier)', () => {
+    const catalog = catalogFixture()
+    // The composed shape every card load accepts: `days` materialized on
+    // every row (schemastery composes absent arrays as []).
+    const timeSlots: SlotRowConfig[] = [
+      { kind: 'preset', preset: 'liang-peak', days: [], chain: ['openai/gpt-4o', 'openai/*'] },
+      { kind: 'custom', start: '22:00', end: '02:00', days: [1, 5], chain: ['anthropic/claude-3-5-sonnet'] },
+      { kind: 'custom', start: '09:00', end: '10:00', days: [], chain: ['openai/gpt-4o'] },
+    ]
+    const rows = timeSlotsToRows(timeSlots, catalog)
+    expect(rows[0]!.kind).toBe('preset')
+    expect(rows[0]!.preset).toBe('liang-peak')
+    expect(rows[0]!.days).toEqual([])
+    // UI-only collapse state (PR #62 UX round 4 part C) — slot rows default
+    // collapsed like role cards; the flag never serializes back.
+    expect(rows[0]!.collapsed).toBe(true)
+    // The wildcard entry reads back as a wildcard selector row (the GUI
+    // conversion hint path, same as role chains).
+    expect(rows[0]!.selectors[1]).toEqual({ wildcard: true, provider: { kind: 'catalog', id: 'openai' }, model: null })
+    expect(rows[1]!.days).toEqual([1, 5])
+    // Round-trip: the original rows come back unchanged (blank selectors
+    // drop out, but there are none here).
+    expect(rowsToTimeSlots(rows)).toEqual(timeSlots)
+  })
+
+  it('serializes an unknown row kind verbatim and drops blank selectors (dirty-check honesty)', () => {
+    // A hand-written YAML row with an unknown kind reads back unchanged —
+    // the card's dirty check stays quiet; save validation rejects it.
+    const rows = timeSlotsToRows([{ kind: 'weird', start: '09:00', end: '10:00', chain: ['openai/gpt-4o'] }])
+    expect(rows[0]!.kind).toBe('weird')
+    expect(rowsToTimeSlots(rows)).toEqual([{ kind: 'weird', start: '09:00', end: '10:00', days: [], chain: ['openai/gpt-4o'] }])
+    // Blank selector rows serialize to nothing (the chain-required
+    // validation surfaces the empty result).
+    const blank = timeSlotsToRows([{ kind: 'custom', start: '09:00', end: '10:00', days: [], chain: [] }])
+    expect(rowsToTimeSlots(blank)).toEqual([{ kind: 'custom', start: '09:00', end: '10:00', days: [], chain: [] }])
   })
 })
 

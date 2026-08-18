@@ -17,10 +17,13 @@
  *   `{ kind: 'retry' }` (own recovery, no `next()`).
  * - `agent/request` waterfall: apply a pending switch after `await next()`
  *   (provider/model override, inherited `reasoningEffort` dropped — the
- *   `installModelSelection` `withoutInheritedEffort` pattern), then the
- *   always-mode cap check (count `llm/retry` events for the current
- *   turn/step/provider; ≥ `alwaysModeRetryCap` → same decision path, reason
- *   `always-cap` — ADR-2).
+ *   `installModelSelection` `withoutInheritedEffort` pattern); a
+ *   root-origin `FallbacksChain/Auto` seed then overrides to the
+ *   effective chain's first exact head (select-is-primary, plan
+ *   fallbacks-virtual-chain Task 2); then the always-mode cap check (count
+ *   `llm/retry` events for the current turn/step/provider; ≥
+ *   `alwaysModeRetryCap` → same decision path, reason `always-cap` —
+ *   ADR-2).
  * - Per-agent state (`FallbackStateStore`): `agent/disposed` removes it,
  *   `agent/status` idle prunes per-step state defensively, plugin dispose
  *   clears everything (spec §6 — no residual state).
@@ -38,10 +41,16 @@ import { defaultFallbacksConfig, detectLegacyKeys, INHERIT_ROLE_ID, validateFall
 import { Config } from './schema.ts'
 import { pickRoleByLlm } from './automatch.ts'
 import { annotateCandidates, createCandidateFilter, hasWildcardEntry, resolveChain, resolveChainViews, selectCandidates, type FailingModel } from './chains.ts'
-import { selectorKey } from './selectors.ts'
+import { parseSelector, selectorKey, type Selector } from './selectors.ts'
 import { resolveRole } from './roles.ts'
 import { firstExactCandidate, resolveRoleAtDispatch } from './role-resolution.ts'
 import { FallbackStateStore, type AgentFallbackState, type PendingSwitch } from './state.ts'
+import {
+  isAllDayConforming,
+  resolveEffectiveChain,
+  resolveSlotState,
+  type SlotRowConfig,
+} from './time-slots.ts'
 import type { FallbackSwitchReason } from './events.ts'
 import {
   FALLBACKS_SETTINGS_NAMESPACE,
@@ -68,6 +77,12 @@ import {
 } from './seeds.ts'
 import { presetRoles } from './presets.ts'
 import { installTuiClient } from './tui.ts'
+import {
+  FALLBACKS_CHAIN_MODEL,
+  FALLBACKS_PROVIDER,
+  firstDispatchableExactHead,
+  installFallbacksAdapter,
+} from './virtual-adapter.ts'
 
 /** The plugin row id mounted by the profile bundle patch. */
 export const name = 'llm-fallbacks'
@@ -291,6 +306,20 @@ function currentModel(agent: Agent, provider: string): FailingModel {
 }
 
 /**
+ * Stable identity of a slot winner for the 分时切换 marker (P7): preset
+ * rows key by their frozen id, custom rows by their window — a chain-only
+ * edit keeps the SAME logical row (no spurious rotation log), while a
+ * window/preset change or a new matching row reads as a switch. `'all-day'`
+ * is the no-extra-row winner.
+ */
+function slotWinnerKey(winner: SlotRowConfig | 'all-day'): string {
+  if (winner === 'all-day') return 'all-day'
+  return winner.kind === 'preset'
+    ? `preset:${winner.preset}`
+    : `custom:${winner.start}-${winner.end}`
+}
+
+/**
  * Override a request config with a pending switch: provider/model replaced,
  * inherited `reasoningEffort` dropped (the `installModelSelection`
  * `withoutInheritedEffort` pattern).
@@ -377,6 +406,23 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     ctx.logger('llm-fallbacks').debug('fallbacks service already registered — no service on this fiber (multi-fiber dedupe)')
   }
   let source: () => FallbacksConfig = () => entry
+  // Virtual FallbacksChain/Auto adapter (plan fallbacks-virtual-chain
+  // Task 1, P2; PR #62 feedback): ONE conditional `ctx.inject(['llm'])`
+  // child — the picker row registers whenever `enabled` (conformance of
+  // the all-day chain is NOT part of registration: a legacy multi-model or
+  // empty rootChain still earns the row; the override below and the
+  // adapter's delegate still refuse a non-conforming all-day), and hides
+  // on disable. The returned reconcile thunk is wired into the settings
+  // onChange below: transition-reconcile over COMMITTED composed
+  // snapshots only (card drafts are client-side until gateway save), so
+  // the catalog never flickers; the condition deliberately ignores
+  // timeSlots and conformance, so slot-row / chain edits never churn
+  // registration.
+  // `() => source()` — the mutable binding, not the initial thunk: the
+  // settings section's setSource swaps `source` for the composed scope, and
+  // reconcile must read the LIVE composed snapshot (same pattern as the
+  // settings bridge below).
+  const reconcileFallbacksAdapter = installFallbacksAdapter(ctx, () => source())
   // AC-4: warn-not-crash startup validation — the schema-resolved entry is
   // checked once (invalid ids / undeclared rule references / illegal
   // selectors / bad fallback enum); each violation warns and "does not take
@@ -432,6 +478,13 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
       const current = source()
       roleIds = new Map(current.roles.list.map((role) => [role.id.trim(), role.id] as const))
       hasChains = current.rootChain.length > 0 || current.roles.list.some((role) => (role.chain?.length ?? 0) > 0)
+      // Virtual adapter registration reconcile (P2): enabled / all-day
+      // conformance transitions only — idempotent, slot edits no-op.
+      reconcileFallbacksAdapter()
+      // P7: a settings edit is a config change, not a wall-clock rotation —
+      // re-baseline the 分时切换 markers so the next root request starts
+      // from the new config instead of logging a spurious switch.
+      slotWinners.clear()
     },
   })
   const bridge: FallbacksSettingsBridge = {
@@ -486,6 +539,14 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   // role injection. Survives across the agent's request lifecycle; cleaned on
   // agent/disposed + plugin dispose (mirrors `states`).
   const dispatchInjected = new Set<string>()
+  // P7 分时切换 marker (plan fallbacks-timeslots Task 2): per-root-agent
+  // LAST slot winner (identity key + display label), in-process only. A
+  // winner change between root requests logs 分时切换 — a routing seed, NOT
+  // a failure decision: no cooldown, no switch count, no pending switch, no
+  // durable event. Cleaned on agent/disposed + plugin dispose (mirrors
+  // `dispatchInjected`) and re-baselined on settings change (a config edit
+  // is not a wall-clock rotation).
+  const slotWinners = new Map<string, { key: string; label: string }>()
 
   /**
    * Shared decision path (spec §5.1 lifecycle step 1): resolve the agent's
@@ -512,6 +573,19 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
       if (state.stepFailures.switchCount >= config.maxSwitchesPerStep) return null
     }
     const role = resolveRole(agent, config.roles.rules, roleIds, logger.warn)
+    // P7 (plan fallbacks-timeslots Task 2): slot rotation applies to
+    // ROOT-origin agents only, in BOTH primary and fallback-only modes —
+    // the effective chain (first matching extra row, else the all-day
+    // `rootChain`) replaces the raw `rootChain` as the root role's
+    // resolveChainViews tail. Subagent walks are UNCHANGED (raw rootChain
+    // append). P6 (qc1 F-001 — the gate lives in `resolveSlotState`, the
+    // single source every slot surface reads): without a conforming all-day
+    // the effective chain IS the raw rootChain — slot rows stay inert and
+    // the v0.2.2 walk over the raw rootChain runs verbatim (mirror the
+    // virtual adapter registration gate).
+    const rootTail = agent.session?.header?.origin === 'subagent'
+      ? config.rootChain
+      : resolveEffectiveChain(config, new Date(), config.tz ?? 'Asia/Shanghai')
     // T1 review Important #2: resolveChainViews walks the concatenated
     // candidates ONCE — `all` (early-exit / annotation view) and the
     // wildcard provenance come from the same pass, and `surviving` is the
@@ -519,7 +593,7 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     // warns at most once per decision (previously resolveChain ran twice:
     // all + surviving). Defensive warns flow through the plugin logger
     // (qc2 F-002 — not console).
-    const { all, wildcard } = resolveChainViews(config.roles.list, config.rootChain, role, current.provider, current.model, logger.warn)
+    const { all, wildcard } = resolveChainViews(config.roles.list, rootTail, role, current.provider, current.model, logger.warn)
     if (all.length === 0) return null
     // T2 review Important #1 (decision-path contract): the "missing id" skip
     // stays scoped to `provider/*` entries (spec §2 clause 2 — exact entries
@@ -529,7 +603,12 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     // NOT receive modelExists. F-002: the probe is built only when a
     // wildcard entry is reachable on the role's concatenated candidates —
     // pure exact chains take zero catalog probes.
-    const modelExists = hasWildcardEntry(config.roles.list, config.rootChain, role)
+    // The wildcard probe walks the SAME tail the candidates come from
+    // (`rootTail` — P7: the slot-effective chain for root-origin agents), so
+    // it never diverges from the resolution (qc2 F-003): a wildcard that
+    // only the winning slot row reaches still gets the existence filter, and
+    // pure exact chains stay zero-probe (F-002).
+    const modelExists = hasWildcardEntry(config.roles.list, rootTail, role)
       ? await makeModelExists(
         ctx,
         [...new Set(all.map((candidate) => candidate.provider))],
@@ -546,7 +625,11 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     const target = surviving[0]
     if (target === undefined || target.model === undefined) return null
     logger.info(
-      'llm-fallbacks: agent "%s" switch %s/%s -> %s/%s (role=%s, reason=%s, candidates=%o)',
+      // Copy split (spec § Copy): the failure walk is 降级切换 / fallback
+      // switch — never 分时 (that copy belongs to the slot-rotation log in
+      // agent/request). The keep-模型已降级 conversation notice is untouched
+      // (failure path only).
+      'llm-fallbacks: agent "%s" fallback switch (降级切换) %s/%s -> %s/%s (role=%s, reason=%s, candidates=%o)',
       agent.id,
       current.provider,
       current.model,
@@ -635,7 +718,7 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     // request means the always-cap count of the previous provider is moot.
     const applied = state === undefined ? undefined : states.applyPending(state, turn, step)
     // The override creates a NEW spread config object (never the deep-frozen
-    // LOOP seed). Host-native semantics (the marker coordination shipped with
+    // Host-native semantics (the marker coordination shipped with
     // the local dsh-agent patch is removed — see
     // .mstar/iterations/iter-20260811-fallbacks-mount-only/guides/
     // role-and-model-selection-exploration.md): whether this step's routing
@@ -644,11 +727,92 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     // default web-profile composition) the switch wins; when the
     // model-selection listener is outer (e.g. headless profile, or any agent
     // created before the plugin registered) the selection re-applies over
-    // this step — the documented degradation.
+    // this step — the documented degradation. For a FallbacksChain seed the
+    // same degradation stays graceful: the re-applied selection dispatches
+    // to the virtual route, whose stream() is P1's thin delegate to the
+    // effective head — no hard outage.
     if (applied !== undefined) {
       return overrideConfig(seed, applied.to)
     }
     const config = source()
+    // P7 分时切换 detection (plan fallbacks-timeslots Task 2): ROOT-origin
+    // requests only, in BOTH primary and fallback-only modes. `resolveSlotState`
+    // reads the current slot winner; a winner different from this agent's last
+    // seen winner (in-process `slotWinners` marker, cleaned on agent/disposed
+    // and settings change) is a time-slot switch (分时切换) — a routing seed,
+    // NOT a failure decision: info log only, exempt from cooldown and
+    // `maxSwitchesPerStep`, no pending switch, no durable event. Never
+    // force-switches an in-flight step — the rotation is observed here and
+    // applies through the SAME resolver to the failure walk (decide) and the
+    // FallbacksChain primary override below. Skipped entirely when no extra
+    // slot rows exist (the winner would always be 'all-day'). P6 (qc1
+    // F-001): gated on a conforming all-day like every other slot surface —
+    // a legacy multi-model chain keeps the rows inert HERE too (the
+    // resolver already reports 'all-day', but the explicit gate also keeps
+    // the per-agent marker and the log untouched across a config change).
+    if (
+      config.enabled
+      && isAllDayConforming(config.rootChain)
+      && (config.timeSlots?.length ?? 0) > 0
+      && agent.session?.header?.origin !== 'subagent'
+    ) {
+      const slot = resolveSlotState(config, new Date(), config.tz ?? 'Asia/Shanghai')
+      const key = slotWinnerKey(slot.winner)
+      const previous = slotWinners.get(agent.id)
+      if (previous !== undefined && previous.key !== key) {
+        logger.info(
+          'llm-fallbacks: agent "%s" time-slot switch (分时切换): %s -> %s',
+          agent.id,
+          previous.label,
+          slot.label,
+        )
+      }
+      slotWinners.set(agent.id, { key, label: slot.label })
+    }
+    // Select-is-primary (plan fallbacks-virtual-chain Task 2, P3; PR #62
+    // feedback): a ROOT-origin seed of the virtual `FallbacksChain/Auto`
+    // row means "use the chain as the root primary" — override the seed to
+    // the effective chain's FIRST DISPATCHABLE EXACT head (the shared
+    // `firstDispatchableExactHead` the virtual adapter's delegate paths
+    // also use — ONE skip/walk rule for override and delegate; the chain
+    // comes from `resolveEffectiveChain`, the single source — no
+    // rootChain[0] fallback branch here). Detection lives AFTER
+    // pending-switch application: a failure decision already progressed
+    // past the head and wins. Root-origin only (mirror the role-inject
+    // gate — a subagent seed that still carries the virtual pair is NOT
+    // overridden here; P1's thin stream() delegate handles those), plugin
+    // `enabled`, a CONFORMING all-day rootChain (the row is visible for a
+    // legacy/empty chain but the override refuses it — conformance still
+    // required for a successful primary, PR #62 feedback), and the
+    // effective chain must yield a dispatchable head — an empty /
+    // wildcard-only / self-route chain warns once and skips.
+    if (
+      config.enabled
+      && seed.provider === FALLBACKS_PROVIDER
+      && seed.model === FALLBACKS_CHAIN_MODEL
+      && agent.session?.header?.origin !== 'subagent'
+    ) {
+      if (!isAllDayConforming(config.rootChain)) {
+        logger.warn(
+          'llm-fallbacks: FallbacksChain/Auto selected but the all-day rootChain is not conforming (exactly one official V4 model) — no primary override',
+        )
+      } else {
+        const effective = resolveEffectiveChain(config, new Date(), config.tz ?? 'Asia/Shanghai')
+        const head = firstDispatchableExactHead(effective)
+        if (head === undefined) {
+          logger.warn(
+            'llm-fallbacks: FallbacksChain/Auto selected but the effective chain has no exact head (empty, wildcard-only, or self-route) — no primary override',
+          )
+        } else {
+          logger.info(
+            'llm-fallbacks: FallbacksChain/Auto selection overrides to the effective head %s/%s',
+            head.provider,
+            head.model,
+          )
+          return overrideConfig(seed, head)
+        }
+      }
+    }
     // Dispatch-time role injection (plan fallbacks-role-automatch Task 4): a
     // subagent-origin agent's FIRST request only (per-agent once-marker,
     // `dispatchInjected`, cleaned on agent/disposed + plugin dispose below).
@@ -746,11 +910,13 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   ctx.on('agent/disposed', ({ agent }) => {
     states.delete(agent.id)
     dispatchInjected.delete(agent.id)
+    slotWinners.delete(agent.id)
   })
 
   ctx.effect(() => () => {
     states.clear()
     dispatchInjected.clear()
+    slotWinners.clear()
   }, 'llm-fallbacks: clear per-agent state')
 
   // AC-5: /fallbacks — session-scoped read-only diagnostics. Conditional
@@ -770,6 +936,10 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
         origin: agent.session.header?.origin ?? 'root',
         role,
         ...resolveChainForDiagnostic(config.roles.list, config.rootChain, role, logger.warn),
+        // P7: current slot winner + label — the 分时 side of the status
+        // strip; the switches section below is the 降级切换 side. Config
+        // fact at `now` (a subagent session's chain display is unchanged).
+        slot: resolveSlotState(config, new Date(), config.tz ?? 'Asia/Shanghai'),
         switches: recentFallbacksSwitches(agent.session.events, RECENT_SWITCHES_LIMIT),
         cooldown: state === undefined ? [] : state.cooldown.snapshot(),
       }

@@ -105,11 +105,12 @@ describe('llm-fallbacks named cordis service', () => {
     apply(ctx)
 
     const fb = ctx.get('llm-fallbacks')!
-    // resolveRole — rule hit from origin root + provider match (same minimal
-    // fixture as tests/export-surface.spec.ts).
+    // resolveRole — rule hit from a subagent + provider match (same minimal
+    // fixture as tests/export-surface.spec.ts; PR #62 feedback: rules are
+    // subagent-only, so a root agent would resolve to 'inherit').
     const agent: Parameters<typeof resolveRole>[0] = {
       options: { provider: 'openai', model: 'gpt-4o' },
-      session: { header: { origin: 'root' } },
+      session: { header: { origin: 'subagent' } },
     }
     expect(fb.resolveRole(agent, [{ provider: 'openai', role: 'coder' }], new Map([['coder', 'coder']]))).toBe('coder')
     // resolveChain — the rootChain candidate survives the default filter
@@ -125,7 +126,9 @@ describe('llm-fallbacks named cordis service', () => {
     const validConfig: FallbacksConfig = {
       ...defaultFallbacksConfig,
       enabled: true,
-      rootChain: ['openai/gpt-4o'],
+      // Conforming all-day head (P6): rootChain must start with one official
+      // V4 model — a legacy non-official-head chain would now earn a warn.
+      rootChain: ['deepseek-official/deepseek-v4-flash'],
       roles: {
         list: [{ id: 'coder', persona: '', chain: ['anthropic/claude-3-5-sonnet'] }],
         rules: [{ origin: 'root', role: 'coder' }],

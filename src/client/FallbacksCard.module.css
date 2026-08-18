@@ -11,7 +11,9 @@
  * owns the column width — the 720px page wrapper is gone): a bordered box
  * whose header is a button (name over description, dirty pill, rotating
  * chevron) and whose open state shows a divided body — divider, notices /
- * form / status block, footer divider with Discard/Reset/Save. */
+ * form / status block. PR #62 UX round 2: the card footer is gone — each
+ * big section (主代理 / 子代理 / 高级选项) carries its own Save/Discard
+ * actions and error surface. */
 
 /* The card box. */
 .card {
@@ -114,14 +116,7 @@
   color: var(--dsw-alias-label-secondary);
 }
 
-.footer {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-  padding: 12px 0 4px;
-  border-top: 1px solid var(--dsw-alias-border-l2);
-}
+
 
 /* Body-level notices (KD-U3: degraded/error states keep the card chrome and
    put the notice/error in the body): business (info) tone for the
@@ -273,6 +268,37 @@
   color: var(--dsw-alias-label-secondary);
 }
 
+/* PR #62 feedback: static section headings (主代理 / 子代理) that group
+   related fields — field-label typography on the primary label color, with
+   the section-toggle vertical rhythm. No disclosure interaction. PR #62 UX
+   round 2: the heading is a flex row carrying the section's Save/Discard
+   actions on the right (the card footer is gone). */
+.sectionHeading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 12px;
+  line-height: 18px;
+  font-weight: 600;
+  color: var(--dsw-alias-label-primary);
+}
+
+.sectionHeadingText {
+  flex: 1;
+  min-width: 0;
+}
+
+/* The per-section action cluster (Save/Discard beside 主代理 / 子代理, and
+   Discard/Reset/Save inside the expanded 高级选项 body): right-aligned,
+   compact capsules so they sit quietly next to a 12px heading. */
+.sectionActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
 /* The advanced-section disclosure: a full-width quiet button at the
    field-label typography, mirroring the card header's chevron interaction
    (hover brighten, brand focus ring). The section body is the
@@ -329,6 +355,16 @@
   line-height: 18px;
   font-weight: 400;
   color: var(--dsw-alias-label-tertiary);
+}
+
+/* A preset time-slot row's frozen name (plan fallbacks-timeslots Task 3):
+   the row's read-only identity at field-label size on the primary tone —
+   stronger than the `.hint` window summary below it. */
+.slotPresetName {
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 500;
+  color: var(--dsw-alias-label-primary);
 }
 
 /* The "!" info badge (T3): a quiet circular mark on the tertiary tone that
@@ -407,6 +443,50 @@
 
 .optionRow input:disabled {
   cursor: default;
+}
+
+/* Custom time-slot day toggles (plan fallbacks-timeslots Task 3): seven
+   compact weekday chips sharing the option-row checkbox geometry — the
+   checkboxes keep the 16px box of `.optionRow input`, the chip text runs
+   at caption size. */
+.dayRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.dayCell {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
+}
+
+.dayCell:hover:has(input:not(:disabled)) {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.dayCell input {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--dsw-alias-brand-primary);
+  cursor: pointer;
+}
+
+.dayCell input:disabled {
+  cursor: default;
+}
+
+.dayCell input:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--dsw-alias-border-l3);
 }
 
 /* Text/enum fields: h32 r8 on the layer-1 fill, brand border on focus
@@ -524,6 +604,157 @@ select.input {
   flex: 1;
 }
 
+/* Collapsible row/panel headers (PR #62 feedback round; UX round 2): the
+   WHOLE first row is ONE header control — a full-width quiet button
+   (chevron + the collapsed summary: name/id + first model) — with a
+   separate drag handle beside it on the slot rows so click ≠ drag. */
+.collapseRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.collapseToggle {
+  appearance: none;
+  border: 0;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+  color: var(--dsw-alias-label-secondary);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  text-align: left;
+}
+
+.collapseToggle:disabled {
+  cursor: default;
+}
+
+.collapseTitle {
+  /* PR #62 UX round 4 part B: no flex:1 — the row tags hug the name
+     (flex:none + a max-width keeps the ellipsis for long custom names). */
+  flex: none;
+  max-width: 55%;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 18px;
+  font-weight: 500;
+  color: var(--dsw-alias-label-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.collapseMeta {
+  /* PR #62 UX round 4 part B: the first-model meta sits at the FAR RIGHT
+     of the row (the tags no longer push it — they hug the name). */
+  flex: none;
+  margin-left: auto;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* PR #62 UX round 4: compact non-interactive chips in the collapsed slot
+   title row — the cost/multiplier tags on the peak presets and the
+   active-slot indicator. PR #62 UX round 4 part B: restyled as
+   SEMI-TRANSPARENT OUTLINED PILLS — 1px border in the tone color + a
+   translucent tone fill (`color-mix`; the client targets modern evergreen
+   browsers) — light/dark adaptive through the same `--dsw-alias-state-*`
+   tokens the card's other badges use. */
+.slotTag {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0 6px;
+  font-size: 11px;
+  line-height: 17px;
+  font-weight: 500;
+  white-space: nowrap;
+  border: 1px solid;
+}
+
+.slotTagHighCost {
+  color: var(--dsw-alias-state-error-primary);
+  border-color: var(--dsw-alias-state-error-primary);
+  background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 10%, transparent);
+}
+
+.slotTagMultiplier {
+  color: var(--dsw-alias-state-warn-primary);
+  border-color: var(--dsw-alias-state-warn-primary);
+  background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 10%, transparent);
+}
+
+.slotTagActive {
+  color: var(--dsw-alias-state-success-primary);
+  border-color: var(--dsw-alias-state-success-primary);
+  background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 10%, transparent);
+}
+
+/* The slot-row drag handle (PR #62 UX round 2): a quiet grip button beside
+   the collapse header — the ONLY draggable element of the row, so it works
+   while the row is collapsed AND a click on the header never starts a
+   drag. The ellipsis glyph rotates 90° into the vertical grip (⋮). */
+.dragHandle {
+  appearance: none;
+  border: 0;
+  background: none;
+  padding: 0;
+  cursor: grab;
+  color: var(--dsw-alias-label-tertiary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  flex: none;
+}
+
+.dragHandle:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+}
+
+.dragHandle:active {
+  cursor: grabbing;
+}
+
+.dragHandle:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+.dragHandle:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--dsw-alias-border-l3);
+}
+
+.dragHandleIcon {
+  transform: rotate(90deg);
+}
+
+/* Drag-reorder (PR #62 feedback round): the dragged slot card dims, the
+   drop target gets a dashed brand outline. */
+.slotCardDragging {
+  opacity: 0.45;
+}
+
+.slotCardOver {
+  outline: 1px dashed var(--dsw-alias-brand-primary);
+  outline-offset: 2px;
+}
+
 .ruleCellLabel {
   font-size: 12px;
   line-height: 18px;
@@ -616,6 +847,25 @@ select.input {
   align-self: flex-start;
 }
 
+/* The time-slot add row (preset picker + Add preset + Add custom): the
+   picker keeps the enum-select width (max 240px), the two sm outline
+   buttons trail it — the row never stretches across the field. */
+.slotAddRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  flex-wrap: wrap;
+}
+
+/* Time-slot row actions (move up / move down / remove): icon buttons in a
+   tight cluster, right-aligned via the editorCard's `.cardFoot`. */
+.rowActions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
 /* Footer actions: right-aligned h36 r18 capsules at the card bottom — the
    primary button carries the brand fill, discard/reset are the outlined
    siblings (the section-era editorActions vocabulary, kept per the brief;
@@ -666,6 +916,18 @@ select.input {
 .secondaryButton:focus-visible {
   outline: none;
   box-shadow: 0 0 0 2px var(--dsw-alias-border-l3);
+}
+
+/* The per-section action capsules (PR #62 UX round 2): the h36 r18
+   vocabulary shrunk to h28 r14 so the buttons sit beside a 12px section
+   heading without dominating it. Composes with .primaryButton /
+   .secondaryButton (defined after them so the overrides win). */
+.sectionAction {
+  height: 28px;
+  padding: 0 12px;
+  border-radius: 14px;
+  font-size: 12px;
+  line-height: 18px;
 }
 
 /* AC-7 read-only status, compact: an outlined card like the Models rows
@@ -719,20 +981,6 @@ select.input {
   line-height: 18px;
   color: var(--dsw-alias-label-tertiary);
   text-align: center;
-}
-
-/* Reset-to-defaults confirmation dialog (the Models delete-confirm width). */
-.resetDialog {
-  width: min(480px, 100%);
-}
-
-.confirmDanger:not(:disabled) {
-  border-color: var(--dsw-alias-state-error-primary);
-  color: var(--dsw-alias-state-error-primary);
-}
-
-.confirmDanger:hover:not(:disabled) {
-  background: var(--dsw-alias-interactive-bg-hover-danger);
 }
 
 @media (prefers-reduced-motion: reduce) {

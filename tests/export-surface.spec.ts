@@ -118,10 +118,11 @@ describe('export surface: callable smokes', () => {
     vi.restoreAllMocks()
   })
 
-  it('resolveRole resolves a rule hit from the package root (origin root + provider match)', () => {
+  it('resolveRole resolves a rule hit from the package root (subagent + provider match)', () => {
+    // PR #62 feedback: rules are subagent-only — root requests never match.
     const agent: index.AgentLike = {
       options: { provider: 'openai', model: 'gpt-4o' },
-      session: { header: { origin: 'root' } },
+      session: { header: { origin: 'subagent' } },
     }
     expect(
       index.resolveRole(agent, [{ provider: 'openai', role: 'coder' }], new Map([['coder', 'coder']])),
@@ -133,7 +134,9 @@ describe('export surface: callable smokes', () => {
     const validConfig: index.FallbacksConfig = {
       ...index.defaultFallbacksConfig,
       enabled: true,
-      rootChain: ['openai/gpt-4o'],
+      // Conforming all-day head (P6): rootChain must start with one official
+      // V4 model — a legacy non-official-head chain would now earn a warn.
+      rootChain: ['deepseek-official/deepseek-v4-flash'],
       roles: {
         list: [{ id: 'coder', persona: '', chain: ['anthropic/claude-3-5-sonnet'] }],
         rules: [{ origin: 'root', role: 'coder' }],

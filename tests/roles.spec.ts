@@ -1,13 +1,16 @@
 /**
- * Role resolution unit tests (plan fallbacks-role-runtime Task 1).
+ * Role resolution unit tests (plan fallbacks-role-runtime Task 1; PR #62
+ * feedback round).
  *
  * Covers spec §7.1 — first matching `roles.rules` entry (order matters) →
- * built-in `'inherit'`, including origin / provider / model pattern
- * matching. A matched rule must target a declared role id (`roleIds`) or
- * `'inherit'`; an undeclared target warns and resolves to `'inherit'`
- * (defensive — startup validation already flagged the reference).
- * `roleIds` is the canonical trimmed-id map (`trimmed id → declared raw
- * id`, qc2 F-001): a matched rule returns the DECLARED RAW id.
+ * built-in `'inherit'`, with provider / model pattern matching. Rules are
+ * SUBAGENT-ONLY (PR #62 feedback): root requests never match rules, and
+ * the legacy per-rule `origin` field is ignored at match time. A matched
+ * rule must target a declared role id (`roleIds`) or `'inherit'`; an
+ * undeclared target warns and resolves to `'inherit'` (defensive —
+ * startup validation already flagged the reference). `roleIds` is the
+ * canonical trimmed-id map (`trimmed id → declared raw id`, qc2 F-001): a
+ * matched rule returns the DECLARED RAW id.
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -15,8 +18,10 @@ import type { AgentLike, FallbacksRoleRule } from '../src/roles.ts'
 import { resolveRole } from '../src/roles.ts'
 
 const RULES: FallbacksRoleRule[] = [
-  { origin: 'subagent', role: 'code-review' },
-  { origin: 'root', provider: 'openai', role: 'root-openai' },
+  // PR #62 feedback: legacy `origin` fields are IGNORED at match time —
+  // every rule below applies to subagents regardless of the stored value
+  // (rule 1 deliberately carries `origin: 'root'` to pin that semantics).
+  { origin: 'root', provider: 'openai', role: 'openai-any' },
   { provider: 'anthropic', role: 'anthropic-only' },
   { model: 'gpt-4o', role: 'gpt4o-only' },
 ]
@@ -27,8 +32,7 @@ const RULES: FallbacksRoleRule[] = [
  * dedicated tests below).
  */
 const ROLE_IDS = new Map([
-  ['code-review', 'code-review'],
-  ['root-openai', 'root-openai'],
+  ['openai-any', 'openai-any'],
   ['anthropic-only', 'anthropic-only'],
   ['gpt4o-only', 'gpt4o-only'],
 ])
@@ -38,31 +42,37 @@ describe('resolveRole', () => {
     vi.restoreAllMocks()
   })
 
-  it('matches an origin-only rule for a subagent', () => {
+  it('matches the first provider-scoped rule for a subagent (persisted origin ignored)', () => {
     const agent: AgentLike = {
       options: { provider: 'openai', model: 'gpt-4o' },
       session: { header: { origin: 'subagent' } },
     }
-    expect(resolveRole(agent, RULES, ROLE_IDS)).toBe('code-review')
+    expect(resolveRole(agent, RULES, ROLE_IDS)).toBe('openai-any')
   })
 
-  it('treats a missing origin as root (root agents carry no origin)', () => {
+  it('treats a missing origin as root — root requests never match rules', () => {
+    // PR #62 feedback: rules are subagent-only — even an `origin: root`
+    // rule cannot match a root agent (the field is ignored entirely).
     const rules: FallbacksRoleRule[] = [{ origin: 'root', role: 'root-chain' }]
     const agent: AgentLike = { options: { provider: 'openai', model: 'gpt-4o' } }
-    expect(resolveRole(agent, rules, new Map([['root-chain', 'root-chain']]))).toBe('root-chain')
+    expect(resolveRole(agent, rules, new Map([['root-chain', 'root-chain']]))).toBe('inherit')
   })
 
-  it('matches an origin+provider rule for a root agent', () => {
+  it('never matches a rule for a root agent even when provider/model fit (subagent-only)', () => {
+    // The second fixture rule is `{ origin: 'root', provider: 'openai' }` —
+    // previously it routed root openai agents; now root resolves to
+    // 'inherit' unconditionally.
     const agent: AgentLike = { options: { provider: 'openai', model: 'gpt-4o' } }
-    expect(resolveRole(agent, RULES, ROLE_IDS)).toBe('root-openai')
+    expect(resolveRole(agent, RULES, ROLE_IDS)).toBe('inherit')
   })
 
-  it('matches a provider-only rule (later rule, no earlier match)', () => {
-    // origin 'root' skips the first rule; provider 'anthropic' skips the
-    // second ({origin:'root', provider:'openai'}) → third rule matches.
+  it('matches a provider-only rule for a subagent (later rule, no earlier match)', () => {
+    // First rule (role-only) matches ANY subagent — so this fixture walks
+    // past it only when the subagent is matched by an earlier rule; here
+    // 'anthropic' skips rules 1-2 → third rule matches.
     const agent: AgentLike = {
       options: { provider: 'anthropic', model: 'claude-3-5-sonnet' },
-      session: { header: { origin: 'root' } },
+      session: { header: { origin: 'subagent' } },
     }
     expect(resolveRole(agent, RULES, ROLE_IDS)).toBe('anthropic-only')
   })
@@ -70,12 +80,12 @@ describe('resolveRole', () => {
   it('matches a model-only rule', () => {
     const agent: AgentLike = {
       options: { provider: 'google', model: 'gpt-4o' },
-      session: { header: { origin: 'root' } },
+      session: { header: { origin: 'subagent' } },
     }
     expect(resolveRole(agent, RULES, ROLE_IDS)).toBe('gpt4o-only')
   })
 
-  it('matches an origin+provider+model combo rule when all patterns fit', () => {
+  it('matches an origin+provider+model combo rule when all patterns fit (persisted origin ignored)', () => {
     const rules: FallbacksRoleRule[] = [
       { origin: 'subagent', provider: 'openai', model: 'gpt-4o', role: 'subagent-openai-gpt4o' },
     ]
@@ -117,8 +127,20 @@ describe('resolveRole', () => {
       { model: 'gpt-4o', role: 'first' },
       { model: 'gpt-4o', role: 'second' },
     ]
-    const agent: AgentLike = { options: { model: 'gpt-4o' } }
+    const agent: AgentLike = { options: { model: 'gpt-4o' }, session: { header: { origin: 'subagent' } } }
     expect(resolveRole(agent, rules, new Map([['first', 'first'], ['second', 'second']]))).toBe('first')
+  })
+
+  it('a persisted origin: root rule still matches a subagent (origin ignored)', () => {
+    // PR #62 feedback: the legacy `origin` field is ignored at match time —
+    // a pre-feedback rule written as `{ origin: 'root', provider: 'openai' }`
+    // applies to subagents exactly like any other rule.
+    const rules: FallbacksRoleRule[] = [{ origin: 'root', provider: 'openai', role: 'coder' }]
+    const agent: AgentLike = {
+      options: { provider: 'openai', model: 'gpt-4o' },
+      session: { header: { origin: 'subagent' } },
+    }
+    expect(resolveRole(agent, rules, new Map([['coder', 'coder']]))).toBe('coder')
   })
 
   it('warns and falls back to inherit when a rule targets an undeclared role', () => {
@@ -134,6 +156,7 @@ describe('resolveRole', () => {
   })
 
   it('handles a completely bare agent shape', () => {
+    // No origin → root → rules never match → inherit.
     expect(resolveRole({}, RULES, ROLE_IDS)).toBe('inherit')
   })
 
@@ -141,21 +164,30 @@ describe('resolveRole', () => {
     // roles.list: [{ id: ' coder ' }] + roles.rules: [{ role: 'coder' }] —
     // the validator accepts this (both sides trimmed); the runtime must
     // resolve to the DECLARED role (raw id), never silently 'inherit'.
-    const agent: AgentLike = { options: { provider: 'openai', model: 'gpt-4o' } }
+    const agent: AgentLike = {
+      options: { provider: 'openai', model: 'gpt-4o' },
+      session: { header: { origin: 'subagent' } },
+    }
     const roleIds = new Map([['coder', ' coder ']])
     expect(resolveRole(agent, [{ provider: 'openai', role: 'coder' }], roleIds)).toBe(' coder ')
   })
 
   it('canonicalizes a padded rule reference (qc2 F-001): raw declared id returned for the reverse padding', () => {
     // Reverse asymmetry: list id 'coder' (unpadded), rule role ' coder '.
-    const agent: AgentLike = { options: { provider: 'openai', model: 'gpt-4o' } }
+    const agent: AgentLike = {
+      options: { provider: 'openai', model: 'gpt-4o' },
+      session: { header: { origin: 'subagent' } },
+    }
     const roleIds = new Map([['coder', 'coder']])
     expect(resolveRole(agent, [{ provider: 'openai', role: ' coder ' }], roleIds)).toBe('coder')
   })
 
   it('still falls back to inherit when a padded rule reference is genuinely undeclared', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    const agent: AgentLike = { options: { provider: 'openai', model: 'gpt-4o' } }
+    const agent: AgentLike = {
+      options: { provider: 'openai', model: 'gpt-4o' },
+      session: { header: { origin: 'subagent' } },
+    }
     const roleIds = new Map([['coder', 'coder']])
     expect(resolveRole(agent, [{ provider: 'openai', role: ' ghost ' }], roleIds)).toBe('inherit')
     expect(warn).toHaveBeenCalledTimes(1)

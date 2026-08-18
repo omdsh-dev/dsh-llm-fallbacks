@@ -25,8 +25,11 @@ import type { AgentLike, FallbacksRoleRule } from '../src/roles.ts'
 import { firstExactCandidate, resolveRoleAtDispatch } from '../src/role-resolution.ts'
 
 const RULES: FallbacksRoleRule[] = [
-  { origin: 'subagent', role: 'code-review' },
+  // Provider-scoped rule first so the anthropic tests below can reach it;
+  // the trailing role-only rule is the subagent catch-all (its legacy
+  // `origin` is ignored — PR #62 feedback).
   { provider: 'anthropic', role: 'anthropic-only' },
+  { origin: 'subagent', role: 'code-review' },
 ]
 
 /**
@@ -49,7 +52,7 @@ describe('resolveRoleAtDispatch — stage 1 explicit', () => {
   })
 
   it('returns the declared RAW id when the preset matches a declared id, beating a rules match', async () => {
-    // origin 'subagent' would hit the first rule — the explicit stage must
+    // The subagent would hit the rules stage — the explicit stage must
     // short-circuit before rules.
     const agent: AgentLike = { session: { header: { origin: 'subagent', agentPreset: 'coder' } } }
     await expect(
@@ -65,8 +68,13 @@ describe('resolveRoleAtDispatch — stage 1 explicit', () => {
   })
 
   it('falls through to rules when the preset is undeclared (no warn)', async () => {
+    // PR #62 feedback: rules are subagent-only — the agent must carry a
+    // subagent origin for the rules stage to match.
     const warn = vi.fn()
-    const agent: AgentLike = { options: { provider: 'anthropic' }, session: { header: { agentPreset: 'ghost' } } }
+    const agent: AgentLike = {
+      options: { provider: 'anthropic' },
+      session: { header: { origin: 'subagent', agentPreset: 'ghost' } },
+    }
     await expect(resolveRoleAtDispatch(agent, RULES, ROLE_IDS, { automatchEnabled: true, warn })).resolves.toBe('anthropic-only')
     expect(warn).not.toHaveBeenCalled()
   })
@@ -79,7 +87,10 @@ describe('resolveRoleAtDispatch — stage 1 explicit', () => {
   })
 
   it('falls through to rules when the preset is empty/whitespace-only', async () => {
-    const agent: AgentLike = { options: { provider: 'anthropic' }, session: { header: { agentPreset: '   ' } } }
+    const agent: AgentLike = {
+      options: { provider: 'anthropic' },
+      session: { header: { origin: 'subagent', agentPreset: '   ' } },
+    }
     await expect(
       resolveRoleAtDispatch(agent, RULES, ROLE_IDS, { automatchEnabled: true, warn: () => {} }),
     ).resolves.toBe('anthropic-only')

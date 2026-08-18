@@ -45,9 +45,21 @@ Add a `fallbacks:` section to the dsh settings document (default `$DSH_HOME/sett
 ```yaml
 fallbacks:
   enabled: true            # feature switch; defaults to false — set explicitly to enable
-  rootChain:               # block 1: root agent's chain, tried in order after the primary model fails
-    - anthropic/claude-3-5-sonnet
-    - openai/*
+  rootChain:               # all-day chain: LAST entry is 默认模型 (official V4);
+    - anthropic/claude-3-5-sonnet          # leading entries = 默认降级链 (walked first)
+    - deepseek-official/deepseek-v4-flash  # last = Flash XOR Pro last-resort fallback
+  timeSlots:               # optional: rotate the effective root chain by wall-clock windows
+    - kind: preset         # frozen UTC+8 windows; only the model chain is editable (locks tz to Asia/Shanghai)
+      preset: liang-peak   # 09:00–12:00 and 14:00–18:00, every day
+      chain:
+        - anthropic/claude-3-5-sonnet
+    - kind: custom         # custom window (may wrap midnight)
+      name: evening        # optional display name
+      start: '22:00'
+      end: '02:00'
+      days: [1, 5]         # optional; omitted/empty = every day (0=Sunday…6=Saturday)
+      chain:
+        - openai/gpt-4o
   roles:                   # block 2: declare role entities first, then let rules reference them
     list:
       - id: reviewer       # unique id (/^[a-z0-9-]{1,32}$/); "inherit" is reserved
@@ -55,12 +67,11 @@ fallbacks:
         chain:
           - openai/gpt-4o-mini
         fallback: inherit-root   # default: role chain, then append rootChain
-    rules:
-      - origin: subagent   # all subagents → reviewer role (own chain + inherited root)
-        role: reviewer
+    rules:                 # subagent-only: rules never match root requests
+      - role: reviewer     # all subagents → reviewer role (own chain + inherited root)
 ```
 
-No rule match → the built-in `inherit` → `rootChain`. `enabled` defaults to **off** — with no chains configured the plugin is a complete no-op. Full reference (role entities, fallback strategies, rules, selectors, preset roles) → [docs/configuration.md](docs/configuration.md).
+No rule match (or a root request) → the built-in `inherit` → `rootChain`. `enabled` defaults to **off** — with no chains configured the plugin is a complete no-op. The all-day `rootChain` must END with exactly one official V4 model (`deepseek-official/deepseek-v4-flash` or `deepseek-official/deepseek-v4-pro`) — the settings card and gateway reject any other tail on save (a legacy non-official-tail chain warns at startup and keeps working as a fallback-only walk, but cannot be saved as-is). Full reference (role entities, fallback strategies, rules, selectors, preset roles, time-slot presets) → [docs/configuration.md](docs/configuration.md).
 
 > **Upgrade note (behavior change)**: an existing `fallbacks:` section **without an explicit `enabled` key** resolves to `false` after upgrading — add `enabled: true` to keep the plugin active.
 
@@ -72,11 +83,39 @@ Save and restart the session, then type `/fallbacks` — the read-only in-sessio
 
 - **Automatic fallback for root and subagents**: any agent switches down the chain to the next available provider/model on model failure — no manual model switching.
 - **Two-block config**: `rootChain` for the root agent; declared role entities (`roles.list`) referenced by `roles.rules` (or the built-in `inherit`).
+- **Chain as root primary from the picker**: when `enabled` is on, the host model picker (web and TUI alike) shows a virtual `FallbacksChain` / `Auto` row — selecting it uses the configured chain as the root primary (a conforming all-day head is required for the override to succeed); selecting a real model keeps fallback-only (see [FallbacksChain in the model picker](#fallbackschain-in-the-model-picker)).
+- **Time-slot rotation (分时切换)**: optional `fallbacks.timeSlots` rows rotate the effective root chain by wall-clock windows in the config-level `tz` timezone (default `Asia/Shanghai`) — four frozen UTC+8 presets (`liang-peak` / `liang-valley` / `glm-peak` / `glm-valley`, windows are code constants, models-only edits) or custom `start`/`end`/`days` windows. The first matching row wins; the all-day row is always last. A slot change applies on the **next** root request and is logged as a **time-slot switch** (分时切换) — a routing seed, never a failure decision: it consumes no cooldown and does not count against `maxSwitchesPerStep`. Failure walks keep the **降级切换** / fallback-switch copy (see [Time-slot presets](#time-slot-presets-分时切换)).
 - **Dispatch-time role resolution**: on a subagent's first request its role is resolved in three stages — explicit (`agentPreset` matches a declared role id) → deterministic rules (unchanged) → LLM auto-match from the declared role taxonomy (`fallbacks.roleAutoMatch`, default `true`). The resolved role's chain-head model is injected into the first request and recorded via an explicit `role → model` log line (no durable `fallbacks/switch` event is written — issue #52 stop-write); set `roleAutoMatch: false` to disable the LLM auto-match stage (the explicit `agentPreset` stage still applies — with no explicit role this reproduces the previous rules-only behavior). The settings card always renders an **Enable role auto-match** switch (default `true`) to toggle it — the schema default applies even to legacy configs that never declared the key.
 - **Cooldown and revert**: failed / switched-away models are not re-selected during cooldown; `revertPolicy: cooldown-expiry` returns to the primary model automatically.
 - **Visible behavior**: every switch is recorded in an info-level log line (from/to/role/reason) — no silent model switching. The plugin deliberately writes **no** durable `fallbacks/switch` session events (issue #52: the apply()-time event-type registration was proven ineffective, and a session containing the event refused to load after a dsh restart). Sessions written by older plugin versions that contain such events are repaired by `scripts/repair-fallbacks-switch-logs.ts`, which marks legacy events ignorable so affected sessions load again.
 - **Safety valves**: `maxSwitchesPerStep` caps switches per step and `alwaysModeRetryCap` caps always-mode retries — chain loops cannot amplify latency.
 - **No-config no-op**: `enabled` defaults to off; with no chains configured the plugin behaves exactly like not being installed.
+
+## FallbacksChain in the model picker
+
+When `enabled: true`, the plugin registers a virtual provider, **FallbacksChain**, with a single catalog row: **Auto**. The web profile and dsh-tui both see the row: they share the same adapter catalog, so no TUI settings page or host patch is involved. The row is visible whenever the plugin is enabled — a legacy or empty all-day chain does NOT hide it (the override just refuses to fire).
+
+Selecting **FallbacksChain / Auto** uses the configured chain as the root **primary**: root requests route to the effective chain's first exact `provider/model` at request time, and the fallback engine degrades from that head as usual. Selecting any real catalog model keeps the v0.2.2 fallback-only behavior — the session model is primary and the chain engages only after it fails.
+
+There is **no `rootMode` switch** — no config key, YAML field, settings toggle, or gateway flag. The mode is the session's `{provider, model}` selection itself: `FallbacksChain` = chain primary; any real model = fallback-only.
+
+Notes:
+
+- **Picker label**: the row's catalog `name` (what the composer trigger shows) is live — `Auto: DeepSeek V4 Flash[Liang Peak]` / `Auto: DeepSeek V4 Flash[all-day]` (catalog display name, not the model id); the id stays `Auto`. Bare `Auto` if the all-day tail is not conforming. Refresh by reopening the picker.
+- **Root only**: the row is about the root agent. Subagent role resolution and injection are unchanged; a subagent session that inherits the selection still routes through the chain head — the virtual row is a thin delegate, never a second routing engine.
+- **Conformance gate on the tail**: a successful override/delegate requires the all-day chain to be **tail-conforming** — its last entry must be exactly one official V4 model (`deepseek-official/deepseek-v4-flash` or `deepseek-official/deepseek-v4-pro`, the card's 默认模型 panel); leading entries (默认降级链) are walked first. Disabling the plugin hides the row again (slot-row/chain edits never churn registration).
+- **Stale selection**: if the row disappears (plugin disabled) while `FallbacksChain / Auto` is selected, the session keeps showing it as the current model with `routable: false` — pick a real model from the catalog to continue (host-native catalog semantics).
+- **Capabilities follow the head**: the row's model metadata (context window, modalities, reasoning) mirrors the current effective head; retry attribution follows the permissive default — retries/failures are accounted to the real head pair, not to the `FallbacksChain` provider. Full semantics → [docs/configuration.md](docs/configuration.md).
+
+## Time-slot presets (分时切换)
+
+Time-slot rows rotate the **effective root chain** by wall-clock windows — useful for peak/valley pricing without confusing wall-clock rotation with failure fallback. The copy split is strict: slot rotation logs and UI say **分时切换** (time-slot switch); the failure walk keeps **降级切换** (fallback switch); the conversation notice 模型已降级 / Model downgraded stays on the failure path only.
+
+- **Match order**: at every root request, the first extra row whose window contains the current moment (in `fallbacks.tz`, default `Asia/Shanghai` / UTC+8) wins — that row's chain **replaces** the all-day chain. No row matches → the all-day `rootChain` is used. The all-day row is always last and **required**: its last entry must be exactly one official V4 model (Flash XOR Pro; leading 默认降级链 entries are walked first).
+- **Presets** (frozen, not user-editable): `liang-peak` = 09:00–12:00 **and** 14:00–18:00 every day; `liang-valley` = every other UTC+8 time; `glm-peak` = Monday–Friday 14:00–18:00; `glm-valley` = every other time. One preset id = one row; the card picker never offers a duplicate.
+- **Custom rows**: `start` / `end` (`HH:mm`, may wrap midnight) + optional `days` (0=Sunday…6=Saturday; omitted/empty = every day) + models.
+- **Next-request apply**: a slot boundary crossing never preempts an in-flight step — the new row takes effect on the next root request. Rotation is mount-only: info log + card/`/fallbacks` status line, no durable switch event.
+- **Settings card**: the 主代理 section groups 分时槽设置 (extra rows — add preset / add custom / remove / reorder by buttons or **drag**; preset rows show a read-only window summary and edit models only; custom rows carry an editable name; the **timezone picker** lives here and **locks to Asia/Shanghai while any preset row exists**, since preset windows are frozen UTC+8 constants), 默认降级链 (walked first when no slot matches) and 默认模型 (the official V4 Flash | Pro last-resort fallback). Rows are collapsible to name + first model. There is no `timeSlots.enabled` master switch (adding a row is the opt-in) and no `rootMode` control.
 
 ## Preset roles
 

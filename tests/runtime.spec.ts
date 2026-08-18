@@ -145,7 +145,7 @@ describe('role resolution + chain concatenation (spec §7)', () => {
   })
 
   it('routes a matching rule to the declared role chain', async () => {
-    const { agent } = makeAgent('agent-coder', { provider: 'mock', model: 'gpt-4o' })
+    const { agent } = makeAgent('agent-coder', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent' })
     apply(ctx, cfg({
       rootChain: ['third/x'],
       roles: {
@@ -168,7 +168,7 @@ describe('role resolution + chain concatenation (spec §7)', () => {
     // degrade to 'inherit' → rootChain. The declared role's chain must be
     // used, proving the padded id resolves (declared raw id returned, roleDef
     // lookup trim-consistent) — no silent inertness.
-    const { agent } = makeAgent('agent-padded', { provider: 'mock', model: 'gpt-4o' })
+    const { agent } = makeAgent('agent-padded', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent' })
     apply(ctx, cfg({
       rootChain: ['third/x'],
       roles: {
@@ -191,7 +191,7 @@ describe('role resolution + chain concatenation (spec §7)', () => {
     // The role chain's only entry equals the current model (filtered), so
     // the appended rootChain tail must still be reachable — the switch to
     // third/x proves the concatenation (role entries first, rootChain last).
-    const { agent } = makeAgent('agent-inherit', { provider: 'mock', model: 'gpt-4o' })
+    const { agent } = makeAgent('agent-inherit', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent' })
     apply(ctx, cfg({
       rootChain: ['third/x'],
       roles: {
@@ -210,7 +210,7 @@ describe('role resolution + chain concatenation (spec §7)', () => {
   })
 
   it("keeps only the role chain under fallback 'none' (no rootChain append)", async () => {
-    const { agent, setRoute } = makeAgent('agent-none', { provider: 'mock', model: 'gpt-4o' })
+    const { agent, setRoute } = makeAgent('agent-none', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent' })
     apply(ctx, cfg({
       rootChain: ['third/x'],
       roles: {
@@ -231,7 +231,7 @@ describe('role resolution + chain concatenation (spec §7)', () => {
   })
 
   it("resolves an explicit rule targeting 'inherit' to rootChain", async () => {
-    const { agent } = makeAgent('agent-explicit-inherit', { provider: 'mock', model: 'gpt-4o' })
+    const { agent } = makeAgent('agent-explicit-inherit', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent' })
     apply(ctx, cfg({
       rootChain: ['other/gpt-4o'],
       roles: { list: [], rules: [{ role: 'inherit' }] },
@@ -248,7 +248,7 @@ describe('role resolution + chain concatenation (spec §7)', () => {
 
   it('defends an undeclared role reference: warn + fall back to inherit → rootChain (no crash)', async () => {
     const logs = captureLogs()
-    const { agent } = makeAgent('agent-ghost', { provider: 'mock', model: 'gpt-4o' })
+    const { agent } = makeAgent('agent-ghost', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent' })
     apply(ctx, cfg({
       rootChain: ['other/gpt-4o'],
       roles: { list: [], rules: [{ role: 'ghost' }] },
@@ -487,7 +487,7 @@ describe('decision-path candidate filtering (T2 review Important #1)', () => {
       listModels: async (provider: string) =>
         (provider === 'other' ? [] : [{ provider, id: 'gpt-4o', name: 'gpt-4o' }]),
     })
-    const { agent } = makeAgent('agent-wild-missing', { provider: 'mock', model: 'gpt-4o' })
+    const { agent } = makeAgent('agent-wild-missing', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent' })
     apply(ctx, cfg({
       roles: {
         list: [role('coder', ['other/*'])],
@@ -505,7 +505,7 @@ describe('decision-path candidate filtering (T2 review Important #1)', () => {
       listModels: async (provider: string) =>
         (provider === 'other' ? [{ provider, id: 'gpt-4o', name: 'gpt-4o' }] : []),
     })
-    const { agent } = makeAgent('agent-wild-present', { provider: 'mock', model: 'gpt-4o' })
+    const { agent } = makeAgent('agent-wild-present', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent' })
     apply(ctx, cfg({
       roles: {
         list: [role('coder', ['other/*'])],
@@ -523,7 +523,7 @@ describe('decision-path candidate filtering (T2 review Important #1)', () => {
 
   it('never existence-filters explicitly listed exact entries (spec §2 clause 2)', async () => {
     ctx.provide('llm', { listModels: async () => [] })
-    const { agent } = makeAgent('agent-exact', { provider: 'mock', model: 'gpt-4o' })
+    const { agent } = makeAgent('agent-exact', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent' })
     apply(ctx, cfg({
       roles: {
         list: [role('coder', ['other/gpt-4o'])],
@@ -558,7 +558,7 @@ describe('decision-path candidate filtering (T2 review Important #1)', () => {
     const listModels = vi.fn(async (provider: string) =>
       (provider === 'other' ? [{ id: 'gpt-4o' }] : []))
     ctx.provide('llm', { listModels })
-    const { agent } = makeAgent('f002-wild', { provider: 'mock', model: 'gpt-4o' })
+    const { agent } = makeAgent('f002-wild', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent' })
     apply(ctx, cfg({
       roles: {
         list: [role('coder', ['other/*'])],
@@ -658,7 +658,7 @@ describe('switch log skip reasons (spec §2 行为可见性; T3 review Minor 1)'
         (provider === 'other' ? [] : [{ provider, id: 'gpt-4o', name: 'gpt-4o' }]),
     })
     const logs = captureLogs()
-    const { agent } = makeAgent('agent-log-missing', { provider: 'mock', model: 'gpt-4o' })
+    const { agent } = makeAgent('agent-log-missing', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent' })
     apply(ctx, cfg({
       roles: {
         list: [role('coder', ['other/*', 'local/*'])],

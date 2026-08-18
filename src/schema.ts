@@ -49,6 +49,9 @@ export const Config = z.object({
       rules: z
         .array(
           z.object({
+            // Legacy wire field (PR #62 feedback): accepted so pre-feedback
+            // configs parse/save unchanged; ignored at match time — rules
+            // are subagent-only.
             origin: z.union([z.const('root'), z.const('subagent')]),
             provider: z.string(),
             model: z.string(),
@@ -71,4 +74,25 @@ export const Config = z.object({
   // same additive shape as the other optional fields — so `Config({})`
   // carries `roleAutoMatch: true` and every resolved config has a value.
   roleAutoMatch: z.boolean().default(true),
+  // 11th/12th fields (plan fallbacks-timeslots Task 1, P5): extra time-slot
+  // rows (the all-day chain keeps `rootChain`'s name) and the
+  // config-level timezone. The row shape is deliberately PERMISSIVE (plain
+  // strings, no const unions) — malformed rows (bad kind/preset/window)
+  // must WARN at load and be skipped by the resolver, never fail schema
+  // resolve (P6 warn-not-crash); the gateway rejects them on save
+  // (Task 3). Absent `days`/`chain` compose to [] — the resolver reads
+  // []/absent `days` as "all days" and an empty `chain` as malformed.
+  timeSlots: z
+    .array(
+      z.object({
+        kind: z.string(),
+        preset: z.string(),
+        start: z.string(),
+        end: z.string(),
+        days: z.array(z.number()),
+        chain: z.array(z.string()),
+      }),
+    )
+    .default([]),
+  tz: z.string().default('Asia/Shanghai'),
 }) as unknown as z<FallbacksConfig>

@@ -29,12 +29,20 @@
  */
 
 import { parseSelector } from './selectors.ts'
+import { PRESETS, isAllDayConforming } from './time-slots.ts'
+import type { SlotRowConfig } from './time-slots.ts'
 
 /** How a cooled-down model comes back (spec §4). */
 export type RevertPolicy = 'cooldown-expiry' | 'never'
 
-/** A single role rule: match on origin/provider/model patterns (spec §3). */
+/** A single role rule: match on provider/model patterns (spec §3). */
 export interface FallbacksRoleRule {
+  /**
+   * Legacy persisted wire field (PR #62 feedback): rules are subagent-only,
+   * so this constraint is IGNORED at match time — root requests never
+   * match rules. Kept in the type/schema so pre-feedback `settings.yaml`
+   * files that carry `origin` still parse, validate, and save unchanged.
+   */
   origin?: 'root' | 'subagent'
   provider?: string
   model?: string
@@ -109,6 +117,20 @@ export interface FallbacksConfig {
    * for direct constructors that omit it).
    */
   roleAutoMatch?: boolean
+  /**
+   * Extra time-slot rows (plan fallbacks-timeslots Task 1, P5): the FIRST
+   * matching row's chain becomes the effective root chain at request time;
+   * `rootChain` (the all-day chain) is always the last row.
+   * Optional on purpose, mirroring `presets` — additive, non-breaking for
+   * library consumers. Malformed rows warn once and are skipped by the
+   * resolver; the gateway rejects them on save (Task 3).
+   */
+  timeSlots?: SlotRowConfig[]
+  /**
+   * Config-level timezone for slot matching (default `Asia/Shanghai`,
+   * UTC+8). Not per-slot.
+   */
+  tz?: string
 }
 
 /**
@@ -129,6 +151,8 @@ export const defaultFallbacksConfig: FallbacksConfig = {
   alwaysModeRetryCap: 5,
   presets: 'bundled',
   roleAutoMatch: true,
+  timeSlots: [],
+  tz: 'Asia/Shanghai',
 }
 
 /**
@@ -206,6 +230,15 @@ export function validateFallbacksConfig(config: FallbacksConfig, logger: Fallbac
       )
     }
   }
+  // P6: `rootChain` is the all-day chain — its LAST entry (默认模型) must
+  // be exactly one official V4 model (Flash XOR Pro; leading 默认降级链
+  // entries allowed). A non-empty chain whose tail is not official earns
+  // ONE startup warn; slot rows stay inert. The empty default stays quiet.
+  if (config.rootChain.length > 0 && !isAllDayConforming(config.rootChain)) {
+    logger.warn(
+      'llm-fallbacks: rootChain must end with exactly one official V4 model (deepseek-official/deepseek-v4-flash or deepseek-official/deepseek-v4-pro) — time-slot rows and the virtual picker row stay inert until the all-day chain tail conforms',
+    )
+  }
   for (const entry of config.rootChain) {
     try {
       parseSelector(entry)
@@ -222,6 +255,33 @@ export function validateFallbacksConfig(config: FallbacksConfig, logger: Fallbac
       logger.warn(
         `llm-fallbacks: rule references undeclared role "${rule.role}" — expected one of roles.list ids or "inherit"`,
       )
+    }
+  }
+  // P4 guards for time-slot rows (warn on load; the gateway rejects on
+  // save): at most ONE row per preset id, known preset ids only, and preset
+  // rows must not carry their own windows/day masks (windows are code
+  // constants). The schema keeps the row shape permissive on purpose —
+  // malformed rows must warn here, never fail composition (P6
+  // warn-not-crash); the resolver skips them defensively at request time.
+  if (Array.isArray(config.timeSlots)) {
+    const seenSlotPresets = new Set<string>()
+    for (const row of config.timeSlots) {
+      if (row.kind !== 'preset') continue
+      const preset = row.preset
+      if (typeof preset !== 'string' || !Object.hasOwn(PRESETS, preset)) {
+        logger.warn(`llm-fallbacks: unknown time-slot preset ${JSON.stringify(preset)} — row ignored`)
+        continue
+      }
+      if (seenSlotPresets.has(preset)) {
+        logger.warn(`llm-fallbacks: duplicate time-slot preset "${preset}" — only the first row takes effect`)
+        continue
+      }
+      seenSlotPresets.add(preset)
+      if (row.start !== undefined || row.end !== undefined || (row.days !== undefined && row.days.length > 0)) {
+        logger.warn(
+          `llm-fallbacks: preset "${preset}" carries its own window/day fields — preset windows are fixed code constants; the row is ignored`,
+        )
+      }
     }
   }
 }

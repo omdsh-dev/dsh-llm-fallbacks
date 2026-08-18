@@ -37,6 +37,9 @@ import {
   type FallbackStrategy, type FallbacksConfig, type FallbacksRole,
   type FallbacksRoleRule, type FallbacksRoles,
 } from '../config.ts'
+// Type-only — `src/time-slots.ts` is a pure module (no `@deepseek-ai/*`
+// runtime imports), so the row types stay out of the client runtime graph.
+import type { PresetId, SlotRowConfig } from '../time-slots.ts'
 import type { FallbacksSwitchEventData } from '../events.ts'
 import { parseSelector } from '../selectors.ts'
 // Type-only — `src/seeds.ts` carries no `@deepseek-ai/*` value imports, so
@@ -258,6 +261,9 @@ export function parseFallbacksConfig(value: unknown): FallbacksConfig {
     if (!isRecord(rule) || typeof rule.role !== 'string') {
       throw new TypeError(`fallbacks descriptor roles.rules[${String(index)}] must have a string role`)
     }
+    // Legacy wire field (PR #62 feedback): accepted for config
+    // compatibility (pre-feedback settings.yaml may carry it) but ignored
+    // at match time — rules are subagent-only.
     const origin = rule.origin
     if (origin !== undefined && origin !== 'root' && origin !== 'subagent') {
       throw new TypeError(`fallbacks descriptor roles.rules[${String(index)}].origin must be root|subagent`)
@@ -301,6 +307,27 @@ export function parseFallbacksConfig(value: unknown): FallbacksConfig {
   if (roleAutoMatch !== undefined && typeof roleAutoMatch !== 'boolean') {
     throw new TypeError('fallbacks descriptor roleAutoMatch must be a boolean')
   }
+  // P5 mirror: the host schema gained `timeSlots` (11th field) — mechanical
+  // descriptor guard for the row shape; the card edits rows in Task 3.
+  const timeSlots = value.timeSlots
+  if (timeSlots !== undefined && (!Array.isArray(timeSlots) || timeSlots.some((row) => {
+    if (!isRecord(row)) return true
+    for (const field of ['kind', 'preset', 'start', 'end'] as const) {
+      if (row[field] !== undefined && typeof row[field] !== 'string') return true
+    }
+    const chain = row.chain
+    if (chain !== undefined && (!Array.isArray(chain) || chain.some(entry => typeof entry !== 'string'))) return true
+    const days = row.days
+    if (days !== undefined && (!Array.isArray(days) || days.some(day => typeof day !== 'number'))) return true
+    return false
+  }))) {
+    throw new TypeError('fallbacks descriptor timeSlots must be an array of slot rows (kind/preset/start/end strings, chain string array, days number array)')
+  }
+  // P5 mirror: the host schema gained `tz` (12th field).
+  const tz = value.tz
+  if (tz !== undefined && typeof tz !== 'string') {
+    throw new TypeError('fallbacks descriptor tz must be a string')
+  }
   return {
     enabled: enabled ?? defaultFallbacksConfig.enabled,
     triggerCodes: (triggerCodes as string[] | undefined) ?? [...defaultFallbacksConfig.triggerCodes],
@@ -328,6 +355,14 @@ export function parseFallbacksConfig(value: unknown): FallbacksConfig {
     // "Enable role auto-match" toggle (default true, plan
     // fallbacks-settings-visibility Task 3).
     roleAutoMatch: roleAutoMatch ?? defaultFallbacksConfig.roleAutoMatch,
+    // P5 mirror: the host default gained `timeSlots` (11th field), so the
+    // client fold mirrors it too — `parseFallbacksConfig` output must stay
+    // equal to `defaultFallbacksConfig` (pinned invariant). Mechanical
+    // mirror of `triggerCodes`; the settings card edits rows in Task 3.
+    timeSlots: (timeSlots as SlotRowConfig[] | undefined) ?? [...(defaultFallbacksConfig.timeSlots ?? [])],
+    // P5 mirror: the host default gained `tz` (12th field), so the client
+    // fold mirrors it too — mechanical mirror of `presets`.
+    tz: (tz as FallbacksConfig['tz'] | undefined) ?? defaultFallbacksConfig.tz,
   }
 }
 
@@ -507,6 +542,75 @@ export function rowsToRootChain(rows: readonly RootChainRow[]): string[] {
 }
 
 /**
+ * One extra time-slot row in the editor (plan fallbacks-timeslots Task 3):
+ * preset rows freeze their windows (read-only summary, models-only edits);
+ * custom rows edit start/end/days + chain. `kind` rides the wire VERBATIM —
+ * a hand-written YAML row with an unknown kind reads back as a custom-shaped
+ * row and serializes back unchanged, so the dirty check stays quiet (save
+ * validation rejects it).
+ */
+export interface SlotEditorRow {
+  kind: string
+  /** Frozen preset id — preset rows only (windows are code constants). */
+  preset?: string
+  /** Custom rows: window start `HH:mm` text. */
+  start: string
+  /** Custom rows: window end `HH:mm` text. */
+  end: string
+  /** Custom rows: day mask 0=Sunday…6=Saturday; [] = every day. */
+  days: number[]
+  /** Custom rows: display name (PR #62 feedback round — collapsed rows). */
+  name: string
+  /** UI-only collapse state — never serialized (dropped by rowsToTimeSlots). */
+  collapsed: boolean
+  selectors: ChainSelectorRow[]
+}
+
+/** Project the time-slot rows into editable rows (chain selectors classified). */
+export function timeSlotsToRows(timeSlots: readonly SlotRowConfig[], catalog?: CatalogLookup): SlotEditorRow[] {
+  return timeSlots.map(row => ({
+    kind: row.kind,
+    ...(row.preset === undefined ? {} : { preset: row.preset }),
+    start: row.start ?? '',
+    end: row.end ?? '',
+    days: [...(row.days ?? [])],
+    name: row.name ?? '',
+    // UI-only collapse state — never serialized (dropped by rowsToTimeSlots).
+    // PR #62 UX round 4 part C: time-slot rows default COLLAPSED like role
+    // cards (every re-seed — mount, save, catalog refresh — comes back
+    // collapsed); only a freshly ADDED row starts expanded (addPresetSlotRow
+    // / addCustomSlotRow set collapsed: false explicitly).
+    collapsed: true,
+    selectors: (row.chain ?? []).map(entry => entryToSelectorRow(entry, catalog)),
+  }))
+}
+
+/** Rebuild the time-slot rows from edited rows; blank selectors drop out.
+ * `kind` rides verbatim (a hand-written unknown kind reads back unchanged;
+ * save validation rejects it) — the cast asserts the trusted editor shape.
+ * `days` is ALWAYS serialized ([] included): schemastery composes absent
+ * array fields as `[]`, so the composed config every card load accepts
+ * carries `days` on every row — the draft must too, or a clean card would
+ * read back dirty. */
+export function rowsToTimeSlots(rows: readonly SlotEditorRow[]): SlotRowConfig[] {
+  return rows.map(row => {
+    const chain = row.selectors.map(selectorRowToRaw).filter(entry => entry !== '')
+    if (row.kind === 'preset') {
+      return { kind: 'preset', preset: row.preset as PresetId, days: row.days, chain }
+    }
+    return {
+      kind: row.kind as 'custom',
+      ...(row.preset === undefined ? {} : { preset: row.preset as PresetId }),
+      start: row.start,
+      end: row.end,
+      days: row.days,
+      ...(row.name === '' ? {} : { name: row.name }),
+      chain,
+    }
+  })
+}
+
+/**
  * One declared-role row in the editor (block 2 `roles.list`): identity
  * fields + the role's own chain selector list + its append strategy.
  * `prompt`/`permissions` are schema-reserved for the next iteration
@@ -517,6 +621,8 @@ export interface RoleRow {
   persona: string
   selectors: ChainSelectorRow[]
   fallback: FallbackStrategy
+  /** UI-only collapse state — never serialized (dropped by rowsToRoles). */
+  collapsed: boolean
 }
 
 /** Project the declared roles into editable rows (chain selectors classified). */
@@ -526,6 +632,10 @@ export function rolesToRows(roles: readonly FallbacksRole[], catalog?: CatalogLo
     persona: role.persona,
     selectors: (role.chain ?? []).map(entry => entryToSelectorRow(entry, catalog)),
     fallback: role.fallback ?? 'inherit-root',
+    // PR #62 UX round 2: role cards default collapsed — the summary row
+    // (id + first chain model) is the quiet default; the editor opens on
+    // the header click. The flag never serializes back.
+    collapsed: true,
   }))
 }
 
@@ -599,9 +709,11 @@ export function detectLegacyClientKeys(config: FallbacksConfig): string[] {
   return keys
 }
 
-/** One role-rule row in the editor; empty origin means "any". */
+/**
+ * One role-rule row in the editor (PR #62 feedback: no origin control —
+ * rules are subagent-only; a persisted wire `origin` is ignored).
+ */
 export interface RoleRuleRow {
-  origin: string
   provider: CatalogSelection
   model: CatalogSelection
   role: string
@@ -610,18 +722,16 @@ export interface RoleRuleRow {
 /** Project the role rules into editable rows (provider/model classified). */
 export function rulesToRows(rules: readonly FallbacksRoleRule[], catalog?: CatalogLookup): RoleRuleRow[] {
   return rules.map(rule => ({
-    origin: rule.origin ?? '',
     provider: classifyProvider(rule.provider ?? '', catalog),
     model: classifyModel(rule.provider ?? '', rule.model ?? '', catalog),
     role: rule.role,
   }))
 }
 
-/** Rebuild the role rules from edited rows; empty origin/provider/model drop out. */
+/** Rebuild the role rules from edited rows; empty provider/model drop out. */
 export function rowsToRules(rows: readonly RoleRuleRow[]): FallbacksRoleRule[] {
   return rows
     .map(row => ({
-      ...(row.origin === '' ? {} : { origin: row.origin as 'root' | 'subagent' }),
       ...(row.provider === null ? {} : { provider: selectionToRaw(row.provider) }),
       ...(row.model === null ? {} : { model: selectionToRaw(row.model) }),
       role: row.role.trim(),
