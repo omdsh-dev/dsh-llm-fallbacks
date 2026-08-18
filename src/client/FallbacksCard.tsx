@@ -12,12 +12,15 @@
  * description, with a dirty "unsaved" pill and a rotating chevron
  * (`IconChevronDownOutline14` from ui-primitives — a CLIENT_EXTERNALS value
  * import), `aria-expanded`/`aria-label` like the upstream header; a divider
- * under the header; then the form content; then a footer with
- * Discard / Reset / Save carrying the upstream disabled semantics — save =
- * `!dirty || saving || !writable`, discard = `!dirty || saving` (KD-U1).
- * Disclosure is card-local state: which card a user has open is a reading
- * gesture, and staged edits outlive collapsing — the pill rides the header
- * (upstream rationale).
+ * under the header; then the form content. PR #62 UX round 2: the card
+ * footer is gone — each big section (主代理 / 子代理 / 高级选项) carries its
+ * own Save/Discard actions beside its heading (高级选项: inside the expanded
+ * body, with the global Reset) and its own validation / save-error surface,
+ * all writing the same whole draft through the one `save()` gateway with
+ * the upstream disabled semantics — save = `!dirty || saving || !writable`,
+ * discard = `!dirty || saving` (KD-U1). Disclosure is card-local state:
+ * which card a user has open is a reading gesture, and staged edits outlive
+ * collapsing — the pill rides the header (upstream rationale).
  *
  * The form body is the two-block editing surface (spec §8): the `enabled`
  * checkbox row, the 6 top-level scalar fields (trigger codes / revert
@@ -38,8 +41,8 @@
  *
  * The page-only chrome is gone (720px column wrapper, title/intro banners,
  * page-bottom status block): the AC-7 read-only status (derived effective
- * model + recent-switch summary) is folded into the card body above the
- * footer, and the plugin-config section owns the column width.
+ * model + recent-switch summary) is folded into the card body, and the
+ * plugin-config section owns the column width.
  *
  * Degraded/error/loading states keep the same card chrome (KD-U3): the
  * header always renders title+description+chevron, and the body carries the
@@ -53,8 +56,11 @@
  * 'error'`) also forces the body open with an error notice and — when the
  * form is inert (`!writable`, i.e. the load never landed) — a Retry button;
  * a save failure keeps the editable form so the Save action itself is the
- * retry (the single `state.error` surface covers both, unlike the advisor's
- * separate apply-failure hints).
+ * retry. PR #62 UX round 2: the single `state.error` surface is split by
+ * origin — a LOAD failure keeps the card-top notice (with Retry when
+ * inert), while a WRITE failure renders under the section whose Save was
+ * last clicked (`lastSaveSection`), unlike the advisor's separate
+ * apply-failure hints.
  *
  * The degraded derivation is latched in the card (the store stays untouched):
  * `present` only ever changes inside the store's `accept()`, so the settled
@@ -69,7 +75,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { ConfigurableProviderView } from '@deepseek-ai/dsh-client-connection/client'
 import {
-  Button, IconChevronDownOutline14, IconChevronUpOutline14, IconPlusOutline16, IconTrashOutline16, Modal, Tooltip,
+  Button, IconChevronDownOutline14, IconChevronUpOutline14, IconEllipsisOutline16, IconPlusOutline16, IconTrashOutline16, Modal, Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { SnapshotSelectorHook } from '@deepseek-ai/dsh-client-web-react'
@@ -264,13 +270,34 @@ function assembleConfig(
 }
 
 /**
+ * The three big sections the card's Save/Discard actions and error surfaces
+ * live on (PR #62 UX round 2): 主代理 (main agent — time slots / default
+ * chain / default model), 子代理 (subagents — role entities + role rules),
+ * and 高级选项 (advanced options — trigger codes / cooldown / revert /
+ * caps / roleAutoMatch). Validation errors are tagged by their OWNING
+ * section so a 主代理 violation never renders under 子代理; store write
+ * failures render under the section whose Save was last clicked.
+ */
+type ValidationSection = 'main' | 'sub' | 'advanced'
+
+/** An empty per-section validation-error record (the clean-draft shape). */
+function emptyValidationErrors(): Record<ValidationSection, string[]> {
+  return { main: [], sub: [], advanced: [] }
+}
+
+/**
  * Pre-save validation of the assembled draft (spec §8 / plan Task 3):
  * role id format/reserved word/duplicates, undeclared rule role references
  * (only reachable through the synthetic outside option — the dropdown
  * itself constrains normal edits), and illegal selector entries in
- * rootChain and role chains. Returns one localized message per violation;
- * a non-empty result blocks {@link save} — the draft is never written.
- * `persona` is free text and never validated.
+ * rootChain and role chains. Returns one localized message per violation,
+ * bucketed by the section that owns the offending field (PR #62 UX round
+ * 2 — 主代理: allDay / timeSlots / slot* / tz / default model / default
+ * chain; 子代理: role* / rule*; 高级选项: trigger / cooldown / revert /
+ * always / roleAutoMatch — the scalars are never validated, so the
+ * advanced bucket stays empty today). A non-empty result blocks
+ * {@link save} — the draft is never written. `persona` is free text and
+ * never validated.
  *
  * `seededIds` is the live trimmed-id → overridden map derived from
  * `state.seeds` (spec §9.4): the empty-chain block relaxes for seeded ids
@@ -282,25 +309,25 @@ function validateDraft(
   draft: FallbacksConfig,
   t: FallbacksCardProps['t'],
   seededIds: ReadonlyMap<string, boolean>,
-): string[] {
-  const errors: string[] = []
+): Record<ValidationSection, string[]> {
+  const errors = emptyValidationErrors()
   const declaredIds = new Set<string>()
   for (const role of draft.roles.list) {
     if (!ROLE_ID_PATTERN.test(role.id)) {
-      errors.push(t('validation.roleIdFormat', { id: role.id }))
+      errors.sub.push(t('validation.roleIdFormat', { id: role.id }))
     }
     if (role.id === INHERIT_ROLE_ID) {
-      errors.push(t('validation.roleIdReserved'))
+      errors.sub.push(t('validation.roleIdReserved'))
     }
     if (declaredIds.has(role.id)) {
-      errors.push(t('validation.roleIdDuplicate', { id: role.id }))
+      errors.sub.push(t('validation.roleIdDuplicate', { id: role.id }))
     }
     declaredIds.add(role.id)
     for (const entry of role.chain ?? []) {
       try {
         parseSelector(entry)
       } catch (error) {
-        errors.push(t('validation.selector', { entry, message: (error as Error).message }))
+        errors.sub.push(t('validation.selector', { entry, message: (error as Error).message }))
       }
     }
     // A declared role with no model config is meaningless (plan
@@ -312,7 +339,7 @@ function validateDraft(
     // and the block relaxes for seeded ids only — the persona edit stays
     // persistable. Non-seeded behavior is byte-identical.
     if ((role.chain ?? []).length === 0 && !seededIds.has(role.id.trim())) {
-      errors.push(t('validation.roleChainRequired', { id: role.id }))
+      errors.sub.push(t('validation.roleChainRequired', { id: role.id }))
     }
   }
   // 默认模型 head (plan fallbacks-timeslots Task 3, product AC — the head
@@ -322,13 +349,13 @@ function validateDraft(
   // non-official head (which rides the draft untouched while the panel is
   // unselected) blocks the save — the user picks Flash or Pro.
   if (draft.rootChain.length < 1 || (draft.rootChain[0] !== ALL_DAY_FLASH && draft.rootChain[0] !== ALL_DAY_PRO)) {
-    errors.push(t('validation.allDayRequired'))
+    errors.main.push(t('validation.allDayRequired'))
   }
   for (const entry of draft.rootChain) {
     try {
       parseSelector(entry)
     } catch (error) {
-      errors.push(t('validation.selector', { entry, message: (error as Error).message }))
+      errors.main.push(t('validation.selector', { entry, message: (error as Error).message }))
     }
   }
   // Time-slot rows (plan fallbacks-timeslots Task 3): preset rows must
@@ -339,13 +366,13 @@ function validateDraft(
   const seenSlotPresets = new Set<string>()
   for (const row of draft.timeSlots ?? []) {
     if (row.kind !== 'preset' && row.kind !== 'custom') {
-      errors.push(t('validation.slotKind'))
+      errors.main.push(t('validation.slotKind'))
     }
     if (row.kind === 'preset') {
       if (typeof row.preset !== 'string' || !(SLOT_PRESET_IDS as readonly string[]).includes(row.preset)) {
-        errors.push(t('validation.slotPresetUnknown', { preset: row.preset }))
+        errors.main.push(t('validation.slotPresetUnknown', { preset: row.preset }))
       } else if (seenSlotPresets.has(row.preset)) {
-        errors.push(t('validation.slotPresetDuplicate', { preset: row.preset }))
+        errors.main.push(t('validation.slotPresetDuplicate', { preset: row.preset }))
       } else {
         seenSlotPresets.add(row.preset)
       }
@@ -356,31 +383,31 @@ function validateDraft(
       // without this guard it would pass the card and fail only at the
       // gateway with a generic English banner, un-fixable from the card.
       if (row.start !== undefined || row.end !== undefined || (row.days !== undefined && row.days.length > 0)) {
-        errors.push(t('validation.slotPresetFrozen'))
+        errors.main.push(t('validation.slotPresetFrozen'))
       }
     } else if (row.kind === 'custom') {
       if (typeof row.start !== 'string' || typeof row.end !== 'string' || !HHMM_RE.test(row.start) || !HHMM_RE.test(row.end)) {
-        errors.push(t('validation.slotWindow'))
+        errors.main.push(t('validation.slotWindow'))
       }
       if (row.days !== undefined && row.days.some(day => !Number.isInteger(day) || day < 0 || day > 6)) {
-        errors.push(t('validation.slotDays'))
+        errors.main.push(t('validation.slotDays'))
       }
     }
     for (const entry of row.chain) {
       try {
         parseSelector(entry)
       } catch (error) {
-        errors.push(t('validation.selector', { entry, message: (error as Error).message }))
+        errors.main.push(t('validation.selector', { entry, message: (error as Error).message }))
       }
     }
     if (row.chain.length === 0) {
-      errors.push(t('validation.slotChainRequired'))
+      errors.main.push(t('validation.slotChainRequired'))
     }
   }
   const validTargets = new Set([...declaredIds, INHERIT_ROLE_ID])
   for (const rule of draft.roles.rules) {
     if (!validTargets.has(rule.role)) {
-      errors.push(t('validation.ruleRoleUndeclared', { role: rule.role }))
+      errors.sub.push(t('validation.ruleRoleUndeclared', { role: rule.role }))
     }
   }
   return errors
@@ -663,13 +690,19 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
   const [ruleRows, setRuleRows] = useState<RoleRuleRow[]>(() => rulesToRows(defaultFallbacksConfig.roles.rules))
   // The preset picker's pending selection (UI-only, never part of the draft).
   const [presetToAdd, setPresetToAdd] = useState<string>('')
-  // Pre-save validation (spec §8): save() validates the assembled draft and
-  // a blocked write leaves the messages in the banner with
-  // `validationAttempted` true so the offending role-id rows keep their
-  // inline red border. Both clear when a save passes validation or the user
-  // discards the draft.
-  const [validationErrors, setValidationErrors] = useState<string[]>([])
+  // Pre-save validation (spec §8; PR #62 UX round 2): save() validates the
+  // assembled draft and a blocked write leaves the messages bucketed by
+  // their OWNING section (主代理 / 子代理 / 高级选项) so each section's
+  // error surface only shows its own violations, with `validationAttempted`
+  // true so the offending role-id rows keep their inline red border. Both
+  // clear when a save passes validation or the user discards the draft.
+  const [validationErrors, setValidationErrors] = useState<Record<ValidationSection, string[]>>(emptyValidationErrors)
   const [validationAttempted, setValidationAttempted] = useState(false)
+  // The section whose Save was last clicked (PR #62 UX round 2): a store
+  // write failure (`state.error`) renders under THAT section instead of the
+  // card-top banner; null means no save has been attempted, so a load
+  // failure keeps the card-top notice + Retry.
+  const [lastSaveSection, setLastSaveSection] = useState<ValidationSection | null>(null)
   const seededConfigKey = useRef<string | null>(null)
 
   useEffect(() => {
@@ -836,7 +869,9 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
   }
 
   const addRole = (): void => {
-    setRoleRows(rows => [...rows, { id: '', persona: '', selectors: [], fallback: 'inherit-root', collapsed: false }])
+    // PR #62 UX round 2: a freshly added role card starts collapsed like
+    // every other role card.
+    setRoleRows(rows => [...rows, { id: '', persona: '', selectors: [], fallback: 'inherit-root', collapsed: true }])
   }
 
   const removeRole = (index: number): void => {
@@ -872,6 +907,10 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
   // cannot see them. Surface them as a validation error instead of
   // silently discarding the row on save (qc3 F-4).
   const hasEmptyRuleRows = ruleRows.some(row => row.role === '')
+  // The joined validation errors across all sections — the disabled-state
+  // row's single error surface (the per-section surfaces are unmounted
+  // while the form is hidden).
+  const allValidationErrors = [...validationErrors.main, ...validationErrors.sub, ...validationErrors.advanced]
   // An empty rule row makes no config difference, but it IS an unsaved UI
   // change: count it so the unsaved pill, Discard, and Save all treat the
   // row as pending (otherwise Save stays disabled and the row vanishes on
@@ -959,24 +998,31 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
     setRuleRows(rulesToRows(state.config.roles.rules, catalogOf(state)))
   }, [state.catalogStatus, state.catalogEpoch, state.config, dirty])
 
-  const save = (): void => {
+  // PR #62 UX round 2: every section's Save writes the SAME whole draft
+  // through the one gateway (`controller.save`) — placement only. The
+  // section is recorded so a store write failure renders under the section
+  // whose Save was clicked; validation violations render under their OWNING
+  // section (validateDraft buckets them).
+  const save = (section: ValidationSection): void => {
+    setLastSaveSection(section)
     const errors = validateDraft(draft, t, seededIds)
     // An empty rule row is invisible to validateDraft (rowsToRules dropped
     // it from the draft) — the row would vanish on a successful save with no
     // explanation. Block it alongside the draft violations (qc3 F-4); the
     // row keeps its inline hint so the user sees why.
     if (hasEmptyRuleRows) {
-      errors.push(t('validation.ruleRoleRequired'))
+      errors.sub.push(t('validation.ruleRoleRequired'))
     }
-    if (errors.length > 0) {
+    if (errors.main.length > 0 || errors.sub.length > 0 || errors.advanced.length > 0) {
       // Validation blocks the write: the draft is never sent to the gateway,
-      // and the violations surface as the banner + inline red borders (spec
-      // §8 — the store's `state.error` data path stays untouched).
+      // and the violations surface under their owning sections + inline red
+      // borders (spec §8 — the store's `state.error` data path stays
+      // untouched).
       setValidationErrors(errors)
       setValidationAttempted(true)
       return
     }
-    setValidationErrors([])
+    setValidationErrors(emptyValidationErrors())
     setValidationAttempted(false)
     void controller.save(draft)
   }
@@ -995,7 +1041,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
     setRuleRows(rulesToRows(state.config.roles.rules, catalogOf(state)))
     // The draft reverted to the accepted config: any blocked-validation
     // banner/inline marks no longer describe the current draft.
-    setValidationErrors([])
+    setValidationErrors(emptyValidationErrors())
     setValidationAttempted(false)
   }
 
@@ -1008,8 +1054,10 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
     // The empty-rule-row violation lives outside the draft (rowsToRules
     // dropped the row), so it must clear on the ROW state, not just the
     // assembled draft (qc3 F-4).
-    if (validateDraft(draft, t, seededIds).length === 0 && !ruleRows.some(row => row.role === '')) {
-      setValidationErrors([])
+    const errors = validateDraft(draft, t, seededIds)
+    if (errors.main.length === 0 && errors.sub.length === 0 && errors.advanced.length === 0
+      && !ruleRows.some(row => row.role === '')) {
+      setValidationErrors(emptyValidationErrors())
       setValidationAttempted(false)
     }
     // `seededIds` is intentionally NOT a dep: it is a fresh Map per render
@@ -1017,6 +1065,14 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
     // this effect on every render — listing it would only re-run the
     // bounded validateDraft pass with zero behavioral change (qc1 S-8).
   }, [validationAttempted, draft, ruleRows, t])
+
+  // PR #62 UX round 2: a store write failure renders under the section
+  // whose Save was clicked; once the store settles READY (a successful
+  // write or load) the section anchor is no longer meaningful — a later
+  // load failure must go back to the card-top notice + Retry.
+  useEffect(() => {
+    if (state.status === 'ready') setLastSaveSection(null)
+  }, [state.status])
 
   const confirmReset = (): void => {
     setResetting(true)
@@ -1118,28 +1174,22 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
               {t('legacy.banner', { keys: state.legacyKeys.join(', ') })}
             </p>
           )}
-          {state.status === 'error' && state.error !== null && (
+          {state.status === 'error' && state.error !== null && lastSaveSection === null && (
+            // PR #62 UX round 2: a store WRITE failure renders under the
+            // section whose Save was clicked (lastSaveSection set); this
+            // card-top notice is the LOAD-failure surface (initial load or
+            // a refresh that never landed) — the Retry button only shows
+            // when the form is inert (the load never landed): with
+            // writable the form itself is the retry surface (Save), and a
+            // reload would clobber staged edits.
             <div className={css.noticeRow}>
               <p className={css.error} role="alert">{t('error.generic', { message: state.error })}</p>
-              {/* Retry only when the form is inert (the load never landed):
-                  with writable the form itself is the retry surface (Save),
-                  and a reload would clobber staged edits. */}
               {!state.writable && (
                 <Button variant="outline" size="sm" onClick={() => { void controller.load() }}>
                   {t('retry')}
                 </Button>
               )}
             </div>
-          )}
-          {validationErrors.length > 0 && (
-            // Pre-save validation blocked the last save attempt (spec §8):
-            // the same error presentation as the store error banner, but the
-            // store's `state.error` data path stays untouched — the draft
-            // was never sent. The inline red borders on the offending role
-            // id rows ride `validationAttempted`.
-            <p className={css.error} role="alert">
-              {`${t('validation.blocked')}${validationErrors.join('; ')}`}
-            </p>
           )}
           {degraded && (
             // Gateway channel unreachable (KD-G5 — the fallbacks config rides
@@ -1187,7 +1237,42 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
              * but never discarded — the draft stays in state and comes right
              * back when the switch is toggled on. */}
             {!scalars.enabled && (
-              <p className={css.offNotice}>{t('enabled.off')}</p>
+              <>
+                <p className={css.offNotice}>{t('enabled.off')}</p>
+                {/* PR #62 UX round 2: the form (and its per-section actions
+                 * and error surfaces) is hidden while disabled — this
+                 * compact row keeps the enabled flip saveable/discardable
+                 * (the old footer's always-visible role; the section
+                 * actions themselves live beside the headings once the form
+                 * is shown). Blocked-save and store errors surface right
+                 * here (the per-section surfaces are unmounted). */}
+                {allValidationErrors.length > 0 && (
+                  <p className={css.error} role="alert">
+                    {`${t('validation.blocked')}${allValidationErrors.join('; ')}`}
+                  </p>
+                )}
+                {lastSaveSection === 'main' && state.status === 'error' && state.error !== null && (
+                  <p className={css.error} role="alert">{t('error.generic', { message: state.error })}</p>
+                )}
+                <div className={css.sectionActions}>
+                  <button
+                    type="button"
+                    className={`${css.secondaryButton} ${css.sectionAction}`}
+                    disabled={!dirty || saving}
+                    onClick={discard}
+                  >
+                    {t('discard')}
+                  </button>
+                  <button
+                    type="button"
+                    className={`${css.primaryButton} ${css.sectionAction}`}
+                    disabled={!writable || saving || !dirty}
+                    onClick={() => { save('main') }}
+                  >
+                    {saving ? t('save.saving') : t('save')}
+                  </button>
+                </div>
+              </>
             )}
 
             {scalars.enabled && (
@@ -1200,8 +1285,39 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
              * aria-labelledby. */
             <fieldset className={css.fieldset} disabled={!writable}>
               {/* PR #62 feedback round: the 主代理 (main agent) section
-               * heading groups 分时槽设置 / 默认降级链 / 默认模型 below. */}
-              <div className={css.sectionHeading} id="fallbacks-main-agent">{t('mainAgent.label')}</div>
+               * heading groups 分时槽设置 / 默认降级链 / 默认模型 below.
+               * PR #62 UX round 2: Save/Discard sit BESIDE the heading and
+               * this section's validation / save errors render directly
+               * under it (the card footer is gone). */}
+              <div className={css.sectionHeading} id="fallbacks-main-agent">
+                <span className={css.sectionHeadingText}>{t('mainAgent.label')}</span>
+                <div className={css.sectionActions}>
+                  <button
+                    type="button"
+                    className={`${css.secondaryButton} ${css.sectionAction}`}
+                    disabled={!dirty || saving}
+                    onClick={discard}
+                  >
+                    {t('discard')}
+                  </button>
+                  <button
+                    type="button"
+                    className={`${css.primaryButton} ${css.sectionAction}`}
+                    disabled={!writable || saving || !dirty}
+                    onClick={() => { save('main') }}
+                  >
+                    {saving ? t('save.saving') : t('save')}
+                  </button>
+                </div>
+              </div>
+              {validationErrors.main.length > 0 && (
+                <p className={css.error} role="alert">
+                  {`${t('validation.blocked')}${validationErrors.main.join('; ')}`}
+                </p>
+              )}
+              {lastSaveSection === 'main' && state.status === 'error' && state.error !== null && (
+                <p className={css.error} role="alert">{t('error.generic', { message: state.error })}</p>
+              )}
               {/* 分时槽设置 (plan fallbacks-timeslots Task 3; PR #62 feedback
                * round): the extra-row list — first matching row wins, the
                * all-day (默认降级链) row is always last. Preset rows freeze
@@ -1245,14 +1361,9 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                     <div
                       key={index}
                       className={`${css.editorCard} ${draggedSlotIndex === index ? css.slotCardDragging : ''} ${overSlotIndex === index && draggedSlotIndex !== null && draggedSlotIndex !== index ? css.slotCardOver : ''}`}
-                      draggable={writable && !row.collapsed}
-                      data-tip={t('timeSlots.drag')}
-                      onDragStart={() => {
-                        if (!writable) return
-                        setDraggedSlotIndex(index)
-                        setOverSlotIndex(index)
-                      }}
-                      onDragEnd={() => { setDraggedSlotIndex(null); setOverSlotIndex(null) }}
+                      // PR #62 UX round 2: the CARD is only the drop target —
+                      // dragging starts from the dedicated handle below, so a
+                      // click on the collapse header never starts a drag.
                       onDragOver={(event) => {
                         if (draggedSlotIndex === null) return
                         event.preventDefault()
@@ -1266,8 +1377,12 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                         if (from !== null && from !== index) reorderTimeSlotRow(from, index)
                       }}
                     >
-                      {/* Collapse header (PR #62 feedback round): collapsed
-                       * rows show the row name + its first model only. */}
+                      {/* Collapse header (PR #62 feedback round; UX round 2):
+                       * the WHOLE first row is the toggle (one header
+                       * control — chevron + name + first model), with a
+                       * SEPARATE drag handle so click ≠ drag. Collapsed rows
+                       * show the row name + its first model only, and stay
+                       * drag-reorderable (the handle works in both states). */}
                       <div className={css.collapseRow}>
                         <button
                           type="button"
@@ -1278,15 +1393,31 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                           onClick={() => { updateTimeSlotRow(index, { collapsed: !row.collapsed }) }}
                         >
                           <IconChevronDownOutline14 className={!row.collapsed ? `${css.chevron} ${css.chevronOpen}` : css.chevron} />
+                          <span className={css.collapseTitle}>
+                            {row.kind === 'preset'
+                              ? t(`timeSlots.preset.${row.preset}.label` as FallbacksKey)
+                              : (row.name !== '' ? row.name : `custom ${row.start}-${row.end}`)}
+                          </span>
+                          {firstModel !== undefined && (
+                            <span className={css.collapseMeta}>{firstModel}</span>
+                          )}
                         </button>
-                        <span className={css.collapseTitle}>
-                          {row.kind === 'preset'
-                            ? t(`timeSlots.preset.${row.preset}.label` as FallbacksKey)
-                            : (row.name !== '' ? row.name : `custom ${row.start}-${row.end}`)}
-                        </span>
-                        {firstModel !== undefined && (
-                          <span className={css.collapseMeta}>{firstModel}</span>
-                        )}
+                        <button
+                          type="button"
+                          className={css.dragHandle}
+                          draggable={writable}
+                          data-tip={t('timeSlots.drag')}
+                          aria-label={t('timeSlots.drag')}
+                          disabled={!writable}
+                          onDragStart={() => {
+                            if (!writable) return
+                            setDraggedSlotIndex(index)
+                            setOverSlotIndex(index)
+                          }}
+                          onDragEnd={() => { setDraggedSlotIndex(null); setOverSlotIndex(null) }}
+                        >
+                          <IconEllipsisOutline16 className={css.dragHandleIcon} />
+                        </button>
                       </div>
                       {!row.collapsed && (
                       <>
@@ -1578,8 +1709,39 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
               </div>
 
               {/* PR #62 feedback: the 子代理 (subagents) section heading
-               * groups the roles list + the role rules below. */}
-              <div className={css.sectionHeading} id="fallbacks-subagents">{t('subagents.label')}</div>
+               * groups the roles list + the role rules below. PR #62 UX
+               * round 2: Save/Discard sit BESIDE the heading and this
+               * section's validation / save errors render directly under it
+               * (the card footer is gone). */}
+              <div className={css.sectionHeading} id="fallbacks-subagents">
+                <span className={css.sectionHeadingText}>{t('subagents.label')}</span>
+                <div className={css.sectionActions}>
+                  <button
+                    type="button"
+                    className={`${css.secondaryButton} ${css.sectionAction}`}
+                    disabled={!dirty || saving}
+                    onClick={discard}
+                  >
+                    {t('discard')}
+                  </button>
+                  <button
+                    type="button"
+                    className={`${css.primaryButton} ${css.sectionAction}`}
+                    disabled={!writable || saving || !dirty}
+                    onClick={() => { save('sub') }}
+                  >
+                    {saving ? t('save.saving') : t('save')}
+                  </button>
+                </div>
+              </div>
+              {validationErrors.sub.length > 0 && (
+                <p className={css.error} role="alert">
+                  {`${t('validation.blocked')}${validationErrors.sub.join('; ')}`}
+                </p>
+              )}
+              {lastSaveSection === 'sub' && state.status === 'error' && state.error !== null && (
+                <p className={css.error} role="alert">{t('error.generic', { message: state.error })}</p>
+              )}
               <div className={css.field} role="group" aria-labelledby="fallbacks-roles-list">
                 <span className={css.fieldLabel}>
                   <span id="fallbacks-roles-list">{t('roles.list.label')}</span>
@@ -1618,25 +1780,34 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                     // chain).
                     const roleFirstModel = row.selectors.map(selectorRowToRaw).find(entry => entry !== '')
                     const roleSummary = roleFirstModel ?? row.fallback
+                    // PR #62 UX round 2: role cards default collapsed, but a
+                    // read-only view FORCES them open (same rule as the
+                    // advanced section) — the collapse toggle is disabled
+                    // when `!writable`, so without the forced-open term the
+                    // role configs would be unreachable in read-only.
+                    const roleExpanded = !row.collapsed || !writable
                     return (
                     <div key={index} className={css.editorCard}>
-                      {/* Collapse header: collapsed roles show id + first
+                      {/* Collapse header (PR #62 UX round 2): the WHOLE first
+                       * row is the toggle — one header control (chevron + id
+                       * + summary) — so a click anywhere on the row
+                       * expands/collapses. Collapsed roles show id + first
                        * chain model (or inherit-root / none). */}
                       <div className={css.collapseRow}>
                         <button
                           type="button"
                           className={css.collapseToggle}
-                          aria-expanded={!row.collapsed}
-                          aria-label={t(row.collapsed ? 'roles.expand' : 'roles.collapse')}
+                          aria-expanded={roleExpanded}
+                          aria-label={t(roleExpanded ? 'roles.collapse' : 'roles.expand')}
                           disabled={!writable}
                           onClick={() => { updateRoleRow(index, { collapsed: !row.collapsed }) }}
                         >
-                          <IconChevronDownOutline14 className={!row.collapsed ? `${css.chevron} ${css.chevronOpen}` : css.chevron} />
+                          <IconChevronDownOutline14 className={roleExpanded ? `${css.chevron} ${css.chevronOpen}` : css.chevron} />
+                          <span className={css.collapseTitle}>{row.id}</span>
+                          <span className={css.collapseMeta}>{roleSummary}</span>
                         </button>
-                        <span className={css.collapseTitle}>{row.id}</span>
-                        <span className={css.collapseMeta}>{roleSummary}</span>
                       </div>
-                      {!row.collapsed && (
+                      {roleExpanded && (
                       <>
                       <div className={css.ruleGrid}>
                         <div className={css.ruleCell}>
@@ -2076,6 +2247,44 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                         <span className={css.hint}>{t('alwaysModeRetryCap.hint')}</span>
                       </div>
                     </div>
+                    {/* PR #62 UX round 2: the advanced section's Save/Discard
+                     * live INSIDE the expanded body (not next to the collapsed
+                     * toggle); Reset (global) lives here too. This section's
+                     * validation / save errors render right above the actions. */}
+                    {validationErrors.advanced.length > 0 && (
+                      <p className={css.error} role="alert">
+                        {`${t('validation.blocked')}${validationErrors.advanced.join('; ')}`}
+                      </p>
+                    )}
+                    {lastSaveSection === 'advanced' && state.status === 'error' && state.error !== null && (
+                      <p className={css.error} role="alert">{t('error.generic', { message: state.error })}</p>
+                    )}
+                    <div className={css.sectionActions}>
+                      <button
+                        type="button"
+                        className={`${css.secondaryButton} ${css.sectionAction}`}
+                        disabled={!dirty || saving}
+                        onClick={discard}
+                      >
+                        {t('discard')}
+                      </button>
+                      <button
+                        type="button"
+                        className={`${css.secondaryButton} ${css.sectionAction}`}
+                        disabled={!writable || saving}
+                        onClick={() => { setConfirmingReset(true) }}
+                      >
+                        {t('reset')}
+                      </button>
+                      <button
+                        type="button"
+                        className={`${css.primaryButton} ${css.sectionAction}`}
+                        disabled={!writable || saving || !dirty}
+                        onClick={() => { save('advanced') }}
+                      >
+                        {saving ? t('save.saving') : t('save')}
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>
@@ -2101,36 +2310,6 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
             </p>
           </div>
 
-          {/* Discard / Reset / Save: the upstream footer (failed message +
-           * discard + save) with the fallbacks Reset per the current UX — the
-           * actions keep the h36 r18 capsule vocabulary (settings-page
-           * standard), right-aligned at the card bottom. */}
-          <div className={css.footer}>
-            <button
-              type="button"
-              className={css.secondaryButton}
-              disabled={!dirty || saving}
-              onClick={discard}
-            >
-              {t('discard')}
-            </button>
-            <button
-              type="button"
-              className={css.secondaryButton}
-              disabled={!writable || saving}
-              onClick={() => { setConfirmingReset(true) }}
-            >
-              {t('reset')}
-            </button>
-            <button
-              type="button"
-              className={css.primaryButton}
-              disabled={!writable || saving || !dirty}
-              onClick={save}
-            >
-              {saving ? t('save.saving') : t('save')}
-            </button>
-          </div>
         </div>
       )}
 

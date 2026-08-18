@@ -400,11 +400,11 @@ describe('rootChain/role/rule row editors (pure round-trips)', () => {
           { wildcard: true, provider: { kind: 'outside', raw: 'openai' }, model: null },
         ],
         fallback: 'none',
-        // UI-only collapse state (PR #62 feedback round) — rows start
-        // expanded and the flag never serializes back.
-        collapsed: false,
+        // UI-only collapse state (PR #62 UX round 2) — role cards start
+        // collapsed and the flag never serializes back.
+        collapsed: true,
       },
-      { id: 'architect', persona: '', selectors: [], fallback: 'inherit-root', collapsed: false },
+      { id: 'architect', persona: '', selectors: [], fallback: 'inherit-root', collapsed: true },
     ])
     expect(rowsToRoles(rows)).toEqual(roles)
   })

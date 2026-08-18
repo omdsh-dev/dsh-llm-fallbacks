@@ -627,7 +627,10 @@ export function rolesToRows(roles: readonly FallbacksRole[], catalog?: CatalogLo
     persona: role.persona,
     selectors: (role.chain ?? []).map(entry => entryToSelectorRow(entry, catalog)),
     fallback: role.fallback ?? 'inherit-root',
-    collapsed: false,
+    // PR #62 UX round 2: role cards default collapsed — the summary row
+    // (id + first chain model) is the quiet default; the editor opens on
+    // the header click. The flag never serializes back.
+    collapsed: true,
   }))
 }
 

@@ -11,7 +11,9 @@
  * owns the column width — the 720px page wrapper is gone): a bordered box
  * whose header is a button (name over description, dirty pill, rotating
  * chevron) and whose open state shows a divided body — divider, notices /
- * form / status block, footer divider with Discard/Reset/Save. */
+ * form / status block. PR #62 UX round 2: the card footer is gone — each
+ * big section (主代理 / 子代理 / 高级选项) carries its own Save/Discard
+ * actions and error surface. */
 
 /* The card box. */
 .card {
@@ -114,14 +116,7 @@
   color: var(--dsw-alias-label-secondary);
 }
 
-.footer {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-  padding: 12px 0 4px;
-  border-top: 1px solid var(--dsw-alias-border-l2);
-}
+
 
 /* Body-level notices (KD-U3: degraded/error states keep the card chrome and
    put the notice/error in the body): business (info) tone for the
@@ -275,13 +270,33 @@
 
 /* PR #62 feedback: static section headings (主代理 / 子代理) that group
    related fields — field-label typography on the primary label color, with
-   the section-toggle vertical rhythm. No disclosure interaction. */
+   the section-toggle vertical rhythm. No disclosure interaction. PR #62 UX
+   round 2: the heading is a flex row carrying the section's Save/Discard
+   actions on the right (the card footer is gone). */
 .sectionHeading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   padding: 4px 0;
   font-size: 12px;
   line-height: 18px;
   font-weight: 600;
   color: var(--dsw-alias-label-primary);
+}
+
+.sectionHeadingText {
+  flex: 1;
+  min-width: 0;
+}
+
+/* The per-section action cluster (Save/Discard beside 主代理 / 子代理, and
+   Discard/Reset/Save inside the expanded 高级选项 body): right-aligned,
+   compact capsules so they sit quietly next to a 12px heading. */
+.sectionActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
 }
 
 /* The advanced-section disclosure: a full-width quiet button at the
@@ -589,8 +604,10 @@ select.input {
   flex: 1;
 }
 
-/* Collapsible row/panel headers (PR #62 feedback round): a quiet chevron
-   toggle + the collapsed summary (name/id + first model) on one line. */
+/* Collapsible row/panel headers (PR #62 feedback round; UX round 2): the
+   WHOLE first row is ONE header control — a full-width quiet button
+   (chevron + the collapsed summary: name/id + first model) — with a
+   separate drag handle beside it on the slot rows so click ≠ drag. */
 .collapseRow {
   display: flex;
   align-items: center;
@@ -605,8 +622,13 @@ select.input {
   padding: 0;
   cursor: pointer;
   color: var(--dsw-alias-label-secondary);
-  display: inline-flex;
+  display: flex;
   align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  text-align: left;
 }
 
 .collapseToggle:disabled {
@@ -614,6 +636,8 @@ select.input {
 }
 
 .collapseTitle {
+  flex: 1;
+  min-width: 0;
   font-size: 12px;
   line-height: 18px;
   font-weight: 500;
@@ -624,12 +648,56 @@ select.input {
 }
 
 .collapseMeta {
+  flex: none;
   font-size: 12px;
   line-height: 18px;
   color: var(--dsw-alias-label-secondary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* The slot-row drag handle (PR #62 UX round 2): a quiet grip button beside
+   the collapse header — the ONLY draggable element of the row, so it works
+   while the row is collapsed AND a click on the header never starts a
+   drag. The ellipsis glyph rotates 90° into the vertical grip (⋮). */
+.dragHandle {
+  appearance: none;
+  border: 0;
+  background: none;
+  padding: 0;
+  cursor: grab;
+  color: var(--dsw-alias-label-tertiary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  flex: none;
+}
+
+.dragHandle:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+}
+
+.dragHandle:active {
+  cursor: grabbing;
+}
+
+.dragHandle:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+.dragHandle:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--dsw-alias-border-l3);
+}
+
+.dragHandleIcon {
+  transform: rotate(90deg);
 }
 
 /* Drag-reorder (PR #62 feedback round): the dragged slot card dims, the
@@ -804,6 +872,18 @@ select.input {
 .secondaryButton:focus-visible {
   outline: none;
   box-shadow: 0 0 0 2px var(--dsw-alias-border-l3);
+}
+
+/* The per-section action capsules (PR #62 UX round 2): the h36 r18
+   vocabulary shrunk to h28 r14 so the buttons sit beside a 12px section
+   heading without dominating it. Composes with .primaryButton /
+   .secondaryButton (defined after them so the overrides win). */
+.sectionAction {
+  height: 28px;
+  padding: 0 12px;
+  border-radius: 14px;
+  font-size: 12px;
+  line-height: 18px;
 }
 
 /* AC-7 read-only status, compact: an outlined card like the Models rows

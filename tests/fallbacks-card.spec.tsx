@@ -339,6 +339,79 @@ function expandAdvanced(): void {
   fireEvent.click(screen.getByRole('button', { name: en['advanced.expand'] }))
 }
 
+// PR #62 UX round 2: the card footer is gone — Save/Discard live beside the
+// 主代理 / 子代理 headings and inside the expanded 高级选项 body (Reset lives
+// there too). The helpers below anchor on the section ids so a test can
+// click the exact section's action even though every section's Save shares
+// the same label.
+
+/** The 主代理 section heading (id anchor — the heading div carries the actions). */
+function mainAgentHeading(): HTMLElement {
+  return document.getElementById('fallbacks-main-agent') as HTMLElement
+}
+
+/** The 子代理 section heading (id anchor). */
+function subagentsHeading(): HTMLElement {
+  return document.getElementById('fallbacks-subagents') as HTMLElement
+}
+
+/** The 主代理 section's Save button (beside the heading). */
+function mainSave(): HTMLButtonElement {
+  return within(mainAgentHeading()).getByRole('button', { name: en.save }) as HTMLButtonElement
+}
+
+/** The 子代理 section's Save button (beside the heading). */
+function subSave(): HTMLButtonElement {
+  return within(subagentsHeading()).getByRole('button', { name: en.save }) as HTMLButtonElement
+}
+
+/** The 主代理 section's Discard button (beside the heading). */
+function mainDiscard(): HTMLButtonElement {
+  return within(mainAgentHeading()).getByRole('button', { name: en.discard }) as HTMLButtonElement
+}
+
+/** The advanced section's Save button (inside the expanded body). */
+function advancedSave(): HTMLButtonElement {
+  return within(document.getElementById('fallbacks-advanced-body')!).getByRole('button', { name: en.save }) as HTMLButtonElement
+}
+
+/** The advanced section's Discard button (inside the expanded body). */
+function advancedDiscard(): HTMLButtonElement {
+  return within(document.getElementById('fallbacks-advanced-body')!).getByRole('button', { name: en.discard }) as HTMLButtonElement
+}
+
+/** The advanced section's Reset button (inside the expanded body). */
+function advancedReset(): HTMLButtonElement {
+  return within(document.getElementById('fallbacks-advanced-body')!).getByRole('button', { name: en.reset }) as HTMLButtonElement
+}
+
+/**
+ * Expand every collapsed role card (PR #62 UX round 2: role cards default
+ * collapsed). Re-queries after each click because expanding one card
+ * re-renders the list (its expand button becomes a collapse button).
+ */
+function expandAllRoles(): void {
+  let expand = screen.queryAllByRole('button', { name: en['roles.expand'] })
+  while (expand.length > 0) {
+    fireEvent.click(expand[0]!)
+    expand = screen.queryAllByRole('button', { name: en['roles.expand'] })
+  }
+}
+
+/**
+ * The error surface rendered DIRECTLY under the 子代理 heading (validation
+ * or store error — PR #62 UX round 2 splits the old single banner by
+ * owning section, so a 主代理 violation and a 子代理 violation are two
+ * separate alerts).
+ */
+function subError(): HTMLElement {
+  const next = subagentsHeading().nextElementSibling
+  if (next === null || next.getAttribute('role') !== 'alert') {
+    throw new Error('expected an alert directly under the 子代理 heading')
+  }
+  return next
+}
+
 /** Regex-escape a literal string (the model labels carry parens). */
 function esc(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -504,15 +577,32 @@ describe('FallbacksCard chrome (upstream PluginCard contract)', () => {
     expect(screen.queryByRole('button', { name: en.save })).toBeNull()
     expect(screen.queryByRole('button', { name: en.discard })).toBeNull()
 
-    // Expanding reveals the enabled row and the footer actions.
+    // Expanding reveals the enabled row. The default config is DISABLED, so
+    // the form (and its per-section actions) is hidden — the compact
+    // disabled-state row (Discard + Save) keeps the enabled flip saveable
+    // (PR #62 UX round 2: the card footer is gone; Reset lives inside the
+    // expanded advanced section, which only exists in the enabled form).
     toggleCard()
     view.rerender(<FallbacksCard {...props} />)
     expect(headerButton(true).getAttribute('aria-expanded')).toBe('true')
     expect(headerButton(true).getAttribute('aria-label')).toBe(`${en.collapse}: ${en.title}`)
     const toggle = screen.getByLabelText(en['enabled.label']) as HTMLInputElement
     expect(toggle.checked).toBe(false)
-    expect(screen.getByRole('button', { name: en.save })).toBeTruthy()
-    expect(screen.getByRole('button', { name: en.discard })).toBeTruthy()
+    expect(screen.getByText(en['enabled.off'])).toBeTruthy()
+    expect(screen.getAllByRole('button', { name: en.save })).toHaveLength(1)
+    expect(screen.getAllByRole('button', { name: en.discard })).toHaveLength(1)
+    expect(screen.queryByRole('button', { name: en.reset })).toBeNull()
+    // Flipping the switch on reveals the form: Save/Discard beside the
+    // 主代理 / 子代理 headings, Reset inside the advanced body.
+    fireEvent.click(toggle)
+    view.rerender(<FallbacksCard {...props} />)
+    expect(screen.getAllByRole('button', { name: en.save })).toHaveLength(2)
+    expect(screen.getAllByRole('button', { name: en.discard })).toHaveLength(2)
+    expect(screen.queryByRole('button', { name: en.reset })).toBeNull()
+    expandAdvanced()
+    view.rerender(<FallbacksCard {...props} />)
+    expect(screen.getAllByRole('button', { name: en.save })).toHaveLength(3)
+    expect(screen.getAllByRole('button', { name: en.discard })).toHaveLength(3)
     expect(screen.getByRole('button', { name: en.reset })).toBeTruthy()
   })
 
@@ -546,7 +636,9 @@ describe('FallbacksCard chrome (upstream PluginCard contract)', () => {
     fireEvent.change(screen.getByLabelText(en['cooldownMs.label']), { target: { value: '5000' } })
     view.rerender(<FallbacksCard {...props} />)
     expect(screen.getByText(en.unsaved)).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: en.discard }))
+    // Discard lives beside the section headings (and inside the advanced
+    // body) — any section's Discard reverts the whole draft.
+    fireEvent.click(advancedDiscard())
     view.rerender(<FallbacksCard {...props} />)
     expect(screen.queryByText(en.unsaved)).toBeNull()
     // The draft reverted to the accepted config, not to defaults.
@@ -561,13 +653,17 @@ describe('FallbacksCard chrome (upstream PluginCard contract)', () => {
     expandAdvanced()
     // Clean (no edits): neither action is offered (upstream semantics —
     // save = !dirty || saving || !writable; discard = !dirty || saving).
-    expect((screen.getByRole('button', { name: en.save }) as HTMLButtonElement).disabled).toBe(true)
-    expect((screen.getByRole('button', { name: en.discard }) as HTMLButtonElement).disabled).toBe(true)
+    // Every section's Save/Discard shares the disabled terms (PR #62 UX
+    // round 2 — the actions moved beside the headings, the semantics stay).
+    expect(mainSave().disabled).toBe(true)
+    expect(mainDiscard().disabled).toBe(true)
+    expect(advancedSave().disabled).toBe(true)
     // One staged edit → both actions become available.
     fireEvent.change(screen.getByLabelText(en['cooldownMs.label']), { target: { value: '5000' } })
     view.rerender(<FallbacksCard {...props} />)
-    expect((screen.getByRole('button', { name: en.save }) as HTMLButtonElement).disabled).toBe(false)
-    expect((screen.getByRole('button', { name: en.discard }) as HTMLButtonElement).disabled).toBe(false)
+    expect(mainSave().disabled).toBe(false)
+    expect(mainDiscard().disabled).toBe(false)
+    expect(advancedSave().disabled).toBe(false)
   })
 
   it('saves the assembled draft through the store face and clears the pill', async () => {
@@ -580,7 +676,8 @@ describe('FallbacksCard chrome (upstream PluginCard contract)', () => {
     fireEvent.change(screen.getByLabelText(en['cooldownMs.label']), { target: { value: '5000' } })
     view.rerender(<FallbacksCard {...props} />)
     expect(screen.getByText(en.unsaved)).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    // The advanced section's Save writes the whole draft (one gateway).
+    fireEvent.click(advancedSave())
     await waitFor(() => {
       expect(scripted.call).toHaveBeenCalledWith('/api', 'fallbacks/set', expect.objectContaining({
         args: { patch: expect.objectContaining({ cooldownMs: 5000 }) },
@@ -592,7 +689,49 @@ describe('FallbacksCard chrome (upstream PluginCard contract)', () => {
     // The accepted config re-seeded the draft → clean again, pill gone.
     view.rerender(<FallbacksCard {...props} />)
     expect(screen.queryByText(en.unsaved)).toBeNull()
-    expect((screen.getByRole('button', { name: en.save }) as HTMLButtonElement).disabled).toBe(true)
+    expect(mainSave().disabled).toBe(true)
+  })
+
+  it('a failed save from the disabled-state row surfaces the error under the row (PR #62 UX round 2)', async () => {
+    // The form (and its per-section error surfaces) is hidden while the
+    // plugin is disabled — the disabled-state row must surface a store
+    // write failure itself, or the error would be invisible.
+    // A conforming all-day head so the disabled-state save passes
+    // validation and the failure comes from the gateway wire.
+    const { view, props, controller, scripted } = await mountCard({ config: { ...ENABLED_CONFIG, rootChain: [OFFICIAL_V4_FLASH] } })
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    // Flip the switch off → the form hides, the disabled-state row appears.
+    fireEvent.click(screen.getByLabelText(en['enabled.label']))
+    view.rerender(<FallbacksCard {...props} />)
+    expect(screen.getByText(en['enabled.off'])).toBeTruthy()
+    expect(screen.getAllByRole('button', { name: en.save })).toHaveLength(1)
+    // The gateway rejects the write → the error renders under the row.
+    scripted.set.mockResolvedValueOnce(failResult('rejected by gateway'))
+    fireEvent.click(screen.getAllByRole('button', { name: en.save })[0]!)
+    await waitFor(() => expect(controller.store.getSnapshot().status).toBe('error'))
+    view.rerender(<FallbacksCard {...props} />)
+    expect(screen.getByRole('alert').textContent).toBe(en['error.generic']) // the test `t` does not interpolate
+  })
+
+  it('every section Save writes the SAME whole draft through the one gateway (placement only)', async () => {
+    // PR #62 UX round 2: the section placement is cosmetic — clicking the
+    // 子代理 Save persists a 主代理 edit AND an advanced edit in one patch.
+    const { view, props, scripted } = await mountCard({ config: { ...ENABLED_CONFIG, rootChain: [OFFICIAL_V4_FLASH] } })
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    // Edit a 主代理 field (timezone) and an advanced field (cooldown).
+    const group = screen.getByText(en['timeSlots.label']).closest('[role="group"]') as HTMLElement
+    fireEvent.change(within(group).getByLabelText(en['timeSlots.tz.label']), { target: { value: 'UTC' } })
+    expandAdvanced()
+    fireEvent.change(screen.getByLabelText(en['cooldownMs.label']), { target: { value: '5000' } })
+    view.rerender(<FallbacksCard {...props} />)
+    fireEvent.click(subSave())
+    await waitFor(() => {
+      expect(scripted.call).toHaveBeenCalledWith('/api', 'fallbacks/set', expect.objectContaining({
+        args: { patch: expect.objectContaining({ tz: 'UTC', cooldownMs: 5000 }) },
+      }))
+    })
   })
 
   it('loads on mount when the store has not loaded yet (status idle → load)', async () => {
@@ -713,30 +852,36 @@ describe('FallbacksCard chrome (upstream PluginCard contract)', () => {
     fireEvent.change(screen.getByLabelText(en['cooldownMs.label']), { target: { value: '5000' } })
     view.rerender(<FallbacksCard {...props} />)
     // The gateway rejects the write: the error notice surfaces the message
-    // (KD-G3) and the form stays editable for retry — no Retry button (the
-    // form itself is the retry surface when writable).
+    // (KD-G3) UNDER the section whose Save was clicked (PR #62 UX round 2 —
+    // the advanced section here) and the form stays editable for retry — no
+    // Retry button (the form itself is the retry surface when writable).
     scripted.set.mockResolvedValueOnce(failResult('rejected by gateway'))
-    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    fireEvent.click(advancedSave())
     await waitFor(() => expect(controller.store.getSnapshot().status).toBe('error'))
     view.rerender(<FallbacksCard {...props} />)
     expect(screen.getByRole('alert').textContent).toBe(en['error.generic']) // the test `t` does not interpolate
     expect((screen.getByLabelText(en['enabled.label']) as HTMLInputElement).disabled).toBe(false)
-    expect((screen.getByRole('button', { name: en.save }) as HTMLButtonElement).disabled).toBe(false)
+    expect(advancedSave().disabled).toBe(false)
     expect(screen.queryByRole('button', { name: en.retry })).toBeNull()
     // A follow-up save succeeds (the mock default folded the write): the
     // accepted config re-seeds the draft → clean again, pill gone.
-    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    fireEvent.click(advancedSave())
     await waitFor(() => expect(controller.store.getSnapshot().status).toBe('ready'))
     view.rerender(<FallbacksCard {...props} />)
     expect(screen.queryByText(en.unsaved)).toBeNull()
-    expect((screen.getByRole('button', { name: en.save }) as HTMLButtonElement).disabled).toBe(true)
+    expect(advancedSave().disabled).toBe(true)
   })
 
   it('reset asks for confirmation in the Modal and only resets on confirm (qc2 S-4)', async () => {
     const { view, props, controller, scripted } = await mountCard({ config: ENABLED_CONFIG })
     toggleCard()
+    // PR #62 UX round 2: Reset (global) lives inside the expanded advanced
+    // section — it is not reachable while the section is collapsed.
+    expect(screen.queryByRole('button', { name: en.reset })).toBeNull()
+    expandAdvanced()
+    view.rerender(<FallbacksCard {...props} />)
     // Reset opens the confirmation dialog (portal to document.body).
-    fireEvent.click(screen.getByRole('button', { name: en.reset }))
+    fireEvent.click(advancedReset())
     const dialog = screen.getByRole('dialog', { name: en['reset.confirmTitle'] })
     expect(dialog).toBeTruthy()
     expect(within(dialog).getByText(en['reset.confirm'])).toBeTruthy()
@@ -745,7 +890,7 @@ describe('FallbacksCard chrome (upstream PluginCard contract)', () => {
     expect(screen.queryByRole('dialog')).toBeNull()
     expect(scripted.reset).not.toHaveBeenCalled()
     // Confirm runs the reset through the store face and closes the dialog.
-    fireEvent.click(screen.getByRole('button', { name: en.reset }))
+    fireEvent.click(advancedReset())
     fireEvent.click(screen.getByRole('button', { name: en['reset.confirm.action'] }))
     await waitFor(() => {
       expect(scripted.call).toHaveBeenCalledWith('/api', 'fallbacks/reset', { args: {} })
@@ -761,13 +906,17 @@ describe('FallbacksCard chrome (upstream PluginCard contract)', () => {
   })
 
   it('shows the read-only notice only once a settled describe reports read-only', async () => {
-    const { view, props } = await mountCard({ writable: false })
+    // ENABLED_CONFIG so the form (and its per-section actions) renders —
+    // the read-only terms are what this test pins.
+    const { view, props } = await mountCard({ config: ENABLED_CONFIG, writable: false })
     toggleCard()
     view.rerender(<FallbacksCard {...props} />)
     expect(screen.getByText(en.readOnly)).toBeTruthy()
-    // The form is inert in a read-only environment.
+    // The form is inert in a read-only environment (every section's Save
+    // shares the `!writable` term — PR #62 UX round 2).
     expect((screen.getByLabelText(en['enabled.label']) as HTMLInputElement).disabled).toBe(true)
-    expect((screen.getByRole('button', { name: en.save }) as HTMLButtonElement).disabled).toBe(true)
+    expect(mainSave().disabled).toBe(true)
+    expect(subSave().disabled).toBe(true)
   })
 })
 
@@ -928,7 +1077,9 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     expandAdvanced()
     fireEvent.change(screen.getByLabelText(en['cooldownMs.label']), { target: { value: '7000' } })
     view.rerender(<FallbacksCard {...props} />)
-    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    // The 主代理 section's Save is blocked; the all-day violation renders
+    // under the 主代理 heading (its owning section).
+    fireEvent.click(mainSave())
     view.rerender(<FallbacksCard {...props} />)
     expect(scripted.set).not.toHaveBeenCalled()
     expect(screen.getByRole('alert').textContent).toContain(en['validation.allDayRequired'])
@@ -936,7 +1087,7 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     // head + the legacy chain entry (head-conforming).
     pickAllDayFlash()
     view.rerender(<FallbacksCard {...props} />)
-    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    fireEvent.click(mainSave())
     await waitFor(() => {
       expect(scripted.call).toHaveBeenCalledWith('/api', 'fallbacks/set', expect.objectContaining({
         args: { patch: expect.objectContaining({ rootChain: [OFFICIAL_V4_FLASH, 'openai/*'] }) },
@@ -953,6 +1104,9 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     // Required all-day pick (Task 3 — WILDCARD_ROLE_CONFIG carries the
     // empty default chain) so the save passes validation.
     pickAllDayFlash()
+    // Role cards default collapsed (PR #62 UX round 2) — open the role
+    // editor first.
+    expandAllRoles()
     view.rerender(<FallbacksCard {...props} />)
     // The wildcard read-back row shows the legacy-conversion hint inside the
     // role card; the openai catalog group keeps the model select enabled so
@@ -965,7 +1119,7 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     // carries the exact entry, never a `provider/*` line.
     fireEvent.change(model, { target: { value: 'gpt-4o' } })
     view.rerender(<FallbacksCard {...props} />)
-    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    fireEvent.click(subSave())
     await waitFor(() => {
       expect(scripted.call).toHaveBeenCalledWith('/api', 'fallbacks/set', expect.objectContaining({
         args: { patch: expect.objectContaining({
@@ -989,6 +1143,7 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     const { view, props, controller } = await mountCard({ config: WILDCARD_ROLE_CONFIG, catalog: noGroupCatalog })
     await controller.loadCatalog()
     toggleCard()
+    expandAllRoles()
     view.rerender(<FallbacksCard {...props} />)
     const rolesGroup = screen.getByText(en['roles.list.label']).closest('[role="group"]') as HTMLElement
     // The strict hint renders inside the model's wrapping label, so the
@@ -1007,6 +1162,7 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     }
     const { view, props } = await mountCard({ config })
     toggleCard()
+    expandAllRoles()
     view.rerender(<FallbacksCard {...props} />)
     // Add a chain entry: the fresh selector row renders provider/model
     // selects only — no wildcard checkbox, and no conversion hint (that
@@ -1023,6 +1179,11 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     toggleCard()
     view.rerender(<FallbacksCard {...props} />)
     expect(screen.getByText(en['roles.list.label'])).toBeTruthy()
+    // Role cards default collapsed (PR #62 UX round 2): the editors are
+    // hidden behind the summary rows until the header is clicked.
+    expect(screen.queryByLabelText(en['roles.id'])).toBeNull()
+    expandAllRoles()
+    view.rerender(<FallbacksCard {...props} />)
     const ids = screen.getAllByLabelText(en['roles.id'])
     expect(ids).toHaveLength(2)
     expect((ids[0] as HTMLInputElement).value).toBe('reviewer')
@@ -1063,18 +1224,28 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     toggleCard()
     view.rerender(<FallbacksCard {...props} />)
     const rolesGroup = screen.getByText(en['roles.list.label']).closest('[role="group"]') as HTMLElement
-    expect(within(rolesGroup).getAllByLabelText(en['roles.id'])).toHaveLength(2)
-    // Collapse both panels: reviewer shows id + first chain model; the
+    // PR #62 UX round 2: role cards START collapsed — the summary rows are
+    // the quiet default: reviewer shows id + first chain model; the
     // empty-chain role shows id + inherit-root (its chain falls back to the
-    // root chain).
+    // root chain). No editors are mounted.
+    expect(within(rolesGroup).queryByLabelText(en['roles.id'])).toBeNull()
+    expect(within(rolesGroup).getByText('reviewer')).toBeTruthy()
+    expect(within(rolesGroup).getByText('anthropic/claude-3-5-sonnet')).toBeTruthy()
+    expect(within(rolesGroup).getByText('empty')).toBeTruthy()
+    expect(within(rolesGroup).getByText('inherit-root')).toBeTruthy()
+    // The WHOLE first row is the toggle: clicking the header (the collapse
+    // button spans the row) expands the panel.
+    fireEvent.click(within(rolesGroup).getAllByRole('button', { name: en['roles.expand'] })[0]!)
+    fireEvent.click(within(rolesGroup).getAllByRole('button', { name: en['roles.expand'] })[0]!)
+    view.rerender(<FallbacksCard {...props} />)
+    expect(within(rolesGroup).getAllByLabelText(en['roles.id'])).toHaveLength(2)
+    // Collapse both again: the editors unmount, the summaries return.
     fireEvent.click(within(rolesGroup).getAllByRole('button', { name: en['roles.collapse'] })[0]!)
     fireEvent.click(within(rolesGroup).getAllByRole('button', { name: en['roles.collapse'] })[0]!)
     view.rerender(<FallbacksCard {...props} />)
     expect(within(rolesGroup).queryByLabelText(en['roles.persona'])).toBeNull()
     expect(within(rolesGroup).getByText('reviewer')).toBeTruthy()
     expect(within(rolesGroup).getByText('anthropic/claude-3-5-sonnet')).toBeTruthy()
-    expect(within(rolesGroup).getByText('empty')).toBeTruthy()
-    expect(within(rolesGroup).getByText('inherit-root')).toBeTruthy()
     // Expand the first back: its id input returns.
     fireEvent.click(within(rolesGroup).getAllByRole('button', { name: en['roles.expand'] })[0]!)
     view.rerender(<FallbacksCard {...props} />)
@@ -1120,6 +1291,7 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
   it('reflects role add/remove in the rules role dropdown on the same page', async () => {
     const { view, props, scripted } = await mountCard({ config: TWO_BLOCK_CONFIG })
     toggleCard()
+    expandAllRoles()
     view.rerender(<FallbacksCard {...props} />)
     const roleSelect = screen.getAllByLabelText(en['roles.rule.role'])[0] as HTMLSelectElement
     expect(within(roleSelect).getByRole('option', { name: 'reviewer' })).toBeTruthy()
@@ -1135,8 +1307,10 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     expect(within(updatedSelect).getByRole('option', { name: 'architect' })).toBeTruthy()
     expect(within(updatedSelect).getByRole('option', { name: 'reviewer (undeclared)' })).toBeTruthy()
 
-    // Adding a role entity with a typed id offers it immediately.
+    // Adding a role entity with a typed id offers it immediately (the new
+    // card starts collapsed — expand it to reach its id input).
     fireEvent.click(screen.getByRole('button', { name: en['roles.add'] }))
+    expandAllRoles()
     const ids = screen.getAllByLabelText(en['roles.id'])
     fireEvent.change(ids[ids.length - 1]!, { target: { value: 'coder' } })
     view.rerender(<FallbacksCard {...props} />)
@@ -1144,8 +1318,9 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
 
     // The orphaned reference survives into the draft: a save attempt is
     // blocked — the dangling rule keeps the write off the wire and the
-    // banner names the undeclared role (T3 fix wave Minor 2).
-    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    // banner names the undeclared role under the 子代理 heading (T3 fix
+    // wave Minor 2).
+    fireEvent.click(subSave())
     view.rerender(<FallbacksCard {...props} />)
     expect(scripted.set).not.toHaveBeenCalled()
     expect(scripted.call).not.toHaveBeenCalledWith('/api', 'fallbacks/set', expect.anything())
@@ -1168,8 +1343,9 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     expect(screen.getAllByText(en['validation.ruleRoleRequired'])).toHaveLength(1)
 
     // Save is blocked: the empty row would otherwise vanish on save
-    // (rowsToRules drops role === '') with no explanation.
-    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    // (rowsToRules drops role === '') with no explanation. The violation
+    // renders under the 子代理 heading (its owning section).
+    fireEvent.click(subSave())
     view.rerender(<FallbacksCard {...props} />)
     expect(scripted.set).not.toHaveBeenCalled()
     expect(scripted.call).not.toHaveBeenCalledWith('/api', 'fallbacks/set', expect.anything())
@@ -1189,10 +1365,11 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
   it('blocks save on an invalid role id: banner + inline red, no gateway write', async () => {
     const { view, props, scripted } = await mountCard({ config: TWO_BLOCK_CONFIG })
     toggleCard()
+    expandAllRoles()
     view.rerender(<FallbacksCard {...props} />)
     fireEvent.change(screen.getAllByLabelText(en['roles.id'])[0]!, { target: { value: 'Bad ID' } })
     view.rerender(<FallbacksCard {...props} />)
-    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    fireEvent.click(subSave())
     view.rerender(<FallbacksCard {...props} />)
     // The write is intercepted: no fallbacks/set ever crosses the wire.
     expect(scripted.set).not.toHaveBeenCalled()
@@ -1211,11 +1388,12 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
   it('blocks save on the reserved id "inherit" and on duplicate ids', async () => {
     const { view, props, scripted } = await mountCard({ config: TWO_BLOCK_CONFIG })
     toggleCard()
+    expandAllRoles()
     view.rerender(<FallbacksCard {...props} />)
     // Reserved word.
     fireEvent.change(screen.getAllByLabelText(en['roles.id'])[0]!, { target: { value: 'inherit' } })
     view.rerender(<FallbacksCard {...props} />)
-    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    fireEvent.click(subSave())
     view.rerender(<FallbacksCard {...props} />)
     expect(scripted.set).not.toHaveBeenCalled()
     expect(screen.getByRole('alert').textContent).toContain(en['validation.roleIdReserved'])
@@ -1223,7 +1401,7 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     fireEvent.change(screen.getAllByLabelText(en['roles.id'])[0]!, { target: { value: 'coder' } })
     fireEvent.change(screen.getAllByLabelText(en['roles.id'])[1]!, { target: { value: 'coder' } })
     view.rerender(<FallbacksCard {...props} />)
-    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    fireEvent.click(subSave())
     view.rerender(<FallbacksCard {...props} />)
     expect(scripted.set).not.toHaveBeenCalled()
     expect(screen.getByRole('alert').textContent).toContain(en['validation.roleIdDuplicate'])
@@ -1246,7 +1424,7 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     expandAdvanced()
     fireEvent.change(screen.getByLabelText(en['cooldownMs.label']), { target: { value: '7000' } })
     view.rerender(<FallbacksCard {...props} />)
-    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    fireEvent.click(mainSave())
     view.rerender(<FallbacksCard {...props} />)
     expect(scripted.set).not.toHaveBeenCalled()
     expect(scripted.call).not.toHaveBeenCalledWith('/api', 'fallbacks/set', expect.anything())
@@ -1258,10 +1436,11 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
   it('clears the blocked-save state once the draft is valid again, then saves', async () => {
     const { view, props, scripted } = await mountCard({ config: TWO_BLOCK_CONFIG })
     toggleCard()
+    expandAllRoles()
     view.rerender(<FallbacksCard {...props} />)
     fireEvent.change(screen.getAllByLabelText(en['roles.id'])[0]!, { target: { value: 'Bad ID' } })
     view.rerender(<FallbacksCard {...props} />)
-    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    fireEvent.click(subSave())
     view.rerender(<FallbacksCard {...props} />)
     expect(scripted.set).not.toHaveBeenCalled()
     expect(screen.getByRole('alert').textContent).toContain(en['validation.blocked'])
@@ -1275,7 +1454,7 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     expect(screen.queryByRole('alert')).toBeNull()
     expect(screen.getAllByLabelText(en['roles.id'])[0]!.getAttribute('aria-invalid')).toBeNull()
     // A subsequent valid save goes through.
-    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    fireEvent.click(subSave())
     await waitFor(() => expect(scripted.set).toHaveBeenCalled())
   })
 
@@ -1306,7 +1485,7 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     pickAllDayFlash()
     fireEvent.change(screen.getByLabelText(en['cooldownMs.label']), { target: { value: '7000' } })
     view.rerender(<FallbacksCard {...props} />)
-    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    fireEvent.click(advancedSave())
     await waitFor(() => {
       expect(scripted.set).toHaveBeenCalledWith(expect.objectContaining({
         args: { patch: expect.objectContaining({
@@ -1339,7 +1518,7 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     pickAllDayFlash()
     fireEvent.change(screen.getByLabelText(en['cooldownMs.label']), { target: { value: '7000' } })
     view.rerender(<FallbacksCard {...props} />)
-    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    fireEvent.click(advancedSave())
     await waitFor(() => expect(scripted.set).toHaveBeenCalled())
   })
 
@@ -1360,6 +1539,7 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     }
     const { view, props, scripted } = await mountCard({ config })
     toggleCard()
+    expandAllRoles()
     expandAdvanced()
     view.rerender(<FallbacksCard {...props} />)
     // The inline hint explains the chain-less role before any save attempt.
@@ -1368,12 +1548,14 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     // is disabled) before the save attempt.
     fireEvent.change(screen.getByLabelText(en['cooldownMs.label']), { target: { value: '7000' } })
     view.rerender(<FallbacksCard {...props} />)
-    // Save is blocked: the role has no model config.
-    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    // Save is blocked: the role has no model config (the violation renders
+    // under the 子代理 heading — the non-official all-day head earns its
+    // own alert under 主代理, so the sub error is queried directly).
+    fireEvent.click(subSave())
     view.rerender(<FallbacksCard {...props} />)
     expect(scripted.set).not.toHaveBeenCalled()
     expect(scripted.call).not.toHaveBeenCalledWith('/api', 'fallbacks/set', expect.anything())
-    const alert = screen.getByRole('alert')
+    const alert = subError()
     expect(alert.textContent).toContain(en['validation.blocked'])
     expect(alert.textContent).toContain(en['validation.roleChainRequired'])
   })
@@ -1392,6 +1574,7 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     // before the interaction (the mount-effect load is asynchronous).
     await controller.loadCatalog()
     toggleCard()
+    expandAllRoles()
     expandAdvanced()
     view.rerender(<FallbacksCard {...props} />)
     // Required all-day pick (Task 3 — this fixture carries the empty
@@ -1402,7 +1585,7 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     expect(screen.getAllByText(en['validation.roleChainRequired'])).toHaveLength(1)
     fireEvent.change(screen.getByLabelText(en['cooldownMs.label']), { target: { value: '7000' } })
     view.rerender(<FallbacksCard {...props} />)
-    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    fireEvent.click(subSave())
     view.rerender(<FallbacksCard {...props} />)
     expect(screen.getByRole('alert').textContent).toContain(en['validation.roleChainRequired'])
     // Add a chain entry to the role card and pick provider + model.
@@ -1421,7 +1604,7 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     expect(screen.queryByText(en['validation.roleChainRequired'])).toBeNull()
     expect(screen.queryByRole('alert')).toBeNull()
     // The valid draft saves through the gateway.
-    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    fireEvent.click(subSave())
     await waitFor(() => expect(scripted.set).toHaveBeenCalled())
   })
 
@@ -1441,6 +1624,7 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     }
     const { view, props, scripted } = await mountCard({ config })
     toggleCard()
+    expandAllRoles()
     expandAdvanced()
     view.rerender(<FallbacksCard {...props} />)
     // Chain area empty → inline hint shown.
@@ -1457,10 +1641,12 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     // serializes to '' and leaves the assembled draft unchanged).
     fireEvent.change(screen.getByLabelText(en['cooldownMs.label']), { target: { value: '7000' } })
     view.rerender(<FallbacksCard {...props} />)
-    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    fireEvent.click(subSave())
     view.rerender(<FallbacksCard {...props} />)
     expect(scripted.set).not.toHaveBeenCalled()
-    const alert = screen.getByRole('alert')
+    // The empty all-day head earns its own alert under 主代理 — the sub
+    // violation is queried directly under the 子代理 heading.
+    const alert = subError()
     expect(alert.textContent).toContain(en['validation.blocked'])
     expect(alert.textContent).toContain(en['validation.roleChainRequired'])
   })
@@ -1511,8 +1697,9 @@ describe('FallbacksCard time-slot rows (plan fallbacks-timeslots Task 3)', () =>
     const remaining = within(group).getByLabelText(en['timeSlots.presetPlaceholder']) as HTMLSelectElement
     expect(Array.from(remaining.querySelectorAll('option')).map(option => option.value))
       .not.toContain('liang-peak')
-    // Save is blocked while the row has no models (chain required).
-    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    // Save is blocked while the row has no models (chain required) — the
+    // violation renders under the 主代理 heading (its owning section).
+    fireEvent.click(mainSave())
     view.rerender(<FallbacksCard {...props} />)
     expect(scripted.set).not.toHaveBeenCalled()
     expect(screen.getByRole('alert').textContent).toContain(en['validation.slotChainRequired'])
@@ -1527,7 +1714,7 @@ describe('FallbacksCard time-slot rows (plan fallbacks-timeslots Task 3)', () =>
     fireEvent.change(modelSelect, { target: { value: 'gpt-4o' } })
     view.rerender(<FallbacksCard {...props} />)
     expect(screen.queryByRole('alert')).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    fireEvent.click(mainSave())
     await waitFor(() => {
       expect(scripted.call).toHaveBeenCalledWith('/api', 'fallbacks/set', expect.objectContaining({
         args: { patch: expect.objectContaining({
@@ -1559,7 +1746,7 @@ describe('FallbacksCard time-slot rows (plan fallbacks-timeslots Task 3)', () =>
     fireEvent.change(end, { target: { value: '10:00' } })
     view.rerender(<FallbacksCard {...props} />)
     expect(within(group).getByText(en['validation.slotWindow'])).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    fireEvent.click(mainSave())
     view.rerender(<FallbacksCard {...props} />)
     expect(scripted.set).not.toHaveBeenCalled()
     expect(screen.getByRole('alert').textContent).toContain(en['validation.slotWindow'])
@@ -1576,7 +1763,7 @@ describe('FallbacksCard time-slot rows (plan fallbacks-timeslots Task 3)', () =>
     fireEvent.change(modelSelect, { target: { value: 'gpt-4o' } })
     fireEvent.click(dayCells[1]!) // Monday
     view.rerender(<FallbacksCard {...props} />)
-    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    fireEvent.click(mainSave())
     await waitFor(() => {
       expect(scripted.call).toHaveBeenCalledWith('/api', 'fallbacks/set', expect.objectContaining({
         args: { patch: expect.objectContaining({
@@ -1610,7 +1797,7 @@ describe('FallbacksCard time-slot rows (plan fallbacks-timeslots Task 3)', () =>
     // save patch reflects the new order (first matching row wins).
     fireEvent.click(downButtons[0]!)
     view.rerender(<FallbacksCard {...props} />)
-    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    fireEvent.click(mainSave())
     await waitFor(() => {
       expect(scripted.call).toHaveBeenCalledWith('/api', 'fallbacks/set', expect.objectContaining({
         args: { patch: expect.objectContaining({
@@ -1625,7 +1812,7 @@ describe('FallbacksCard time-slot rows (plan fallbacks-timeslots Task 3)', () =>
     fireEvent.click(within(group).getAllByRole('button', { name: en['timeSlots.remove'] })[0]!)
     view.rerender(<FallbacksCard {...props} />)
     expect(within(group).getAllByRole('button', { name: en['timeSlots.remove'] })).toHaveLength(1)
-    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    fireEvent.click(mainSave())
     await waitFor(() => {
       expect(scripted.call).toHaveBeenCalledWith('/api', 'fallbacks/set', expect.objectContaining({
         args: { patch: expect.objectContaining({
@@ -1679,9 +1866,14 @@ describe('FallbacksCard time-slot rows (plan fallbacks-timeslots Task 3)', () =>
     // Custom rows carry an editable name field (read back from the wire).
     const nameInput = within(group).getByLabelText(en['timeSlots.name']) as HTMLInputElement
     expect(nameInput.value).toBe('晚班')
+    // PR #62 UX round 2: the WHOLE first row is the toggle — the collapse
+    // button spans the row and carries the name + first model inside it.
+    const collapseToggle = within(group).getAllByRole('button', { name: en['timeSlots.collapse'] })[0]!
+    expect(within(collapseToggle).getByText(en['timeSlots.preset.liang-peak.label'])).toBeTruthy()
+    expect(within(collapseToggle).getByText('openai/gpt-4o')).toBeTruthy()
     // Collapse the preset row: header shows the frozen name + first model;
     // the window summary, the chainsOnly hint, and the chain editor hide.
-    fireEvent.click(within(group).getAllByRole('button', { name: en['timeSlots.collapse'] })[0]!)
+    fireEvent.click(collapseToggle)
     view.rerender(<FallbacksCard {...props} />)
     expect(within(group).getAllByText(en['timeSlots.preset.liang-peak.label'])).toHaveLength(1)
     expect(within(group).queryByText(en['timeSlots.preset.liang-peak.window'])).toBeNull()
@@ -1694,7 +1886,7 @@ describe('FallbacksCard time-slot rows (plan fallbacks-timeslots Task 3)', () =>
     expect(within(group).getByText(en['timeSlots.preset.liang-peak.window'])).toBeTruthy()
   })
 
-  it('drag-reorders slot rows; the reorder persists on save (PR #62 feedback round)', async () => {
+  it('drag-reorders slot rows via the dedicated handle; the reorder persists on save (PR #62 UX round 2)', async () => {
     const config: typeof defaultFallbacksConfig = {
       ...SLOT_CONFIG,
       timeSlots: [
@@ -1706,12 +1898,14 @@ describe('FallbacksCard time-slot rows (plan fallbacks-timeslots Task 3)', () =>
     toggleCard()
     view.rerender(<FallbacksCard {...props} />)
     const group = slotsGroup()
-    // The row cards are the draggable containers: grab the SECOND row and
-    // drop it onto the FIRST.
-    const cards = within(group).getAllByRole('button', { name: en['timeSlots.collapse'] })
-      .map(button => button.closest('[draggable="true"]') as HTMLElement)
-    expect(cards).toHaveLength(2)
-    fireEvent.dragStart(cards[1]!)
+    // PR #62 UX round 2: the drag HANDLE is the only draggable element
+    // (click ≠ drag — the collapse header is a plain button); the row card
+    // is the drop target. Grab the SECOND row's handle and drop it onto the
+    // FIRST row's card.
+    const handles = within(group).getAllByRole('button', { name: en['timeSlots.drag'] })
+    expect(handles).toHaveLength(2)
+    const cards = handles.map(handle => handle.closest('div')!.parentElement as HTMLElement)
+    fireEvent.dragStart(handles[1]!)
     fireEvent.dragOver(cards[0]!)
     fireEvent.drop(cards[0]!)
     view.rerender(<FallbacksCard {...props} />)
@@ -1719,7 +1913,53 @@ describe('FallbacksCard time-slot rows (plan fallbacks-timeslots Task 3)', () =>
     // preset row follows — the save patch carries the new order.
     const upButtons = within(group).getAllByRole('button', { name: en['timeSlots.moveUp'] })
     expect((upButtons[0] as HTMLButtonElement).disabled).toBe(true)
-    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    fireEvent.click(mainSave())
+    await waitFor(() => {
+      expect(scripted.call).toHaveBeenCalledWith('/api', 'fallbacks/set', expect.objectContaining({
+        args: { patch: expect.objectContaining({
+          timeSlots: [
+            { kind: 'custom', start: '22:00', end: '02:00', days: [], chain: ['anthropic/claude-3-5-sonnet'] },
+            { kind: 'preset', preset: 'liang-peak', days: [], chain: ['openai/gpt-4o'] },
+          ],
+        }) },
+      }))
+    })
+  })
+
+  it('keeps a COLLAPSED slot row drag-reorderable through the handle (PR #62 UX round 2)', async () => {
+    const config: typeof defaultFallbacksConfig = {
+      ...SLOT_CONFIG,
+      timeSlots: [
+        { kind: 'preset', preset: 'liang-peak', days: [], chain: ['openai/gpt-4o'] },
+        { kind: 'custom', start: '22:00', end: '02:00', days: [], chain: ['anthropic/claude-3-5-sonnet'] },
+      ],
+    }
+    const { view, props, scripted } = await mountCard({ config })
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    const group = slotsGroup()
+    // Collapse BOTH rows: the editors unmount, the summary rows remain.
+    fireEvent.click(within(group).getAllByRole('button', { name: en['timeSlots.collapse'] })[0]!)
+    fireEvent.click(within(group).getAllByRole('button', { name: en['timeSlots.collapse'] })[0]!)
+    view.rerender(<FallbacksCard {...props} />)
+    expect(within(group).queryByLabelText(en['timeSlots.start'])).toBeNull()
+    // The drag handles are still there and still draggable while collapsed:
+    // grab the SECOND row's handle and drop it onto the FIRST row's card.
+    const handles = within(group).getAllByRole('button', { name: en['timeSlots.drag'] })
+    expect(handles).toHaveLength(2)
+    const cards = handles.map(handle => handle.closest('div')!.parentElement as HTMLElement)
+    fireEvent.dragStart(handles[1]!)
+    fireEvent.dragOver(cards[0]!)
+    fireEvent.drop(cards[0]!)
+    view.rerender(<FallbacksCard {...props} />)
+    // The custom row now sits first — expand the rows to verify the order
+    // through the move buttons (the move cluster only renders expanded).
+    fireEvent.click(within(group).getAllByRole('button', { name: en['timeSlots.expand'] })[0]!)
+    fireEvent.click(within(group).getAllByRole('button', { name: en['timeSlots.expand'] })[0]!)
+    view.rerender(<FallbacksCard {...props} />)
+    const upButtons = within(group).getAllByRole('button', { name: en['timeSlots.moveUp'] })
+    expect((upButtons[0] as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.click(mainSave())
     await waitFor(() => {
       expect(scripted.call).toHaveBeenCalledWith('/api', 'fallbacks/set', expect.objectContaining({
         args: { patch: expect.objectContaining({
@@ -1747,7 +1987,7 @@ describe('FallbacksCard time-slot rows (plan fallbacks-timeslots Task 3)', () =>
     expandAdvanced()
     fireEvent.change(screen.getByLabelText(en['cooldownMs.label']), { target: { value: '7000' } })
     view.rerender(<FallbacksCard {...props} />)
-    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    fireEvent.click(mainSave())
     view.rerender(<FallbacksCard {...props} />)
     expect(scripted.set).not.toHaveBeenCalled()
     expect(screen.getByRole('alert').textContent).toContain(en['validation.slotChainRequired'])
@@ -1780,7 +2020,7 @@ describe('FallbacksCard time-slot rows (plan fallbacks-timeslots Task 3)', () =>
     expandAdvanced()
     fireEvent.change(screen.getByLabelText(en['cooldownMs.label']), { target: { value: '7000' } })
     view.rerender(<FallbacksCard {...props} />)
-    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    fireEvent.click(mainSave())
     view.rerender(<FallbacksCard {...props} />)
     expect(scripted.set).not.toHaveBeenCalled()
     expect(screen.getByRole('alert').textContent).toContain(en['validation.slotPresetFrozen'])
@@ -1809,6 +2049,9 @@ describe('FallbacksCard seeded roles (plan fallbacks-role-seeds T5)', () => {
     // persona cell hosts the badge + revert pair.
     const first = await mountCard({ config: SEEDED_CONFIG, seeds: [{ id: 'architect', overridden: false }] })
     toggleCard()
+    // Role cards default collapsed (PR #62 UX round 2) — the badge lives
+    // inside the role editor, so open the cards first.
+    expandAllRoles()
     first.view.rerender(<FallbacksCard {...first.props} />)
     expect(screen.getAllByText(en['roles.seedDefault'])).toHaveLength(1)
     expect(screen.queryByText(en['roles.seedOverride'])).toBeNull()
@@ -1820,6 +2063,7 @@ describe('FallbacksCard seeded roles (plan fallbacks-role-seeds T5)', () => {
     // Override state: the pill flips to the override label; still one badge.
     const second = await mountCard({ config: SEEDED_CONFIG, seeds: [{ id: 'architect', overridden: true }] })
     toggleCard()
+    expandAllRoles()
     second.view.rerender(<FallbacksCard {...second.props} />)
     expect(screen.getAllByText(en['roles.seedOverride'])).toHaveLength(1)
     expect(screen.queryByText(en['roles.seedDefault'])).toBeNull()
@@ -1831,6 +2075,7 @@ describe('FallbacksCard seeded roles (plan fallbacks-role-seeds T5)', () => {
       seeds: [{ id: 'architect', overridden: true }],
     })
     toggleCard()
+    expandAllRoles()
     view.rerender(<FallbacksCard {...props} />)
     fireEvent.click(screen.getByRole('button', { name: en['roles.revertPersona'] }))
     // The store mirrors save: the rpc reaches fallbacks/revert-seed with the
@@ -1848,6 +2093,8 @@ describe('FallbacksCard seeded roles (plan fallbacks-role-seeds T5)', () => {
       seeds: [{ id: 'architect', overridden: true }],
     })
     toggleCard()
+    // Read-only forces the role cards open (the collapse toggle is inert),
+    // so the revert button is reachable and disabled.
     readOnly.view.rerender(<FallbacksCard {...readOnly.props} />)
     expect((screen.getByRole('button', { name: en['roles.revertPersona'] }) as HTMLButtonElement).disabled).toBe(true)
     readOnly.view.unmount()
@@ -1859,6 +2106,7 @@ describe('FallbacksCard seeded roles (plan fallbacks-role-seeds T5)', () => {
       seeds: [{ id: 'architect', overridden: true }],
     })
     toggleCard()
+    expandAllRoles()
     expandAdvanced()
     view.rerender(<FallbacksCard {...props} />)
     const gate = Promise.withResolvers<unknown>()
@@ -1870,7 +2118,7 @@ describe('FallbacksCard seeded roles (plan fallbacks-role-seeds T5)', () => {
     // in-flight write flips the store to 'saving'.
     fireEvent.change(screen.getByLabelText(en['cooldownMs.label']), { target: { value: '7000' } })
     view.rerender(<FallbacksCard {...props} />)
-    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    fireEvent.click(advancedSave())
     view.rerender(<FallbacksCard {...props} />)
     expect((screen.getByRole('button', { name: en['roles.revertPersona'] }) as HTMLButtonElement).disabled).toBe(true)
     // Release the write so the store settles and the test ends clean.
@@ -1887,6 +2135,7 @@ describe('FallbacksCard seeded roles (plan fallbacks-role-seeds T5)', () => {
       seeds: [{ id: 'architect', overridden: false }],
     })
     toggleCard()
+    expandAllRoles()
     expandAdvanced()
     view.rerender(<FallbacksCard {...props} />)
     // The seeded row shows the non-blocking chain hint instead of the
@@ -1900,7 +2149,7 @@ describe('FallbacksCard seeded roles (plan fallbacks-role-seeds T5)', () => {
     // is disabled), then Save passes validation and writes.
     fireEvent.change(screen.getByLabelText(en['cooldownMs.label']), { target: { value: '7000' } })
     view.rerender(<FallbacksCard {...props} />)
-    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    fireEvent.click(advancedSave())
     await waitFor(() => expect(scripted.set).toHaveBeenCalled())
     expect(screen.queryByRole('alert')).toBeNull()
   })
@@ -1928,6 +2177,7 @@ describe('FallbacksCard seeded roles (plan fallbacks-role-seeds T5)', () => {
       seeds: [{ id: 'architect', overridden: false }],
     })
     toggleCard()
+    expandAllRoles()
     expandAdvanced()
     view.rerender(<FallbacksCard {...props} />)
     // architect is seeded → the seeded (non-blocking) hint; reviewer is NOT
@@ -1935,14 +2185,16 @@ describe('FallbacksCard seeded roles (plan fallbacks-role-seeds T5)', () => {
     expect(screen.getByText(en['roles.seedChainOptional'])).toBeTruthy()
     expect(screen.getAllByText(en['validation.roleChainRequired'])).toHaveLength(1)
     // Save is blocked: the non-seeded empty-chain role keeps the draft off
-    // the wire.
+    // the wire (the violation renders under the 子代理 heading).
     fireEvent.change(screen.getByLabelText(en['cooldownMs.label']), { target: { value: '7000' } })
     view.rerender(<FallbacksCard {...props} />)
-    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    fireEvent.click(subSave())
     view.rerender(<FallbacksCard {...props} />)
     expect(scripted.set).not.toHaveBeenCalled()
     expect(scripted.call).not.toHaveBeenCalledWith('/api', 'fallbacks/set', expect.anything())
-    const alert = screen.getByRole('alert')
+    // The empty all-day head earns its own alert under 主代理 — the sub
+    // violation is queried directly under the 子代理 heading.
+    const alert = subError()
     expect(alert.textContent).toContain(en['validation.blocked'])
     expect(alert.textContent).toContain(en['validation.roleChainRequired'])
   })
@@ -1953,6 +2205,7 @@ describe('FallbacksCard seeded roles (plan fallbacks-role-seeds T5)', () => {
       seeds: [{ id: 'architect', overridden: false }],
     })
     toggleCard()
+    expandAllRoles()
     // Required all-day pick (Task 3 — SEEDED_CONFIG carries the empty
     // default chain) so the save passes validation.
     pickAllDayFlash()
@@ -1978,8 +2231,14 @@ describe('FallbacksCard seeded roles (plan fallbacks-role-seeds T5)', () => {
       config: editedConfig,
       seeds: [{ id: 'architect', overridden: true }],
     }))
-    fireEvent.click(screen.getByRole('button', { name: en.save }))
-    await waitFor(() => expect(screen.getAllByText(en['roles.seedOverride'])).toHaveLength(1))
+    fireEvent.click(subSave())
+    // The save lands: the accepted config re-seeds the draft → role cards
+    // re-collapse (default collapsed, PR #62 UX round 2). Wait for the
+    // collapse, then re-open the editors to read the persona + badge back.
+    await waitFor(() => expect(screen.getAllByRole('button', { name: en['roles.expand'] })).toHaveLength(2))
+    expandAllRoles()
+    view.rerender(<FallbacksCard {...props} />)
+    expect(screen.getAllByText(en['roles.seedOverride'])).toHaveLength(1)
     expect(screen.queryByText(en['roles.seedDefault'])).toBeNull()
     expect((within(rolesGroup).getAllByLabelText(en['roles.persona'])[0] as HTMLTextAreaElement).value)
       .toBe('Edited persona')
@@ -1999,7 +2258,11 @@ describe('FallbacksCard seeded roles (plan fallbacks-role-seeds T5)', () => {
       seeds: [{ id: 'architect', overridden: false }],
     }))
     fireEvent.click(screen.getByRole('button', { name: en['roles.revertPersona'] }))
-    await waitFor(() => expect(screen.getAllByText(en['roles.seedDefault'])).toHaveLength(1))
+    // Same re-seed rhythm after the revert write.
+    await waitFor(() => expect(screen.getAllByRole('button', { name: en['roles.expand'] })).toHaveLength(2))
+    expandAllRoles()
+    view.rerender(<FallbacksCard {...props} />)
+    expect(screen.getAllByText(en['roles.seedDefault'])).toHaveLength(1)
     expect(screen.queryByText(en['roles.seedOverride'])).toBeNull()
     // The store adopted the post-write config: the restored persona lands
     // back in the draft.
@@ -2013,6 +2276,7 @@ describe('FallbacksCard seeded roles (plan fallbacks-role-seeds T5)', () => {
       seeds: [{ id: 'architect', overridden: false }],
     })
     toggleCard()
+    expandAllRoles()
     view.rerender(<FallbacksCard {...props} />)
     // SEEDED_CONFIG declares architect (seeded) before reviewer (ordinary).
     const ids = screen.getAllByLabelText(en['roles.id'])
@@ -2044,6 +2308,7 @@ describe('FallbacksCard seeded roles (plan fallbacks-role-seeds T5)', () => {
       seeds: [{ id: 'architect', overridden: true }],
     })
     toggleCard()
+    expandAllRoles()
     view.rerender(<FallbacksCard {...props} />)
     const ids = screen.getAllByLabelText(en['roles.id'])
     expect(ids).toHaveLength(2)
@@ -2105,6 +2370,7 @@ describe('FallbacksCard seeded roles (plan fallbacks-role-seeds T5)', () => {
       seeds: [{ id: 'designer', overridden: false }],
     })
     toggleCard()
+    expandAllRoles()
     view.rerender(<FallbacksCard {...props} />)
     const ids = screen.getAllByLabelText(en['roles.id'])
     expect(ids).toHaveLength(2)
@@ -2157,7 +2423,7 @@ describe('FallbacksCard 主代理 layout (PR #62 feedback round)', () => {
     expect(tz.disabled).toBe(false)
     fireEvent.change(tz, { target: { value: 'UTC' } })
     view.rerender(<FallbacksCard {...props} />)
-    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    fireEvent.click(mainSave())
     await waitFor(() => {
       expect(scripted.call).toHaveBeenCalledWith('/api', 'fallbacks/set', expect.objectContaining({
         args: { patch: expect.objectContaining({ tz: 'UTC' }) },
@@ -2205,7 +2471,7 @@ describe('FallbacksCard roleAutoMatch toggle (plan fallbacks-settings-visibility
     fireEvent.click(screen.getByLabelText(en['roleAutoMatch.label']))
     view.rerender(<FallbacksCard {...props} />)
     expect((screen.getByLabelText(en['roleAutoMatch.label']) as HTMLInputElement).checked).toBe(false)
-    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    fireEvent.click(advancedSave())
     await waitFor(() => expect(scripted.set).toHaveBeenCalled())
     expect(scripted.set).toHaveBeenCalledWith(expect.objectContaining({
       args: { patch: expect.objectContaining({ roleAutoMatch: false }) },
@@ -2236,7 +2502,7 @@ describe('FallbacksCard roleAutoMatch toggle (plan fallbacks-settings-visibility
     toggleCard()
     view.rerender(<FallbacksCard {...props} />)
     expect(screen.queryByText(en.unsaved)).toBeNull()
-    expect((screen.getByRole('button', { name: en.save }) as HTMLButtonElement).disabled).toBe(true)
+    expect(mainSave().disabled).toBe(true)
   })
 
   it('a legacy-config save persists roleAutoMatch: true (the schema default is pinned, not invented)', async () => {
@@ -2252,7 +2518,7 @@ describe('FallbacksCard roleAutoMatch toggle (plan fallbacks-settings-visibility
     // identical to the schema default (AC-7 re-scope Option A).
     fireEvent.change(screen.getByLabelText(en['cooldownMs.label']), { target: { value: '7000' } })
     view.rerender(<FallbacksCard {...props} />)
-    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    fireEvent.click(advancedSave())
     await waitFor(() => expect(scripted.set).toHaveBeenCalled())
     expect(scripted.set).toHaveBeenCalledWith(expect.objectContaining({
       args: { patch: expect.objectContaining({ roleAutoMatch: true }) },
