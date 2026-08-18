@@ -230,16 +230,13 @@ export function validateFallbacksConfig(config: FallbacksConfig, logger: Fallbac
       )
     }
   }
-  // P6: `rootChain` is the all-day chain — its HEAD must be exactly one
-  // official V4 model (Flash XOR Pro; trailing entries allowed). A
-  // non-empty chain with a non-official head (e.g. a legacy multi-model
-  // chain) earns ONE startup warn; slot rows stay inert and the virtual
-  // picker row refuses override/delegate until the head conforms (the
-  // v0.2.2 failure walk over the raw chain keeps working verbatim). The empty
-  // default ("no degradation") stays quiet.
+  // P6: `rootChain` is the all-day chain — its LAST entry (默认模型) must
+  // be exactly one official V4 model (Flash XOR Pro; leading 默认降级链
+  // entries allowed). A non-empty chain whose tail is not official earns
+  // ONE startup warn; slot rows stay inert. The empty default stays quiet.
   if (config.rootChain.length > 0 && !isAllDayConforming(config.rootChain)) {
     logger.warn(
-      'llm-fallbacks: rootChain must start with exactly one official V4 model (deepseek-official/deepseek-v4-flash or deepseek-official/deepseek-v4-pro) — time-slot rows and the virtual picker row stay inert until the all-day chain head conforms',
+      'llm-fallbacks: rootChain must end with exactly one official V4 model (deepseek-official/deepseek-v4-flash or deepseek-official/deepseek-v4-pro) — time-slot rows and the virtual picker row stay inert until the all-day chain tail conforms',
     )
   }
   for (const entry of config.rootChain) {

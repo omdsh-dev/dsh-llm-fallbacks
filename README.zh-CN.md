@@ -45,8 +45,9 @@ pnpm repair:fallbacks-switch-logs -- --apply --backup     # 给旧事件打 igno
 ```yaml
 fallbacks:
   enabled: true          # 功能级开关；默认关闭（false），需显式打开后生效
-  rootChain:             # 全时段链：链头（第一项）必须是恰好一个官方 V4 模型
-    - deepseek-official/deepseek-v4-flash   # （Flash 或 Pro，二选一）；后续条目为有序降级目标
+  rootChain:             # 全时段链：最后一项是默认模型（官方 V4）
+    - anthropic/claude-3-5-sonnet          # 前面是默认降级链（先走）
+    - deepseek-official/deepseek-v4-flash  # 最后一档：Flash 或 Pro
   timeSlots:             # 可选：按墙钟时段轮换 root 生效链
     - kind: preset       # 冻结的 UTC+8 窗口；仅模型链可编辑（锁定 tz 为 Asia/Shanghai）
       preset: liang-peak # 09:00–12:00 与 14:00–18:00，每天
@@ -70,7 +71,7 @@ fallbacks:
       - role: reviewer   # 所有 subagent → reviewer 角色（自身链 + 继承 root）
 ```
 
-未命中规则（或 root 请求）→ 内置 `inherit` → `rootChain`。`enabled` **默认关闭（`false`）**——未配置任何链时插件完全 no-op。全时段 `rootChain` 的链头必须恰好是一个官方 V4 模型（`deepseek-official/deepseek-v4-flash` 或 `deepseek-official/deepseek-v4-pro`）——设置卡与 gateway 在保存时拒绝其它链头（遗留非合规链头启动时告警并继续按 fallback-only 走原链，但无法原样保存）。完整参考（角色实体、fallback 策略、规则、selector、预设角色、分时槽预设）→ [docs/configuration.md](docs/configuration.md)。
+未命中规则（或 root 请求）→ 内置 `inherit` → `rootChain`。`enabled` **默认关闭（`false`）**——未配置任何链时插件完全 no-op。全时段 `rootChain` 的**最后一项**必须恰好是一个官方 V4 模型（`deepseek-official/deepseek-v4-flash` 或 `deepseek-official/deepseek-v4-pro`）——设置卡与 gateway 在保存时拒绝其它尾巴（遗留非合规尾巴启动时告警并继续按 fallback-only 走原链，但无法原样保存）。完整参考（角色实体、fallback 策略、规则、selector、预设角色、分时槽预设）→ [docs/configuration.md](docs/configuration.md)。
 
 > **升级提示（行为变更）**：已有 `fallbacks:` 配置若**未显式写 `enabled` 键**，升级后解析为 `false`——请补上 `enabled: true` 以保持插件继续生效。
 
@@ -102,7 +103,7 @@ fallbacks:
 
 - **选择器文案**：目录行的 `name`（composer 触发器显示）是动态的——`Auto: deepseek-v4-flash[Liang Peak]` / `Auto: deepseek-v4-flash[all-day]`；id 仍是 `Auto`。all-day 链头不合规则只显示 `Auto`。重新打开选择器即可刷新。
 - **仅 root**：这一行只关乎 root 代理。subagent 的角色解析与注入不变；继承了该选择的 subagent 会话仍经链头路由——虚拟行只是薄委托，绝不是第二个路由引擎。
-- **链头合规门槛**：覆盖/委托成功要求 all-day 链**链头合规**——第一项必须是恰好一个官方 V4 模型（`deepseek-official/deepseek-v4-flash` 或 `deepseek-official/deepseek-v4-pro`，即设置卡的「默认模型」面板）；后续条目（「默认降级链」）允许。禁用插件后该行隐藏（slot/链编辑不会触发注册抖动）。
+- **链尾合规门槛**：覆盖/委托成功要求 all-day 链**尾巴合规**——最后一项必须是恰好一个官方 V4 模型（`deepseek-official/deepseek-v4-flash` 或 `deepseek-official/deepseek-v4-pro`，即设置卡的「默认模型」面板）；前面的默认降级链先走。禁用插件后该行隐藏（slot/链编辑不会触发注册抖动）。
 - **过期选择**：行消失（插件禁用）而会话仍选中 `FallbacksChain / Auto` 时，会话继续把它显示为当前模型，但 `routable: false`——从目录选一个真实模型即可继续（宿主原生目录语义）。
 - **能力跟随链头**：该行的模型元数据（上下文窗口、模态、推理）镜像当前生效链头；重试归属保持宽松默认——重试/失败记到被委托的真实链头，而非 `FallbacksChain` provider。完整语义 → [docs/configuration.md](docs/configuration.md)。
 
@@ -110,7 +111,7 @@ fallbacks:
 
 分时槽行按墙钟窗口轮换**生效 root 链**——适合按峰谷切换模型，且不会把墙钟轮换误认为故障降级。文案严格区分：时段轮换的日志与 UI 用**分时切换**；失败降级保持**降级切换**；会话内「模型已降级」提示只出现在失败路径。
 
-- **匹配顺序**：每个 root 请求时刻，第一条窗口包含当前时刻（按 `fallbacks.tz`，默认 `Asia/Shanghai` / UTC+8）的额外行生效——该行的模型链**取代**全时段链；无行命中则用全时段 `rootChain`。全时段行固定最后且**必选**：链头必须是恰好一个官方 V4 模型（Flash 或 Pro；后续条目允许）。
+- **匹配顺序**：每个 root 请求时刻，第一条窗口包含当前时刻（按 `fallbacks.tz`，默认 `Asia/Shanghai` / UTC+8）的额外行生效——该行的模型链**取代**全时段链；无行命中则用全时段 `rootChain`。全时段行固定最后且**必选**：最后一项必须是恰好一个官方 V4 模型（Flash 或 Pro；前面的降级条目先走）。
 - **预设**（冻结，不可编辑窗口）：`liang-peak` = 每天 09:00–12:00 **与** 14:00–18:00；`liang-valley` = 其它所有 UTC+8 时间；`glm-peak` = 周一至周五 14:00–18:00；`glm-valley` = 其余时间。一个预设 id 对应一行；设置卡的选择器不会重复提供已添加的预设。
 - **自定义行**：`start` / `end`（`HH:mm`，可跨午夜）+ 可选 `days`（0=周日…6=周六；缺省/空 = 每天）+ 模型。
 - **下一请求生效**：时段边界跨越绝不打断进行中的 step——新行在下一个 root 请求生效。轮换仅挂载生效：info 日志 + 设置卡/`/fallbacks` 状态行，无 durable 切换事件。

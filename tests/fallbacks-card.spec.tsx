@@ -1166,7 +1166,7 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     // (wildcard entry + conversion hint) while the 默认模型 panel shows no
     // selection + the notice. The save stays blocked
     // (validation.allDayRequired) until the user picks Flash or Pro; the
-    // pick composes rootChain = [default model, ...chain entries].
+    // pick composes rootChain = [...chain entries, default model].
     const config: typeof defaultFallbacksConfig = {
       ...defaultFallbacksConfig,
       enabled: true,
@@ -1198,13 +1198,13 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     expect(scripted.set).not.toHaveBeenCalled()
     expect(screen.getByRole('alert').textContent).toContain(en['validation.allDayRequired'])
     // Picking Flash makes the draft valid → the save patch composes the
-    // head + the legacy chain entry (head-conforming).
+    // legacy chain entry + the tail (tail-conforming).
     pickAllDayFlash()
     view.rerender(<FallbacksCard {...props} />)
     fireEvent.click(mainSave())
     await waitFor(() => {
       expect(scripted.call).toHaveBeenCalledWith('/api', 'fallbacks/set', expect.objectContaining({
-        args: { patch: expect.objectContaining({ rootChain: [OFFICIAL_V4_FLASH, 'openai/*'] }) },
+        args: { patch: expect.objectContaining({ rootChain: ['openai/*', OFFICIAL_V4_FLASH] }) },
       }))
     })
   })

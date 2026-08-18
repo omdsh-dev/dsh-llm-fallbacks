@@ -428,18 +428,15 @@ function validateConfigPatch(patch: unknown): void {
         validateTimeSlotsPatch(rows)
       }
     }
-    // All-day head gate (P6 save gate; PR #62 feedback round): `rootChain`
-    // must START with exactly one official V4 model — Flash XOR Pro (the
-    // card's 默认模型 panel); trailing entries (默认降级链) are allowed. An
-    // empty default or a chain whose head is not official is rejected on
-    // save (the card forces the pick; hand-written YAML stays warn-only at
-    // load). `null` is the wire's "absent" signal and is dropped by the
-    // caller's normalization — not validated.
+    // All-day tail gate: `rootChain` must END with exactly one official
+    // V4 model — Flash XOR Pro (the card's 默认模型 panel); leading
+    // entries (默认降级链) are the ordered walk before that last-resort
+    // fallback. Empty / non-official tail rejected on save.
     if (key === 'rootChain') {
       const chain = (patch as Record<string, unknown>)[key]
       if (chain !== null && chain !== undefined && (!Array.isArray(chain) || !isAllDayConforming(chain))) {
         throw new Error(
-          'dsh-llm-fallbacks: rootChain must start with exactly one official V4 model (deepseek-official/deepseek-v4-flash or deepseek-official/deepseek-v4-pro)',
+          'dsh-llm-fallbacks: rootChain must end with exactly one official V4 model (deepseek-official/deepseek-v4-flash or deepseek-official/deepseek-v4-pro)',
         )
       }
     }

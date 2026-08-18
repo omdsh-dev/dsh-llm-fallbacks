@@ -154,25 +154,24 @@ const TZ_OPTIONS = [
 const HHMM_RE = /^([01]\d|2[0-3]):[0-5]\d$/
 
 /**
- * The 默认模型 (default model) value for a chain: the official V4 id when
- * the chain HEAD is that model (Flash XOR Pro — trailing entries allowed,
- * PR #62 feedback round); `''` for an empty chain or a chain whose head is
- * not official (the panel reads back unselected and save validation blocks
- * the value).
+ * The 默认模型 value for a chain: the official V4 id when the chain TAIL
+ * is that model (Flash XOR Pro — leading 默认降级链 entries allowed);
+ * `''` for an empty chain or a chain whose last entry is not official
+ * (the panel reads back unselected and save validation blocks the value).
  */
 function allDayModelOf(chain: readonly string[]): string {
-  return chain.length >= 1 && (chain[0] === ALL_DAY_FLASH || chain[0] === ALL_DAY_PRO) ? chain[0] : ''
+  const tail = chain.length >= 1 ? chain[chain.length - 1] : undefined
+  return tail === ALL_DAY_FLASH || tail === ALL_DAY_PRO ? tail : ''
 }
 
 /**
- * The 默认降级链 editor row for a chain (PR #62 feedback round): the
- * trailing entries AFTER the official-V4 head, or the whole chain while
- * the head is not official (the draft rides the accepted value until a
- * 默认模型 pick).
+ * The 默认降级链 editor row: the leading entries BEFORE the official-V4
+ * tail, or the whole chain while the tail is not official (the draft
+ * rides the accepted value until a 默认模型 pick).
  */
 function allDayChainRowOf(chain: readonly string[], catalog: CatalogLookup | undefined): RootChainRow {
-  const head = allDayModelOf(chain)
-  const rest = head === '' ? chain : chain.slice(1)
+  const tail = allDayModelOf(chain)
+  const rest = tail === '' ? chain : chain.slice(0, -1)
   return rootChainToRows(rest, catalog)[0]!
 }
 
@@ -239,17 +238,12 @@ function scalarsOf(config: FallbacksConfig): FallbacksScalars {
  * toggle always renders (default on) and a save persists the resolved value
  * (AC-7 re-scope, PM decision 2026-08-17 Option A).
  *
- * All-day (plan fallbacks-timeslots Task 3; PR #62 feedback round): the
- * rootChain is composed from the 默认模型 head (exactly one official V4
- * model — Flash XOR Pro) plus the 默认降级链 editor's trailing selectors.
- * While no head is selected the ACCEPTED chain rides through untouched, so
- * a clean legacy draft still equals the accepted config (dirty-check
- * invariant) and save validation blocks the non-conforming value with
- * `validation.allDayRequired`. `timeSlots` is rebuilt from the slot rows
- * every render (the P5 pass-through ends here — Task 3 edits rows). `tz`
- * is a card scalar now: preset rows LOCK it to Asia/Shanghai (their
- * windows are frozen UTC+8 constants, PR #62 feedback); custom rows follow
- * the selected timezone.
+ * All-day: rootChain is composed from the 默认降级链 editor's leading
+ * selectors plus the 默认模型 tail (exactly one official V4 — Flash XOR
+ * Pro). While no tail is selected the ACCEPTED chain rides through
+ * untouched. `timeSlots` is rebuilt from the slot rows every render. `tz`
+ * is a card scalar: preset rows lock it to Asia/Shanghai; custom rows
+ * follow the selected timezone.
  */
 function assembleConfig(
   scalars: FallbacksScalars,
@@ -269,7 +263,7 @@ function assembleConfig(
   return {
     enabled: scalars.enabled,
     triggerCodes: [...scalars.triggerCodes],
-    rootChain: allDayModel === '' ? [...acceptedRootChain] : [allDayModel, ...trailingChain],
+    rootChain: allDayModel === '' ? [...acceptedRootChain] : [...trailingChain, allDayModel],
     roles: { list, rules: rowsToRules(ruleRows) },
     cooldownMs: scalars.cooldownMs,
     revertPolicy: scalars.revertPolicy,
@@ -355,13 +349,13 @@ function validateDraft(
       errors.sub.push(t('validation.roleChainRequired', { id: role.id }))
     }
   }
-  // 默认模型 head (plan fallbacks-timeslots Task 3, product AC — the head
-  // is required and NOT removable; PR #62 feedback round: trailing
-  // 默认降级链 entries are allowed): the chain must START with exactly one
-  // official V4 model. An empty default or a legacy chain with a
-  // non-official head (which rides the draft untouched while the panel is
-  // unselected) blocks the save — the user picks Flash or Pro.
-  if (draft.rootChain.length < 1 || (draft.rootChain[0] !== ALL_DAY_FLASH && draft.rootChain[0] !== ALL_DAY_PRO)) {
+  // 默认模型 tail: required, not removable. The chain must END with
+  // exactly one official V4 model; leading 默认降级链 entries are the
+  // ordered walk before that last-resort fallback. An empty default or a
+  // legacy chain whose last entry is not official (rides the draft
+  // untouched while the panel is unselected) blocks the save.
+  const allDayTail = draft.rootChain.length >= 1 ? draft.rootChain[draft.rootChain.length - 1] : undefined
+  if (allDayTail !== ALL_DAY_FLASH && allDayTail !== ALL_DAY_PRO) {
     errors.main.push(t('validation.allDayRequired'))
   }
   for (const entry of draft.rootChain) {
@@ -692,10 +686,9 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
   // next content-changing ready: unsaved drafts are not preserved across
   // the unreachable→ready upgrade.
   const [scalars, setScalars] = useState<FallbacksScalars>(() => scalarsOf(defaultFallbacksConfig))
-  // 默认模型 head (plan fallbacks-timeslots Task 3; PR #62 feedback round):
-  // the official V4 id, or '' while the accepted chain has no official head
-  // (the draft rides the accepted value until a pick). The 默认降级链 editor
-  // holds the TRAILING entries after that head.
+  // 默认模型 tail: official V4 id, or '' while the accepted chain has no
+  // official last entry. The 默认降级链 editor holds the LEADING entries
+  // before that tail.
   const [allDayModel, setAllDayModel] = useState<string>(() => allDayModelOf(defaultFallbacksConfig.rootChain))
   const [allDayChainRow, setAllDayChainRow] = useState<RootChainRow>(() => allDayChainRowOf(defaultFallbacksConfig.rootChain, undefined))
   const [timeSlotRows, setTimeSlotRows] = useState<SlotEditorRow[]>(() => timeSlotsToRows(defaultFallbacksConfig.timeSlots ?? []))
@@ -1855,12 +1848,10 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                 </div>
               </div>
 
-              {/* 默认模型 (PR #62 feedback round): the official V4 Flash |
-               * Pro 二选一 panel — the HEAD of the default fallback chain,
-               * separate from the 默认降级链 selector list. Required: an
-               * empty or legacy head reads back with no selection plus the
-               * nonconforming notice, and save validation blocks the value
-               * (validation.allDayRequired). */}
+              {/* 默认模型: official V4 Flash | Pro 二选一 — the LAST
+               * fallback of the all-day chain (UI order = walk order).
+               * Required: an empty or legacy tail reads back unselected
+               * plus the nonconforming notice; save validation blocks. */}
               <div className={css.field} role="group" aria-labelledby="fallbacks-default-model">
                 <span className={css.fieldLabel}>
                   <span id="fallbacks-default-model">{t('defaultModel.label')}</span>

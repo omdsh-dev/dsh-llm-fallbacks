@@ -28,10 +28,10 @@ rc.7 `buildModelCatalog` iterates registered providers only. There is no picker 
 ## Guidance
 
 - Register a virtual adapter whenever `enabled` (PR #62 feedback: row visibility is conformance-independent). Slot/chain edits must not churn registration.
-- `stream()` is a thin delegate to `firstDispatchableExactHead(resolveEffectiveChain(...))` — gated on a conforming all-day HEAD (first entry an official V4; trailing entries allowed). Do not walk cooldown / maxSwitches inside the adapter.
+- `stream()` is a thin delegate to `firstDispatchableExactHead(resolveEffectiveChain(...))` — gated on a conforming all-day TAIL (last entry an official V4; leading 默认降级链 entries walked first). Do not walk cooldown / maxSwitches inside the adapter.
 - Selecting the virtual pair = primary. Selecting a real pair = v0.2.2 fallback-only. No `rootMode` key.
-- Preset rows freeze windows in code constants; user edits models only; preset rows lock `tz` to Asia/Shanghai. Valleys complement peaks. The all-day chain head is exactly one of `deepseek-official/deepseek-v4-flash` or `deepseek-official/deepseek-v4-pro`.
-- Gate every slot observation surface on the same conforming helper (P6, head-based).
+- Preset rows freeze windows in code constants; user edits models only; preset rows lock `tz` to Asia/Shanghai. Valleys complement peaks. The all-day chain **tail** is exactly one of `deepseek-official/deepseek-v4-flash` or `deepseek-official/deepseek-v4-pro`.
+- Gate every slot observation surface on the same conforming helper (P6, tail-based).
 
 ## Why This Matters
 

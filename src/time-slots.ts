@@ -221,17 +221,18 @@ function labelOf(row: SlotRowConfig): string {
 }
 
 /**
- * All-day conformance (P6; PR #62 feedback round): the all-day chain is
- * conforming when its FIRST entry (the head — the card's 默认模型 panel) is
- * exactly one official V4 model — Flash XOR Pro. Trailing entries (the
- * card's 默认降级链 block) are allowed: the head is the primary the virtual
- * picker row resolves to, and the rest are the ordered fallback targets.
- * An empty chain or a chain whose head is not an official V4 model keeps
- * slot rows inert and refuses the virtual-row override/delegate; the
- * v0.2.2 failure walk over the raw chain stays verbatim.
+ * All-day conformance (P6): the all-day chain is conforming when its LAST
+ * entry (the tail — the card's 默认模型 panel) is exactly one official V4
+ * model — Flash XOR Pro. Leading entries (the card's 默认降级链 block) are
+ * the ordered walk before that last-resort fallback. An empty chain or a
+ * chain whose tail is not an official V4 model keeps slot rows inert and
+ * refuses the virtual-row override/delegate; the v0.2.2 failure walk over
+ * the raw chain stays verbatim.
  */
 export function isAllDayConforming(chain: readonly string[]): boolean {
-  return chain.length >= 1 && (chain[0] === OFFICIAL_V4_FLASH || chain[0] === OFFICIAL_V4_PRO)
+  if (chain.length < 1) return false
+  const tail = chain[chain.length - 1]
+  return tail === OFFICIAL_V4_FLASH || tail === OFFICIAL_V4_PRO
 }
 
 /**

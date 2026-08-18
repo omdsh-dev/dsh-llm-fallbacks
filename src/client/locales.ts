@@ -55,7 +55,7 @@ export const zh = {
   // configurable selector list (no Flash|Pro radio — that panel moved to
   // 默认模型); the preemption hints are removed.
   'rootChain.label': '默认降级链',
-  'rootChain.tooltip': '未命中任何分时槽时使用的降级链。链头必须是官方 V4 Flash 或 V4 Pro（默认模型），后续条目为追加的降级目标。',
+  'rootChain.tooltip': '未命中任何分时槽时先走这条降级链；全部失败后落到下面的默认模型。',
   'defaultModel.label': '默认模型',
   'chains.selector.remove': '删除该选择器',
   'chains.selector.providerPlaceholder': '选择 provider',
@@ -127,7 +127,7 @@ export const zh = {
   // All-day head (plan fallbacks-timeslots Task 3; PR #62 feedback round):
   // the 默认模型 panel is the official V4 Flash XOR Pro head of the
   // default fallback chain — separate from the 默认降级链 selector list.
-  'allDay.hint': '默认降级链的链头模型：官方 V4 Flash 或 V4 Pro 二选一',
+  'allDay.hint': '全天链的最后一档兜底：官方 V4 Flash 或 V4 Pro 二选一',
   'allDay.flash': '官方 V4 Flash（deepseek-official/deepseek-v4-flash）',
   'allDay.pro': '官方 V4 Pro（deepseek-official/deepseek-v4-pro）',
   'allDay.nonconforming': '当前默认模型不合法：请选择官方 V4 Flash 或 V4 Pro 后保存',
@@ -285,7 +285,7 @@ export const en = {
   // as a configurable selector list (no Flash|Pro radio — that panel moved
   // to 默认模型); the preemption hints are removed.
   'rootChain.label': 'Default fallback chain',
-  'rootChain.tooltip': 'The fallback chain used whenever no time slot matches. Its head must be an official V4 model (Flash or Pro — the default model); trailing entries are additional fallback targets.',
+  'rootChain.tooltip': 'Walked first whenever no time slot matches; if every entry fails, the default model below is the last fallback.',
   'defaultModel.label': 'Default model',
   'chains.selector.remove': 'Remove this selector',
   'chains.selector.providerPlaceholder': 'Select provider',
@@ -357,7 +357,7 @@ export const en = {
   // All-day head (plan fallbacks-timeslots Task 3; PR #62 feedback round):
   // the default-model panel is the official V4 Flash XOR Pro head of the
   // default fallback chain — separate from the default-chain selector list.
-  'allDay.hint': 'Head model of the default fallback chain: official V4 Flash or Pro (pick exactly one)',
+  'allDay.hint': 'Last-resort fallback of the all-day chain: official V4 Flash or Pro (pick exactly one)',
   'allDay.flash': 'Official V4 Flash (deepseek-official/deepseek-v4-flash)',
   'allDay.pro': 'Official V4 Pro (deepseek-official/deepseek-v4-pro)',
   'allDay.nonconforming': 'The current default model is not valid: pick official V4 Flash or Pro before saving',
