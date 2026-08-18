@@ -1,5 +1,5 @@
 /**
- * Virtual `FallbacksChain/自动选择` adapter tests (plan fallbacks-virtual-chain
+ * Virtual `FallbacksChain/Auto` adapter tests (plan fallbacks-virtual-chain
  * Task 1; PR #62 feedback round): the P2 registration lifecycle (listed
  * whenever enabled — conformance is NOT part of registration; idempotent
  * transition-reconcile; multi-fiber dedupe; slot/chain edits never churn)

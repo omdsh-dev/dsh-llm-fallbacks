@@ -3,7 +3,7 @@
  *
  * At `agent/request` — after `await next()` and AFTER pending-switch
  * application (a failure decision always wins) — a ROOT-origin seed of
- * `FallbacksChain/自动选择` (the virtual picker row) overrides to the
+ * `FallbacksChain/Auto` (the virtual picker row) overrides to the
  * FIRST EXACT head of the effective chain, via the existing
  * `overrideConfig` path. The effective chain comes from
  * `resolveEffectiveChain` (src/time-slots.ts) — the single source: the

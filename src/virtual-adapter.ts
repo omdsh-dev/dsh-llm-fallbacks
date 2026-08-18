@@ -1,5 +1,5 @@
 /**
- * Virtual `FallbacksChain/自动选择` LLM adapter (plan fallbacks-virtual-chain
+ * Virtual `FallbacksChain/Auto` LLM adapter (plan fallbacks-virtual-chain
  * Task 1, technical pins P1–P3; PR #62 feedback round): a mount-only
  * catalog row that makes the configured effective chain selectable as the
  * session **primary** in the host model picker, without patching dsh or
@@ -47,8 +47,13 @@ import { isAllDayConforming, resolveEffectiveChain } from './time-slots.ts'
 
 /** Provider route of the virtual adapter (exact string, spec lock). */
 export const FALLBACKS_PROVIDER = 'FallbacksChain'
-/** Model id of the virtual catalog row (exact string, spec lock). */
-export const FALLBACKS_CHAIN_MODEL = '自动选择'
+/**
+ * Model id of the virtual catalog row (exact string, spec lock). "Auto" is
+ * the literal picker row the host renders (hardcoded, not i18n — user
+ * decision 2026-08-18): the catalog row's `id` and `name` both come from
+ * this constant, so the row reads `FallbacksChain/Auto`.
+ */
+export const FALLBACKS_CHAIN_MODEL = 'Auto'
 
 /**
  * `LlmError` code: the effective chain is empty — the virtual route has no
@@ -243,7 +248,7 @@ export function installFallbacksAdapter(ctx: Context, readConfig: () => Fallback
       try {
         disposeAdapter = llm.registerAdapter([FALLBACKS_PROVIDER], adapter)
         registered = true
-        logger.info('llm-fallbacks: virtual adapter registered — FallbacksChain/自动选择 is selectable in the model picker')
+        logger.info('llm-fallbacks: virtual adapter registered — FallbacksChain/Auto is selectable in the model picker')
       } catch (error) {
         // Multi-fiber dedupe (P2, mirroring the service/gateway/typert
         // children): a later fiber applying over a shared context root hits
@@ -258,7 +263,7 @@ export function installFallbacksAdapter(ctx: Context, readConfig: () => Fallback
       disposeAdapter?.()
       disposeAdapter = undefined
       registered = false
-      logger.info('llm-fallbacks: virtual adapter unregistered — FallbacksChain/自动选择 hidden from the model picker')
+      logger.info('llm-fallbacks: virtual adapter unregistered — FallbacksChain/Auto hidden from the model picker')
     }
   }
 

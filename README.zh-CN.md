@@ -82,7 +82,7 @@ fallbacks:
 
 - **root / subagent 自动降级**：任意 agent 在模型故障下按链切换到下一个可用 provider/model，无需手动换模型。
 - **两块制配置**：`rootChain` 管 root 代理；声明式角色实体（`roles.list`）供 `roles.rules` 引用（或内置 `inherit`）。
-- **选择器里把链当主模型**：`enabled` 开启时，宿主模型选择器（web 与 TUI 一致）出现虚拟 `FallbacksChain` / `自动选择` 行——选中它即以配置的链作为 root 主模型（需要 all-day 链头合规才能成功覆盖）；选真实模型则保持 fallback-only（见 [模型选择器中的 FallbacksChain](#模型选择器中的-fallbackschain)）。
+- **选择器里把链当主模型**：`enabled` 开启时，宿主模型选择器（web 与 TUI 一致）出现虚拟 `FallbacksChain` / `Auto` 行——选中它即以配置的链作为 root 主模型（需要 all-day 链头合规才能成功覆盖）；选真实模型则保持 fallback-only（见 [模型选择器中的 FallbacksChain](#模型选择器中的-fallbackschain)）。
 - **分时切换（Time-slot rotation）**：可选的 `fallbacks.timeSlots` 行按墙钟窗口（配置级 `tz` 时区，默认 `Asia/Shanghai`）轮换 root 生效链——四个冻结的 UTC+8 预设（`liang-peak` / `liang-valley` / `glm-peak` / `glm-valley`，窗口为代码常量、仅模型链可编辑），或自定义 `start`/`end`/`days` 窗口。第一条命中的行生效；全时段行固定最后。时段切换在**下一个** root 请求生效，日志记为**分时切换**——路由种子而非失败决策：不消耗冷却、不计入 `maxSwitchesPerStep`。失败降级保留**降级切换**文案（见 [分时槽预设（分时切换）](#分时槽预设分时切换)）。
 - **派发时角色解析**：在 subagent 的首次请求上，其角色按三个阶段解析——显式（`agentPreset` 匹配已声明角色 id）→ 确定性规则（不变）→ LLM 自动匹配（从已声明角色体系中选择，`fallbacks.roleAutoMatch` 默认 `true`）。解析出的角色的链头模型注入首次请求，并以显式 `role → model` 日志行记录（不写 durable `fallbacks/switch` 事件——issue #52 停写）；设 `roleAutoMatch: false` 仅关闭 LLM 自动匹配阶段（显式 `agentPreset` 阶段仍生效——无显式角色时即复现原有仅规则行为）。设置卡总是渲染「启用角色自动匹配」开关（默认 `true`）以切换之——即使是从未声明过该键的旧配置，schema 默认值同样生效。
 - **冷却与回主**：被切离/失败的模型在冷却期内不再入选；`revertPolicy: cooldown-expiry` 冷却到期后自动回主模型。
@@ -92,9 +92,9 @@ fallbacks:
 
 ## 模型选择器中的 FallbacksChain
 
-当 `enabled: true` 时，插件注册一个虚拟 provider **FallbacksChain**，目录中只有一行：**自动选择**。web profile 与 dsh-tui 都能看到这一行：两者共享同一个 adapter catalog，无需 TUI 设置页或宿主补丁。该行只要插件启用就可见——遗留多模型或空的 all-day 链**不会**隐藏它（只是覆盖不会生效）。
+当 `enabled: true` 时，插件注册一个虚拟 provider **FallbacksChain**，目录中只有一行：**Auto**。web profile 与 dsh-tui 都能看到这一行：两者共享同一个 adapter catalog，无需 TUI 设置页或宿主补丁。该行只要插件启用就可见——遗留多模型或空的 all-day 链**不会**隐藏它（只是覆盖不会生效）。
 
-选择 **FallbacksChain / 自动选择** = 把配置的链作为 root **主模型**：root 请求路由到请求时刻生效链的第一个精确 `provider/model`，失败后由降级引擎从该链头照常沿链切换。选择任何真实目录模型则保持 v0.2.2 的 fallback-only 行为——会话模型为主，链只在它失败后介入。
+选择 **FallbacksChain / Auto** = 把配置的链作为 root **主模型**：root 请求路由到请求时刻生效链的第一个精确 `provider/model`，失败后由降级引擎从该链头照常沿链切换。选择任何真实目录模型则保持 v0.2.2 的 fallback-only 行为——会话模型为主，链只在它失败后介入。
 
 **没有 `rootMode` 开关**——没有配置键、YAML 字段、设置开关或 gateway 标志。模式就是会话的 `{provider, model}` 选择本身：`FallbacksChain` = 链为主模型；任意真实模型 = fallback-only。
 
@@ -102,7 +102,7 @@ fallbacks:
 
 - **仅 root**：这一行只关乎 root 代理。subagent 的角色解析与注入不变；继承了该选择的 subagent 会话仍经链头路由——虚拟行只是薄委托，绝不是第二个路由引擎。
 - **链头合规门槛**：覆盖/委托成功要求 all-day 链**链头合规**——第一项必须是恰好一个官方 V4 模型（`deepseek-official/deepseek-v4-flash` 或 `deepseek-official/deepseek-v4-pro`，即设置卡的「默认模型」面板）；后续条目（「默认降级链」）允许。禁用插件后该行隐藏（slot/链编辑不会触发注册抖动）。
-- **过期选择**：行消失（插件禁用）而会话仍选中 `FallbacksChain / 自动选择` 时，会话继续把它显示为当前模型，但 `routable: false`——从目录选一个真实模型即可继续（宿主原生目录语义）。
+- **过期选择**：行消失（插件禁用）而会话仍选中 `FallbacksChain / Auto` 时，会话继续把它显示为当前模型，但 `routable: false`——从目录选一个真实模型即可继续（宿主原生目录语义）。
 - **能力跟随链头**：该行的模型元数据（上下文窗口、模态、推理）镜像当前生效链头；重试归属保持宽松默认——重试/失败记到被委托的真实链头，而非 `FallbacksChain` provider。完整语义 → [docs/configuration.md](docs/configuration.md)。
 
 ## 分时槽预设（分时切换）

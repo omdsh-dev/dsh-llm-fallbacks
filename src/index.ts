@@ -18,7 +18,7 @@
  * - `agent/request` waterfall: apply a pending switch after `await next()`
  *   (provider/model override, inherited `reasoningEffort` dropped — the
  *   `installModelSelection` `withoutInheritedEffort` pattern); a
- *   root-origin `FallbacksChain/自动选择` seed then overrides to the
+ *   root-origin `FallbacksChain/Auto` seed then overrides to the
  *   effective chain's first exact head (select-is-primary, plan
  *   fallbacks-virtual-chain Task 2); then the always-mode cap check (count
  *   `llm/retry` events for the current turn/step/provider; ≥
@@ -406,7 +406,7 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     ctx.logger('llm-fallbacks').debug('fallbacks service already registered — no service on this fiber (multi-fiber dedupe)')
   }
   let source: () => FallbacksConfig = () => entry
-  // Virtual FallbacksChain/自动选择 adapter (plan fallbacks-virtual-chain
+  // Virtual FallbacksChain/Auto adapter (plan fallbacks-virtual-chain
   // Task 1, P2; PR #62 feedback): ONE conditional `ctx.inject(['llm'])`
   // child — the picker row registers whenever `enabled` (conformance of
   // the all-day chain is NOT part of registration: a legacy multi-model or
@@ -770,7 +770,7 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
       slotWinners.set(agent.id, { key, label: slot.label })
     }
     // Select-is-primary (plan fallbacks-virtual-chain Task 2, P3; PR #62
-    // feedback): a ROOT-origin seed of the virtual `FallbacksChain/自动选择`
+    // feedback): a ROOT-origin seed of the virtual `FallbacksChain/Auto`
     // row means "use the chain as the root primary" — override the seed to
     // the effective chain's FIRST DISPATCHABLE EXACT head (the shared
     // `firstDispatchableExactHead` the virtual adapter's delegate paths
@@ -794,18 +794,18 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     ) {
       if (!isAllDayConforming(config.rootChain)) {
         logger.warn(
-          'llm-fallbacks: FallbacksChain/自动选择 selected but the all-day rootChain is not conforming (exactly one official V4 model) — no primary override',
+          'llm-fallbacks: FallbacksChain/Auto selected but the all-day rootChain is not conforming (exactly one official V4 model) — no primary override',
         )
       } else {
         const effective = resolveEffectiveChain(config, new Date(), config.tz ?? 'Asia/Shanghai')
         const head = firstDispatchableExactHead(effective)
         if (head === undefined) {
           logger.warn(
-            'llm-fallbacks: FallbacksChain/自动选择 selected but the effective chain has no exact head (empty, wildcard-only, or self-route) — no primary override',
+            'llm-fallbacks: FallbacksChain/Auto selected but the effective chain has no exact head (empty, wildcard-only, or self-route) — no primary override',
           )
         } else {
           logger.info(
-            'llm-fallbacks: FallbacksChain/自动选择 selection overrides to the effective head %s/%s',
+            'llm-fallbacks: FallbacksChain/Auto selection overrides to the effective head %s/%s',
             head.provider,
             head.model,
           )
