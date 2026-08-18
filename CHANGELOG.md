@@ -6,6 +6,29 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-08-18
+
+### Added
+
+- A virtual `FallbacksChain` provider with a single `Auto` row appears in the model picker whenever fallbacks is enabled (no conformance requirement for the row itself); selecting it uses the configured chain as the root primary — a conforming all-day head (exactly one official V4 model) is still required for the override/delegate to succeed — while selecting a real model keeps fallback-only behavior.
+- Time-slot rows (`fallbacks.timeSlots`) rotate the effective root chain by wall-clock windows: four frozen UTC+8 presets (Liang Peak / Liang Valley / GLM Peak / GLM Valley; windows are code constants, models-only edits) or custom `start`/`end`/`days` windows; the first matching row wins and the all-day row is always last. The all-day `rootChain` head must be exactly one official V4 model (`deepseek-official/deepseek-v4-flash` or `deepseek-official/deepseek-v4-pro`; trailing entries allowed) — enforced by the settings card and the gateway on save (a legacy multi-model chain warns at startup, keeps the fallback-only walk, and cannot be saved as-is). Slot changes apply on the next root request and are logged as time-slot switches (分时切换 / time-slot switch) — a routing seed exempt from cooldown and switch caps — never as fallback switches (降级切换 / fallback switch).
+- Settings card: preset peak time-slot rows (Liang Peak / GLM Peak) now carry compact cost tags in their collapsed title — a red 高消耗 / High Cost chip plus a yellow x2 (Liang Peak) or x3 (GLM Peak) multiplier chip (valley and custom rows render none) — and the currently-active slot row (resolved with the runtime's `resolveSlotState`, the P5 single source) shows an 激活 / Active chip; when the active surface is the all-day chain no row is tagged. The chips were restyled as semi-transparent outlined pills hugging the slot name (the first-model meta is right-aligned), and the GLM presets (GLM Peak / GLM Valley) are unselectable in the preset picker until zai-coding-cn is configured (the options stay visible with a 需配置 zai-coding-cn / requires zai-coding-cn suffix, and the add action refuses a GLM preset defensively).
+
+### Fixed
+
+- Clicking "Restore default persona" on a seeded role now resets the in-card draft even when the saved value is already the seed default (issue #59).
+- Time-slot panels in the settings card stay collapsed by default: they no longer re-expand after a save (role cards already behaved this way; a freshly added row still opens for editing).
+
+### Changed
+
+- The all-day `rootChain` now ends with the default model (official V4 Flash or Pro) as the last-resort fallback; the default fallback chain is walked first. Card copy, save validation, and the gateway match this order (UI top-to-bottom = walk order).
+- Settings card: the new 主代理 section groups 分时槽设置 (slot rows + an in-section timezone picker that locks to Asia/Shanghai while any preset row exists; rows are drag-reorderable and collapsible to name + first model; custom rows carry an editable name), 默认降级链 (the all-day chain as a configurable provider/model selector list — the old preemption hints are removed) and 默认模型 (the official V4 Flash | Pro head panel); zh preset labels are 梁文峰 / 梁文谷 / GLM峰 / GLM谷, with a zai-coding-cn validity caveat on the GLM presets.
+- Role rules are now subagent-only: the origin control is removed from the settings card, root requests never match rules, and a persisted legacy rule `origin` is ignored at match time; role panels are collapsible to id + first chain model (or inherit-root).
+- The host model picker labels the virtual row `Auto: <displayName>[<slot>]` (e.g. `Auto: DeepSeek V4 Flash[Liang Peak]`) using the catalog display name, not the model id; the catalog id stays `Auto`.
+- Custom time-slot rows show the host timezone as a read-only label (`Asia/Shanghai (UTC+8)`); there is no timezone picker. Preset-only configs hide the label; mixed configs show Asia/Shanghai. Saving a custom-only config persists the host timezone.
+- Settings card: the card footer is gone — Save/Discard now live beside the 主代理 and 子代理 section headings (and inside the expanded 高级选项 body, where the global Reset also lives), and validation / save errors render under the section that owns them (a store write failure renders under the section whose Save was clicked). Role cards default collapsed (the whole first row is the toggle, with a separate drag handle on time-slot rows so click ≠ drag), and collapsed time-slot rows stay drag-reorderable.
+- Settings card (PR #62 UX round 3): the Reset-to-defaults button and its confirmation dialog are gone from the card (the gateway `fallbacks/reset` RPC and store `resetToDefaults()` stay as host APIs), and each big section (主代理 / 子代理 / 高级选项) now saves ONLY its own fields — 主代理 persists `rootChain` / `timeSlots` / `tz` (+ the card-level `enabled`), 子代理 persists `roles`, 高级选项 persists the advanced scalars — with every other section's value taken from the last accepted config, so one section's Save never rides along (or clobbers) another section's unsaved edits; validation and Discard are per-section too, and after a save only clean sections re-seed from the accepted config.
+
 ## [0.2.2] - 2026-08-17
 
 ### Fixed
