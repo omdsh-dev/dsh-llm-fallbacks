@@ -636,7 +636,10 @@ select.input {
 }
 
 .collapseTitle {
-  flex: 1;
+  /* PR #62 UX round 4 part B: no flex:1 — the row tags hug the name
+     (flex:none + a max-width keeps the ellipsis for long custom names). */
+  flex: none;
+  max-width: 55%;
   min-width: 0;
   font-size: 12px;
   line-height: 18px;
@@ -648,7 +651,10 @@ select.input {
 }
 
 .collapseMeta {
+  /* PR #62 UX round 4 part B: the first-model meta sits at the FAR RIGHT
+     of the row (the tags no longer push it — they hug the name). */
   flex: none;
+  margin-left: auto;
   font-size: 12px;
   line-height: 18px;
   color: var(--dsw-alias-label-secondary);
@@ -659,10 +665,11 @@ select.input {
 
 /* PR #62 UX round 4: compact non-interactive chips in the collapsed slot
    title row — the cost/multiplier tags on the peak presets and the
-   active-slot indicator. The chip geometry mirrors `.pending` (pill);
-   the tones ride the state tokens (error = 高消耗, warn = x2/x3,
-   success = 激活), light/dark adaptive through the alias tokens like the
-   card's other badges. */
+   active-slot indicator. PR #62 UX round 4 part B: restyled as
+   SEMI-TRANSPARENT OUTLINED PILLS — 1px border in the tone color + a
+   translucent tone fill (`color-mix`; the client targets modern evergreen
+   browsers) — light/dark adaptive through the same `--dsw-alias-state-*`
+   tokens the card's other badges use. */
 .slotTag {
   flex: none;
   display: inline-flex;
@@ -673,19 +680,25 @@ select.input {
   line-height: 17px;
   font-weight: 500;
   white-space: nowrap;
-  background: var(--dsw-alias-bg-module-platform);
+  border: 1px solid;
 }
 
 .slotTagHighCost {
   color: var(--dsw-alias-state-error-primary);
+  border-color: var(--dsw-alias-state-error-primary);
+  background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 10%, transparent);
 }
 
 .slotTagMultiplier {
   color: var(--dsw-alias-state-warn-primary);
+  border-color: var(--dsw-alias-state-warn-primary);
+  background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 10%, transparent);
 }
 
 .slotTagActive {
   color: var(--dsw-alias-state-success-primary);
+  border-color: var(--dsw-alias-state-success-primary);
+  background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 10%, transparent);
 }
 
 /* The slot-row drag handle (PR #62 UX round 2): a quiet grip button beside

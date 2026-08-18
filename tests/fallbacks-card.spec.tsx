@@ -2084,7 +2084,8 @@ describe('FallbacksCard time-slot rows (plan fallbacks-timeslots Task 3)', () =>
     view.rerender(<FallbacksCard {...props} />)
     const group = slotsGroup()
     const picker = within(group).getByLabelText(en['timeSlots.presetPlaceholder']) as HTMLSelectElement
-    fireEvent.change(picker, { target: { value: 'glm-peak' } })
+    // liang-peak (not a GLM preset — those are gated on zai-coding-cn).
+    fireEvent.change(picker, { target: { value: 'liang-peak' } })
     view.rerender(<FallbacksCard {...props} />)
     fireEvent.click(within(group).getByRole('button', { name: en['timeSlots.addPreset'] }))
     view.rerender(<FallbacksCard {...props} />)
@@ -2211,6 +2212,59 @@ describe('FallbacksCard time-slot rows (plan fallbacks-timeslots Task 3)', () =>
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('disables the GLM preset options until zai-coding-cn is configured (PR #62 UX round 4 part B)', async () => {
+    // The openai-only catalog leaves zai-coding-cn UNCONFIGURED (the
+    // Models-page `configured` join): the GLM options stay visible but
+    // disabled with the reason suffix; the add guard refuses them too.
+    const { view, props, controller } = await mountCard({ config: SLOT_CONFIG, catalog: CHAIN_CATALOG })
+    await controller.loadCatalog()
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    const group = slotsGroup()
+    const picker = within(group).getByLabelText(en['timeSlots.presetPlaceholder']) as HTMLSelectElement
+    const options = Array.from(picker.querySelectorAll('option'))
+    const byValue = (value: string): HTMLOptionElement => options.find(option => option.value === value) as HTMLOptionElement
+    expect(byValue('glm-peak').disabled).toBe(true)
+    expect(byValue('glm-valley').disabled).toBe(true)
+    expect(byValue('liang-peak').disabled).toBe(false)
+    expect(byValue('liang-valley').disabled).toBe(false)
+    // The disabled GLM options carry the unconfigured suffix; the enabled
+    // Liang options do not.
+    expect(byValue('glm-peak').textContent).toContain(en['timeSlots.preset.glm.unconfigured'])
+    expect(byValue('glm-valley').textContent).toContain(en['timeSlots.preset.glm.unconfigured'])
+    expect(byValue('liang-peak').textContent).not.toContain(en['timeSlots.preset.glm.unconfigured'])
+    // Defensive guard: even a programmatically forced GLM selection (jsdom
+    // lets fireEvent set a disabled option) must not add a row.
+    fireEvent.change(picker, { target: { value: 'glm-peak' } })
+    view.rerender(<FallbacksCard {...props} />)
+    fireEvent.click(within(group).getByRole('button', { name: en['timeSlots.addPreset'] }))
+    view.rerender(<FallbacksCard {...props} />)
+    expect(within(group).queryAllByRole('button', { name: en['timeSlots.collapse'] })).toHaveLength(0)
+  })
+
+  it('enables the GLM preset options once zai-coding-cn is configured (PR #62 UX round 4 part B)', async () => {
+    const catalog = {
+      providers: [
+        { provider: 'openai', displayName: 'OpenAI', settingsNs: 'llm-providers', settingsPath: [], active: true },
+        { provider: 'zai-coding-cn', displayName: 'ZAI', settingsNs: 'llm-providers', settingsPath: [], active: true },
+      ] as ConfigurableProviderView[],
+      groups: [
+        { id: 'openai', name: 'OpenAI', models: [{ id: 'gpt-4o', name: 'GPT-4o' }] },
+        { id: 'zai-coding-cn', name: 'ZAI', models: [{ id: 'glm-4.6', name: 'GLM 4.6' }] },
+      ] as ModelProviderGroup[],
+    }
+    const { view, props, controller } = await mountCard({ config: SLOT_CONFIG, catalog })
+    await controller.loadCatalog()
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    const picker = within(slotsGroup()).getByLabelText(en['timeSlots.presetPlaceholder']) as HTMLSelectElement
+    const options = Array.from(picker.querySelectorAll('option'))
+    const byValue = (value: string): HTMLOptionElement => options.find(option => option.value === value) as HTMLOptionElement
+    expect(byValue('glm-peak').disabled).toBe(false)
+    expect(byValue('glm-valley').disabled).toBe(false)
+    expect(byValue('glm-peak').textContent).not.toContain(en['timeSlots.preset.glm.unconfigured'])
   })
 })
 

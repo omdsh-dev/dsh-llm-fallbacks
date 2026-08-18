@@ -112,6 +112,10 @@ export const zh = {
   'timeSlots.preset.highCost': '高消耗',
   'timeSlots.preset.multiplier': 'x{n}',
   'timeSlots.active': '激活',
+  // PR #62 UX round 4 part B: the GLM presets route to zai-coding-cn — the
+  // suffix explains why the option is disabled until the provider is
+  // configured (the note wording: 仅配置了 zai-coding-cn 时有效).
+  'timeSlots.preset.glm.unconfigured': '（需配置 zai-coding-cn）',
   'timeSlots.day.sun': '日',
   'timeSlots.day.mon': '一',
   'timeSlots.day.tue': '二',
@@ -338,6 +342,10 @@ export const en = {
   'timeSlots.preset.highCost': 'High Cost',
   'timeSlots.preset.multiplier': 'x{n}',
   'timeSlots.active': 'Active',
+  // PR #62 UX round 4 part B: the GLM presets route to zai-coding-cn — the
+  // suffix explains why the option is disabled until the provider is
+  // configured.
+  'timeSlots.preset.glm.unconfigured': ' (requires zai-coding-cn)',
   'timeSlots.day.sun': 'Sun',
   'timeSlots.day.mon': 'Mon',
   'timeSlots.day.tue': 'Tue',

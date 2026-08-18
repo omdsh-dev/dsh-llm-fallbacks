@@ -850,6 +850,11 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
 
   const addPresetSlotRow = (): void => {
     if (presetToAdd === '') return
+    // PR #62 UX round 4 part B: the GLM presets route to zai-coding-cn
+    // models — without the provider configured they are unselectable (the
+    // disabled option normally prevents it, but a stale selection must not
+    // slip through the guard).
+    if ((presetToAdd === 'glm-peak' || presetToAdd === 'glm-valley') && !glmConfigured) return
     setTimeSlotRows(rows => [...rows, { kind: 'preset', preset: presetToAdd, start: '', end: '', days: [], name: '', collapsed: false, selectors: [] }])
     setPresetToAdd('')
   }
@@ -971,6 +976,12 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
   // PR #62 feedback round: preset rows lock the tz to UTC+8 / Asia/Shanghai
   // (frozen windows) — the picker is disabled and the assembled tz is forced.
   const presetsPresent = timeSlotRows.some(row => row.kind === 'preset')
+  // PR #62 UX round 4 part B: the GLM presets (glm-peak / glm-valley) route
+  // to zai-coding-cn models — they are only selectable when that provider is
+  // CONFIGURED (the Models-page `configured` join, matching the caveat
+  // wording); a non-ready catalog counts as not-configured (conservative
+  // default, same as the rest of the card).
+  const glmConfigured = state.configuredProviders.some(entry => entry.provider === 'zai-coding-cn')
   // PR #62 UX round 4: the currently-ACTIVE slot row (P5), resolved with
   // the SAME pure helper the runtime uses (`resolveSlotState` — the single
   // source; never derived from switch history), against the ACCEPTED config
@@ -1752,9 +1763,19 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                     <option value="">{t('timeSlots.presetPlaceholder')}</option>
                     {SLOT_PRESET_IDS
                       .filter(id => !timeSlotRows.some(row => row.kind === 'preset' && row.preset === id))
-                      .map(id => (
-                        <option key={id} value={id}>{t(`timeSlots.preset.${id}.label` as FallbacksKey)}</option>
-                      ))}
+                      .map(id => {
+                        // PR #62 UX round 4 part B: the GLM presets are
+                        // unselectable until zai-coding-cn is configured —
+                        // the options stay VISIBLE (disabled, never removed)
+                        // so the user sees why, with the reason suffix.
+                        const glmUnconfigured = !glmConfigured && (id === 'glm-peak' || id === 'glm-valley')
+                        return (
+                          <option key={id} value={id} disabled={glmUnconfigured}>
+                            {t(`timeSlots.preset.${id}.label` as FallbacksKey)}
+                            {glmUnconfigured ? t('timeSlots.preset.glm.unconfigured') : null}
+                          </option>
+                        )
+                      })}
                   </select>
                   <Button
                     variant="outline"
