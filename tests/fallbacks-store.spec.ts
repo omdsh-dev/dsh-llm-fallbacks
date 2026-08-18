@@ -1217,7 +1217,7 @@ describe('FallbacksSettingsController', () => {
       seeds: [{ id: 'architect', overridden: false }],
       outcome: { reverted: true, persona: 'v1' },
     })))
-    await controller.revertSeed('architect')
+    await expect(controller.revertSeed('architect')).resolves.toBe('v1')
     expect(call).toHaveBeenLastCalledWith('/api', 'fallbacks/revert-seed', { args: { id: 'architect' } })
     expect(revertSeed).toHaveBeenCalledTimes(1)
     const state = controller.store.getSnapshot()
@@ -1226,6 +1226,25 @@ describe('FallbacksSettingsController', () => {
     expect(state.config.roles.list).toEqual([{ id: 'architect', persona: 'v1', chain: [], fallback: 'inherit-root' }])
     expect(state.seeds).toEqual([{ id: 'architect', overridden: false }])
   })
+
+  it('revertSeed returns the outcome persona even when persist is a no-op (issue #59)', async () => {
+    const alreadySeed = {
+      ...defaultFallbacksConfig,
+      roles: { list: [{ id: 'architect', persona: 'Designs systems' }], rules: [] },
+    }
+    const api = makeApi()
+    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
+    const { rpc, revertSeed } = makeRpc(alreadySeed)
+    const controller = new FallbacksSettingsController(api, rpc)
+    await controller.load()
+    revertSeed.mockReturnValueOnce(Promise.resolve(okResult({
+      config: alreadySeed,
+      seeds: [{ id: 'architect', overridden: false }],
+      outcome: { reverted: true, persona: 'Designs systems' },
+    })))
+    await expect(controller.revertSeed('architect')).resolves.toBe('Designs systems')
+  })
+
 
   it('a revert-seed response without seeds keeps the last badge state (W-1/F-1)', async () => {
     const api = makeApi()
