@@ -286,6 +286,14 @@ const TWO_BLOCK_CONFIG: typeof defaultFallbacksConfig = {
   },
 }
 
+const VALID_CUSTOM_SLOT = {
+  kind: 'custom' as const,
+  start: '09:00',
+  end: '10:00',
+  days: [] as number[],
+  chain: [OFFICIAL_V4_FLASH],
+}
+
 /**
  * A legacy two-block config whose all-day `rootChain` has a NON-official
  * head (a multi-model chain from the pre-Task-3 era): the 默认模型 panel
@@ -419,6 +427,15 @@ function expandAllSlots(): void {
     fireEvent.click(expand[0]!)
     expand = screen.queryAllByRole('button', { name: en['timeSlots.expand'] })
   }
+}
+
+/** Add a custom slot (starts expanded) so the in-row timezone picker mounts. */
+function addCustomSlot(): void {
+  fireEvent.click(screen.getByRole('button', { name: en['timeSlots.addCustom'] }))
+}
+
+function customTzSelect(): HTMLSelectElement {
+  return screen.getByLabelText(en['timeSlots.tz.label']) as HTMLSelectElement
 }
 
 /**
@@ -673,17 +690,15 @@ describe('FallbacksCard chrome (upstream PluginCard contract)', () => {
   it('a 主代理 Discard reverts ONLY main fields — unsaved 子代理 edits survive (PR #62 UX round 3)', async () => {
     const { view, props } = await mountCard({ config: TWO_BLOCK_CONFIG })
     toggleCard()
-    // Edit a 主代理 field (timezone) and a 子代理 field (role persona).
-    const group = screen.getByText(en['timeSlots.label']).closest('[role="group"]') as HTMLElement
-    fireEvent.change(within(group).getByLabelText(en['timeSlots.tz.label']), { target: { value: 'UTC' } })
+    addCustomSlot()
+    fireEvent.change(customTzSelect(), { target: { value: 'UTC' } })
     expandAllRoles()
     fireEvent.change(screen.getAllByLabelText(en['roles.persona'])[0]!, { target: { value: 'Edited persona' } })
     view.rerender(<FallbacksCard {...props} />)
-    // 主代理 Discard reverts the timezone (and only the main section)…
     fireEvent.click(mainDiscard())
     view.rerender(<FallbacksCard {...props} />)
-    expect((within(group).getByLabelText(en['timeSlots.tz.label']) as HTMLSelectElement).value).toBe('Asia/Shanghai')
-    // …but the 子代理 edit stays staged — the pill remains.
+    // Discard drops the added custom row (and its tz picker) — main is clean.
+    expect(screen.queryByLabelText(en['timeSlots.tz.label'])).toBeNull()
     expect(screen.getByText(en.unsaved)).toBeTruthy()
     expect((screen.getAllByLabelText(en['roles.persona'])[0] as HTMLTextAreaElement).value).toBe('Edited persona')
   })
@@ -691,21 +706,15 @@ describe('FallbacksCard chrome (upstream PluginCard contract)', () => {
   it('compact Discard while enabled is OFF reverts enabled only — hidden section edits survive (PR #62 UX round 3)', async () => {
     const { view, props } = await mountCard({ config: ENABLED_CONFIG })
     toggleCard()
-    // Edit a 主代理 field (timezone) while the form is on.
-    const group = screen.getByText(en['timeSlots.label']).closest('[role="group"]') as HTMLElement
-    fireEvent.change(within(group).getByLabelText(en['timeSlots.tz.label']), { target: { value: 'UTC' } })
-    // Flip the switch off → the form hides, the compact disabled-state row
-    // appears.
+    addCustomSlot()
+    fireEvent.change(customTzSelect(), { target: { value: 'UTC' } })
     fireEvent.click(screen.getByLabelText(en['enabled.label']))
     view.rerender(<FallbacksCard {...props} />)
     expect(screen.getByText(en['enabled.off'])).toBeTruthy()
-    // The compact Discard reverts ONLY `enabled` (the smallest correct
-    // behavior): the hidden tz edit survives.
     fireEvent.click(screen.getAllByRole('button', { name: en.discard })[0]!)
     view.rerender(<FallbacksCard {...props} />)
     expect((screen.getByLabelText(en['enabled.label']) as HTMLInputElement).checked).toBe(true)
-    const groupAfter = screen.getByText(en['timeSlots.label']).closest('[role="group"]') as HTMLElement
-    expect((within(groupAfter).getByLabelText(en['timeSlots.tz.label']) as HTMLSelectElement).value).toBe('UTC')
+    expect(customTzSelect().value).toBe('UTC')
     expect(screen.getByText(en.unsaved)).toBeTruthy()
   })
 
@@ -728,9 +737,9 @@ describe('FallbacksCard chrome (upstream PluginCard contract)', () => {
     expect(mainDiscard().disabled).toBe(true)
     expect(advancedSave().disabled).toBe(false)
     expect(advancedDiscard().disabled).toBe(false)
-    // A 主代理 edit (timezone) enables the main actions — and only them.
-    const group = screen.getByText(en['timeSlots.label']).closest('[role="group"]') as HTMLElement
-    fireEvent.change(within(group).getByLabelText(en['timeSlots.tz.label']), { target: { value: 'UTC' } })
+    // A 主代理 edit (custom-slot timezone) enables the main actions.
+    addCustomSlot()
+    fireEvent.change(customTzSelect(), { target: { value: 'UTC' } })
     view.rerender(<FallbacksCard {...props} />)
     expect(mainSave().disabled).toBe(false)
     expect(mainDiscard().disabled).toBe(false)
@@ -792,8 +801,8 @@ describe('FallbacksCard chrome (upstream PluginCard contract)', () => {
     toggleCard()
     // Edit a 主代理 field (timezone), an advanced field (cooldown), and a
     // 子代理 field (role persona).
-    const group = screen.getByText(en['timeSlots.label']).closest('[role="group"]') as HTMLElement
-    fireEvent.change(within(group).getByLabelText(en['timeSlots.tz.label']), { target: { value: 'UTC' } })
+    addCustomSlot()
+    fireEvent.change(customTzSelect(), { target: { value: 'UTC' } })
     expandAdvanced()
     fireEvent.change(screen.getByLabelText(en['cooldownMs.label']), { target: { value: '5000' } })
     expandAllRoles()
@@ -821,16 +830,17 @@ describe('FallbacksCard chrome (upstream PluginCard contract)', () => {
     // The unsaved 主代理 + 高级 edits survive in the editors; the pill stays.
     view.rerender(<FallbacksCard {...props} />)
     expect(screen.getByText(en.unsaved)).toBeTruthy()
-    expect((within(group).getByLabelText(en['timeSlots.tz.label']) as HTMLSelectElement).value).toBe('UTC')
+    expect(customTzSelect().value).toBe('UTC')
     expect((screen.getByLabelText(en['cooldownMs.label']) as HTMLInputElement).value).toBe('5000')
   })
 
   it('a 主代理 Save writes new main fields + ACCEPTED roles; the unsaved 子代理 edit survives until its own Save (PR #62 UX round 3)', async () => {
-    const { view, props, controller, scripted } = await mountCard({ config: TWO_BLOCK_CONFIG })
+    const { view, props, controller, scripted } = await mountCard({
+      config: { ...TWO_BLOCK_CONFIG, timeSlots: [VALID_CUSTOM_SLOT] },
+    })
     toggleCard()
-    // Edit a 主代理 field (timezone) and a 子代理 field (role persona).
-    const group = screen.getByText(en['timeSlots.label']).closest('[role="group"]') as HTMLElement
-    fireEvent.change(within(group).getByLabelText(en['timeSlots.tz.label']), { target: { value: 'UTC' } })
+    expandAllSlots()
+    fireEvent.change(customTzSelect(), { target: { value: 'UTC' } })
     expandAllRoles()
     fireEvent.change(screen.getAllByLabelText(en['roles.persona'])[0]!, { target: { value: 'Edited persona' } })
     view.rerender(<FallbacksCard {...props} />)
@@ -1171,6 +1181,7 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
       ...defaultFallbacksConfig,
       enabled: true,
       rootChain: ['openai/*'],
+      timeSlots: [VALID_CUSTOM_SLOT],
     }
     const { view, props, controller, scripted } = await mountCard({ config, catalog: CHAIN_CATALOG })
     await controller.loadCatalog()
@@ -1188,8 +1199,8 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     // with the default-model requirement — the legacy value never crosses
     // the wire (per-section dirty: an advanced-only edit would not enable
     // 主代理 Save at all).
-    const group = screen.getByText(en['timeSlots.label']).closest('[role="group"]') as HTMLElement
-    fireEvent.change(within(group).getByLabelText(en['timeSlots.tz.label']), { target: { value: 'UTC' } })
+    expandAllSlots()
+    fireEvent.change(customTzSelect(), { target: { value: 'UTC' } })
     view.rerender(<FallbacksCard {...props} />)
     // The 主代理 section's Save is blocked; the all-day violation renders
     // under the 主代理 heading (its owning section).
@@ -1541,8 +1552,8 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     expect(screen.getByText(en['allDay.nonconforming'])).toBeTruthy()
     // A 主代理 edit (timezone) dirties the main section so the save attempt
     // fires (per-section dirty).
-    const group = screen.getByText(en['timeSlots.label']).closest('[role="group"]') as HTMLElement
-    fireEvent.change(within(group).getByLabelText(en['timeSlots.tz.label']), { target: { value: 'UTC' } })
+    addCustomSlot()
+    fireEvent.change(customTzSelect(), { target: { value: 'UTC' } })
     view.rerender(<FallbacksCard {...props} />)
     fireEvent.click(mainSave())
     view.rerender(<FallbacksCard {...props} />)
@@ -2668,31 +2679,44 @@ describe('FallbacksCard 主代理 layout (PR #62 feedback round)', () => {
     expect(screen.queryByText(/Engages only after the current session/)).toBeNull()
     expect(screen.queryByText(/Prefer the current session/)).toBeNull()
   })
-
-  it('locks the timezone picker to Asia/Shanghai while a preset row exists', async () => {
-    const config: typeof defaultFallbacksConfig = {
+  it('hides the timezone picker on preset-only configs; mixed configs lock it to Asia/Shanghai', async () => {
+    const presetOnly: typeof defaultFallbacksConfig = {
       ...ENABLED_CONFIG,
       rootChain: [OFFICIAL_V4_FLASH],
       timeSlots: [{ kind: 'preset', preset: 'liang-peak', days: [], chain: [OFFICIAL_V4_FLASH] }],
     }
-    const { view, props } = await mountCard({ config })
+    const first = await mountCard({ config: presetOnly })
     toggleCard()
-    view.rerender(<FallbacksCard {...props} />)
-    const group = slotGroup()
-    const tz = within(group).getByLabelText(en['timeSlots.tz.label']) as HTMLSelectElement
-    // Preset windows are frozen UTC+8 constants — the picker is locked to
-    // Asia/Shanghai and never follows the host timezone.
+    first.view.rerender(<FallbacksCard {...first.props} />)
+    // Preset rows have no tz picker — windows are frozen UTC+8.
+    expect(screen.queryByLabelText(en['timeSlots.tz.label'])).toBeNull()
+    first.view.unmount()
+
+    const mixed: typeof defaultFallbacksConfig = {
+      ...presetOnly,
+      timeSlots: [
+        { kind: 'preset', preset: 'liang-peak', days: [], chain: [OFFICIAL_V4_FLASH] },
+        { kind: 'custom', start: '22:00', end: '02:00', days: [], chain: [OFFICIAL_V4_FLASH] },
+      ],
+    }
+    const second = await mountCard({ config: mixed })
+    toggleCard()
+    second.view.rerender(<FallbacksCard {...second.props} />)
+    expandAllSlots()
+    const tz = customTzSelect()
     expect(tz.value).toBe('Asia/Shanghai')
     expect(tz.disabled).toBe(true)
-    expect(within(group).getByText(en['timeSlots.tz.hint'])).toBeTruthy()
+    expect(screen.getByText(en['timeSlots.tz.hint'])).toBeTruthy()
   })
 
   it('lets custom-only configs pick the timezone and persists it on save', async () => {
-    const { view, props, scripted } = await mountCard({ config: { ...ENABLED_CONFIG, rootChain: [OFFICIAL_V4_FLASH] } })
+    const { view, props, scripted } = await mountCard({
+      config: { ...ENABLED_CONFIG, rootChain: [OFFICIAL_V4_FLASH], timeSlots: [VALID_CUSTOM_SLOT] },
+    })
     toggleCard()
     view.rerender(<FallbacksCard {...props} />)
-    const group = slotGroup()
-    const tz = within(group).getByLabelText(en['timeSlots.tz.label']) as HTMLSelectElement
+    expandAllSlots()
+    const tz = customTzSelect()
     expect(tz.disabled).toBe(false)
     fireEvent.change(tz, { target: { value: 'UTC' } })
     view.rerender(<FallbacksCard {...props} />)

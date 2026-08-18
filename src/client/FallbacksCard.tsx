@@ -150,6 +150,25 @@ const TZ_OPTIONS = [
   'America/Los_Angeles',
   'Australia/Sydney',
 ] as const
+
+/** `UTC+8` / `UTC-4` for an IANA id (current offset, DST-honest). */
+function tzUtcOffset(tz: string): string {
+  try {
+    const name = new Intl.DateTimeFormat('en-US', { timeZone: tz, timeZoneName: 'shortOffset' })
+      .formatToParts(new Date())
+      .find(part => part.type === 'timeZoneName')?.value
+    if (name === undefined || name === '') return ''
+    return name.replace(/^GMT/, 'UTC')
+  } catch {
+    return ''
+  }
+}
+
+/** Select option copy: `Asia/Shanghai (UTC+8)`. */
+function tzOptionLabel(tz: string): string {
+  const offset = tzUtcOffset(tz)
+  return offset === '' ? tz : `${tz} (${offset})`
+}
 /** Strict 24h `HH:mm` — the resolver's HHMM_RE twin (drift-guarded by the gateway reject-on-save). */
 const HHMM_RE = /^([01]\d|2[0-3]):[0-5]\d$/
 
@@ -1476,26 +1495,6 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                   <InfoHint label={t('timeSlots.tooltip')} disabled={!writable} />
                 </span>
                 <span className={css.hint}>{t('timeSlots.hint')}</span>
-                {/* The tz picker lives INSIDE this block (PR #62 feedback
-                 * round). Preset rows LOCK it to UTC+8 / Asia/Shanghai —
-                 * their windows are frozen UTC+8 constants and never follow
-                 * the host timezone; custom rows follow the selection. */}
-                <div className={css.field}>
-                  <span className={css.ruleCellLabel}>{t('timeSlots.tz.label')}</span>
-                  <select
-                    className={`${css.input} ${css.selectInput}`}
-                    aria-label={t('timeSlots.tz.label')}
-                    value={presetsPresent ? 'Asia/Shanghai' : scalars.tz}
-                    disabled={!writable || presetsPresent}
-                    onChange={event => { updateScalars(draft => { draft.tz = event.target.value }) }}
-                  >
-                    {TZ_OPTIONS.map(tz => <option key={tz} value={tz}>{tz}</option>)}
-                    {scalars.tz !== '' && !(TZ_OPTIONS as readonly string[]).includes(scalars.tz) && (
-                      <option value={scalars.tz}>{scalars.tz}</option>
-                    )}
-                  </select>
-                  <span className={css.hint}>{t('timeSlots.tz.hint')}</span>
-                </div>
                 <div className={css.list}>
                   {timeSlotRows.map((row, index) => {
                     const invalidWindow = invalidSlotRows?.has(index) ?? false
@@ -1630,6 +1629,24 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                               disabled={!writable}
                               onChange={event => { updateTimeSlotRow(index, { name: event.target.value }) }}
                             />
+                          </div>
+                          <div className={css.field}>
+                            <span className={css.ruleCellLabel}>{t('timeSlots.tz.label')}</span>
+                            <select
+                              className={`${css.input} ${css.selectInput}`}
+                              aria-label={t('timeSlots.tz.label')}
+                              value={presetsPresent ? 'Asia/Shanghai' : scalars.tz}
+                              disabled={!writable || presetsPresent}
+                              onChange={event => { updateScalars(draft => { draft.tz = event.target.value }) }}
+                            >
+                              {TZ_OPTIONS.map(tz => (
+                                <option key={tz} value={tz}>{tzOptionLabel(tz)}</option>
+                              ))}
+                              {scalars.tz !== '' && !(TZ_OPTIONS as readonly string[]).includes(scalars.tz) && (
+                                <option value={scalars.tz}>{tzOptionLabel(scalars.tz)}</option>
+                              )}
+                            </select>
+                            <span className={css.hint}>{t('timeSlots.tz.hint')}</span>
                           </div>
                           <div className={css.ruleGrid}>
                             <label className={css.ruleCell}>

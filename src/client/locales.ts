@@ -69,12 +69,12 @@ export const zh = {
   'subagents.label': '子代理',
   // Time-slot rows (plan fallbacks-timeslots Task 3; PR #62 feedback
   // round): the extra-row list sits under the 主代理 section; preset
-  // windows are frozen (read-only, models-only edits). The tz picker lives
-  // INSIDE this block; preset rows lock it to UTC+8 (Asia/Shanghai).
+  // Timezone picker lives inside expanded custom rows only; preset
+  // windows stay frozen UTC+8. The label carries the UTC± cue.
   'timeSlots.label': '分时槽设置',
   'timeSlots.hint': '自上而下第一条命中生效；全时段行固定最后',
-  'timeSlots.tz.label': '时区',
-  'timeSlots.tz.hint': '预设行锁定 UTC+8（Asia/Shanghai），不跟随宿主时区；自定义行跟随所选时区',
+  'timeSlots.tz.label': '时区（UTC±）',
+  'timeSlots.tz.hint': '仅自定义时段使用。预设窗口固定 UTC+8（Asia/Shanghai）。',
   'timeSlots.drag': '拖拽排序（或使用上下按钮）',
   // PR #62 feedback round: collapsible slot rows — collapsed shows the
   // row name + its first model; custom rows carry an editable name.
@@ -297,14 +297,12 @@ export const en = {
   // rules.
   'mainAgent.label': 'Main agent',
   'subagents.label': 'Subagents',
-  // Time-slot rows (plan fallbacks-timeslots Task 3; PR #62 feedback
-  // round): the extra-row list sits under the Main agent section; preset
-  // windows are frozen (read-only, models-only edits). The tz picker lives
-  // INSIDE this block; preset rows lock it to UTC+8 (Asia/Shanghai).
-  'timeSlots.label': 'Time-slot settings',
+  // Time-slot rows: extra-row list under Main agent. Timezone picker
+  // lives inside expanded custom rows only; preset windows stay UTC+8.
+  'timeSlots.label': 'Time slots',
   'timeSlots.hint': 'First match from top to bottom wins; the all-day row is always last',
-  'timeSlots.tz.label': 'Timezone',
-  'timeSlots.tz.hint': 'Preset rows lock UTC+8 (Asia/Shanghai) regardless of the host timezone; custom rows follow the selected timezone',
+  'timeSlots.tz.label': 'Timezone (UTC±)',
+  'timeSlots.tz.hint': 'Applies to custom slots only. Preset windows stay UTC+8 (Asia/Shanghai).',
   'timeSlots.drag': 'Drag to reorder (or use the up/down buttons)',
   // PR #62 feedback round: collapsible slot rows — collapsed shows the
   // row name + its first model; custom rows carry an editable name.
