@@ -5,7 +5,7 @@ name: Release prep
 # (publish + tag + GitHub Release). No NPM_TOKEN / NODE_AUTH_TOKEN: npm auth
 # in the Release workflow is pure Trusted Publishing (OIDC; the npm-side
 # Trusted Publisher is configured — bootstrap token mode removed 2026-08-14).
-# The PR create/reopen/edit step uses the PAT secret because the omdsh-dev
+# The PR create/edit step uses the PAT secret because the omdsh-dev
 # org disables GITHUB_TOKEN's createPullRequest capability; everything else
 # uses only the built-in GITHUB_TOKEN.
 #
@@ -129,19 +129,15 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh label create release --color 0E8A16 --force
 
-      # State-aware PR handling. `gh pr view` also matches closed PRs, and
-      # `gh pr edit` silently keeps them closed — which would make a re-run
-      # after rollback (close PR -> re-run prep) look successful while
-      # leaving no open PR. Query state explicitly:
-      #   open PR   -> update it;
-      #   closed PR -> reopen it, then update the body;
-      #   none      -> create a new one.
-      # A closed PR is never edited in place.
+      # State-aware PR handling. Query open PRs explicitly:
+      #   open PR -> update title/body;
+      #   none    -> create a new PR (even when a closed PR exists for the
+      #              same head branch — never reopen a closed release PR).
       - name: Open or update release PR
         env:
           # The omdsh-dev org disables GITHUB_TOKEN's createPullRequest
           # capability ("Allow GitHub Actions to create and approve pull
-          # requests" is off), so PR create/reopen/edit runs under the
+          # requests" is off), so PR create/edit runs under the
           # PAT secret (user identity) instead of the built-in token.
           GH_TOKEN: ${{ secrets.PAT }}
           VERSION: ${{ steps.ver.outputs.version }}
@@ -162,16 +158,6 @@ jobs:
           if [ -n "$OPEN_NUM" ]; then
             gh pr edit "$OPEN_NUM" --title "$TITLE" --body-file /tmp/pr-body.md
             echo "Updated existing open release PR #${OPEN_NUM} for $BRANCH"
-            exit 0
-          fi
-
-          CLOSED_NUM="$(gh pr list --head "$BRANCH" --state closed --json number -q '.[0].number' 2>/dev/null || true)"
-          if [ -n "$CLOSED_NUM" ]; then
-            # Reopen first: `gh pr reopen` fails loudly on a merged PR instead
-            # of silently leaving the release blocked.
-            gh pr reopen "$CLOSED_NUM"
-            gh pr edit "$CLOSED_NUM" --title "$TITLE" --body-file /tmp/pr-body.md
-            echo "Reopened release PR #${CLOSED_NUM} for $BRANCH"
           else
             gh pr create --base main --head "$BRANCH" --title "$TITLE" \
               --body-file /tmp/pr-body.md --label release

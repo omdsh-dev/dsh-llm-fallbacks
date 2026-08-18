@@ -52,7 +52,7 @@ dsh-llm-fallbacks 建立 npm 发布流水线（单包），参考 mstar-harness 
 
 ### 坑 4：流水线重跑/版本一致性防护
 
-- **closed-PR 重跑**：`gh pr view $BRANCH` 会匹配已关闭 PR（`gh pr edit` 不 reopen）→ 静默死路。门控必须 state-aware：`gh pr list --head $BRANCH --state open` → open 则 edit；closed 则 `gh pr reopen` 再 edit；无则 create。
+- **closed-PR 重跑**：`gh pr view $BRANCH` 会匹配已关闭 PR（`gh pr edit` 不 reopen）→ 静默死路。门控必须 state-aware：`gh pr list --head $BRANCH --state open` → open 则 edit；无 open PR 则 `gh pr create`（**永不** `gh pr reopen` 已关闭的 release PR，merged 或 closed-unmerged 同理）。
 - **PR title 版本交叉校验**：release.yml 从 title 后缀推导期望版本 vs package.json version，mismatch → fail（防手工改分支导致的标题/版本脱钩）；changelog 提取空文件 → fail。
 - **reject 已存在 tag**：release-prep 前置 `git rev-parse v$V` 拒绝 + validate 双保险。
 - **publish 先于 tag**：发布失败不会产生坏 tag；tag push 不会重复触发 CI（push filter 只 main）。
