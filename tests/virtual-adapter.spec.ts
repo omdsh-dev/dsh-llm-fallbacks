@@ -182,18 +182,17 @@ describe('adapter contract (P1/P3)', () => {
         provider: FALLBACKS_PROVIDER,
         id: FALLBACKS_CHAIN_MODEL,
         // All-day winner (no extra slots) — host picker trigger is this name.
-        name: `${FALLBACKS_CHAIN_MODEL}: ${HEAD_MODEL}[all-day]`,
+        name: `${FALLBACKS_CHAIN_MODEL}: DeepSeek V4 Flash[all-day]`,
       },
     ])
   })
-  it('pickerDisplayName annotates the matching slot + head model', () => {
-    // 10:00 Asia/Shanghai = 02:00Z — inside Liang Peak (09:00–12:00).
+  it('pickerDisplayName annotates the matching slot + head display name', () => {
     const now = new Date('2026-08-18T02:00:00Z')
     const name = pickerDisplayName(cfg({
       rootChain: [OFFICIAL_V4_FLASH],
       timeSlots: [{ kind: 'preset', preset: 'liang-peak', days: [], chain: [OFFICIAL_V4_FLASH] }],
-    }), now)
-    expect(name).toBe(`${FALLBACKS_CHAIN_MODEL}: ${HEAD_MODEL}[Liang Peak]`)
+    }), now, 'DeepSeek V4 Flash')
+    expect(name).toBe(`${FALLBACKS_CHAIN_MODEL}: DeepSeek V4 Flash[Liang Peak]`)
   })
 
   it('pickerDisplayName stays bare Auto when the all-day chain is non-conforming', () => {

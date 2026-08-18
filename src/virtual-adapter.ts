@@ -122,20 +122,42 @@ function effectiveHeadOf(config: FallbacksConfig, now: Date): EffectiveHead | un
 }
 
 /**
- * Host picker label (user 2026-08-18): `Auto: <model>[<slot>]`.
- * Model first so the trigger stays readable when the slot label is long.
- * The host ModelSelect trigger renders `model.name` from `listModels`.
- * Bare `Auto` when there is no dispatchable head (non-conforming all-day).
- * Slot label comes from {@link resolveSlotState} (`Liang Peak` / `all-day`
- * / custom name) — same source as the 分时切换 log.
+ * Host picker label: `Auto: <displayName>[<slot>]`.
+ * Display name first so the trigger stays readable and platforms stay
+ * distinguishable (catalog `name`, not the model id). Bare `Auto` when
+ * there is no dispatchable head. Slot label from {@link resolveSlotState}.
+ * @param modelDisplayName - catalog/resolved name; falls back to the id.
  */
-export function pickerDisplayName(config: FallbacksConfig, now: Date = new Date()): string {
+export function pickerDisplayName(
+  config: FallbacksConfig,
+  now: Date = new Date(),
+  modelDisplayName?: string,
+): string {
   const head = effectiveHeadOf(config, now)
   if (head === undefined) return FALLBACKS_CHAIN_MODEL
   const slot = resolveSlotState(config, now, config.tz ?? 'Asia/Shanghai')
-  return `${FALLBACKS_CHAIN_MODEL}: ${head.model}[${slot.label}]`
+  const model = modelDisplayName !== undefined && modelDisplayName !== '' ? modelDisplayName : head.model
+  return `${FALLBACKS_CHAIN_MODEL}: ${model}[${slot.label}]`
 }
 
+/** Catalog `name` for a head pair; id if the provider is not listed. */
+async function resolveHeadDisplayName(llm: LlmRuntime | undefined, head: EffectiveHead): Promise<string> {
+  if (llm === undefined) return head.model
+  try {
+    const listed = await llm.listModels(head.provider)
+    const row = listed.find(model => model.id === head.model)
+    if (row !== undefined && row.name !== '') return row.name
+  } catch {
+    // Provider not registered or list failed — try resolveModelInfo.
+  }
+  try {
+    const info = await llm.resolveModelInfo(head.provider, head.model)
+    if (info.name !== '') return info.name
+  } catch {
+    // Unresolvable — caller keeps the id.
+  }
+  return head.model
+}
 
 /**
  * The virtual adapter (P1/P3). `stream()` is a thin head-delegate, never a
@@ -157,12 +179,16 @@ class FallbacksChainAdapter extends LlmAdapter {
   }
 
   /** Advisory catalog: one virtual row; `name` is the live picker label. */
-  override listModels(provider: string): Promise<readonly LlmModelInfo[]> {
-    return Promise.resolve([{
+  override async listModels(provider: string): Promise<readonly LlmModelInfo[]> {
+    const config = this.readConfig()
+    const now = new Date()
+    const head = effectiveHeadOf(config, now)
+    const display = head === undefined ? undefined : await resolveHeadDisplayName(this.getLlm(), head)
+    return [{
       provider,
       id: FALLBACKS_CHAIN_MODEL,
-      name: pickerDisplayName(this.readConfig()),
-    }])
+      name: pickerDisplayName(config, now, display),
+    }]
   }
 
   /**
