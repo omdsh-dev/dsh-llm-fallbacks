@@ -28,7 +28,7 @@
 import { useEffect } from 'react'
 import type { ReactNode } from 'react'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-import type { SnapshotSelectorHook } from '@deepseek-ai/dsh-client-web-react'
+import type { SnapshotSelectorHook } from '@deepseek-ai/dsh-client-ui-slots'
 // Type-only: the `settings.general.item` SlotMap entry (owner props empty)
 // — same empty type-only import pattern as the registration in index.ts.
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'

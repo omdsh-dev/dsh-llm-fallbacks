@@ -86,7 +86,7 @@ import {
   Button, IconChevronDownOutline14, IconChevronUpOutline14, IconEllipsisOutline16, IconPlusOutline16, IconTrashOutline16, Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-import type { SnapshotSelectorHook } from '@deepseek-ai/dsh-client-web-react'
+import type { SnapshotSelectorHook } from '@deepseek-ai/dsh-client-ui-slots'
 import type { FallbacksConfig, FallbacksRole, FallbackStrategy, RevertPolicy } from '../config.ts'
 import { defaultFallbacksConfig, INHERIT_ROLE_ID, ROLE_ID_PATTERN } from '../config.ts'
 import { parseSelector } from '../selectors.ts'

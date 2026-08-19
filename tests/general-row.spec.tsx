@@ -24,7 +24,7 @@ import { afterEach, describe, expect, it, vi, type Mock } from 'vitest'
 import type {
   ClientConnectionRpc, HistoryEntry, IApiClient, RpcResult,
 } from '@deepseek-ai/dsh-client-connection/client'
-import { bindSnapshotSelector, type SnapshotSelectorHook } from '@deepseek-ai/dsh-client-web-react'
+import { bindSnapshotSelector, type SnapshotSelectorHook } from '../src/client/use-snapshot.ts'
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import { GeneralFallbacksRow } from '../src/client/GeneralFallbacksRow.tsx'
 import type { GeneralFallbacksRowProps } from '../src/client/GeneralFallbacksRow.tsx'

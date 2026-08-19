@@ -47,12 +47,15 @@ const OUT_FILE = 'index.js'
 
 /**
  * Frozen loader module table (dsh mechanism-guide): the plan-documented
- * composition = PLATFORM_MODULES (10 entries, `web/src/platform.ts:8-15`)
- * + the RUNTIME_STORE_EXEMPTION (`@deepseek-ai/dsh-client-runtime/client`,
- * `tsdown.client.ts:62-65`). `@deepseek-ai/cordis` is the in-box cordis
- * framework (dsh-advisor alignment): the client graph resolves it through
- * the generated shim, so it stays on the table as a real loader-table
- * specifier for the frozen-composition claim.
+ * composition = PLATFORM_MODULES (7 entries, `web/src/platform.ts:8-12`)
+ * + the PRELOADED_CLIENT_EXTERNALS (`@deepseek-ai/dsh-client-runtime/client`,
+ * `web/src/platform.ts:15-17`). rc.8 dropped `dsh-client-web-react` (deleted
+ * package — the uSES bridge is vendored in `src/client/use-snapshot.ts`),
+ * `dsh-client-ui-attachment` and `dsh-client-schema-form` from the platform
+ * table. `@deepseek-ai/cordis` is the in-box cordis framework (dsh-advisor
+ * alignment): the client graph resolves it through the generated shim, so it
+ * stays on the table as a real loader-table specifier for the frozen-
+ * composition claim.
  */
 export const CLIENT_EXTERNALS: readonly string[] = [
   'react',
@@ -61,10 +64,7 @@ export const CLIENT_EXTERNALS: readonly string[] = [
   'react-dom/client',
   '@deepseek-ai/cordis',
   '@deepseek-ai/dsh-client-ui-slots',
-  '@deepseek-ai/dsh-client-web-react',
   '@deepseek-ai/dsh-client-ui-primitives',
-  '@deepseek-ai/dsh-client-ui-attachment',
-  '@deepseek-ai/dsh-client-schema-form',
   '@deepseek-ai/dsh-client-runtime/client',
 ]
 

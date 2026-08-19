@@ -37,7 +37,7 @@ import { afterEach, describe, expect, it, vi, type Mock } from 'vitest'
 import type {
   ClientConnectionRpc, ConfigurableProviderView, HistoryEntry, IApiClient, ModelProviderGroup, RpcResult,
 } from '@deepseek-ai/dsh-client-connection/client'
-import { bindSnapshotSelector, type SnapshotSelectorHook } from '@deepseek-ai/dsh-client-web-react'
+import { bindSnapshotSelector, type SnapshotSelectorHook } from '../src/client/use-snapshot.ts'
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import { FallbacksCard } from '../src/client/FallbacksCard.tsx'
 import type { FallbacksCardProps } from '../src/client/FallbacksCard.tsx'
