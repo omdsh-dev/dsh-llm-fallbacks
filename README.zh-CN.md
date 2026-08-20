@@ -11,7 +11,7 @@
 
 dsh（DeepSeek Harness）的自动模型降级插件：当 root agent 或 subagent 的模型请求持续失败（重试耗尽、权限、配额超限、限流 429）时，按角色/模型 fallback 链自动切换 provider/model，当前 step/turn 在目标模型上继续完成——任务不因模型问题中断。
 
-两个 dsh 前端均可用：**web** profile（设置 → 插件配置 → Fallbacks 卡片）与 **dsh-tui** 终端 profile（`/fallbacks` + `/fallbacks config`）。
+两个 dsh 前端均可用：**web** profile（设置 → 插件配置 → Fallbacks 卡片）与 **dsh-tui** 终端 profile（`/fallbacks` 会话诊断、`/fallbacks config` 回读，以及 `/settings` 中的 fallbacks 区块用于编辑）。
 
 ## 峰谷无忧
 
@@ -57,46 +57,70 @@ pnpm repair:fallbacks-switch-logs -- --apply --backup     # 给旧事件打 igno
 
 脚本默认扫描 `~/.dsh/sessions`（可用 `--root <dir>` 覆盖），把遗留 `fallbacks/switch` 事件标记为 `ignorable: true`，宿主读路径即可重新接受该会话；每个被修复的日志保留一份 `<file>.bak`。`--apply` 必须搭配 `--backup`，且须在 dsh 停止时运行。从 0.2.2 起插件不再写 durable 切换事件，新会话无需修复。
 
+### 配置界面
+
+插件的设置存在于共享的 `fallbacks:` 命名空间中，可通过三个界面编辑：
+
+| 界面 | 是什么 | 说明 |
+|---|---|---|
+| **Web 设置卡** | 设置 → 插件配置 → Fallbacks | `fallbacks:` 命名空间的完整 GUI 编辑器；写入共享设置文档 |
+| **`$DSH_HOME/settings.yaml`** | dsh 设置文档中的 `fallbacks:` 分节 | 共享的事实源——与 Web 卡写入的是同一个文件；任何场景（包括脚本化配置）都可读写 |
+| **TUI `/settings`** | dsh-tui 设置界面中的 fallbacks 区块 | 需要 dsh-tui ≥ v0.8.5；简单键用原生字段，复杂结构用 JSON 文本字段（见 [dsh-tui profile（终端）](#dsh-tui-profile终端)） |
+
+按你的前端选择入口：web 用户用设置卡，终端用户用 `/settings`，YAML 文件处处可用。（`/fallbacks` 与 `/fallbacks config` 是诊断命令——只读视图，不是编辑入口。）
+
 ### 最小配置
 
-在 dsh 的设置文档（默认 `$DSH_HOME/settings.yaml`）中添加 `fallbacks:` 分节：
+在共享设置文档（`$DSH_HOME/settings.yaml`——见 [配置界面](#配置界面)）中添加 `fallbacks:` 分节：
 
 ```yaml
 fallbacks:
-  enabled: true          # 功能级开关；默认关闭（false），需显式打开后生效
-  rootChain:             # 全时段链：最后一项是默认模型（官方 V4）
-    - anthropic/claude-3-5-sonnet          # 前面是默认降级链（先走）
-    - deepseek-official/deepseek-v4-flash  # 最后一档：Flash 或 Pro
-  timeSlots:             # 可选：按墙钟时段轮换 root 生效链
-    - kind: preset       # 冻结的 UTC+8 窗口；仅模型链可编辑（锁定 tz 为 Asia/Shanghai）
-      preset: liang-peak # 09:00–12:00 与 14:00–18:00，每天
+  enabled: true            # 功能开关——默认关闭（否则插件完全 no-op）
+  rootChain:               # 全时段链：前面的条目 = 降级路径，最后一项 = 默认模型（官方 V4）
+    - anthropic/claude-3-5-sonnet          # 先走
+    - deepseek-official/deepseek-v4-flash  # 最后一档（Flash 或 Pro）
+  timeSlots:               # 可选：按墙钟窗口轮换生效 root 链
+    - kind: preset         # 冻结的 UTC+8 窗口；仅链可编辑
+      preset: liang-peak   # 每天 09:00–12:00 与 14:00–18:00
       chain:
         - anthropic/claude-3-5-sonnet
-    - kind: custom       # 自定义窗口（可跨午夜）
-      name: evening      # 可选显示名称
+    - kind: custom         # 自定义窗口（可跨午夜）
+      name: evening        # 可选显示名称
       start: '22:00'
       end: '02:00'
-      days: [1, 5]       # 可选；缺省/空 = 每天（0=周日…6=周六）
+      days: [1, 5]         # 可选；缺省/空 = 每天（0=周日…6=周六）
       chain:
         - openai/gpt-4o
-  roles:                 # 块 2：先声明角色，再让规则引用
+  roles:                   # 可选：先声明角色实体，再由规则引用
     list:
-      - id: reviewer     # 角色实体：id 唯一（/^[a-z0-9-]{1,32}$/）；inherit 为保留字
+      - id: reviewer       # 唯一 id；"inherit" 为保留字
         persona: 代码审查子代理
         chain:
           - openai/gpt-4o-mini
-        fallback: inherit-root   # 默认：角色链后追加 rootChain
-    rules:               # 仅对子代理生效：规则不匹配 root 请求
-      - role: reviewer   # 所有 subagent → reviewer 角色（自身链 + 继承 root）
+        fallback: inherit-root   # 先走角色链，再追加继承的 rootChain
+    rules:                 # 仅对子代理生效：规则不匹配 root 请求
+      - role: reviewer     # 所有 subagent → reviewer 角色
 ```
 
-未命中规则（或 root 请求）→ 内置 `inherit` → `rootChain`。`enabled` **默认关闭（`false`）**——未配置任何链时插件完全 no-op。全时段 `rootChain` 的**最后一项**必须恰好是一个官方 V4 模型（`deepseek-official/deepseek-v4-flash` 或 `deepseek-official/deepseek-v4-pro`）——设置卡与 gateway 在保存时拒绝其它尾巴（遗留非合规尾巴启动时告警并继续按 fallback-only 走原链，但无法原样保存）。完整参考（角色实体、fallback 策略、规则、selector、预设角色、分时槽预设）→ [docs/configuration.md](docs/configuration.md)。
+按四个步骤逐步构建：
+
+**1. 启用插件。** `enabled: true` 打开降级引擎。默认**关闭（`false`）**——未配置任何链时插件完全 no-op。
+
+**2. 配置全时段 `rootChain`。** 前面的条目是降级链，请求失败时先走；**最后**一项是默认模型。
+
+> **链尾合规**：最后一项必须是恰好一个官方 V4 模型——`deepseek-official/deepseek-v4-flash` 或 `deepseek-official/deepseek-v4-pro`（二选一）。设置卡与 gateway 在保存时拒绝其它尾巴；遗留的非合规尾巴启动时告警并继续按 fallback-only 走原链，但无法原样保存。
+
+**3. 添加 `timeSlots`（可选）。** 各行按墙钟窗口轮换生效 root 链。预设行使用冻结的 UTC+8 窗口（仅链可编辑；存在预设行时 `tz` 锁定 `Asia/Shanghai`）；自定义行使用 `start`/`end`（可跨午夜）与可选的 `days` 列表。第一个窗口包含当前时刻的行生效；无行命中 → 全时段 `rootChain`。分时切换是路由种子——在下一个 root 请求生效、不消耗冷却（见 [峰谷无忧](#峰谷无忧)）。
+
+**4. 添加 `roles`（可选）。** 在 `roles.list` 中声明角色实体（id、persona、chain、可选的 `fallback` 策略），再用 `roles.rules` 把 subagent 映射到角色。规则绝不匹配 root 请求——未命中规则（或 root 请求）时由内置 `inherit` 角色兜底，追加 `rootChain`。
+
+完整参考（角色实体、fallback 策略、规则、selector、预设角色、分时槽预设）→ [docs/configuration.md](docs/configuration.md)。
 
 > **升级提示（行为变更）**：已有 `fallbacks:` 配置若**未显式写 `enabled` 键**，升级后解析为 `false`——请补上 `enabled: true` 以保持插件继续生效。
 
 ### 验证
 
-保存并重启会话后，键入 `/fallbacks`——只读的会话内诊断（来源、解析角色、链、最近的 `fallbacks/switch` 事件、冷却状态）。插件**不再写入** durable `fallbacks/switch` 会话事件（issue #52——apply() 时的注册被证伪无效），因此新切换只出现在 info 日志中，不再出现在 recent-switch 展示面；由旧版插件写入、含 `fallbacks/switch` 事件的会话，可用 `scripts/repair-fallbacks-switch-logs.ts` 修复——脚本把旧事件标记为 ignorable，会话即可重新加载（见下方「能力一览」说明）。在 dsh-tui profile 中，`/fallbacks config` 额外回读组合配置（TUI 无设置页——配置仅文件，见 [docs/configuration.md](docs/configuration.md)）。
+保存配置并重启会话，然后键入 `/fallbacks`——只读的会话内诊断（来源、解析角色、链、最近降级切换、冷却状态）。在 dsh-tui profile 中，`/fallbacks config` 回读组合配置；见 [dsh-tui profile（终端）](#dsh-tui-profile终端)。
 
 ## 能力一览
 
@@ -108,11 +132,23 @@ fallbacks:
 - **冷却与回主**：被切离/失败的模型在冷却期内不再入选；`revertPolicy: cooldown-expiry` 冷却到期后自动回主模型。
 - **行为可见**：每次切换以 info 级日志行（from/to/role/reason）记录——无静默换模型。插件**刻意不写** durable `fallbacks/switch` 会话事件（issue #52——apply() 时的事件类型注册被证伪无效，含该事件的会话在 dsh 重启后拒绝加载）。由旧版插件写入、含此类事件的会话由 `scripts/repair-fallbacks-switch-logs.ts` 修复——旧事件被标记 ignorable 后，受影响会话可重新加载。
 - **安全阀**：`maxSwitchesPerStep` 限制每 step 切换次数、`alwaysModeRetryCap` 限制 always 模式重试——链循环不会放大延迟。
-- **无配置回归（no-op）**：`enabled` 默认关闭；未配置任何链时行为与未安装插件完全一致。
+- **无配置回归（no-op）**：未配置任何链时行为与未安装插件完全一致——`enabled` 默认关闭（见 [最小配置](#最小配置)）。
+
+## dsh-tui profile（终端）
+
+在 dsh-tui profile 中，插件有三个操作面——职责严格区分：
+
+- **`/fallbacks`** —— 本次会话发生了什么：来源、解析角色、生效链、最近降级切换、冷却状态。只读。
+- **`/fallbacks config`** —— 配置了什么：组合配置回读（触发码、根链、分时槽、时区、角色、角色规则、冷却、回主策略、安全阀、预置、角色自动匹配）。除唯一的动作命令 **`/fallbacks config revert-seed <role-id>`** 外只读——该命令把某个 seed 角色的 persona 还原为已声明的默认（设置 seam 无法表达 Web 卡的这类动作能力）。
+- **`/settings`** —— 编辑界面。插件注册 **fallbacks** 区块，与 **Web 设置卡完全一致**：布尔（`enabled`、`roleAutoMatch`）渲染为开关、下拉（`presets`、`revertPolicy`）为选择器、数值（`cooldownMs`、`maxSwitchesPerStep`、`alwaysModeRetryCap`）为数字输入；复杂结构（`rootChain`、`timeSlots`、`roles.list`、`roles.rules`）为 JSON 文本字段，`triggerCodes` 为逗号分隔文本字段。非法草稿（JSON 解析失败、链尾不合规、分时行畸形）会阻止保存——区块绝不写入损坏配置。
+
+**版本要求**：`/settings` 的 fallbacks 区块需要 **dsh-tui ≥ v0.8.5**（`main` 上 commit `c51661f` 及以后；settings seam 于 v0.8.0 引入，groups 结构与校验于 v0.8.5 引入）。更旧的 dsh-tui 没有该区块，文件编辑仍是 TUI 唯一编辑面。
+
+文件编辑在任意情况下仍然可用：全局设置写共享的 `$DSH_HOME/settings.yaml`（`fallbacks:` 分节——与 Web 卡写的是同一个文件）；dsh-tui 专属覆盖写 profile patch `~/.dsh/profiles/dsh-tui/cordis.patch.yml`（插件行上的 `config:` 覆盖）。注意：patch 行会**整体替换**目标行的整个 `config`——想保留的字段都要写全（schema 默认值补齐其余）。
 
 ## 模型选择器中的 FallbacksChain
 
-当 `enabled: true` 时，插件注册一个虚拟 provider **FallbacksChain**，目录中只有一行：**Auto**。web profile 与 dsh-tui 都能看到这一行：两者共享同一个 adapter catalog，无需 TUI 设置页或宿主补丁。该行只要插件启用就可见——遗留多模型或空的 all-day 链**不会**隐藏它（只是覆盖不会生效）。
+当 `enabled: true` 时，插件注册一个虚拟 provider **FallbacksChain**，目录中只有一行：**Auto**。web profile 与 dsh-tui 都能看到这一行：两者共享同一个 adapter catalog，无需设置页接线或宿主补丁（它与 `/settings` 的 fallbacks 区块相互独立——区块编辑的是配置，不是选择器目录）。该行只要插件启用就可见——遗留多模型或空的 all-day 链**不会**隐藏它（只是覆盖不会生效）。
 
 选择 **FallbacksChain / Auto** = 把配置的链作为 root **主模型**：root 请求路由到请求时刻生效链的第一个精确 `provider/model`，失败后由降级引擎从该链头照常沿链切换。选择任何真实目录模型则保持 v0.2.2 的 fallback-only 行为——会话模型为主，链只在它失败后介入。
 

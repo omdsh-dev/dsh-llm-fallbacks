@@ -77,6 +77,7 @@ import {
 } from './seeds.ts'
 import { presetRoles } from './presets.ts'
 import { installTuiClient } from './tui.ts'
+import { installTuiSettingsSection } from './tui-settings.ts'
 import {
   FALLBACKS_CHAIN_MODEL,
   FALLBACKS_PROVIDER,
@@ -950,13 +951,26 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     // two-block model); `presets` is optional-on-type with a schema default,
     // so the summary falls back to 'bundled' explicitly; `roleAutoMatch`
     // reads defensively (`?? true`) for direct constructors that omit it.
+    // T2 AC-4 (fallbacks-tui-settings): the readback is enriched with the
+    // time-slot rows (preset rows carry `{ preset, chainCount }` — windows
+    // are frozen PRESETS constants, never stored; custom rows carry
+    // `{ start, end, chainCount }`), the config `tz`, and the role rules
+    // (`provider`/`model` optional at the config model, summarized as `''`
+    // → rendered `*` when omitted). Chain counts read defensively (`?? []`)
+    // so a malformed legacy slot row never crashes the readback (the
+    // resolver warns and skips it at request time).
     getConfig(): FallbacksConfigSummary {
       const config = source()
       return {
         enabled: config.enabled,
         triggerCodes: config.triggerCodes,
         rootChain: config.rootChain,
+        timeSlots: (config.timeSlots ?? []).map((row) => row.kind === 'preset'
+          ? { preset: row.preset, chainCount: (row.chain ?? []).length }
+          : { start: row.start, end: row.end, days: row.days, chainCount: (row.chain ?? []).length }),
+        tz: config.tz ?? 'Asia/Shanghai',
         roles: config.roles.list.map((role) => ({ id: role.id, chainCount: role.chain?.length ?? 0 })),
+        rules: config.roles.rules.map((rule) => ({ provider: rule.provider ?? '', model: rule.model ?? '', role: rule.role })),
         cooldownMs: config.cooldownMs,
         revertPolicy: config.revertPolicy,
         maxSwitchesPerStep: config.maxSwitchesPerStep,
@@ -964,6 +978,22 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
         presets: config.presets ?? 'bundled',
         roleAutoMatch: config.roleAutoMatch ?? true,
       }
+    },
+    // T2 AC-3 (fallbacks-tui-settings): the one write action — revert a
+    // role's persona to its CURRENT declared seed default. Wired through the
+    // SERVICE path (seeds.revert(roleId, seedsIo), the same single point of
+    // truth as revertSeededPersona) rather than the typert gateway RPC: the
+    // gateway may not be composed in a dsh-tui profile, while `seeds` is
+    // always in scope here. Business failures are VALUES (`ok: false` +
+    // the SeedRevertFailReason code — qc1 F-003 / qc2 F-006 / qc3 F-003);
+    // the command handler localizes the code per its registration locale,
+    // so the controller never composes copy. A failed settings write
+    // propagates loudly as a rejection (the seeds contract — never
+    // swallowed); the handler maps it to a structured error outcome (C-6).
+    revertSeed: async (roleId) => {
+      const outcome = await seeds.revert(roleId, seedsIo)
+      if (outcome.reverted) return { ok: true }
+      return { ok: false, reason: outcome.reason ?? 'not-seeded' }
     },
   }
   ctx.inject(['commands'], (commandCtx) => {
@@ -973,15 +1003,26 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     return registerFallbacksCommands(commandCtx.commands, fallbacksCommandController)
   })
 
-  // dsh-tui client surface (plan fallbacks-tui-client T1, AC-1): register
-  // the `tuiCommandTrees` /fallbacks provider (localized root descriptions +
-  // `config` subcommand completion). Conditional inject child like the
-  // commands/typert children — absent service = clean no-op. First-fiber-only
-  // via `serviceOwned` (the host registry throws on duplicate roots, so a
+  // dsh-tui client surface (plan fallbacks-tui-client T1, AC-1 +
+  // fallbacks-tui-settings Task 2): register the `tuiCommandTrees`
+  // /fallbacks provider (localized root descriptions + `config` →
+  // `revert-seed` subcommand completion — the provider now supplies both,
+  // not just `config`). Conditional inject child like the commands/typert
+  // children — absent service = clean no-op. First-fiber-only via
+  // `serviceOwned` (the host registry throws on duplicate roots, so a
   // deduped later fiber must never register). Registered here — after the
   // commands child, BEFORE the tail settings preset child — so the tail
   // child's last-registered activation order is preserved.
   installTuiClient(ctx, { serviceOwned })
+
+  // dsh-tui settings write surface (plan fallbacks-tui-settings Task 1,
+  // AC-1/AC-2): register the `tuiSettingsSections` `fallbacks` section —
+  // the `/settings` editable form with full web-card parity. Same
+  // conditional inject child + first-fiber-only `serviceOwned` gate as the
+  // command-tree client; absent service = clean no-op. Registered here,
+  // right after installTuiClient and before the tail settings preset child
+  // (the tail child must stay last-registered — see below).
+  installTuiSettingsSection(ctx, { serviceOwned })
 
   // Bundled preset self-declaration (plan fallbacks-preset-roles T3, spec
   // §9.3 D9.3-a): a NEW conditional settings inject child, registered LAST
