@@ -78,6 +78,21 @@ describe('resolveChain — concatenation semantics (spec §7.2)', () => {
     })
   })
 
+  it('keeps a multi-slash model id entry as an exact candidate (regression pin, issue #74)', () => {
+    // Downstream chain matching treats the model id as an opaque string:
+    // a multi-slash model id must resolve as an exact candidate with the
+    // raw entry preserved, and must not be existence-filtered as an exact
+    // entry (only provider/*-origin candidates consult modelExists).
+    const roles = [role('coder', { chain: ['nvidia/minimaxai/minimax-m3'] })]
+    const candidates = resolveChain(roles, [], 'coder', 'openai', 'gpt-4o', undefined, () => false)
+    expect(candidates.map((c) => c.raw)).toEqual(['nvidia/minimaxai/minimax-m3'])
+    expect(candidates[0]).toEqual({
+      provider: 'nvidia',
+      model: 'minimaxai/minimax-m3',
+      raw: 'nvidia/minimaxai/minimax-m3',
+    })
+  })
+
   it('skips malformed entries without throwing (they do not take effect)', () => {
     const roles = [role('coder', { chain: ['bogus', 'provider/', 'openai/gpt-4o', ''] })]
     expect(resolveChain(roles, rootChain, 'coder', 'openai', 'gpt-4o').map((c) => c.raw)).toEqual([
