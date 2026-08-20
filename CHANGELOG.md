@@ -6,6 +6,17 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-08-20
+
+### Added
+
+- Add a `/settings` write surface for llm-fallbacks in dsh-tui profiles: the fallbacks section edits every web settings-card capability (JSON text fields for complex config), with full parity to the web card. Requires dsh-tui >= v0.8.5 (commit `c51661f`).
+- Add `/fallbacks config revert-seed <role-id>` (restores a seeded role's persona) and enrich the `/fallbacks config` readback with time slots, timezone, and role rules.
+
+### Fixed
+
+- Support selectors whose model id contains `/` (e.g. NVIDIA NIM `nvidia/minimaxai/minimax-m3`), previously rejected as an "extra separator".
+
 ## [0.3.1] - 2026-08-20
 
 ### Changed
