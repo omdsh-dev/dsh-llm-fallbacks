@@ -11,7 +11,7 @@
 
 Automatic provider/model fallback chains for dsh (DeepSeek Harness): when an agent's LLM requests keep failing — retries exhausted, auth errors, quota exceeded, rate limiting (429) — the plugin switches provider/model along the fallback chain for the current role, and the current step/turn continues on the target model: tasks are not interrupted by model problems.
 
-Works in both dsh front ends: the **web** profile (Settings → Plugins → Fallbacks card) and the **dsh-tui** terminal profile (`/fallbacks` + `/fallbacks config`).
+Works in both dsh front ends: the **web** profile (Settings → Plugins → Fallbacks card) and the **dsh-tui** terminal profile (`/fallbacks` session diagnostics, `/fallbacks config` readback, and the `/settings` fallbacks section for editing).
 
 ## Time slots
 
@@ -96,7 +96,7 @@ No rule match (or a root request) → the built-in `inherit` → `rootChain`. `e
 
 ### Verify
 
-Save and restart the session, then type `/fallbacks` — the read-only in-session diagnostics (origin, resolved role, chain, recent `fallbacks/switch` events, cooldown status). The plugin no longer writes durable `fallbacks/switch` session events (issue #52 — the apply()-time registration was proven ineffective), so new switches show up in the info logs, not in the recent-switch surfaces; sessions written by older plugin versions that contain `fallbacks/switch` events are repaired with `scripts/repair-fallbacks-switch-logs.ts`, which marks legacy events ignorable so those sessions load again (see the Features note below). In a dsh-tui profile, `/fallbacks config` additionally reads back the composed configuration (the TUI has no settings page — config is file-only; see [docs/configuration.md](docs/configuration.md)).
+Save and restart the session, then type `/fallbacks` — the read-only in-session diagnostics (origin, resolved role, chain, recent `fallbacks/switch` events, cooldown status). The plugin no longer writes durable `fallbacks/switch` session events (issue #52 — the apply()-time registration was proven ineffective), so new switches show up in the info logs, not in the recent-switch surfaces; sessions written by older plugin versions that contain `fallbacks/switch` events are repaired with `scripts/repair-fallbacks-switch-logs.ts`, which marks legacy events ignorable so those sessions load again (see the Features note below). In a dsh-tui profile, `/fallbacks config` reads back the composed configuration and `/settings` is the TUI edit surface — a **fallbacks** section with full web-card parity (see [dsh-tui profile (terminal)](#dsh-tui-profile-terminal)).
 
 ## Features
 
@@ -110,9 +110,19 @@ Save and restart the session, then type `/fallbacks` — the read-only in-sessio
 - **Safety valves**: `maxSwitchesPerStep` caps switches per step and `alwaysModeRetryCap` caps always-mode retries — chain loops cannot amplify latency.
 - **No-config no-op**: `enabled` defaults to off; with no chains configured the plugin behaves exactly like not being installed.
 
+## dsh-tui profile (terminal)
+
+In a dsh-tui profile the plugin has three operator surfaces, with a strict duty split:
+
+- **`/fallbacks`** — session diagnostics (origin, resolved role, effective chain, recent fallback switches, cooldown). Read-only.
+- **`/fallbacks config`** — composed-config readback (trigger codes, root chain, time slots, timezone, roles, role rules, cooldown, revert policy, safety valves, presets, role auto-match), plus the one action command **`/fallbacks config revert-seed <role-id>`**, which restores a seeded role's persona to its declared seed default (a web-card action the settings seam cannot express).
+- **`/settings`** — the host's edit screen. With **dsh-tui ≥ v0.8.5** (commit `c51661f` or later on `main`; the settings seam shipped in v0.8.0, the groups shape + validation in v0.8.5) the plugin registers a **fallbacks** section with **full parity to the web settings card**: booleans (`enabled`, `roleAutoMatch`), selects (`presets`, `revertPolicy`) and numbers (`cooldownMs`, `maxSwitchesPerStep`, `alwaysModeRetryCap`) use native field kinds; complex structures (`rootChain`, `timeSlots`, `roles.list`, `roles.rules`) are JSON text fields and `triggerCodes` a comma-separated text field. Invalid drafts (bad JSON, non-conforming chains, malformed time-slot rows) block the save — never corrupt the config. `enabled` defaults to **off**. On an older dsh-tui the section is absent and file editing remains the only TUI surface.
+
+File editing still works everywhere: the shared `$DSH_HOME/settings.yaml` (`fallbacks:` section — the same file the web card writes) for global settings, or the profile patch `~/.dsh/profiles/dsh-tui/cordis.patch.yml` (`config:` overrides on the plugin row) for dsh-tui-specific values. A patch row **replaces** the targeted row's whole `config` — restate every field you want to keep (schema defaults fill the rest).
+
 ## FallbacksChain in the model picker
 
-When `enabled: true`, the plugin registers a virtual provider, **FallbacksChain**, with a single catalog row: **Auto**. The web profile and dsh-tui both see the row: they share the same adapter catalog, so no TUI settings page or host patch is involved. The row is visible whenever the plugin is enabled — a legacy or empty all-day chain does NOT hide it (the override just refuses to fire).
+When `enabled: true`, the plugin registers a virtual provider, **FallbacksChain**, with a single catalog row: **Auto**. The web profile and dsh-tui both see the row: they share the same adapter catalog, so the row needs no settings-page wiring or host patch (it is independent of the `/settings` fallbacks section, which edits configuration rather than the picker catalog). The row is visible whenever the plugin is enabled — a legacy or empty all-day chain does NOT hide it (the override just refuses to fire).
 
 Selecting **FallbacksChain / Auto** uses the configured chain as the root **primary**: root requests route to the effective chain's first exact `provider/model` at request time, and the fallback engine degrades from that head as usual. Selecting any real catalog model keeps the v0.2.2 fallback-only behavior — the session model is primary and the chain engages only after it fails.
 
