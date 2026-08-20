@@ -12,8 +12,10 @@
  *   `/api/fallbacks/get|set|reset`), while `settings.describe` (writable +
  *   namespace directory) and the provider/model catalog stay on
  *   `connection.api` (see `fallbacks-store.ts`).
- * - Registers the `settings.plugin.item` card `key: 'fallbacks'` (the rc.7
- *   keyed slot — no `id`/`order`) with a business-only inject face
+ * - Registers the `settings.plugin.item` card `key: 'fallbacks'` with a
+ *   matching `id: 'fallbacks'` (the rc.7 keyed slot — no `order`; the id
+ *   keeps the card mountable on hosts that still declare the slot as a list,
+ *   which requires `options.id`) with a business-only inject face
  *   ({@link FallbacksSettingsController} + the snapshot-selector hook); the
  *   old Settings-nav section registration is removed — deleting the section
  *   registration deletes the nav entry.
@@ -200,14 +202,25 @@ export function apply(ctx: ClientContext): void {
   // registration (the "Fallbacks" nav entry) is removed — deleting the
   // section registration deletes the nav entry. rc.7 made the slot keyed:
   // `key` is the settings namespace the card edits, and the card renders in
-  // registration order — the old list-slot `id`/`order` options are gone.
+  // registration order. Pre-rc.7 hosts still declare `settings.plugin.item`
+  // as a list slot, whose loader requires `options.id` — passing `id`
+  // alongside `key` keeps the card mountable on both slot kinds (the keyed
+  // loader ignores the extra id).
   ctx.slots.inject('settings.plugin.item', function* () {
-    yield ctx.slots.register({
+    const cardOptions = {
       name: 'settings.plugin.item',
       key: 'fallbacks', // the settings namespace the card edits
+      id: 'fallbacks', // pre-rc.7 list-slot hosts require options.id
       locale: NS,
       inject: () => ({ controller, useSnapshot }),
-    }, FallbacksCard)
+    }
+    // The rc.7+ slot-contract types this half compiles against declare the
+    // slot keyed (no `id` in the options literal type); pre-rc.7 hosts
+    // declare it as a list slot whose loader throws without `options.id`.
+    // Both fields are passed — the keyed loader ignores the extra `id` — so
+    // the cast only widens the literal past the rc.7 contract, never past
+    // the runtime shape either host accepts.
+    yield ctx.slots.register(cardOptions as never, FallbacksCard)
   })
 
   // The General settings page status row (plan fallbacks-aux-seams T1): a

@@ -571,9 +571,11 @@ describe('FallbacksCard registration (settings.plugin.item)', () => {
     const cards = ledger['settings.plugin.item'] ?? []
     expect(cards).toHaveLength(1)
     // rc.7 keyed slot: `key` is the settings namespace the card edits; the
-    // old list-slot `id` / `order` options must be absent.
+    // list-slot `id` rides along so pre-rc.7 hosts (which declare the slot
+    // as a list and require options.id) can mount the card — the keyed
+    // loader ignores the extra id.
     expect(cards[0].options.key).toBe('fallbacks')
-    expect(cards[0].options).not.toHaveProperty('id')
+    expect(cards[0].options.id).toBe('fallbacks')
     expect(cards[0].options).not.toHaveProperty('order')
     expect(cards[0].options.locale).toBe('fallbacks')
     // No nav-label thunk survives from the removed section registration.
