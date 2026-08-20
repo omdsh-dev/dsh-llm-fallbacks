@@ -6,6 +6,15 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-08-20
+
+### Changed
+
+- The English README uses the plugin's English UI labels only (Main agent, Time slots, Default model, Default fallback chain, time-slot switch / fallback switch) and no longer mixes Chinese terms. The language switcher keeps the `[中文]` label as the sole Chinese in that file.
+- Upgrade every `@deepseek-ai/dsh-*` peer dependency to `^0.1.0-rc.8` (dsh 0.1.0-rc.8, 2026-08-19).
+- Replace the deleted `@deepseek-ai/dsh-client-web-react` dependency: the uSES snapshot bind is vendored in the client half (`src/client/use-snapshot.ts`, same contract as rc.7) and `SnapshotSelectorHook` is imported from `@deepseek-ai/dsh-client-ui-slots`; the client bundle's loader-table externals follow the rc.8 platform table.
+- Add `use-sync-external-store` as a runtime dependency for the vendored snapshot hook.
+
 ## [0.3.0] - 2026-08-18
 
 ### Changed
