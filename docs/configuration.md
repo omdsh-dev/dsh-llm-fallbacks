@@ -85,14 +85,14 @@ The plugin ships **7 bundled omp-style preset roles** — generic subagent roles
 
 **Chain entries** (the values of `roles.list[].chain` / `timeSlots[].chain`, ordered; the all-day `rootChain` is a single-entry list — exactly one official V4 model):
 
-- `provider/model` — exact switch: switch to the specified model;
+- `provider/model` — exact switch: switch to the specified model; the model id may itself contain `/` (e.g. NVIDIA NIM `nvidia/minimaxai/minimax-m3` or Hugging Face `org/repo`-style names);
 - `provider/*` — keep the failed model id and switch the provider only; when the target provider lacks this model id the candidate is skipped (fuzzy near-match resolution is out of scope for this iteration).
 
 > **The chain-key namespace is removed**: the three key semantics of the old `chains` key (`provider/model` exact, `provider/*` wildcard, role-name keys) no longer exist — model-specific routing on failure is now approximated by `roles.rules` (matching to a role by provider/model pattern), and role membership is expressed by declared entities. The entry-side `provider/*` wildcard stays a valid YAML entry everywhere (role chains and `timeSlots[].chain`); the settings GUI no longer offers a wildcard checkbox in any chain editor (role and time-slot chains alike) — chains are edited as provider/model lines, a hand-written `provider/*` entry reads back with a conversion hint and becomes an exact entry once a model is picked, and provider-any matching is expressed through…
 
 Whitespace padding: whitespace padding in a selector (e.g. `other/ gpt-4o`) is **preserved as-is** on save (the GUI does not rewrite user input); runtime parsing normalizes it (`parseSelector` tolerates whitespace), so the semantics are identical to the unpadded form.
 
-Invalid/unknown entries (missing separator, empty segment, extra separator, etc.) warn at save validation and **block the save** (card) or warn at startup (validation function); they never crash and never take effect. In a running dsh environment (with a model-catalog service) `*/*` never matches — the target provider has no `*` model catalog, so the existence probe skips that candidate.
+Invalid/unknown entries (missing separator, empty segment, wildcard inside a model id, etc.) warn at save validation and **block the save** (card) or warn at startup (validation function); they never crash and never take effect. `*` is only valid as the entire model segment (the `provider/*` wildcard) and is rejected inside a model id. In a running dsh environment (with a model-catalog service) `*/*` never matches — the target provider has no `*` model catalog, so the existence probe skips that candidate.
 
 ## Role resolution and chain composition
 
