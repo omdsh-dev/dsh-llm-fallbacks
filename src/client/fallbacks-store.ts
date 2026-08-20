@@ -146,7 +146,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Read a nested value by path — the `@deepseek-ai/dsh-client-schema-form`
+ * Read a nested value by path — the upstream `dsh-client-schema-form`
  * `getPath` semantics, copied locally so the provider-configured join needs no
  * new dependency (array indexes as numeric keys, `undefined` along a missing
  * branch).

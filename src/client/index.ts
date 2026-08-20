@@ -31,7 +31,7 @@
  */
 
 import type { ClientContext, ISessions } from '@deepseek-ai/dsh-client-runtime/client'
-import { bindSnapshotSelector } from '@deepseek-ai/dsh-client-web-react'
+import { bindSnapshotSelector } from './use-snapshot.ts'
 // Type-only: pulls the `ctx.locale` Context merge (LocaleService face).
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 // Type-only: pulls the plugin-config card slot's SlotMap merge (the

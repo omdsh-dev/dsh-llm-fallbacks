@@ -49,10 +49,11 @@ Verdict（implement-now / gated / map-only + 理由）。
 ### 关键机制事实（所有 seam 共用）
 
 - **Bundle purity gate**：client 值导入仅允许 `CLIENT_EXTERNALS` = `PLATFORM_MODULES`
-  （10 项：react/*、@deepseek-ai/cordis、`dsh-client-ui-slots`、`dsh-client-web-react`、
-  `dsh-client-ui-primitives`、`dsh-client-ui-attachment`、`dsh-client-schema-form`，
-  `{HOST}/packages/client/web/src/platform.ts:8-15`）+ @deepseek-ai/dsh-client-runtime/client
-  豁免。**跨插件值导入在构建门抛错**；type-only import 永远合法（emit 时擦除）。
+  （7 项：react/*、@deepseek-ai/cordis、`dsh-client-ui-slots`、`dsh-client-ui-primitives`，
+  `{HOST}/packages/client/web/src/platform.ts:8-12`）+ `PRELOADED_CLIENT_EXTERNALS`
+  （`@deepseek-ai/dsh-client-runtime/client`，`web/src/platform.ts:15-17`）豁免。rc.8 从平台表
+  移除 `dsh-client-web-react`（包已删除；uSES bind 由插件自行 vendored）、`dsh-client-ui-attachment`、
+  `dsh-client-schema-form`。**跨插件值导入在构建门抛错**；type-only import 永远合法（emit 时擦除）。
   → 任何「值导入某 `@deepseek-ai/*` 包」的 seam 都需先查该包是否在表内。
 - **Slot 注册统一 `ctx.slots.inject`**（非裸 register）：等待声明就绪、声明坍缩时自动移除、
   重声明后重跑（`{HOST}/runtime/src/client/slots.ts:130-192`）。
