@@ -5,8 +5,8 @@
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![node](https://img.shields.io/badge/node-%3E%3D22-339933.svg)
 ![pnpm](https://img.shields.io/badge/pnpm-%3E%3D10-f69220.svg)
-![dsh web](https://img.shields.io/badge/dsh%20web-compatible-4B32C3.svg)
 ![dsh tui](https://img.shields.io/badge/dsh%20tui-compatible-4B32C3.svg)
+![dsh](https://img.shields.io/badge/DSH-0.1.0--rc.8-4B32C3.svg)
 [![dshfind](https://dshfind.com/api/badge/omdsh-dev/dsh-llm-fallbacks?lang=zh)](https://dshfind.com/zh/plugins/omdsh-dev/dsh-llm-fallbacks?ref=badge)
 
 dsh（DeepSeek Harness）的自动模型降级插件：当 root agent 或 subagent 的模型请求持续失败（重试耗尽、权限、配额超限、限流 429）时，按角色/模型 fallback 链自动切换 provider/model，当前 step/turn 在目标模型上继续完成——任务不因模型问题中断。
