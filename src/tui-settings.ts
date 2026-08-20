@@ -22,13 +22,15 @@
  * mirrors the gateway's save rules through the exported
  * {@link validateConfigPatch} — an invalid draft returns `undefined` and
  * blocks the save (never writes partial/corrupt config); a blank draft
- * stages a `clear` (the field re-inherits the composition layer).
+ * stages a `clear` (the field re-inherits the composition layer). The `tz`
+ * text field validates its IANA id the same way the runtime resolves it.
  *
  * @module dsh-llm-fallbacks/tui-settings
  */
 
 import type { Context } from '@deepseek-ai/cordis'
 import { validateConfigPatch } from './gateway.ts'
+import { presetRoles } from './presets.ts'
 import type { TuiLocalizedDescriptions } from './tui.ts'
 
 /** Control kinds the TUI settings screen knows how to render (host shape). */
@@ -112,6 +114,15 @@ export interface TuiSettingsSection {
 export const FALLBACKS_TUI_SECTION_NS = 'fallbacks'
 
 /**
+ * Maximum draft size for the JSON-backed text fields (qc2 F-004): past
+ * this many UTF-8 bytes the draft is rejected BEFORE `JSON.parse` — a very
+ * large paste would otherwise stall the in-process settings editor. The
+ * cap is far above any operator-authored config; it bounds local memory
+ * pressure, not the config model (the gateway accepts any size).
+ */
+export const JSON_FIELD_MAX_DRAFT_BYTES = 64 * 1024
+
+/**
  * Render a JSON-backed field's stored value as draft text. The host calls
  * `format(value)` with the namespace-view value (absent path → `undefined`),
  * so both `undefined` and `null` render as an empty draft. Pretty-printed so
@@ -125,21 +136,32 @@ function jsonFieldFormat(value: unknown): string {
  * Build the parse for a JSON-backed text field: blank/whitespace text stages
  * a `clear` (the field re-inherits the composition layer — a custom parse
  * replaces the host's default blank→clear, so the empty draft is owned
- * here), then `JSON.parse` + the gateway's `validateConfigPatch` on the
- * parsed value (invalid JSON or a shape the gateway would reject on save →
- * `undefined`, blocking the save — never partial/corrupt config).
+ * here), then a bounded `JSON.parse` (drafts over
+ * {@link JSON_FIELD_MAX_DRAFT_BYTES} → `undefined`) + the gateway's
+ * `validateConfigPatch` on the parsed value (invalid JSON or a shape the
+ * gateway would reject on save → `undefined`, blocking the save — never
+ * partial/corrupt config). A literal `null` JSON draft stages a `clear`
+ * (qc3 F-004): the schema treats `null` as missing, so a null write is
+ * semantically a clear — the parse makes that explicit instead of staging
+ * a `set: null`.
  */
 function jsonFieldParse(
   patch: (parsed: unknown) => Record<string, unknown>,
 ): (text: string) => TuiSettingsFieldWrite | undefined {
   return (text) => {
     if (text.trim() === '') return { kind: 'clear' }
+    // qc2 F-004: reject oversized drafts before JSON.parse (byte-accurate;
+    // a 64 KiB cap on a paste is far beyond any real config).
+    if (new TextEncoder().encode(text).length > JSON_FIELD_MAX_DRAFT_BYTES) return undefined
     let parsed: unknown
     try {
       parsed = JSON.parse(text)
     } catch {
       return undefined
     }
+    // qc3 F-004: a literal null draft means "no value" — stage a clear, the
+    // semantic twin of the blank draft, never a set-null write.
+    if (parsed === null) return { kind: 'clear' }
     try {
       validateConfigPatch(patch(parsed))
     } catch {
@@ -160,8 +182,10 @@ function triggerCodesFormat(value: unknown): string {
 /**
  * Parse a comma-separated `triggerCodes` draft: blank → `clear`; otherwise
  * split on `,`, trim, and drop empty tokens into the string array the
- * schema expects. Any non-string token (impossible from a string split, kept
- * as the total guard) → `undefined` (save blocked).
+ * schema expects, then route the tokens through the SAME
+ * {@link validateConfigPatch} entry point the JSON fields use (qc2 F-001) —
+ * a future gateway guard on trigger codes applies to this surface too.
+ * Invalid → `undefined` (save blocked).
  */
 function triggerCodesParse(text: string): TuiSettingsFieldWrite | undefined {
   if (text.trim() === '') return { kind: 'clear' }
@@ -169,9 +193,44 @@ function triggerCodesParse(text: string): TuiSettingsFieldWrite | undefined {
     .split(',')
     .map((token) => token.trim())
     .filter((token) => token !== '')
-  if (tokens.some((token) => typeof token !== 'string')) return undefined
+  try {
+    validateConfigPatch({ triggerCodes: tokens })
+  } catch {
+    return undefined
+  }
   return { kind: 'set', value: tokens }
 }
+
+/**
+ * Parse the `tz` draft (qc1 F-001 / qc2 F-002): blank → `clear` (re-inherit
+ * the composition default); otherwise the trimmed text must be a valid IANA
+ * timezone id — validated with the same `Intl.DateTimeFormat` mechanism the
+ * runtime wall-clock lookup uses (`src/time-slots.ts` `wallClock`). An
+ * invalid id (e.g. a typo `Asia/Shanghi`) returns `undefined`, blocking the
+ * save — the runtime would otherwise persist it and silently degrade slot
+ * windows to UTC with a warn-once. The web card derives `tz` and never lets
+ * users set it, so this is the only edit surface for the value.
+ */
+function tzParse(text: string): TuiSettingsFieldWrite | undefined {
+  const trimmed = text.trim()
+  if (trimmed === '') return { kind: 'clear' }
+  try {
+    // Validation only: constructing the formatter throws RangeError on an
+    // unknown timezone id; the formatter itself is discarded.
+    Intl.DateTimeFormat(undefined, { timeZone: trimmed })
+  } catch {
+    return undefined
+  }
+  return { kind: 'set', value: trimmed }
+}
+
+/**
+ * Bundled-preset select label — the count comes from the declaration source
+ * of truth (`src/presets.ts` {@link presetRoles}), never hard-coded (qc2
+ * Task-1 Minor): adding/removing a bundled preset updates this label
+ * automatically.
+ */
+const BUNDLED_PRESETS_LABEL = `Bundled (${presetRoles.length} preset roles)`
 
 /**
  * The `fallbacks` /settings section: 13 fields covering all 15 web-card
@@ -220,8 +279,8 @@ export function buildFallbacksTuiSection(): TuiSettingsSection {
         options: [
           {
             value: 'bundled',
-            label: 'Bundled (7 preset roles)',
-            descriptions: { zh: '预置（7 个预置角色）', en: 'Bundled (7 preset roles)' },
+            label: BUNDLED_PRESETS_LABEL,
+            descriptions: { zh: `预置（${presetRoles.length} 个预置角色）`, en: BUNDLED_PRESETS_LABEL },
           },
           { value: 'none', label: 'None', descriptions: { zh: '不注入', en: 'None' } },
         ],
@@ -230,8 +289,14 @@ export function buildFallbacksTuiSection(): TuiSettingsSection {
         path: ['triggerCodes'],
         label: 'Trigger codes',
         descriptions: { zh: '触发码', en: 'Trigger codes' },
-        hint: 'Comma-separated failure codes that trigger the fallback.',
-        hintDescriptions: { zh: '逗号分隔的触发回退的失败码。', en: 'Comma-separated failure codes that trigger the fallback.' },
+        // qc2 F-003: the comma is the delimiter — a code containing a comma
+        // cannot round-trip through this field (the web card's checkbox
+        // model has no delimiter). Documented in the hint, not escaped.
+        hint: 'Comma-separated failure codes that trigger the fallback. A code containing a comma cannot round-trip through this field.',
+        hintDescriptions: {
+          zh: '逗号分隔的触发回退的失败码；包含逗号的代码无法通过该字段往返。',
+          en: 'Comma-separated failure codes that trigger the fallback. A code containing a comma cannot round-trip through this field.',
+        },
         group: 'general',
         kind: 'text',
         format: triggerCodesFormat,
@@ -241,8 +306,11 @@ export function buildFallbacksTuiSection(): TuiSettingsSection {
         path: ['tz'],
         label: 'Timezone',
         descriptions: { zh: '时区', en: 'Timezone' },
+        hint: 'IANA timezone identifier, e.g. Asia/Shanghai.',
+        hintDescriptions: { zh: 'IANA 时区标识符，如 Asia/Shanghai。', en: 'IANA timezone identifier, e.g. Asia/Shanghai.' },
         group: 'general',
         kind: 'text',
+        parse: tzParse,
       },
       {
         path: ['rootChain'],

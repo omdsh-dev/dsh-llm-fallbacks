@@ -59,7 +59,6 @@ import {
   type FallbacksSettingsBridge,
 } from './gateway.ts'
 import {
-  FALLBACKS_COMMAND_LOCALES,
   RECENT_SWITCHES_LIMIT,
   recentFallbacksSwitches,
   registerFallbacksCommands,
@@ -968,7 +967,7 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
         rootChain: config.rootChain,
         timeSlots: (config.timeSlots ?? []).map((row) => row.kind === 'preset'
           ? { preset: row.preset, chainCount: (row.chain ?? []).length }
-          : { start: row.start, end: row.end, chainCount: (row.chain ?? []).length }),
+          : { start: row.start, end: row.end, days: row.days, chainCount: (row.chain ?? []).length }),
         tz: config.tz ?? 'Asia/Shanghai',
         roles: config.roles.list.map((role) => ({ id: role.id, chainCount: role.chain?.length ?? 0 })),
         rules: config.roles.rules.map((rule) => ({ provider: rule.provider ?? '', model: rule.model ?? '', role: rule.role })),
@@ -985,21 +984,16 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     // SERVICE path (seeds.revert(roleId, seedsIo), the same single point of
     // truth as revertSeededPersona) rather than the typert gateway RPC: the
     // gateway may not be composed in a dsh-tui profile, while `seeds` is
-    // always in scope here. Business failures are values (`ok: false` +
-    // message mapping SeedRevertOutcome.reverted/reason); a failed settings
-    // write propagates loudly (the seeds contract — never swallowed). The
-    // message uses the command's default zh copy (the wiring registers with
-    // no locale; en copy keys are dictionary-tested like `usage`).
+    // always in scope here. Business failures are VALUES (`ok: false` +
+    // the SeedRevertFailReason code — qc1 F-003 / qc2 F-006 / qc3 F-003);
+    // the command handler localizes the code per its registration locale,
+    // so the controller never composes copy. A failed settings write
+    // propagates loudly as a rejection (the seeds contract — never
+    // swallowed); the handler maps it to a structured error outcome (C-6).
     revertSeed: async (roleId) => {
       const outcome = await seeds.revert(roleId, seedsIo)
-      const t = FALLBACKS_COMMAND_LOCALES.zh
-      if (outcome.reverted) return { ok: true, message: t.revertSeedOk.replace('{id}', roleId) }
-      return {
-        ok: false,
-        message: t.revertSeedFail
-          .replace('{id}', roleId)
-          .replace('{reason}', t.revertSeedReason[outcome.reason ?? 'not-seeded']),
-      }
+      if (outcome.reverted) return { ok: true }
+      return { ok: false, reason: outcome.reason ?? 'not-seeded' }
     },
   }
   ctx.inject(['commands'], (commandCtx) => {
@@ -1009,11 +1003,13 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     return registerFallbacksCommands(commandCtx.commands, fallbacksCommandController)
   })
 
-  // dsh-tui client surface (plan fallbacks-tui-client T1, AC-1): register
-  // the `tuiCommandTrees` /fallbacks provider (localized root descriptions +
-  // `config` subcommand completion). Conditional inject child like the
-  // commands/typert children — absent service = clean no-op. First-fiber-only
-  // via `serviceOwned` (the host registry throws on duplicate roots, so a
+  // dsh-tui client surface (plan fallbacks-tui-client T1, AC-1 +
+  // fallbacks-tui-settings Task 2): register the `tuiCommandTrees`
+  // /fallbacks provider (localized root descriptions + `config` →
+  // `revert-seed` subcommand completion — the provider now supplies both,
+  // not just `config`). Conditional inject child like the commands/typert
+  // children — absent service = clean no-op. First-fiber-only via
+  // `serviceOwned` (the host registry throws on duplicate roots, so a
   // deduped later fiber must never register). Registered here — after the
   // commands child, BEFORE the tail settings preset child — so the tail
   // child's last-registered activation order is preserved.

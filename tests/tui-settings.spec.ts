@@ -18,8 +18,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { apply } from '../src/index.ts'
+import { presetRoles } from '../src/presets.ts'
 import {
   FALLBACKS_TUI_SECTION_NS,
+  JSON_FIELD_MAX_DRAFT_BYTES,
   buildFallbacksTuiSection,
   installTuiSettingsSection,
   type TuiSettingsField,
@@ -277,6 +279,15 @@ describe('fallbacks section — native kinds (AC-1)', () => {
     expect(revertPolicy.kind).toBe('select')
     expect(revertPolicy.options?.map((option) => option.value)).toEqual(['cooldown-expiry', 'never'])
   })
+
+  it('the bundled presets label derives its count from the presetRoles source of truth (C-11)', () => {
+    // The '7' is never hard-coded: the label references src/presets.ts, so
+    // adding/removing a bundled preset keeps the label in sync.
+    const presets = fieldOf(section, 'presets')
+    const bundled = presets.options?.find((option) => option.value === 'bundled')
+    expect(bundled?.label).toBe(`Bundled (${presetRoles.length} preset roles)`)
+    expect(bundled?.descriptions?.zh).toBe(`预置（${presetRoles.length} 个预置角色）`)
+  })
 })
 
 describe('JSON fields — format/parse round-trips and gateway-parity rejection (AC-2)', () => {
@@ -303,6 +314,29 @@ describe('JSON fields — format/parse round-trips and gateway-parity rejection 
     const field = fieldOf(section, key)
     expect(field.parse!('')).toEqual({ kind: 'clear' })
     expect(field.parse!('   \n\t ')).toEqual({ kind: 'clear' })
+  })
+
+  it.each(JSON_FIELD_KEYS)('%s: a literal null JSON draft stages a clear, never a set-null write (C-4)', (key) => {
+    // qc3 F-004: the schema treats null as missing — a null draft is
+    // semantically a clear (the twin of the blank draft), so the parse
+    // stages {kind:'clear'} instead of a set-null write.
+    const field = fieldOf(section, key)
+    expect(field.parse!('null')).toEqual({ kind: 'clear' })
+    expect(field.parse!('  null  ')).toEqual({ kind: 'clear' })
+  })
+
+  it('rejects oversized drafts before JSON.parse (C-3)', () => {
+    // qc2 F-004: a paste over JSON_FIELD_MAX_DRAFT_BYTES is rejected with
+    // undefined (save blocked) — never handed to JSON.parse. The payload
+    // below exceeds the cap; the conformance-independent rejection happens
+    // before any shape validation.
+    const field = fieldOf(section, 'rootChain')
+    const oversized = `[${JSON.stringify('x'.repeat(JSON_FIELD_MAX_DRAFT_BYTES + 1))}, "deepseek-official/deepseek-v4-flash"]`
+    expect(oversized.length).toBeGreaterThan(JSON_FIELD_MAX_DRAFT_BYTES)
+    expect(field.parse!(oversized)).toBeUndefined()
+    // A draft right AT the cap boundary still parses (cap is exclusive).
+    const atCap = `[${JSON.stringify('x'.repeat(JSON_FIELD_MAX_DRAFT_BYTES - 64))}, "deepseek-official/deepseek-v4-flash"]`
+    expect(field.parse!(atCap)).toEqual({ kind: 'set', value: ['x'.repeat(JSON_FIELD_MAX_DRAFT_BYTES - 64), 'deepseek-official/deepseek-v4-flash'] })
   })
 
   it.each(JSON_FIELD_KEYS)('%s: invalid JSON → undefined (save blocked)', (key) => {
@@ -366,9 +400,56 @@ describe('triggerCodes — comma-joined format/parse (AC-2)', () => {
     expect(field.parse!('AUTH,  , QUOTA ,')).toEqual({ kind: 'set', value: ['AUTH', 'QUOTA'] })
   })
 
+  it('routes the token list through validateConfigPatch like the JSON fields (C-1)', () => {
+    // qc2 F-001: the parse now validates via the shared entry point — an
+    // empty token list is schema-valid (z.array(z.string())), so it stages
+    // a set, and any future gateway guard applies here too.
+    expect(field.parse!(' , ')).toEqual({ kind: 'set', value: [] })
+    expect(field.parse!('AUTH, QUOTA')).toEqual({ kind: 'set', value: ['AUTH', 'QUOTA'] })
+  })
+
   it('blank/whitespace drafts stage a clear', () => {
     expect(field.parse!('')).toEqual({ kind: 'clear' })
     expect(field.parse!('  ')).toEqual({ kind: 'clear' })
+  })
+
+  it('documents the comma round-trip limitation in the hint (C-7)', () => {
+    // qc2 F-003: the comma is the delimiter — a code containing a comma
+    // cannot round-trip through this field. Documented, not escaped.
+    expect(field.hint).toContain('comma')
+    expect(field.hint).toContain('cannot round-trip')
+    expect(field.hintDescriptions?.zh).toContain('逗号')
+  })
+})
+
+describe('tz field — IANA validation (C-2)', () => {
+  const section = buildFallbacksTuiSection()
+  const field = fieldOf(section, 'tz')
+
+  it('accepts a valid IANA id and trims the draft', () => {
+    expect(field.parse!('Asia/Shanghai')).toEqual({ kind: 'set', value: 'Asia/Shanghai' })
+    expect(field.parse!('  Asia/Shanghai  ')).toEqual({ kind: 'set', value: 'Asia/Shanghai' })
+    expect(field.parse!('UTC')).toEqual({ kind: 'set', value: 'UTC' })
+    expect(field.parse!('America/New_York')).toEqual({ kind: 'set', value: 'America/New_York' })
+  })
+
+  it('rejects an invalid IANA id with undefined (save blocked)', () => {
+    // qc1 F-001 / qc2 F-002: a typo would otherwise persist and silently
+    // degrade slot windows to UTC at runtime.
+    expect(field.parse!('Asia/Shanghi')).toBeUndefined()
+    expect(field.parse!('Not/AZone')).toBeUndefined()
+    expect(field.parse!('UTC+8')).toBeUndefined()
+  })
+
+  it('blank/whitespace drafts stage a clear (re-inherit the default)', () => {
+    expect(field.parse!('')).toEqual({ kind: 'clear' })
+    expect(field.parse!('   ')).toEqual({ kind: 'clear' })
+  })
+
+  it('carries a one-line IANA hint (C-11)', () => {
+    expect(field.hint).toContain('IANA')
+    expect(field.hintDescriptions?.zh?.length).toBeGreaterThan(0)
+    expect(field.hintDescriptions?.en?.length).toBeGreaterThan(0)
   })
 })
 

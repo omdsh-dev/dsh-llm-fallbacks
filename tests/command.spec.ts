@@ -430,6 +430,52 @@ describe('fallbacksConfigText — composed-config readback', () => {
     expect(text).not.toContain('window undefined')
   })
 
+  it('renders day masks for weekday-masked preset windows and keeps complement wording accurate (C-8)', () => {
+    // glm-peak is Mon–Fri 14:00-18:00 (PRESETS window day mask) — the mask
+    // must be visible so operators can verify /settings edits.
+    const peak = fallbacksConfigText(configSummary({ timeSlots: [{ preset: 'glm-peak', chainCount: 2 }] }), 'en')
+    expect(peak).toContain('glm-peak (chain: 2, window 14:00-18:00 (Mon-Fri))')
+    // glm-valley is the complement of that weekday window — the exclusion is
+    // the Mon–Fri window only, never the whole daily range, so the day mask
+    // qualifies the "outside" wording (qc1 F-004).
+    const valley = fallbacksConfigText(configSummary({ timeSlots: [{ preset: 'glm-valley', chainCount: 2 }] }), 'en')
+    expect(valley).toContain('glm-valley (chain: 2, window outside 14:00-18:00 (Mon-Fri))')
+    // zh mirror for the same row.
+    const zh = fallbacksConfigText(configSummary({ timeSlots: [{ preset: 'glm-valley', chainCount: 2 }] }), 'zh')
+    expect(zh).toContain('glm-valley（chain: 2, window outside 14:00-18:00 (Mon-Fri)）')
+  })
+
+  it('renders a compact day mask on custom rows that carry one', () => {
+    const text = fallbacksConfigText(
+      configSummary({ timeSlots: [{ start: '09:00', end: '12:00', days: [1, 2, 3, 4, 5], chainCount: 1 }] }),
+      'en',
+    )
+    expect(text).toContain('custom 09:00-12:00 (Mon-Fri) (chain: 1)')
+    // Non-contiguous masks stay comma-joined and compact.
+    const weekend = fallbacksConfigText(
+      configSummary({ timeSlots: [{ start: '10:00', end: '14:00', days: [0, 6], chainCount: 1 }] }),
+      'en',
+    )
+    expect(weekend).toContain('custom 10:00-14:00 (Sun, Sat) (chain: 1)')
+  })
+
+  it('degrades a malformed custom slot row (missing bounds) to a bare custom marker (C-9)', () => {
+    // A legacy row the resolver warns about and skips must not render
+    // `undefined-undefined` — the readback shows the bare custom marker.
+    const text = fallbacksConfigText(configSummary({ timeSlots: [{ chainCount: 0 }] }), 'en')
+    expect(text).toContain('Time slots: 1 — custom  (chain: 0)')
+    expect(text).not.toContain('undefined')
+  })
+
+  it('renders unknown preset ids without a window segment (C-9)', () => {
+    // Legacy rows with an unknown preset id render the bare preset item —
+    // never a window placeholder or undefined.
+    const text = fallbacksConfigText(configSummary({ timeSlots: [{ preset: 'nope', chainCount: 1 }] }), 'en')
+    expect(text).toContain('nope (chain: 1)')
+    expect(text).not.toContain('window')
+    expect(text).not.toContain('undefined')
+  })
+
   it('renders (empty) when no time slots are configured', () => {
     expect(fallbacksConfigText(configSummary({ timeSlots: [] }), 'en')).toContain('Time slots: (empty)')
   })
@@ -555,7 +601,7 @@ describe('handler — factory-bound, read-only', () => {
     const controller: FallbacksCommandController = {
       getSnapshot: vi.fn(() => snapshot()),
       getConfig: vi.fn(() => configSummary()),
-      revertSeed: async () => ({ ok: true, message: 'reverted' }),
+      revertSeed: async () => ({ ok: true }),
     }
     const { definition } = captureRegistration(controller, 'en')
     const result = definition.handler({
@@ -572,7 +618,7 @@ describe('handler — factory-bound, read-only', () => {
     const controller: FallbacksCommandController = {
       getSnapshot: () => snapshot(),
       getConfig: () => configSummary(),
-      revertSeed: async () => ({ ok: true, message: 'reverted' }),
+      revertSeed: async () => ({ ok: true }),
     }
     const { definition } = captureRegistration(controller)
     const result = definition.handler({
@@ -592,7 +638,7 @@ describe('handler — factory-bound, read-only', () => {
     const controller: FallbacksCommandController = {
       getSnapshot: vi.fn(() => snapshot()),
       getConfig: vi.fn(() => configSummary()),
-      revertSeed: async () => ({ ok: true, message: 'reverted' }),
+      revertSeed: async () => ({ ok: true }),
     }
     const { definition } = captureRegistration(controller, 'en')
     const result = definition.handler({
@@ -611,7 +657,7 @@ describe('handler — factory-bound, read-only', () => {
     const controller: FallbacksCommandController = {
       getSnapshot: vi.fn(() => snapshot()),
       getConfig: () => configSummary(),
-      revertSeed: async () => ({ ok: true, message: 'reverted' }),
+      revertSeed: async () => ({ ok: true }),
     }
     const { definition } = captureRegistration(controller)
     const result = definition.handler({
@@ -627,7 +673,7 @@ describe('handler — factory-bound, read-only', () => {
 
   it('is bound to the locale passed at registration', () => {
     const { definition } = captureRegistration(
-      { getSnapshot: () => snapshot(), getConfig: () => configSummary(), revertSeed: async () => ({ ok: true, message: 'reverted' }) },
+      { getSnapshot: () => snapshot(), getConfig: () => configSummary(), revertSeed: async () => ({ ok: true }) },
       'en',
     )
     const result = definition.handler({
@@ -643,7 +689,7 @@ describe('handler — factory-bound, read-only', () => {
     const controller: FallbacksCommandController = {
       getSnapshot: vi.fn(() => snapshot()),
       getConfig: vi.fn(() => configSummary()),
-      revertSeed: vi.fn(async (roleId: string) => ({ ok: true, message: `role ${roleId} reverted to its seed default` })),
+      revertSeed: vi.fn(async (roleId: string) => ({ ok: true })),
     }
     const { definition } = captureRegistration(controller, 'en')
     const result = await definition.handler({
@@ -659,11 +705,39 @@ describe('handler — factory-bound, read-only', () => {
     expect(controller.getConfig).not.toHaveBeenCalled()
   })
 
-  it('surfaces a not-found revert as an error-kind result with the controller message', async () => {
+  it('surfaces a not-found revert as an error-kind result, localizing the reason code per registration locale (C-5)', async () => {
     const controller: FallbacksCommandController = {
       getSnapshot: vi.fn(() => snapshot()),
       getConfig: vi.fn(() => configSummary()),
-      revertSeed: vi.fn(async () => ({ ok: false, message: 'role ghost not reverted (not a seeded role)' })),
+      revertSeed: vi.fn(async () => ({ ok: false, reason: 'not-seeded' })),
+    }
+    // en registration → en copy; the controller only returned the code.
+    const en = captureRegistration(controller, 'en')
+    const enResult = await en.definition.handler({
+      commandId: 'x',
+      agent: { id: 'a1', session: { events: [] } },
+      rawInput: ' config revert-seed ghost',
+      signal: new AbortController().signal,
+    } as unknown as CommandInvocation)
+    expect(enResult).toEqual({ kind: 'error', text: 'role ghost not reverted (not a seeded role)' })
+    expect(controller.revertSeed).toHaveBeenCalledWith('ghost')
+
+    // zh (default) registration → zh copy for the same reason code.
+    const zh = captureRegistration(controller)
+    const zhResult = await zh.definition.handler({
+      commandId: 'x',
+      agent: { id: 'a1', session: { events: [] } },
+      rawInput: ' config revert-seed ghost',
+      signal: new AbortController().signal,
+    } as unknown as CommandInvocation)
+    expect(zhResult).toEqual({ kind: 'error', text: '角色 ghost 未还原（未声明种子）' })
+  })
+
+  it('localizes the row-absent reason code per registration locale (C-5)', async () => {
+    const controller: FallbacksCommandController = {
+      getSnapshot: vi.fn(() => snapshot()),
+      getConfig: vi.fn(() => configSummary()),
+      revertSeed: vi.fn(async () => ({ ok: false, reason: 'row-absent' })),
     }
     const { definition } = captureRegistration(controller, 'en')
     const result = await definition.handler({
@@ -672,15 +746,36 @@ describe('handler — factory-bound, read-only', () => {
       rawInput: ' config revert-seed ghost',
       signal: new AbortController().signal,
     } as unknown as CommandInvocation)
-    expect(result).toEqual({ kind: 'error', text: 'role ghost not reverted (not a seeded role)' })
-    expect(controller.revertSeed).toHaveBeenCalledWith('ghost')
+    expect(result).toEqual({ kind: 'error', text: 'role ghost not reverted (role row absent)' })
+  })
+
+  it('maps a settings-write failure (rejected revertSeed) to a structured error outcome (C-6)', async () => {
+    // qc2 F-007: seeds.revert propagates a failed settings write by
+    // throwing; the handler must surface a localized error-kind result —
+    // never an unhandled rejection, never raw technical text.
+    const controller: FallbacksCommandController = {
+      getSnapshot: vi.fn(() => snapshot()),
+      getConfig: vi.fn(() => configSummary()),
+      revertSeed: vi.fn(async () => {
+        throw new Error('llm-fallbacks: seeds: settings service is unavailable')
+      }),
+    }
+    const { definition } = captureRegistration(controller, 'en')
+    const result = await definition.handler({
+      commandId: 'x',
+      agent: { id: 'a1', session: { events: [] } },
+      rawInput: ' config revert-seed coder',
+      signal: new AbortController().signal,
+    } as unknown as CommandInvocation)
+    expect(result).toEqual({ kind: 'error', text: 'role coder revert failed (settings write failed)' })
+    expect(controller.revertSeed).toHaveBeenCalledWith('coder')
   })
 
   it('keeps bare and config results synchronous — only revert-seed returns a promise', () => {
     const controller: FallbacksCommandController = {
       getSnapshot: () => snapshot(),
       getConfig: () => configSummary(),
-      revertSeed: async () => ({ ok: true, message: 'reverted' }),
+      revertSeed: async () => ({ ok: true }),
     }
     const { definition } = captureRegistration(controller)
     const bare = definition.handler({
@@ -990,5 +1085,46 @@ describe('apply() wiring — conditional commands child', () => {
     // registered by the plugin, but its user layer stays empty.
     const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)
     expect(descriptor?.user).toBeUndefined()
+  })
+
+  it('/fallbacks config revert-seed reports a row-absent id (seeded but row deleted) as an error outcome (C-9)', async () => {
+    const registered: CommandDefinition[] = []
+    ctx.provide('commands', {
+      register: (def: CommandDefinition) => {
+        registered.push(def)
+        return () => {}
+      },
+    } as never)
+    apply(ctx, cfg({ rootChain: ['other/gpt-4o'] }))
+    await vi.waitFor(() => expect(registered).toHaveLength(1))
+
+    // Seed the role first — the registry knows `coder`, so this is NOT the
+    // not-seeded branch.
+    const fb = ctx.get('llm-fallbacks')!
+    await vi.waitFor(async () => {
+      await expect(fb.declareSeeds([{ id: 'coder', persona: 'seed default' }])).resolves.toEqual({
+        applied: ['coder'],
+        skipped: [],
+        conflicts: [],
+      })
+    })
+
+    // Delete the row from the operator config — the seed stays declared, so
+    // the revert hits the `row-absent` reason (seeds.ts revert), never
+    // `not-seeded`.
+    await ctx.settings.update(FALLBACKS_SETTINGS_NAMESPACE, { roles: { list: [], rules: [] } })
+
+    const result = await registered[0]!.handler({
+      commandId: 'x',
+      agent: { id: 'a1', session: { events: [] } },
+      rawInput: ' config revert-seed coder',
+      signal: new AbortController().signal,
+    } as unknown as CommandInvocation)
+    expect(result).toEqual({ kind: 'error', text: '角色 coder 未还原（角色行不存在）' })
+
+    // The empty list was NOT written again by the failed revert — the user
+    // layer still holds the row deletion the test staged (no phantom write).
+    const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)
+    expect(descriptor?.user).toMatchObject({ roles: { list: [] } })
   })
 })

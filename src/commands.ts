@@ -30,6 +30,7 @@ import type { CommandDefinition, CommandInvocation, CommandResult } from '@deeps
 import { INHERIT_ROLE_ID, type FallbacksRole } from './config.ts'
 import type { Origin } from './roles.ts'
 import type { FallbackSwitchReason, FallbacksSwitchEventData } from './events.ts'
+import type { SeedRevertFailReason } from './seeds.ts'
 import { PRESETS, type PresetId, type SlotRowConfig } from './time-slots.ts'
 
 /** How many recent `fallbacks/switch` events `/fallbacks` shows (newest first). */
@@ -108,8 +109,8 @@ export interface FallbacksConfigSummary {
   readonly enabled: boolean
   readonly triggerCodes: readonly string[]
   readonly rootChain: readonly string[]
-  /** Summarized time-slot rows (preset rows carry `preset`, custom rows carry `start`/`end`). */
-  readonly timeSlots: readonly { preset?: string; start?: string; end?: string; chainCount: number }[]
+  /** Summarized time-slot rows (preset rows carry `preset`, custom rows carry `start`/`end`; both may carry a day mask). */
+  readonly timeSlots: readonly { preset?: string; start?: string; end?: string; days?: readonly number[]; chainCount: number }[]
   /** Config-level timezone for slot matching (default `Asia/Shanghai`). */
   readonly tz: string
   readonly roles: readonly { id: string; chainCount: number }[]
@@ -141,14 +142,18 @@ export interface FallbacksCommandController {
   getConfig(): FallbacksConfigSummary
   /**
    * Revert one role's persona to its CURRENT declared seed default (AC-3).
-   * Surfaces the outcome as a value: `ok: true` when reverted; `ok: false`
-   * with a human-readable `message` explaining why not (not a seeded role /
-   * role row absent). A settings-write failure propagates loudly (the same
-   * contract as the seeds service — never swallowed into a `ok: false`).
-   * Implemented by the wiring against the per-apply seed manager
+   * Surfaces the outcome as VALUES, not copy (qc1 F-003 / qc2 F-006 / qc3
+   * F-003): `ok: true` when reverted; `ok: false` with the
+   * {@link SeedRevertFailReason} code explaining why not (not a seeded role
+   * / role row absent). The command handler localizes the code per its
+   * registration locale — the controller never pre-localizes. A
+   * settings-write failure propagates loudly as a rejected promise (the
+   * same contract as the seeds service — never swallowed into an
+   * `ok: false`); the handler maps it to a structured error. Implemented by
+   * the wiring against the per-apply seed manager
    * (`seeds.revert(roleId, seedsIo)`), not the typert gateway.
    */
-  revertSeed(roleId: string): Promise<{ ok: boolean; message: string }>
+  revertSeed(roleId: string): Promise<{ ok: boolean; reason?: SeedRevertFailReason }>
 }
 
 // ---------------------------------------------------------------------------
@@ -230,9 +235,16 @@ export const FALLBACKS_COMMAND_LOCALES = {
     configEditHint: 'TUI 通过 /settings 修改配置；文件编辑仍然可用',
     revertSeedOk: '角色 {id} 已还原为 Seed 默认',
     revertSeedFail: '角色 {id} 未还原（{reason}）',
+    // C-6: the settings-write failure path — the seeds service propagates a
+    // failed write by throwing, and the handler maps the rejection to this
+    // localized message (never raw technical text).
+    revertSeedError: '角色 {id} 还原失败（设置写入失败）',
     revertSeedReason: {
       'not-seeded': '未声明种子',
       'row-absent': '角色行不存在',
+      // Reserved (qc3 F-001): a future seeds outcome for the no-settings-
+      // channel case — seeds.revert THROWS today instead of returning this
+      // reason, so this key is unreachable copy until that changes.
       'settings-unavailable': '设置通道不可用',
     },
   },
@@ -285,9 +297,12 @@ export const FALLBACKS_COMMAND_LOCALES = {
     configEditHint: 'TUI edits config via /settings; file editing still works',
     revertSeedOk: 'role {id} reverted to its seed default',
     revertSeedFail: 'role {id} not reverted ({reason})',
+    // C-6: mapped settings-write failure message (mirror of the zh key).
+    revertSeedError: 'role {id} revert failed (settings write failed)',
     revertSeedReason: {
       'not-seeded': 'not a seeded role',
       'row-absent': 'role row absent',
+      // Reserved (qc3 F-001): unreachable today — see the zh block comment.
       'settings-unavailable': 'settings channel unavailable',
     },
   },
@@ -452,9 +467,10 @@ function formatCooldown(entry: FallbacksCooldownEntry, t: FallbacksCommandCopy):
 }
 
 /**
- * Cap for long list lines in the composed-config readback: beyond this many
- * items a line truncates with `…` (the `Roles:` count always stays the FULL
- * count). Same sanity scale as {@link RECENT_SWITCHES_LIMIT}.
+ * Cap for the composed-config readback's LIST lines — Trigger codes, Root
+ * chain, Time slots, Roles, and Rules (qc2 Task-2 Minor): beyond this many
+ * items a line truncates with `…` while its leading count always stays the
+ * FULL count. Same sanity scale as {@link RECENT_SWITCHES_LIMIT}.
  */
 export const FALLBACKS_CONFIG_LIST_CAP = 5
 
@@ -476,29 +492,66 @@ function formatConfigRoles(roles: readonly { id: string; chainCount: number }[],
   return `${roles.length}${list.length === 0 ? '' : ` — ${list}`}`
 }
 
+/** Weekday names indexed 0=Sunday…6=Saturday (matches the slot day masks). */
+const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const
+
+/**
+ * Compact day-mask text for a slot window (qc1 F-004): contiguous runs
+ * collapse to a range (`[1,2,3,4,5]` → `Mon-Fri`), gaps stay comma-joined
+ * (`[0,6]` → `Sun, Sat`). Empty/absent masks render `''` (every day).
+ */
+function formatDayMask(days: readonly number[]): string {
+  if (days.length === 0) return ''
+  const sorted = [...days].sort((a, b) => a - b)
+  const runs: string[] = []
+  let runStart = sorted[0]!
+  let prev = sorted[0]!
+  for (let index = 1; index <= sorted.length; index += 1) {
+    const day = sorted[index]
+    if (day === undefined || day !== prev + 1) {
+      runs.push(prev === runStart ? DAY_NAMES[runStart]! : `${DAY_NAMES[runStart]}-${DAY_NAMES[prev]}`)
+      runStart = day
+      prev = day
+    } else {
+      prev = day
+    }
+  }
+  return runs.join(', ')
+}
+
 /**
  * Resolve a preset row's frozen window text from {@link PRESETS} — preset
  * rows store NO start/end (windows are code constants, `time-slots.ts`), so
- * the readback resolves them here. Complement (valley) presets match the
- * OUTSIDE of their peak windows — annotated so the readback never claims the
- * peak window as the active one. Unknown preset ids (legacy rows the
- * resolver warns about and skips) render without a window segment.
+ * the readback resolves them here. Windows carrying a day mask append it
+ * (`14:00-18:00 (Mon-Fri)`), so the GLM presets' weekday-only windows are
+ * visible. Complement (valley) presets match the OUTSIDE of their peak
+ * windows — annotated as `outside <windows>` where the appended day mask
+ * qualifies exactly which window is excluded (the glm-valley exclusion is
+ * the Mon–Fri window only, never the whole daily range). Unknown preset ids
+ * (legacy rows the resolver warns about and skips) render without a window
+ * segment.
  */
 function formatSlotWindow(preset: string): string {
   const definition = PRESETS[preset as PresetId]
   if (definition === undefined) return ''
-  const windows = definition.windows.map((window) => `${window.start}-${window.end}`).join(', ')
+  const windows = definition.windows
+    .map((window) => {
+      const dayMask = window.days !== undefined && window.days.length > 0 ? ` (${formatDayMask(window.days)})` : ''
+      return `${window.start}-${window.end}${dayMask}`
+    })
+    .join(', ')
   return definition.complement ? `outside ${windows}` : windows
 }
 
 /**
  * Render the `Time slots:` line: full count, then one row per slot —
  * preset rows as `{preset} (chain: n, window <resolved from PRESETS>)`,
- * custom rows as `custom {start}-{end} (chain: n)` (truncated at the cap
- * like the other list lines).
+ * custom rows as `custom {start}-{end} (chain: n)` — with a compact day
+ * mask appended when the row carries one (qc1 F-004). Truncated at the cap
+ * like the other list lines.
  */
 function formatConfigTimeSlots(
-  slots: readonly { preset?: string; start?: string; end?: string; chainCount: number }[],
+  slots: readonly { preset?: string; start?: string; end?: string; days?: readonly number[]; chainCount: number }[],
   t: FallbacksCommandCopy,
 ): string {
   const items = slots.slice(0, FALLBACKS_CONFIG_LIST_CAP).map((row) => {
@@ -515,7 +568,9 @@ function formatConfigTimeSlots(
     }
     // A malformed custom row (missing bounds — legacy source the resolver
     // skips) degrades to a bare custom marker instead of `undefined-undefined`.
-    const bounds = row.start !== undefined && row.end !== undefined ? `${row.start}-${row.end}` : ''
+    const bounds = row.start !== undefined && row.end !== undefined
+      ? `${row.start}-${row.end}${row.days !== undefined && row.days.length > 0 ? ` (${formatDayMask(row.days)})` : ''}`
+      : ''
     return t.configSlotCustomItem.replace('{start}-{end}', bounds).replace('{n}', String(row.chainCount))
   })
   const list = items.length === 0 ? '' : `${items.join(', ')}${slots.length > FALLBACKS_CONFIG_LIST_CAP ? ', …' : ''}`
@@ -635,11 +690,27 @@ function createFallbacksCommandHandler(
       // The one write action (AC-3): delegate to the controller (wired to
       // the seeds service) and surface the outcome — success for a reverted
       // role, error-kind for a not-found role (the message explains why).
-      return controller.revertSeed(parsed.arg).then((outcome) =>
-        outcome.ok
-          ? { kind: 'success', text: outcome.message }
-          : { kind: 'error', text: outcome.message },
-      )
+      // The controller returns reason CODES (qc1 F-003 / qc2 F-006 / qc3
+      // F-003); this handler localizes them against the registration
+      // locale, so an en-registered command never renders zh revert copy.
+      const roleId = parsed.arg
+      const t = FALLBACKS_COMMAND_LOCALES[locale]
+      return controller.revertSeed(roleId)
+        .then(
+          (outcome): CommandResult =>
+            outcome.ok
+              ? { kind: 'success', text: t.revertSeedOk.replace('{id}', roleId) }
+              : {
+                  kind: 'error',
+                  text: t.revertSeedFail
+                    .replace('{id}', roleId)
+                    .replace('{reason}', t.revertSeedReason[outcome.reason ?? 'not-seeded']),
+                },
+        )
+        // C-6 (qc2 F-007): a settings-write failure rejects the promise —
+        // map it to a structured error-kind outcome with the localized
+        // message instead of relying on the host's rejection settlement.
+        .catch((): CommandResult => ({ kind: 'error', text: t.revertSeedError.replace('{id}', roleId) }))
     }
     return { kind: 'success', text: fallbacksCommandText(controller.getSnapshot(invocation.agent), locale) }
   }
