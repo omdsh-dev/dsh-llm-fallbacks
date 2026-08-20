@@ -31,6 +31,14 @@ describe('parseSelector', () => {
     })
   })
 
+  it('parses a multi-slash model id (e.g. NVIDIA NIM, issue #74)', () => {
+    expect(parseSelector('nvidia/minimaxai/minimax-m3')).toEqual({
+      provider: 'nvidia',
+      model: 'minimaxai/minimax-m3',
+      raw: 'nvidia/minimaxai/minimax-m3',
+    })
+  })
+
   it('trims surrounding whitespace but keeps the canonical raw string', () => {
     expect(parseSelector('  openai/gpt-4o  ')).toEqual({
       provider: 'openai',
@@ -69,9 +77,12 @@ describe('parseSelector', () => {
     }
   })
 
-  it('throws SelectorError on extra separators', () => {
-    expect(() => parseSelector('provider/model/extra')).toThrow(SelectorError)
-    expect(() => parseSelector('provider/*/x')).toThrow(SelectorError)
+  it('throws SelectorError when the model segment contains a wildcard', () => {
+    // `provider/*` is the only legal wildcard form; `*` inside a model id
+    // (e.g. after a slash, or embedded) would blur the wildcard grammar.
+    for (const bad of ['provider/*/x', 'openai/gpt*', 'openai/*x']) {
+      expect(() => parseSelector(bad), `selector ${JSON.stringify(bad)}`).toThrow(SelectorError)
+    }
   })
 
   it('exposes a catchable error type for the config-warning path', () => {
@@ -93,6 +104,10 @@ describe('selectorKey', () => {
 
   it('builds the wildcard key when the model is missing', () => {
     expect(selectorKey('openai')).toBe('openai/*')
+  })
+
+  it('builds the canonical key for a multi-slash model id', () => {
+    expect(selectorKey('nvidia', 'minimaxai/minimax-m3')).toBe('nvidia/minimaxai/minimax-m3')
   })
 })
 
