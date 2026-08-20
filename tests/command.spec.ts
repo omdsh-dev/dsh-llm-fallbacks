@@ -459,6 +459,27 @@ describe('fallbacksConfigText — composed-config readback', () => {
     expect(weekend).toContain('custom 10:00-14:00 (Sun, Sat) (chain: 1)')
   })
 
+  it('skips out-of-range day values — a hand-written days:[7] row never renders "undefined" (S-1)', () => {
+    // settings.yaml `days` are schema-permissive (z.array(z.number()), no
+    // range constraint) and the read path passes them verbatim — the render
+    // guard must keep the C-9 "never undefined in readback" invariant.
+    const mixed = fallbacksConfigText(
+      configSummary({ timeSlots: [{ start: '09:00', end: '12:00', days: [7, 1], chainCount: 1 }] }),
+      'en',
+    )
+    // In-range siblings still render; the out-of-range entry is skipped.
+    expect(mixed).toContain('custom 09:00-12:00 (Mon) (chain: 1)')
+    expect(mixed).not.toContain('undefined')
+    // All entries out of range → the mask segment is dropped entirely.
+    const allOut = fallbacksConfigText(
+      configSummary({ timeSlots: [{ start: '09:00', end: '12:00', days: [7], chainCount: 1 }] }),
+      'en',
+    )
+    expect(allOut).toContain('custom 09:00-12:00 (chain: 1)')
+    expect(allOut).not.toContain('undefined')
+    expect(allOut).not.toContain('()')
+  })
+
   it('degrades a malformed custom slot row (missing bounds) to a bare custom marker (C-9)', () => {
     // A legacy row the resolver warns about and skips must not render
     // `undefined-undefined` — the readback shows the bare custom marker.
@@ -996,6 +1017,42 @@ describe('apply() wiring — conditional commands child', () => {
     expect(text).toContain('预置: none')
     expect(text).toContain('编辑：')
     // Read-only: the config readback must not grow the session log.
+    expect(agent.session.events).toHaveLength(0)
+  })
+
+  it('/fallbacks config renders a hand-written days:[7] slot row without "undefined" (S-1)', async () => {
+    const registered: CommandDefinition[] = []
+    ctx.provide('commands', {
+      register: (def: CommandDefinition) => {
+        registered.push(def)
+        return () => {}
+      },
+    } as never)
+    // The schema is deliberately permissive (z.array(z.number()), no range
+    // constraint) and the read path passes `days` verbatim — a hand-written
+    // settings.yaml custom row with days:[7] composes and reaches the
+    // renderer, which must keep the C-9 invariant instead of indexing
+    // DAY_NAMES to `undefined`.
+    apply(ctx, cfg({
+      enabled: true,
+      enabled: true,
+      rootChain: ['other/gpt-4o'],
+      timeSlots: [{ kind: 'custom', start: '09:00', end: '12:00', days: [7], chain: ['other/gpt-4o'] }],
+    }))
+    await vi.waitFor(() => expect(registered).toHaveLength(1))
+
+    const { agent } = makeAgent('cmd-s1-days', { provider: 'mock', model: 'gpt-4o' })
+    const result = registered[0]!.handler({
+      commandId: 'x',
+      agent,
+      rawInput: ' config',
+      signal: new AbortController().signal,
+    } as unknown as CommandInvocation)
+    expect(result.kind).toBe('success')
+    const text = result.kind === 'success' ? (result.text ?? '') : ''
+    // The all-out-of-range mask drops its segment — a bare custom window.
+    expect(text).toContain('custom 09:00-12:00（chain: 1）')
+    expect(text).not.toContain('undefined')
     expect(agent.session.events).toHaveLength(0)
   })
 

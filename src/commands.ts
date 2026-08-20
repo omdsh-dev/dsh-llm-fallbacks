@@ -499,10 +499,18 @@ const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const
  * Compact day-mask text for a slot window (qc1 F-004): contiguous runs
  * collapse to a range (`[1,2,3,4,5]` → `Mon-Fri`), gaps stay comma-joined
  * (`[0,6]` → `Sun, Sat`). Empty/absent masks render `''` (every day).
+ * Out-of-range entries (settings.yaml `days` are schema-permissive
+ * `z.array(z.number())`, and the read path passes them verbatim) are
+ * skipped BEFORE the `DAY_NAMES` lookup — an all-out-of-range mask also
+ * renders `''`, so the caller drops the mask segment entirely (S-1: never
+ * `undefined` in the readback).
  */
 function formatDayMask(days: readonly number[]): string {
   if (days.length === 0) return ''
-  const sorted = [...days].sort((a, b) => a - b)
+  const sorted = days
+    .filter((day) => Number.isInteger(day) && day >= 0 && day <= 6)
+    .sort((a, b) => a - b)
+  if (sorted.length === 0) return ''
   const runs: string[] = []
   let runStart = sorted[0]!
   let prev = sorted[0]!
@@ -517,6 +525,16 @@ function formatDayMask(days: readonly number[]): string {
     }
   }
   return runs.join(', ')
+}
+
+/**
+ * The parenthesized mask segment for one slot window/row — ` (Mon-Fri)` or
+ * `''` when the mask is empty or every entry is out of range (S-1: a
+ * hand-written `days: [7]` renders the bare window, never ` ()`/`undefined`).
+ */
+function formatDayMaskSegment(days: readonly number[] | undefined): string {
+  const mask = formatDayMask(days ?? [])
+  return mask === '' ? '' : ` (${mask})`
 }
 
 /**
@@ -536,7 +554,7 @@ function formatSlotWindow(preset: string): string {
   if (definition === undefined) return ''
   const windows = definition.windows
     .map((window) => {
-      const dayMask = window.days !== undefined && window.days.length > 0 ? ` (${formatDayMask(window.days)})` : ''
+      const dayMask = formatDayMaskSegment(window.days)
       return `${window.start}-${window.end}${dayMask}`
     })
     .join(', ')
@@ -569,7 +587,7 @@ function formatConfigTimeSlots(
     // A malformed custom row (missing bounds — legacy source the resolver
     // skips) degrades to a bare custom marker instead of `undefined-undefined`.
     const bounds = row.start !== undefined && row.end !== undefined
-      ? `${row.start}-${row.end}${row.days !== undefined && row.days.length > 0 ? ` (${formatDayMask(row.days)})` : ''}`
+      ? `${row.start}-${row.end}${formatDayMaskSegment(row.days)}`
       : ''
     return t.configSlotCustomItem.replace('{start}-{end}', bounds).replace('{n}', String(row.chainCount))
   })
