@@ -77,6 +77,7 @@ import {
 } from './seeds.ts'
 import { presetRoles } from './presets.ts'
 import { installTuiClient } from './tui.ts'
+import { installTuiSettingsSection } from './tui-settings.ts'
 import {
   FALLBACKS_CHAIN_MODEL,
   FALLBACKS_PROVIDER,
@@ -982,6 +983,15 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   // commands child, BEFORE the tail settings preset child — so the tail
   // child's last-registered activation order is preserved.
   installTuiClient(ctx, { serviceOwned })
+
+  // dsh-tui settings write surface (plan fallbacks-tui-settings Task 1,
+  // AC-1/AC-2): register the `tuiSettingsSections` `fallbacks` section —
+  // the `/settings` editable form with full web-card parity. Same
+  // conditional inject child + first-fiber-only `serviceOwned` gate as the
+  // command-tree client; absent service = clean no-op. Registered here,
+  // right after installTuiClient and before the tail settings preset child
+  // (the tail child must stay last-registered — see below).
+  installTuiSettingsSection(ctx, { serviceOwned })
 
   // Bundled preset self-declaration (plan fallbacks-preset-roles T3, spec
   // §9.3 D9.3-a): a NEW conditional settings inject child, registered LAST
