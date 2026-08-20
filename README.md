@@ -57,18 +57,30 @@ pnpm repair:fallbacks-switch-logs -- --apply --backup     # mark legacy events i
 
 The script scans `~/.dsh/sessions` by default (override with `--root <dir>`), marks legacy `fallbacks/switch` events `ignorable: true` so the host read path accepts the session again, and keeps a `<file>.bak` per repaired log. `--apply` requires `--backup` and must run with dsh stopped. From 0.2.2 on, the plugin stops writing durable switch events, so no new sessions need repair.
 
+### Configuration surfaces
+
+The plugin's settings live in a shared `fallbacks:` namespace, editable from three surfaces:
+
+| Surface | What it is | Notes |
+|---|---|---|
+| **Web settings card** | Settings → Plugins → Fallbacks | Full GUI editor for the `fallbacks:` namespace; writes the shared settings document |
+| **`$DSH_HOME/settings.yaml`** | `fallbacks:` section in the dsh settings document | The shared source of truth — the same file the web card writes; readable and editable everywhere, including scripted setups |
+| **TUI `/settings`** | fallbacks section in the dsh-tui settings screen | dsh-tui ≥ v0.8.5; native fields for simple keys, JSON text fields for complex structures (see [dsh-tui profile (terminal)](#dsh-tui-profile-terminal)) |
+
+Pick the surface that matches your front end: web users get the card, terminal users get `/settings`, and the YAML file works everywhere. (`/fallbacks` and `/fallbacks config` are diagnostics — read-only views, not edit surfaces.)
+
 ### Minimal configuration
 
-Add a `fallbacks:` section to the dsh settings document (default `$DSH_HOME/settings.yaml`):
+Add a `fallbacks:` section to the shared settings document (`$DSH_HOME/settings.yaml` — see [Configuration surfaces](#configuration-surfaces)):
 
 ```yaml
 fallbacks:
-  enabled: true            # feature switch; defaults to false — set explicitly to enable
-  rootChain:               # all-day chain: LAST entry is Default model (official V4);
-    - anthropic/claude-3-5-sonnet          # leading entries = Default fallback chain (walked first)
-    - deepseek-official/deepseek-v4-flash  # last = Flash XOR Pro last-resort fallback
+  enabled: true            # feature switch — defaults to off (plugin is a no-op otherwise)
+  rootChain:               # all-day chain: leading entries = fallback walk, last = Default model (official V4)
+    - anthropic/claude-3-5-sonnet          # walked first
+    - deepseek-official/deepseek-v4-flash  # last resort (Flash or Pro)
   timeSlots:               # optional: rotate the effective root chain by wall-clock windows
-    - kind: preset         # frozen UTC+8 windows; only the model chain is editable (locks tz to Asia/Shanghai)
+    - kind: preset         # frozen UTC+8 window; only the chain is editable
       preset: liang-peak   # 09:00–12:00 and 14:00–18:00, every day
       chain:
         - anthropic/claude-3-5-sonnet
@@ -79,24 +91,36 @@ fallbacks:
       days: [1, 5]         # optional; omitted/empty = every day (0=Sunday…6=Saturday)
       chain:
         - openai/gpt-4o
-  roles:                   # block 2: declare role entities first, then let rules reference them
+  roles:                   # optional: declare role entities, then reference them from rules
     list:
-      - id: reviewer       # unique id (/^[a-z0-9-]{1,32}$/); "inherit" is reserved
+      - id: reviewer       # unique id; "inherit" is reserved
         persona: Code-review subagents
         chain:
           - openai/gpt-4o-mini
-        fallback: inherit-root   # default: role chain, then append rootChain
+        fallback: inherit-root   # role chain first, then the inherited rootChain
     rules:                 # subagent-only: rules never match root requests
-      - role: reviewer     # all subagents → reviewer role (own chain + inherited root)
+      - role: reviewer     # all subagents → the reviewer role
 ```
 
-No rule match (or a root request) → the built-in `inherit` → `rootChain`. `enabled` defaults to **off** — with no chains configured the plugin is a complete no-op. The all-day `rootChain` must END with exactly one official V4 model (`deepseek-official/deepseek-v4-flash` or `deepseek-official/deepseek-v4-pro`) — the settings card and gateway reject any other tail on save (a legacy non-official-tail chain warns at startup and keeps working as a fallback-only walk, but cannot be saved as-is). Full reference (role entities, fallback strategies, rules, selectors, preset roles, time-slot presets) → [docs/configuration.md](docs/configuration.md).
+Build the section up in four steps:
+
+**1. Enable the plugin.** `enabled: true` turns the fallback engine on. It defaults to **off** — with no chains configured the plugin is a complete no-op.
+
+**2. Set the all-day `rootChain`.** Leading entries are the fallback chain, walked first when a request fails; the **last** entry is the Default model.
+
+> **Conformance**: the last entry must be exactly one official V4 model — `deepseek-official/deepseek-v4-flash` XOR `deepseek-official/deepseek-v4-pro`. The settings card and gateway reject any other tail on save; a legacy non-official tail warns at startup and keeps working as a fallback-only walk, but cannot be saved as-is.
+
+**3. Add `timeSlots` (optional).** Rows rotate the effective root chain by wall-clock windows. Preset rows use frozen UTC+8 windows (only their chain is editable; while a preset row exists, `tz` locks to `Asia/Shanghai`); custom rows take `start`/`end` (may wrap midnight) and an optional `days` list. The first row whose window contains the current moment wins; no match → the all-day `rootChain`. Rotation is a routing seed — it applies on the next root request and consumes no cooldown (see [Time slots](#time-slots)).
+
+**4. Add `roles` (optional).** Declare role entities in `roles.list` (id, persona, chain, optional `fallback` policy), then map subagents to them with `roles.rules`. Rules never match root requests — with no rule match (or on a root request) the built-in `inherit` role applies and appends the `rootChain`.
+
+Full reference (role entities, fallback strategies, rules, selectors, preset roles, time-slot presets) → [docs/configuration.md](docs/configuration.md).
 
 > **Upgrade note (behavior change)**: an existing `fallbacks:` section **without an explicit `enabled` key** resolves to `false` after upgrading — add `enabled: true` to keep the plugin active.
 
 ### Verify
 
-Save and restart the session, then type `/fallbacks` — the read-only in-session diagnostics (origin, resolved role, chain, recent `fallbacks/switch` events, cooldown status). The plugin no longer writes durable `fallbacks/switch` session events (issue #52 — the apply()-time registration was proven ineffective), so new switches show up in the info logs, not in the recent-switch surfaces; sessions written by older plugin versions that contain `fallbacks/switch` events are repaired with `scripts/repair-fallbacks-switch-logs.ts`, which marks legacy events ignorable so those sessions load again (see the Features note below). In a dsh-tui profile, `/fallbacks config` reads back the composed configuration and `/settings` is the TUI edit surface — a **fallbacks** section with full web-card parity (see [dsh-tui profile (terminal)](#dsh-tui-profile-terminal)).
+Save the config and restart the session, then type `/fallbacks` — the read-only in-session diagnostics (origin, resolved role, chain, recent fallback switches, cooldown status). In a dsh-tui profile, `/fallbacks config` reads back the composed configuration; see [dsh-tui profile (terminal)](#dsh-tui-profile-terminal).
 
 ## Features
 
@@ -108,15 +132,17 @@ Save and restart the session, then type `/fallbacks` — the read-only in-sessio
 - **Cooldown and revert**: failed / switched-away models are not re-selected during cooldown; `revertPolicy: cooldown-expiry` returns to the primary model automatically.
 - **Visible behavior**: every switch is recorded in an info-level log line (from/to/role/reason) — no silent model switching. The plugin deliberately writes **no** durable `fallbacks/switch` session events (issue #52: the apply()-time event-type registration was proven ineffective, and a session containing the event refused to load after a dsh restart). Sessions written by older plugin versions that contain such events are repaired by `scripts/repair-fallbacks-switch-logs.ts`, which marks legacy events ignorable so affected sessions load again.
 - **Safety valves**: `maxSwitchesPerStep` caps switches per step and `alwaysModeRetryCap` caps always-mode retries — chain loops cannot amplify latency.
-- **No-config no-op**: `enabled` defaults to off; with no chains configured the plugin behaves exactly like not being installed.
+- **No-config no-op**: with no chains configured the plugin behaves exactly like not being installed (`enabled` is off by default — see [Minimal configuration](#minimal-configuration)).
 
 ## dsh-tui profile (terminal)
 
 In a dsh-tui profile the plugin has three operator surfaces, with a strict duty split:
 
-- **`/fallbacks`** — session diagnostics (origin, resolved role, effective chain, recent fallback switches, cooldown). Read-only.
-- **`/fallbacks config`** — composed-config readback (trigger codes, root chain, time slots, timezone, roles, role rules, cooldown, revert policy, safety valves, presets, role auto-match), plus the one action command **`/fallbacks config revert-seed <role-id>`**, which restores a seeded role's persona to its declared seed default (a web-card action the settings seam cannot express).
-- **`/settings`** — the host's edit screen. With **dsh-tui ≥ v0.8.5** (commit `c51661f` or later on `main`; the settings seam shipped in v0.8.0, the groups shape + validation in v0.8.5) the plugin registers a **fallbacks** section with **full parity to the web settings card**: booleans (`enabled`, `roleAutoMatch`), selects (`presets`, `revertPolicy`) and numbers (`cooldownMs`, `maxSwitchesPerStep`, `alwaysModeRetryCap`) use native field kinds; complex structures (`rootChain`, `timeSlots`, `roles.list`, `roles.rules`) are JSON text fields and `triggerCodes` a comma-separated text field. Invalid drafts (bad JSON, non-conforming chains, malformed time-slot rows) block the save — never corrupt the config. `enabled` defaults to **off**. On an older dsh-tui the section is absent and file editing remains the only TUI surface.
+- **`/fallbacks`** — what happened this session: origin, resolved role, effective chain, recent fallback switches, cooldown status. Read-only.
+- **`/fallbacks config`** — what is configured: composed-config readback (trigger codes, root chain, time slots, timezone, roles, role rules, cooldown, revert policy, safety valves, presets, role auto-match). Read-only apart from the one action command **`/fallbacks config revert-seed <role-id>`**, which restores a seeded role's persona to its declared seed default (a web-card action the settings seam cannot express).
+- **`/settings`** — the edit surface. The plugin registers a **fallbacks** section with full parity to the web settings card: booleans (`enabled`, `roleAutoMatch`) render as toggles, selects (`presets`, `revertPolicy`) as pickers, and numbers (`cooldownMs`, `maxSwitchesPerStep`, `alwaysModeRetryCap`) as numeric inputs; complex structures (`rootChain`, `timeSlots`, `roles.list`, `roles.rules`) are JSON text fields and `triggerCodes` a comma-separated text field. Invalid drafts (bad JSON, non-conforming chains, malformed time-slot rows) block the save — the section never corrupts the config.
+
+**Requirements**: the `/settings` fallbacks section needs **dsh-tui ≥ v0.8.5** (commit `c51661f` or later on `main`; the settings seam shipped in v0.8.0, the groups shape + validation in v0.8.5). On an older dsh-tui the section is absent, and file editing remains the only TUI edit surface.
 
 File editing still works everywhere: the shared `$DSH_HOME/settings.yaml` (`fallbacks:` section — the same file the web card writes) for global settings, or the profile patch `~/.dsh/profiles/dsh-tui/cordis.patch.yml` (`config:` overrides on the plugin row) for dsh-tui-specific values. A patch row **replaces** the targeted row's whole `config` — restate every field you want to keep (schema defaults fill the rest).
 
