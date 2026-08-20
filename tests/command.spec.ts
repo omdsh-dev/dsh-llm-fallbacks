@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import type { CommandDefinition, CommandInvocation } from '@deepseek-ai/dsh-commands'
 import { apply } from '../src/index.ts'
+import { FALLBACKS_SETTINGS_NAMESPACE } from '../src/gateway.ts'
 import { cfg, dispatchRequestError, makeAgent } from './support/harness.ts'
 import { MemorySettings } from './support/memory-settings.ts'
 import {
@@ -59,9 +60,18 @@ function configSummary(overrides: Partial<FallbacksConfigSummary> = {}): Fallbac
     enabled: true,
     triggerCodes: ['AUTH', 'QUOTA', 'RATE_LIMIT'],
     rootChain: ['anthropic/claude-3-5-sonnet', 'openai/*'],
+    timeSlots: [
+      { preset: 'liang-peak', chainCount: 2 },
+      { start: '09:00', end: '12:00', chainCount: 1 },
+    ],
+    tz: 'Asia/Shanghai',
     roles: [
       { id: 'coder', chainCount: 2 },
       { id: 'reviewer', chainCount: 1 },
+    ],
+    rules: [
+      { provider: 'deepseek', model: 'deepseek-chat', role: 'coder' },
+      { provider: 'anthropic', model: 'claude-3-5-sonnet', role: 'reviewer' },
     ],
     cooldownMs: 300_000,
     revertPolicy: 'cooldown-expiry',
@@ -212,18 +222,30 @@ describe('snapshot building helpers', () => {
 describe('parseFallbacksSubcommand — rawInput subcommand parsing', () => {
   it("maps trimmed 'config' to the config subcommand (separator whitespace included)", () => {
     // /fallbacks config → rawInput === ' config' (exact text after the name).
-    expect(parseFallbacksSubcommand(' config')).toBe('config')
-    expect(parseFallbacksSubcommand('config')).toBe('config')
-    expect(parseFallbacksSubcommand('  config  ')).toBe('config')
+    expect(parseFallbacksSubcommand(' config')).toEqual({ kind: 'config' })
+    expect(parseFallbacksSubcommand('config')).toEqual({ kind: 'config' })
+    expect(parseFallbacksSubcommand('  config  ')).toEqual({ kind: 'config' })
+  })
+
+  it("maps 'config revert-seed <id>' to the revert-seed subcommand with the role id", () => {
+    expect(parseFallbacksSubcommand(' config revert-seed coder')).toEqual({ kind: 'revert-seed', arg: 'coder' })
+    expect(parseFallbacksSubcommand('config revert-seed  coder ')).toEqual({ kind: 'revert-seed', arg: 'coder' })
+  })
+
+  it("treats 'config revert-seed' without an id as lenient bare input", () => {
+    expect(parseFallbacksSubcommand(' config revert-seed')).toEqual({ kind: '' })
+    expect(parseFallbacksSubcommand('config revert-seed   ')).toEqual({ kind: '' })
   })
 
   it("maps everything else — including empty input — to the bare snapshot (lenient, no error)", () => {
-    expect(parseFallbacksSubcommand('')).toBe('')
-    expect(parseFallbacksSubcommand('   ')).toBe('')
-    expect(parseFallbacksSubcommand(' xyz')).toBe('')
-    expect(parseFallbacksSubcommand('configx')).toBe('')
+    expect(parseFallbacksSubcommand('')).toEqual({ kind: '' })
+    expect(parseFallbacksSubcommand('   ')).toEqual({ kind: '' })
+    expect(parseFallbacksSubcommand(' xyz')).toEqual({ kind: '' })
+    expect(parseFallbacksSubcommand('configx')).toEqual({ kind: '' })
+    // Unknown subcommand under config stays lenient (bare snapshot), never errors.
+    expect(parseFallbacksSubcommand(' config other')).toEqual({ kind: '' })
     // Trim only — no case folding: the host lowercases the command name, not rawInput.
-    expect(parseFallbacksSubcommand('CONFIG')).toBe('')
+    expect(parseFallbacksSubcommand('CONFIG')).toEqual({ kind: '' })
   })
 })
 
@@ -398,6 +420,124 @@ describe('fallbacksConfigText — composed-config readback', () => {
     expect(fallbacksConfigText(configSummary({ triggerCodes: codes }), 'en')).toContain('Trigger codes: A, B, C, D, E, …')
   })
 
+  it('renders the time-slots summary: full count, preset rows resolve their frozen window from PRESETS, custom rows show start-end', () => {
+    const text = fallbacksConfigText(configSummary(), 'en')
+    expect(text).toContain(
+      'Time slots: 2 — liang-peak (chain: 2, window 09:00-12:00, 14:00-18:00), custom 09:00-12:00 (chain: 1)',
+    )
+    // The preset window comes from the frozen PRESETS constant (09:00-12:00 +
+    // 14:00-18:00 for liang-peak), never from a stored row field.
+    expect(text).not.toContain('window undefined')
+  })
+
+  it('renders day masks for weekday-masked preset windows and keeps complement wording accurate (C-8)', () => {
+    // glm-peak is Mon–Fri 14:00-18:00 (PRESETS window day mask) — the mask
+    // must be visible so operators can verify /settings edits.
+    const peak = fallbacksConfigText(configSummary({ timeSlots: [{ preset: 'glm-peak', chainCount: 2 }] }), 'en')
+    expect(peak).toContain('glm-peak (chain: 2, window 14:00-18:00 (Mon-Fri))')
+    // glm-valley is the complement of that weekday window — the exclusion is
+    // the Mon–Fri window only, never the whole daily range, so the day mask
+    // qualifies the "outside" wording (qc1 F-004).
+    const valley = fallbacksConfigText(configSummary({ timeSlots: [{ preset: 'glm-valley', chainCount: 2 }] }), 'en')
+    expect(valley).toContain('glm-valley (chain: 2, window outside 14:00-18:00 (Mon-Fri))')
+    // zh mirror for the same row.
+    const zh = fallbacksConfigText(configSummary({ timeSlots: [{ preset: 'glm-valley', chainCount: 2 }] }), 'zh')
+    expect(zh).toContain('glm-valley（chain: 2, window outside 14:00-18:00 (Mon-Fri)）')
+  })
+
+  it('renders a compact day mask on custom rows that carry one', () => {
+    const text = fallbacksConfigText(
+      configSummary({ timeSlots: [{ start: '09:00', end: '12:00', days: [1, 2, 3, 4, 5], chainCount: 1 }] }),
+      'en',
+    )
+    expect(text).toContain('custom 09:00-12:00 (Mon-Fri) (chain: 1)')
+    // Non-contiguous masks stay comma-joined and compact.
+    const weekend = fallbacksConfigText(
+      configSummary({ timeSlots: [{ start: '10:00', end: '14:00', days: [0, 6], chainCount: 1 }] }),
+      'en',
+    )
+    expect(weekend).toContain('custom 10:00-14:00 (Sun, Sat) (chain: 1)')
+  })
+
+  it('skips out-of-range day values — a hand-written days:[7] row never renders "undefined" (S-1)', () => {
+    // settings.yaml `days` are schema-permissive (z.array(z.number()), no
+    // range constraint) and the read path passes them verbatim — the render
+    // guard must keep the C-9 "never undefined in readback" invariant.
+    const mixed = fallbacksConfigText(
+      configSummary({ timeSlots: [{ start: '09:00', end: '12:00', days: [7, 1], chainCount: 1 }] }),
+      'en',
+    )
+    // In-range siblings still render; the out-of-range entry is skipped.
+    expect(mixed).toContain('custom 09:00-12:00 (Mon) (chain: 1)')
+    expect(mixed).not.toContain('undefined')
+    // All entries out of range → the mask segment is dropped entirely.
+    const allOut = fallbacksConfigText(
+      configSummary({ timeSlots: [{ start: '09:00', end: '12:00', days: [7], chainCount: 1 }] }),
+      'en',
+    )
+    expect(allOut).toContain('custom 09:00-12:00 (chain: 1)')
+    expect(allOut).not.toContain('undefined')
+    expect(allOut).not.toContain('()')
+  })
+
+  it('degrades a malformed custom slot row (missing bounds) to a bare custom marker (C-9)', () => {
+    // A legacy row the resolver warns about and skips must not render
+    // `undefined-undefined` — the readback shows the bare custom marker.
+    const text = fallbacksConfigText(configSummary({ timeSlots: [{ chainCount: 0 }] }), 'en')
+    expect(text).toContain('Time slots: 1 — custom  (chain: 0)')
+    expect(text).not.toContain('undefined')
+  })
+
+  it('renders unknown preset ids without a window segment (C-9)', () => {
+    // Legacy rows with an unknown preset id render the bare preset item —
+    // never a window placeholder or undefined.
+    const text = fallbacksConfigText(configSummary({ timeSlots: [{ preset: 'nope', chainCount: 1 }] }), 'en')
+    expect(text).toContain('nope (chain: 1)')
+    expect(text).not.toContain('window')
+    expect(text).not.toContain('undefined')
+  })
+
+  it('renders (empty) when no time slots are configured', () => {
+    expect(fallbacksConfigText(configSummary({ timeSlots: [] }), 'en')).toContain('Time slots: (empty)')
+  })
+
+  it('renders the timezone line', () => {
+    expect(fallbacksConfigText(configSummary(), 'en')).toContain('TZ: Asia/Shanghai')
+    expect(fallbacksConfigText(configSummary({ tz: 'UTC' }), 'en')).toContain('TZ: UTC')
+  })
+
+  it('renders the rules summary: full count, provider/model → role rows', () => {
+    const text = fallbacksConfigText(configSummary(), 'en')
+    expect(text).toContain('Rules: 2 — deepseek/deepseek-chat → coder, anthropic/claude-3-5-sonnet → reviewer')
+  })
+
+  it('renders (empty) when no role rules are configured', () => {
+    expect(fallbacksConfigText(configSummary({ rules: [] }), 'en')).toContain('Rules: (empty)')
+  })
+
+  it('renders omitted rule provider/model as wildcards', () => {
+    const rules = [
+      { provider: 'deepseek', model: '', role: 'coder' },
+      { provider: '', model: 'gpt-4o', role: 'reviewer' },
+    ]
+    expect(fallbacksConfigText(configSummary({ rules }), 'en')).toContain(
+      'Rules: 2 — deepseek/* → coder, */gpt-4o → reviewer',
+    )
+  })
+
+  it('truncates long time-slot and rule lists at the cap with an ellipsis (full count stays visible)', () => {
+    const timeSlots = Array.from({ length: 7 }, (_, i) => ({ start: '09:00', end: '12:00', chainCount: i }))
+    const slotsText = fallbacksConfigText(configSummary({ timeSlots }), 'en')
+    expect(slotsText).toContain(
+      'Time slots: 7 — custom 09:00-12:00 (chain: 0), custom 09:00-12:00 (chain: 1), custom 09:00-12:00 (chain: 2), custom 09:00-12:00 (chain: 3), custom 09:00-12:00 (chain: 4), …',
+    )
+    expect(slotsText).not.toContain('custom 09:00-12:00 (chain: 5)')
+    const rules = Array.from({ length: 7 }, (_, i) => ({ provider: 'p', model: `m${i}`, role: 'coder' }))
+    const rulesText = fallbacksConfigText(configSummary({ rules }), 'en')
+    expect(rulesText).toContain('Rules: 7 — p/m0 → coder, p/m1 → coder, p/m2 → coder, p/m3 → coder, p/m4 → coder, …')
+    expect(rulesText).not.toContain('p/m5 → coder')
+  })
+
   it('renders cooldown, revert policy, caps, presets, and role auto-match', () => {
     expect(fallbacksConfigText(configSummary(), 'en')).toContain('Cooldown: 300000 ms')
     expect(fallbacksConfigText(configSummary(), 'en')).toContain('Revert: cooldown-expiry')
@@ -409,12 +549,12 @@ describe('fallbacksConfigText — composed-config readback', () => {
     expect(fallbacksConfigText(configSummary({ roleAutoMatch: false }), 'en')).toContain('Auto-match: disabled')
   })
 
-  it('renders the file-only edit hints after a blank line', () => {
+  it('renders the edit hints after a blank line — /settings is the TUI edit surface, file editing still documented', () => {
     const text = fallbacksConfigText(configSummary(), 'en')
     expect(text).toContain(
-      '\n\nEdit: ~/.dsh/profiles/<profile>/cordis.patch.yml (plugin row) or $DSH_HOME/settings.yaml (fallbacks: section)',
+      '\n\nEdit: /settings (TUI settings screen) or ~/.dsh/profiles/<profile>/cordis.patch.yml (plugin row) / $DSH_HOME/settings.yaml (fallbacks: section)',
     )
-    expect(text).toContain('TUI cannot change config — edit files only')
+    expect(text).toContain('TUI edits config via /settings; file editing still works')
   })
 })
 
@@ -426,14 +566,17 @@ describe('fallbacksConfigText — zh/en copy smoke', () => {
     expect(text.split('\n')[0]).toBe('Fallbacks 配置: 已启用')
     expect(text).toContain('触发码: AUTH, QUOTA, RATE_LIMIT')
     expect(text).toContain('根链: anthropic/claude-3-5-sonnet, openai/*')
+    expect(text).toContain('分时槽: 2 — liang-peak（chain: 2, window 09:00-12:00, 14:00-18:00）, custom 09:00-12:00（chain: 1）')
+    expect(text).toContain('时区: Asia/Shanghai')
     expect(text).toContain('角色: 2 — coder（chain: 2）, reviewer（chain: 1）')
+    expect(text).toContain('角色规则: 2 — deepseek/deepseek-chat → coder, anthropic/claude-3-5-sonnet → reviewer')
     expect(text).toContain('冷却: 300000 ms')
     expect(text).toContain('回主策略: cooldown-expiry')
     expect(text).toContain('单步最大切换: 8')
     expect(text).toContain('always 上限: 5')
     expect(text).toContain('预置: bundled')
-    expect(text).toContain('编辑：~/.dsh/profiles/<profile>/cordis.patch.yml（插件行）或 $DSH_HOME/settings.yaml（fallbacks: 分节）')
-    expect(text).toContain('TUI 无法修改配置——只能编辑文件')
+    expect(text).toContain('编辑：/settings（TUI 设置界面）或 ~/.dsh/profiles/<profile>/cordis.patch.yml（插件行）/ $DSH_HOME/settings.yaml（fallbacks: 分节）')
+    expect(text).toContain('TUI 通过 /settings 修改配置；文件编辑仍然可用')
   })
 
   it('renders the en dictionary end to end', () => {
@@ -441,35 +584,46 @@ describe('fallbacksConfigText — zh/en copy smoke', () => {
     expect(text.split('\n')[0]).toBe('Fallbacks config: enabled')
     expect(text).toContain('Trigger codes: AUTH, QUOTA, RATE_LIMIT')
     expect(text).toContain('Root chain: anthropic/claude-3-5-sonnet, openai/*')
+    expect(text).toContain('Time slots: 2 — liang-peak (chain: 2, window 09:00-12:00, 14:00-18:00), custom 09:00-12:00 (chain: 1)')
+    expect(text).toContain('TZ: Asia/Shanghai')
     expect(text).toContain('Roles: 2 — coder (chain: 2), reviewer (chain: 1)')
+    expect(text).toContain('Rules: 2 — deepseek/deepseek-chat → coder, anthropic/claude-3-5-sonnet → reviewer')
     expect(text).toContain('Cooldown: 300000 ms')
     expect(text).toContain('Revert: cooldown-expiry')
     expect(text).toContain('Max switches/step: 8')
     expect(text).toContain('Always-mode cap: 5')
     expect(text).toContain('Presets: bundled')
-    expect(text).toContain('Edit: ~/.dsh/profiles/<profile>/cordis.patch.yml (plugin row) or $DSH_HOME/settings.yaml (fallbacks: section)')
-    expect(text).toContain('TUI cannot change config — edit files only')
+    expect(text).toContain('Edit: /settings (TUI settings screen) or ~/.dsh/profiles/<profile>/cordis.patch.yml (plugin row) / $DSH_HOME/settings.yaml (fallbacks: section)')
+    expect(text).toContain('TUI edits config via /settings; file editing still works')
   })
 
   it('defaults to zh when no locale is given', () => {
     expect(fallbacksConfigText(populated)).toBe(fallbacksConfigText(populated, 'zh'))
   })
 
-  it('USAGE lists the config subcommand, reusing the usageConfig description (single copy source)', () => {
-    expect(FALLBACKS_COMMAND_LOCALES.zh.usage).toBe('  /fallbacks config   查看组合后的 fallbacks 配置（设置回读）')
-    expect(FALLBACKS_COMMAND_LOCALES.en.usage).toBe(
-      '  /fallbacks config   show the composed fallbacks config (settings readback)',
+  it('USAGE lists the config and revert-seed subcommands, reusing the shared descriptions (single copy source)', () => {
+    expect(FALLBACKS_COMMAND_LOCALES.zh.usage).toBe(
+      '  /fallbacks config   查看组合后的 fallbacks 配置（设置回读）\n  /fallbacks config revert-seed <role-id>   将角色的 persona 还原为已声明的 Seed 默认',
     )
-    // The USAGE line composes the shared description — never duplicated copy.
+    expect(FALLBACKS_COMMAND_LOCALES.en.usage).toBe(
+      "  /fallbacks config   show the composed fallbacks config (settings readback)\n  /fallbacks config revert-seed <role-id>   revert a role's persona to its declared seed default",
+    )
+    // The USAGE lines compose the shared descriptions — never duplicated copy.
     expect(FALLBACKS_COMMAND_LOCALES.zh.usage).toContain(FALLBACKS_COMMAND_LOCALES.zh.usageConfig)
     expect(FALLBACKS_COMMAND_LOCALES.en.usage).toContain(FALLBACKS_COMMAND_LOCALES.en.usageConfig)
+    expect(FALLBACKS_COMMAND_LOCALES.zh.usage).toContain(FALLBACKS_COMMAND_LOCALES.zh.usageRevertSeed)
+    expect(FALLBACKS_COMMAND_LOCALES.en.usage).toContain(FALLBACKS_COMMAND_LOCALES.en.usageRevertSeed)
   })
 })
 
 describe('handler — factory-bound, read-only', () => {
   it('renders the controller snapshot as a success result for the invoking agent', () => {
     const agent = { id: 'a1', session: { events: [] } }
-    const controller: FallbacksCommandController = { getSnapshot: vi.fn(() => snapshot()), getConfig: vi.fn(() => configSummary()) }
+    const controller: FallbacksCommandController = {
+      getSnapshot: vi.fn(() => snapshot()),
+      getConfig: vi.fn(() => configSummary()),
+      revertSeed: async () => ({ ok: true }),
+    }
     const { definition } = captureRegistration(controller, 'en')
     const result = definition.handler({
       commandId: 'x',
@@ -482,7 +636,11 @@ describe('handler — factory-bound, read-only', () => {
   })
 
   it('treats non-config rawInput leniently — falls back to the snapshot (no USAGE prepend)', () => {
-    const controller: FallbacksCommandController = { getSnapshot: () => snapshot(), getConfig: () => configSummary() }
+    const controller: FallbacksCommandController = {
+      getSnapshot: () => snapshot(),
+      getConfig: () => configSummary(),
+      revertSeed: async () => ({ ok: true }),
+    }
     const { definition } = captureRegistration(controller)
     const result = definition.handler({
       commandId: 'x',
@@ -501,6 +659,7 @@ describe('handler — factory-bound, read-only', () => {
     const controller: FallbacksCommandController = {
       getSnapshot: vi.fn(() => snapshot()),
       getConfig: vi.fn(() => configSummary()),
+      revertSeed: async () => ({ ok: true }),
     }
     const { definition } = captureRegistration(controller, 'en')
     const result = definition.handler({
@@ -519,6 +678,7 @@ describe('handler — factory-bound, read-only', () => {
     const controller: FallbacksCommandController = {
       getSnapshot: vi.fn(() => snapshot()),
       getConfig: () => configSummary(),
+      revertSeed: async () => ({ ok: true }),
     }
     const { definition } = captureRegistration(controller)
     const result = definition.handler({
@@ -533,7 +693,10 @@ describe('handler — factory-bound, read-only', () => {
   })
 
   it('is bound to the locale passed at registration', () => {
-    const { definition } = captureRegistration({ getSnapshot: () => snapshot(), getConfig: () => configSummary() }, 'en')
+    const { definition } = captureRegistration(
+      { getSnapshot: () => snapshot(), getConfig: () => configSummary(), revertSeed: async () => ({ ok: true }) },
+      'en',
+    )
     const result = definition.handler({
       commandId: 'x',
       agent: { id: 'a1', session: { events: [] } },
@@ -541,6 +704,115 @@ describe('handler — factory-bound, read-only', () => {
       signal: new AbortController().signal,
     } as unknown as CommandInvocation)
     expect((result as { text?: string }).text).toContain('Session origin')
+  })
+
+  it('routes config revert-seed <id> to the controller revert and surfaces a success outcome', async () => {
+    const controller: FallbacksCommandController = {
+      getSnapshot: vi.fn(() => snapshot()),
+      getConfig: vi.fn(() => configSummary()),
+      revertSeed: vi.fn(async (roleId: string) => ({ ok: true })),
+    }
+    const { definition } = captureRegistration(controller, 'en')
+    const result = await definition.handler({
+      commandId: 'x',
+      agent: { id: 'a1', session: { events: [] } },
+      rawInput: ' config revert-seed coder',
+      signal: new AbortController().signal,
+    } as unknown as CommandInvocation)
+    expect(result).toEqual({ kind: 'success', text: 'role coder reverted to its seed default' })
+    expect(controller.revertSeed).toHaveBeenCalledWith('coder')
+    // The revert path never renders the snapshot or the config readback.
+    expect(controller.getSnapshot).not.toHaveBeenCalled()
+    expect(controller.getConfig).not.toHaveBeenCalled()
+  })
+
+  it('surfaces a not-found revert as an error-kind result, localizing the reason code per registration locale (C-5)', async () => {
+    const controller: FallbacksCommandController = {
+      getSnapshot: vi.fn(() => snapshot()),
+      getConfig: vi.fn(() => configSummary()),
+      revertSeed: vi.fn(async () => ({ ok: false, reason: 'not-seeded' })),
+    }
+    // en registration → en copy; the controller only returned the code.
+    const en = captureRegistration(controller, 'en')
+    const enResult = await en.definition.handler({
+      commandId: 'x',
+      agent: { id: 'a1', session: { events: [] } },
+      rawInput: ' config revert-seed ghost',
+      signal: new AbortController().signal,
+    } as unknown as CommandInvocation)
+    expect(enResult).toEqual({ kind: 'error', text: 'role ghost not reverted (not a seeded role)' })
+    expect(controller.revertSeed).toHaveBeenCalledWith('ghost')
+
+    // zh (default) registration → zh copy for the same reason code.
+    const zh = captureRegistration(controller)
+    const zhResult = await zh.definition.handler({
+      commandId: 'x',
+      agent: { id: 'a1', session: { events: [] } },
+      rawInput: ' config revert-seed ghost',
+      signal: new AbortController().signal,
+    } as unknown as CommandInvocation)
+    expect(zhResult).toEqual({ kind: 'error', text: '角色 ghost 未还原（未声明种子）' })
+  })
+
+  it('localizes the row-absent reason code per registration locale (C-5)', async () => {
+    const controller: FallbacksCommandController = {
+      getSnapshot: vi.fn(() => snapshot()),
+      getConfig: vi.fn(() => configSummary()),
+      revertSeed: vi.fn(async () => ({ ok: false, reason: 'row-absent' })),
+    }
+    const { definition } = captureRegistration(controller, 'en')
+    const result = await definition.handler({
+      commandId: 'x',
+      agent: { id: 'a1', session: { events: [] } },
+      rawInput: ' config revert-seed ghost',
+      signal: new AbortController().signal,
+    } as unknown as CommandInvocation)
+    expect(result).toEqual({ kind: 'error', text: 'role ghost not reverted (role row absent)' })
+  })
+
+  it('maps a settings-write failure (rejected revertSeed) to a structured error outcome (C-6)', async () => {
+    // qc2 F-007: seeds.revert propagates a failed settings write by
+    // throwing; the handler must surface a localized error-kind result —
+    // never an unhandled rejection, never raw technical text.
+    const controller: FallbacksCommandController = {
+      getSnapshot: vi.fn(() => snapshot()),
+      getConfig: vi.fn(() => configSummary()),
+      revertSeed: vi.fn(async () => {
+        throw new Error('llm-fallbacks: seeds: settings service is unavailable')
+      }),
+    }
+    const { definition } = captureRegistration(controller, 'en')
+    const result = await definition.handler({
+      commandId: 'x',
+      agent: { id: 'a1', session: { events: [] } },
+      rawInput: ' config revert-seed coder',
+      signal: new AbortController().signal,
+    } as unknown as CommandInvocation)
+    expect(result).toEqual({ kind: 'error', text: 'role coder revert failed (settings write failed)' })
+    expect(controller.revertSeed).toHaveBeenCalledWith('coder')
+  })
+
+  it('keeps bare and config results synchronous — only revert-seed returns a promise', () => {
+    const controller: FallbacksCommandController = {
+      getSnapshot: () => snapshot(),
+      getConfig: () => configSummary(),
+      revertSeed: async () => ({ ok: true }),
+    }
+    const { definition } = captureRegistration(controller)
+    const bare = definition.handler({
+      commandId: 'x',
+      agent: { id: 'a1', session: { events: [] } },
+      rawInput: '',
+      signal: new AbortController().signal,
+    } as unknown as CommandInvocation)
+    expect(bare).toEqual({ kind: 'success', text: fallbacksCommandText(snapshot()) })
+    const config = definition.handler({
+      commandId: 'x',
+      agent: { id: 'a1', session: { events: [] } },
+      rawInput: ' config',
+      signal: new AbortController().signal,
+    } as unknown as CommandInvocation)
+    expect(config).toEqual({ kind: 'success', text: fallbacksConfigText(configSummary()) })
   })
 })
 
@@ -748,6 +1020,42 @@ describe('apply() wiring — conditional commands child', () => {
     expect(agent.session.events).toHaveLength(0)
   })
 
+  it('/fallbacks config renders a hand-written days:[7] slot row without "undefined" (S-1)', async () => {
+    const registered: CommandDefinition[] = []
+    ctx.provide('commands', {
+      register: (def: CommandDefinition) => {
+        registered.push(def)
+        return () => {}
+      },
+    } as never)
+    // The schema is deliberately permissive (z.array(z.number()), no range
+    // constraint) and the read path passes `days` verbatim — a hand-written
+    // settings.yaml custom row with days:[7] composes and reaches the
+    // renderer, which must keep the C-9 invariant instead of indexing
+    // DAY_NAMES to `undefined`.
+    apply(ctx, cfg({
+      enabled: true,
+      enabled: true,
+      rootChain: ['other/gpt-4o'],
+      timeSlots: [{ kind: 'custom', start: '09:00', end: '12:00', days: [7], chain: ['other/gpt-4o'] }],
+    }))
+    await vi.waitFor(() => expect(registered).toHaveLength(1))
+
+    const { agent } = makeAgent('cmd-s1-days', { provider: 'mock', model: 'gpt-4o' })
+    const result = registered[0]!.handler({
+      commandId: 'x',
+      agent,
+      rawInput: ' config',
+      signal: new AbortController().signal,
+    } as unknown as CommandInvocation)
+    expect(result.kind).toBe('success')
+    const text = result.kind === 'success' ? (result.text ?? '') : ''
+    // The all-out-of-range mask drops its segment — a bare custom window.
+    expect(text).toContain('custom 09:00-12:00（chain: 1）')
+    expect(text).not.toContain('undefined')
+    expect(agent.session.events).toHaveLength(0)
+  })
+
   it('top-level inject list is unchanged (commands stays conditional)', async () => {
     // The conditional child must not pollute the top-level inject: apply()
     // without a composed commands service completes without registering or
@@ -764,5 +1072,116 @@ describe('apply() wiring — conditional commands child', () => {
     } as never)
     await vi.waitFor(() => expect(registered).toHaveLength(1))
     expect(registered[0]?.name).toBe('fallbacks')
+  })
+
+  it('/fallbacks config revert-seed reverts a seeded persona through the service (seeds.revert) and reports the outcome', async () => {
+    const registered: CommandDefinition[] = []
+    ctx.provide('commands', {
+      register: (def: CommandDefinition) => {
+        registered.push(def)
+        return () => {}
+      },
+    } as never)
+    apply(ctx, cfg({ rootChain: ['other/gpt-4o'] }))
+    await vi.waitFor(() => expect(registered).toHaveLength(1))
+
+    // Seed a role through the service — the controller's revertSeed uses the
+    // SAME seeds.revert(roleId, seedsIo) single point of truth.
+    const fb = ctx.get('llm-fallbacks')!
+    await vi.waitFor(async () => {
+      await expect(fb.declareSeeds([{ id: 'coder', persona: 'seed default' }])).resolves.toEqual({
+        applied: ['coder'],
+        skipped: [],
+        conflicts: [],
+      })
+    })
+
+    // Operator override first, so the revert has a delta to restore.
+    await ctx.settings.update(FALLBACKS_SETTINGS_NAMESPACE, {
+      roles: { list: [{ id: 'coder', persona: 'operator edit' }], rules: [] },
+    })
+
+    const result = await registered[0]!.handler({
+      commandId: 'x',
+      agent: { id: 'a1', session: { events: [] } },
+      rawInput: ' config revert-seed coder',
+      signal: new AbortController().signal,
+    } as unknown as CommandInvocation)
+    expect(result).toEqual({ kind: 'success', text: '角色 coder 已还原为 Seed 默认' })
+
+    // The user layer now carries the restored seed default persona (the
+    // revert wrote through the same settings channel as declare). The row
+    // may carry schema-resolved defaults (chain/fallback/permissions) from
+    // the operator-override update above — the persona is the delta.
+    const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)!
+    expect(descriptor.user).toMatchObject({
+      roles: { list: [{ id: 'coder', persona: 'seed default' }], rules: [] },
+    })
+  })
+
+  it('/fallbacks config revert-seed reports a not-seeded id as an error outcome without writing', async () => {
+    const registered: CommandDefinition[] = []
+    ctx.provide('commands', {
+      register: (def: CommandDefinition) => {
+        registered.push(def)
+        return () => {}
+      },
+    } as never)
+    apply(ctx, cfg({ rootChain: ['other/gpt-4o'] }))
+    await vi.waitFor(() => expect(registered).toHaveLength(1))
+
+    const result = await registered[0]!.handler({
+      commandId: 'x',
+      agent: { id: 'a1', session: { events: [] } },
+      rawInput: ' config revert-seed ghost',
+      signal: new AbortController().signal,
+    } as unknown as CommandInvocation)
+    expect(result).toEqual({ kind: 'error', text: '角色 ghost 未还原（未声明种子）' })
+
+    // No write happened for an id that was never seeded — the namespace is
+    // registered by the plugin, but its user layer stays empty.
+    const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)
+    expect(descriptor?.user).toBeUndefined()
+  })
+
+  it('/fallbacks config revert-seed reports a row-absent id (seeded but row deleted) as an error outcome (C-9)', async () => {
+    const registered: CommandDefinition[] = []
+    ctx.provide('commands', {
+      register: (def: CommandDefinition) => {
+        registered.push(def)
+        return () => {}
+      },
+    } as never)
+    apply(ctx, cfg({ rootChain: ['other/gpt-4o'] }))
+    await vi.waitFor(() => expect(registered).toHaveLength(1))
+
+    // Seed the role first — the registry knows `coder`, so this is NOT the
+    // not-seeded branch.
+    const fb = ctx.get('llm-fallbacks')!
+    await vi.waitFor(async () => {
+      await expect(fb.declareSeeds([{ id: 'coder', persona: 'seed default' }])).resolves.toEqual({
+        applied: ['coder'],
+        skipped: [],
+        conflicts: [],
+      })
+    })
+
+    // Delete the row from the operator config — the seed stays declared, so
+    // the revert hits the `row-absent` reason (seeds.ts revert), never
+    // `not-seeded`.
+    await ctx.settings.update(FALLBACKS_SETTINGS_NAMESPACE, { roles: { list: [], rules: [] } })
+
+    const result = await registered[0]!.handler({
+      commandId: 'x',
+      agent: { id: 'a1', session: { events: [] } },
+      rawInput: ' config revert-seed coder',
+      signal: new AbortController().signal,
+    } as unknown as CommandInvocation)
+    expect(result).toEqual({ kind: 'error', text: '角色 coder 未还原（角色行不存在）' })
+
+    // The empty list was NOT written again by the failed revert — the user
+    // layer still holds the row deletion the test staged (no phantom write).
+    const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)
+    expect(descriptor?.user).toMatchObject({ roles: { list: [] } })
   })
 })

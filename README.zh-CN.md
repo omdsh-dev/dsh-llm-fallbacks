@@ -11,7 +11,7 @@
 
 dsh（DeepSeek Harness）的自动模型降级插件：当 root agent 或 subagent 的模型请求持续失败（重试耗尽、权限、配额超限、限流 429）时，按角色/模型 fallback 链自动切换 provider/model，当前 step/turn 在目标模型上继续完成——任务不因模型问题中断。
 
-两个 dsh 前端均可用：**web** profile（设置 → 插件配置 → Fallbacks 卡片）与 **dsh-tui** 终端 profile（`/fallbacks` + `/fallbacks config`）。
+两个 dsh 前端均可用：**web** profile（设置 → 插件配置 → Fallbacks 卡片）与 **dsh-tui** 终端 profile（`/fallbacks` 会话诊断、`/fallbacks config` 回读，以及 `/settings` 中的 fallbacks 区块用于编辑）。
 
 ## 峰谷无忧
 
@@ -96,7 +96,7 @@ fallbacks:
 
 ### 验证
 
-保存并重启会话后，键入 `/fallbacks`——只读的会话内诊断（来源、解析角色、链、最近的 `fallbacks/switch` 事件、冷却状态）。插件**不再写入** durable `fallbacks/switch` 会话事件（issue #52——apply() 时的注册被证伪无效），因此新切换只出现在 info 日志中，不再出现在 recent-switch 展示面；由旧版插件写入、含 `fallbacks/switch` 事件的会话，可用 `scripts/repair-fallbacks-switch-logs.ts` 修复——脚本把旧事件标记为 ignorable，会话即可重新加载（见下方「能力一览」说明）。在 dsh-tui profile 中，`/fallbacks config` 额外回读组合配置（TUI 无设置页——配置仅文件，见 [docs/configuration.md](docs/configuration.md)）。
+保存并重启会话后，键入 `/fallbacks`——只读的会话内诊断（来源、解析角色、链、最近的 `fallbacks/switch` 事件、冷却状态）。插件**不再写入** durable `fallbacks/switch` 会话事件（issue #52——apply() 时的注册被证伪无效），因此新切换只出现在 info 日志中，不再出现在 recent-switch 展示面；由旧版插件写入、含 `fallbacks/switch` 事件的会话，可用 `scripts/repair-fallbacks-switch-logs.ts` 修复——脚本把旧事件标记为 ignorable，会话即可重新加载（见下方「能力一览」说明）。在 dsh-tui profile 中，`/fallbacks config` 回读组合配置，`/settings` 是 TUI 编辑界面——**fallbacks** 区块与 Web 设置卡完全一致（见 [dsh-tui profile（终端）](#dsh-tui-profile终端) 一节）。
 
 ## 能力一览
 
@@ -110,9 +110,19 @@ fallbacks:
 - **安全阀**：`maxSwitchesPerStep` 限制每 step 切换次数、`alwaysModeRetryCap` 限制 always 模式重试——链循环不会放大延迟。
 - **无配置回归（no-op）**：`enabled` 默认关闭；未配置任何链时行为与未安装插件完全一致。
 
+## dsh-tui profile（终端）
+
+在 dsh-tui profile 中，插件有三个操作面——职责严格区分：
+
+- **`/fallbacks`** —— 会话内诊断（来源、解析角色、生效链、最近降级切换、冷却状态）。只读。
+- **`/fallbacks config`** —— 组合配置回读（触发码、根链、分时槽、时区、角色、角色规则、冷却、回主策略、安全阀、预置、角色自动匹配），外加唯一的动作命令 **`/fallbacks config revert-seed <role-id>`**——把某个 seed 角色的 persona 还原为已声明的默认（设置 seam 无法表达 Web 卡的这类动作能力）。
+- **`/settings`** —— 宿主的编辑界面。**dsh-tui ≥ v0.8.5**（`main` 上 commit `c51661f` 及以后；settings seam 于 v0.8.0 引入，groups 结构与校验于 v0.8.5 引入）时，插件注册 **fallbacks** 区块，与 **Web 设置卡完全一致**：布尔（`enabled`、`roleAutoMatch`）、下拉（`presets`、`revertPolicy`）、数值（`cooldownMs`、`maxSwitchesPerStep`、`alwaysModeRetryCap`）使用原生字段类型；复杂结构（`rootChain`、`timeSlots`、`roles.list`、`roles.rules`）为 JSON 文本字段，`triggerCodes` 为逗号分隔文本字段。非法草稿（JSON 解析失败、链尾不合规、分时行畸形）会阻止保存——绝不写入损坏配置。`enabled` 默认**关闭**。更旧的 dsh-tui 没有该区块，文件编辑仍是 TUI 唯一编辑面。
+
+文件编辑在任意情况下仍然可用：全局设置写共享的 `$DSH_HOME/settings.yaml`（`fallbacks:` 分节——与 Web 卡写的是同一个文件）；dsh-tui 专属覆盖写 profile patch `~/.dsh/profiles/dsh-tui/cordis.patch.yml`（插件行上的 `config:` 覆盖）。注意：patch 行会**整体替换**目标行的整个 `config`——想保留的字段都要写全（schema 默认值补齐其余）。
+
 ## 模型选择器中的 FallbacksChain
 
-当 `enabled: true` 时，插件注册一个虚拟 provider **FallbacksChain**，目录中只有一行：**Auto**。web profile 与 dsh-tui 都能看到这一行：两者共享同一个 adapter catalog，无需 TUI 设置页或宿主补丁。该行只要插件启用就可见——遗留多模型或空的 all-day 链**不会**隐藏它（只是覆盖不会生效）。
+当 `enabled: true` 时，插件注册一个虚拟 provider **FallbacksChain**，目录中只有一行：**Auto**。web profile 与 dsh-tui 都能看到这一行：两者共享同一个 adapter catalog，无需设置页接线或宿主补丁（它与 `/settings` 的 fallbacks 区块相互独立——区块编辑的是配置，不是选择器目录）。该行只要插件启用就可见——遗留多模型或空的 all-day 链**不会**隐藏它（只是覆盖不会生效）。
 
 选择 **FallbacksChain / Auto** = 把配置的链作为 root **主模型**：root 请求路由到请求时刻生效链的第一个精确 `provider/model`，失败后由降级引擎从该链头照常沿链切换。选择任何真实目录模型则保持 v0.2.2 的 fallback-only 行为——会话模型为主，链只在它失败后介入。
 

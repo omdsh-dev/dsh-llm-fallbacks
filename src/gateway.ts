@@ -387,8 +387,15 @@ function normalizeRoles(value: unknown): unknown {
  * keys, `timeSlots` row shapes (unknown preset ids, duplicate presets, preset
  * rows carrying windows, non-`HH:mm` custom bounds, out-of-range days, empty
  * chains), and the all-day `rootChain` head conformance.
+ *
+ * Exported (plan fallbacks-tui-settings Task 1): the TUI settings section's
+ * JSON-field `parse` mirrors the gateway save rules through this single
+ * validator (it internally routes `timeSlots` → {@link validateTimeSlotsPatch}),
+ * so an invalid draft blocks the TUI save exactly like a rejected gateway
+ * patch. No shared-module extraction — the two-keyword diff is the minimal
+ * change.
  */
-function validateConfigPatch(patch: unknown): void {
+export function validateConfigPatch(patch: unknown): void {
   if (patch === null || typeof patch !== 'object' || Array.isArray(patch)) {
     throw new TypeError('dsh-llm-fallbacks: configuration patch must be a plain object')
   }
