@@ -1,8 +1,10 @@
 /**
  * Selector parsing for `fallbacks` chains (spec §4, plan Task 2).
  *
- * Grammar: `provider/model` (exact) and `provider/*` (wildcard — the parsed
- * `model` is `undefined`). Illegal selectors throw {@link SelectorError} —
+ * Grammar: `provider/model` (exact — the model segment may itself contain
+ * `/`, e.g. NVIDIA NIM `nvidia/minimaxai/minimax-m3`) and `provider/*`
+ * (wildcard — the parsed `model` is `undefined`; `*` is only valid as the
+ * entire model segment). Illegal selectors throw {@link SelectorError} —
  * the catchable "config warning" path; warn-and-continue lives in Task 3.
  * These modules never crash on their own.
  *
@@ -34,7 +36,8 @@ export function selectorKey(provider: string, model?: string): string {
  * Parse a chain key or entry selector.
  *
  * Accepts `provider/model` and `provider/*`; throws {@link SelectorError}
- * on anything else (missing separator, empty parts, extra separators).
+ * on anything else (missing separator, empty parts, wildcard inside the
+ * model segment).
  */
 export function parseSelector(input: string): Selector {
   if (typeof input !== 'string') {
@@ -53,8 +56,10 @@ export function parseSelector(input: string): Selector {
   if (!provider || !modelPart) {
     throw new SelectorError(`invalid selector "${input}": empty provider or model`)
   }
-  if (modelPart.includes('/')) {
-    throw new SelectorError(`invalid selector "${input}": unexpected extra separator`)
+  // `*` is only valid as the entire model segment (the `provider/*`
+  // wildcard); inside a model id it would blur the wildcard grammar.
+  if (modelPart !== '*' && modelPart.includes('*')) {
+    throw new SelectorError(`invalid selector "${input}": unexpected wildcard in model`)
   }
   const model = modelPart === '*' ? undefined : modelPart
   return { provider, model, raw: trimmed }
