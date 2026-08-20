@@ -80,7 +80,9 @@ describe('parseSelector', () => {
   it('throws SelectorError when the model segment contains a wildcard', () => {
     // `provider/*` is the only legal wildcard form; `*` inside a model id
     // (e.g. after a slash, or embedded) would blur the wildcard grammar.
-    expect(() => parseSelector('provider/*/x')).toThrow(SelectorError)
+    for (const bad of ['provider/*/x', 'openai/gpt*', 'openai/*x']) {
+      expect(() => parseSelector(bad), `selector ${JSON.stringify(bad)}`).toThrow(SelectorError)
+    }
   })
 
   it('exposes a catchable error type for the config-warning path', () => {
