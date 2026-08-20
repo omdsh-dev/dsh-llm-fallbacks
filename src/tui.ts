@@ -1,8 +1,9 @@
 /**
- * dsh-tui client surface (plan fallbacks-tui-client Task 1, AC-1): registers
- * a `tuiCommandTrees` provider for the `/fallbacks` command so the dsh-tui
- * profile's `/` menu shows the command with localized descriptions and
- * `config` subcommand completion — with ZERO dsh-TUI changes.
+ * dsh-tui client surface (plan fallbacks-tui-client Task 1, AC-1 +
+ * fallbacks-tui-settings Task 2): registers a `tuiCommandTrees` provider
+ * for the `/fallbacks` command so the dsh-tui profile's `/` menu shows the
+ * command with localized descriptions and `config` → `revert-seed`
+ * subcommand completion — with ZERO dsh-TUI changes.
  *
  * The service and its shapes are consumed structurally (read-only reference:
  * dsh-TUI @ 557a27a, `src/dsh-adapter/command-trees.ts` +
@@ -46,7 +47,7 @@ export interface TuiCommandTreeProvider {
 /** The provider's root — matches the command registry entry name `fallbacks`. */
 export const FALLBACKS_TUI_ROOT = 'fallbacks'
 
-/** The `config` completion node (leaf); copy from the shared `usageConfig` key. */
+/** The `config` completion node; copy from the shared `usageConfig` key. */
 const FALLBACKS_CONFIG_NODE: TuiCommandCompletionNode = {
   name: 'config',
   description: FALLBACKS_COMMAND_LOCALES.zh.usageConfig,
@@ -57,18 +58,35 @@ const FALLBACKS_CONFIG_NODE: TuiCommandCompletionNode = {
 }
 
 /**
+ * The `revert-seed` completion node (leaf at depth 2, plan
+ * fallbacks-tui-settings Task 2); copy from the shared `usageRevertSeed`
+ * key (the same key the USAGE line consumes — single copy source).
+ */
+const REVERT_SEED_NODE: TuiCommandCompletionNode = {
+  name: 'revert-seed',
+  description: FALLBACKS_COMMAND_LOCALES.zh.usageRevertSeed,
+  descriptions: {
+    zh: FALLBACKS_COMMAND_LOCALES.zh.usageRevertSeed,
+    en: FALLBACKS_COMMAND_LOCALES.en.usageRevertSeed,
+  },
+}
+
+/**
  * Completion children for the `/fallbacks` tree. The host only passes
  * canonical paths (root at index 0, registered names), so any path whose
  * first element is not the canonical root — or that reaches past the
- * `config` leaf — is unknown and yields `[]`, never throwing.
+ * `config` → `revert-seed` leaf — is unknown and yields `[]`, never
+ * throwing. The `config` row (depth 1) stays a node; its `revert-seed`
+ * child (depth 2) is the leaf — the branch is extended, never flattened.
  *
- * The `config` row is returned as a FRESH array per call (qc3 N-3): callers
- * receive a copy, never the shared module constant by reference, so a
+ * Every row is returned in a FRESH array per call (qc3 N-3): callers
+ * receive a copy, never the shared module constants by reference, so a
  * host-side mutation could never corrupt subsequent completions.
  */
 function fallbacksChildren(canonicalPath: readonly string[]): readonly TuiCommandCompletionNode[] {
   if (canonicalPath[0] !== FALLBACKS_TUI_ROOT) return []
   if (canonicalPath.length === 1) return [FALLBACKS_CONFIG_NODE]
+  if (canonicalPath.length === 2 && canonicalPath[1] === 'config') return [REVERT_SEED_NODE]
   return []
 }
 

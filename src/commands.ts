@@ -11,12 +11,17 @@
  * the command is silently absent when no command registry is composed (no
  * top-level inject pollution — advisor T1 fix).
  *
- * The handler is **read-only**: it never mutates fallback state (no cooldown
- * reset, no pending-switch writes). zh/en copy lives in this file — the
- * client half's `src/client/locales.ts` is a separate client-side dictionary.
- * The host carries no per-session locale signal (the `locale` service is
- * client-side), so the wiring picks a deterministic default (`zh`, this
- * repo's primary language); both dictionaries are unit-tested.
+ * The bare diagnostic and the config readback are **read-only**: they never
+ * mutate fallback state (no cooldown reset, no pending-switch writes). The
+ * `config revert-seed <role-id>` subcommand is the one write action (plan
+ * fallbacks-tui-settings Task 2, AC-3): it delegates to the controller's
+ * `revertSeed` (wired to the seeds service) and prints the outcome — a
+ * web-card action capability the settings seam cannot express. zh/en copy
+ * lives in this file — the client half's `src/client/locales.ts` is a
+ * separate client-side dictionary. The host carries no per-session locale
+ * signal (the `locale` service is client-side), so the wiring picks a
+ * deterministic default (`zh`, this repo's primary language); both
+ * dictionaries are unit-tested.
  *
  * @module dsh-llm-fallbacks/commands
  */
@@ -25,7 +30,7 @@ import type { CommandDefinition, CommandInvocation, CommandResult } from '@deeps
 import { INHERIT_ROLE_ID, type FallbacksRole } from './config.ts'
 import type { Origin } from './roles.ts'
 import type { FallbackSwitchReason, FallbacksSwitchEventData } from './events.ts'
-import type { SlotRowConfig } from './time-slots.ts'
+import { PRESETS, type PresetId, type SlotRowConfig } from './time-slots.ts'
 
 /** How many recent `fallbacks/switch` events `/fallbacks` shows (newest first). */
 export const RECENT_SWITCHES_LIMIT = 5
@@ -89,12 +94,27 @@ export interface FallbacksCommandSnapshot {
  * entities carry id/persona/chain/fallback (NO per-role `model`;
  * `provider`/`model` live on `roles.rules`), so the readback line is id +
  * chain count, never a rules dump.
+ *
+ * Enriched readback (plan fallbacks-tui-settings Task 2, AC-4): timeSlots /
+ * tz / roles.rules join the summary so TUI operators can verify `/settings`
+ * edits. One summarized time-slot row: preset rows carry `{ preset,
+ * chainCount }` (windows are frozen code constants in {@link PRESETS} and
+ * never stored on the row — the render resolves the window text from
+ * PRESETS); custom rows carry `{ start, end, chainCount }`. Rules rows carry
+ * `{ provider, model, role }` — an omitted provider/model (wildcard match at
+ * runtime) is summarized as `''` and rendered as `*`.
  */
 export interface FallbacksConfigSummary {
   readonly enabled: boolean
   readonly triggerCodes: readonly string[]
   readonly rootChain: readonly string[]
+  /** Summarized time-slot rows (preset rows carry `preset`, custom rows carry `start`/`end`). */
+  readonly timeSlots: readonly { preset?: string; start?: string; end?: string; chainCount: number }[]
+  /** Config-level timezone for slot matching (default `Asia/Shanghai`). */
+  readonly tz: string
   readonly roles: readonly { id: string; chainCount: number }[]
+  /** Summarized role rules: provider/model patterns → declared role (or the built-in `'inherit'`). */
+  readonly rules: readonly { provider: string; model: string; role: string }[]
   readonly cooldownMs: number
   readonly revertPolicy: string
   readonly maxSwitchesPerStep: number
@@ -119,6 +139,16 @@ export interface FallbacksCommandController {
    * same live config source the runtime reads. Never mutates state.
    */
   getConfig(): FallbacksConfigSummary
+  /**
+   * Revert one role's persona to its CURRENT declared seed default (AC-3).
+   * Surfaces the outcome as a value: `ok: true` when reverted; `ok: false`
+   * with a human-readable `message` explaining why not (not a seeded role /
+   * role row absent). A settings-write failure propagates loudly (the same
+   * contract as the seeds service — never swallowed into a `ok: false`).
+   * Implemented by the wiring against the per-apply seed manager
+   * (`seeds.revert(roleId, seedsIo)`), not the typert gateway.
+   */
+  revertSeed(roleId: string): Promise<{ ok: boolean; message: string }>
 }
 
 // ---------------------------------------------------------------------------
@@ -136,13 +166,25 @@ const CONFIG_SUBCOMMAND_DESCRIPTION = {
   en: 'show the composed fallbacks config (settings readback)',
 } as const
 
+/**
+ * The `revert-seed` subcommand's localized one-line description — single
+ * copy source: consumed by the `usageRevertSeed` copy key (TUI completion
+ * node) and the `usage` USAGE line (plan fallbacks-tui-settings Task 2 —
+ * same pattern as {@link CONFIG_SUBCOMMAND_DESCRIPTION}).
+ */
+const REVERT_SEED_SUBCOMMAND_DESCRIPTION = {
+  zh: '将角色的 persona 还原为已声明的 Seed 默认',
+  en: "revert a role's persona to its declared seed default",
+} as const
+
 /** zh/en dictionaries for the `/fallbacks` output. */
 export const FALLBACKS_COMMAND_LOCALES = {
   zh: {
     title: '当前会话 fallback 诊断（只读）',
     description: '查看当前会话的降级链、最近降级切换与冷却状态（只读）',
     usageConfig: CONFIG_SUBCOMMAND_DESCRIPTION.zh,
-    usage: `  /fallbacks config   ${CONFIG_SUBCOMMAND_DESCRIPTION.zh}`,
+    usageRevertSeed: REVERT_SEED_SUBCOMMAND_DESCRIPTION.zh,
+    usage: `  /fallbacks config   ${CONFIG_SUBCOMMAND_DESCRIPTION.zh}\n  /fallbacks config revert-seed <role-id>   ${REVERT_SEED_SUBCOMMAND_DESCRIPTION.zh}`,
     origin: '会话来源',
     role: '角色',
     chain: '链',
@@ -170,22 +212,36 @@ export const FALLBACKS_COMMAND_LOCALES = {
     configTriggerCodes: '触发码',
     configRootChain: '根链',
     configEmpty: '（空）',
+    configTimeSlots: '分时槽',
+    configSlotPresetItem: '{preset}（chain: {n}, window {window}）',
+    configSlotPresetBare: '{preset}（chain: {n}）',
+    configSlotCustomItem: 'custom {start}-{end}（chain: {n}）',
+    configTz: '时区',
     configRoles: '角色',
     configRoleItem: '{id}（chain: {n}）',
+    configRules: '角色规则',
     configCooldown: '冷却',
     configRevert: '回主策略',
     configMaxSwitches: '单步最大切换',
     configAlwaysCap: 'always 上限',
     configPresets: '预置',
     configRoleAutoMatch: '角色自动匹配',
-    configEdit: '编辑：~/.dsh/profiles/<profile>/cordis.patch.yml（插件行）或 $DSH_HOME/settings.yaml（fallbacks: 分节）',
-    configEditHint: 'TUI 无法修改配置——只能编辑文件',
+    configEdit: '编辑：/settings（TUI 设置界面）或 ~/.dsh/profiles/<profile>/cordis.patch.yml（插件行）/ $DSH_HOME/settings.yaml（fallbacks: 分节）',
+    configEditHint: 'TUI 通过 /settings 修改配置；文件编辑仍然可用',
+    revertSeedOk: '角色 {id} 已还原为 Seed 默认',
+    revertSeedFail: '角色 {id} 未还原（{reason}）',
+    revertSeedReason: {
+      'not-seeded': '未声明种子',
+      'row-absent': '角色行不存在',
+      'settings-unavailable': '设置通道不可用',
+    },
   },
   en: {
     title: 'Session fallback diagnostics (read-only)',
     description: 'Inspect fallback chain, recent fallback switches, and cooldown for this session (read-only)',
     usageConfig: CONFIG_SUBCOMMAND_DESCRIPTION.en,
-    usage: `  /fallbacks config   ${CONFIG_SUBCOMMAND_DESCRIPTION.en}`,
+    usageRevertSeed: REVERT_SEED_SUBCOMMAND_DESCRIPTION.en,
+    usage: `  /fallbacks config   ${CONFIG_SUBCOMMAND_DESCRIPTION.en}\n  /fallbacks config revert-seed <role-id>   ${REVERT_SEED_SUBCOMMAND_DESCRIPTION.en}`,
     origin: 'Session origin',
     role: 'Role',
     chain: 'Chain',
@@ -211,16 +267,29 @@ export const FALLBACKS_COMMAND_LOCALES = {
     configTriggerCodes: 'Trigger codes',
     configRootChain: 'Root chain',
     configEmpty: '(empty)',
+    configTimeSlots: 'Time slots',
+    configSlotPresetItem: '{preset} (chain: {n}, window {window})',
+    configSlotPresetBare: '{preset} (chain: {n})',
+    configSlotCustomItem: 'custom {start}-{end} (chain: {n})',
+    configTz: 'TZ',
     configRoles: 'Roles',
     configRoleItem: '{id} (chain: {n})',
+    configRules: 'Rules',
     configCooldown: 'Cooldown',
     configRevert: 'Revert',
     configMaxSwitches: 'Max switches/step',
     configAlwaysCap: 'Always-mode cap',
     configPresets: 'Presets',
     configRoleAutoMatch: 'Auto-match',
-    configEdit: 'Edit: ~/.dsh/profiles/<profile>/cordis.patch.yml (plugin row) or $DSH_HOME/settings.yaml (fallbacks: section)',
-    configEditHint: 'TUI cannot change config — edit files only',
+    configEdit: 'Edit: /settings (TUI settings screen) or ~/.dsh/profiles/<profile>/cordis.patch.yml (plugin row) / $DSH_HOME/settings.yaml (fallbacks: section)',
+    configEditHint: 'TUI edits config via /settings; file editing still works',
+    revertSeedOk: 'role {id} reverted to its seed default',
+    revertSeedFail: 'role {id} not reverted ({reason})',
+    revertSeedReason: {
+      'not-seeded': 'not a seeded role',
+      'row-absent': 'role row absent',
+      'settings-unavailable': 'settings channel unavailable',
+    },
   },
 } as const
 
@@ -234,17 +303,36 @@ type FallbacksCommandCopy = (typeof FALLBACKS_COMMAND_LOCALES)[FallbacksCommandL
 // Subcommand parsing
 // ---------------------------------------------------------------------------
 
-/** The `/fallbacks` subcommands: `'config'` (composed-config readback) or
- * `''` (the bare session snapshot). */
-export type FallbacksSubcommand = '' | 'config'
+/** The `/fallbacks` subcommands: `'config'` (composed-config readback),
+ * `'revert-seed'` (persona revert action, requires a role id), or `''` (the
+ * bare session snapshot). */
+export type FallbacksSubcommand = '' | 'config' | 'revert-seed'
+
+/** One parsed subcommand invocation: the kind plus the optional role id
+ * carried by `revert-seed`. */
+export interface FallbacksSubcommandParse {
+  readonly kind: FallbacksSubcommand
+  /** The role id argument of `revert-seed` (present iff `kind === 'revert-seed'`). */
+  readonly arg?: string
+}
 
 /**
  * Map an invocation's rawInput to a subcommand: trimmed `'config'` →
- * `'config'`; everything else (incl. empty) → `''` (bare snapshot). Lenient
- * by design — unknown input keeps today's bare behavior, never errors.
+ * `{ kind: 'config' }`; `'config revert-seed <id>'` → `{ kind: 'revert-seed',
+ * arg: id }`; everything else (incl. empty, a missing id, or an unknown
+ * subcommand under `config`) → `{ kind: '' }` (bare snapshot). Lenient by
+ * design — unknown input keeps today's bare behavior, never errors.
  */
-export function parseFallbacksSubcommand(rawInput: string): FallbacksSubcommand {
-  return rawInput.trim() === 'config' ? 'config' : ''
+export function parseFallbacksSubcommand(rawInput: string): FallbacksSubcommandParse {
+  const trimmed = rawInput.trim()
+  if (trimmed === 'config') return { kind: 'config' }
+  const [head, sub, ...rest] = trimmed.split(/\s+/)
+  if (head === 'config' && sub === 'revert-seed') {
+    const arg = rest.join(' ').trim()
+    if (arg === '') return { kind: '' }
+    return { kind: 'revert-seed', arg }
+  }
+  return { kind: '' }
 }
 
 // ---------------------------------------------------------------------------
@@ -389,12 +477,77 @@ function formatConfigRoles(roles: readonly { id: string; chainCount: number }[],
 }
 
 /**
+ * Resolve a preset row's frozen window text from {@link PRESETS} — preset
+ * rows store NO start/end (windows are code constants, `time-slots.ts`), so
+ * the readback resolves them here. Complement (valley) presets match the
+ * OUTSIDE of their peak windows — annotated so the readback never claims the
+ * peak window as the active one. Unknown preset ids (legacy rows the
+ * resolver warns about and skips) render without a window segment.
+ */
+function formatSlotWindow(preset: string): string {
+  const definition = PRESETS[preset as PresetId]
+  if (definition === undefined) return ''
+  const windows = definition.windows.map((window) => `${window.start}-${window.end}`).join(', ')
+  return definition.complement ? `outside ${windows}` : windows
+}
+
+/**
+ * Render the `Time slots:` line: full count, then one row per slot —
+ * preset rows as `{preset} (chain: n, window <resolved from PRESETS>)`,
+ * custom rows as `custom {start}-{end} (chain: n)` (truncated at the cap
+ * like the other list lines).
+ */
+function formatConfigTimeSlots(
+  slots: readonly { preset?: string; start?: string; end?: string; chainCount: number }[],
+  t: FallbacksCommandCopy,
+): string {
+  const items = slots.slice(0, FALLBACKS_CONFIG_LIST_CAP).map((row) => {
+    if (row.preset !== undefined) {
+      const window = formatSlotWindow(row.preset)
+      // Unknown preset ids (legacy rows the resolver warns about and skips)
+      // render without a window segment — never a placeholder or undefined.
+      return window === ''
+        ? t.configSlotPresetBare.replace('{preset}', row.preset).replace('{n}', String(row.chainCount))
+        : t.configSlotPresetItem
+            .replace('{preset}', row.preset)
+            .replace('{n}', String(row.chainCount))
+            .replace('{window}', window)
+    }
+    // A malformed custom row (missing bounds — legacy source the resolver
+    // skips) degrades to a bare custom marker instead of `undefined-undefined`.
+    const bounds = row.start !== undefined && row.end !== undefined ? `${row.start}-${row.end}` : ''
+    return t.configSlotCustomItem.replace('{start}-{end}', bounds).replace('{n}', String(row.chainCount))
+  })
+  const list = items.length === 0 ? '' : `${items.join(', ')}${slots.length > FALLBACKS_CONFIG_LIST_CAP ? ', …' : ''}`
+  return `${slots.length}${list.length === 0 ? '' : ` — ${list}`}`
+}
+
+/**
+ * Render the `Rules:` line: full count, then `provider/model → role` rows
+ * (truncated at the cap). An omitted provider/model (wildcard match at
+ * runtime) is rendered as `*`.
+ */
+function formatConfigRules(
+  rules: readonly { provider: string; model: string; role: string }[],
+  t: FallbacksCommandCopy,
+): string {
+  const items = rules.slice(0, FALLBACKS_CONFIG_LIST_CAP)
+    .map((rule) => `${rule.provider === '' ? '*' : rule.provider}/${rule.model === '' ? '*' : rule.model} → ${rule.role}`)
+  const list = items.length === 0 ? '' : `${items.join(', ')}${rules.length > FALLBACKS_CONFIG_LIST_CAP ? ', …' : ''}`
+  return `${rules.length}${list.length === 0 ? '' : ` — ${list}`}`
+}
+
+/**
  * Render the `/fallbacks config` surface (plan fallbacks-tui-client T2,
- * AC-2): the composed `fallbacks` namespace as the runtime reads it + file-only
- * edit hints (TUI has no write surface). The FIRST LINE marks the
- * composed-config readback — distinct from the diagnostic title and never
- * merged into {@link fallbacksCommandText} (two operator surfaces, product
- * lock). Locale defaults to `zh` (the command default); en dictionary tested.
+ * AC-2 + fallbacks-tui-settings Task 2 AC-4): the composed `fallbacks`
+ * namespace as the runtime reads it — enriched with the time-slot rows
+ * (preset rows resolve their frozen window from {@link PRESETS}), the
+ * config timezone, and the role rules — plus edit hints pointing at the
+ * `/settings` TUI edit surface while keeping the file-edit documentation.
+ * The FIRST LINE marks the composed-config readback — distinct from the
+ * diagnostic title and never merged into {@link fallbacksCommandText} (two
+ * operator surfaces, product lock). Locale defaults to `zh` (the command
+ * default); en dictionary tested.
  */
 export function fallbacksConfigText(
   summary: FallbacksConfigSummary,
@@ -405,7 +558,10 @@ export function fallbacksConfigText(
     `${t.configTitle}: ${summary.enabled ? t.configEnabled : t.configDisabled}`,
     `${t.configTriggerCodes}: ${summary.triggerCodes.length === 0 ? t.configEmpty : formatConfigList(summary.triggerCodes)}`,
     `${t.configRootChain}: ${summary.rootChain.length === 0 ? t.configEmpty : formatConfigList(summary.rootChain)}`,
+    `${t.configTimeSlots}: ${summary.timeSlots.length === 0 ? t.configEmpty : formatConfigTimeSlots(summary.timeSlots, t)}`,
+    `${t.configTz}: ${summary.tz}`,
     `${t.configRoles}: ${formatConfigRoles(summary.roles, t)}`,
+    `${t.configRules}: ${summary.rules.length === 0 ? t.configEmpty : formatConfigRules(summary.rules, t)}`,
     `${t.configCooldown}: ${summary.cooldownMs} ms`,
     `${t.configRevert}: ${summary.revertPolicy}`,
     `${t.configMaxSwitches}: ${summary.maxSwitchesPerStep}`,
@@ -467,16 +623,26 @@ function createFallbacksCommandHandler(
   controller: FallbacksCommandController,
   locale: FallbacksCommandLocale = 'zh',
 ) {
-  return (invocation: CommandInvocation): CommandResult => ({
-    kind: 'success',
-    text:
-      // The contract says rawInput is a string; a contract-violating host
-      // passing undefined must still fall back to the bare snapshot (qc2
-      // N-3 — keep the lenient-fallback promise absolute).
-      parseFallbacksSubcommand(invocation.rawInput ?? '') === 'config'
-        ? fallbacksConfigText(controller.getConfig(), locale)
-        : fallbacksCommandText(controller.getSnapshot(invocation.agent), locale),
-  })
+  return (invocation: CommandInvocation): CommandResult | Promise<CommandResult> => {
+    // The contract says rawInput is a string; a contract-violating host
+    // passing undefined must still fall back to the bare snapshot (qc2
+    // N-3 — keep the lenient-fallback promise absolute).
+    const parsed = parseFallbacksSubcommand(invocation.rawInput ?? '')
+    if (parsed.kind === 'config') {
+      return { kind: 'success', text: fallbacksConfigText(controller.getConfig(), locale) }
+    }
+    if (parsed.kind === 'revert-seed' && parsed.arg !== undefined) {
+      // The one write action (AC-3): delegate to the controller (wired to
+      // the seeds service) and surface the outcome — success for a reverted
+      // role, error-kind for a not-found role (the message explains why).
+      return controller.revertSeed(parsed.arg).then((outcome) =>
+        outcome.ok
+          ? { kind: 'success', text: outcome.message }
+          : { kind: 'error', text: outcome.message },
+      )
+    }
+    return { kind: 'success', text: fallbacksCommandText(controller.getSnapshot(invocation.agent), locale) }
+  }
 }
 
 /**
@@ -495,10 +661,10 @@ export function registerFallbacksCommands(
     name: 'fallbacks',
     description: FALLBACKS_COMMAND_LOCALES[locale].description,
     // No `input` descriptor: `/fallbacks` takes no free-form input (only the
-    // `config` subcommand, parsed from rawInput by the handler). Real
-    // dsh-commands normalizeDefinition rejects an empty hint, so omitting
-    // the optional `input` is both the correct representation and the only
-    // shape that registers.
+    // `config` and `config revert-seed <role-id>` subcommands, parsed from
+    // rawInput by the handler). Real dsh-commands normalizeDefinition
+    // rejects an empty hint, so omitting the optional `input` is both the
+    // correct representation and the only shape that registers.
     handler: createFallbacksCommandHandler(controller, locale),
   })
 }

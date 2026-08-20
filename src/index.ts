@@ -59,6 +59,7 @@ import {
   type FallbacksSettingsBridge,
 } from './gateway.ts'
 import {
+  FALLBACKS_COMMAND_LOCALES,
   RECENT_SWITCHES_LIMIT,
   recentFallbacksSwitches,
   registerFallbacksCommands,
@@ -951,19 +952,53 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     // two-block model); `presets` is optional-on-type with a schema default,
     // so the summary falls back to 'bundled' explicitly; `roleAutoMatch`
     // reads defensively (`?? true`) for direct constructors that omit it.
+    // T2 AC-4 (fallbacks-tui-settings): the readback is enriched with the
+    // time-slot rows (preset rows carry `{ preset, chainCount }` — windows
+    // are frozen PRESETS constants, never stored; custom rows carry
+    // `{ start, end, chainCount }`), the config `tz`, and the role rules
+    // (`provider`/`model` optional at the config model, summarized as `''`
+    // → rendered `*` when omitted). Chain counts read defensively (`?? []`)
+    // so a malformed legacy slot row never crashes the readback (the
+    // resolver warns and skips it at request time).
     getConfig(): FallbacksConfigSummary {
       const config = source()
       return {
         enabled: config.enabled,
         triggerCodes: config.triggerCodes,
         rootChain: config.rootChain,
+        timeSlots: (config.timeSlots ?? []).map((row) => row.kind === 'preset'
+          ? { preset: row.preset, chainCount: (row.chain ?? []).length }
+          : { start: row.start, end: row.end, chainCount: (row.chain ?? []).length }),
+        tz: config.tz ?? 'Asia/Shanghai',
         roles: config.roles.list.map((role) => ({ id: role.id, chainCount: role.chain?.length ?? 0 })),
+        rules: config.roles.rules.map((rule) => ({ provider: rule.provider ?? '', model: rule.model ?? '', role: rule.role })),
         cooldownMs: config.cooldownMs,
         revertPolicy: config.revertPolicy,
         maxSwitchesPerStep: config.maxSwitchesPerStep,
         alwaysModeRetryCap: config.alwaysModeRetryCap,
         presets: config.presets ?? 'bundled',
         roleAutoMatch: config.roleAutoMatch ?? true,
+      }
+    },
+    // T2 AC-3 (fallbacks-tui-settings): the one write action — revert a
+    // role's persona to its CURRENT declared seed default. Wired through the
+    // SERVICE path (seeds.revert(roleId, seedsIo), the same single point of
+    // truth as revertSeededPersona) rather than the typert gateway RPC: the
+    // gateway may not be composed in a dsh-tui profile, while `seeds` is
+    // always in scope here. Business failures are values (`ok: false` +
+    // message mapping SeedRevertOutcome.reverted/reason); a failed settings
+    // write propagates loudly (the seeds contract — never swallowed). The
+    // message uses the command's default zh copy (the wiring registers with
+    // no locale; en copy keys are dictionary-tested like `usage`).
+    revertSeed: async (roleId) => {
+      const outcome = await seeds.revert(roleId, seedsIo)
+      const t = FALLBACKS_COMMAND_LOCALES.zh
+      if (outcome.reverted) return { ok: true, message: t.revertSeedOk.replace('{id}', roleId) }
+      return {
+        ok: false,
+        message: t.revertSeedFail
+          .replace('{id}', roleId)
+          .replace('{reason}', t.revertSeedReason[outcome.reason ?? 'not-seeded']),
       }
     },
   }

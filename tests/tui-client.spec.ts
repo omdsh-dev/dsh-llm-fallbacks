@@ -212,11 +212,17 @@ describe('provider completion children — config node (AC-1)', () => {
     expect(config.descriptions?.en).toBe(FALLBACKS_COMMAND_LOCALES.en.usageConfig)
   })
 
-  it('treats config as a leaf and never throws on unknown paths', () => {
+  it('serves the revert-seed leaf under config (depth 2) and never throws on unknown paths', () => {
     const provider = registeredProvider()
 
-    // Deeper than the config node: leaf — no further children.
-    expect(provider.children([FALLBACKS_TUI_ROOT, 'config'])).toEqual([])
+    // config (depth 1) → the revert-seed leaf (depth 2); deeper stays a leaf.
+    const children = provider.children([FALLBACKS_TUI_ROOT, 'config'])
+    expect(children).toHaveLength(1)
+    const revertSeed = children[0]!
+    expect(revertSeed.name).toBe('revert-seed')
+    expect(revertSeed.description).toBe(FALLBACKS_COMMAND_LOCALES.zh.usageRevertSeed)
+    expect(revertSeed.descriptions?.zh).toBe(FALLBACKS_COMMAND_LOCALES.zh.usageRevertSeed)
+    expect(revertSeed.descriptions?.en).toBe(FALLBACKS_COMMAND_LOCALES.en.usageRevertSeed)
     expect(provider.children([FALLBACKS_TUI_ROOT, 'config', 'deep'])).toEqual([])
     // Unknown / malformed paths: [] without throwing.
     expect(provider.children([])).toEqual([])
@@ -243,7 +249,8 @@ describe('provider completion children — config node (AC-1)', () => {
     installTuiClient(ctx, { serviceOwned: true })
 
     expect(registry.children(['fallbacks'])).toHaveLength(1)
-    expect(registry.children(['fallbacks', 'config'])).toEqual([])
+    expect(registry.children(['fallbacks', 'config'])).toHaveLength(1)
+    expect(registry.children(['fallbacks', 'config'])[0]!.name).toBe('revert-seed')
     expect(registry.children([])).toEqual([])
     expect(registry.children(['other'])).toEqual([])
   })
