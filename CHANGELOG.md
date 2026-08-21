@@ -6,6 +6,16 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-08-21
+
+### Fixed
+
+- Register the `settings.plugin.item` card with `id` alongside `key` so it mounts on dsh hosts that still declare the slot as a list (pre-rc.7) instead of failing with `list slot "settings.plugin.item" requires options.id`.
+
+### Changed
+
+- Upgrade every `@deepseek-ai/dsh-*` peer dependency to `^0.1.1-rc.1` (dsh 0.1.1-rc.1, 2026-08-21); no breaking seam consumed by this plugin changed, so no source migration was required.
+
 ## [0.3.2] - 2026-08-20
 
 ### Added
