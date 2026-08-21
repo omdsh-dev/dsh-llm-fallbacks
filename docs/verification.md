@@ -17,11 +17,11 @@ This document records the installation / runtime-contract verification already c
 | client (T5) | `fallbacks-store.spec.ts` / `fallbacks-card.spec.tsx` / `general-row.spec.tsx` / `conversation-switch.spec.tsx` | 95 / 36 / 9 / 15 | card read/write via the **gateway channel** (rpc mock of `/api/fallbacks/get|set|reset`: `load` fetches config from `get`, `save` goes through `set`, `resetToDefaults` goes through `reset`), `present` flag and unreachable-channel skeleton, describe only reads writable + other namespaces (the fallbacks namespace no longer appears in describe), KD-G3 new error path (errors surface truthfully after the revision guard was removed), draft seeded only from a real `get` result (I-1 invariant), chain/rule row-edit round trips, status-block recent-switch extraction (sessions.history event surface), card chrome (plugin-config page listing, collapse/expand, dirty/save/discard), controller lifecycle; General page status row (`settings.general.item` registration shape id `fallbacks` order 100, enabled badge + recent-switch summary, KD-G5 unreachable does not masquerade as disabled, lazy first read and no re-read once read); conversation switch row (`conversation.chat.node` keyed registration key `fallbacks-switch`, D1-defined state machine match/start/update/buildViewNode, renders `from → to (role · reason)` with unknown reasons passed through verbatim, role=status, malformed payloads degrade to the title row without throwing, zh rendering parity smoke) |
 | command (AC-5) | `command.spec.ts` | 30 | `/fallbacks` registration shape (name/description/empty hint/handler, disposer passthrough), conditional `commands` child injection (registers only when a registry exists; silent without a service), snapshot building (role/chain resolution with the default fallback, recent switches newest-first capped, cooldown read-only snapshot), output states (configured chain / no chain / switches present + absent / cooldown present + absent / `never` does not revert), zh/en rendering smoke, real runtime-state integration (switch events + cooldown read from real state; read-only, never adds state) |
 | release/consumer tooling | `service.spec.ts` / `export-surface.spec.ts` / `release-scripts.spec.ts` | 7 / 27 / 17 | the named cordis service surface (static provide metadata, `ctx.get` availability while applied, unregister on dispose, multi-fiber dedupe, same functions as the package-root re-exports); the package export surface (runtime values + callable smokes + type exports matching the docs-inventory keys); release-script gates (autoBumpPatch / insertSection / parseArgs / validateReleaseVersion / tagExists) |
-| regression | `skeleton.spec.ts` / `host-native.spec.ts` / `peer-deps.test.ts` | 3 / 3 / 5 | bundle contract (row id, empty schema accepted, host+client apply entry points); host-native behavior baseline (real `@deepseek-ai/dsh-agent` module: trigger-code switches route to the chain target, always-cap second return point, no-op invariant); registry peer contract (`@deepseek-ai/*` as peerDependencies only, dsh-* pinned to `^0.1.1-rc.1`, autoInstallPeers, no link farm) |
+| regression | `skeleton.spec.ts` / `host-native.spec.ts` / `peer-deps.test.ts` | 3 / 3 / 5 | bundle contract (row id, empty schema accepted, host+client apply entry points); host-native behavior baseline (real `@deepseek-ai/dsh-agent` module: trigger-code switches route to the chain target, always-cap second return point, no-op invariant); registry peer contract (`@deepseek-ai/*` as peerDependencies only, dsh-* pinned to `^0.1.1-rc.2`, autoInstallPeers, no link farm) |
 
 Result: **23 files / 475 tests all green** (`pnpm test`, vitest run); `pnpm build` (`tsc -p tsconfig.build.json` emits JS first (standard decorator downgrade `__esDecorate`) → tsdown host bundle →
 `pnpm run build-client` → `tsc` declarations → `node scripts/verify-dist.mjs` artifact-parsing guard) all green — `tsc` is
-driven by the real host type surface (registry peer `@deepseek-ai/*@0.1.1-rc.1`, no in-repo type shims). The no-op regression
+driven by the real host type surface (registry peer `@deepseek-ai/*@0.1.1-rc.2`, no in-repo type shims). The no-op regression
 invariants (empty chains / no match / chain exhausted / safety-valve cap exceeded → pass through without producing
 `fallbacks/switch` events) are persistently asserted by T3/T4 tests.
 
@@ -58,7 +58,7 @@ order section of [docs/install.md](docs/install.md); the real web profile's laye
 - **No residue on unload**: `agent/disposed` removes state, `agent/status` idle is defensively cleaned, `ctx.effect`
   dispose clears everything (T3 assertions).
 - **Real-type contract**: the type layer does not use hand-written `peer-stubs/` — `autoInstallPeers` resolves the real
-  `@deepseek-ai/*@0.1.1-rc.1` peers from the npm registry (user-level `~/.npmrc` auth, no local link farm);
+  `@deepseek-ai/*@0.1.1-rc.2` peers from the npm registry (user-level `~/.npmrc` auth, no local link farm);
   `tsc` and the integration tests (`tests/support/harness.ts` + llm-retry-stub + model-selection-stub) are driven by the
   real type surface. Runtime seams run the real implementations: `installSettingsSection` mounts the real
   `@deepseek-ai/dsh-settings` (in-memory provider `tests/support/memory-settings.ts`, inheriting the real
@@ -129,7 +129,7 @@ Then restart the dsh web session so the host half and the client half load.
 #### 4.1 Environment preparation (new snapshot baseline)
 
 1. **Preflight check**: record `dsh --version` (snapshot); the plugin-side peer dependencies resolve from the npm registry
-   (`@deepseek-ai/*@0.1.1-rc.1`, no source tree needed).
+   (`@deepseek-ai/*@0.1.1-rc.2`, no source tree needed).
 2. **Plugin build**: `cd <plugin-repo> && pnpm build` (host bundle + client bundle + tsc
    declarations) green — pure-mount semantics: no dsh source-tree modification, no patch step; settings read/write go through the plugin
    gateway channel (`/api/fallbacks/get|set|reset`), usable right after installation.
