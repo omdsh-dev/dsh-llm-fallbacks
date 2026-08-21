@@ -264,12 +264,13 @@ describe('GeneralFallbacksRow registration (settings.general.item)', () => {
     expect(typeof face.useSnapshot).toBe('function')
     expect(face).not.toHaveProperty('t')
 
-    // The plugin-config card registration is untouched (rc.7 keyed slot:
-    // key only — the old list-slot id/order are absent).
+    // The plugin-config card registration is untouched (rc.7 keyed-slot `key`
+    // alongside the list-slot `id` — pre-rc.7 hosts require options.id, the
+    // keyed loader ignores the extra id).
     const cards = ledger['settings.plugin.item'] ?? []
     expect(cards).toHaveLength(1)
     expect(cards[0].options.key).toBe('fallbacks')
-    expect(cards[0].options).not.toHaveProperty('id')
+    expect(cards[0].options.id).toBe('fallbacks')
     expect(cards[0].options).not.toHaveProperty('order')
 
     // The dictionary namespace registers with the en/zh pair.
