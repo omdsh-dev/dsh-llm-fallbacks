@@ -4,17 +4,17 @@ This document explains how to load `dsh-llm-fallbacks` into a dsh profile, verif
 
 ## Prerequisites
 
-- A working dsh runtime environment (`$DSH_HOME`, defaults to `~/.dsh`); development-time type checking and tests resolve the `@deepseek-ai/*@0.1.0-rc.8` peer dependencies from the npm registry (registry auth token — see "Authentication (pnpm 11)" below).
+- A working dsh runtime environment (`$DSH_HOME`, defaults to `~/.dsh`); development-time type checking and tests resolve the `@deepseek-ai/*@0.1.1-rc.1` peer dependencies from the npm registry (registry auth token — see "Authentication (pnpm 11)" below).
 - Building requires **node** (`>= 22`) and **pnpm** (`>= 10`) — needed **only for local directory installs** (development): the plugin's `prepare` script self-builds (`pnpm run build`, tsdown + tsc, pnpm stack without bun); registry installs deliver built artifacts, so the target machine does not build anything.
 - The target profile (e.g. `web`) is readable/writable, and a dsh session restart is required after installation.
 
 ## Development-time `@deepseek-ai/*` peer resolution (npm registry)
 
-`@deepseek-ai/*` is a private package family: at runtime it is provided by the host dsh box as a bundle (`peerDependencies` contract; `@deepseek-ai/*` is externalized at tsdown build time). During development the real packages (`0.1.0-rc.8`) are resolved from the npm registry: `autoInstallPeers: true` in `pnpm-workspace.yaml` + an auth token in the user-level `~/.npmrc` — `pnpm install` pulls in the peer dependencies automatically, so type checking, tests, and navigation all run against the real code (no local link farm).
+`@deepseek-ai/*` is a private package family: at runtime it is provided by the host dsh box as a bundle (`peerDependencies` contract; `@deepseek-ai/*` is externalized at tsdown build time). During development the real packages (`0.1.1-rc.1`) are resolved from the npm registry: `autoInstallPeers: true` in `pnpm-workspace.yaml` + an auth token in the user-level `~/.npmrc` — `pnpm install` pulls in the peer dependencies automatically, so type checking, tests, and navigation all run against the real code (no local link farm).
 
 - **Authentication (pnpm 11)**: as of pnpm 11, credentials in a project-level `.npmrc` **no longer expand environment variables** (`${NPM_TOKEN}` is invalid and warns). The token must live in the **user-level** `~/.npmrc`: `@deepseek-ai:registry=https://registry.npmjs.org/` + `//registry.npmjs.org/:_authToken=<token>` (or `pnpm config set "//registry.npmjs.org/:_authToken" <token>`); `NPM_TOKEN` remains the read-only token source for the restricted scope.
-- **Version**: `peerDependencies` is pinned to `^0.1.0-rc.8` (aligned with the dlx host's rc.8); bump the peer version in sync after a dsh upgrade.
-- **pnpm version**: pnpm 11.21+ (this project's stack). Since 11.21 the minimum-release-age supply-chain gate is enabled by default; the `minimumReleaseAgeExclude` table in `pnpm-workspace.yaml` is a **pnpm-maintained** exemption table — the whole rc.8 line (and cordis 4.0.1) was published on the same day and is auto-listed; **do not delete the block manually**: a resolved lockfile hard-fails without the exemptions (`ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION`; re-resolve with `pnpm clean --lockfile`).
+- **Version**: `peerDependencies` is pinned to `^0.1.1-rc.1` (aligned with the dlx host's rc.1); bump the peer version in sync after a dsh upgrade.
+- **pnpm version**: pnpm 11.21+ (this project's stack). Since 11.21 the minimum-release-age supply-chain gate is enabled by default; the `minimumReleaseAgeExclude` table in `pnpm-workspace.yaml` is a **pnpm-maintained** exemption table — the whole rc.1 line (and cordis 4.0.1) was published on the same day and is auto-listed; **do not delete the block manually**: a resolved lockfile hard-fails without the exemptions (`ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION`; re-resolve with `pnpm clean --lockfile`).
 - **Client runtime seam**: the `dsh-client-runtime` `./client` entry of the registry package is a browser loader artifact (not node-importable); tests use a local node-safe double (`tests/support/snapshot-store.ts`, vitest alias).
 
 ## 1. Local directory install (recommended)
