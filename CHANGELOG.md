@@ -6,6 +6,13 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-08-23
+
+### Changed
+
+- Liang Peak (`liang-peak`) now applies only Monday–Friday 09:00–12:00 and 14:00–18:00 UTC+8; weekends fall through to Liang Valley / the all-day chain.
+- Upgrade every `@deepseek-ai/dsh-*` peer dependency to `^0.1.1-rc.2` (dsh 0.1.1-rc.2, 2026-08-21); no breaking seam consumed by this plugin changed, so no source migration was required.
+
 ## [0.3.3] - 2026-08-21
 
 ### Fixed
