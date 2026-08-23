@@ -66,23 +66,23 @@ export interface PresetDefinition {
 }
 
 /**
- * Frozen preset windows (UTC+8). `liang-*` presets have NO day mask (they
- * apply every day, weekends included); `glm-peak` is Monday–Friday only.
- * The two valleys are `complement: true` of their peak.
+ * Frozen preset windows (UTC+8). `liang-peak` and `glm-peak` are
+ * Monday–Friday only (day mask `[1, 2, 3, 4, 5]`); their valleys are the
+ * `complement: true` of the corresponding peak (weekends included).
  */
 export const PRESETS: Record<PresetId, PresetDefinition> = {
   'liang-peak': {
     windows: [
-      { start: '09:00', end: '12:00' },
-      { start: '14:00', end: '18:00' },
+      { start: '09:00', end: '12:00', days: [1, 2, 3, 4, 5] },
+      { start: '14:00', end: '18:00', days: [1, 2, 3, 4, 5] },
     ],
     complement: false,
     label: 'Liang Peak',
   },
   'liang-valley': {
     windows: [
-      { start: '09:00', end: '12:00' },
-      { start: '14:00', end: '18:00' },
+      { start: '09:00', end: '12:00', days: [1, 2, 3, 4, 5] },
+      { start: '14:00', end: '18:00', days: [1, 2, 3, 4, 5] },
     ],
     complement: true,
     label: 'Liang Valley',

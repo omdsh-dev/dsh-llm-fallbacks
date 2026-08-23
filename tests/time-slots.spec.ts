@@ -128,15 +128,14 @@ describe('resolveEffectiveChain — glm-peak is Monday–Friday 14:00–18:00 on
 describe('resolveEffectiveChain — valley complements derive from their peak', () => {
   it('liang-valley matches every time liang-peak does not, including weekends', () => {
     const cfg = slotConfig({ timeSlots: [presetRow('liang-valley', ['openai/gpt-4o'])] })
-    // Liang windows have NO day mask → peak applies on weekends too, so a
-    // weekend peak-time is still NOT valley…
-    expect(resolveEffectiveChain(cfg, at('10:30', '2026-08-22'), 'Asia/Shanghai')).toEqual([ALL_DAY])
-    // …but a weekend off-peak time IS valley.
+    // Liang peak is Mon–Fri only, so weekend peak-hours are valley too.
+    expect(resolveEffectiveChain(cfg, at('10:30', '2026-08-22'), 'Asia/Shanghai')).toEqual(['openai/gpt-4o'])
+    // …and a weekend off-peak time IS valley.
     expect(resolveEffectiveChain(cfg, at('20:00', '2026-08-22'), 'Asia/Shanghai')).toEqual(['openai/gpt-4o'])
     // Weekday off-peak: the 12:00–14:00 gap and the night.
     expect(resolveEffectiveChain(cfg, at('13:00'), 'Asia/Shanghai')).toEqual(['openai/gpt-4o'])
     expect(resolveEffectiveChain(cfg, at('21:00'), 'Asia/Shanghai')).toEqual(['openai/gpt-4o'])
-    // Peak times themselves are excluded.
+    // Weekday peak times themselves are excluded.
     expect(resolveEffectiveChain(cfg, at('10:30'), 'Asia/Shanghai')).toEqual([ALL_DAY])
   })
 
@@ -212,6 +211,13 @@ describe('resolveEffectiveChain — liang-peak is ONE row covering both windows'
     expect(resolveEffectiveChain(cfg, at('12:00'), 'Asia/Shanghai')).toEqual([ALL_DAY])
     expect(resolveEffectiveChain(cfg, at('13:59'), 'Asia/Shanghai')).toEqual([ALL_DAY])
     expect(resolveEffectiveChain(cfg, at('18:00'), 'Asia/Shanghai')).toEqual([ALL_DAY])
+  })
+
+  it('does not match weekends (day mask is Monday–Friday only)', () => {
+    expect(resolveEffectiveChain(cfg, at('10:30', '2026-08-22'), 'Asia/Shanghai')).toEqual([ALL_DAY]) // Sat
+    expect(resolveEffectiveChain(cfg, at('10:30', '2026-08-23'), 'Asia/Shanghai')).toEqual([ALL_DAY]) // Sun
+    expect(resolveEffectiveChain(cfg, at('15:00', '2026-08-22'), 'Asia/Shanghai')).toEqual([ALL_DAY]) // Sat
+    expect(resolveEffectiveChain(cfg, at('15:00', '2026-08-23'), 'Asia/Shanghai')).toEqual([ALL_DAY]) // Sun
   })
 })
 
