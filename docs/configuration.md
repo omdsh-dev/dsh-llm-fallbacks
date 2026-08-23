@@ -186,7 +186,7 @@ Time-slot rows rotate the **effective root chain** by wall-clock windows. At eve
 
 | preset | Window (not user-editable) |
 |--------|----------------------------|
-| `liang-peak` | 09:00–12:00 **and** 14:00–18:00 (both clocks, every day; ONE row) |
+| `liang-peak` | 09:00–12:00 **and** 14:00–18:00 (both clocks, Monday–Friday; ONE row) |
 | `liang-valley` | all UTC+8 times that are not Liang Peak (complement of the peak) |
 | `glm-peak` | Monday–Friday 14:00–18:00 |
 | `glm-valley` | all other times (complement of GLM Peak) |
@@ -215,7 +215,7 @@ fallbacks:
     - deepseek-official/deepseek-v4-flash  # last = Flash XOR Pro last-resort fallback
   timeSlots:                     # Optional: rotate the effective root chain by wall-clock windows
     - kind: preset               # Frozen UTC+8 windows; only the chain is editable (locks tz to Asia/Shanghai)
-      preset: liang-peak         # 09:00–12:00 AND 14:00–18:00, every day
+      preset: liang-peak         # Monday–Friday 09:00–12:00 AND 14:00–18:00
       chain:
         - anthropic/claude-3-5-sonnet
     - kind: custom               # Custom window: HH:mm, may wrap midnight

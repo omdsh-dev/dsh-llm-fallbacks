@@ -423,10 +423,10 @@ describe('fallbacksConfigText — composed-config readback', () => {
   it('renders the time-slots summary: full count, preset rows resolve their frozen window from PRESETS, custom rows show start-end', () => {
     const text = fallbacksConfigText(configSummary(), 'en')
     expect(text).toContain(
-      'Time slots: 2 — liang-peak (chain: 2, window 09:00-12:00, 14:00-18:00), custom 09:00-12:00 (chain: 1)',
+      'Time slots: 2 — liang-peak (chain: 2, window 09:00-12:00 (Mon-Fri), 14:00-18:00 (Mon-Fri)), custom 09:00-12:00 (chain: 1)',
     )
     // The preset window comes from the frozen PRESETS constant (09:00-12:00 +
-    // 14:00-18:00 for liang-peak), never from a stored row field.
+    // 14:00-18:00 Mon–Fri for liang-peak), never from a stored row field.
     expect(text).not.toContain('window undefined')
   })
 
@@ -566,7 +566,7 @@ describe('fallbacksConfigText — zh/en copy smoke', () => {
     expect(text.split('\n')[0]).toBe('Fallbacks 配置: 已启用')
     expect(text).toContain('触发码: AUTH, QUOTA, RATE_LIMIT')
     expect(text).toContain('根链: anthropic/claude-3-5-sonnet, openai/*')
-    expect(text).toContain('分时槽: 2 — liang-peak（chain: 2, window 09:00-12:00, 14:00-18:00）, custom 09:00-12:00（chain: 1）')
+    expect(text).toContain('分时槽: 2 — liang-peak（chain: 2, window 09:00-12:00 (Mon-Fri), 14:00-18:00 (Mon-Fri)）, custom 09:00-12:00（chain: 1）')
     expect(text).toContain('时区: Asia/Shanghai')
     expect(text).toContain('角色: 2 — coder（chain: 2）, reviewer（chain: 1）')
     expect(text).toContain('角色规则: 2 — deepseek/deepseek-chat → coder, anthropic/claude-3-5-sonnet → reviewer')
@@ -584,7 +584,7 @@ describe('fallbacksConfigText — zh/en copy smoke', () => {
     expect(text.split('\n')[0]).toBe('Fallbacks config: enabled')
     expect(text).toContain('Trigger codes: AUTH, QUOTA, RATE_LIMIT')
     expect(text).toContain('Root chain: anthropic/claude-3-5-sonnet, openai/*')
-    expect(text).toContain('Time slots: 2 — liang-peak (chain: 2, window 09:00-12:00, 14:00-18:00), custom 09:00-12:00 (chain: 1)')
+    expect(text).toContain('Time slots: 2 — liang-peak (chain: 2, window 09:00-12:00 (Mon-Fri), 14:00-18:00 (Mon-Fri)), custom 09:00-12:00 (chain: 1)')
     expect(text).toContain('TZ: Asia/Shanghai')
     expect(text).toContain('Roles: 2 — coder (chain: 2), reviewer (chain: 1)')
     expect(text).toContain('Rules: 2 — deepseek/deepseek-chat → coder, anthropic/claude-3-5-sonnet → reviewer')
