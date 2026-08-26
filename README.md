@@ -2,6 +2,7 @@
 
 [English](README.md) | [中文](README.zh-CN.md)
 
+[![npm](https://img.shields.io/npm/dt/dsh-llm-fallbacks)](https://www.npmjs.com/package/dsh-llm-fallbacks)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![node](https://img.shields.io/badge/node-%3E%3D22-339933.svg)
 ![pnpm](https://img.shields.io/badge/pnpm-%3E%3D10-f69220.svg)
