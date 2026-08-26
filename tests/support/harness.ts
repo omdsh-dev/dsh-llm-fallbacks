@@ -18,7 +18,7 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent, RequestErrorAction } from '@deepseek-ai/dsh-agent'
-import { ProviderRequestId } from '@deepseek-ai/dsh-llm'
+import { ProviderRequestId, createAssistantMessage } from '@deepseek-ai/dsh-llm'
 import { RetryId } from '@deepseek-ai/dsh-llm-retry'
 import type {
   LlmCallConfig, LlmFailure, ReasoningEffortId, ResolvedNormalRetryPolicy, ResolvedRetryPolicy,
@@ -73,6 +73,12 @@ export function makeAgent(
       id,
       events,
       header,
+      // Mirrors the real `Session.seq` (the next event's sequence number —
+      // always the log length): the P5 `session/event` driver stamps emitted
+      // events with it.
+      get seq() {
+        return events.length
+      },
       append(type: string, data: Record<string, unknown>) {
         events.push({ type, data })
         return { seq: events.length, type, data }
@@ -158,6 +164,44 @@ export function appendLlmRetry(
       failure,
     })
   }
+}
+
+/**
+ * Emit one `assistant/message` `session/event` through the SAME context the
+ * plugin listens on (plan fallbacks-half-open-recovery P5 driver): the
+ * post-commit append firehose the P3 success-observation listener consumes.
+ * The message is a real `createAssistantMessage` (dsh-llm) carrying the
+ * producing route's `provider`/`model` provenance — the actual producing
+ * route, so a probe served through the virtual FallbacksChain/Auto adapter
+ * matches its real head's key.
+ */
+export function emitAssistantMessage(
+  ctx: Context,
+  agent: Agent,
+  data: {
+    provider: string
+    model: string
+    turn?: number
+    step?: number
+    interrupted?: true
+  },
+): void {
+  const { provider, model } = data
+  const message = createAssistantMessage({
+    content: [{ type: 'text', text: 'ok' }],
+    source: { provider, model },
+  })
+  ctx.emit('session/event', agent.session, {
+    type: 'assistant/message',
+    seq: agent.session.seq,
+    time: Date.now(),
+    data: {
+      turn: data.turn ?? 1,
+      step: data.step ?? 1,
+      message,
+      ...(data.interrupted === undefined ? {} : { interrupted: data.interrupted }),
+    },
+  })
 }
 
 /** Drive one `agent/request-error` waterfall (the loop's dispatch, spec §5 table). */

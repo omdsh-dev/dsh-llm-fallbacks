@@ -915,6 +915,27 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     slotWinners.delete(agent.id)
   })
 
+  // P3 (plan fallbacks-half-open-recovery): plugin-scope success observation —
+  // a read-only `session/event` subscription that closes half-open circuits on
+  // observed completions. Plain `ctx.on` (no `{ global: true }` — the
+  // dsh-agent-presets precedent): scoping parity with the plugin's own
+  // `agent/*` listeners, so exactly the managed agents' sessions are observed.
+  // Cordis auto-disposes listeners with the plugin fiber — no explicit
+  // disposer, mirroring the existing four. Filter chain (cheap, in order):
+  // type → mode → interrupted → source.kind. `Agent.id` IS the session
+  // identity, so `states.peek(session.id)` needs no reverse map and never
+  // creates (F-004). Read-only: the listener never appends (mount-only).
+  ctx.on('session/event', (session, event) => {
+    if (event.type !== 'assistant/message') return
+    if ((source().recovery ?? 'timer') !== 'half-open') return
+    if (event.data.interrupted === true) return
+    const message = event.data.message
+    if (message.source.kind !== 'model') return
+    const state = states.peek(session.id)
+    if (state === undefined) return
+    states.observeSuccess(state, selectorKey(message.source.provider, message.source.model))
+  })
+
   ctx.effect(() => () => {
     states.clear()
     dispatchInjected.clear()
