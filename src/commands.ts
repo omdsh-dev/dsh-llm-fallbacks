@@ -57,6 +57,8 @@ export interface FallbacksCooldownEntry {
   readonly key: string
   /** Expiry epoch ms; `Infinity` for `revertPolicy: 'never'`. */
   readonly untilEpochMs: number
+  /** True for a half-open marker row (an expired cooldown awaiting a recovery probe). */
+  readonly halfOpen?: boolean
 }
 
 /** The read-only diagnostic snapshot the `/fallbacks` handler renders. */
@@ -205,6 +207,7 @@ export const FALLBACKS_COMMAND_LOCALES = {
     cooldownNone: '无活跃冷却',
     cooldownLine: '{key} 冷却至 {time}',
     cooldownNever: '{key} 会话内不再回主',
+    cooldownHalfOpen: '{key} half-open（等待恢复探针）',
     reason: {
       'trigger-code': '触发码',
       'always-cap': 'always 上限',
@@ -269,6 +272,7 @@ export const FALLBACKS_COMMAND_LOCALES = {
     cooldownNone: 'none active',
     cooldownLine: '{key} suppressed until {time}',
     cooldownNever: '{key} not reverting this session',
+    cooldownHalfOpen: '{key} half-open (awaiting recovery probe)',
     reason: {
       'trigger-code': 'trigger-code',
       'always-cap': 'always-cap',
@@ -458,8 +462,14 @@ function formatSwitch(entry: FallbacksSwitchEventData, t: FallbacksCommandCopy):
     .replace('{reason}', (t.reason as Partial<Record<FallbackSwitchReason, string>>)[entry.reason] ?? entry.reason)
 }
 
-/** Render one cooldown entry as one text line (`Infinity` = never reverts). */
+/**
+ * Render one cooldown entry as one text line. The half-open marker branches
+ * FIRST (plan fallbacks-half-open-recovery P4): a half-open row's
+ * `untilEpochMs` is the lapsed expiry epoch, so it must never render as a
+ * suppression time or `Infinity` (`Infinity` entries never transition).
+ */
 function formatCooldown(entry: FallbacksCooldownEntry, t: FallbacksCommandCopy): string {
+  if (entry.halfOpen === true) return t.cooldownHalfOpen.replace('{key}', entry.key)
   if (!Number.isFinite(entry.untilEpochMs)) return t.cooldownNever.replace('{key}', entry.key)
   return t.cooldownLine
     .replace('{key}', entry.key)

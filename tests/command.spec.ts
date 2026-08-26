@@ -1184,4 +1184,95 @@ describe('apply() wiring — conditional commands child', () => {
     const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)
     expect(descriptor?.user).toMatchObject({ roles: { list: [] } })
   })
+
+  it('renders the half-open marker row when an expired cooldown awaits a recovery probe (P4)', async () => {
+    const registered: CommandDefinition[] = []
+    ctx.provide('commands', {
+      register: (def: CommandDefinition) => {
+        registered.push(def)
+        return () => {}
+      },
+    } as never)
+    apply(ctx, cfg({ rootChain: ['mock/gpt-4o', 'other/gpt-4o'], recovery: 'half-open' }))
+    await vi.waitFor(() => expect(registered).toHaveLength(1))
+
+    const { agent } = makeAgent('cmd-half-open', { provider: 'mock', model: 'gpt-4o' })
+    // A real switch: mock is suppressed flat (n=1).
+    const action = await dispatchRequestError(ctx, agent)
+    expect(action).toEqual({ kind: 'retry' })
+    vi.useFakeTimers()
+    try {
+      // The cooldown lapses: the diagnostic read transitions the expired
+      // entry to half-open, so the marker appears at expiry without waiting
+      // for a failure walk.
+      vi.setSystemTime(Date.now() + 301_000)
+      const result = registered[0]!.handler({
+        commandId: 'x',
+        agent,
+        rawInput: '',
+        signal: new AbortController().signal,
+      } as unknown as CommandInvocation)
+      expect(result.kind).toBe('success')
+      const text = (result as { text?: string }).text ?? ''
+      expect(text).toContain('冷却 (1):')
+      expect(text).toContain('mock/gpt-4o half-open（等待恢复探针）')
+      expect(text).not.toContain('冷却至')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('default timer mode keeps the bare diagnostic byte-identical (no half-open marker, no recovery line)', async () => {
+    const registered: CommandDefinition[] = []
+    ctx.provide('commands', {
+      register: (def: CommandDefinition) => {
+        registered.push(def)
+        return () => {}
+      },
+    } as never)
+    apply(ctx, cfg({ rootChain: ['mock/gpt-4o', 'other/gpt-4o'] }))
+    await vi.waitFor(() => expect(registered).toHaveLength(1))
+
+    const { agent } = makeAgent('cmd-timer', { provider: 'mock', model: 'gpt-4o' })
+    const action = await dispatchRequestError(ctx, agent)
+    expect(action).toEqual({ kind: 'retry' })
+    const result = registered[0]!.handler({
+      commandId: 'x',
+      agent,
+      rawInput: '',
+      signal: new AbortController().signal,
+    } as unknown as CommandInvocation)
+    expect(result.kind).toBe('success')
+    const text = (result as { text?: string }).text ?? ''
+    // The suppression line renders exactly as before the recovery feature.
+    expect(text).toContain('mock/gpt-4o 冷却至')
+    expect(text).not.toContain('half-open')
+    expect(text).not.toContain('恢复')
+  })
+
+  it('/fallbacks config gains no recovery line even under half-open mode (P1 byte-identity)', async () => {
+    const registered: CommandDefinition[] = []
+    ctx.provide('commands', {
+      register: (def: CommandDefinition) => {
+        registered.push(def)
+        return () => {}
+      },
+    } as never)
+    apply(ctx, cfg({ rootChain: ['other/gpt-4o'], recovery: 'half-open' }))
+    await vi.waitFor(() => expect(registered).toHaveLength(1))
+
+    const { agent } = makeAgent('cmd-config-half-open', { provider: 'mock', model: 'gpt-4o' })
+    const result = registered[0]!.handler({
+      commandId: 'x',
+      agent,
+      rawInput: ' config',
+      signal: new AbortController().signal,
+    } as unknown as CommandInvocation)
+    expect(result.kind).toBe('success')
+    const text = result.kind === 'success' ? (result.text ?? '') : ''
+    expect(text.split('\n')[0]).toBe('Fallbacks 配置: 已启用')
+    expect(text).toContain('冷却: 300000 ms')
+    expect(text).not.toContain('recovery')
+    expect(text).not.toContain('恢复')
+  })
 })
