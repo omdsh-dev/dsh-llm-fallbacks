@@ -79,6 +79,28 @@ describe('P3 success observation — session/event listener (plan fallbacks-half
 
     expect(stateStore(ctx)!.peek(agent.id)!.recovery.isHalfOpen('mock/gpt-4o')).toBe(true)
   })
+  it('an interrupted completion does not reset a nonzero escalation exponent (rule 7, PR #87 review point 2c)', () => {
+    const { agent } = makeAgent('p3-interrupted-n', { provider: 'mock', model: 'gpt-4o' })
+    apply(ctx, cfg({ recovery: 'half-open' }))
+    const store = stateStore(ctx)!
+    const state = store.get(agent.id)
+    // Seed a half-open episode carrying a nonzero consecutive-failure
+    // counter (a probe failure escalates to n+1 — rule 5). NOT via the
+    // markHalfOpen-from-clean path: recordFailure first, then the lapsed
+    // suppression transitions the EXISTING entry to half-open, so the
+    // counter survives the episode.
+    state.recovery.recordFailure('mock/gpt-4o')
+    store.suppress(state, 'mock/gpt-4o', 1_000)
+    expect(store.isSuppressed(state, 'mock/gpt-4o', 2_000, 'half-open')).toBe(false)
+    expect(state.recovery.isHalfOpen('mock/gpt-4o')).toBe(true)
+
+    emitAssistantMessage(ctx, agent, { provider: 'mock', model: 'gpt-4o', interrupted: true })
+
+    // The interrupted completion is neutral: close is not called, the entry
+    // survives with its counter — the next failure still escalates to n+1.
+    expect(state.recovery.isHalfOpen('mock/gpt-4o')).toBe(true)
+    expect(state.recovery.recordFailure('mock/gpt-4o')).toBe(2)
+  })
 
   it('ignores a non-model message source (source.kind filter)', () => {
     const { agent } = makeAgent('p3-source', { provider: 'mock', model: 'gpt-4o' })

@@ -25,6 +25,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { apply, stateStore } from '../src/index.ts'
 import { MemorySettings } from './support/memory-settings.ts'
+import { FALLBACKS_SETTINGS_NAMESPACE } from '../src/gateway.ts'
 import {
   appendLlmRetry,
   cfg,
@@ -243,6 +244,90 @@ describe('half-open runtime integration (plan fallbacks-half-open-recovery P4)',
       expect(state.stepFailures.switchCount).toBe(0)
       expect(state.cooldown.peek('mock/gpt-4o')).toBe(t0 + 301_000 + 600_000)
       expect(state.recovery.isHalfOpen('mock/gpt-4o')).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a mid-session flip to revertPolicy never blocks the 5b escalation write (qc1 S-001)', async () => {
+    const logs = captureLogs()
+    const { agent, setRoute } = makeAgent('probe-5b-never', { provider: 'mock', model: 'gpt-4o' })
+    apply(ctx, cfg({ rootChain: ['mock/gpt-4o', 'anthropic/claude-3-5-sonnet'], recovery: 'half-open' }))
+    vi.useFakeTimers()
+    const t0 = Date.now()
+    try {
+      await walkIntoHalfOpen({ agent, setRoute }, logs, t0)
+      // Mid-session flip: the route is already half-open under
+      // cooldown-expiry; the operator switches to 'never' while the episode
+      // is unresolved. Under 'never' every suppression must be Infinity — the
+      // 5b write must not land a finite escalated until.
+      // installSettingsSection registers through `ctx.inject` (a deferred
+      // callback even when the service is already mounted) — wait for the
+      // namespace registration before flipping (vi.waitFor advances the
+      // fake timers this suite runs under).
+      await vi.waitFor(() => expect(ctx.settings.get(FALLBACKS_SETTINGS_NAMESPACE)).toBeDefined())
+      await ctx.settings.update(FALLBACKS_SETTINGS_NAMESPACE, { revertPolicy: 'never' })
+      const store = stateStore(ctx)!
+      const state = store.peek('probe-5b-never')!
+      // The probe routes to mock (pending switch applied), then fails with
+      // no surviving target (claude still suppressed) → the null decision
+      // fires rule 5b — which the never short-circuit must skip entirely.
+      let config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' }, { turn: 2, step: 2 })
+      setRoute(config.provider, config.model)
+      const action = await dispatchRequestError(ctx, agent, {
+        turn: 2,
+        step: 2,
+        failure: { message: 'boom', code: 'AUTH' },
+      })
+      // Null decision → the original failure passes through.
+      expect(action).toBeUndefined()
+      // No finite suppression was written: the cooldown store gained no
+      // entry and the half-open episode is untouched (recordFailure never
+      // ran — the counter still escalates the NEXT episode, not this one).
+      expect(state.cooldown.peek('mock/gpt-4o')).toBeUndefined()
+      expect(state.recovery.isHalfOpen('mock/gpt-4o')).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a mid-session flip to timer silences the half-open probe log (qc1 W-001)', async () => {
+    const logs = captureLogs()
+    const { agent } = makeAgent('probe-timer-flip', { provider: 'mock', model: 'gpt-4o' })
+    apply(ctx, cfg({ rootChain: ['mock/gpt-4o', 'anthropic/claude-3-5-sonnet'], recovery: 'half-open' }))
+    vi.useFakeTimers()
+    const t0 = Date.now()
+    try {
+      // Seed an unresolved half-open episode with probeLogged still false —
+      // the lapsed suppression transitions the entry at the read (rule 3);
+      // no admission has logged yet.
+      const store = stateStore(ctx)!
+      const state = store.get('probe-timer-flip')
+      store.suppress(state, 'mock/gpt-4o', t0 + 1_000)
+      expect(store.isSuppressed(state, 'mock/gpt-4o', t0 + 2_000, 'half-open')).toBe(false)
+      expect(state.recovery.isHalfOpen('mock/gpt-4o')).toBe(true)
+      // Mid-session flip to timer while the episode is in progress.
+      // installSettingsSection registers through `ctx.inject` (a deferred
+      // callback even when the service is already mounted) — wait for the
+      // namespace registration before flipping (vi.waitFor advances the
+      // fake timers this suite runs under).
+      await vi.waitFor(() => expect(ctx.settings.get(FALLBACKS_SETTINGS_NAMESPACE)).toBeDefined())
+      await ctx.settings.update(FALLBACKS_SETTINGS_NAMESPACE, { recovery: 'timer' })
+      // The next walk selects mock as the surviving target (timer drops the
+      // lapsed cooldown entry) — but the probe log is live-mode gated, so no
+      // half-open line is emitted while the plugin is in timer mode.
+      let config = await dispatchRequest(ctx, agent, { provider: 'anthropic', model: 'claude-3-5-sonnet' })
+      expect(config).toEqual({ provider: 'anthropic', model: 'claude-3-5-sonnet' })
+      const action = await dispatchRequestError(ctx, agent, {
+        turn: 1,
+        step: 1,
+        provider: 'anthropic',
+        failure: { message: 'boom', code: 'AUTH' },
+      })
+      expect(action).toEqual({ kind: 'retry' })
+      config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' }, { turn: 1, step: 1 })
+      expect(config).toEqual({ provider: 'mock', model: 'gpt-4o' })
+      expect(probeLogs(logs)).toHaveLength(0)
     } finally {
       vi.useRealTimers()
     }
