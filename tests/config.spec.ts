@@ -108,6 +108,18 @@ describe('fallbacks Config schema (two-block model)', () => {
       /presets expected "bundled" \| "none"/,
     )
   })
+
+  it('rejects a recovery value outside the timer|half-open union at schema resolve', () => {
+    // Same semantics as the presets union (plan fallbacks-half-open-recovery
+    // Task 1): the value domain is guarded by the schema — NOT by
+    // validateFallbacksConfig. The matcher pins the rejecting stage AND the
+    // exact union, so a subset-list regression (e.g. a single-const union)
+    // fails here.
+    expect(() => Config({ recovery: 'sometimes' } as unknown as FallbacksConfig)).toThrow(TypeError)
+    expect(() => Config({ recovery: 'sometimes' } as unknown as FallbacksConfig)).toThrow(
+      /recovery expected "timer" \| "half-open"/,
+    )
+  })
 })
 
 describe('roleAutoMatch config key (plan fallbacks-role-automatch Task 1)', () => {

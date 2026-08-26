@@ -339,6 +339,12 @@ export function parseFallbacksConfig(value: unknown): FallbacksConfig {
   if (tz !== undefined && typeof tz !== 'string') {
     throw new TypeError('fallbacks descriptor tz must be a string')
   }
+  // P1 mirror: the host schema gained `recovery` (13th field) — mechanical
+  // descriptor guard mirroring `revertPolicy`/`presets`.
+  const recovery = value.recovery
+  if (recovery !== undefined && recovery !== 'timer' && recovery !== 'half-open') {
+    throw new TypeError('fallbacks descriptor recovery must be timer|half-open')
+  }
   return {
     enabled: enabled ?? defaultFallbacksConfig.enabled,
     triggerCodes: (triggerCodes as string[] | undefined) ?? [...defaultFallbacksConfig.triggerCodes],
@@ -374,6 +380,12 @@ export function parseFallbacksConfig(value: unknown): FallbacksConfig {
     // P5 mirror: the host default gained `tz` (12th field), so the client
     // fold mirrors it too — mechanical mirror of `presets`.
     tz: (tz as FallbacksConfig['tz'] | undefined) ?? defaultFallbacksConfig.tz,
+    // P1 mirror: the host default gained `recovery` (13th field), so the
+    // client fold mirrors it too — `parseFallbacksConfig` output must stay
+    // equal to `defaultFallbacksConfig` (pinned invariant). Mechanical
+    // mirror of `presets`; the settings card neither consumes nor renders
+    // `recovery` (YAML-only, plan fallbacks-half-open-recovery).
+    recovery: (recovery as FallbacksConfig['recovery'] | undefined) ?? defaultFallbacksConfig.recovery,
   }
 }
 

@@ -45,6 +45,7 @@ import { parseSelector, selectorKey, type Selector } from './selectors.ts'
 import { resolveRole } from './roles.ts'
 import { firstExactCandidate, resolveRoleAtDispatch } from './role-resolution.ts'
 import { FallbackStateStore, type AgentFallbackState, type PendingSwitch } from './state.ts'
+import { escalatedCooldownMs } from './recovery.ts'
 import {
   isAllDayConforming,
   resolveEffectiveChain,
@@ -185,6 +186,7 @@ export {
   type FallbacksRoleRule,
   type FallbackStrategy,
   type RevertPolicy,
+  type RecoveryPolicy,
 } from './config.ts'
 export {
   parseSelector,
@@ -616,7 +618,7 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
       )
       : undefined
     const cooldown = {
-      isSuppressed: (key: string) => state !== undefined && states.isSuppressed(state, key),
+      isSuppressed: (key: string) => state !== undefined && states.isSuppressed(state, key, Date.now(), source().recovery ?? 'timer'),
     }
     const failed = {
       has: (key: string) => state !== undefined && state.stepFailures.failed.has(key),
@@ -625,6 +627,28 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     const surviving = selectCandidates(all, wildcard, filter, modelExists)
     const target = surviving[0]
     if (target === undefined || target.model === undefined) return null
+    // P2 rule 4 (plan fallbacks-half-open-recovery Task 4): the once-per-episode
+    // probe admission marker — the FIRST admission of a half-open episode logs
+    // one info line; later admissions while the episode is unresolved route
+    // normally and log nothing (the marker is not a gate — no admission limit).
+    // The emission is live-mode gated (qc1 W-001): a mid-session flip to timer
+    // must not log a half-open probe line, and the marker is consumed only
+    // when the log actually emits (a flip back to half-open within the same
+    // episode still logs once).
+    if (
+      (source().recovery ?? 'timer') === 'half-open' &&
+      state !== undefined &&
+      state.recovery.tryMarkProbeLogged(selectorKey(target.provider, target.model))
+    ) {
+      logger.info(
+        'llm-fallbacks: agent "%s" half-open probe %s/%s (role=%s, reason=%s)',
+        agent.id,
+        target.provider,
+        target.model,
+        role,
+        reason,
+      )
+    }
     logger.info(
       // Copy split (spec § Copy): the failure walk is 降级切换 / fallback
       // switch — never 分时 (that copy belongs to the slot-rotation log in
@@ -659,7 +683,17 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   function commit(state: AgentFallbackState, pending: PendingSwitch, turn: number, step: number): void {
     const config = source()
     const fromKey = selectorKey(pending.from.provider, pending.from.model)
-    const until = config.revertPolicy === 'never' ? Number.POSITIVE_INFINITY : Date.now() + config.cooldownMs
+    // P2 rule 1 (plan fallbacks-half-open-recovery Task 4): under half-open
+    // mode the suppression duration escalates with the consecutive-failure
+    // counter (n = 1 is flat cooldownMs); 'never' and 'timer' run today's
+    // line verbatim. The states.recordFailure/recordSwitch bookkeeping below
+    // is untouched — escalation changes duration only, never the per-step
+    // switch count.
+    const until = config.revertPolicy === 'never'
+      ? Number.POSITIVE_INFINITY
+      : config.recovery === 'half-open'
+        ? Date.now() + escalatedCooldownMs(config.cooldownMs, state.recovery.recordFailure(fromKey))
+        : Date.now() + config.cooldownMs
     // F-004 follow-up: a state freshly created by `states.get` at the commit
     // site carries no (turn, step) markers — sync them here so the next
     // decision's valve/failed-set bookkeeping sees this committed step (a
@@ -676,6 +710,31 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     // session containing the event refused to load after a dsh restart. The
     // switch decision is still recorded by the decide() info log; only the
     // durable event is dropped (never poison a session log).
+  }
+
+  /**
+   * P2 rule 5b (plan fallbacks-half-open-recovery Task 4): a probe failure
+   * with no surviving switch target (`decide` → null — single-route chain
+   * or all siblings suppressed) re-suppresses the half-open route with the
+   * escalated duration. Gated on half-open mode AND an in-progress half-open
+   * episode for the failed key. This is the deliberate, documented exception
+   * to F-004 ("null decision must not grow the store"): a real probe failure
+   * justifies the entry. The write applies rule 1's escalation WITHOUT a
+   * pending switch and WITHOUT `recordSwitch` — escalation changes
+   * suppression duration only, never the per-step switch count.
+   */
+  function failHalfOpenProbe(agentId: string, current: FailingModel): void {
+    const key = selectorKey(current.provider, current.model)
+    if ((source().recovery ?? 'timer') !== 'half-open') return
+    // qc1 S-001: a mid-session flip to 'never' must not write an escalated
+    // finite suppression — under 'never' every suppression is Infinity (the
+    // commit gate), and the never short-circuit is structural on the read
+    // side (state.ts isSuppressed), so the write is skipped entirely.
+    if (source().revertPolicy === 'never') return
+    if (states.peek(agentId)?.recovery.isHalfOpen(key) !== true) return
+    const state = states.get(agentId)
+    const n = state.recovery.recordFailure(key)
+    states.suppress(state, key, Date.now() + escalatedCooldownMs(source().cooldownMs, n))
   }
 
   ctx.on('agent/request-error', async (
@@ -696,7 +755,10 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
       // F-004: peek, never create — a null decision must not grow the store.
       const state = states.peek(agent.id)
       const pending = await decide(agent, turn, step, current, 'trigger-code', state)
-      if (pending === null) return next()
+      if (pending === null) {
+        failHalfOpenProbe(agent.id, current)
+        return next()
+      }
       commit(states.get(agent.id), pending, turn, step)
       return { kind: 'retry' }
     } catch (error) {
@@ -897,6 +959,8 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
           // Same host-native routing as the trigger-code path above.
           return overrideConfig(seed, appliedCap.to)
         }
+      } else {
+        failHalfOpenProbe(agent.id, { provider: seed.provider, model: seed.model })
       }
     }
     return seed
@@ -914,6 +978,27 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     slotWinners.delete(agent.id)
   })
 
+  // P3 (plan fallbacks-half-open-recovery): plugin-scope success observation —
+  // a read-only `session/event` subscription that closes half-open circuits on
+  // observed completions. Plain `ctx.on` (no `{ global: true }` — the
+  // dsh-agent-presets precedent): scoping parity with the plugin's own
+  // `agent/*` listeners, so exactly the managed agents' sessions are observed.
+  // Cordis auto-disposes listeners with the plugin fiber — no explicit
+  // disposer, mirroring the existing four. Filter chain (cheap, in order):
+  // type → mode → interrupted → source.kind. `Agent.id` IS the session
+  // identity, so `states.peek(session.id)` needs no reverse map and never
+  // creates (F-004). Read-only: the listener never appends (mount-only).
+  ctx.on('session/event', (session, event) => {
+    if (event.type !== 'assistant/message') return
+    if ((source().recovery ?? 'timer') !== 'half-open') return
+    if (event.data.interrupted === true) return
+    const message = event.data.message
+    if (message.source.kind !== 'model') return
+    const state = states.peek(session.id)
+    if (state === undefined) return
+    states.observeSuccess(state, selectorKey(message.source.provider, message.source.model))
+  })
+
   ctx.effect(() => () => {
     states.clear()
     dispatchInjected.clear()
@@ -927,12 +1012,25 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   // unavailable with no top-level error. The handler reads live state
   // through the SAME `source()` / `roleIds` / `states` the runtime uses and
   // never mutates fallback state (read-only; no cooldown reset, no pending
-  // writes).
+  // writes). The one exception is the half-open display path (P4): expired
+  // cooldown entries lazily transition to half-open at the diagnostic read —
+  // the same lazy-expiry the decision-path read performs — so the marker
+  // appears at expiry without waiting for a failure walk.
   const fallbacksCommandController: FallbacksCommandController = {
     getSnapshot(agent): FallbacksCommandSnapshot {
       const config = source()
       const role = resolveRole(agent, config.roles.rules, roleIds, logger.warn)
       const state = states.peek(agent.id)
+      // P4 (plan fallbacks-half-open-recovery Task 4): under half-open mode
+      // the expired cooldown entries transition AT the diagnostic read (so
+      // the marker appears at expiry without waiting for a failure walk),
+      // then the active rows are followed by the half-open marker rows.
+      // Timer mode skips syncRecovery entirely — internal state and output
+      // stay byte-identical in default mode.
+      const recovery = config.recovery ?? 'timer'
+      if (state !== undefined && recovery === 'half-open') {
+        states.syncRecovery(state, Date.now(), recovery)
+      }
       return {
         origin: agent.session.header?.origin ?? 'root',
         role,
@@ -942,7 +1040,18 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
         // fact at `now` (a subagent session's chain display is unchanged).
         slot: resolveSlotState(config, new Date(), config.tz ?? 'Asia/Shanghai'),
         switches: recentFallbacksSwitches(agent.session.events, RECENT_SWITCHES_LIMIT),
-        cooldown: state === undefined ? [] : state.cooldown.snapshot(),
+        cooldown: state === undefined
+          ? []
+          : recovery === 'half-open'
+            ? [
+              ...state.cooldown.snapshot(),
+              ...state.recovery.halfOpenEntries().map((entry) => ({
+                key: entry.key,
+                untilEpochMs: entry.untilEpochMs,
+                halfOpen: true,
+              })),
+            ]
+            : state.cooldown.snapshot(),
       }
     },
     // T2 AC-2: composed-config readback — the SAME live `source()` the

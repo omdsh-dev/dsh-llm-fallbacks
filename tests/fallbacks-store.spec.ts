@@ -271,6 +271,9 @@ describe('parseFallbacksConfig (descriptor read, redactSecrets face)', () => {
       // host defaults, so a truly complete config carries them.
       timeSlots: [],
       tz: 'Asia/Shanghai',
+      // P1 key (plan fallbacks-half-open-recovery Task 1): the fold mirrors
+      // the host default, so a truly complete config carries it.
+      recovery: 'timer',
     }
     expect(parseFallbacksConfig(config)).toEqual(config)
   })
@@ -305,6 +308,7 @@ describe('parseFallbacksConfig (descriptor read, redactSecrets face)', () => {
     expect(() => parseFallbacksConfig({ roles: { rules: [{ origin: 'host', role: 'x' }] } })).toThrow(TypeError)
     expect(() => parseFallbacksConfig({ revertPolicy: 'sometimes' })).toThrow(TypeError)
     expect(() => parseFallbacksConfig({ presets: 'sometimes' })).toThrow(TypeError)
+    expect(() => parseFallbacksConfig({ recovery: 'sometimes' })).toThrow(TypeError)
     expect(() => parseFallbacksConfig({ cooldownMs: 'soon' })).toThrow(TypeError)
     expect(() => parseFallbacksConfig({ enabled: 'yes' })).toThrow(TypeError)
   })
