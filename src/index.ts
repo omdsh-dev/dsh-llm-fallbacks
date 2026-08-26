@@ -185,6 +185,7 @@ export {
   type FallbacksRoleRule,
   type FallbackStrategy,
   type RevertPolicy,
+  type RecoveryPolicy,
 } from './config.ts'
 export {
   parseSelector,

@@ -126,6 +126,11 @@ const CONFIG_KEYS: Record<string, true> = {
   // validateConfigPatch (the ROLES_KEYS pattern, Task 3).
   timeSlots: true,
   tz: true,
+  // Plan fallbacks-half-open-recovery (P1): the single gateway surface for
+  // the `recovery` key — readConfig whitelists it for `get` readback, and
+  // set acceptance resolves it through validateConfigPatch's schema check
+  // (no hand-written enum guard; scalars rely on schema resolve).
+  recovery: true,
 }
 
 /** Declared nested keys of the `roles` patch — anything else is rejected (qc2 S-1). */

@@ -163,6 +163,7 @@ describe('export surface: type exports (compile-time only)', () => {
     expectTypeOf<index.Selector>().toEqualTypeOf<{ provider: string; model?: string; raw: string }>()
     expectTypeOf<index.FailingModel>().toEqualTypeOf<{ provider: string; model: string }>()
     expectTypeOf<index.FallbackStrategy>().toEqualTypeOf<'inherit-root' | 'none'>()
+    expectTypeOf<index.RecoveryPolicy>().toEqualTypeOf<'timer' | 'half-open'>()
     expectTypeOf<index.RevertPolicy>().toEqualTypeOf<'cooldown-expiry' | 'never'>()
     expectTypeOf<index.CandidateSkipReason>().toEqualTypeOf<
       'same-as-current' | 'cooldown' | 'step-failed' | 'missing-id'

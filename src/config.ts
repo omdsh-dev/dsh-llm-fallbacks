@@ -32,6 +32,8 @@ import { parseSelector } from './selectors.ts'
 import { PRESETS, isAllDayConforming } from './time-slots.ts'
 import type { SlotRowConfig } from './time-slots.ts'
 
+/** How an expired cooldown recovers the route (plan fallbacks-half-open-recovery Task 1). */
+export type RecoveryPolicy = 'timer' | 'half-open'
 /** How a cooled-down model comes back (spec §4). */
 export type RevertPolicy = 'cooldown-expiry' | 'never'
 
@@ -131,6 +133,18 @@ export interface FallbacksConfig {
    * UTC+8). Not per-slot.
    */
   tz?: string
+  /**
+   * Cooldown-expiry recovery mode (plan fallbacks-half-open-recovery Task
+   * 1): `'timer'` restores the preferred candidate when the cooldown
+   * expires (today's behavior); `'half-open'` leaves the route half-open
+   * for one logged probe instead. Optional on purpose, mirroring
+   * `presets` — a required field would break library consumers that
+   * construct `FallbacksConfig` literals with the existing keys
+   * (additive, non-breaking). The value domain is guarded by the schema
+   * (`Config` in `src/schema.ts`), NOT by `validateFallbacksConfig`, and
+   * every resolved config carries a value via the schema default.
+   */
+  recovery?: RecoveryPolicy
 }
 
 /**
@@ -153,6 +167,7 @@ export const defaultFallbacksConfig: FallbacksConfig = {
   roleAutoMatch: true,
   timeSlots: [],
   tz: 'Asia/Shanghai',
+  recovery: 'timer',
 }
 
 /**

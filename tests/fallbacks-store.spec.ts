@@ -271,6 +271,9 @@ describe('parseFallbacksConfig (descriptor read, redactSecrets face)', () => {
       // host defaults, so a truly complete config carries them.
       timeSlots: [],
       tz: 'Asia/Shanghai',
+      // P1 key (plan fallbacks-half-open-recovery Task 1): the fold mirrors
+      // the host default, so a truly complete config carries it.
+      recovery: 'timer',
     }
     expect(parseFallbacksConfig(config)).toEqual(config)
   })
