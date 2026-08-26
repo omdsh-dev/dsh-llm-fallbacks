@@ -31,6 +31,7 @@
 import { parseSelector } from './selectors.ts'
 import { PRESETS, isAllDayConforming } from './time-slots.ts'
 import type { SlotRowConfig } from './time-slots.ts'
+import { ESCALATION_CAP_MS } from './recovery.ts'
 
 /** How an expired cooldown recovers the route (plan fallbacks-half-open-recovery Task 1). */
 export type RecoveryPolicy = 'timer' | 'half-open'
@@ -298,6 +299,16 @@ export function validateFallbacksConfig(config: FallbacksConfig, logger: Fallbac
         )
       }
     }
+  }
+  // Review point 3 (PR #87): with `recovery: 'half-open'` and a cooldown at
+  // or above the 1-hour escalation cap, `escalatedCooldownMs` degenerates to
+  // `max(ms, min(cap, ms × 2^(n-1)))` = `ms` for every n — escalation is
+  // silently inert (every suppression stays flat at cooldownMs). Same class
+  // as the other inert-configuration warns: one startup warn, never throws.
+  if ((config.recovery ?? 'timer') === 'half-open' && config.cooldownMs >= ESCALATION_CAP_MS) {
+    logger.warn(
+      `llm-fallbacks: recovery "half-open" escalation is inert — cooldownMs (${config.cooldownMs} ms) is at or above the 1-hour escalation cap (${ESCALATION_CAP_MS} ms), so every suppression stays flat at cooldownMs`,
+    )
   }
 }
 
