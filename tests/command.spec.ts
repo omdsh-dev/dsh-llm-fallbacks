@@ -332,6 +332,19 @@ describe('fallbacksCommandText — output states', () => {
     expect(text).toContain('deepseek/deepseek-chat 会话内不再回主')
   })
 
+  it('renders the half-open marker row for a { key, untilEpochMs, halfOpen: true } entry (zh + en)', () => {
+    // P4 (plan fallbacks-half-open-recovery): a half-open row's
+    // `untilEpochMs` is the lapsed expiry epoch — the marker branches FIRST
+    // and must never render as a suppression time.
+    const entry = { key: 'deepseek/deepseek-chat', untilEpochMs: 2000, halfOpen: true }
+    const zh = fallbacksCommandText(snapshot({ cooldown: [entry] }), 'zh')
+    expect(zh).toContain('deepseek/deepseek-chat half-open（等待恢复探针）')
+    expect(zh).not.toContain('冷却至')
+    const en = fallbacksCommandText(snapshot({ cooldown: [entry] }), 'en')
+    expect(en).toContain('deepseek/deepseek-chat half-open (awaiting recovery probe)')
+    expect(en).not.toContain('suppressed until')
+  })
+
   it('renders the none state when no cooldown is active', () => {
     const zh = fallbacksCommandText(snapshot({ cooldown: [] }), 'zh')
     expect(zh).toContain('冷却: 无活跃冷却')

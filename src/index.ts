@@ -631,7 +631,15 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     // probe admission marker — the FIRST admission of a half-open episode logs
     // one info line; later admissions while the episode is unresolved route
     // normally and log nothing (the marker is not a gate — no admission limit).
-    if (state !== undefined && state.recovery.tryMarkProbeLogged(selectorKey(target.provider, target.model))) {
+    // The emission is live-mode gated (qc1 W-001): a mid-session flip to timer
+    // must not log a half-open probe line, and the marker is consumed only
+    // when the log actually emits (a flip back to half-open within the same
+    // episode still logs once).
+    if (
+      (source().recovery ?? 'timer') === 'half-open' &&
+      state !== undefined &&
+      state.recovery.tryMarkProbeLogged(selectorKey(target.provider, target.model))
+    ) {
       logger.info(
         'llm-fallbacks: agent "%s" half-open probe %s/%s (role=%s, reason=%s)',
         agent.id,
@@ -718,6 +726,11 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   function failHalfOpenProbe(agentId: string, current: FailingModel): void {
     const key = selectorKey(current.provider, current.model)
     if ((source().recovery ?? 'timer') !== 'half-open') return
+    // qc1 S-001: a mid-session flip to 'never' must not write an escalated
+    // finite suppression — under 'never' every suppression is Infinity (the
+    // commit gate), and the never short-circuit is structural on the read
+    // side (state.ts isSuppressed), so the write is skipped entirely.
+    if (source().revertPolicy === 'never') return
     if (states.peek(agentId)?.recovery.isHalfOpen(key) !== true) return
     const state = states.get(agentId)
     const n = state.recovery.recordFailure(key)
