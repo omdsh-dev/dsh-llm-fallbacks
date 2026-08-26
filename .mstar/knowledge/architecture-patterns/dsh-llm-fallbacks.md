@@ -70,6 +70,8 @@ wire 层需显式规范化：`validateConfigPatch` 按新键集 own-key membersh
 
 cooldownMs 内被切离/失败模型不入选；revertPolicy: 'cooldown-expiry' 到期回主、'never' 用 Infinity TTL 会话内不回。每 step 失败模型集合 + maxSwitchesPerStep 双重防护；链耗尽保持原 LlmError 语义。
 
+**half-open 恢复（iter-20260826，issue #85，opt-in `recovery: 'timer' | 'half-open'` 默认 'timer'）**：timer 模式行为逐字节不变（含 `/fallbacks` 输出）。`'half-open'`（仅在 cooldown-expiry 下生效）把恢复从纯定时器升级为证据驱动：到期条目经 `CooldownStore.peek` 读到 `until <= now` 时不再丢弃，转入半开态（`RecoveryStore` 纯模块、per-route `{consecutiveFailures, halfOpen, probeLogged, expiredUntil}`）；半开条目**不抑制**——候选过滤照常放行，「每 expiry episode 一条 logged probe」是 probeLogged 标记而非准入门限（未决期内两次准入都路由，仅首次打日志）；失败走 commit 路径按 `escalatedCooldownMs(ms,n)=max(ms, min(1h, ms·2^(n-1)))` 递进重压（无幸存目标的 null-decision 路径由 failHalfOpenProbe 补记账——今天链尾自身失败不写任何状态）；成功闭合只认 **plugin-scope 只读 `session/event` 订阅**到的完成事件（`assistant/message` 的 ModelMessageSource provider/model 匹配 + `interrupted !== true`），且 **close 仅从半开态生效**（活跃抑制期的迟到成功是 no-op——失败是更新近的证据）。中断前缀既非成功也非失败。状态会话级内存、agent/disposed 清理零新代码；不写任何持久事件。
+
 ### mode:'always' 的 cap（ADR-2）
 
 llm-retry always 模式先 next() 委托下游——若在 request-error 直接切换会抢占退避。故 cap 在 agent/request 边界生效：按 (turn, step, provider) 计数已持久化 llm/retry 事件（只计 mode === 'always' 条目）≥ alwaysModeRetryCap 才切换。

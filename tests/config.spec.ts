@@ -21,6 +21,7 @@ import {
   type FallbacksConfig,
   type FallbacksRole,
 } from '../src/config.ts'
+import { ESCALATION_CAP_MS } from '../src/recovery.ts'
 
 /** Warn-only logger double: collects every `llm-fallbacks: ...` warn. */
 function warnLogger() {
@@ -106,6 +107,18 @@ describe('fallbacks Config schema (two-block model)', () => {
     expect(() => Config({ presets: 'sometimes' } as unknown as FallbacksConfig)).toThrow(TypeError)
     expect(() => Config({ presets: 'sometimes' } as unknown as FallbacksConfig)).toThrow(
       /presets expected "bundled" \| "none"/,
+    )
+  })
+
+  it('rejects a recovery value outside the timer|half-open union at schema resolve', () => {
+    // Same semantics as the presets union (plan fallbacks-half-open-recovery
+    // Task 1): the value domain is guarded by the schema — NOT by
+    // validateFallbacksConfig. The matcher pins the rejecting stage AND the
+    // exact union, so a subset-list regression (e.g. a single-const union)
+    // fails here.
+    expect(() => Config({ recovery: 'sometimes' } as unknown as FallbacksConfig)).toThrow(TypeError)
+    expect(() => Config({ recovery: 'sometimes' } as unknown as FallbacksConfig)).toThrow(
+      /recovery expected "timer" \| "half-open"/,
     )
   })
 })
@@ -408,6 +421,35 @@ describe('validateFallbacksConfig — role model config (chain required semantic
     validateFallbacksConfig({
       ...defaultFallbacksConfig,
       roles: { list: [role({ id: 'coder', chain: ['openai/gpt-4o'] })], rules: [] },
+    }, logger)
+    expect(messagesOf({ warn: logger.warn })).toEqual([])
+  })
+})
+
+describe('validateFallbacksConfig — half-open escalation inertness (PR #87 review point 3)', () => {
+  it('warns once when recovery is half-open and cooldownMs is at/above the 1h escalation cap', () => {
+    const { logger } = warnLogger()
+    validateFallbacksConfig({
+      ...defaultFallbacksConfig,
+      recovery: 'half-open',
+      cooldownMs: ESCALATION_CAP_MS,
+    }, logger)
+    expect(messagesOf({ warn: logger.warn })).toEqual([
+      `llm-fallbacks: recovery "half-open" escalation is inert — cooldownMs (${ESCALATION_CAP_MS} ms) is at or above the 1-hour escalation cap (${ESCALATION_CAP_MS} ms), so every suppression stays flat at cooldownMs`,
+    ])
+  })
+
+  it('is silent below the cap, and for timer mode at/above the cap', () => {
+    const { logger } = warnLogger()
+    validateFallbacksConfig({
+      ...defaultFallbacksConfig,
+      recovery: 'half-open',
+      cooldownMs: ESCALATION_CAP_MS - 1,
+    }, logger)
+    validateFallbacksConfig({
+      ...defaultFallbacksConfig,
+      recovery: 'timer',
+      cooldownMs: ESCALATION_CAP_MS,
     }, logger)
     expect(messagesOf({ warn: logger.warn })).toEqual([])
   })

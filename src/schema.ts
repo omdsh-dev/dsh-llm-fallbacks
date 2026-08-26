@@ -95,4 +95,12 @@ export const Config = z.object({
     )
     .default([]),
   tz: z.string().default('Asia/Shanghai'),
+  // 13th field (plan fallbacks-half-open-recovery Task 1): cooldown-expiry
+  // recovery mode — `'timer'` restores the preferred candidate on expiry
+  // (today's behavior, byte-identical); `'half-open'` leaves the route
+  // half-open for one logged probe instead. Union-of-const + default, the
+  // same shape as `revertPolicy`/`presets` — illegal values fail at schema
+  // resolve, and the default guarantees every resolved config carries
+  // `recovery`.
+  recovery: z.union([z.const('timer'), z.const('half-open')]).default('timer'),
 }) as unknown as z<FallbacksConfig>

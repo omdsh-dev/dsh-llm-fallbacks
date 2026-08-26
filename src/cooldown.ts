@@ -42,6 +42,21 @@ export class CooldownStore {
   }
 
   /**
+   * Raw expiry read — no lazy drop (plan fallbacks-half-open-recovery P2
+   * rule 3). `undefined` for unknown keys; `Infinity` for
+   * `revertPolicy: 'never'` entries. The half-open read path uses this to
+   * observe the lapsed `until` before the decision-path drop.
+   */
+  peek(key: string): number | undefined {
+    return this.entries.get(key)
+  }
+
+  /** Unfiltered map keys, in insertion order (plan P4 display sync). */
+  keys(): IterableIterator<string> {
+    return this.entries.keys()
+  }
+
+  /**
    * Read-only diagnostic accessor: the active (non-expired) entries, in
    * insertion order. This is a pure read — expired entries are FILTERED OUT
    * but left in the store; the lazy delete happens only in

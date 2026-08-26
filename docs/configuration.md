@@ -28,6 +28,7 @@ Since iter-20260813 the configuration follows a **two-block model** — you only
 | `roles.rules` | Array | `[]` | **子代理 — role rules (SUBAGENT-ONLY)**: match to a role in order by `provider`, `model` patterns (omitted fields are unconstrained; first match wins; root requests NEVER match rules and resolve to `inherit`); `role` may only reference `roles.list[].id` or the built-in `'inherit'`. The legacy per-rule `origin` field is accepted for config compatibility and IGNORED at match time |
 | `cooldownMs` | number | `300000` | Cooldown duration (milliseconds). Switched-away / failed models are not re-selected during the cooldown period |
 | `revertPolicy` | `'cooldown-expiry'` \| `'never'` | `'cooldown-expiry'` | Primary-return policy after cooldown expiry: return to the primary model on expiry / keep the fallback model for the session |
+| `recovery` | `'timer'` \| `'half-open'` | `'timer'` | Cooldown-expiry recovery mode: `'timer'` restores the preferred candidate when the cooldown expires (today's behavior, byte-identical); `'half-open'` leaves the route half-open for one logged probe line instead (see [Recovery mode](#recovery-mode-recovery-key)). Optional key — unset configs resolve to the default via the schema; YAML-only (no card / TUI control) |
 | `maxSwitchesPerStep` | number | `8` | Per-step safety valve: the switch-count cap per step; beyond it switching stops and the original error semantics are kept, preventing chain loops from amplifying latency |
 | `alwaysModeRetryCap` | number | `5` | Always-mode retry cap: providers with `retryPolicy.mode === 'always'` switch after this many retries within the same request; `0` disables |
 | `presets` | `'bundled'` \| `'none'` | `'bundled'` | Preset-role switch: `'bundled'` declares the 7 bundled preset roles as seeded `roles.list` rows on apply; `'none'` disables declaration (zero declarations, zero writes from this switch). Optional key — unset configs resolve to the default via the schema. See [Preset roles](#preset-roles-presets-key) |
@@ -247,6 +248,7 @@ fallbacks:
         role: cheap
   cooldownMs: 300000
   revertPolicy: cooldown-expiry
+  recovery: timer              # Optional: 'timer' (default) | 'half-open' — evidence-driven recovery
   maxSwitchesPerStep: 8
   alwaysModeRetryCap: 5
 ```
@@ -332,6 +334,21 @@ A candidate hit → record a pending switch + push the current model into cooldo
 ### Cooldown and returning to the primary
 
 A switched-away / failed model is not re-selected within `cooldownMs` (cooldown and "already failed this step" double suppression); with `cooldown-expiry` the model can be re-selected after the cooldown expires (return to primary); `never` does not return within the session (infinite cooldown).
+
+### Recovery mode (`recovery` key)
+
+`recovery` selects how an expired cooldown brings the route back — `'timer'` (default) or `'half-open'`:
+
+- **`'timer'` (default)** — today's behavior, byte-identical: when the cooldown expires the model is re-selected as the preferred candidate (return to primary, subject to `revertPolicy`).
+- **`'half-open'`** — evidence-driven recovery: when the cooldown expires the route is **not** restored as the preferred candidate. It goes **half-open**: while the episode is unresolved, every real user request routed to it is admitted normally — exactly as under `'timer'`, there is no admission limit. The episode's **one logged probe** is a single info log line (`llm-fallbacks: agent "…" half-open probe …`; the `probeLogged` marker) emitted for the first admitted request; later admissions route silently. The probe is a normal user request through the existing chain — no synthetic health checks, no background traffic. An **observed completion** on that route closes the circuit — the entry is cleared and the preference is fully restored (restoration is evidence-backed, not timer-backed). A **cancelled** (interrupted) completion is neutral: it neither closes nor fails the circuit, so the route stays half-open for the next probe. A probe failure re-suppresses the route with an **escalated** duration and the request falls over per the usual switch-away path, consuming the normal `maxSwitchesPerStep` budget.
+
+**Escalation**: consecutive failures multiply the suppression duration by **2** per failure, capped at **1 hour** — `cooldownMs` → 2× → 4× → … → 1 h (the default `300000` escalates 5 m → 10 m → 20 m → 40 m → 1 h → 1 h …). The first failure of an episode is the flat `cooldownMs`; escalation changes the suppression **duration only**, never the per-step switch count (`maxSwitchesPerStep` is untouched). If `cooldownMs` is at or above the 1-hour cap, escalation is inert (every suppression is already the cap) — `validateFallbacksConfig` warns about this at startup.
+
+**Interaction with `revertPolicy`**: `revertPolicy: 'never'` makes the half-open mechanism entirely inert — the infinite cooldown never expires, so no probe is admitted and nothing escalates.
+
+**Session-scoped state**: half-open flags and escalation counters are in-memory and session-scoped (the same lifetime as the cooldown store) — a restart resets every route to a flat first cooldown.
+
+**YAML-only discovery**: `recovery` is a YAML-only key — the settings card and the TUI `/settings` section render no control for it, and `/fallbacks config` prints no `recovery` line (default-mode output is byte-identical). Machine readback flows only through the gateway `get` passthrough. Set it in `$DSH_HOME/settings.yaml` (or the profile patch layer). While a route is half-open, `/fallbacks` shows a marker row `{key} half-open (awaiting recovery probe)` instead of a suppression time.
 
 ### Safety valve and always mode
 
