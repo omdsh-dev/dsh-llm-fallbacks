@@ -183,3 +183,91 @@ describe('FallbackStateStore — cooldown', () => {
     expect(store.isSuppressed(state, 'mock/gpt-4o', Number.MAX_SAFE_INTEGER)).toBe(true)
   })
 })
+
+describe('FallbackStateStore — half-open recovery (plan fallbacks-half-open-recovery P2)', () => {
+  it('timer mode drops expired entries on read (today behavior, verbatim)', () => {
+    const store = new FallbackStateStore()
+    const state = store.get('a')
+    store.suppress(state, 'mock/gpt-4o', 1_000)
+    expect(store.isSuppressed(state, 'mock/gpt-4o', 999, 'timer')).toBe(true)
+    expect(store.isSuppressed(state, 'mock/gpt-4o', 1_000, 'timer')).toBe(false)
+    expect(state.recovery.isHalfOpen('mock/gpt-4o')).toBe(false)
+    // expired entry removed on read
+    expect(store.isSuppressed(state, 'mock/gpt-4o', 2_000, 'timer')).toBe(false)
+  })
+
+  it('half-open mode marks the route half-open at expiry instead of restoring it', () => {
+    const store = new FallbackStateStore()
+    const state = store.get('a')
+    store.suppress(state, 'mock/gpt-4o', 1_000)
+    expect(store.isSuppressed(state, 'mock/gpt-4o', 999, 'half-open')).toBe(true)
+    expect(store.isSuppressed(state, 'mock/gpt-4o', 1_000, 'half-open')).toBe(false)
+    expect(state.recovery.isHalfOpen('mock/gpt-4o')).toBe(true)
+    expect(state.recovery.halfOpenEntries()).toEqual([
+      { key: 'mock/gpt-4o', untilEpochMs: 1_000 },
+    ])
+    // the entry was dropped from the cooldown store
+    expect(store.isSuppressed(state, 'mock/gpt-4o', 2_000, 'half-open')).toBe(false)
+  })
+
+  it('half-open mode never transitions an Infinity TTL (revertPolicy: never)', () => {
+    const store = new FallbackStateStore()
+    const state = store.get('a')
+    store.suppress(state, 'mock/gpt-4o', Number.POSITIVE_INFINITY)
+    expect(store.isSuppressed(state, 'mock/gpt-4o', Number.MAX_SAFE_INTEGER, 'half-open')).toBe(true)
+    expect(state.recovery.isHalfOpen('mock/gpt-4o')).toBe(false)
+  })
+
+  it('syncRecovery bulk-transitions every expired cooldown key (display path)', () => {
+    const store = new FallbackStateStore()
+    const state = store.get('a')
+    store.suppress(state, 'mock/gpt-4o', 1_000) // expired at now = 2000
+    store.suppress(state, 'anthropic/claude-3-5-sonnet', 5_000) // still active
+    store.syncRecovery(state, 2_000, 'half-open')
+    expect(state.recovery.isHalfOpen('mock/gpt-4o')).toBe(true)
+    expect(state.recovery.isHalfOpen('anthropic/claude-3-5-sonnet')).toBe(false)
+    expect(state.recovery.halfOpenEntries()).toEqual([
+      { key: 'mock/gpt-4o', untilEpochMs: 1_000 },
+    ])
+  })
+
+  it('syncRecovery is a pure no-op under timer mode', () => {
+    const store = new FallbackStateStore()
+    const state = store.get('a')
+    store.suppress(state, 'mock/gpt-4o', 1_000)
+    store.syncRecovery(state, 2_000, 'timer')
+    expect(state.recovery.isHalfOpen('mock/gpt-4o')).toBe(false)
+    // the expired entry is still in the cooldown store (no transition ran)
+    expect(store.isSuppressed(state, 'mock/gpt-4o', 2_000, 'timer')).toBe(false)
+  })
+
+  it('observeSuccess closes the circuit only from half-open', () => {
+    const store = new FallbackStateStore()
+    const state = store.get('a')
+    // no entry — no-op
+    store.observeSuccess(state, 'mock/gpt-4o')
+    expect(state.recovery.isHalfOpen('mock/gpt-4o')).toBe(false)
+    // actively suppressed (non-half-open) — no-op, counter survives
+    state.recovery.recordFailure('mock/gpt-4o')
+    store.suppress(state, 'mock/gpt-4o', 1_000)
+    store.observeSuccess(state, 'mock/gpt-4o')
+    expect(state.recovery.isHalfOpen('mock/gpt-4o')).toBe(false)
+    expect(state.recovery.recordFailure('mock/gpt-4o')).toBe(2)
+    // half-open — closes and resets the counter
+    store.isSuppressed(state, 'mock/gpt-4o', 2_000, 'half-open')
+    expect(state.recovery.isHalfOpen('mock/gpt-4o')).toBe(true)
+    store.observeSuccess(state, 'mock/gpt-4o')
+    expect(state.recovery.isHalfOpen('mock/gpt-4o')).toBe(false)
+    expect(state.recovery.halfOpenEntries()).toEqual([])
+  })
+
+  it('clearStepState does not clear recovery (cooldown-survival rationale)', () => {
+    const store = new FallbackStateStore()
+    const state = store.get('a')
+    store.suppress(state, 'mock/gpt-4o', 1_000)
+    store.isSuppressed(state, 'mock/gpt-4o', 2_000, 'half-open')
+    expect(state.recovery.isHalfOpen('mock/gpt-4o')).toBe(true)
+    store.clearStepState(state)
+    expect(state.recovery.isHalfOpen('mock/gpt-4o')).toBe(true)
+  })
+})

@@ -88,6 +88,34 @@ describe('CooldownStore', () => {
     store.suppress('openai/gpt-4o', Date.now() + 10_000)
     expect(store.snapshot()).toEqual([{ key: 'openai/gpt-4o', untilEpochMs: expect.any(Number) }])
   })
+
+  it('peek reads the raw expiry without dropping (pure read)', () => {
+    const store = new CooldownStore()
+    store.suppress('openai/gpt-4o', 1_000)
+    expect(store.peek('openai/gpt-4o')).toBe(1_000)
+    // expired at now = 2000, but peek does not drop
+    expect(store.peek('openai/gpt-4o')).toBe(1_000)
+    expect(store.size).toBe(1)
+    // the decision path still drops on read
+    expect(store.isSuppressed('openai/gpt-4o', 2_000)).toBe(false)
+    expect(store.size).toBe(0)
+  })
+
+  it('peek returns undefined for unknown keys and Infinity for never-TTL entries', () => {
+    const store = new CooldownStore()
+    expect(store.peek('ghost/model')).toBeUndefined()
+    store.suppress('openai/gpt-4o', Infinity)
+    expect(store.peek('openai/gpt-4o')).toBe(Infinity)
+  })
+
+  it('keys yields the unfiltered map keys in insertion order (pure read)', () => {
+    const store = new CooldownStore()
+    store.suppress('openai/gpt-4o', 1_000) // expired at now = 2000
+    store.suppress('anthropic/claude-3-5-sonnet', 5_000)
+    expect([...store.keys()]).toEqual(['openai/gpt-4o', 'anthropic/claude-3-5-sonnet'])
+    // pure read: expired entries are still present
+    expect(store.size).toBe(2)
+  })
 })
 
 describe('StepFailureSet', () => {

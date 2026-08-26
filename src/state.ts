@@ -30,6 +30,8 @@
 
 import type { FallbackSwitchReason } from './events.ts'
 import { CooldownStore, StepFailureSet } from './cooldown.ts'
+import { RecoveryStore } from './recovery.ts'
+import type { RecoveryPolicy } from './config.ts'
 
 /** Decision awaiting application at the next `agent/request` boundary (spec §5.1). */
 export interface PendingSwitch {
@@ -59,6 +61,8 @@ export interface AgentFallbackState {
   stepFailures: StepFailures
   /** `provider/model → expiry epoch ms`; lazily expired on read. */
   cooldown: CooldownStore
+  /** Half-open recovery bookkeeping (plan fallbacks-half-open-recovery P2). */
+  recovery: RecoveryStore
 }
 
 /**
@@ -89,6 +93,7 @@ export class FallbackStateStore {
       state = {
         stepFailures: { turn: 0, step: 0, failed: new StepFailureSet(), switchCount: 0 },
         cooldown: new CooldownStore(),
+        recovery: new RecoveryStore(),
       }
       this.states.set(agentId, state)
     }
@@ -166,8 +171,49 @@ export class FallbackStateStore {
     state.cooldown.suppress(key, untilEpochMs)
   }
 
-  /** Lazy cooldown read: expired entries are dropped on read (spec §5.1). */
-  isSuppressed(state: AgentFallbackState, key: string, now: number = Date.now()): boolean {
-    return state.cooldown.isSuppressed(key, now)
+  /**
+   * Lazy cooldown read (spec §5.1; plan fallbacks-half-open-recovery P2
+   * rule 3). Under `'timer'` (the default) today's body runs verbatim:
+   * expired entries are dropped on read. Under `'half-open'` the raw `until`
+   * is read via `CooldownStore.peek` (no lazy drop): absent ⇒ false;
+   * `until > now` ⇒ true; `until <= now` ⇒ the entry is dropped via the
+   * existing `isSuppressed` and the route is marked half-open, returning
+   * false. `Infinity` (`revertPolicy: 'never'`) never satisfies `until <=
+   * now` ⇒ the never short-circuit is structural on the read side.
+   */
+  isSuppressed(
+    state: AgentFallbackState,
+    key: string,
+    now: number = Date.now(),
+    recovery: RecoveryPolicy = 'timer',
+  ): boolean {
+    if (recovery !== 'half-open') return state.cooldown.isSuppressed(key, now)
+    const until = state.cooldown.peek(key)
+    if (until === undefined) return false
+    if (until > now) return true
+    state.cooldown.isSuppressed(key, now)
+    state.recovery.markHalfOpen(key, until)
+    return false
+  }
+
+  /**
+   * Bulk half-open transition for the display path (plan P4): walks the
+   * cooldown keys applying rule 3 per key. A pure no-op under `'timer'` —
+   * internal state and output stay byte-identical in default mode.
+   */
+  syncRecovery(state: AgentFallbackState, now: number, mode: RecoveryPolicy): void {
+    if (mode !== 'half-open') return
+    for (const key of state.cooldown.keys()) {
+      this.isSuppressed(state, key, now, mode)
+    }
+  }
+
+  /**
+   * Observed completion ⇒ close the circuit (plan P2 rule 6): acts only when
+   * the entry exists and is half-open; otherwise a no-op (a stale in-flight
+   * success must not cancel a fresher escalated re-suppression).
+   */
+  observeSuccess(state: AgentFallbackState, key: string): void {
+    state.recovery.close(key)
   }
 }
