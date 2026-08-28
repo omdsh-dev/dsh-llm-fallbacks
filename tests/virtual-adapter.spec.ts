@@ -6,7 +6,8 @@
  * and the P1/P3 adapter contract (one catalog row; `stream()` is a thin
  * head-delegate through the host LLM runtime, gated on a conforming
  * all-day; `resolveModel` proxies the current effective head with a
- * permissive fallback).
+ * permissive fallback; `imageRequestPricing` delegates to the SAME head,
+ * never throwing).
  *
  * Runs against the REAL `LlmRuntime` (`@deepseek-ai/dsh-llm`) with a stub
  * head adapter for `deepseek-official`, so the registration boundary, the
@@ -20,9 +21,11 @@ import {
   LlmAdapter,
   LlmRuntime,
   type GenerateOptions,
+  type LlmImageRequestPricing,
   type LlmResolvedModelInfo,
   type StreamChunk,
 } from '@deepseek-ai/dsh-llm'
+import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import { apply } from '../src/index.ts'
 import { defaultFallbacksConfig, type FallbacksConfig } from '../src/config.ts'
 import { OFFICIAL_V4_FLASH } from '../src/time-slots.ts'
@@ -30,6 +33,7 @@ import {
   EMPTY_EFFECTIVE_CHAIN_CODE,
   FALLBACKS_CHAIN_MODEL,
   FALLBACKS_PROVIDER,
+  FallbacksChainAdapter,
   installFallbacksAdapter,
   pickerDisplayName,
   UNDISPATCHABLE_HEAD_CODE,
@@ -41,9 +45,28 @@ import { cfg } from './support/harness.ts'
 const HEAD_PROVIDER = 'deepseek-official'
 const HEAD_MODEL = 'deepseek-v4-flash'
 
+/** Minimal durable image ref for pricing calls (shape only — the opaque id is never dereferenced). */
+const IMAGE_REF: ImageAttachmentRef = {
+  attachmentId: 'att-test' as ImageAttachmentRef['attachmentId'],
+  mediaType: 'image/png',
+  bytes: 1024,
+  width: 64,
+  height: 64,
+}
+/** One stub price per occurrence — an unmistakable non-neutral answer. */
+const STUB_PRICE = { visualTokens: 17, text: 'stub image price' }
+
+/** Route pricing serving {@link STUB_PRICE} for every occurrence. */
+function stubPricing(): LlmImageRequestPricing {
+  return { priceImages: () => [STUB_PRICE] }
+}
+
 /** Stub adapter for the real head provider — records delegated calls. */
 class StubHeadAdapter extends LlmAdapter {
   readonly calls: Array<{ provider: string; model: string; options: GenerateOptions }> = []
+  readonly pricingCalls: Array<{ provider: string; model: string }> = []
+  /** Route pricing served for the head pair; `undefined` declares none (the base default). */
+  pricing: LlmImageRequestPricing | undefined
 
   constructor(public info: Partial<LlmResolvedModelInfo> = {}) {
     super()
@@ -59,6 +82,11 @@ class StubHeadAdapter extends LlmAdapter {
 
   override resolveModel(provider: string, model: string) {
     return Promise.resolve({ provider, id: model, name: model, ...this.info })
+  }
+
+  override imageRequestPricing(provider: string, model: string): LlmImageRequestPricing | undefined {
+    this.pricingCalls.push({ provider, model })
+    return this.pricing
   }
 
   override async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
@@ -394,5 +422,69 @@ describe('adapter contract (P1/P3)', () => {
       reason: { kind: 'error', failure: { code: UNDISPATCHABLE_HEAD_CODE } },
     })
     expect(stub.calls).toHaveLength(0)
+  })
+})
+
+describe('imageRequestPricing (0.1.2 adoption)', () => {
+  it('delegates to the SAME effective head stream() dispatches (route-accurate)', async () => {
+    stub.pricing = stubPricing()
+    apply(ctx, cfg({ rootChain: [OFFICIAL_V4_FLASH] }))
+    await vi.waitFor(() => expect(listed()).toBe(true))
+
+    const pricing = ctx.llm.imageRequestPricing(FALLBACKS_PROVIDER, FALLBACKS_CHAIN_MODEL)
+    // The head adapter's own pricing came back — queried for the HEAD pair,
+    // never the virtual `FallbacksChain/Auto` arguments.
+    expect(pricing?.priceImages([IMAGE_REF])).toEqual([STUB_PRICE])
+    expect(stub.pricingCalls).toEqual([{ provider: HEAD_PROVIDER, model: HEAD_MODEL }])
+  })
+
+  it('returns undefined for an unknown or undispatchable head (never throws)', async () => {
+    // Undispatchable: a legacy non-conforming all-day chain has no head.
+    apply(ctx, cfg({ rootChain: ['other/gpt-4o', 'other/gpt-5'] }))
+    await vi.waitFor(() => expect(listed()).toBe(true))
+    expect(ctx.llm.imageRequestPricing(FALLBACKS_PROVIDER, FALLBACKS_CHAIN_MODEL)).toBeUndefined()
+
+    // Unknown: the head pair resolves but no adapter is registered for it.
+    const bare = new Context()
+    try {
+      new LlmRuntime(bare)
+      apply(bare, cfg({ rootChain: [OFFICIAL_V4_FLASH] }))
+      await vi.waitFor(() =>
+        expect(bare.llm.listProviders().some((provider) => provider.id === FALLBACKS_PROVIDER)).toBe(true))
+      expect(bare.llm.imageRequestPricing(FALLBACKS_PROVIDER, FALLBACKS_CHAIN_MODEL)).toBeUndefined()
+    } finally {
+      await bare.fiber.dispose()
+    }
+  })
+
+  it('returns undefined when the llm runtime is gone (mid-teardown guard)', () => {
+    // Direct construction — the registration lifecycle can never reach a
+    // registered route whose `llm` vanished, so the guard is unit-tested
+    // on the class directly.
+    const config: FallbacksConfig = {
+      ...defaultFallbacksConfig,
+      enabled: true,
+      rootChain: [OFFICIAL_V4_FLASH],
+      presets: 'none',
+    }
+    const adapter = new FallbacksChainAdapter(() => config, () => undefined)
+    expect(adapter.imageRequestPricing(FALLBACKS_PROVIDER, FALLBACKS_CHAIN_MODEL)).toBeUndefined()
+  })
+
+  it('degrades to undefined when the head adapter pricing throws', async () => {
+    apply(ctx, cfg({ rootChain: [OFFICIAL_V4_FLASH] }))
+    await vi.waitFor(() => expect(listed()).toBe(true))
+    vi.spyOn(stub, 'imageRequestPricing').mockImplementation(() => {
+      throw new Error('head pricing exploded')
+    })
+    // The runtime lookup would propagate the throw; the virtual override
+    // must absorb it into the meter's neutral estimate.
+    expect(ctx.llm.imageRequestPricing(FALLBACKS_PROVIDER, FALLBACKS_CHAIN_MODEL)).toBeUndefined()
+  })
+
+  it('returns undefined when the effective chain is empty', async () => {
+    apply(ctx, cfg({ rootChain: [] }))
+    await vi.waitFor(() => expect(listed()).toBe(true))
+    expect(ctx.llm.imageRequestPricing(FALLBACKS_PROVIDER, FALLBACKS_CHAIN_MODEL)).toBeUndefined()
   })
 })
