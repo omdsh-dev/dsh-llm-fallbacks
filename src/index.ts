@@ -47,7 +47,7 @@ import { firstExactCandidate, resolveRoleAtDispatch } from './role-resolution.ts
 import { detectAuthorizedRoute, type AuthorizedRouteSession } from './authorized-route.ts'
 import { firstAllowedCandidate, resolvedRoutes } from './route-allowlist.ts'
 import { effectivePolicy, readSessionPolicyEvent, type PolicySettings } from './subagent-policy.ts'
-import { FallbackStateStore, type AgentFallbackState, type PendingSwitch } from './state.ts'
+import { FallbackStateStore, type AgentFallbackState, type BlockedSwitchAttempt, type PendingSwitch } from './state.ts'
 import { escalatedCooldownMs } from './recovery.ts'
 import {
   isAllDayConforming,
@@ -149,7 +149,7 @@ export { Config }
 /** The plugin's composition config — the `fallbacks` settings schema (spec §4). */
 export type Config = FallbacksConfig
 export type { FallbackSwitchReason, FallbacksSwitchEventData } from './events.ts'
-export type { AgentFallbackState, FallbackStateStore, PendingSwitch, StepFailures } from './state.ts'
+export type { AgentFallbackState, BlockedSwitchAttempt, FallbackStateStore, PendingSwitch, StepFailures } from './state.ts'
 
 // --- Library API re-exports (plan fallbacks-consumer-api T1) ---
 // The full fallback-runtime surface — role resolution, chain resolution,
@@ -241,6 +241,25 @@ const stateStores = new WeakMap<Context, FallbackStateStore>()
  */
 export function stateStore(ctx: Context): FallbackStateStore | undefined {
   return stateStores.get(ctx)
+}
+
+/**
+ * Per-apply blocked-switch-attempt maps, keyed by context. Weak so entries
+ * die with the context; the plugin's own dispose effect clears the map
+ * contents (mirrors `stateStores`).
+ * @internal
+ */
+const blockedAttemptStores = new WeakMap<Context, ReadonlyMap<string, BlockedSwitchAttempt>>()
+
+/**
+ * @internal Test seam (mirrors `stateStore`): the per-agent blocked-switch
+ * attempts recorded by the T3 allowlist gate for the plugin applied to `ctx`
+ * (spec D1; in-memory only, issue #52). Not part of the plugin's public
+ * surface; lets tests (and the T5 gateway projection) read blocked attempts
+ * without reaching into the closure. `undefined` when no plugin is applied.
+ */
+export function blockedAttempts(ctx: Context): ReadonlyMap<string, BlockedSwitchAttempt> | undefined {
+  return blockedAttemptStores.get(ctx)
 }
 
 /**
@@ -596,6 +615,15 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   // `dispatchInjected`) and re-baselined on settings change (a config edit
   // is not a wall-clock rotation).
   const slotWinners = new Map<string, { key: string; label: string }>()
+  // T3 (plan dsh-012-subagent-routing): per-agent blocked-switch attempts —
+  // the host allowlist emptied a failure-switch intersection (spec D1).
+  // Latest attempt per agent (the Subagents card shows the current one, T5);
+  // in-memory only (issue #52 — no durable session write). Grown ONLY here
+  // (F-004 discipline: a blocked decision must not grow the fallback state
+  // store); cleaned on agent/disposed + plugin dispose (mirrors
+  // `dispatchInjected` / `slotWinners`).
+  const blockedAttemptMap = new Map<string, BlockedSwitchAttempt>()
+  blockedAttemptStores.set(ctx, blockedAttemptMap)
 
   /**
    * Shared decision path (spec §5.1 lifecycle step 1): resolve the agent's
@@ -671,8 +699,54 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     }
     const filter = createCandidateFilter({ current, cooldown, failed })
     const surviving = selectCandidates(all, wildcard, filter, modelExists)
-    const target = surviving[0]
-    if (target === undefined || target.model === undefined) return null
+    // T3 (plan dsh-012-subagent-routing): allowlist-constrained failure
+    // switching. The subagent host policy — read PER DECISION through the T1
+    // reader (same ADR path as the inject site) — intersects the RESOLVED
+    // survivors with the effective allowlist in candidate order (spec D1);
+    // the existing cooldown / step-failed / same-as-current / missing-id
+    // filters above already ran. Root-origin walks are untouched (0.3.5).
+    const first = surviving[0]
+    let target: { readonly provider: string; readonly model: string } | undefined
+    if (first !== undefined && first.model !== undefined) {
+      target = { provider: first.provider, model: first.model }
+    }
+    if (agent.session?.header?.origin === 'subagent' && target !== undefined) {
+      const policy = effectivePolicy(readSessionPolicyEvent(agent.session.events), readSubagentSettings(ctx))
+      if (policy.state === 'unprovable') {
+        // Fail-closed (spec D1): no plugin-originated switch the plugin cannot
+        // prove is on the allowlist — stay on the current route (host seed
+        // stands). Mirrors the T2 inject-path unprovable skip; only the
+        // switch is blocked, never the non-switch behavior.
+        logger.warn(
+          'llm-fallbacks: agent "%s" subagent model-selection policy is on but unreadable — skipping fallback switch',
+          agent.id,
+        )
+        return null
+      }
+      if (policy.state === 'enabled') {
+        const allowed = firstAllowedCandidate(resolvedRoutes(surviving), policy.allowedModels)
+        if (allowed === undefined) {
+          // Empty intersection: the 0.3.5 walk would have switched to
+          // `target` — the allowlist emptied it. Warn + in-memory
+          // blocked-attempt record (T5 consumes; issue #52 — no session
+          // write) and stay on the current route. No request is sent.
+          logger.warn(
+            'llm-fallbacks: agent "%s" fallback switch %s/%s blocked: resolved candidates are all outside the subagent allowlist — no switch',
+            agent.id,
+            target.provider,
+            target.model,
+          )
+          blockedAttemptMap.set(agent.id, {
+            at: Date.now(),
+            route: { provider: target.provider, model: target.model },
+            reason,
+          })
+          return null
+        }
+        target = { provider: allowed.provider, model: allowed.model }
+      }
+    }
+    if (target === undefined) return null
     // P2 rule 4 (plan fallbacks-half-open-recovery Task 4): the once-per-episode
     // probe admission marker — the FIRST admission of a half-open episode logs
     // one info line; later admissions while the episode is unresolved route
@@ -1075,6 +1149,7 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     states.delete(agent.id)
     dispatchInjected.delete(agent.id)
     slotWinners.delete(agent.id)
+    blockedAttemptMap.delete(agent.id)
   })
 
   // P3 (plan fallbacks-half-open-recovery): plugin-scope success observation —
@@ -1102,6 +1177,7 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     states.clear()
     dispatchInjected.clear()
     slotWinners.clear()
+    blockedAttemptMap.clear()
   }, 'llm-fallbacks: clear per-agent state')
 
   // AC-5: /fallbacks — session-scoped read-only diagnostics. Conditional
