@@ -45,8 +45,7 @@ import { bindSnapshotSelector, type SnapshotSelectorHook } from '../src/client/u
 import { FallbacksCard } from '../src/client/FallbacksCard.tsx'
 import type { FallbacksCardProps } from '../src/client/FallbacksCard.tsx'
 import { FallbacksSettingsController } from '../src/client/fallbacks-store.ts'
-import type { FallbacksRemote } from '../src/client/fallbacks-store.ts'
-import type { FallbacksSettingsState } from '../src/client/fallbacks-store.ts'
+import type { FallbacksRemote, FallbacksSettingsState, SubagentPolicyView } from '../src/client/fallbacks-store.ts'
 import type { SeedsWireStatus } from '../src/seeds.ts'
 import { presetRoles } from '../src/presets.ts'
 import { apply } from '../src/client/index.ts'
@@ -159,6 +158,7 @@ function scriptedApi(options: {
   writable?: boolean
   legacyKeys?: string[]
   seeds?: SeedsWireStatus[]
+  subagentPolicy?: SubagentPolicyView
   catalog?: { providers: LlmConfigurableProvider[]; groups: ModelProviderGroup[] }
   historyEntries?: SessionEventLikeEntry[]
   historyError?: string
@@ -196,6 +196,9 @@ function scriptedApi(options: {
           // spec §9.4: the additive seeds field rides the get response; an
           // absent option means "no seeds to badge" on this fixture.
           ...(options.seeds === undefined ? {} : { seeds: options.seeds }),
+          // Spec D4 / T5: additive host-policy snapshot. Absent option =
+          // old payload (field omitted) — the card must still render.
+          ...(options.subagentPolicy === undefined ? {} : { subagentPolicy: options.subagentPolicy }),
         }),
   ))
   const set = vi.fn((payload: { args: { patch: typeof defaultFallbacksConfig } }) => {
@@ -3002,3 +3005,167 @@ describe('FallbacksCard status block (AC-2: recent switch only)', () => {
     expect(screen.queryByText(/manually selected in the web front end/i)).toBeNull()
   })
 })
+
+describe('FallbacksCard host-policy status (plan dsh-012-subagent-routing T5 / spec D4)', () => {
+  const POLICY_KEYS = [
+    'subagents.policy.label',
+    'subagents.policy.allowlist',
+    'subagents.policy.head',
+    'subagents.policy.source.authorized',
+    'subagents.policy.source.injected',
+    'subagents.policy.blocked',
+    'subagents.policy.unprovable',
+  ] as const
+
+  /** Distinct routes so text queries cannot collide with catalog models. */
+  const ALPHA = { provider: 'policy-test', model: 'alpha' }
+  const BETA = { provider: 'policy-test', model: 'beta' }
+
+  const ENABLED_POLICY: SubagentPolicyView = {
+    state: 'enabled',
+    allowedModels: [ALPHA, BETA],
+    head: { route: ALPHA, source: 'authorized' },
+    blockedAttempt: { at: 1, route: BETA, reason: 'empty-intersection' },
+  }
+
+  it('policy-on renders the allowlist, head/source, and empty-intersection warning', async () => {
+    const { view, props } = await mountCard({
+      config: ENABLED_CONFIG,
+      subagentPolicy: ENABLED_POLICY,
+    })
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    expect(screen.getByText(en['subagents.policy.label'])).toBeTruthy()
+    expect(screen.getByText(`${en['subagents.policy.allowlist']}: policy-test/alpha, policy-test/beta`)).toBeTruthy()
+    expect(screen.getByText(
+      `${en['subagents.policy.head']}: policy-test/alpha (${en['subagents.policy.source.authorized']})`,
+    )).toBeTruthy()
+    expect(screen.getByText(en['subagents.policy.blocked'])).toBeTruthy()
+    expect(screen.getByText(en['subagents.policy.blocked']).getAttribute('role')).toBe('alert')
+    expect(screen.queryByText(en['subagents.policy.unprovable'])).toBeNull()
+  })
+
+  it('policy-off / absent payload renders no active allowlist', async () => {
+    const { view, props } = await mountCard({ config: ENABLED_CONFIG })
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    expect(screen.getByText(en['subagents.label'])).toBeTruthy()
+    expect(screen.queryByText(en['subagents.policy.label'])).toBeNull()
+    expect(screen.queryByText(en['subagents.policy.allowlist'], { exact: false })).toBeNull()
+    expect(screen.queryByText('policy-test/alpha')).toBeNull()
+    cleanup()
+
+    const disabled = await mountCard({
+      config: ENABLED_CONFIG,
+      subagentPolicy: { state: 'disabled' },
+    })
+    toggleCard()
+    disabled.view.rerender(<FallbacksCard {...disabled.props} />)
+    expect(screen.queryByText(en['subagents.policy.label'])).toBeNull()
+    expect(screen.queryByText(en['subagents.policy.allowlist'], { exact: false })).toBeNull()
+  })
+
+  it('every new zh policy key has an en twin', () => {
+    for (const key of POLICY_KEYS) {
+      expect(zh[key], key).toBeTruthy()
+      expect(en[key], key).toBeTruthy()
+    }
+  })
+
+  it('payload without the new fields still renders (old-payload tolerance)', async () => {
+    const { view, props, controller } = await mountCard({ config: ENABLED_CONFIG })
+    expect(controller.store.getSnapshot().subagentPolicy).toBeUndefined()
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    expect(screen.getByText(en['subagents.label'])).toBeTruthy()
+    expect(screen.getByText(en['roles.list.label'])).toBeTruthy()
+    expect(screen.queryByText(en['subagents.policy.label'])).toBeNull()
+    expect(screen.queryByText(en['subagents.policy.unprovable'])).toBeNull()
+    expect(screen.queryByText(en['subagents.policy.blocked'])).toBeNull()
+  })
+
+  it('pins the head-source label: authorized vs injected', async () => {
+    const authorized = await mountCard({
+      config: ENABLED_CONFIG,
+      subagentPolicy: {
+        state: 'enabled',
+        allowedModels: [ALPHA],
+        head: { route: ALPHA, source: 'authorized' },
+      },
+    })
+    toggleCard()
+    authorized.view.rerender(<FallbacksCard {...authorized.props} />)
+    expect(screen.getByText(
+      `${en['subagents.policy.head']}: policy-test/alpha (${en['subagents.policy.source.authorized']})`,
+    )).toBeTruthy()
+    expect(screen.queryByText(en['subagents.policy.source.injected'])).toBeNull()
+    cleanup()
+
+    const injected = await mountCard({
+      config: ENABLED_CONFIG,
+      subagentPolicy: {
+        state: 'enabled',
+        allowedModels: [ALPHA],
+        head: { route: ALPHA, source: 'injected' },
+      },
+    })
+    toggleCard()
+    injected.view.rerender(<FallbacksCard {...injected.props} />)
+    expect(screen.getByText(
+      `${en['subagents.policy.head']}: policy-test/alpha (${en['subagents.policy.source.injected']})`,
+    )).toBeTruthy()
+    expect(screen.queryByText(`(${en['subagents.policy.source.authorized']})`)).toBeNull()
+  })
+
+  it('unprovable is its own state — not empty-intersection, not enabled', async () => {
+    const { view, props, controller } = await mountCard({
+      config: ENABLED_CONFIG,
+      subagentPolicy: { state: 'unprovable' },
+    })
+    expect(controller.store.getSnapshot().subagentPolicy).toEqual({ state: 'unprovable' })
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    expect(screen.getByText(en['subagents.policy.unprovable'])).toBeTruthy()
+    expect(screen.getByText(en['subagents.policy.unprovable']).getAttribute('role')).toBe('alert')
+    expect(screen.queryByText(en['subagents.policy.blocked'])).toBeNull()
+    expect(screen.queryByText(en['subagents.policy.label'])).toBeNull()
+    expect(screen.queryByText(en['subagents.policy.allowlist'], { exact: false })).toBeNull()
+    expect(screen.queryByText('policy-test/alpha')).toBeNull()
+  })
+
+  it('a write that returns { state: disabled } clears a previously-enabled allowlist (keep-last cannot retain it)', async () => {
+    const { view, props, controller, scripted } = await mountCard({
+      config: ENABLED_CONFIG,
+      subagentPolicy: ENABLED_POLICY,
+    })
+    expect(controller.store.getSnapshot().subagentPolicy?.state).toBe('enabled')
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    expect(screen.getByText(en['subagents.policy.label'])).toBeTruthy()
+
+    scripted.set.mockImplementation((payload: { args: { patch: typeof defaultFallbacksConfig } }) => (
+      Promise.resolve(okResult({
+        config: payload.args.patch,
+        subagentPolicy: { state: 'disabled' },
+      }))
+    ))
+    await controller.save(ENABLED_CONFIG)
+    view.rerender(<FallbacksCard {...props} />)
+    expect(controller.store.getSnapshot().subagentPolicy).toEqual({ state: 'disabled' })
+    expect(screen.queryByText(en['subagents.policy.label'])).toBeNull()
+    expect(screen.queryByText(en['subagents.policy.allowlist'], { exact: false })).toBeNull()
+    expect(screen.queryByText('policy-test/alpha')).toBeNull()
+  })
+
+  it('enabled with no recorded head still shows the allowlist and omits the head line', async () => {
+    const { view, props } = await mountCard({
+      config: ENABLED_CONFIG,
+      subagentPolicy: { state: 'enabled', allowedModels: [ALPHA] },
+    })
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    expect(screen.getByText(`${en['subagents.policy.allowlist']}: policy-test/alpha`)).toBeTruthy()
+    expect(screen.queryByText(en['subagents.policy.head'], { exact: false })).toBeNull()
+  })
+})
+

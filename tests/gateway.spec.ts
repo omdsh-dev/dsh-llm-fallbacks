@@ -54,6 +54,7 @@ import {
   FallbacksConfigGateway,
   fallbacksTypertContribution,
   type FallbacksSettingsBridge,
+  type SubagentPolicySnapshotFn,
 } from '../src/gateway.ts'
 import { FallbacksSeedManager } from '../src/seeds.ts'
 import { MemorySettings } from './support/memory-settings.ts'
@@ -1169,5 +1170,70 @@ describe('composed plugin (apply wires the gateway)', () => {
     expect(invokeConfig(reset)).toEqual(entry)
     const afterReset = ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)!
     expect(afterReset.user).toEqual({})
+  })
+})
+
+// ---------------------------------------------------------------------------
+// T5 fix round 1: explicit disabled projection + subagentPolicy write-omission
+// ---------------------------------------------------------------------------
+
+describe('subagentPolicy wire projection (plan dsh-012 T5 fix round 1)', () => {
+  const disabledSnapshot: SubagentPolicySnapshotFn = () => ({ policy: { state: 'disabled' } })
+
+  it('the 3-arg constructor still omits the field (byte-identical pre-T5 payload)', () => {
+    const ctx = track(new Context())
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()), makeSeeds())
+    expect(gateway.get()).toEqual({ config: entryConfig(), legacyKeys: [], seeds: [] })
+    expect('subagentPolicy' in gateway.get()).toBe(false)
+  })
+
+  it('a wired disabled snapshot emits { state: "disabled" } (never an active allowlist)', () => {
+    const ctx = track(new Context())
+    const gateway = new FallbacksConfigGateway(
+      ctx,
+      installFallbacksBridge(ctx, entryConfig()),
+      makeSeeds(),
+      disabledSnapshot,
+    )
+    expect(gateway.get().subagentPolicy).toEqual({ state: 'disabled' })
+    expect(gateway.get()).toEqual({
+      config: entryConfig(),
+      legacyKeys: [],
+      seeds: [],
+      subagentPolicy: { state: 'disabled' },
+    })
+  })
+
+  it('set/reset with a wired disabled snapshot keep emitting { state: "disabled" }', async () => {
+    const ctx = track(new Context())
+    await ctx.plugin(MemorySettings)
+    const gateway = new FallbacksConfigGateway(
+      ctx,
+      installFallbacksBridge(ctx, entryConfig()),
+      makeSeeds(),
+      disabledSnapshot,
+    )
+    await waitRegistered(ctx)
+    await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
+
+    const setResult = await gateway.set({ enabled: true })
+    expect(setResult.subagentPolicy).toEqual({ state: 'disabled' })
+    expect(gateway.get().subagentPolicy).toEqual({ state: 'disabled' })
+
+    const resetResult = await gateway.reset()
+    expect(resetResult.subagentPolicy).toEqual({ state: 'disabled' })
+  })
+
+  it('rejects a subagentPolicy patch (read-only wire field; never written)', async () => {
+    const ctx = track(new Context())
+    await ctx.plugin(MemorySettings)
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()), makeSeeds())
+    await waitRegistered(ctx)
+    await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
+
+    await expect(gateway.set({ subagentPolicy: { state: 'disabled' } } as never))
+      .rejects.toThrow(/unknown config key "subagentPolicy"/)
+    const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)!
+    expect(descriptor.user).toBeUndefined()
   })
 })

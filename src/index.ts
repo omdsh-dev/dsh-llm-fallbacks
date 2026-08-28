@@ -16,8 +16,9 @@
  *   cooldown + failure bookkeeping, then return
  *   `{ kind: 'retry' }` (own recovery, no `next()`).
  * - `agent/request` waterfall: apply a pending switch after `await next()`
- *   (provider/model override, inherited `reasoningEffort` dropped — the
- *   `installModelSelection` `withoutInheritedEffort` pattern); a
+ *   (provider/model override; the inherited `reasoningEffort` follows the
+ *   upstream routeChanged rule — dropped on a route change unless explicitly
+ *   named, preserved on a same-route override; spec D3); a
  *   root-origin `FallbacksChain/Auto` seed then overrides to the
  *   effective chain's first exact head (select-is-primary, plan
  *   fallbacks-virtual-chain Task 2); then the always-mode cap check (count
@@ -44,8 +45,12 @@ import { annotateCandidates, createCandidateFilter, hasWildcardEntry, resolveCha
 import { parseSelector, selectorKey, type Selector } from './selectors.ts'
 import { resolveRole } from './roles.ts'
 import { firstExactCandidate, resolveRoleAtDispatch } from './role-resolution.ts'
-import { FallbackStateStore, type AgentFallbackState, type PendingSwitch } from './state.ts'
+import { detectAuthorizedRoute, type AuthorizedRouteSession } from './authorized-route.ts'
+import { firstAllowedCandidate, resolvedRoutes } from './route-allowlist.ts'
+import { effectivePolicy, readSessionPolicyEvent, type PolicySettings } from './subagent-policy.ts'
+import { FallbackStateStore, type AgentFallbackState, type BlockedSwitchAttempt, type EffectiveChainHead, type PendingSwitch } from './state.ts'
 import { escalatedCooldownMs } from './recovery.ts'
+import { overrideConfigWithRouteRule, type LlmReasoningEffort } from './override.ts'
 import {
   isAllDayConforming,
   resolveEffectiveChain,
@@ -146,7 +151,9 @@ export { Config }
 /** The plugin's composition config — the `fallbacks` settings schema (spec §4). */
 export type Config = FallbacksConfig
 export type { FallbackSwitchReason, FallbacksSwitchEventData } from './events.ts'
-export type { AgentFallbackState, FallbackStateStore, PendingSwitch, StepFailures } from './state.ts'
+export type { AgentFallbackState, BlockedSwitchAttempt, FallbackStateStore, PendingSwitch, StepFailures } from './state.ts'
+/** @internal T5 test-seam types (mirrors `BlockedSwitchAttempt`; not public API). */
+export type { ChainHeadSource, EffectiveChainHead } from './state.ts'
 
 // --- Library API re-exports (plan fallbacks-consumer-api T1) ---
 // The full fallback-runtime surface — role resolution, chain resolution,
@@ -241,6 +248,54 @@ export function stateStore(ctx: Context): FallbackStateStore | undefined {
 }
 
 /**
+ * Per-apply blocked-switch-attempt maps, keyed by context. Weak so entries
+ * die with the context; the plugin's own dispose effect clears the map
+ * contents (mirrors `stateStores`).
+ * @internal
+ */
+const blockedAttemptStores = new WeakMap<Context, ReadonlyMap<string, BlockedSwitchAttempt>>()
+
+/**
+ * @internal Test seam (mirrors `stateStore`): the per-agent blocked-switch
+ * attempts recorded by the T3 allowlist gate for the plugin applied to `ctx`
+ * (spec D1; in-memory only, issue #52). Not part of the plugin's public
+ * surface; lets tests (and the T5 gateway projection) read blocked attempts
+ * without reaching into the closure. `undefined` when no plugin is applied.
+ */
+export function blockedAttempts(ctx: Context): ReadonlyMap<string, BlockedSwitchAttempt> | undefined {
+  return blockedAttemptStores.get(ctx)
+}
+
+/**
+ * Per-apply effective-chain-head maps, keyed by context. Weak so entries
+ * die with the context; the plugin's own dispose effect clears the map
+ * contents (mirrors `blockedAttemptStores`).
+ * @internal
+ */
+const chainHeadStores = new WeakMap<Context, ReadonlyMap<string, EffectiveChainHead>>()
+
+/**
+ * @internal Test seam (mirrors `blockedAttempts`): the per-agent effective
+ * chain heads recorded by the T2 inject path (source `authorized` |
+ * `injected`) for the plugin applied to `ctx` (spec D4 / T2 M3). Not part
+ * of the plugin's public surface; lets tests and the T5 gateway projection
+ * read the head without reaching into the closure. `undefined` when no
+ * plugin is applied.
+ */
+export function chainHeads(ctx: Context): ReadonlyMap<string, EffectiveChainHead> | undefined {
+  return chainHeadStores.get(ctx)
+}
+
+/** Latest map value by `at` (the Subagents card shows the current one). */
+function latestByAt<T extends { at: number }>(map: ReadonlyMap<string, T>): T | undefined {
+  let latest: T | undefined
+  for (const value of map.values()) {
+    if (latest === undefined || value.at >= latest.at) latest = value
+  }
+  return latest
+}
+
+/**
  * The `provider/*`-entry existence probe (spec §2 clause 2): the target
  * provider's advertised catalog, fetched once per decision and cached per
  * provider. A missing/unknown provider or a failing catalog reads as "no such
@@ -324,12 +379,123 @@ function slotWinnerKey(winner: SlotRowConfig | 'all-day'): string {
 
 /**
  * Override a request config with a pending switch: provider/model replaced,
- * inherited `reasoningEffort` dropped (the `installModelSelection`
- * `withoutInheritedEffort` pattern).
+ * the inherited `reasoningEffort` following the upstream routeChanged rule
+ * (spec D3, T4) — dropped on a route change unless an explicit effort is
+ * named, preserved on a same-route override. Thin delegate: the rule lives
+ * in the pure `overrideConfigWithRouteRule` (`src/override.ts`), shared by
+ * every override path.
  */
-function overrideConfig(seed: LlmCallConfig, to: { provider: string; model: string }): LlmCallConfig {
-  const { reasoningEffort: _inherited, ...withoutInheritedEffort } = seed
-  return { ...withoutInheritedEffort, provider: to.provider, model: to.model }
+function overrideConfig(
+  seed: LlmCallConfig,
+  to: { provider: string; model: string },
+  explicitEffort?: LlmReasoningEffort,
+): LlmCallConfig {
+  return overrideConfigWithRouteRule(seed, to, explicitEffort)
+}
+
+/**
+ * Read the host `subagentModelSelection` settings snapshot as plain data (T1
+ * ADR: the settings service is the policy read's second source). The service
+ * is typed via the peer's type-only augmentation; its runtime presence is
+ * host-composition-dependent, so absence reads as `undefined` —
+ * {@link effectivePolicy} resolves that to `'disabled'` (plan Global
+ * Constraints).
+ */
+function readSubagentSettings(ctx: Context): PolicySettings | undefined {
+  const service = ctx.get('subagentModelSelection')
+  return service === undefined ? undefined : service.current()
+}
+
+/**
+ * Outcome of the guarded per-agent policy settings read (qc fix wave W-002 +
+ * S-hard). `ok` carries the snapshot to feed {@link effectivePolicy} —
+ * `undefined` still means "policy off" (service absent, nothing retained);
+ * `!ok` means the live read threw and no last-known snapshot exists for the
+ * agent — the wiring resolves that to the same fail-closed skip as
+ * `'unprovable'`, never a fail-open 0.3.5 selection.
+ */
+type GuardedPolicySettings =
+  | { readonly ok: true; readonly settings: PolicySettings | undefined }
+  | { readonly ok: false }
+
+/**
+ * Guarded per-agent read of the host `subagentModelSelection` settings
+ * snapshot (qc fix wave W-002 + S-hard), wrapping {@link readSubagentSettings}:
+ *
+ * - the live read never propagates a throw into the request path — a throwing
+ *   host `current()` warns (the plugin doctrine: any throw in the
+ *   resolution/injection path warns and the request proceeds unchanged) and
+ *   degrades like the inject path's own try/catch;
+ * - the freshest successful read for the agent is retained in `lastKnown`, so
+ *   a mid-session service disappearance (or a later throwing read) feeds the
+ *   last proven snapshot to {@link effectivePolicy} instead of `undefined` —
+ *   an enabled policy stays enabled (fail-closed), never silently reverting
+ *   to unconstrained 0.3.5 switching;
+ * - agents never proven anything keep `undefined` (policy off) — 0.3.5
+ *   selection unchanged.
+ *
+ * A throwing read with nothing retained resolves to `{ ok: false }`: the
+ * callers treat it exactly like `'unprovable'` (warn + skip, host seed
+ * stands). Pure bookkeeping — the map is the caller's per-agent state, this
+ * helper stays stateless.
+ */
+function readGuardedPolicySettings(
+  ctx: Context,
+  agentId: string,
+  lastKnown: Map<string, PolicySettings>,
+  warn: (message: string, ...args: unknown[]) => void,
+): GuardedPolicySettings {
+  try {
+    const service = ctx.get('subagentModelSelection')
+    if (service === undefined) {
+      // Service absent (never composed, or it disappeared mid-session): the
+      // last proven snapshot stands — absent-with-nothing stays `undefined`.
+      return { ok: true, settings: lastKnown.get(agentId) }
+    }
+    const settings = service.current()
+    // Freshest successful read wins — including `enabled: false` (the
+    // operator's last known truth, still resolving to `'disabled'`).
+    lastKnown.set(agentId, settings)
+    return { ok: true, settings }
+  } catch (error) {
+    warn(
+      'llm-fallbacks: agent "%s" subagent model-selection settings read failed — %s',
+      agentId,
+      (error as Error)?.message ?? String(error),
+    )
+    const known = lastKnown.get(agentId)
+    return known === undefined ? { ok: false } : { ok: true, settings: known }
+  }
+}
+
+/**
+ * Capture the plain-data authorized-route view for one subagent at its first
+ * request (T2 detection sources): durable child state plus the
+ * pure-inheritance baseline. Host objects enter only here — the pure module
+ * receives plain data.
+ *
+ * The baseline mirrors upstream `parentAgentOptionsForDelegation`
+ * (`child-agent.ts:68-85`): the delegating parent's durable header config
+ * wins, its creation options fallback. The parent is read opportunistically
+ * through the `agents` registry (the documented `ctx.get` pattern — runtime
+ * presence is composition-dependent); an unreadable lineage leaves the
+ * baseline absent.
+ */
+function authorizedRouteView(ctx: Context, agent: Agent): AuthorizedRouteSession {
+  const header = agent.session?.header
+  const parentId = header?.origin === 'subagent' ? header.parentSession : undefined
+  const parent = parentId === undefined ? undefined : ctx.get('agents')?.get(parentId)
+  const parentHeader = parent?.session.requestHeader()?.config
+  const parentOptions = parent?.options
+  return {
+    requestHeader: agent.session?.requestHeader()?.config,
+    events: agent.session?.events,
+    options: agent.options,
+    inherited: parentHeader
+      ?? (typeof parentOptions?.provider === 'string' && typeof parentOptions?.model === 'string'
+        ? { provider: parentOptions.provider, model: parentOptions.model }
+        : undefined),
+  }
 }
 
 export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksConfig): void {
@@ -501,13 +667,36 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   // fails loud on a duplicate key, so the catch lets the first fiber own the
   // `fallbacks` service key while later fibers fall back (no gateway) — the
   // typertGateway claim set dedupes, so claims never conflict.
+  // T3/T5 (plan dsh-012-subagent-routing): per-agent blocked-switch attempts
+  // and effective chain heads. Grown here so the gateway snapshot (constructed
+  // next) can close over them; cleaned on agent/disposed + plugin dispose
+  // (mirrors `dispatchInjected` / `slotWinners`). In-memory only (issue #52).
+  const chainHeadMap = new Map<string, EffectiveChainHead>()
+  chainHeadStores.set(ctx, chainHeadMap)
+  const blockedAttemptMap = new Map<string, BlockedSwitchAttempt>()
+  blockedAttemptStores.set(ctx, blockedAttemptMap)
+
   try {
     // T3 (plan fallbacks-role-seeds): the gateway receives the SAME per-apply
     // seed manager the service exposes — badge state (`seeds` wire field) and
     // `fallbacks/revert-seed` both delegate to it (spec §9.4 single point of
     // truth); the gateway builds its io over the bridge + its own settings
     // capture.
-    new FallbacksConfigGateway(ctx, bridge, seeds)
+    new FallbacksConfigGateway(ctx, bridge, seeds, () => {
+      // Same T1 reader the inject/switch paths use (no second policy source).
+      // get() is settings-page scoped: no live session, so the event read is
+      // "absent" and settings (or disabled) decide — identical to a session
+      // that has not yet recorded `subagent/model-selection-policy`.
+      try {
+        return {
+          policy: effectivePolicy({ ok: false, present: false }, readSubagentSettings(ctx)),
+          head: latestByAt(chainHeadMap),
+          blockedAttempt: latestByAt(blockedAttemptMap),
+        }
+      } catch {
+        return { policy: { state: 'unprovable' as const } }
+      }
+    })
   } catch (error) {
     if (!(error instanceof Error) || !error.message.includes('has been registered')) throw error
     ctx.logger('llm-fallbacks').debug('fallbacks gateway already registered — no gateway on this fiber (multi-fiber dedupe)')
@@ -550,6 +739,17 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   // `dispatchInjected`) and re-baselined on settings change (a config edit
   // is not a wall-clock rotation).
   const slotWinners = new Map<string, { key: string; label: string }>()
+  // S-hard (qc fix wave): per-agent last-known `subagentModelSelection`
+  // snapshots — the freshest successful settings read per agent, retained so a
+  // mid-session service disappearance (or a later throwing read) keeps a
+  // proven-enabled policy constraining (fail-closed) instead of reverting to
+  // unconstrained 0.3.5. Grown only by the guarded policy read
+  // (`readGuardedPolicySettings`); cleaned on agent/disposed + plugin dispose
+  // (mirrors `dispatchInjected` / `slotWinners`). In-memory only.
+  const lastKnownPolicySettings = new Map<string, PolicySettings>()
+  // T3 blocked-attempt / T5 chain-head maps are constructed before the
+  // gateway (so the snapshot can close over them). decide() writes the
+  // blocked record below; the inject path writes the head.
 
   /**
    * Shared decision path (spec §5.1 lifecycle step 1): resolve the agent's
@@ -625,8 +825,63 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     }
     const filter = createCandidateFilter({ current, cooldown, failed })
     const surviving = selectCandidates(all, wildcard, filter, modelExists)
-    const target = surviving[0]
-    if (target === undefined || target.model === undefined) return null
+    // T3 (plan dsh-012-subagent-routing): allowlist-constrained failure
+    // switching. The subagent host policy — read PER DECISION through the T1
+    // reader (same ADR path as the inject site) — intersects the RESOLVED
+    // survivors with the effective allowlist in candidate order (spec D1);
+    // the existing cooldown / step-failed / same-as-current / missing-id
+    // filters above already ran. Root-origin walks are untouched (0.3.5).
+    const first = surviving[0]
+    let target: { readonly provider: string; readonly model: string } | undefined
+    if (first !== undefined && first.model !== undefined) {
+      target = { provider: first.provider, model: first.model }
+    }
+    if (agent.session?.header?.origin === 'subagent' && target !== undefined) {
+      // W-002 + S-hard (qc fix wave): the read is guarded (a throwing host
+      // `current()` warns instead of escaping the listener) and carries the
+      // last-known snapshot, so a mid-session service disappearance keeps a
+      // proven-enabled policy constraining instead of failing open. A read
+      // that threw with nothing retained resolves to the SAME fail-closed
+      // skip as `'unprovable'` (warn + no switch, host seed stands).
+      const settingsRead = readGuardedPolicySettings(ctx, agent.id, lastKnownPolicySettings, logger.warn)
+      const policy = settingsRead.ok
+        ? effectivePolicy(readSessionPolicyEvent(agent.session.events), settingsRead.settings)
+        : { state: 'unprovable' as const }
+      if (policy.state === 'unprovable') {
+        // Fail-closed (spec D1): no plugin-originated switch the plugin cannot
+        // prove is on the allowlist — stay on the current route (host seed
+        // stands). Mirrors the T2 inject-path unprovable skip; only the
+        // switch is blocked, never the non-switch behavior.
+        logger.warn(
+          'llm-fallbacks: agent "%s" subagent model-selection policy is on but unreadable — skipping fallback switch',
+          agent.id,
+        )
+        return null
+      }
+      if (policy.state === 'enabled') {
+        const allowed = firstAllowedCandidate(resolvedRoutes(surviving), policy.allowedModels)
+        if (allowed === undefined) {
+          // Empty intersection: the 0.3.5 walk would have switched to
+          // `target` — the allowlist emptied it. Warn + in-memory
+          // blocked-attempt record (T5 consumes; issue #52 — no session
+          // write) and stay on the current route. No request is sent.
+          logger.warn(
+            'llm-fallbacks: agent "%s" fallback switch %s/%s blocked: resolved candidates are all outside the subagent allowlist — no switch',
+            agent.id,
+            target.provider,
+            target.model,
+          )
+          blockedAttemptMap.set(agent.id, {
+            at: Date.now(),
+            route: { provider: target.provider, model: target.model },
+            reason,
+          })
+          return null
+        }
+        target = { provider: allowed.provider, model: allowed.model }
+      }
+    }
+    if (target === undefined) return null
     // P2 rule 4 (plan fallbacks-half-open-recovery Task 4): the once-per-episode
     // probe admission marker — the FIRST admission of a half-open episode logs
     // one info line; later admissions while the episode is unresolved route
@@ -876,54 +1131,127 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
         }
       }
     }
-    // Dispatch-time role injection (plan fallbacks-role-automatch Task 4): a
-    // subagent-origin agent's FIRST request only (per-agent once-marker,
-    // `dispatchInjected`, cleaned on agent/disposed + plugin dispose below).
-    // Evaluated ONLY in this branch — a failure-path pending switch always
-    // wins above. Resolve the role (explicit → rules → auto-match hook), then
-    // inject the resolved role's chain head (first exact, non-wildcard
-    // candidate — no cooldown/failed filtering, no existence probe, per the
-    // Task 4 decision) when it differs from the request's current model. This
-    // is NOT a failure decision: no commit(), no pending switch, no cooldown,
-    // no failure bookkeeping — only the override + an explicit role → model
-    // log. `'inherit'` ("no specific role") NEVER
-    // injects, so with `roleAutoMatch: false` and no explicit/rules role the
-    // outcome is identical to today. Defensive: any throw in the
-    // resolution/injection path warns and the request proceeds unchanged
-    // (mirror the `agent/request-error` defensive pattern).
+    // Dispatch-time role injection (plan fallbacks-role-automatch Task 4;
+    // dsh-012-subagent-routing T2): a subagent-origin agent's FIRST request
+    // only (per-agent once-marker, `dispatchInjected`, cleaned on
+    // agent/disposed + plugin dispose below). Evaluated ONLY in this branch —
+    // a failure-path pending switch always wins above.
+    //
+    // T2 policy gates (spec D1 ∩ D2), read per dispatch through the T1 pure
+    // reader (session event → settings snapshot): `'unprovable'` (policy on
+    // but unreadable) → skip inject, host seed stands (fail-closed warn). An
+    // explicit authorized route detected on the child's durable state → the
+    // authorized route IS the chain head (label `authorized`) — inject
+    // skipped, never overwritten at first request (D2). Pure inheritance →
+    // the three-stage resolution runs, but a policy-on injected head is
+    // plugin-originated and must be on the allowlist: `firstAllowedCandidate`
+    // over the resolved candidates (label `injected`); empty intersection →
+    // skip inject, host seed stands, warn. Policy off/absent → inject exactly
+    // as 0.3.5 (first exact candidate, unchanged).
+    //
+    // This is NOT a failure decision: no commit(), no pending switch, no
+    // cooldown, no failure bookkeeping — only the override + an explicit role
+    // → model log. `'inherit'` ("no specific role") NEVER injects, so with
+    // `roleAutoMatch: false` and no explicit/rules role the outcome is
+    // identical to today. Defensive: any throw in the resolution/injection
+    // path warns and the request proceeds unchanged (mirror the
+    // `agent/request-error` defensive pattern).
     if (config.enabled && hasChains && agent.session?.header?.origin === 'subagent' && !dispatchInjected.has(agent.id)) {
       dispatchInjected.add(agent.id)
       try {
-        const role = await resolveRoleAtDispatch(agent, config.roles.rules, roleIds, {
-          automatchEnabled: config.roleAutoMatch ?? true,
-          automatch: (agent) => pickRoleByLlm(ctx, config.roles, agent, { warn: logger.warn }),
-          warn: logger.warn,
-        })
-        if (role !== INHERIT_ROLE_ID) {
-          const { all, wildcard } = resolveChainViews(
-            config.roles.list,
-            config.rootChain,
-            role,
-            seed.provider,
-            seed.model,
-            logger.warn,
+        // W-002 + S-hard (qc fix wave): the same guarded, last-known-backed
+        // read as the decision path — a throwing host `current()` warns and
+        // degrades to the `'unprovable'` skip (what the wrapping try/catch
+        // already did), while a retained snapshot keeps a proven-enabled
+        // policy constraining after the service disappears.
+        const settingsRead = readGuardedPolicySettings(ctx, agent.id, lastKnownPolicySettings, logger.warn)
+        const policy = settingsRead.ok
+          ? effectivePolicy(readSessionPolicyEvent(agent.session.events), settingsRead.settings)
+          : { state: 'unprovable' as const }
+        if (policy.state === 'unprovable') {
+          // Fail-closed: no plugin-originated route the plugin cannot prove is
+          // allowed — skip inject, host seed stands (spec D1).
+          logger.warn(
+            'llm-fallbacks: agent "%s" subagent model-selection policy is on but unreadable — skipping role-inject',
+            agent.id,
           )
-          const head = firstExactCandidate(all, wildcard)
-          if (head !== undefined && head.model !== undefined && !(head.provider === seed.provider && head.model === seed.model)) {
-            const to = { provider: head.provider, model: head.model }
-            // issue #52: no durable `fallbacks/switch` role-inject event is
-            // written (same reason as commit() — the registration seam was
-            // ineffective, and a session containing the event would refuse to
-            // load after a dsh restart). The override still applies below and
-            // the role→model info log still fires.
+        } else {
+          const authorized = policy.state === 'enabled'
+            ? detectAuthorizedRoute(authorizedRouteView(ctx, agent))
+            : undefined
+          if (authorized !== undefined) {
+            // D2: the authorized route is the chain head; the plugin chain
+            // applies only from failure time onward (T3). Persist the
+            // head-source label for the T5 card (T2 M3).
+            chainHeadMap.set(agent.id, {
+              at: Date.now(),
+              route: { provider: authorized.provider, model: authorized.model },
+              source: 'authorized',
+            })
             logger.info(
-              'llm-fallbacks: agent "%s" role-inject role=%s model=%s/%s',
+              'llm-fallbacks: agent "%s" authorized child route %s/%s is the chain head — skipping role-inject',
               agent.id,
-              role,
-              head.provider,
-              head.model,
+              authorized.provider,
+              authorized.model,
             )
-            return overrideConfig(seed, to)
+          } else {
+            const role = await resolveRoleAtDispatch(agent, config.roles.rules, roleIds, {
+              automatchEnabled: config.roleAutoMatch ?? true,
+              automatch: (agent) => pickRoleByLlm(ctx, config.roles, agent, { warn: logger.warn }),
+              warn: logger.warn,
+            })
+            if (role !== INHERIT_ROLE_ID) {
+              const { all, wildcard } = resolveChainViews(
+                config.roles.list,
+                config.rootChain,
+                role,
+                seed.provider,
+                seed.model,
+                logger.warn,
+              )
+              let to: { provider: string; model: string } | undefined
+              if (policy.state === 'enabled') {
+                // The injected head is plugin-originated: intersect the
+                // RESOLVED candidates with the allowlist in order (D1 ∩ D2).
+                const routes = resolvedRoutes(all)
+                to = firstAllowedCandidate(routes, policy.allowedModels)
+                if (to === undefined && routes.length > 0) {
+                  logger.warn(
+                    'llm-fallbacks: agent "%s" role-inject candidates are all outside the subagent allowlist — skipping inject (host seed stands)',
+                    agent.id,
+                  )
+                }
+              } else {
+                // Policy off: the first exact candidate exactly as 0.3.5.
+                const head = firstExactCandidate(all, wildcard)
+                if (head !== undefined && head.model !== undefined) {
+                  to = { provider: head.provider, model: head.model }
+                }
+              }
+              if (to !== undefined && !(to.provider === seed.provider && to.model === seed.model)) {
+                // issue #52: no durable `fallbacks/switch` role-inject event is
+                // written (same reason as commit() — the registration seam was
+                // ineffective, and a session containing the event would refuse to
+                // load after a dsh restart). The override still applies below and
+                // the role→model info log still fires. Persist the head-source
+                // label for the T5 card when the host policy is on (T2 M3).
+                if (policy.state === 'enabled') {
+                  chainHeadMap.set(agent.id, {
+                    at: Date.now(),
+                    route: { provider: to.provider, model: to.model },
+                    source: 'injected',
+                  })
+                }
+                logger.info(
+                  'llm-fallbacks: agent "%s" role-inject role=%s model=%s/%s',
+                  agent.id,
+                  role,
+                  to.provider,
+                  to.model,
+                )
+                return overrideConfig(seed, to)
+              }
+            }
           }
         }
       } catch (error) {
@@ -976,6 +1304,9 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     states.delete(agent.id)
     dispatchInjected.delete(agent.id)
     slotWinners.delete(agent.id)
+    blockedAttemptMap.delete(agent.id)
+    chainHeadMap.delete(agent.id)
+    lastKnownPolicySettings.delete(agent.id)
   })
 
   // P3 (plan fallbacks-half-open-recovery): plugin-scope success observation —
@@ -1003,6 +1334,9 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     states.clear()
     dispatchInjected.clear()
     slotWinners.clear()
+    blockedAttemptMap.clear()
+    chainHeadMap.clear()
+    lastKnownPolicySettings.clear()
   }, 'llm-fallbacks: clear per-agent state')
 
   // AC-5: /fallbacks — session-scoped read-only diagnostics. Conditional

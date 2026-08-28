@@ -143,6 +143,12 @@ export interface FallbacksSettingsState {
   switchesError: string | null
   /** Most recent `fallbacks/switch` events of the current session, newest first. */
   switches: FallbacksSwitchSnapshot[]
+  /**
+   * Host subagent-model-selection policy (spec D4 / T5). `undefined` when
+   * the gateway omitted the additive field (old payload / policy off) —
+   * the card hides the status area and never renders an active allowlist.
+   */
+  subagentPolicy: SubagentPolicyView | undefined
 }
 
 function messageOf(error: unknown): string {
@@ -185,6 +191,78 @@ function parseSeedsWire(value: unknown): SeedsWireStatus[] {
     if (!isRecord(entry)) return false
     return typeof entry.id === 'string' && typeof entry.overridden === 'boolean'
   })
+}
+
+/** Source label of the effective subagent chain head (spec D4). */
+export type SubagentPolicyHeadSource = 'authorized' | 'injected'
+
+/** One exact route on the additive `subagentPolicy` wire field. */
+export type SubagentPolicyRoute = { provider: string; model: string }
+
+/**
+ * Client-side view of the additive host-policy payload. Structural twin of
+ * the gateway wire type — parsed from unknown, never imported from host
+ * modules (`src/client/**` consumes policy only via the gateway channel).
+ */
+export type SubagentPolicyView =
+  | {
+      state: 'enabled'
+      allowedModels: SubagentPolicyRoute[]
+      head?: { route: SubagentPolicyRoute; source: SubagentPolicyHeadSource }
+      blockedAttempt?: { at: number; route: SubagentPolicyRoute; reason: string }
+    }
+  | { state: 'disabled' }
+  | { state: 'unprovable' }
+
+function parsePolicyRoute(value: unknown): SubagentPolicyRoute | undefined {
+  if (!isRecord(value)) return undefined
+  if (typeof value.provider !== 'string' || value.provider.length === 0) return undefined
+  if (typeof value.model !== 'string' || value.model.length === 0) return undefined
+  return { provider: value.provider, model: value.model }
+}
+
+/**
+ * Shape-guard the additive `subagentPolicy` wire field (T5). Malformed
+ * payloads resolve to `undefined` (hide the status area) — the store never
+ * throws on an old or misshapen field (old-payload tolerance).
+ */
+export function parseSubagentPolicyWire(value: unknown): SubagentPolicyView | undefined {
+  if (!isRecord(value) || typeof value.state !== 'string') return undefined
+  if (value.state === 'disabled' || value.state === 'unprovable') {
+    return { state: value.state }
+  }
+  if (value.state !== 'enabled') return undefined
+  if (!Array.isArray(value.allowedModels)) return undefined
+  const allowedModels: SubagentPolicyRoute[] = []
+  for (const entry of value.allowedModels) {
+    const route = parsePolicyRoute(entry)
+    if (route === undefined) return undefined
+    allowedModels.push(route)
+  }
+  const view: Extract<SubagentPolicyView, { state: 'enabled' }> = {
+    state: 'enabled',
+    allowedModels,
+  }
+  if (isRecord(value.head) && (value.head.source === 'authorized' || value.head.source === 'injected')) {
+    const route = parsePolicyRoute(value.head.route)
+    if (route !== undefined) view.head = { route, source: value.head.source }
+  }
+  if (isRecord(value.blockedAttempt) && typeof value.blockedAttempt.at === 'number') {
+    const route = parsePolicyRoute(value.blockedAttempt.route)
+    if (route !== undefined) {
+      view.blockedAttempt = {
+        at: value.blockedAttempt.at,
+        route,
+        reason: typeof value.blockedAttempt.reason === 'string' ? value.blockedAttempt.reason : '',
+      }
+    }
+  }
+  return view
+}
+
+function subagentPolicyFromWire(value: unknown, fallback: SubagentPolicyView | undefined): SubagentPolicyView | undefined {
+  if (!isRecord(value) || !('subagentPolicy' in value)) return fallback
+  return parseSubagentPolicyWire(value.subagentPolicy)
 }
 
 /** Seed-default persona from a revert-seed wire body (issue #59). */
@@ -841,6 +919,7 @@ export class FallbacksSettingsController {
     switchesStatus: 'idle',
     switchesError: null,
     switches: [],
+    subagentPolicy: undefined,
   })
 
   /** Read guard: a newer load() supersedes an older one's publish. */
@@ -952,7 +1031,10 @@ export class FallbacksSettingsController {
           seeds = parseSeedsWire(getResult.value.seeds)
         }
       }
-      this.accept(config, writable, legacyKeys, seeds)
+      const subagentPolicy = getResult !== undefined && getResult.ok
+        ? subagentPolicyFromWire(getResult.value, undefined)
+        : undefined
+      this.accept(config, writable, legacyKeys, seeds, subagentPolicy)
     } catch (error) {
       if (generation !== this.readGeneration) return
       if (writeGenerationAtStart !== this.writeGeneration) return
@@ -1151,7 +1233,8 @@ export class FallbacksSettingsController {
           seeds = parseSeedsWire(wireSeeds)
         }
       }
-      this.accept(config, true, legacyKeys, seeds)
+      const subagentPolicy = subagentPolicyFromWire(value, this.store.getSnapshot().subagentPolicy)
+      this.accept(config, true, legacyKeys, seeds, subagentPolicy)
     } catch (error) {
       if (generation !== this.writeGeneration) return
       this.fail(error)
@@ -1201,7 +1284,8 @@ export class FallbacksSettingsController {
           seeds = parseSeedsWire(wireSeeds)
         }
       }
-      this.accept(config, true, legacyKeys, seeds)
+      const subagentPolicy = subagentPolicyFromWire(value, this.store.getSnapshot().subagentPolicy)
+      this.accept(config, true, legacyKeys, seeds, subagentPolicy)
     } catch (error) {
       if (generation !== this.writeGeneration) return
       this.fail(error)
@@ -1259,7 +1343,8 @@ export class FallbacksSettingsController {
           seeds = parseSeedsWire(wireSeeds)
         }
       }
-      this.accept(config, true, legacyKeys, seeds)
+      const subagentPolicy = subagentPolicyFromWire(value, this.store.getSnapshot().subagentPolicy)
+      this.accept(config, true, legacyKeys, seeds, subagentPolicy)
       return revertOutcomePersona(value)
     } catch (error) {
       if (generation !== this.writeGeneration) return undefined
@@ -1298,7 +1383,13 @@ export class FallbacksSettingsController {
    * only when a real config resolved — a transient channel-down keeps the
    * last accepted badge state.
    */
-  private accept(config: unknown, writable: boolean, legacyKeys: string[], seeds: SeedsWireStatus[]): void {
+  private accept(
+    config: unknown,
+    writable: boolean,
+    legacyKeys: string[],
+    seeds: SeedsWireStatus[],
+    subagentPolicy: SubagentPolicyView | undefined,
+  ): void {
     const parsed = config === undefined ? undefined : parseFallbacksConfig(config)
     // `roleAutoMatch` (plan fallbacks-role-automatch Task 1) is a boolean
     // with a schemastery schema default `true`, so the gateway composition
@@ -1326,6 +1417,10 @@ export class FallbacksSettingsController {
       // read that resolved no config (the badge is server truth, not a
       // client guess).
       state.seeds = parsed === undefined ? state.seeds : seeds
+      // Same honest rule for the host-policy snapshot: a get that resolved
+      // no config keeps the last accepted view; a real get settles even
+      // when the additive field is absent (`undefined` = off/old payload).
+      state.subagentPolicy = parsed === undefined ? state.subagentPolicy : subagentPolicy
       if (parsed !== undefined) {
         state.config = parsed
       }

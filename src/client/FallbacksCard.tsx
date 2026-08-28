@@ -1933,6 +1933,42 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
               {lastSaveSection === 'sub' && state.status === 'error' && state.error !== null && (
                 <p className={css.error} role="alert">{t('error.generic', { message: state.error })}</p>
               )}
+              {/* Spec D4 / T5: read-only host-policy status. Hidden when the
+               * additive field is absent or disabled — never an active
+               * allowlist. Unprovable is its own state (T3 contract), not
+               * an empty-intersection warning. Roles/rules editors below
+               * stay untouched. */}
+              {state.subagentPolicy?.state === 'enabled' && (
+                <div className={css.policyStatus} role="status">
+                  <span className={css.policyStatusLabel}>{t('subagents.policy.label')}</span>
+                  <span className={css.policyStatusLine}>
+                    {`${t('subagents.policy.allowlist')}: ${state.subagentPolicy.allowedModels
+                      .map((route) => `${route.provider}/${route.model}`)
+                      .join(', ')}`}
+                  </span>
+                  {state.subagentPolicy.head !== undefined && (
+                    <span className={css.policyStatusLine}>
+                      {`${t('subagents.policy.head')}: ${state.subagentPolicy.head.route.provider}/${state.subagentPolicy.head.route.model} (${t(
+                        state.subagentPolicy.head.source === 'authorized'
+                          ? 'subagents.policy.source.authorized'
+                          : 'subagents.policy.source.injected',
+                      )})`}
+                    </span>
+                  )}
+                  {state.subagentPolicy.blockedAttempt !== undefined && (
+                    <span className={css.policyStatusWarn} role="alert">
+                      {t('subagents.policy.blocked')}
+                    </span>
+                  )}
+                </div>
+              )}
+              {state.subagentPolicy?.state === 'unprovable' && (
+                <div className={css.policyStatus} role="status">
+                  <span className={css.policyStatusWarn} role="alert">
+                    {t('subagents.policy.unprovable')}
+                  </span>
+                </div>
+              )}
               <div className={css.field} role="group" aria-labelledby="fallbacks-roles-list">
                 <span className={css.fieldLabel}>
                   <span id="fallbacks-roles-list">{t('roles.list.label')}</span>
