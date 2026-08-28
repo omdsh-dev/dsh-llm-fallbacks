@@ -16,8 +16,9 @@
  *   cooldown + failure bookkeeping, then return
  *   `{ kind: 'retry' }` (own recovery, no `next()`).
  * - `agent/request` waterfall: apply a pending switch after `await next()`
- *   (provider/model override, inherited `reasoningEffort` dropped — the
- *   `installModelSelection` `withoutInheritedEffort` pattern); a
+ *   (provider/model override; the inherited `reasoningEffort` follows the
+ *   upstream routeChanged rule — dropped on a route change unless explicitly
+ *   named, preserved on a same-route override; spec D3); a
  *   root-origin `FallbacksChain/Auto` seed then overrides to the
  *   effective chain's first exact head (select-is-primary, plan
  *   fallbacks-virtual-chain Task 2); then the always-mode cap check (count
@@ -49,6 +50,7 @@ import { firstAllowedCandidate, resolvedRoutes } from './route-allowlist.ts'
 import { effectivePolicy, readSessionPolicyEvent, type PolicySettings } from './subagent-policy.ts'
 import { FallbackStateStore, type AgentFallbackState, type BlockedSwitchAttempt, type PendingSwitch } from './state.ts'
 import { escalatedCooldownMs } from './recovery.ts'
+import { overrideConfigWithRouteRule, type LlmReasoningEffort } from './override.ts'
 import {
   isAllDayConforming,
   resolveEffectiveChain,
@@ -346,12 +348,18 @@ function slotWinnerKey(winner: SlotRowConfig | 'all-day'): string {
 
 /**
  * Override a request config with a pending switch: provider/model replaced,
- * inherited `reasoningEffort` dropped (the `installModelSelection`
- * `withoutInheritedEffort` pattern).
+ * the inherited `reasoningEffort` following the upstream routeChanged rule
+ * (spec D3, T4) — dropped on a route change unless an explicit effort is
+ * named, preserved on a same-route override. Thin delegate: the rule lives
+ * in the pure `overrideConfigWithRouteRule` (`src/override.ts`), shared by
+ * every override path.
  */
-function overrideConfig(seed: LlmCallConfig, to: { provider: string; model: string }): LlmCallConfig {
-  const { reasoningEffort: _inherited, ...withoutInheritedEffort } = seed
-  return { ...withoutInheritedEffort, provider: to.provider, model: to.model }
+function overrideConfig(
+  seed: LlmCallConfig,
+  to: { provider: string; model: string },
+  explicitEffort?: LlmReasoningEffort,
+): LlmCallConfig {
+  return overrideConfigWithRouteRule(seed, to, explicitEffort)
 }
 
 /**
