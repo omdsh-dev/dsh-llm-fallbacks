@@ -1,0 +1,5 @@
+---
+category: Changed
+---
+- Migrate the client half off the removed `@deepseek-ai/dsh-client-runtime` (deleted upstream in dsh 0.1.2) onto its 0.1.2 successor seams: the snapshot store VALUE-imports `@deepseek-ai/dsh-client-store`, session/context types come from `@deepseek-ai/dsh-api-session-controller/client` and cordis `Context`, conversation/chat slot types from `@deepseek-ai/dsh-client-ui-conversation/client` / `@deepseek-ai/dsh-client-ui-chat/client`, and the view types dropped by the 0.1.2 `dsh-client-connection/client` entry re-home to the api-remotes client barrel and session-controller client. Peers are re-pinned `^0.1.2-alpha.1` with the dead `dsh-client-runtime` peer removed; the plugin's own export surface (`.` and `./client`) is unchanged.
+- Align the client bundle composition with the 0.1.2 platform table: the former runtime entry in `CLIENT_EXTERNALS` becomes `@deepseek-ai/dsh-client-store` (the frozen loader-table store module the store VALUE import resolves from at runtime), and the `dsh.client.inject` list keeps only the client-plugin service graph (no store/runtime inject entry).

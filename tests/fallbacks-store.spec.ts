@@ -18,10 +18,11 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
-import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import type {
-  ClientConnectionRpc, HistoryEntry, SettingsNamespaceView,
-} from '@deepseek-ai/dsh-client-connection/client'
+  SessionFollowFrame, SettingsNamespaceView,
+} from '@deepseek-ai/dsh-api-remotes/client'
+import type { SessionEventLikeEntry } from '@deepseek-ai/dsh-api-session-controller/client'
+import type { ClientConnectionRpc } from '@deepseek-ai/dsh-client-connection/client'
 import { defaultFallbacksConfig, type FallbacksConfig } from '../src/config.ts'
 import type { FallbacksSwitchEventData } from '../src/events.ts'
 import { KNOWN_TRIGGER_CODES, TRIGGER_CODE_LABELS } from '../src/client/locales.ts'
@@ -121,25 +122,39 @@ function withoutRoleAutoMatch(config: FallbacksConfig): FallbacksConfig {
   return copy as FallbacksConfig
 }
 
-/** A settings + llm + sessions wire face whose methods are spies (real `IApiClient` also carries `openDocument`). */
+/** The settings + llm + session Remote-namespace faces the store reads, as spies (0.1.2 `ctx.remote` face). */
 function makeApi() {
   return {
     settings: {
       describe: vi.fn(),
-      openDocument: vi.fn(),
-      update: vi.fn(),
-      replace: vi.fn(),
-      mutate: vi.fn(),
     },
     llm: {
-      providers: vi.fn(),
-      models: vi.fn(),
-      discoverModels: vi.fn(),
+      listConfigurableProviders: vi.fn(),
     },
-    sessions: {
-      history: vi.fn(),
+    session: {
+      modelCatalog: vi.fn(),
+      follow: vi.fn(),
     },
   }
+}
+
+/**
+ * A `session/follow` answer: yields the opening snapshot carrying `records`
+ * (the tail page the switches read consumes), then idles — the store cancels
+ * the stream right after the snapshot.
+ */
+function followAnswer(records: readonly SessionEventLikeEntry[]): AsyncIterable<SessionFollowFrame> {
+  return (async function* (): AsyncGenerator<SessionFollowFrame> {
+    yield { type: 'snapshot', records, hasMore: false } as unknown as SessionFollowFrame
+    await Promise.withResolvers().promise
+  })()
+}
+
+/** A `session/follow` answer whose first frame read rejects (business or transport failure). */
+function followThrow(error: Error): AsyncIterable<SessionFollowFrame> {
+  return (async function* (): AsyncGenerator<SessionFollowFrame> {
+    throw error
+  })()
 }
 
 /**
@@ -152,7 +167,7 @@ function makeApi() {
  * a regressed duplicate `$on` registration would pass; the Set plus the
  * single-listener emit guard make any double subscription fail loudly.
  */
-function makeRemote() {
+function makeRemote(namespaces: { settings?: unknown; llm?: unknown; session?: unknown } = {}) {
   const listeners = new Map<string, Set<(...args: unknown[]) => void>>()
   const disposers: Array<{ invoked: boolean }> = []
   const $on = vi.fn((event: string, listener: (...args: unknown[]) => void): (() => void) => {
@@ -167,7 +182,7 @@ function makeRemote() {
     }
   })
   return {
-    remote: { $on } as { $on: typeof $on },
+    remote: { $on, ...namespaces },
     $on,
     emit(event: string, ...args: unknown[]): void {
       const set = listeners.get(event)
@@ -184,8 +199,9 @@ function makeRemote() {
 }
 
 /** One `fallbacks/switch` history entry with a deterministic seq/time. */
-function switchEntry(seq: number, overrides: Partial<FallbacksSwitchEventData> = {}): HistoryEntry {
+function switchEntry(seq: number, overrides: Partial<FallbacksSwitchEventData> = {}): SessionEventLikeEntry {
   return {
+    type: 'event',
     event: {
       type: 'fallbacks/switch',
       seq,
@@ -200,20 +216,25 @@ function switchEntry(seq: number, overrides: Partial<FallbacksSwitchEventData> =
         ...overrides,
       },
     },
-  } as HistoryEntry
+  }
 }
 
 /** A non-switch history entry (must be filtered out by the extraction). */
-function otherEntry(seq: number, type = 'assistant/message'): HistoryEntry {
-  return { event: { type, seq, time: 1_700_000_000_000, data: {} } } as unknown as HistoryEntry
+function otherEntry(seq: number, type = 'assistant/message'): SessionEventLikeEntry {
+  return { type: 'event', event: { type, seq, time: 1_700_000_000_000, data: {} } } as unknown as SessionEventLikeEntry
+}
+
+/** A packed Assistant chunk run (0.1.2 history pages interleave these with scalar events). */
+function chunksEntry(seq: number): SessionEventLikeEntry {
+  return { type: 'chunks', event: { type: 'chunkrow/text-chunks', seq, time: 1_700_000_000_000, data: {} } } as unknown as SessionEventLikeEntry
 }
 
 /** A catalog fixture: two providers, one with advertised models, one without. */
 function catalogFixture(): CatalogLookup {
   return {
     providers: [
-      { provider: 'openai', displayName: 'OpenAI', settingsNs: 'llm-providers', settingsPath: [], active: true },
-      { provider: 'anthropic', displayName: 'Anthropic', settingsNs: 'llm-providers', settingsPath: [], active: true },
+      { provider: 'openai', displayName: 'OpenAI', settingsNs: 'llm-providers', settingsPath: [] },
+      { provider: 'anthropic', displayName: 'Anthropic', settingsNs: 'llm-providers', settingsPath: [] },
     ],
     groups: [
       { id: 'openai', name: 'OpenAI', models: [{ id: 'gpt-4o', name: 'GPT-4o' }, { id: 'o3', name: 'o3' }] },
@@ -230,20 +251,22 @@ function providerNs(ns: string, value: unknown): SettingsNamespaceView {
 function configuredFixture() {
   return {
     providers: [
-      { provider: 'deepseek-official', displayName: 'DeepSeek Official', settingsNs: 'llm-deepseek', settingsPath: [], active: true },
-      { provider: 'openai', displayName: 'OpenAI', settingsNs: 'llm-providers', settingsPath: ['providers', 'openai'], active: true },
-      { provider: 'anthropic', displayName: 'Anthropic', settingsNs: 'llm-providers', settingsPath: ['providers', 'anthropic'], active: true },
-      { provider: 'google', displayName: 'Google', settingsNs: 'llm-providers', settingsPath: ['providers', 'google'], active: true },
+      { provider: 'deepseek-official', displayName: 'DeepSeek Official', settingsNs: 'llm-deepseek', settingsPath: [] },
+      { provider: 'openai', displayName: 'OpenAI', settingsNs: 'llm-providers', settingsPath: ['providers', 'openai'] },
+      { provider: 'anthropic', displayName: 'Anthropic', settingsNs: 'llm-providers', settingsPath: ['providers', 'anthropic'] },
+      { provider: 'google', displayName: 'Google', settingsNs: 'llm-providers', settingsPath: ['providers', 'google'] },
     ],
   }
 }
 
-function ok(value: unknown) {
-  return { result: { ok: true, value } }
+/** One Remote success (0.1.2 flat `RemoteResult`, no `result` envelope). */
+function ok<T>(value: T) {
+  return { ok: true as const, value }
 }
 
+/** One Remote business rejection. */
 function error(code: string, message: string, details?: unknown) {
-  return { result: { ok: false, error: { code, message, ...(details === undefined ? {} : { details }) } } }
+  return { ok: false as const, error: { code, message, details: details ?? {} } }
 }
 
 describe('parseFallbacksConfig (descriptor read, redactSecrets face)', () => {
@@ -616,6 +639,14 @@ describe('extractRecentSwitches (spec §2.5 D-5 raw event face)', () => {
     expect(extracted.map(item => item.seq)).toEqual([7, 5])
   })
 
+  it('skips packed Assistant chunk runs (`chunks` entries) interleaved on the page', () => {
+    // 0.1.2 history pages interleave packed chunk runs with scalar events;
+    // the chunk run carries the highest seq, so reading it as a scalar entry
+    // would mis-order or leak it into the summary.
+    const extracted = extractRecentSwitches([switchEntry(4), chunksEntry(9), switchEntry(2)])
+    expect(extracted.map(item => item.seq)).toEqual([4, 2])
+  })
+
   it('orders by event seq descending (newest first)', () => {
     const entries = [switchEntry(2), switchEntry(10), switchEntry(5)]
     const extracted = extractRecentSwitches(entries)
@@ -722,7 +753,7 @@ describe('FallbacksSettingsController', () => {
     expect(state.present).toBe(true)
     expect(state.config.enabled).toBe(false)
     // describe is still called (writable + namespace directory)…
-    expect(api.settings.describe).toHaveBeenCalledWith({})
+    expect(api.settings.describe).toHaveBeenCalledWith()
     // …but the config itself rides the gateway channel, never describe.
     expect(call).toHaveBeenCalledWith('/api', 'fallbacks/get', { args: {} })
     expect(get).toHaveBeenCalledTimes(1)
@@ -1560,8 +1591,8 @@ describe('FallbacksSettingsController', () => {
 
   it('loads the provider directory and model groups into the catalog snapshot (D-4)', async () => {
     const api = makeApi()
-    api.llm.providers.mockResolvedValue(ok({ providers: catalogFixture().providers }))
-    api.llm.models.mockResolvedValue(ok({ groups: catalogFixture().groups, failures: [] }))
+    api.llm.listConfigurableProviders.mockResolvedValue(ok(catalogFixture().providers))
+    api.session.modelCatalog.mockResolvedValue(ok({ groups: catalogFixture().groups, failures: [] }))
     const controller = new FallbacksSettingsController(api, makeRpc().rpc)
     await controller.loadCatalog()
     const state = controller.store.getSnapshot()
@@ -1572,14 +1603,14 @@ describe('FallbacksSettingsController', () => {
     expect(state.catalogEpoch).toBe(1)
     // The catalog read never touches the settings side of the store.
     expect(state.status).toBe('idle')
-    expect(api.llm.providers).toHaveBeenCalledWith({})
-    expect(api.llm.models).toHaveBeenCalledWith({})
+    expect(api.llm.listConfigurableProviders).toHaveBeenCalledWith()
+    expect(api.session.modelCatalog).toHaveBeenCalledWith()
   })
 
   it('keeps sound groups usable and reports per-provider failures as a diagnostic (D-4)', async () => {
     const api = makeApi()
-    api.llm.providers.mockResolvedValue(ok({ providers: catalogFixture().providers }))
-    api.llm.models.mockResolvedValue(ok({
+    api.llm.listConfigurableProviders.mockResolvedValue(ok(catalogFixture().providers))
+    api.session.modelCatalog.mockResolvedValue(ok({
       groups: catalogFixture().groups,
       failures: [{ id: 'anthropic', name: 'Anthropic', message: 'lookup refused' }],
     }))
@@ -1594,7 +1625,7 @@ describe('FallbacksSettingsController', () => {
 
   it('marks the catalog errored on a failed read without blocking the settings state', async () => {
     const api = makeApi()
-    api.llm.providers.mockResolvedValue(error('llm-rejected', 'directory read refused'))
+    api.llm.listConfigurableProviders.mockResolvedValue(error('llm-rejected', 'directory read refused'))
     const controller = new FallbacksSettingsController(api, makeRpc().rpc)
     await controller.loadCatalog()
     const state = controller.store.getSnapshot()
@@ -1607,8 +1638,8 @@ describe('FallbacksSettingsController', () => {
 
   it('accepts an empty catalog as ready (empty-state guidance, not an error)', async () => {
     const api = makeApi()
-    api.llm.providers.mockResolvedValue(ok({ providers: [] }))
-    api.llm.models.mockResolvedValue(ok({ groups: [], failures: [] }))
+    api.llm.listConfigurableProviders.mockResolvedValue(ok([]))
+    api.session.modelCatalog.mockResolvedValue(ok({ groups: [], failures: [] }))
     const controller = new FallbacksSettingsController(api, makeRpc().rpc)
     await controller.loadCatalog()
     const state = controller.store.getSnapshot()
@@ -1620,9 +1651,9 @@ describe('FallbacksSettingsController', () => {
 
   it('guards catalog refreshes on load with an independent generation (llm/adapters-updated)', async () => {
     const api = makeApi()
-    api.llm.providers.mockResolvedValue(ok({ providers: catalogFixture().providers }))
+    api.llm.listConfigurableProviders.mockResolvedValue(ok(catalogFixture().providers))
     const gate = Promise.withResolvers<unknown>()
-    api.llm.models.mockReturnValue(gate.promise)
+    api.session.modelCatalog.mockReturnValue(gate.promise)
     const controller = new FallbacksSettingsController(api, makeRpc().rpc)
     const first = controller.loadCatalog()
     controller.dispose()
@@ -1636,17 +1667,17 @@ describe('FallbacksSettingsController', () => {
 
   it('refreshCatalogIfLoaded skips an idle catalog and refreshes an opened one', async () => {
     const api = makeApi()
-    api.llm.providers.mockResolvedValue(ok({ providers: catalogFixture().providers }))
-    api.llm.models.mockResolvedValue(ok({ groups: catalogFixture().groups, failures: [] }))
+    api.llm.listConfigurableProviders.mockResolvedValue(ok(catalogFixture().providers))
+    api.session.modelCatalog.mockResolvedValue(ok({ groups: catalogFixture().groups, failures: [] }))
     const controller = new FallbacksSettingsController(api, makeRpc().rpc)
     // Idle → no refetch.
     refreshCatalogIfLoaded(controller)
-    expect(api.llm.providers).not.toHaveBeenCalled()
+    expect(api.llm.listConfigurableProviders).not.toHaveBeenCalled()
     await controller.loadCatalog()
-    expect(api.llm.providers).toHaveBeenCalledTimes(1)
+    expect(api.llm.listConfigurableProviders).toHaveBeenCalledTimes(1)
     // Opened (ready) → refetches.
     refreshCatalogIfLoaded(controller)
-    expect(api.llm.providers).toHaveBeenCalledTimes(2)
+    expect(api.llm.listConfigurableProviders).toHaveBeenCalledTimes(2)
   })
 
   it('refreshFallbacksIfLoaded skips an idle store and refreshes an opened one', async () => {
@@ -1705,8 +1736,8 @@ describe('configuredProviders derivation (Models-page `configured` join)', () =>
         providerNs('llm-providers', { providers: { openai: {}, anthropic: {} } }),
       ],
     }))
-    api.llm.providers.mockResolvedValue(ok({ providers: configuredFixture().providers }))
-    api.llm.models.mockResolvedValue(ok({ groups: [], failures: [] }))
+    api.llm.listConfigurableProviders.mockResolvedValue(ok(configuredFixture().providers))
+    api.session.modelCatalog.mockResolvedValue(ok({ groups: [], failures: [] }))
     const controller = new FallbacksSettingsController(api, makeRpc().rpc)
     await controller.load()
     // Namespaces landed first; without the catalog the join stays empty.
@@ -1724,8 +1755,8 @@ describe('configuredProviders derivation (Models-page `configured` join)', () =>
       hasDocument: false,
       namespaces: [providerNs('llm-deepseek', {})],
     }))
-    api.llm.providers.mockResolvedValue(ok({ providers: configuredFixture().providers }))
-    api.llm.models.mockResolvedValue(ok({ groups: [], failures: [] }))
+    api.llm.listConfigurableProviders.mockResolvedValue(ok(configuredFixture().providers))
+    api.session.modelCatalog.mockResolvedValue(ok({ groups: [], failures: [] }))
     const controller = new FallbacksSettingsController(api, makeRpc().rpc)
     await controller.loadCatalog()
     expect(controller.store.getSnapshot().configuredProviders).toEqual([])
@@ -1744,8 +1775,8 @@ describe('configuredProviders derivation (Models-page `configured` join)', () =>
       hasDocument: false,
       namespaces: [providerNs('llm-deepseek', {})],
     }))
-    api.llm.providers.mockResolvedValue(ok({ providers: configuredFixture().providers }))
-    api.llm.models.mockResolvedValue(ok({ groups: [], failures: [] }))
+    api.llm.listConfigurableProviders.mockResolvedValue(ok(configuredFixture().providers))
+    api.session.modelCatalog.mockResolvedValue(ok({ groups: [], failures: [] }))
     const controller = new FallbacksSettingsController(api, makeRpc().rpc)
     await controller.load()
     await controller.loadCatalog()
@@ -1759,8 +1790,8 @@ describe('configuredProviders derivation (Models-page `configured` join)', () =>
   it('keeps out-of-catalog existing values round-tripping (the configured filter never touches rows)', async () => {
     const api = makeApi()
     api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
-    api.llm.providers.mockResolvedValue(ok({ providers: catalogFixture().providers }))
-    api.llm.models.mockResolvedValue(ok({ groups: catalogFixture().groups, failures: [] }))
+    api.llm.listConfigurableProviders.mockResolvedValue(ok(catalogFixture().providers))
+    api.session.modelCatalog.mockResolvedValue(ok({ groups: catalogFixture().groups, failures: [] }))
     const controller = new FallbacksSettingsController(
       api,
       makeRpc({ ...defaultFallbacksConfig, rootChain: ['other/gpt-4o'] }).rpc,
@@ -1786,8 +1817,8 @@ describe('configuredProviders derivation (Models-page `configured` join)', () =>
       hasDocument: false,
       namespaces: [providerNs('llm-providers', { providers: { openai: { apiKeyEnv: 'OPENAI_API_KEY' }, anthropic: {} } })],
     }))
-    api.llm.providers.mockResolvedValue(ok({ providers: configuredFixture().providers }))
-    api.llm.models.mockResolvedValue(ok({ groups: catalogFixture().groups, failures: [] }))
+    api.llm.listConfigurableProviders.mockResolvedValue(ok(configuredFixture().providers))
+    api.session.modelCatalog.mockResolvedValue(ok({ groups: catalogFixture().groups, failures: [] }))
     const controller = new FallbacksSettingsController(
       api,
       makeRpc({ ...defaultFallbacksConfig, rootChain: ['google/gemini-2.0-flash'] }).rpc,
@@ -1808,18 +1839,15 @@ describe('configuredProviders derivation (Models-page `configured` join)', () =>
 describe('recent-switch summary (spec §2.5 D-5)', () => {
   it('reads one history page for the recorded current session and lands the extracted switches', async () => {
     const api = makeApi()
-    api.sessions.history.mockResolvedValue(ok({
-      events: [otherEntry(3), switchEntry(5), switchEntry(9)],
-      hasMore: false,
-    }))
+    api.session.follow.mockImplementation(() => followAnswer([otherEntry(3), switchEntry(5), switchEntry(9)]))
     const controller = new FallbacksSettingsController(api, makeRpc().rpc)
     controller.setCurrentSession('sess-1' as never)
     await controller.loadSwitches()
     const state = controller.store.getSnapshot()
-    expect(api.sessions.history).toHaveBeenCalledWith({
-      sessionId: 'sess-1',
+    expect(api.session.follow).toHaveBeenCalledWith({
+      address: { kind: 'session', sessionId: 'sess-1' },
       maxMessages: SWITCHES_HISTORY_PAGE,
-    })
+    }, expect.any(AbortSignal))
     expect(state.switchesStatus).toBe('ready')
     expect(state.switchesError).toBeNull()
     expect(state.switches.map(item => item.seq)).toEqual([9, 5])
@@ -1835,12 +1863,12 @@ describe('recent-switch summary (spec §2.5 D-5)', () => {
     expect(state.switchesStatus).toBe('ready')
     expect(state.switchesError).toBeNull()
     expect(state.switches).toEqual([])
-    expect(api.sessions.history).not.toHaveBeenCalled()
+    expect(api.session.follow).not.toHaveBeenCalled()
   })
 
   it('marks the switches read errored on a failed history without blocking the settings state', async () => {
     const api = makeApi()
-    api.sessions.history.mockResolvedValue(error('session-rejected', 'history read refused', { sessionId: 'sess-1' }))
+    api.session.follow.mockImplementation(() => followThrow(new Error('history read refused')))
     const controller = new FallbacksSettingsController(api, makeRpc().rpc)
     controller.setCurrentSession('sess-1' as never)
     await controller.loadSwitches()
@@ -1853,7 +1881,7 @@ describe('recent-switch summary (spec §2.5 D-5)', () => {
 
   it('surfaces a transport failure as the switches error (wire message extraction)', async () => {
     const api = makeApi()
-    api.sessions.history.mockRejectedValue(new Error('transport down'))
+    api.session.follow.mockImplementation(() => followThrow(new Error('transport down')))
     const controller = new FallbacksSettingsController(api, makeRpc().rpc)
     controller.setCurrentSession('sess-1' as never)
     await controller.loadSwitches()
@@ -1865,12 +1893,16 @@ describe('recent-switch summary (spec §2.5 D-5)', () => {
   it('drops in-flight history responses after dispose (independent generation guard)', async () => {
     const api = makeApi()
     const gate = Promise.withResolvers<unknown>()
-    api.sessions.history.mockReturnValue(gate.promise)
+    api.session.follow.mockImplementation(() => (async function* (): AsyncGenerator<SessionFollowFrame> {
+      await gate.promise
+      yield { type: 'snapshot', records: [switchEntry(1)], hasMore: false } as unknown as SessionFollowFrame
+      await Promise.withResolvers().promise
+    })())
     const controller = new FallbacksSettingsController(api, makeRpc().rpc)
     controller.setCurrentSession('sess-1' as never)
     const loading = controller.loadSwitches()
     controller.dispose()
-    gate.resolve(ok({ events: [switchEntry(1)], hasMore: false }))
+    gate.resolve(undefined)
     await loading
     const state = controller.store.getSnapshot()
     // The stale response never published: the block stays on the loading
@@ -1879,60 +1911,94 @@ describe('recent-switch summary (spec §2.5 D-5)', () => {
     expect(state.switches).toEqual([])
   })
 
+  it('aborts a wedged follow opening on dispose (store signal reaches the stream double)', async () => {
+    // qc3 F-003: `iterator.return()` is only reachable AFTER the opening
+    // frame settles — a dispose while the first frame is still pending must
+    // cancel the stream through the store's dispose AbortSignal instead of
+    // leaving the server-side session-follow registration open until the
+    // plugin mount abort. The double fails its pending `next()` on abort
+    // exactly like the real gateway inbox does.
+    const api = makeApi()
+    let opened: AbortSignal | undefined
+    api.session.follow.mockImplementation((_request: unknown, signal?: AbortSignal) => {
+      opened = signal
+      return (async function* (): AsyncGenerator<SessionFollowFrame> {
+        await new Promise<never>((_resolve, reject) => {
+          signal?.addEventListener('abort', () => reject(signal.reason), { once: true })
+        })
+      })()
+    })
+    const controller = new FallbacksSettingsController(api, makeRpc().rpc)
+    controller.setCurrentSession('sess-1' as never)
+    const loading = controller.loadSwitches()
+    // The stream double receives the store's dispose signal, still live.
+    expect(opened?.aborted).toBe(false)
+    controller.dispose()
+    // The double observes the abort (the wedged `next()` settles now).
+    expect(opened?.aborted).toBe(true)
+    await loading
+    const state = controller.store.getSnapshot()
+    // The abort-induced failure never publishes: dispose's generation guard
+    // freezes the block on the loading state it was left in.
+    expect(state.switchesStatus).not.toBe('ready')
+    expect(state.switchesStatus).not.toBe('error')
+    expect(state.switches).toEqual([])
+  })
+
   it('session switch reloads the summary for the new session once read', async () => {
     const api = makeApi()
-    api.sessions.history.mockResolvedValue(ok({ events: [switchEntry(2)], hasMore: false }))
+    api.session.follow.mockImplementation(() => followAnswer([switchEntry(2)]))
     const controller = new FallbacksSettingsController(api, makeRpc().rpc)
     controller.setCurrentSession('sess-1' as never)
     await controller.loadSwitches()
-    expect(api.sessions.history).toHaveBeenCalledTimes(1)
+    expect(api.session.follow).toHaveBeenCalledTimes(1)
 
     // A different current session → immediate reload for the new id.
     controller.setCurrentSession('sess-2' as never)
     await Promise.resolve()
-    expect(api.sessions.history).toHaveBeenCalledTimes(2)
-    expect(api.sessions.history).toHaveBeenLastCalledWith({
-      sessionId: 'sess-2',
+    expect(api.session.follow).toHaveBeenCalledTimes(2)
+    expect(api.session.follow).toHaveBeenLastCalledWith({
+      address: { kind: 'session', sessionId: 'sess-2' },
       maxMessages: SWITCHES_HISTORY_PAGE,
-    })
+    }, expect.any(AbortSignal))
 
     // The same id again → no reload.
     controller.setCurrentSession('sess-2' as never)
     await Promise.resolve()
-    expect(api.sessions.history).toHaveBeenCalledTimes(2)
+    expect(api.session.follow).toHaveBeenCalledTimes(2)
   })
 
   it('recording the current session before the block is read only stores the id (first read stays with the section mount)', async () => {
     const api = makeApi()
-    api.sessions.history.mockResolvedValue(ok({ events: [], hasMore: false }))
+    api.session.follow.mockImplementation(() => followAnswer([]))
     const controller = new FallbacksSettingsController(api, makeRpc().rpc)
     controller.setCurrentSession('sess-1' as never)
     // Idle block: recording must not trigger a read.
-    expect(api.sessions.history).not.toHaveBeenCalled()
+    expect(api.session.follow).not.toHaveBeenCalled()
     await controller.loadSwitches()
-    expect(api.sessions.history).toHaveBeenCalledWith({
-      sessionId: 'sess-1',
+    expect(api.session.follow).toHaveBeenCalledWith({
+      address: { kind: 'session', sessionId: 'sess-1' },
       maxMessages: SWITCHES_HISTORY_PAGE,
-    })
+    }, expect.any(AbortSignal))
   })
 
   it('refreshSwitchesIfLoaded skips an idle block and refreshes an opened one', async () => {
     const api = makeApi()
-    api.sessions.history.mockResolvedValue(ok({ events: [], hasMore: false }))
+    api.session.follow.mockImplementation(() => followAnswer([]))
     const controller = new FallbacksSettingsController(api, makeRpc().rpc)
     controller.setCurrentSession('sess-1' as never)
     // Idle → no refetch.
     refreshSwitchesIfLoaded(controller)
-    expect(api.sessions.history).not.toHaveBeenCalled()
+    expect(api.session.follow).not.toHaveBeenCalled()
     await controller.loadSwitches()
-    expect(api.sessions.history).toHaveBeenCalledTimes(1)
+    expect(api.session.follow).toHaveBeenCalledTimes(1)
     // Opened (ready) → refetches for the tracked session.
     refreshSwitchesIfLoaded(controller)
-    expect(api.sessions.history).toHaveBeenCalledTimes(2)
-    expect(api.sessions.history).toHaveBeenLastCalledWith({
-      sessionId: 'sess-1',
+    expect(api.session.follow).toHaveBeenCalledTimes(2)
+    expect(api.session.follow).toHaveBeenLastCalledWith({
+      address: { kind: 'session', sessionId: 'sess-1' },
       maxMessages: SWITCHES_HISTORY_PAGE,
-    })
+    }, expect.any(AbortSignal))
   })
 })
 
@@ -1953,9 +2019,10 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
 
   beforeEach(() => {
     ctx = new Context()
-    // ConversationEvents service double: apply() registers the
-    // `fallbacks-switch` node Definition through it (plan 3 T2 D1).
-    ctx.provide('conversationEvents', { register: () => () => {}, registerFallback: () => () => {} })
+    // `uiConversation` service double (the D1 Definition registry's home
+    // since 0.1.2): apply() registers the `fallbacks-switch` node Definition
+    // through `ctx.uiConversation.events` (plan 3 T2 D1).
+    ctx.provide('uiConversation', { events: { register: () => () => {}, registerFallback: () => () => {} } })
   })
 
   afterEach(async () => {
@@ -1970,17 +2037,18 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
     ctx.provide('sessions', {
       list: { getSnapshot: () => ({ current: undefined }), subscribe: () => () => {} },
     })
-    // Connection service double: a controllable settings.describe plus the
-    // gateway rpc face (never reached — describe never resolves pre-dispose).
+    // Connection service double: only the gateway rpc face (never reached —
+    // describe never resolves pre-dispose).
     const gate = Promise.withResolvers<unknown>()
     const describe = vi.fn(() => gate.promise)
     ctx.provide('connection', {
-      api: { settings: { describe, update: vi.fn(), replace: vi.fn(), mutate: vi.fn() } },
       rpc: { call: vi.fn() },
     })
     // Remote service double: the apply wiring subscribes the pushed
-    // invalidations through `ctx.remote.$on` (20260811 remote events).
-    const { remote, disposers } = makeRemote()
+    // invalidations through `ctx.remote.$on` (20260811 remote events), and
+    // the store reads the settings namespace through it (0.1.2:
+    // `ConnectionHandle` dropped `api` — describe rides `ctx.remote`).
+    const { remote, disposers } = makeRemote({ settings: { describe } })
     ctx.provide('remote', remote)
     // Slots service double: run the card-registration generator and capture the
     // injected controller — the seam apply() uses to hand the controller over.
@@ -1997,7 +2065,7 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
         return {}
       },
     })
-    applyClient(ctx as unknown as ClientContext)
+    applyClient(ctx)
     expect(controller).toBeDefined()
 
     // A load is in flight when the plugin unloads (HMR / dispose).
@@ -2027,16 +2095,15 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
     const describe = vi.fn().mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
     const providers = vi.fn()
     const models = vi.fn()
-    const history = vi.fn().mockResolvedValue(ok({ events: [switchEntry(1)], hasMore: false }))
+    const history = vi.fn().mockImplementation(() => followAnswer([switchEntry(1)]))
     ctx.provide('connection', {
-      api: {
-        settings: { describe, update: vi.fn(), replace: vi.fn(), mutate: vi.fn() },
-        llm: { providers, models, discoverModels: vi.fn() },
-        sessions: { history },
-      },
       rpc: makeRpc().rpc,
     })
-    ctx.provide('remote', makeRemote().remote)
+    ctx.provide('remote', makeRemote({
+      settings: { describe },
+      llm: { listConfigurableProviders: providers },
+      session: { modelCatalog: models, follow: history },
+    }).remote)
     let controller: FallbacksSettingsController | undefined
     ctx.provide('slots', {
       inject: (_name: string, thunk: () => Iterable<unknown>) => { for (const _dispose of thunk()) { /* run the registration generator */ } },
@@ -2050,9 +2117,9 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
         return {}
       },
     })
-    applyClient(ctx as unknown as ClientContext)
+    applyClient(ctx)
     expect(controller).toBeDefined()
-    providers.mockResolvedValue(ok({ providers: [] }))
+    providers.mockResolvedValue(ok([]))
     models.mockResolvedValue(ok({ groups: [], failures: [] }))
     await controller!.load()
     await controller!.loadSwitches()
@@ -2082,20 +2149,21 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
     ctx.provide('sessions', {
       list: { getSnapshot: () => ({ current: undefined }), subscribe: () => () => {} },
     })
-    // Connection service double: controllable settings.describe + llm catalog.
+    // Connection service double: only the gateway rpc face.
     const describe = vi.fn()
     const providers = vi.fn()
     const models = vi.fn()
     ctx.provide('connection', {
-      api: {
-        settings: { describe, update: vi.fn(), replace: vi.fn(), mutate: vi.fn() },
-        llm: { providers, models, discoverModels: vi.fn() },
-      },
       rpc: { call: vi.fn() },
     })
     // Remote service double: the payload-free llm/adapters-updated event
-    // (20260811 forwarding) is dispatched through the recorded listener.
-    const { remote, emit } = makeRemote()
+    // (20260811 forwarding) is dispatched through the recorded listener; the
+    // settings + llm + session namespaces ride it (0.1.2 remote face).
+    const { remote, emit } = makeRemote({
+      settings: { describe },
+      llm: { listConfigurableProviders: providers },
+      session: { modelCatalog: models },
+    })
     ctx.provide('remote', remote)
     let controller: FallbacksSettingsController | undefined
     ctx.provide('slots', {
@@ -2110,18 +2178,23 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
         return {}
       },
     })
-    applyClient(ctx as unknown as ClientContext)
+    applyClient(ctx)
     expect(controller).toBeDefined()
-    providers.mockResolvedValue(ok({ providers: [] }))
+    providers.mockResolvedValue(ok([]))
     models.mockResolvedValue(ok({ groups: [], failures: [] }))
     await controller!.loadCatalog()
     expect(providers).toHaveBeenCalledTimes(1)
+    // Pins the 0.1.2 catalog home: the model catalog loads through
+    // `session.modelCatalog` — re-homing it on `llm` in the double turns
+    // this red instead of silently re-greening (review IMPORTANT-1).
+    expect(models).toHaveBeenCalledTimes(1)
 
     // A pushed llm/adapters-updated refetches the catalog and leaves the
     // settings descriptor untouched.
     emit('llm/adapters-updated')
     await Promise.resolve()
     expect(providers).toHaveBeenCalledTimes(2)
+    expect(models).toHaveBeenCalledTimes(2)
     expect(describe).not.toHaveBeenCalled()
   })
 
@@ -2141,18 +2214,18 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
         },
       },
     })
-    // Connection service double: sessions.history is the status block's face.
-    const history = vi.fn().mockResolvedValue(ok({ events: [switchEntry(1)], hasMore: false }))
+    // Connection service double: only the gateway rpc face.
+    const history = vi.fn().mockImplementation(() => followAnswer([switchEntry(1)]))
     ctx.provide('connection', {
-      api: {
-        settings: { describe: vi.fn(), update: vi.fn(), replace: vi.fn(), mutate: vi.fn() },
-        llm: { providers: vi.fn(), models: vi.fn(), discoverModels: vi.fn() },
-        sessions: { history },
-      },
       rpc: { call: vi.fn() },
     })
-    // Remote service double: the invalidation wiring subscribes through it.
-    ctx.provide('remote', makeRemote().remote)
+    // Remote service double: the invalidation wiring subscribes through it;
+    // `session/follow` is the status block's face (0.1.2 remote face).
+    ctx.provide('remote', makeRemote({
+      settings: { describe: vi.fn() },
+      llm: { listConfigurableProviders: vi.fn() },
+      session: { modelCatalog: vi.fn(), follow: history },
+    }).remote)
     let controller: FallbacksSettingsController | undefined
     ctx.provide('slots', {
       inject: (_name: string, thunk: () => Iterable<unknown>) => { for (const _dispose of thunk()) { /* run the registration generator */ } },
@@ -2166,20 +2239,26 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
         return {}
       },
     })
-    applyClient(ctx as unknown as ClientContext)
+    applyClient(ctx)
     expect(controller).toBeDefined()
 
     // The status block opened once (the section mount effect's first read).
     await controller!.loadSwitches()
     expect(history).toHaveBeenCalledTimes(1)
-    expect(history).toHaveBeenCalledWith({ sessionId: 'sess-1', maxMessages: SWITCHES_HISTORY_PAGE })
+    expect(history).toHaveBeenCalledWith({
+      address: { kind: 'session', sessionId: 'sess-1' },
+      maxMessages: SWITCHES_HISTORY_PAGE,
+    }, expect.any(AbortSignal))
 
     // The user switches session → the list subscription reloads for the new id.
     current = 'sess-2'
     for (const listener of [...listeners]) listener()
     await Promise.resolve()
     expect(history).toHaveBeenCalledTimes(2)
-    expect(history).toHaveBeenLastCalledWith({ sessionId: 'sess-2', maxMessages: SWITCHES_HISTORY_PAGE })
+    expect(history).toHaveBeenLastCalledWith({
+      address: { kind: 'session', sessionId: 'sess-2' },
+      maxMessages: SWITCHES_HISTORY_PAGE,
+    }, expect.any(AbortSignal))
   })
 
   it('settings/document-updated (fallbacks ns) refreshes settings + switches, never the catalog', async () => {
@@ -2189,21 +2268,21 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
     ctx.provide('sessions', {
       list: { getSnapshot: () => ({ current: 'sess-1' }), subscribe: () => () => {} },
     })
-    // Connection service double: controllable describe + llm catalog +
-    // session history, with a scripted gateway rpc so load() succeeds.
+    // Connection service double: a scripted gateway rpc so load() succeeds.
     const describe = vi.fn().mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
     const providers = vi.fn()
     const models = vi.fn()
-    const history = vi.fn().mockResolvedValue(ok({ events: [switchEntry(1)], hasMore: false }))
+    const history = vi.fn().mockImplementation(() => followAnswer([switchEntry(1)]))
     ctx.provide('connection', {
-      api: {
-        settings: { describe, update: vi.fn(), replace: vi.fn(), mutate: vi.fn() },
-        llm: { providers, models, discoverModels: vi.fn() },
-        sessions: { history },
-      },
       rpc: makeRpc().rpc,
     })
-    const { remote, emit } = makeRemote()
+    // Remote service double: describe + llm providers + session catalog/follow ride it
+    // (0.1.2 remote face).
+    const { remote, emit } = makeRemote({
+      settings: { describe },
+      llm: { listConfigurableProviders: providers },
+      session: { modelCatalog: models, follow: history },
+    })
     ctx.provide('remote', remote)
     let controller: FallbacksSettingsController | undefined
     ctx.provide('slots', {
@@ -2218,9 +2297,9 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
         return {}
       },
     })
-    applyClient(ctx as unknown as ClientContext)
+    applyClient(ctx)
     expect(controller).toBeDefined()
-    providers.mockResolvedValue(ok({ providers: [] }))
+    providers.mockResolvedValue(ok([]))
     models.mockResolvedValue(ok({ groups: [], failures: [] }))
     await controller!.load()
     await controller!.loadSwitches()
@@ -2247,16 +2326,16 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
       list: { getSnapshot: () => ({ current: 'sess-1' }), subscribe: () => () => {} },
     })
     const describe = vi.fn().mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
-    const history = vi.fn().mockResolvedValue(ok({ events: [switchEntry(1)], hasMore: false }))
+    const history = vi.fn().mockImplementation(() => followAnswer([switchEntry(1)]))
     ctx.provide('connection', {
-      api: {
-        settings: { describe, update: vi.fn(), replace: vi.fn(), mutate: vi.fn() },
-        llm: { providers: vi.fn(), models: vi.fn(), discoverModels: vi.fn() },
-        sessions: { history },
-      },
       rpc: makeRpc().rpc,
     })
-    const { remote, emit } = makeRemote()
+    // Remote service double: describe + session follow ride it (0.1.2 remote face).
+    const { remote, emit } = makeRemote({
+      settings: { describe },
+      llm: { listConfigurableProviders: vi.fn() },
+      session: { modelCatalog: vi.fn(), follow: history },
+    })
     ctx.provide('remote', remote)
     let controller: FallbacksSettingsController | undefined
     ctx.provide('slots', {
@@ -2271,7 +2350,7 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
         return {}
       },
     })
-    applyClient(ctx as unknown as ClientContext)
+    applyClient(ctx)
     expect(controller).toBeDefined()
     await controller!.load()
     await controller!.loadSwitches()
@@ -2294,16 +2373,15 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
     const describe = vi.fn().mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
     const providers = vi.fn()
     const models = vi.fn()
-    const history = vi.fn().mockResolvedValue(ok({ events: [switchEntry(1)], hasMore: false }))
+    const history = vi.fn().mockImplementation(() => followAnswer([switchEntry(1)]))
     ctx.provide('connection', {
-      api: {
-        settings: { describe, update: vi.fn(), replace: vi.fn(), mutate: vi.fn() },
-        llm: { providers, models, discoverModels: vi.fn() },
-        sessions: { history },
-      },
       rpc: makeRpc().rpc,
     })
-    const { remote } = makeRemote()
+    const { remote } = makeRemote({
+      settings: { describe },
+      llm: { listConfigurableProviders: providers },
+      session: { modelCatalog: models, follow: history },
+    })
     ctx.provide('remote', remote)
     let controller: FallbacksSettingsController | undefined
     ctx.provide('slots', {
@@ -2318,9 +2396,9 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
         return {}
       },
     })
-    applyClient(ctx as unknown as ClientContext)
+    applyClient(ctx)
     expect(controller).toBeDefined()
-    providers.mockResolvedValue(ok({ providers: [] }))
+    providers.mockResolvedValue(ok([]))
     models.mockResolvedValue(ok({ groups: [], failures: [] }))
     await controller!.load()
     await controller!.loadSwitches()

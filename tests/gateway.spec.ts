@@ -943,7 +943,6 @@ type FakeRpcHandler = (endpoint: string, payload: unknown, signal: AbortSignal) 
 /** Records the `/api` interceptor the typertGateway mounts (advisor gateway.spec.ts pattern). */
 class FakeConnectionService extends Service {
   channel: string | undefined
-  authority: string | undefined
   matches: ((endpoint: string) => boolean) | undefined
   handler: FakeRpcHandler | undefined
 
@@ -954,20 +953,13 @@ class FakeConnectionService extends Service {
   get rpc() {
     const owner = this.ctx
     return {
-      intercept: (
-        channel: string,
-        matches: (endpoint: string) => boolean,
-        handler: FakeRpcHandler,
-        options: { readonly authority: string },
-      ) =>
+      intercept: (channel: string, matches: (endpoint: string) => boolean, handler: FakeRpcHandler) =>
         owner.effect(() => {
           this.channel = channel
-          this.authority = options.authority
           this.matches = matches
           this.handler = handler
           return () => {
             this.channel = undefined
-            this.authority = undefined
             this.matches = undefined
             this.handler = undefined
           }
@@ -1020,7 +1012,6 @@ describe('typertGateway endpoint claims + payload contract', () => {
     expect(ctx.typert.local.get('fallbacks/revert-seed')?.parameters).toEqual([
       { name: 'id', wire: 'id', source: 'json', codec: { mode: 'src-json' } },
     ])
-    expect(connection.authority).toBe('trusted-host')
     expect(connection.matches!('fallbacks/get')).toBe(true)
     expect(connection.matches!('fallbacks/set')).toBe(true)
     expect(connection.matches!('fallbacks/reset')).toBe(true)
