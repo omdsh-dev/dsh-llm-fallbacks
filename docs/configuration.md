@@ -140,8 +140,55 @@ Key semantics:
 - **Role id `none` edge**: a declared role id `none` collides with the auto-match `none` decline token — such a role can be selected via the explicit/rules stages but can never be picked by auto-match.
 - **`'inherit'` never injects**: the "no specific role" outcome always leaves the request's model untouched.
 - **Root agents are untouched**: the dispatch-time path applies to `session.header.origin === 'subagent'` only; a root agent's model follows the normal selection/fallback path.
+- **Host policy constrains the inject (dsh 0.1.2)**: when the host `subagent-model-selection` policy is enabled, an explicit authorized spawn route skips inject entirely (the authorized route becomes the chain head), and an injected head must be on the effective allowlist — an empty intersection skips the inject and leaves the host seed. Policy off → the injection above is unchanged from 0.3.5. See [Host subagent model selection](#host-subagent-model-selection-dsh-012).
 - **`role-inject` is an additive event reason (vocabulary only)**: the `fallbacks/switch` payload stays a superset of the failure-time shape; for legacy events (the plugin writes no new durable events — issue #52), renderers show a localized `role-inject` label and an explicit `role → model` line (conversation badge card / recent-switch lines), with any unknown reason still rendered raw.
 - **Documented degradation (honesty)**: dispatch injection reuses the same `agent/request` override path as the failure-time fallback, so whether it survives a **manual web model selection** depends on waterfall listener order — the same documented degradation as the failure-time switch (see the model-selection coordination note in the card-usage section and [docs/verification.md](docs/verification.md) §4.3).
+
+## Host subagent model selection (dsh 0.1.2)
+
+dsh 0.1.2 adds optional host-side child-model selection for subagents: a `subagent-model-selection` settings allowlist (`{ enabled: boolean; allowedModels: [{ provider, model }] }`), a per-session `subagent/model-selection-policy` event (payload `{ allowedModels: [{ provider, model }] }`, written once by the host before the first model request), and spawn-time `provider/model/reasoning_effort` routing. The plugin reconciles its role-inject and failure-switch behavior with that policy under **one runtime arbiter** — plugin roles/chains remain the failure-recovery layer the host does not provide. Nothing here changes root (non-subagent) routing.
+
+**Effective policy read (per session, in order)**:
+
+1. the session `subagent/model-selection-policy` event (read structurally, never throws); otherwise
+2. the host `subagent-model-selection` settings service snapshot when `enabled: true`.
+
+Missing service, `enabled !== true`, and no session event → the policy is **off**. A present-but-malformed event payload, or enabled settings with an unreadable/empty route list, resolves to **unprovable** (fail-closed, below).
+
+### When the policy is enabled
+
+The allowlist is a **hard constraint**: no code path writes, overrides, or sends an out-of-allowlist plugin-originated route. Route identity is exact `provider` + exact `model` — no aliasing, no case-folding, no catalog-id substitution; the intersection runs on **resolved** candidates (wildcards already expanded by the existing chain pipeline).
+
+- **Authorized head preserved**: a subagent carrying an explicit authorized route at its first request — spawn options with explicit provider+model, a durable `request/header` config, or a `model/selection` selection for that session — keeps that route as the chain head. Role-inject is **skipped** (info log `authorized child route … is the chain head — skipping role-inject`); the plugin chain applies only from failure time onward. **Pure inheritance is not an authorized route**: when the child's only route equals the delegating parent's current route, the three-stage dispatch resolution still runs (constrained, next bullet). A route requires BOTH provider and model — an effort alone is not a route.
+- **Allowlist-constrained inject**: the injected chain head is plugin-originated, so the resolved three-stage candidates are intersected with the effective allowlist in order — the first in-allowlist candidate is injected (head source label `injected`). Empty intersection → inject is **skipped**, the host seed stands, and a warn line is logged (`role-inject candidates are all outside the subagent allowlist — skipping inject (host seed stands)`).
+- **Allowlist-constrained failure switching**: at failure time the resolved surviving candidates (after the existing cooldown / step-failed / same-as-current / missing-id filters) are intersected with the allowlist in walk order — the first in-allowlist candidate wins. Empty intersection → **no switch**: the session stays on the current route, no out-of-allowlist request is sent, a warn line is logged (`fallback switch … blocked: resolved candidates are all outside the subagent allowlist — no switch`) and a **blocked attempt** is recorded in-process (warn log + card warning; **no** durable session write — issue #52 stands). Root-origin walks are untouched.
+- **Fail-closed (unprovable)**: with the policy on but unreadable, plugin-originated injects and switches are skipped (warn lines `… policy is on but unreadable — skipping role-inject` / `… — skipping fallback switch`); the host seed and all non-switch behavior are untouched. The policy read never throws.
+
+### When the policy is disabled or absent
+
+Inject and failure-switch **selection** are unchanged from 0.3.5: no allowlist filter, no authorized-route skip — the first exact resolved candidate injects, and the failure walk picks the first surviving resolved candidate. The full vitest suite pins this regression.
+
+### Effort rule (policy-independent)
+
+`reasoningEffort` on **every** `overrideConfig` path (role-inject, pending-switch apply, always-cap switch, slot/picker overrides) follows the upstream 0.1.2 `resolveChildAgentOptions` routeChanged rule:
+
+| Case | Result |
+|------|--------|
+| Same provider+model route | seed `reasoningEffort` preserved |
+| Route changed, no explicit effort on the override | seed effort **dropped** (a stale effort never crosses into a different provider/model) |
+| Explicit effort named on the override | explicit effort wins (either route) |
+
+This rule applies whether the host policy is on or off (adoption, not policy-gated).
+
+### Card status area (read-only)
+
+The Fallbacks card Subagents section (`#fallbacks-subagents`) gains a **read-only** host-policy status area fed by the same runtime reader the override paths use (gateway `/api/fallbacks/get`, additive `subagentPolicy` field — old readers tolerate its absence; `set`/`reset` reject it as a config key):
+
+- **enabled**: the allowlist routes (each `provider/model`), the effective chain head with its source label (`authorized` / `injected`) once one is recorded, and — when a switch was blocked — the empty-intersection warning (`No in-allowlist fallback candidate — switch skipped`). Enabled without a recorded head yet → allowlist shown, head line omitted.
+- **unprovable**: a distinct warning line (`Policy present but unreadable — plugin switches disabled`), never an active allowlist.
+- **disabled / absent**: the status area is hidden — never an active allowlist.
+
+Roles/rules editors stay editable; the status area is never a second write-face. zh is the locale key-set source of truth with en twins (`subagents.policy.*`).
 
 ## FallbacksChain in the model picker (root primary)
 
