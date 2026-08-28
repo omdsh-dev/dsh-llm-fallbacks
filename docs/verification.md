@@ -57,13 +57,15 @@ order section of [docs/install.md](docs/install.md); the real web profile's laye
   (T3/T4 assertions).
 - **No residue on unload**: `agent/disposed` removes state, `agent/status` idle is defensively cleaned, `ctx.effect`
   dispose clears everything (T3 assertions).
-- **Real-type contract**: the type layer does not use hand-written `peer-stubs/` — `autoInstallPeers` resolves the real
-  `@deepseek-ai/*@0.1.2-alpha.1` peers from the npm registry (user-level `~/.npmrc` auth, no local link farm);
-  `tsc` and the integration tests (`tests/support/harness.ts` + llm-retry-stub + model-selection-stub) are driven by the
-  real type surface. Runtime seams run the real implementations: `installSettingsSection` mounts the real
+- **Real-type contract**: the type layer does not use hand-written `peer-stubs/` — the real
+  `@deepseek-ai/*@0.1.2-alpha.1` packages drive `tsc` and the integration tests (`tests/support/harness.ts` +
+  llm-retry-stub + model-selection-stub): in registry mode `autoInstallPeers` resolves them from npm (user-level
+  `~/.npmrc` auth, no local link farm); until 0.1.2 publishes, development links a sibling dsh checkout into
+  `node_modules`. Runtime seams run the real implementations: `installSettingsSection` mounts the real
   `@deepseek-ai/dsh-settings` (in-memory provider `tests/support/memory-settings.ts`, inheriting the real
-  `SettingsProvider` base class), and `createSnapshotStore` uses a local node-safe double (vitest alias pointing at
-  `tests/support/snapshot-store.ts`, because the registry package's `./client` is a browser loader artifact).
+  `SettingsProvider` base class), and the client store VALUE import runs the real `@deepseek-ai/dsh-client-store`
+  snapshot-store engine through its vitest alias — the linked tree is tsc-built into `lib/types/` only, so the test
+  graph's VALUE imports resolve via `vitest.config.ts` aliases instead of the packages' exports maps.
   The plugin makes **zero local modifications** to the dsh source tree — installation = bundle row insert
   (`bundle/cordis.patch.yml`) + client inject (`dsh.client.inject`) + its own gateway channel; dsh upgrades never
   require re-patching (pure-mount semantics).
