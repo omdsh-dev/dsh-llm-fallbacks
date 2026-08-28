@@ -29,7 +29,7 @@ import { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { StreamChunk } from '@deepseek-ai/dsh-llm'
 import { detectAuthorizedRoute } from '../src/authorized-route.ts'
-import { apply, stateStore } from '../src/index.ts'
+import { apply, chainHeads, stateStore } from '../src/index.ts'
 import { MemorySettings } from './support/memory-settings.ts'
 import { cfg, dispatchRequest, dispatchRequestError, makeAgent, switchEvents } from './support/harness.ts'
 
@@ -446,5 +446,45 @@ describe('subagent routing policy (wiring, spec D1 ∩ D2)', () => {
     const config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
     expect(config).toEqual({ provider: 'anthropic', model: 'claude-sonnet-4' })
     expect(switchEvents(agent)).toHaveLength(0)
+  })
+})
+
+describe('chainHeads recording (plan dsh-012 T5 / T2 M3)', () => {
+  it('records source authorized when the first request carries model/selection (policy on)', async () => {
+    provideSubagentPolicy([{ provider: 'deepseek', model: 'deepseek-chat' }])
+    const { agent } = makeAgent('t5-head-auth', { provider: 'deepseek', model: 'deepseek-chat' }, { origin: 'subagent', agentPreset: 'coder' })
+    agent.session.append('model/selection', { provider: 'deepseek', model: 'deepseek-chat' })
+    apply(ctx, cfg({ roles: coderRoles() }))
+
+    await dispatchRequest(ctx, agent, { provider: 'deepseek', model: 'deepseek-chat' })
+    const record = chainHeads(ctx)?.get('t5-head-auth')
+    expect(record?.source).toBe('authorized')
+    expect(record?.route).toEqual({ provider: 'deepseek', model: 'deepseek-chat' })
+    expect(typeof record?.at).toBe('number')
+  })
+
+  it('records source injected when role-inject applies an in-allowlist head (policy on)', async () => {
+    const { agent: parent } = makeAgent('t5-head-inj-parent', { provider: 'mock', model: 'gpt-4o' })
+    provideParentAgent(parent)
+    const { agent } = makeAgent('t5-head-inj', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent', agentPreset: 'coder' })
+    stampParentSession(agent, 't5-head-inj-parent')
+    provideSubagentPolicy([{ provider: 'anthropic', model: 'claude-sonnet-4' }])
+    apply(ctx, cfg({ roles: coderRoles() }))
+
+    await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
+    const record = chainHeads(ctx)?.get('t5-head-inj')
+    expect(record?.source).toBe('injected')
+    expect(record?.route).toEqual({ provider: 'anthropic', model: 'claude-sonnet-4' })
+  })
+
+  it('does not record an injected head when the policy is off (0.3.5 inject still happens)', async () => {
+    ctx.provide('subagentModelSelection', { current: () => ({ enabled: false, allowedModels: [] }) })
+    const { agent } = makeAgent('t5-head-off', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent', agentPreset: 'coder' })
+    apply(ctx, cfg({ roles: coderRoles() }))
+
+    const config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
+    expect(config).toEqual({ provider: 'anthropic', model: 'claude-sonnet-4' })
+    expect(chainHeads(ctx)?.get('t5-head-off')).toBeUndefined()
+    expect(chainHeads(ctx)?.size).toBe(0)
   })
 })

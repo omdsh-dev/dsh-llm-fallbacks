@@ -78,9 +78,11 @@ export type SubagentPolicyRoute = { provider: string; model: string }
 
 /**
  * Additive `/api/fallbacks/get` host-policy snapshot (spec D4 / T5).
- * Omitted when the policy is disabled/absent so older clients and the
- * 3-arg gateway constructor keep a byte-identical `{ config, legacyKeys,
- * seeds }` payload. Never written through `set`/`reset`.
+ * Omitted only when the snapshot is unwired (3-arg constructor) so older
+ * clients and gateway unit tests keep a byte-identical `{ config,
+ * legacyKeys, seeds }` payload. A wired snapshot always emits the field —
+ * `{ state: 'disabled' }` included — so a write after an enabled get cannot
+ * keep-last an allowlist. Never written through `set`/`reset`.
  */
 export type SubagentPolicyWire =
   | {
@@ -134,7 +136,9 @@ export interface FallbacksReadResult {
   seeds: SeedsWireStatus[]
   /**
    * Host subagent-model-selection policy (spec D4). Additive — old readers
-   * ignore it; omitted when disabled/absent or when no snapshot is wired.
+   * ignore it; omitted only when no snapshot is wired. A wired snapshot
+   * always carries the field (`disabled` included) so keep-last cannot
+   * retain an allowlist after policy-off.
    */
   subagentPolicy?: SubagentPolicyWire
 }
@@ -424,10 +428,12 @@ export class FallbacksConfigGateway extends TypertRemoteService {
 
 /**
  * Project the live host-policy snapshot onto the additive wire field.
- * Disabled/absent (or an unwired snapshot) omits the field; `unprovable`
- * and `enabled` always ride. Never throws: a throwing snapshot fails
- * closed to `{ state: 'unprovable' }` (same outcome as an unreadable
- * runtime policy — the card must not 500 the settings page).
+ * An unwired snapshot omits the field (3-arg constructor / old payload).
+ * A wired snapshot always emits: `disabled` as `{ state: 'disabled' }`
+ * (so save/reset keep-last cannot retain an allowlist), plus `unprovable`
+ * and `enabled`. Never throws: a throwing snapshot fails closed to
+ * `{ state: 'unprovable' }` (same outcome as an unreadable runtime policy
+ * — the card must not 500 the settings page).
  */
 function projectSubagentPolicy(
   snapshot: SubagentPolicySnapshotFn | undefined,
@@ -440,7 +446,7 @@ function projectSubagentPolicy(
     return { state: 'unprovable' }
   }
   const { policy, head, blockedAttempt } = captured
-  if (policy.state === 'disabled') return undefined
+  if (policy.state === 'disabled') return { state: 'disabled' }
   if (policy.state === 'unprovable') return { state: 'unprovable' }
   const wire: SubagentPolicyWire = {
     state: 'enabled',

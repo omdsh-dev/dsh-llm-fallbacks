@@ -151,7 +151,9 @@ export { Config }
 /** The plugin's composition config — the `fallbacks` settings schema (spec §4). */
 export type Config = FallbacksConfig
 export type { FallbackSwitchReason, FallbacksSwitchEventData } from './events.ts'
-export type { AgentFallbackState, BlockedSwitchAttempt, ChainHeadSource, EffectiveChainHead, FallbackStateStore, PendingSwitch, StepFailures } from './state.ts'
+export type { AgentFallbackState, BlockedSwitchAttempt, FallbackStateStore, PendingSwitch, StepFailures } from './state.ts'
+/** @internal T5 test-seam types (mirrors `BlockedSwitchAttempt`; not public API). */
+export type { ChainHeadSource, EffectiveChainHead } from './state.ts'
 
 // --- Library API re-exports (plan fallbacks-consumer-api T1) ---
 // The full fallback-runtime surface — role resolution, chain resolution,

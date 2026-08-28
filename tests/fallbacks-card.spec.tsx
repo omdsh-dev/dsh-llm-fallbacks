@@ -3132,5 +3132,40 @@ describe('FallbacksCard host-policy status (plan dsh-012-subagent-routing T5 / s
     expect(screen.queryByText(en['subagents.policy.allowlist'], { exact: false })).toBeNull()
     expect(screen.queryByText('policy-test/alpha')).toBeNull()
   })
+
+  it('a write that returns { state: disabled } clears a previously-enabled allowlist (keep-last cannot retain it)', async () => {
+    const { view, props, controller, scripted } = await mountCard({
+      config: ENABLED_CONFIG,
+      subagentPolicy: ENABLED_POLICY,
+    })
+    expect(controller.store.getSnapshot().subagentPolicy?.state).toBe('enabled')
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    expect(screen.getByText(en['subagents.policy.label'])).toBeTruthy()
+
+    scripted.set.mockImplementation((payload: { args: { patch: typeof defaultFallbacksConfig } }) => (
+      Promise.resolve(okResult({
+        config: payload.args.patch,
+        subagentPolicy: { state: 'disabled' },
+      }))
+    ))
+    await controller.save(ENABLED_CONFIG)
+    view.rerender(<FallbacksCard {...props} />)
+    expect(controller.store.getSnapshot().subagentPolicy).toEqual({ state: 'disabled' })
+    expect(screen.queryByText(en['subagents.policy.label'])).toBeNull()
+    expect(screen.queryByText(en['subagents.policy.allowlist'], { exact: false })).toBeNull()
+    expect(screen.queryByText('policy-test/alpha')).toBeNull()
+  })
+
+  it('enabled with no recorded head still shows the allowlist and omits the head line', async () => {
+    const { view, props } = await mountCard({
+      config: ENABLED_CONFIG,
+      subagentPolicy: { state: 'enabled', allowedModels: [ALPHA] },
+    })
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    expect(screen.getByText(`${en['subagents.policy.allowlist']}: policy-test/alpha`)).toBeTruthy()
+    expect(screen.queryByText(en['subagents.policy.head'], { exact: false })).toBeNull()
+  })
 })
 
