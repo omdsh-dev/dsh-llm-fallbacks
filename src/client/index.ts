@@ -32,7 +32,8 @@
  * @module dsh-llm-fallbacks/client
  */
 
-import type { ClientContext, ISessions } from '@deepseek-ai/dsh-client-runtime/client'
+import type { Context as ClientContext } from '@deepseek-ai/cordis'
+import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
 import { bindSnapshotSelector } from './use-snapshot.ts'
 // Type-only: pulls the `ctx.locale` Context merge (LocaleService face).
 import type {} from '@deepseek-ai/dsh-client-locale/client'
@@ -47,12 +48,21 @@ import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
 // target). Same empty type-only pattern; the ui-settings package is already
 // a type-only peer (`peerDependencies`) and a manifest inject entry.
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
-// Type-only: the conversation domain's slot-contract merge (the
-// 'conversation.chat.node' keyed entry — the transcript switch node's
-// registration target) + the `ChatNodeDataMap` key seat. Same empty
-// type-only pattern; the ui-conversation package joins the type-only peers
-// and the manifest inject list with this registration.
+// Type-only: the conversation domain's Context merge (the `uiConversation`
+// service seat — the D1 Definition registry's home since 0.1.2). Same empty
+// type-only pattern; the ui-conversation package is already a type-only peer
+// (`peerDependencies`) and a manifest inject entry.
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
+// Type-only: the chat target's slot-contract merge (the
+// 'conversation.chat.node' keyed entry — the transcript switch node's
+// registration target) + the `ChatNodeDataMap` key seat, both re-homed from
+// ui-conversation to ui-chat in 0.1.2. Same empty type-only pattern; the
+// ui-chat package joins the type-only peers with this registration.
+import type {} from '@deepseek-ai/dsh-client-ui-chat/client'
+// Type-only: the renderer host's Context merge (the `slots` service seat +
+// the `slots/changed` Events entry). Same empty type-only pattern; the
+// ui-renderer package joins the type-only peers with this registration.
+import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 // Type-only: the gateway's Client half declares `ctx.remote` (the typed
 // Remote service) on the cordis Context face.
 import type {} from '@deepseek-ai/dsh-api-gateway/client'
@@ -87,19 +97,19 @@ export { FallbacksSettingsController, FALLBACKS_SETTINGS_NS } from './fallbacks-
 
 /**
  * Required services (cordis fiber inject); registrations wait on the slot
- * declaration. `conversationEvents` is declared because the D1 Definition
- * registration reads the service directly (`ctx.conversationEvents.register`
+ * declaration. `uiConversation` is declared because the D1 Definition
+ * registration reads the service directly (`ctx.uiConversation.events.register`
  * at the bottom of `apply` — explicit fiber-ordering parity with the
  * ui-workflow-run precedent, whose inject list includes it for the same
- * direct read). The runtime would still provide the service synchronously
- * on apply, but the declaration makes the dependency honest. `sessions` is
+ * direct read). Cordis would still provide the service synchronously on
+ * apply, but the declaration makes the dependency honest. `sessions` is
  * deliberately NOT injected (S-g): a non-web host without the dsh-session
  * client service must not hang the fiber waiting for it — the wiring reads
  * it reflectively and degrades to the switches empty state when absent
  * (`setCurrentSession` never called, `loadSwitches` ready with an empty
  * array, which the store already supports).
  */
-export const inject = ['slots', 'locale', 'connection', 'remote', 'conversationEvents']
+export const inject = ['slots', 'locale', 'connection', 'remote', 'uiConversation']
 
 /**
  * Register the `fallbacks` dictionaries and the plugin-config card once the
@@ -248,7 +258,7 @@ export function apply(ctx: ClientContext): void {
   // system-style line in the chat transcript at its event seq — the user
   // sees each recovery happen in place. Two registrations, both render-only
   // (no model-context injection — C4 excluded):
-  // - D1: the conversationEvents Definition registry accepts the
+  // - D1: the `uiConversation.events` Definition registry accepts the
   //   `fallbacks-switch` node (kind `fallbacks-switch`, target `chat`,
   //   match on the non-surface `fallbacks/switch` event — today the
   //   `unknown-surface` fallback only admits append-surface events, so the
@@ -265,7 +275,7 @@ export function apply(ctx: ClientContext): void {
   // the disposer is idempotent, so both teardown paths are safe, no
   // double-dispose.
   ctx.effect(
-    () => ctx.conversationEvents.register(fallbackSwitchDefinition),
+    () => ctx.uiConversation.events.register(fallbackSwitchDefinition),
     'llm-fallbacks: conversation node definition',
   )
   ctx.slots.inject('conversation.chat.node', function* () {

@@ -23,7 +23,7 @@
  *   `chat/ChatNodeSeat.tsx:48-51`), externally registrable as
  *   `{ name, key, locale }` (precedents: ui-tool `tool-call`, ui-goal
  *   `command-input`, ui-workflow-run `workflow-run`).
- * - Purity: this file only type-imports `@deepseek-ai/dsh-client-runtime/client`
+ * - Purity: this file only type-imports `@deepseek-ai/dsh-client-ui-chat/client`
  *   and `@deepseek-ai/dsh-client-ui-conversation/client` (both erased at
  *   build); the renderer self-draws on `--dsw-alias-*` tokens. Render-only:
  *   the Definition is a pure view contribution — no message construction,
@@ -31,13 +31,13 @@
  */
 import type { ReactNode } from 'react'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-import type {
-  ChatConversationViewNode, ConversationNodeDefinition,
-} from '@deepseek-ai/dsh-client-runtime/client'
+import type { ChatConversationViewNode } from '@deepseek-ai/dsh-client-ui-chat/client'
+import type { ConversationNodeDefinition } from '@deepseek-ai/dsh-client-ui-conversation/client'
 // Type-only: pulls the `conversation.chat.node` SlotMap entry + the
-// `ChatNodeDataMap` merge seat (the keyed dispatch key domain). Same empty
-// type-only pattern as the ui-settings / ui-settings-plugins merges in index.ts.
-import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
+// `ChatNodeDataMap` merge seat (the keyed dispatch key domain) — both re-homed
+// from ui-conversation to ui-chat in 0.1.2. Same empty type-only pattern as
+// the ui-settings / ui-settings-plugins merges in index.ts.
+import type {} from '@deepseek-ai/dsh-client-ui-chat/client'
 import type { FallbackSwitchReason } from '../events.ts'
 import { SWITCH_REASON_KEYS } from './locales.ts'
 import { isFallbacksSwitchData } from './switch-guard.ts'
@@ -58,7 +58,7 @@ export interface FallbacksSwitchChatData {
   readonly reason: FallbackSwitchReason
 }
 
-declare module '@deepseek-ai/dsh-client-ui-conversation/client' {
+declare module '@deepseek-ai/dsh-client-ui-chat/client' {
   interface ChatNodeDataMap {
     /** One decided fallback provider/model switch, rendered at its event seq. */
     'fallbacks-switch': FallbacksSwitchChatData
