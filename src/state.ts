@@ -57,6 +57,27 @@ export interface BlockedSwitchAttempt {
   reason: FallbackSwitchReason
 }
 
+/**
+ * How the effective subagent chain head was chosen (plan dsh-012-subagent-routing
+ * T5 / T2 M3). Lives on a per-agent map (mirrors {@link BlockedSwitchAttempt}),
+ * not on {@link AgentFallbackState} — recording a head is not a switch intent
+ * (F-004: the fallback store grows only inside `commit()`).
+ */
+export type ChainHeadSource = 'authorized' | 'injected'
+
+/**
+ * The effective chain head for one subagent, plus the source label the
+ * Subagents card renders (spec D4). In-memory only (issue #52).
+ */
+export interface EffectiveChainHead {
+  /** Epoch ms when this head was recorded (recency for the card snapshot). */
+  at: number
+  /** Exact provider+model of the effective chain head. */
+  route: { provider: string; model: string }
+  /** `authorized` = host spawn preserved; `injected` = plugin role-inject. */
+  source: ChainHeadSource
+}
+
 /** The current (turn, step)'s failed-model set and switch budget (spec §5.1). */
 export interface StepFailures {
   turn: number

@@ -48,7 +48,7 @@ import { firstExactCandidate, resolveRoleAtDispatch } from './role-resolution.ts
 import { detectAuthorizedRoute, type AuthorizedRouteSession } from './authorized-route.ts'
 import { firstAllowedCandidate, resolvedRoutes } from './route-allowlist.ts'
 import { effectivePolicy, readSessionPolicyEvent, type PolicySettings } from './subagent-policy.ts'
-import { FallbackStateStore, type AgentFallbackState, type BlockedSwitchAttempt, type PendingSwitch } from './state.ts'
+import { FallbackStateStore, type AgentFallbackState, type BlockedSwitchAttempt, type EffectiveChainHead, type PendingSwitch } from './state.ts'
 import { escalatedCooldownMs } from './recovery.ts'
 import { overrideConfigWithRouteRule, type LlmReasoningEffort } from './override.ts'
 import {
@@ -151,7 +151,7 @@ export { Config }
 /** The plugin's composition config — the `fallbacks` settings schema (spec §4). */
 export type Config = FallbacksConfig
 export type { FallbackSwitchReason, FallbacksSwitchEventData } from './events.ts'
-export type { AgentFallbackState, BlockedSwitchAttempt, FallbackStateStore, PendingSwitch, StepFailures } from './state.ts'
+export type { AgentFallbackState, BlockedSwitchAttempt, ChainHeadSource, EffectiveChainHead, FallbackStateStore, PendingSwitch, StepFailures } from './state.ts'
 
 // --- Library API re-exports (plan fallbacks-consumer-api T1) ---
 // The full fallback-runtime surface — role resolution, chain resolution,
@@ -262,6 +262,35 @@ const blockedAttemptStores = new WeakMap<Context, ReadonlyMap<string, BlockedSwi
  */
 export function blockedAttempts(ctx: Context): ReadonlyMap<string, BlockedSwitchAttempt> | undefined {
   return blockedAttemptStores.get(ctx)
+}
+
+/**
+ * Per-apply effective-chain-head maps, keyed by context. Weak so entries
+ * die with the context; the plugin's own dispose effect clears the map
+ * contents (mirrors `blockedAttemptStores`).
+ * @internal
+ */
+const chainHeadStores = new WeakMap<Context, ReadonlyMap<string, EffectiveChainHead>>()
+
+/**
+ * @internal Test seam (mirrors `blockedAttempts`): the per-agent effective
+ * chain heads recorded by the T2 inject path (source `authorized` |
+ * `injected`) for the plugin applied to `ctx` (spec D4 / T2 M3). Not part
+ * of the plugin's public surface; lets tests and the T5 gateway projection
+ * read the head without reaching into the closure. `undefined` when no
+ * plugin is applied.
+ */
+export function chainHeads(ctx: Context): ReadonlyMap<string, EffectiveChainHead> | undefined {
+  return chainHeadStores.get(ctx)
+}
+
+/** Latest map value by `at` (the Subagents card shows the current one). */
+function latestByAt<T extends { at: number }>(map: ReadonlyMap<string, T>): T | undefined {
+  let latest: T | undefined
+  for (const value of map.values()) {
+    if (latest === undefined || value.at >= latest.at) latest = value
+  }
+  return latest
 }
 
 /**
@@ -574,13 +603,36 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   // fails loud on a duplicate key, so the catch lets the first fiber own the
   // `fallbacks` service key while later fibers fall back (no gateway) — the
   // typertGateway claim set dedupes, so claims never conflict.
+  // T3/T5 (plan dsh-012-subagent-routing): per-agent blocked-switch attempts
+  // and effective chain heads. Grown here so the gateway snapshot (constructed
+  // next) can close over them; cleaned on agent/disposed + plugin dispose
+  // (mirrors `dispatchInjected` / `slotWinners`). In-memory only (issue #52).
+  const chainHeadMap = new Map<string, EffectiveChainHead>()
+  chainHeadStores.set(ctx, chainHeadMap)
+  const blockedAttemptMap = new Map<string, BlockedSwitchAttempt>()
+  blockedAttemptStores.set(ctx, blockedAttemptMap)
+
   try {
     // T3 (plan fallbacks-role-seeds): the gateway receives the SAME per-apply
     // seed manager the service exposes — badge state (`seeds` wire field) and
     // `fallbacks/revert-seed` both delegate to it (spec §9.4 single point of
     // truth); the gateway builds its io over the bridge + its own settings
     // capture.
-    new FallbacksConfigGateway(ctx, bridge, seeds)
+    new FallbacksConfigGateway(ctx, bridge, seeds, () => {
+      // Same T1 reader the inject/switch paths use (no second policy source).
+      // get() is settings-page scoped: no live session, so the event read is
+      // "absent" and settings (or disabled) decide — identical to a session
+      // that has not yet recorded `subagent/model-selection-policy`.
+      try {
+        return {
+          policy: effectivePolicy({ ok: false, present: false }, readSubagentSettings(ctx)),
+          head: latestByAt(chainHeadMap),
+          blockedAttempt: latestByAt(blockedAttemptMap),
+        }
+      } catch {
+        return { policy: { state: 'unprovable' as const } }
+      }
+    })
   } catch (error) {
     if (!(error instanceof Error) || !error.message.includes('has been registered')) throw error
     ctx.logger('llm-fallbacks').debug('fallbacks gateway already registered — no gateway on this fiber (multi-fiber dedupe)')
@@ -623,15 +675,9 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   // `dispatchInjected`) and re-baselined on settings change (a config edit
   // is not a wall-clock rotation).
   const slotWinners = new Map<string, { key: string; label: string }>()
-  // T3 (plan dsh-012-subagent-routing): per-agent blocked-switch attempts —
-  // the host allowlist emptied a failure-switch intersection (spec D1).
-  // Latest attempt per agent (the Subagents card shows the current one, T5);
-  // in-memory only (issue #52 — no durable session write). Grown ONLY here
-  // (F-004 discipline: a blocked decision must not grow the fallback state
-  // store); cleaned on agent/disposed + plugin dispose (mirrors
-  // `dispatchInjected` / `slotWinners`).
-  const blockedAttemptMap = new Map<string, BlockedSwitchAttempt>()
-  blockedAttemptStores.set(ctx, blockedAttemptMap)
+  // T3 blocked-attempt / T5 chain-head maps are constructed before the
+  // gateway (so the snapshot can close over them). decide() writes the
+  // blocked record below; the inject path writes the head.
 
   /**
    * Shared decision path (spec §5.1 lifecycle step 1): resolve the agent's
@@ -1046,8 +1092,13 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
             : undefined
           if (authorized !== undefined) {
             // D2: the authorized route is the chain head; the plugin chain
-            // applies only from failure time onward (T3). Head-source label:
-            // `authorized` (the gateway card consumes it later, T5).
+            // applies only from failure time onward (T3). Persist the
+            // head-source label for the T5 card (T2 M3).
+            chainHeadMap.set(agent.id, {
+              at: Date.now(),
+              route: { provider: authorized.provider, model: authorized.model },
+              source: 'authorized',
+            })
             logger.info(
               'llm-fallbacks: agent "%s" authorized child route %s/%s is the chain head — skipping role-inject',
               agent.id,
@@ -1093,8 +1144,15 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
                 // written (same reason as commit() — the registration seam was
                 // ineffective, and a session containing the event would refuse to
                 // load after a dsh restart). The override still applies below and
-                // the role→model info log still fires. Head-source label:
-                // `injected` (the gateway card consumes it later, T5).
+                // the role→model info log still fires. Persist the head-source
+                // label for the T5 card when the host policy is on (T2 M3).
+                if (policy.state === 'enabled') {
+                  chainHeadMap.set(agent.id, {
+                    at: Date.now(),
+                    route: { provider: to.provider, model: to.model },
+                    source: 'injected',
+                  })
+                }
                 logger.info(
                   'llm-fallbacks: agent "%s" role-inject role=%s model=%s/%s',
                   agent.id,
@@ -1158,6 +1216,7 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     dispatchInjected.delete(agent.id)
     slotWinners.delete(agent.id)
     blockedAttemptMap.delete(agent.id)
+    chainHeadMap.delete(agent.id)
   })
 
   // P3 (plan fallbacks-half-open-recovery): plugin-scope success observation —
@@ -1186,6 +1245,7 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     dispatchInjected.clear()
     slotWinners.clear()
     blockedAttemptMap.clear()
+    chainHeadMap.clear()
   }, 'llm-fallbacks: clear per-agent state')
 
   // AC-5: /fallbacks — session-scoped read-only diagnostics. Conditional

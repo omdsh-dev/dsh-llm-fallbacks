@@ -983,6 +983,39 @@ select.input {
   text-align: center;
 }
 
+/* Read-only host-policy status (spec D4 / T5) under #fallbacks-subagents.
+   Quiet filled box matching `.legacyNotice` — informational, not a second
+   write-face. Warn-tone line uses the same `--dsw-alias-state-warn-*` token
+   as the conversation switch row. */
+.policyStatus {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-module-platform);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.policyStatusLabel {
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 18px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.policyStatusLine {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-primary);
+}
+
+.policyStatusWarn {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-state-warn-primary);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .iconButton::after {
     transition: none;
