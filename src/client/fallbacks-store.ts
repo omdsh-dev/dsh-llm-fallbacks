@@ -31,7 +31,7 @@ import type {
 } from '@deepseek-ai/dsh-client-connection/client'
 import {
   createSnapshotStore, type SnapshotStore,
-} from '@deepseek-ai/dsh-client-runtime/client'
+} from '@deepseek-ai/dsh-client-store'
 import {
   defaultFallbacksConfig, INHERIT_ROLE_ID,
   type FallbackStrategy, type FallbacksConfig, type FallbacksRole,
