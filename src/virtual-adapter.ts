@@ -36,6 +36,7 @@ import {
   LlmAdapter,
   LlmError,
   type GenerateOptions,
+  type LlmImageRequestPricing,
   type LlmModelInfo,
   type LlmResolvedModelInfo,
   type LlmRuntime,
@@ -163,9 +164,11 @@ async function resolveHeadDisplayName(llm: LlmRuntime | undefined, head: Effecti
  * The virtual adapter (P1/P3). `stream()` is a thin head-delegate, never a
  * second routing engine: no chain walk, cooldown, caps, revert bookkeeping,
  * or state writes live here — those stay in the `agent/request` /
- * `agent/request-error` listeners.
+ * `agent/request-error` listeners. Exported so the defensive guard paths
+ * the registration lifecycle cannot reach (a registered route whose `llm`
+ * vanished mid-teardown) stay unit-testable by direct construction.
  */
-class FallbacksChainAdapter extends LlmAdapter {
+export class FallbacksChainAdapter extends LlmAdapter {
   constructor(
     private readonly readConfig: () => FallbacksConfig,
     private readonly getLlm: () => LlmRuntime | undefined,
@@ -222,6 +225,30 @@ class FallbacksChainAdapter extends LlmAdapter {
       }
     }
     return { provider, id: model, name: model }
+  }
+
+  /**
+   * Route-accurate image pricing (0.1.2 adoption): the virtual row has no
+   * pricing of its own — the virtual `provider`/`model` arguments are
+   * intentionally ignored. Resolves the SAME effective head `stream()`
+   * dispatches and delegates through the runtime lookup, so the token
+   * meter gets exactly the answer the concrete route's adapter would give
+   * (including `undefined`). Never throws: an unresolvable head, a
+   * vanished `llm`, or a throwing delegate degrades to `undefined` — the
+   * token meter's neutral estimate.
+   */
+  override imageRequestPricing(_provider: string, _model: string): LlmImageRequestPricing | undefined {
+    try {
+      const head = effectiveHeadOf(this.readConfig(), new Date())
+      // Defensive recursion guard: `effectiveHeadOf` already refuses
+      // self-routes, so a `FallbacksChain/*` head is impossible — assert
+      // it anyway so a future resolution change can never recurse image
+      // pricing into the virtual adapter itself.
+      if (head === undefined || head.provider === FALLBACKS_PROVIDER) return undefined
+      return this.getLlm()?.imageRequestPricing(head.provider, head.model)
+    } catch {
+      return undefined // thrown delegate → the meter's neutral estimate
+    }
   }
 
   /**
