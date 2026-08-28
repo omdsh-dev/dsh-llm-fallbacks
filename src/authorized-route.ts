@@ -76,8 +76,13 @@ function completeRoute(source: RouteSource | undefined): PolicyRoute | undefined
 
 /**
  * The latest explicit `model/selection` route in the captured log, or
- * `undefined`. Scanned backwards — the latest selection wins, mirroring the
- * durable selection fold; malformed entries are skipped, never thrown.
+ * `undefined`. Scanned backwards — the NEWEST selection wins, mirroring the
+ * durable selection fold (upstream's selection projection folds entries in
+ * order, so the last one is current); malformed entries are skipped, never
+ * thrown. Deliberately the opposite of the write-once
+ * `subagent/model-selection-policy` event, whose reader
+ * (`subagent-policy.ts` `readSessionPolicyEvent`) takes the first
+ * occurrence — see its docblock (qc fix wave S-asym).
  */
 function lastModelSelection(entries: AuthorizedRouteSession['events']): PolicyRoute | undefined {
   if (entries === undefined) return undefined

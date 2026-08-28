@@ -107,6 +107,15 @@ function parseRoutes(value: unknown): PolicyRoute[] | undefined {
  * Structurally read the session's `subagent/model-selection-policy` event.
  * Never throws: a present-but-malformed payload is reported, not raised.
  *
+ * Recency (qc fix wave S-asym — deliberate asymmetry, both sides mirror
+ * upstream): this read takes the FIRST occurrence, exactly like the upstream
+ * reader's `.find` — the host writes the policy event at most once per
+ * session (its ensure-guard checks the reader before appending), so a second
+ * occurrence would already be off-contract. The re-emittable
+ * `model/selection` log is the opposite: `authorized-route.ts`
+ * `lastModelSelection` scans backwards because upstream's selection
+ * projection folds to the newest entry.
+ *
  * @param events - plain event descriptors (`type` + optional `data`) captured
  *   from the session by the wiring layer.
  * @returns the detached route list when the event is present and valid;

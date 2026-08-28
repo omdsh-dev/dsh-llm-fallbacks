@@ -359,6 +359,33 @@ describe('subagent routing policy (wiring, spec D1 ∩ D2)', () => {
     expect(logs.some((message) => message.type === 'info' && String(message.args[0]).includes('authorized child route'))).toBe(true)
   })
 
+  it('uses the NEWEST model/selection occurrence for the authorized head (upstream newest-match, qc fix wave S-asym)', async () => {
+    const logs = captureLogs()
+    provideSubagentPolicy([
+      { provider: 'deepseek', model: 'deepseek-chat' },
+      { provider: 'anthropic', model: 'claude-sonnet-4' },
+    ])
+    const { agent } = makeAgent('t2-newest-sel', { provider: 'deepseek', model: 'deepseek-chat' }, { origin: 'subagent', agentPreset: 'coder' })
+    // Two explicit selections: an OLDER anthropic one, then the newer deepseek
+    // one. Upstream's selection projection folds to the newest entry — a
+    // first-match read would authorize anthropic here.
+    agent.session.append('model/selection', { provider: 'anthropic', model: 'claude-sonnet-4' })
+    agent.session.append('model/selection', { provider: 'deepseek', model: 'deepseek-chat' })
+    apply(ctx, cfg({ roles: coderRoles() }))
+
+    const config = await dispatchRequest(ctx, agent, { provider: 'deepseek', model: 'deepseek-chat' })
+    expect(config).toEqual({ provider: 'deepseek', model: 'deepseek-chat' })
+    expect(switchEvents(agent)).toHaveLength(0)
+    // The recorded authorized head is the NEWEST selection, not the first.
+    const record = chainHeads(ctx)?.get('t2-newest-sel')
+    expect(record?.source).toBe('authorized')
+    expect(record?.route).toEqual({ provider: 'deepseek', model: 'deepseek-chat' })
+    expect(logs.some((message) => message.type === 'info'
+      && String(message.args[0]).includes('authorized child route %s/%s is the chain head — skipping role-inject')
+      && message.args[2] === 'deepseek'
+      && message.args[3] === 'deepseek-chat')).toBe(true)
+  })
+
   it('skips inject for a spawn-selected route differing from the delegating parent route (authorized head, policy on)', async () => {
     const { agent: parent } = makeAgent('t2-spawn-parent', { provider: 'mock', model: 'gpt-4o' })
     provideParentAgent(parent)

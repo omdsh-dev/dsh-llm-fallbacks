@@ -407,6 +407,68 @@ function readSubagentSettings(ctx: Context): PolicySettings | undefined {
 }
 
 /**
+ * Outcome of the guarded per-agent policy settings read (qc fix wave W-002 +
+ * S-hard). `ok` carries the snapshot to feed {@link effectivePolicy} —
+ * `undefined` still means "policy off" (service absent, nothing retained);
+ * `!ok` means the live read threw and no last-known snapshot exists for the
+ * agent — the wiring resolves that to the same fail-closed skip as
+ * `'unprovable'`, never a fail-open 0.3.5 selection.
+ */
+type GuardedPolicySettings =
+  | { readonly ok: true; readonly settings: PolicySettings | undefined }
+  | { readonly ok: false }
+
+/**
+ * Guarded per-agent read of the host `subagentModelSelection` settings
+ * snapshot (qc fix wave W-002 + S-hard), wrapping {@link readSubagentSettings}:
+ *
+ * - the live read never propagates a throw into the request path — a throwing
+ *   host `current()` warns (the plugin doctrine: any throw in the
+ *   resolution/injection path warns and the request proceeds unchanged) and
+ *   degrades like the inject path's own try/catch;
+ * - the freshest successful read for the agent is retained in `lastKnown`, so
+ *   a mid-session service disappearance (or a later throwing read) feeds the
+ *   last proven snapshot to {@link effectivePolicy} instead of `undefined` —
+ *   an enabled policy stays enabled (fail-closed), never silently reverting
+ *   to unconstrained 0.3.5 switching;
+ * - agents never proven anything keep `undefined` (policy off) — 0.3.5
+ *   selection unchanged.
+ *
+ * A throwing read with nothing retained resolves to `{ ok: false }`: the
+ * callers treat it exactly like `'unprovable'` (warn + skip, host seed
+ * stands). Pure bookkeeping — the map is the caller's per-agent state, this
+ * helper stays stateless.
+ */
+function readGuardedPolicySettings(
+  ctx: Context,
+  agentId: string,
+  lastKnown: Map<string, PolicySettings>,
+  warn: (message: string, ...args: unknown[]) => void,
+): GuardedPolicySettings {
+  try {
+    const service = ctx.get('subagentModelSelection')
+    if (service === undefined) {
+      // Service absent (never composed, or it disappeared mid-session): the
+      // last proven snapshot stands — absent-with-nothing stays `undefined`.
+      return { ok: true, settings: lastKnown.get(agentId) }
+    }
+    const settings = service.current()
+    // Freshest successful read wins — including `enabled: false` (the
+    // operator's last known truth, still resolving to `'disabled'`).
+    lastKnown.set(agentId, settings)
+    return { ok: true, settings }
+  } catch (error) {
+    warn(
+      'llm-fallbacks: agent "%s" subagent model-selection settings read failed — %s',
+      agentId,
+      (error as Error)?.message ?? String(error),
+    )
+    const known = lastKnown.get(agentId)
+    return known === undefined ? { ok: false } : { ok: true, settings: known }
+  }
+}
+
+/**
  * Capture the plain-data authorized-route view for one subagent at its first
  * request (T2 detection sources): durable child state plus the
  * pure-inheritance baseline. Host objects enter only here — the pure module
@@ -677,6 +739,14 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   // `dispatchInjected`) and re-baselined on settings change (a config edit
   // is not a wall-clock rotation).
   const slotWinners = new Map<string, { key: string; label: string }>()
+  // S-hard (qc fix wave): per-agent last-known `subagentModelSelection`
+  // snapshots — the freshest successful settings read per agent, retained so a
+  // mid-session service disappearance (or a later throwing read) keeps a
+  // proven-enabled policy constraining (fail-closed) instead of reverting to
+  // unconstrained 0.3.5. Grown only by the guarded policy read
+  // (`readGuardedPolicySettings`); cleaned on agent/disposed + plugin dispose
+  // (mirrors `dispatchInjected` / `slotWinners`). In-memory only.
+  const lastKnownPolicySettings = new Map<string, PolicySettings>()
   // T3 blocked-attempt / T5 chain-head maps are constructed before the
   // gateway (so the snapshot can close over them). decide() writes the
   // blocked record below; the inject path writes the head.
@@ -767,7 +837,16 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
       target = { provider: first.provider, model: first.model }
     }
     if (agent.session?.header?.origin === 'subagent' && target !== undefined) {
-      const policy = effectivePolicy(readSessionPolicyEvent(agent.session.events), readSubagentSettings(ctx))
+      // W-002 + S-hard (qc fix wave): the read is guarded (a throwing host
+      // `current()` warns instead of escaping the listener) and carries the
+      // last-known snapshot, so a mid-session service disappearance keeps a
+      // proven-enabled policy constraining instead of failing open. A read
+      // that threw with nothing retained resolves to the SAME fail-closed
+      // skip as `'unprovable'` (warn + no switch, host seed stands).
+      const settingsRead = readGuardedPolicySettings(ctx, agent.id, lastKnownPolicySettings, logger.warn)
+      const policy = settingsRead.ok
+        ? effectivePolicy(readSessionPolicyEvent(agent.session.events), settingsRead.settings)
+        : { state: 'unprovable' as const }
       if (policy.state === 'unprovable') {
         // Fail-closed (spec D1): no plugin-originated switch the plugin cannot
         // prove is on the allowlist — stay on the current route (host seed
@@ -1080,7 +1159,15 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     if (config.enabled && hasChains && agent.session?.header?.origin === 'subagent' && !dispatchInjected.has(agent.id)) {
       dispatchInjected.add(agent.id)
       try {
-        const policy = effectivePolicy(readSessionPolicyEvent(agent.session.events), readSubagentSettings(ctx))
+        // W-002 + S-hard (qc fix wave): the same guarded, last-known-backed
+        // read as the decision path — a throwing host `current()` warns and
+        // degrades to the `'unprovable'` skip (what the wrapping try/catch
+        // already did), while a retained snapshot keeps a proven-enabled
+        // policy constraining after the service disappears.
+        const settingsRead = readGuardedPolicySettings(ctx, agent.id, lastKnownPolicySettings, logger.warn)
+        const policy = settingsRead.ok
+          ? effectivePolicy(readSessionPolicyEvent(agent.session.events), settingsRead.settings)
+          : { state: 'unprovable' as const }
         if (policy.state === 'unprovable') {
           // Fail-closed: no plugin-originated route the plugin cannot prove is
           // allowed — skip inject, host seed stands (spec D1).
@@ -1219,6 +1306,7 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     slotWinners.delete(agent.id)
     blockedAttemptMap.delete(agent.id)
     chainHeadMap.delete(agent.id)
+    lastKnownPolicySettings.delete(agent.id)
   })
 
   // P3 (plan fallbacks-half-open-recovery): plugin-scope success observation —
@@ -1248,6 +1336,7 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     slotWinners.clear()
     blockedAttemptMap.clear()
     chainHeadMap.clear()
+    lastKnownPolicySettings.clear()
   }, 'llm-fallbacks: clear per-agent state')
 
   // AC-5: /fallbacks — session-scoped read-only diagnostics. Conditional
