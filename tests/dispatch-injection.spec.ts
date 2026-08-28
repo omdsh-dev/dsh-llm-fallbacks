@@ -26,7 +26,9 @@
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
+import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { StreamChunk } from '@deepseek-ai/dsh-llm'
+import { detectAuthorizedRoute } from '../src/authorized-route.ts'
 import { apply, stateStore } from '../src/index.ts'
 import { MemorySettings } from './support/memory-settings.ts'
 import { cfg, dispatchRequest, dispatchRequestError, makeAgent, switchEvents } from './support/harness.ts'
@@ -274,6 +276,175 @@ describe('dispatch auto-match stage (wired through pickRoleByLlm)', () => {
 
     const config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
     expect(config).toEqual({ provider: 'mock', model: 'gpt-4o' })
+    expect(switchEvents(agent)).toHaveLength(0)
+  })
+})
+
+
+/** Policy-on `subagentModelSelection` settings-service double (host composition stand-in). */
+function provideSubagentPolicy(allowed: readonly { provider: string; model: string }[]): void {
+  ctx.provide('subagentModelSelection', {
+    current: () => ({ enabled: true, allowedModels: allowed.map((route) => ({ ...route })) }),
+  })
+}
+
+/** `agents` registry double exposing one delegating parent agent (the lineage the child view reads). */
+function provideParentAgent(parent: Agent): void {
+  ctx.provide('agents', { get: () => parent })
+}
+
+/** Stamp the fake session header with a delegating parent (spawn lineage). */
+function stampParentSession(child: Agent, parentId: string): void {
+  ;(child.session as unknown as { header: { parentSession?: string } }).header.parentSession = parentId
+}
+
+describe('authorized-route detection (pure module)', () => {
+  it('prefers the model/selection event, even when it equals the inherited baseline', () => {
+    expect(detectAuthorizedRoute({
+      events: [{ type: 'model/selection', data: { provider: 'a', model: 'b' } }],
+      requestHeader: { provider: 'x', model: 'y' },
+      inherited: { provider: 'a', model: 'b' },
+    })).toEqual({ provider: 'a', model: 'b' })
+  })
+
+  it('takes the latest complete selection and skips malformed entries', () => {
+    expect(detectAuthorizedRoute({
+      events: [
+        { type: 'model/selection', data: { provider: 'a', model: 'b' } },
+        { type: 'model/selection', data: { provider: 42 } },
+        { type: 'other', data: {} },
+        { type: 'model/selection', data: { provider: 'c', model: 'd', reasoningEffort: 'high' } },
+      ],
+    })).toEqual({ provider: 'c', model: 'd' })
+  })
+
+  it('falls back header → options and ignores an effort-only source (effort alone is not a route)', () => {
+    expect(detectAuthorizedRoute({ options: { provider: 'p', model: 'm' } })).toEqual({ provider: 'p', model: 'm' })
+    expect(detectAuthorizedRoute({
+      requestHeader: { provider: 'p', model: 'm' },
+      options: { provider: 'q', model: 'n' },
+    })).toEqual({ provider: 'p', model: 'm' })
+    expect(detectAuthorizedRoute({ options: { reasoningEffort: 'high' } })).toBeUndefined()
+    expect(detectAuthorizedRoute({ options: { provider: 'p', model: '' } })).toBeUndefined()
+  })
+
+  it('treats a route equal to the provable inherited baseline as pure inheritance (not authorized)', () => {
+    expect(detectAuthorizedRoute({
+      requestHeader: { provider: 'mock', model: 'gpt-4o' },
+      inherited: { provider: 'mock', model: 'gpt-4o' },
+    })).toBeUndefined()
+    expect(detectAuthorizedRoute({
+      requestHeader: { provider: 'deepseek', model: 'deepseek-chat' },
+      inherited: { provider: 'mock', model: 'gpt-4o' },
+    })).toEqual({ provider: 'deepseek', model: 'deepseek-chat' })
+  })
+
+  it('treats an unprovable baseline as authorized (D2 keeps chain heads unoverwritten)', () => {
+    expect(detectAuthorizedRoute({ requestHeader: { provider: 'a', model: 'b' } })).toEqual({ provider: 'a', model: 'b' })
+    expect(detectAuthorizedRoute({})).toBeUndefined()
+  })
+})
+
+describe('subagent routing policy (wiring, spec D1 ∩ D2)', () => {
+  it('skips inject when the first request carries an explicit model/selection (authorized head, policy on)', async () => {
+    const logs = captureLogs()
+    provideSubagentPolicy([{ provider: 'deepseek', model: 'deepseek-chat' }])
+    const { agent } = makeAgent('t2-authorized', { provider: 'deepseek', model: 'deepseek-chat' }, { origin: 'subagent', agentPreset: 'coder' })
+    agent.session.append('model/selection', { provider: 'deepseek', model: 'deepseek-chat' })
+    apply(ctx, cfg({ roles: coderRoles() }))
+
+    const config = await dispatchRequest(ctx, agent, { provider: 'deepseek', model: 'deepseek-chat' })
+    expect(config).toEqual({ provider: 'deepseek', model: 'deepseek-chat' })
+    expect(switchEvents(agent)).toHaveLength(0)
+    expect(logs.some((message) => message.type === 'info' && String(message.args[0]).includes('authorized child route'))).toBe(true)
+  })
+
+  it('skips inject for a spawn-selected route differing from the delegating parent route (authorized head, policy on)', async () => {
+    const { agent: parent } = makeAgent('t2-spawn-parent', { provider: 'mock', model: 'gpt-4o' })
+    provideParentAgent(parent)
+    const { agent } = makeAgent('t2-spawn', { provider: 'deepseek', model: 'deepseek-chat' }, { origin: 'subagent', agentPreset: 'coder' })
+    stampParentSession(agent, 't2-spawn-parent')
+    provideSubagentPolicy([
+      { provider: 'deepseek', model: 'deepseek-chat' },
+      { provider: 'anthropic', model: 'claude-sonnet-4' },
+    ])
+    apply(ctx, cfg({ roles: coderRoles() }))
+
+    const config = await dispatchRequest(ctx, agent, { provider: 'deepseek', model: 'deepseek-chat' })
+    expect(config).toEqual({ provider: 'deepseek', model: 'deepseek-chat' })
+    expect(switchEvents(agent)).toHaveLength(0)
+  })
+
+  it('injects an in-allowlist chain head for pure inheritance, explicit preset precedence unchanged (policy on)', async () => {
+    const logs = captureLogs()
+    const { agent: parent } = makeAgent('t2-inh-parent', { provider: 'mock', model: 'gpt-4o' })
+    provideParentAgent(parent)
+    const { agent } = makeAgent('t2-inh', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent', agentPreset: 'coder' })
+    stampParentSession(agent, 't2-inh-parent')
+    provideSubagentPolicy([{ provider: 'anthropic', model: 'claude-sonnet-4' }])
+    apply(ctx, cfg({ roles: coderRoles() }))
+
+    const config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
+    expect(config).toEqual({ provider: 'anthropic', model: 'claude-sonnet-4' })
+    // agentPreset precedence unchanged: the explicit preset role still drives the inject.
+    expect(logs.some((message) => message.type === 'info'
+      && String(message.args[0]).includes('role-inject role=%s model=%s/%s')
+      && message.args[2] === 'coder')).toBe(true)
+    expect(switchEvents(agent)).toHaveLength(0)
+  })
+
+  it('skips inject when no resolved candidate is on the allowlist (empty intersection, host seed stands)', async () => {
+    const logs = captureLogs()
+    const { agent: parent } = makeAgent('t2-empty-parent', { provider: 'mock', model: 'gpt-4o' })
+    provideParentAgent(parent)
+    const { agent } = makeAgent('t2-empty', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent', agentPreset: 'coder' })
+    stampParentSession(agent, 't2-empty-parent')
+    provideSubagentPolicy([{ provider: 'unrelated', model: 'unrelated-model' }])
+    apply(ctx, cfg({ roles: coderRoles() }))
+
+    const config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
+    expect(config).toEqual({ provider: 'mock', model: 'gpt-4o' })
+    expect(switchEvents(agent)).toHaveLength(0)
+    expect(logs.some((message) => message.type === 'warn' && String(message.args[0]).includes('outside the subagent allowlist'))).toBe(true)
+  })
+
+  it('intersects in candidate order: an out-of-allowlist head is skipped for the next in-allowlist entry (no force-apply)', async () => {
+    const { agent: parent } = makeAgent('t2-force-parent', { provider: 'mock', model: 'gpt-4o' })
+    provideParentAgent(parent)
+    const { agent } = makeAgent('t2-force', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent', agentPreset: 'coder' })
+    stampParentSession(agent, 't2-force-parent')
+    provideSubagentPolicy([{ provider: 'deepseek', model: 'deepseek-chat' }])
+    apply(ctx, cfg({
+      roles: { list: [{ id: 'coder', persona: '', chain: ['anthropic/claude-sonnet-4', 'deepseek/deepseek-chat'] }], rules: [] },
+    }))
+
+    const config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
+    // The out-of-allowlist head is never sent: the FIRST IN-ALLOWLIST entry wins.
+    expect(config).toEqual({ provider: 'deepseek', model: 'deepseek-chat' })
+    expect(switchEvents(agent)).toHaveLength(0)
+  })
+
+  it('emits no override when the policy event is malformed (unprovable, fail-closed)', async () => {
+    const logs = captureLogs()
+    const { agent } = makeAgent('t2-unprovable', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent', agentPreset: 'coder' })
+    agent.session.append('subagent/model-selection-policy', { allowedModels: 'not-a-list' })
+    apply(ctx, cfg({ roles: coderRoles() }))
+
+    const config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
+    expect(config).toEqual({ provider: 'mock', model: 'gpt-4o' })
+    expect(switchEvents(agent)).toHaveLength(0)
+    expect(logs.some((message) => message.type === 'warn' && String(message.args[0]).includes('unreadable'))).toBe(true)
+  })
+
+  it('injects exactly as 0.3.5 when the policy is off (settings disabled, no event)', async () => {
+    ctx.provide('subagentModelSelection', { current: () => ({ enabled: false, allowedModels: [] }) })
+    const { agent } = makeAgent('t2-policy-off', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent', agentPreset: 'coder' })
+    apply(ctx, cfg({ roles: coderRoles() }))
+
+    // No allowlist filter, no authorized-route skip — the role head applies even
+    // though it is not on the (inactive) allowlist: 0.3.5 selection unchanged.
+    const config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
+    expect(config).toEqual({ provider: 'anthropic', model: 'claude-sonnet-4' })
     expect(switchEvents(agent)).toHaveLength(0)
   })
 })

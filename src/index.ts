@@ -44,6 +44,9 @@ import { annotateCandidates, createCandidateFilter, hasWildcardEntry, resolveCha
 import { parseSelector, selectorKey, type Selector } from './selectors.ts'
 import { resolveRole } from './roles.ts'
 import { firstExactCandidate, resolveRoleAtDispatch } from './role-resolution.ts'
+import { detectAuthorizedRoute, type AuthorizedRouteSession } from './authorized-route.ts'
+import { firstAllowedCandidate, resolvedRoutes } from './route-allowlist.ts'
+import { effectivePolicy, readSessionPolicyEvent, type PolicySettings } from './subagent-policy.ts'
 import { FallbackStateStore, type AgentFallbackState, type PendingSwitch } from './state.ts'
 import { escalatedCooldownMs } from './recovery.ts'
 import {
@@ -330,6 +333,49 @@ function slotWinnerKey(winner: SlotRowConfig | 'all-day'): string {
 function overrideConfig(seed: LlmCallConfig, to: { provider: string; model: string }): LlmCallConfig {
   const { reasoningEffort: _inherited, ...withoutInheritedEffort } = seed
   return { ...withoutInheritedEffort, provider: to.provider, model: to.model }
+}
+
+/**
+ * Read the host `subagentModelSelection` settings snapshot as plain data (T1
+ * ADR: the settings service is the policy read's second source). The service
+ * is typed via the peer's type-only augmentation; its runtime presence is
+ * host-composition-dependent, so absence reads as `undefined` —
+ * {@link effectivePolicy} resolves that to `'disabled'` (plan Global
+ * Constraints).
+ */
+function readSubagentSettings(ctx: Context): PolicySettings | undefined {
+  const service = ctx.get('subagentModelSelection')
+  return service === undefined ? undefined : service.current()
+}
+
+/**
+ * Capture the plain-data authorized-route view for one subagent at its first
+ * request (T2 detection sources): durable child state plus the
+ * pure-inheritance baseline. Host objects enter only here — the pure module
+ * receives plain data.
+ *
+ * The baseline mirrors upstream `parentAgentOptionsForDelegation`
+ * (`child-agent.ts:68-85`): the delegating parent's durable header config
+ * wins, its creation options fallback. The parent is read opportunistically
+ * through the `agents` registry (the documented `ctx.get` pattern — runtime
+ * presence is composition-dependent); an unreadable lineage leaves the
+ * baseline absent.
+ */
+function authorizedRouteView(ctx: Context, agent: Agent): AuthorizedRouteSession {
+  const header = agent.session?.header
+  const parentId = header?.origin === 'subagent' ? header.parentSession : undefined
+  const parent = parentId === undefined ? undefined : ctx.get('agents')?.get(parentId)
+  const parentHeader = parent?.session.requestHeader()?.config
+  const parentOptions = parent?.options
+  return {
+    requestHeader: agent.session?.requestHeader()?.config,
+    events: agent.session?.events,
+    options: agent.options,
+    inherited: parentHeader
+      ?? (typeof parentOptions?.provider === 'string' && typeof parentOptions?.model === 'string'
+        ? { provider: parentOptions.provider, model: parentOptions.model }
+        : undefined),
+  }
 }
 
 export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksConfig): void {
@@ -876,54 +922,107 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
         }
       }
     }
-    // Dispatch-time role injection (plan fallbacks-role-automatch Task 4): a
-    // subagent-origin agent's FIRST request only (per-agent once-marker,
-    // `dispatchInjected`, cleaned on agent/disposed + plugin dispose below).
-    // Evaluated ONLY in this branch — a failure-path pending switch always
-    // wins above. Resolve the role (explicit → rules → auto-match hook), then
-    // inject the resolved role's chain head (first exact, non-wildcard
-    // candidate — no cooldown/failed filtering, no existence probe, per the
-    // Task 4 decision) when it differs from the request's current model. This
-    // is NOT a failure decision: no commit(), no pending switch, no cooldown,
-    // no failure bookkeeping — only the override + an explicit role → model
-    // log. `'inherit'` ("no specific role") NEVER
-    // injects, so with `roleAutoMatch: false` and no explicit/rules role the
-    // outcome is identical to today. Defensive: any throw in the
-    // resolution/injection path warns and the request proceeds unchanged
-    // (mirror the `agent/request-error` defensive pattern).
+    // Dispatch-time role injection (plan fallbacks-role-automatch Task 4;
+    // dsh-012-subagent-routing T2): a subagent-origin agent's FIRST request
+    // only (per-agent once-marker, `dispatchInjected`, cleaned on
+    // agent/disposed + plugin dispose below). Evaluated ONLY in this branch —
+    // a failure-path pending switch always wins above.
+    //
+    // T2 policy gates (spec D1 ∩ D2), read per dispatch through the T1 pure
+    // reader (session event → settings snapshot): `'unprovable'` (policy on
+    // but unreadable) → skip inject, host seed stands (fail-closed warn). An
+    // explicit authorized route detected on the child's durable state → the
+    // authorized route IS the chain head (label `authorized`) — inject
+    // skipped, never overwritten at first request (D2). Pure inheritance →
+    // the three-stage resolution runs, but a policy-on injected head is
+    // plugin-originated and must be on the allowlist: `firstAllowedCandidate`
+    // over the resolved candidates (label `injected`); empty intersection →
+    // skip inject, host seed stands, warn. Policy off/absent → inject exactly
+    // as 0.3.5 (first exact candidate, unchanged).
+    //
+    // This is NOT a failure decision: no commit(), no pending switch, no
+    // cooldown, no failure bookkeeping — only the override + an explicit role
+    // → model log. `'inherit'` ("no specific role") NEVER injects, so with
+    // `roleAutoMatch: false` and no explicit/rules role the outcome is
+    // identical to today. Defensive: any throw in the resolution/injection
+    // path warns and the request proceeds unchanged (mirror the
+    // `agent/request-error` defensive pattern).
     if (config.enabled && hasChains && agent.session?.header?.origin === 'subagent' && !dispatchInjected.has(agent.id)) {
       dispatchInjected.add(agent.id)
       try {
-        const role = await resolveRoleAtDispatch(agent, config.roles.rules, roleIds, {
-          automatchEnabled: config.roleAutoMatch ?? true,
-          automatch: (agent) => pickRoleByLlm(ctx, config.roles, agent, { warn: logger.warn }),
-          warn: logger.warn,
-        })
-        if (role !== INHERIT_ROLE_ID) {
-          const { all, wildcard } = resolveChainViews(
-            config.roles.list,
-            config.rootChain,
-            role,
-            seed.provider,
-            seed.model,
-            logger.warn,
+        const policy = effectivePolicy(readSessionPolicyEvent(agent.session.events), readSubagentSettings(ctx))
+        if (policy.state === 'unprovable') {
+          // Fail-closed: no plugin-originated route the plugin cannot prove is
+          // allowed — skip inject, host seed stands (spec D1).
+          logger.warn(
+            'llm-fallbacks: agent "%s" subagent model-selection policy is on but unreadable — skipping role-inject',
+            agent.id,
           )
-          const head = firstExactCandidate(all, wildcard)
-          if (head !== undefined && head.model !== undefined && !(head.provider === seed.provider && head.model === seed.model)) {
-            const to = { provider: head.provider, model: head.model }
-            // issue #52: no durable `fallbacks/switch` role-inject event is
-            // written (same reason as commit() — the registration seam was
-            // ineffective, and a session containing the event would refuse to
-            // load after a dsh restart). The override still applies below and
-            // the role→model info log still fires.
+        } else {
+          const authorized = policy.state === 'enabled'
+            ? detectAuthorizedRoute(authorizedRouteView(ctx, agent))
+            : undefined
+          if (authorized !== undefined) {
+            // D2: the authorized route is the chain head; the plugin chain
+            // applies only from failure time onward (T3). Head-source label:
+            // `authorized` (the gateway card consumes it later, T5).
             logger.info(
-              'llm-fallbacks: agent "%s" role-inject role=%s model=%s/%s',
+              'llm-fallbacks: agent "%s" authorized child route %s/%s is the chain head — skipping role-inject',
               agent.id,
-              role,
-              head.provider,
-              head.model,
+              authorized.provider,
+              authorized.model,
             )
-            return overrideConfig(seed, to)
+          } else {
+            const role = await resolveRoleAtDispatch(agent, config.roles.rules, roleIds, {
+              automatchEnabled: config.roleAutoMatch ?? true,
+              automatch: (agent) => pickRoleByLlm(ctx, config.roles, agent, { warn: logger.warn }),
+              warn: logger.warn,
+            })
+            if (role !== INHERIT_ROLE_ID) {
+              const { all, wildcard } = resolveChainViews(
+                config.roles.list,
+                config.rootChain,
+                role,
+                seed.provider,
+                seed.model,
+                logger.warn,
+              )
+              let to: { provider: string; model: string } | undefined
+              if (policy.state === 'enabled') {
+                // The injected head is plugin-originated: intersect the
+                // RESOLVED candidates with the allowlist in order (D1 ∩ D2).
+                const routes = resolvedRoutes(all)
+                to = firstAllowedCandidate(routes, policy.allowedModels)
+                if (to === undefined && routes.length > 0) {
+                  logger.warn(
+                    'llm-fallbacks: agent "%s" role-inject candidates are all outside the subagent allowlist — skipping inject (host seed stands)',
+                    agent.id,
+                  )
+                }
+              } else {
+                // Policy off: the first exact candidate exactly as 0.3.5.
+                const head = firstExactCandidate(all, wildcard)
+                if (head !== undefined && head.model !== undefined) {
+                  to = { provider: head.provider, model: head.model }
+                }
+              }
+              if (to !== undefined && !(to.provider === seed.provider && to.model === seed.model)) {
+                // issue #52: no durable `fallbacks/switch` role-inject event is
+                // written (same reason as commit() — the registration seam was
+                // ineffective, and a session containing the event would refuse to
+                // load after a dsh restart). The override still applies below and
+                // the role→model info log still fires. Head-source label:
+                // `injected` (the gateway card consumes it later, T5).
+                logger.info(
+                  'llm-fallbacks: agent "%s" role-inject role=%s model=%s/%s',
+                  agent.id,
+                  role,
+                  to.provider,
+                  to.model,
+                )
+                return overrideConfig(seed, to)
+              }
+            }
           }
         }
       } catch (error) {
