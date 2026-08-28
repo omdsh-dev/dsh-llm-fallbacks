@@ -9,9 +9,10 @@
  * - Registers the `fallbacks` locale dictionaries (zh/en).
  * - Constructs the card's own store over the connection: the fallbacks
  *   config rides the plugin's gateway channel (`connection.rpc` →
- *   `/api/fallbacks/get|set|reset`), while `settings.describe` (writable +
- *   namespace directory) and the provider/model catalog stay on
- *   `connection.api` (see `fallbacks-store.ts`).
+ *   `/api/fallbacks/get|set|reset`), while `settings/describe` (writable +
+ *   namespace directory), the provider/model catalog, and the switch-history
+ *   tail page ride the typed `ctx.remote` namespaces (0.1.2:
+ *   `ConnectionHandle` dropped `api`; see `fallbacks-store.ts`).
  * - Registers the `settings.plugin.item` card `key: 'fallbacks'` with a
  *   matching `id: 'fallbacks'` (the rc.7 keyed slot — no `order`; the id
  *   keeps the card mountable on hosts that still declare the slot as a list,
@@ -84,6 +85,7 @@ import {
 import {
   FallbacksSettingsController, FALLBACKS_SETTINGS_NS,
   refreshCatalogIfLoaded, refreshFallbacksIfLoaded, refreshSwitchesIfLoaded,
+  type FallbacksRemote,
 } from './fallbacks-store.ts'
 import { en, NS, zh } from './locales.ts'
 
@@ -129,9 +131,15 @@ export function apply(ctx: ClientContext): void {
   const sessions = ctx.get('sessions') as unknown as ISessions | undefined
   // The store reads/writes the fallbacks config over the connection's
   // generic RPC channel (the host gateway `/api/fallbacks/get|set|reset`);
-  // the describe `writable` + namespace directory and the provider/model
-  // catalog still ride `connection.api` (guide §9).
-  const controller = new FallbacksSettingsController(connection.api, connection.rpc)
+  // the describe `writable` + namespace directory, the provider/model
+  // catalog, and the switch-history tail page ride `ctx.remote` (guide §9).
+  // The generated namespace merge ships with the host build, so the boundary
+  // casts once to the store's structural face — the session-controller
+  // client's `ctx.remote as unknown as SessionRemotes` pattern.
+  const controller = new FallbacksSettingsController(
+    ctx.remote as unknown as FallbacksRemote,
+    connection.rpc,
+  )
   // The card's uSES selector hook, bound once to the controller's store and
   // handed to the renderer through the inject face (advisor pattern).
   const useSnapshot = bindSnapshotSelector(controller.store)

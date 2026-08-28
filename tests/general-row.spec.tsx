@@ -21,13 +21,16 @@
 
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi, type Mock } from 'vitest'
+import type { SessionFollowFrame } from '@deepseek-ai/dsh-api-remotes/client'
+import type { SessionEventLikeEntry } from '@deepseek-ai/dsh-api-session-controller/client'
 import type {
-  ClientConnectionRpc, HistoryEntry, IApiClient, RpcResult,
+  ClientConnectionRpc, RpcResult,
 } from '@deepseek-ai/dsh-client-connection/client'
 import { bindSnapshotSelector, type SnapshotSelectorHook } from '../src/client/use-snapshot.ts'
 import { GeneralFallbacksRow } from '../src/client/GeneralFallbacksRow.tsx'
 import type { GeneralFallbacksRowProps } from '../src/client/GeneralFallbacksRow.tsx'
 import { FallbacksSettingsController } from '../src/client/fallbacks-store.ts'
+import type { FallbacksRemote } from '../src/client/fallbacks-store.ts'
 import type { FallbacksSettingsState } from '../src/client/fallbacks-store.ts'
 import { apply } from '../src/client/index.ts'
 import { defaultFallbacksConfig } from '../src/config.ts'
@@ -76,12 +79,12 @@ function failResult(message: string): RpcResult<unknown> {
 }
 
 /** One settings/api RPC response envelope (describe/history). */
-function ok(value: unknown) {
-  return { result: { ok: true, value } }
+function ok<T>(value: T) {
+  return { ok: true as const, value }
 }
 
 interface Scripted {
-  api: Pick<IApiClient, 'settings' | 'sessions'>
+  api: FallbacksRemote
   rpc: ClientConnectionRpc
   call: Mock
   get: Mock
@@ -98,7 +101,7 @@ interface Scripted {
  */
 function scriptedApi(options: {
   config?: typeof defaultFallbacksConfig | null
-  historyEntries?: HistoryEntry[]
+  historyEntries?: SessionEventLikeEntry[]
   historyError?: string
   describeError?: string
 } = {}): Scripted {
@@ -111,9 +114,13 @@ function scriptedApi(options: {
       ? failResult('fallbacks gateway is not ready')
       : okResult({ config: current }),
   ))
-  const history = vi.fn(() => options.historyError === undefined
-    ? Promise.resolve(ok({ events: options.historyEntries ?? [], hasMore: false }))
-    : Promise.reject(new Error(options.historyError)))
+  const history = vi.fn((): AsyncIterable<SessionFollowFrame> => (async function* (): AsyncGenerator<SessionFollowFrame> {
+    if (options.historyError !== undefined) throw new Error(options.historyError)
+    yield {
+      type: 'snapshot', records: options.historyEntries ?? [], hasMore: false,
+    } as unknown as SessionFollowFrame
+    await Promise.withResolvers().promise
+  })())
   const call = vi.fn((channel: string, endpoint: string) => {
     if (channel !== '/api') throw new Error(`test: unexpected channel ${channel}`)
     if (endpoint === 'fallbacks/get') return get()
@@ -121,9 +128,9 @@ function scriptedApi(options: {
   })
   return {
     api: {
-      settings: { describe, openDocument: vi.fn(), update: vi.fn(), replace: vi.fn(), mutate: vi.fn() },
-      sessions: { history },
-    } as unknown as Pick<IApiClient, 'settings' | 'sessions'>,
+      settings: { describe },
+      session: { follow: history },
+    } as unknown as FallbacksRemote,
     rpc: { call } as unknown as ClientConnectionRpc,
     call,
     get,
@@ -133,8 +140,9 @@ function scriptedApi(options: {
 }
 
 /** One `fallbacks/switch` history entry with a deterministic seq/time (store-spec fixture shape). */
-function switchEntry(seq: number, overrides: Partial<FallbacksSwitchEventData> = {}): HistoryEntry {
+function switchEntry(seq: number, overrides: Partial<FallbacksSwitchEventData> = {}): SessionEventLikeEntry {
   return {
+    type: 'event',
     event: {
       type: 'fallbacks/switch',
       seq,
@@ -149,7 +157,7 @@ function switchEntry(seq: number, overrides: Partial<FallbacksSwitchEventData> =
         ...overrides,
       },
     },
-  } as HistoryEntry
+  }
 }
 
 /** Preload the store (descriptor + current session + switches), then render the row. */
@@ -213,11 +221,6 @@ function fakeRuntime() {
     get: (key: string): unknown => (
       key === 'connection'
         ? {
-            api: {
-              settings: { describe: vi.fn(), update: vi.fn(), replace: vi.fn(), mutate: vi.fn() },
-              llm: { providers: vi.fn(), models: vi.fn(), discoverModels: vi.fn() },
-              sessions: { history: vi.fn() },
-            },
             rpc: { call: vi.fn() },
           }
         : undefined

@@ -81,7 +81,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
-import type { ConfigurableProviderView } from '@deepseek-ai/dsh-client-connection/client'
+import type { LlmConfigurableProvider } from '@deepseek-ai/dsh-api-remotes/client'
 import {
   Button, IconChevronDownOutline14, IconChevronUpOutline14, IconEllipsisOutline16, IconPlusOutline16, IconTrashOutline16, Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives'
@@ -548,7 +548,7 @@ function ChainSelectorEditor({
 }: {
   selector: ChainSelectorRow
   catalog: CatalogLookup | undefined
-  configuredProviders: readonly ConfigurableProviderView[]
+  configuredProviders: readonly LlmConfigurableProvider[]
   disabled: boolean
   t: FallbacksCardProps['t']
   onChange: (patch: Partial<ChainSelectorRow>) => void

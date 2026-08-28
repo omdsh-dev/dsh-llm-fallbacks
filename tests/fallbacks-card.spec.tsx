@@ -35,12 +35,17 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi, type Mock } from 'vitest'
 import type {
-  ClientConnectionRpc, ConfigurableProviderView, HistoryEntry, IApiClient, ModelProviderGroup, RpcResult,
+  LlmConfigurableProvider, ModelProviderGroup, SessionFollowFrame,
+} from '@deepseek-ai/dsh-api-remotes/client'
+import type { SessionEventLikeEntry } from '@deepseek-ai/dsh-api-session-controller/client'
+import type {
+  ClientConnectionRpc, RpcResult,
 } from '@deepseek-ai/dsh-client-connection/client'
 import { bindSnapshotSelector, type SnapshotSelectorHook } from '../src/client/use-snapshot.ts'
 import { FallbacksCard } from '../src/client/FallbacksCard.tsx'
 import type { FallbacksCardProps } from '../src/client/FallbacksCard.tsx'
 import { FallbacksSettingsController } from '../src/client/fallbacks-store.ts'
+import type { FallbacksRemote } from '../src/client/fallbacks-store.ts'
 import type { FallbacksSettingsState } from '../src/client/fallbacks-store.ts'
 import type { SeedsWireStatus } from '../src/seeds.ts'
 import { presetRoles } from '../src/presets.ts'
@@ -97,9 +102,9 @@ function failResult(message: string): RpcResult<unknown> {
   return { ok: false, error: { code: 'internal', message, details: {} } }
 }
 
-/** One settings/api RPC response envelope (describe/providers/models/history). */
-function ok(value: unknown) {
-  return { result: { ok: true, value } }
+/** One Remote success (0.1.2 flat `RemoteResult`, no `result` envelope). */
+function ok<T>(value: T) {
+  return { ok: true as const, value }
 }
 
 /**
@@ -107,8 +112,9 @@ function ok(value: unknown) {
  * store-spec / general-row fixture shape), for the status block's recent-switch
  * face (D-5 — `sessions.history`).
  */
-function switchEntry(seq: number, overrides: Partial<FallbacksSwitchEventData> = {}): HistoryEntry {
+function switchEntry(seq: number, overrides: Partial<FallbacksSwitchEventData> = {}): SessionEventLikeEntry {
   return {
+    type: 'event',
     event: {
       type: 'fallbacks/switch',
       seq,
@@ -123,11 +129,11 @@ function switchEntry(seq: number, overrides: Partial<FallbacksSwitchEventData> =
         ...overrides,
       },
     },
-  } as HistoryEntry
+  }
 }
 
 interface Scripted {
-  api: Pick<IApiClient, 'settings' | 'llm' | 'sessions'>
+  api: FallbacksRemote
   rpc: ClientConnectionRpc
   call: Mock
   get: Mock
@@ -153,8 +159,8 @@ function scriptedApi(options: {
   writable?: boolean
   legacyKeys?: string[]
   seeds?: SeedsWireStatus[]
-  catalog?: { providers: ConfigurableProviderView[]; groups: ModelProviderGroup[] }
-  historyEntries?: HistoryEntry[]
+  catalog?: { providers: LlmConfigurableProvider[]; groups: ModelProviderGroup[] }
+  historyEntries?: SessionEventLikeEntry[]
   historyError?: string
 } = {}): Scripted {
   let current = options.config === undefined ? defaultFallbacksConfig : options.config
@@ -172,11 +178,15 @@ function scriptedApi(options: {
           revision: 1,
         }],
   })))
-  const providers = vi.fn(() => Promise.resolve(ok({ providers: options.catalog?.providers ?? [] })))
+  const providers = vi.fn(() => Promise.resolve(ok(options.catalog?.providers ?? [])))
   const models = vi.fn(() => Promise.resolve(ok({ groups: options.catalog?.groups ?? [], failures: [] })))
-  const history = vi.fn(() => options.historyError === undefined
-    ? Promise.resolve(ok({ events: options.historyEntries ?? [], hasMore: false }))
-    : Promise.reject(new Error(options.historyError)))
+  const history = vi.fn((): AsyncIterable<SessionFollowFrame> => (async function* (): AsyncGenerator<SessionFollowFrame> {
+    if (options.historyError !== undefined) throw new Error(options.historyError)
+    yield {
+      type: 'snapshot', records: options.historyEntries ?? [], hasMore: false,
+    } as unknown as SessionFollowFrame
+    await Promise.withResolvers().promise
+  })())
   const get = vi.fn(() => Promise.resolve(
     current === null
       ? failResult('fallbacks gateway is not ready')
@@ -215,10 +225,10 @@ function scriptedApi(options: {
   })
   return {
     api: {
-      settings: { describe, openDocument: vi.fn(), update: vi.fn(), replace: vi.fn(), mutate: vi.fn() },
-      llm: { providers, models, discoverModels: vi.fn() },
-      sessions: { history },
-    } as unknown as Pick<IApiClient, 'settings' | 'llm' | 'sessions'>,
+      settings: { describe },
+      llm: { listConfigurableProviders: providers },
+      session: { modelCatalog: models, follow: history },
+    } as unknown as FallbacksRemote,
     rpc: { call } as unknown as ClientConnectionRpc,
     call, get, set, reset, revertSeed, describe,
   }
@@ -314,8 +324,8 @@ const LEGACY_ALL_DAY_CONFIG: typeof defaultFallbacksConfig = {
  */
 const CHAIN_CATALOG = {
   providers: [
-    { provider: 'openai', displayName: 'OpenAI', settingsNs: 'llm-providers', settingsPath: [], active: true },
-  ] as ConfigurableProviderView[],
+    { provider: 'openai', displayName: 'OpenAI', settingsNs: 'llm-providers', settingsPath: [] },
+  ] as LlmConfigurableProvider[],
   groups: [
     { id: 'openai', name: 'OpenAI', models: [{ id: 'gpt-4o', name: 'GPT-4o' }] },
   ] as ModelProviderGroup[],
@@ -523,11 +533,6 @@ function fakeRuntime() {
     get: (key: string): unknown => (
       key === 'connection'
         ? {
-            api: {
-              settings: { describe: vi.fn(), update: vi.fn(), replace: vi.fn(), mutate: vi.fn() },
-              llm: { providers: vi.fn(), models: vi.fn(), discoverModels: vi.fn() },
-              sessions: { history: vi.fn() },
-            },
             rpc: { call: vi.fn() },
           }
         : undefined
@@ -2292,9 +2297,9 @@ describe('FallbacksCard time-slot rows (plan fallbacks-timeslots Task 3)', () =>
   it('enables the GLM preset options once zai-coding-cn is configured (PR #62 UX round 4 part B)', async () => {
     const catalog = {
       providers: [
-        { provider: 'openai', displayName: 'OpenAI', settingsNs: 'llm-providers', settingsPath: [], active: true },
-        { provider: 'zai-coding-cn', displayName: 'ZAI', settingsNs: 'llm-providers', settingsPath: [], active: true },
-      ] as ConfigurableProviderView[],
+        { provider: 'openai', displayName: 'OpenAI', settingsNs: 'llm-providers', settingsPath: [] },
+        { provider: 'zai-coding-cn', displayName: 'ZAI', settingsNs: 'llm-providers', settingsPath: [] },
+      ] as LlmConfigurableProvider[],
       groups: [
         { id: 'openai', name: 'OpenAI', models: [{ id: 'gpt-4o', name: 'GPT-4o' }] },
         { id: 'zai-coding-cn', name: 'ZAI', models: [{ id: 'glm-4.6', name: 'GLM 4.6' }] },
@@ -2963,7 +2968,9 @@ describe('FallbacksCard status block (AC-2: recent switch only)', () => {
 
   it('shows the loading term while the switch history read is in flight', async () => {
     const scripted = scriptedApi({ config: ENABLED_CONFIG })
-    scripted.api.sessions.history = vi.fn(() => new Promise(() => {}))
+    scripted.api.session.follow = vi.fn((): AsyncIterable<SessionFollowFrame> => (async function* (): AsyncGenerator<SessionFollowFrame> {
+      await Promise.withResolvers().promise
+    })())
     const controller = new FallbacksSettingsController(scripted.api, scripted.rpc)
     await controller.load()
     controller.setCurrentSession('sess-1' as never)

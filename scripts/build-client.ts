@@ -52,7 +52,7 @@ const OUT_FILE = 'index.js'
  * — the old runtime `./client` exemption became the
  * `@deepseek-ai/dsh-client-store` platform module, so the store VALUE import
  * stays external and resolves from the host loader table) + the
- * PRELOADED_CLIENT_EXTERNALS (empty in 0.1.2, `web/src/platform.ts:18-19`).
+ * PRELOADED_CLIENT_EXTERNALS (empty in 0.1.2, `web/src/platform.ts:16-17`).
  * rc.8 dropped `dsh-client-web-react` (deleted
  * package — the uSES bridge is vendored in `src/client/use-snapshot.ts`),
  * `dsh-client-ui-attachment` and `dsh-client-schema-form` from the platform
