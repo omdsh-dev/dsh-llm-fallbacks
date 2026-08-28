@@ -1052,7 +1052,16 @@ export class FallbacksSettingsController {
         first = await iterator.next()
       } finally {
         // One-shot read: cancelling after the opening snapshot propagates a
-        // stream-cancel frame through the gateway's mux client.
+        // stream-cancel frame through the gateway's mux client — the mux
+        // `open()` generator's `finally` sends `{ type: 'cancel', streamId }`
+        // when the consumer returns the iterator early (deepseek-harness
+        // packages/api/gateway/src/client/stream-client.ts:112-118; the
+        // worker-local carrier path delegates `return()` through `yield *`,
+        // gateway client index.ts:711-714). No caller AbortSignal is threaded
+        // here: an omitted signal defaults to the plugin mount's abort
+        // (gateway client index.ts:482-486), and this read only ever cancels
+        // AFTER the first frame resolves — never mid-await — so `return()`
+        // alone reaches the cancel frame.
         await iterator.return?.()
       }
       if (generation !== this.switchesGeneration) return

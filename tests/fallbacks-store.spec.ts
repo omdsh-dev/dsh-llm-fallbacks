@@ -224,6 +224,11 @@ function otherEntry(seq: number, type = 'assistant/message'): SessionEventLikeEn
   return { type: 'event', event: { type, seq, time: 1_700_000_000_000, data: {} } } as unknown as SessionEventLikeEntry
 }
 
+/** A packed Assistant chunk run (0.1.2 history pages interleave these with scalar events). */
+function chunksEntry(seq: number): SessionEventLikeEntry {
+  return { type: 'chunks', event: { type: 'chunkrow/text-chunks', seq, time: 1_700_000_000_000, data: {} } } as unknown as SessionEventLikeEntry
+}
+
 /** A catalog fixture: two providers, one with advertised models, one without. */
 function catalogFixture(): CatalogLookup {
   return {
@@ -632,6 +637,14 @@ describe('extractRecentSwitches (spec §2.5 D-5 raw event face)', () => {
     const extracted = extractRecentSwitches(entries)
     expect(extracted).toHaveLength(2)
     expect(extracted.map(item => item.seq)).toEqual([7, 5])
+  })
+
+  it('skips packed Assistant chunk runs (`chunks` entries) interleaved on the page', () => {
+    // 0.1.2 history pages interleave packed chunk runs with scalar events;
+    // the chunk run carries the highest seq, so reading it as a scalar entry
+    // would mis-order or leak it into the summary.
+    const extracted = extractRecentSwitches([switchEntry(4), chunksEntry(9), switchEntry(2)])
+    expect(extracted.map(item => item.seq)).toEqual([4, 2])
   })
 
   it('orders by event seq descending (newest first)', () => {
@@ -2054,8 +2067,8 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
     })
     ctx.provide('remote', makeRemote({
       settings: { describe },
-      llm: { listConfigurableProviders: providers, modelCatalog: models },
-      session: { follow: history },
+      llm: { listConfigurableProviders: providers },
+      session: { modelCatalog: models, follow: history },
     }).remote)
     let controller: FallbacksSettingsController | undefined
     ctx.provide('slots', {
@@ -2111,10 +2124,11 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
     })
     // Remote service double: the payload-free llm/adapters-updated event
     // (20260811 forwarding) is dispatched through the recorded listener; the
-    // settings + llm namespaces ride it (0.1.2 remote face).
+    // settings + llm + session namespaces ride it (0.1.2 remote face).
     const { remote, emit } = makeRemote({
       settings: { describe },
-      llm: { listConfigurableProviders: providers, modelCatalog: models },
+      llm: { listConfigurableProviders: providers },
+      session: { modelCatalog: models },
     })
     ctx.provide('remote', remote)
     let controller: FallbacksSettingsController | undefined
@@ -2136,12 +2150,17 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
     models.mockResolvedValue(ok({ groups: [], failures: [] }))
     await controller!.loadCatalog()
     expect(providers).toHaveBeenCalledTimes(1)
+    // Pins the 0.1.2 catalog home: the model catalog loads through
+    // `session.modelCatalog` — re-homing it on `llm` in the double turns
+    // this red instead of silently re-greening (review IMPORTANT-1).
+    expect(models).toHaveBeenCalledTimes(1)
 
     // A pushed llm/adapters-updated refetches the catalog and leaves the
     // settings descriptor untouched.
     emit('llm/adapters-updated')
     await Promise.resolve()
     expect(providers).toHaveBeenCalledTimes(2)
+    expect(models).toHaveBeenCalledTimes(2)
     expect(describe).not.toHaveBeenCalled()
   })
 
@@ -2170,8 +2189,8 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
     // `session/follow` is the status block's face (0.1.2 remote face).
     ctx.provide('remote', makeRemote({
       settings: { describe: vi.fn() },
-      llm: { listConfigurableProviders: vi.fn(), modelCatalog: vi.fn() },
-      session: { follow: history },
+      llm: { listConfigurableProviders: vi.fn() },
+      session: { modelCatalog: vi.fn(), follow: history },
     }).remote)
     let controller: FallbacksSettingsController | undefined
     ctx.provide('slots', {
@@ -2223,12 +2242,12 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
     ctx.provide('connection', {
       rpc: makeRpc().rpc,
     })
-    // Remote service double: describe + llm catalog + session follow ride it
+    // Remote service double: describe + llm providers + session catalog/follow ride it
     // (0.1.2 remote face).
     const { remote, emit } = makeRemote({
       settings: { describe },
-      llm: { listConfigurableProviders: providers, modelCatalog: models },
-      session: { follow: history },
+      llm: { listConfigurableProviders: providers },
+      session: { modelCatalog: models, follow: history },
     })
     ctx.provide('remote', remote)
     let controller: FallbacksSettingsController | undefined
@@ -2280,8 +2299,8 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
     // Remote service double: describe + session follow ride it (0.1.2 remote face).
     const { remote, emit } = makeRemote({
       settings: { describe },
-      llm: { listConfigurableProviders: vi.fn(), modelCatalog: vi.fn() },
-      session: { follow: history },
+      llm: { listConfigurableProviders: vi.fn() },
+      session: { modelCatalog: vi.fn(), follow: history },
     })
     ctx.provide('remote', remote)
     let controller: FallbacksSettingsController | undefined
@@ -2326,8 +2345,8 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
     })
     const { remote } = makeRemote({
       settings: { describe },
-      llm: { listConfigurableProviders: providers, modelCatalog: models },
-      session: { follow: history },
+      llm: { listConfigurableProviders: providers },
+      session: { modelCatalog: models, follow: history },
     })
     ctx.provide('remote', remote)
     let controller: FallbacksSettingsController | undefined

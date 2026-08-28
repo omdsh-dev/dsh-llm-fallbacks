@@ -203,7 +203,7 @@ export function apply(ctx: ClientContext): void {
     return () => {
       disposed = true
       for (const dispose of disposers) dispose()
-      // F-006 / M-01: stop in-flight describe/get/set/reset/history
+      // F-006 / M-01: stop in-flight describe/get/set/reset/session-follow
       // responses from publishing to the dead store once the plugin unloads
       // (HMR/dispose) — the generation guard only helps when it is actually
       // bumped here.
