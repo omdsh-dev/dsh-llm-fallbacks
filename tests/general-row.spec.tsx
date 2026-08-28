@@ -25,7 +25,6 @@ import type {
   ClientConnectionRpc, HistoryEntry, IApiClient, RpcResult,
 } from '@deepseek-ai/dsh-client-connection/client'
 import { bindSnapshotSelector, type SnapshotSelectorHook } from '../src/client/use-snapshot.ts'
-import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import { GeneralFallbacksRow } from '../src/client/GeneralFallbacksRow.tsx'
 import type { GeneralFallbacksRowProps } from '../src/client/GeneralFallbacksRow.tsx'
 import { FallbacksSettingsController } from '../src/client/fallbacks-store.ts'
@@ -197,11 +196,12 @@ function fakeRuntime() {
   }
   const ctx = {
     slots,
-    conversationEvents: {
-      // The transcript switch node Definition registry (plan 3 T2 D1):
-      // apply() registers the `fallbacks-switch` Definition; the row spec
-      // only pins that the call happens without disturbing the row/card.
-      register: (): (() => void) => () => {},
+    // `uiConversation` service double (the D1 Definition registry's home
+    // since 0.1.2): apply() registers the `fallbacks-switch` Definition
+    // through `ctx.uiConversation.events`; the row spec only pins that the
+    // call happens without disturbing the row/card.
+    uiConversation: {
+      events: { register: (): (() => void) => () => {} },
     },
     locale: {
       register: (ns: string, dict: unknown): (() => void) => {
@@ -247,7 +247,7 @@ function fakeRuntime() {
 describe('GeneralFallbacksRow registration (settings.general.item)', () => {
   it('registers the status row alongside the unchanged plugin-config card', () => {
     const { ctx, ledger, locales } = fakeRuntime()
-    apply(ctx as unknown as ClientContext)
+    apply(ctx as unknown as Parameters<typeof apply>[0])
 
     // The general-item ledger holds exactly one fallbacks row.
     const rows = ledger['settings.general.item'] ?? []

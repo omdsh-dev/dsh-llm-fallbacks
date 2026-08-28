@@ -8,16 +8,16 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
-import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import { apply as applyClient } from '../src/client/index.ts'
 
 let ctx: Context
 
 beforeEach(() => {
   ctx = new Context()
-  // ConversationEvents service double: apply() registers the
-  // `fallbacks-switch` node Definition through it.
-  ctx.provide('conversationEvents', { register: () => () => {}, registerFallback: () => () => {} })
+  // `uiConversation` service double (the D1 Definition registry's home since
+  // 0.1.2): apply() registers the `fallbacks-switch` node Definition through
+  // `ctx.uiConversation.events`.
+  ctx.provide('uiConversation', { events: { register: () => () => {}, registerFallback: () => () => {} } })
   // Locale service double: register + bind (bind returns a translate thunk).
   ctx.provide('locale', { register: () => () => {}, bind: () => () => '' })
   // Sessions service double: no current session.
@@ -49,7 +49,7 @@ describe('client slot registration', () => {
         return {}
       },
     })
-    applyClient(ctx as unknown as ClientContext)
+    applyClient(ctx)
     const card = registered.find((entry) => entry.name === 'settings.plugin.item')
     expect(card).toBeDefined()
     expect(card!.key).toBe('fallbacks')

@@ -2,8 +2,9 @@
  * Client bundle build: emits the closure-factory CJS artifact the dsh web
  * loader consumes — `window.__ModuleLoader__.load({ id: 'dsh-llm-fallbacks',
  * factory: (require) => { … return module.exports; } })`. Externals resolve
- * through the loader module table (platform seed entries + the documented
- * `@deepseek-ai/dsh-client-runtime/client` exemption); everything else
+ * through the loader module table (the platform seed entries — in 0.1.2 the
+ * former runtime exemption is folded into the `@deepseek-ai/dsh-client-store`
+ * platform module, the client half's one VALUE import); everything else
  * inlines.
  *
  * Build tool: `tsdown` (rolldown) — the same tool the dsh host itself uses
@@ -47,9 +48,12 @@ const OUT_FILE = 'index.js'
 
 /**
  * Frozen loader module table (dsh mechanism-guide): the plan-documented
- * composition = PLATFORM_MODULES (7 entries, `web/src/platform.ts:8-12`)
- * + the PRELOADED_CLIENT_EXTERNALS (`@deepseek-ai/dsh-client-runtime/client`,
- * `web/src/platform.ts:15-17`). rc.8 dropped `dsh-client-web-react` (deleted
+ * composition = PLATFORM_MODULES (8 entries in 0.1.2, `web/src/platform.ts:8-15`
+ * — the old runtime `./client` exemption became the
+ * `@deepseek-ai/dsh-client-store` platform module, so the store VALUE import
+ * stays external and resolves from the host loader table) + the
+ * PRELOADED_CLIENT_EXTERNALS (empty in 0.1.2, `web/src/platform.ts:18-19`).
+ * rc.8 dropped `dsh-client-web-react` (deleted
  * package — the uSES bridge is vendored in `src/client/use-snapshot.ts`),
  * `dsh-client-ui-attachment` and `dsh-client-schema-form` from the platform
  * table. `@deepseek-ai/cordis` is the in-box cordis framework (dsh-advisor
@@ -63,9 +67,9 @@ export const CLIENT_EXTERNALS: readonly string[] = [
   'react-dom',
   'react-dom/client',
   '@deepseek-ai/cordis',
+  '@deepseek-ai/dsh-client-store',
   '@deepseek-ai/dsh-client-ui-slots',
   '@deepseek-ai/dsh-client-ui-primitives',
-  '@deepseek-ai/dsh-client-runtime/client',
 ]
 
 /**

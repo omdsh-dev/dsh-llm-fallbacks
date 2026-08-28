@@ -6,7 +6,7 @@
  *
  * Registration surface: the fake slots runtime runs the inject callbacks
  * (both generator and plain-disposer shapes) and records every register
- * call; the fake conversationEvents runtime records the node definition.
+ * call; the fake `uiConversation.events` runtime records the node definition.
  * Pins the contract: the `conversation.chat.node` ledger holds one entry
  * with key 'fallbacks-switch' + locale 'fallbacks' rendering
  * ConversationFallbackSwitch, the events ledger holds the
@@ -39,9 +39,9 @@
 import { cleanup, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type {
-  ChatConversationViewNode, ConversationMatch,
-} from '@deepseek-ai/dsh-client-runtime/client'
-import type { ChatNode } from '@deepseek-ai/dsh-client-ui-conversation/client'
+  ChatConversationViewNode, ChatNode,
+} from '@deepseek-ai/dsh-client-ui-chat/client'
+import type { ConversationMatch } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { SessionEvent } from '@deepseek-ai/dsh-session/types'
 import {
   ConversationFallbackSwitch, fallbackSwitchDefinition,
@@ -143,7 +143,6 @@ function nodeFor(event: SessionEvent<'fallbacks/switch'>): ChatNode<'fallbacks-s
   expect(result).toEqual({ id: String(event.seq), role: 'start' })
   const match: ConversationMatch = {
     event,
-    view: undefined,
     role: 'start',
     location: { kind: 'session' },
   }
@@ -173,7 +172,6 @@ function nodeFor(event: SessionEvent<'fallbacks/switch'>): ChatNode<'fallbacks-s
 function degradedNodeFor(event: unknown): ChatNode<'fallbacks-switch'> {
   const match: ConversationMatch = {
     event: event as unknown as SessionEvent<'fallbacks/switch'>,
-    view: undefined,
     role: 'start',
     location: { kind: 'session' },
   }
@@ -194,13 +192,14 @@ function degradedNodeFor(event: unknown): ChatNode<'fallbacks-switch'> {
 }
 
 /**
- * A minimal fake of the client slots + conversationEvents services for the
+ * A minimal fake of the client slots + `uiConversation` services for the
  * registration ledger test (the card/general-row spec pattern, extended
  * with the events registry): `inject(name, callback)` runs the callback and
  * records every `register` call (both the generator shape — settings slots —
  * and the plain-disposer shape — the chat-node seat, matching
- * `ctx.slots.inject`'s accepted callback forms); `conversationEvents
- * .register(definition)` records the Definition; `ctx.get('connection')`
+ * `ctx.slots.inject`'s accepted callback forms);
+ * `ctx.uiConversation.events.register(definition)` records the Definition;
+ * `ctx.get('connection')`
  * serves an inert wire face; everything else apply() touches is recorded
  * but inert.
  */
@@ -227,10 +226,12 @@ function fakeRuntime() {
   }
   const ctx = {
     slots,
-    conversationEvents: {
-      register: (definition: unknown): (() => void) => {
-        eventsLedger.push(definition)
-        return () => {}
+    uiConversation: {
+      events: {
+        register: (definition: unknown): (() => void) => {
+          eventsLedger.push(definition)
+          return () => {}
+        },
       },
     },
     locale: {

@@ -18,7 +18,6 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
-import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import type {
   ClientConnectionRpc, HistoryEntry, SettingsNamespaceView,
 } from '@deepseek-ai/dsh-client-connection/client'
@@ -1953,9 +1952,10 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
 
   beforeEach(() => {
     ctx = new Context()
-    // ConversationEvents service double: apply() registers the
-    // `fallbacks-switch` node Definition through it (plan 3 T2 D1).
-    ctx.provide('conversationEvents', { register: () => () => {}, registerFallback: () => () => {} })
+    // `uiConversation` service double (the D1 Definition registry's home
+    // since 0.1.2): apply() registers the `fallbacks-switch` node Definition
+    // through `ctx.uiConversation.events` (plan 3 T2 D1).
+    ctx.provide('uiConversation', { events: { register: () => () => {}, registerFallback: () => () => {} } })
   })
 
   afterEach(async () => {
@@ -1997,7 +1997,7 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
         return {}
       },
     })
-    applyClient(ctx as unknown as ClientContext)
+    applyClient(ctx)
     expect(controller).toBeDefined()
 
     // A load is in flight when the plugin unloads (HMR / dispose).
@@ -2050,7 +2050,7 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
         return {}
       },
     })
-    applyClient(ctx as unknown as ClientContext)
+    applyClient(ctx)
     expect(controller).toBeDefined()
     providers.mockResolvedValue(ok({ providers: [] }))
     models.mockResolvedValue(ok({ groups: [], failures: [] }))
@@ -2110,7 +2110,7 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
         return {}
       },
     })
-    applyClient(ctx as unknown as ClientContext)
+    applyClient(ctx)
     expect(controller).toBeDefined()
     providers.mockResolvedValue(ok({ providers: [] }))
     models.mockResolvedValue(ok({ groups: [], failures: [] }))
@@ -2166,7 +2166,7 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
         return {}
       },
     })
-    applyClient(ctx as unknown as ClientContext)
+    applyClient(ctx)
     expect(controller).toBeDefined()
 
     // The status block opened once (the section mount effect's first read).
@@ -2218,7 +2218,7 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
         return {}
       },
     })
-    applyClient(ctx as unknown as ClientContext)
+    applyClient(ctx)
     expect(controller).toBeDefined()
     providers.mockResolvedValue(ok({ providers: [] }))
     models.mockResolvedValue(ok({ groups: [], failures: [] }))
@@ -2271,7 +2271,7 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
         return {}
       },
     })
-    applyClient(ctx as unknown as ClientContext)
+    applyClient(ctx)
     expect(controller).toBeDefined()
     await controller!.load()
     await controller!.loadSwitches()
@@ -2318,7 +2318,7 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
         return {}
       },
     })
-    applyClient(ctx as unknown as ClientContext)
+    applyClient(ctx)
     expect(controller).toBeDefined()
     providers.mockResolvedValue(ok({ providers: [] }))
     models.mockResolvedValue(ok({ groups: [], failures: [] }))

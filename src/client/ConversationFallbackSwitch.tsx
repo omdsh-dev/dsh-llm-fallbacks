@@ -10,19 +10,23 @@
  * so the `unknown-surface` fallback never picked it up and the transcript
  * showed nothing).
  *
- * Contract notes (dsh-private, verified 2026-08-12):
- * - D1 registry: `ConversationEventRegistry.register(definition)` — service
- *   on the client Context (`runtime/src/client/index.ts:171,189-192`);
- *   external registration precedent `ui-workflow-run/src/client/index.ts:18-28`.
+ * Contract notes (dsh-private, 0.1.2 homes, verified 2026-08-28):
+ * - D1 registry: `ConversationEventRegistry.register(definition)` — the
+ *   client Context's `uiConversation.events` service seat
+ *   (`ui-conversation conversation/event-registry.ts:17-25`); external
+ *   registration precedent `ui-workflow-run/src/client/index.ts:22-26`
+ *   (its inject list declares `uiConversation` for the same direct read).
  *   The engine feeds EVERY session event to each definition's `match`
- *   (`runtime/src/client/sessions/conversation-assembler.ts:370-382`) —
- *   non-surface plugin events included — and the client session appends live
- *   events into the engine (`sessions/session.ts:673` `conversation.append`).
+ *   (`ui-conversation conversation/assembler.ts:406-414`) — non-surface
+ *   plugin events included — and live events reach the engine through the
+ *   assembly window pump (`ui-conversation conversation/assembly.ts:97-105`
+ *   `assembler.append`).
  * - D2 seat: `conversation.chat.node` is a keyed seat dispatched by
- *   `ChatConversationViewNode.kind` (`ui-conversation contract/slots.ts:56-63`;
- *   `chat/ChatNodeSeat.tsx:48-51`), externally registrable as
- *   `{ name, key, locale }` (precedents: ui-tool `tool-call`, ui-goal
- *   `command-input`, ui-workflow-run `workflow-run`).
+ *   `ChatConversationViewNode.kind` (`ui-chat contract/slots.ts:171-180`;
+ *   `chat/ChatNodeSeat.tsx:212` renderSlot dispatch), externally registrable
+ *   as `{ name, key, locale }` (precedents: ui-tool `tool-call`
+ *   `apply.ts:28-31`, ui-goal `command-input` `index.ts:60-63`,
+ *   ui-workflow-run `workflow-run`).
  * - Purity: this file only type-imports `@deepseek-ai/dsh-client-ui-chat/client`
  *   and `@deepseek-ai/dsh-client-ui-conversation/client` (both erased at
  *   build); the renderer self-draws on `--dsw-alias-*` tokens. Render-only:
