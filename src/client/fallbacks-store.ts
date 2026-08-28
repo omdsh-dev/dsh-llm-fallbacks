@@ -856,6 +856,14 @@ export class FallbacksSettingsController {
   /** Every settings namespace from the last describe, keyed by ns — the configured-provider join's other input. */
   private namespaces: Map<string, SettingsNamespaceView> = new Map()
   private currentSession: SessionId | undefined
+  /**
+   * The store's dispose signal (qc3 F-003): created alongside the store
+   * lifecycle, threaded into every `session.follow` call, aborted once in
+   * {@link dispose} — a follow opening still mid-await at plugin unload
+   * (HMR / fiber dispose, or a wedged gateway stream) is cancelled promptly
+   * instead of staying open until the mount abort or socket failure.
+   */
+  private readonly followAbort = new AbortController()
 
   /**
    * @param api - the Remote namespace faces the store reads (settings
@@ -1045,6 +1053,7 @@ export class FallbacksSettingsController {
     try {
       const frames = this.api.session.follow(
         { address: { kind: 'session', sessionId }, maxMessages: SWITCHES_HISTORY_PAGE },
+        this.followAbort.signal,
       )
       const iterator = frames[Symbol.asyncIterator]()
       let first
@@ -1057,11 +1066,14 @@ export class FallbacksSettingsController {
         // when the consumer returns the iterator early (deepseek-harness
         // packages/api/gateway/src/client/stream-client.ts:112-118; the
         // worker-local carrier path delegates `return()` through `yield *`,
-        // gateway client index.ts:711-714). No caller AbortSignal is threaded
-        // here: an omitted signal defaults to the plugin mount's abort
-        // (gateway client index.ts:482-486), and this read only ever cancels
-        // AFTER the first frame resolves — never mid-await — so `return()`
-        // alone reaches the cancel frame.
+        // gateway client index.ts:711-714). The store's dispose signal (qc3
+        // F-003) covers the window `return()` cannot reach — a first frame
+        // still pending at dispose: the abort fails the gateway inbox and
+        // settles the pending `next()`, closing the server-side follow
+        // registration promptly instead of at the plugin mount abort
+        // (gateway client index.ts:482-486 combines both signals when a
+        // caller signal is threaded). `return()` stays for the settled
+        // path — cheap and explicit.
         await iterator.return?.()
       }
       if (generation !== this.switchesGeneration) return
@@ -1263,6 +1275,11 @@ export class FallbacksSettingsController {
     this.catalogGeneration += 1
     this.switchesGeneration += 1
     this.namespaces = new Map()
+    // qc3 F-003: the generation guard only drops settled responses; the
+    // dispose signal closes an in-flight follow stream whose opening frame
+    // has not settled (the `iterator.return()` in loadSwitches is
+    // unreachable mid-await).
+    this.followAbort.abort()
   }
 
   /**

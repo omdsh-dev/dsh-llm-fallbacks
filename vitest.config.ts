@@ -12,8 +12,9 @@
  * `resolve.alias` rewrites the specifier and `server.deps.inline` keeps
  * vitest from handing it to Node's loader (which would reject the subpath
  * through the exports map). Dev/test tooling ONLY: product imports keep the
- * bare specifiers, and both blocks can be dropped once the peers resolve
- * from a registry/bundled tree again.
+ * bare specifiers; in npm-registry mode (no linked tree — the probe below)
+ * the alias/inline blocks are skipped automatically and the specifiers
+ * resolve from the installed packages.
  * - `@deepseek-ai/cordis` + `@deepseek-ai/cosmokit` (cordis' one runtime
  *   dep): the real `Context` the fiber-backed specs drive (compiled
  *   `lib/types/index.js`).
@@ -38,7 +39,7 @@
  * over a thin in-memory provider (`tests/support/memory-settings.ts`,
  * extends the real abstract `SettingsProvider` base class).
  */
-import { readFileSync, realpathSync } from 'node:fs'
+import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { defaultExclude, defineConfig } from 'vitest/config'
 
@@ -47,6 +48,17 @@ import { defaultExclude, defineConfig } from 'vitest/config'
 // .vite-temp — so import.meta.url lies about the checkout. Run root (the
 // worktree when vitest is invoked there) is the honest anchor.
 const here = process.cwd()
+// Mode probe (qc3 F-002): the config serves TWO install modes — LINKED,
+// this dev tree's node_modules pointing at the local 0.1.2 sources, and
+// REGISTRY (docs/install.md, once 0.1.2 publishes), where the peers come
+// from npm and carry only the exports-mapped `lib/index.js`. The compiled
+// store entry is the anchor: when it is absent, every `linked()` resolve
+// below would throw at config load and hard-fail the whole suite — so the
+// entire linked block (aliases, inline doubles, attribution transform) is
+// skipped and `@deepseek-ai/*` specifiers resolve through the registry.
+const linkedMode = existsSync(
+  resolve(here, 'node_modules/@deepseek-ai/dsh-client-store/lib/types/index.js'),
+)
 // A linked peer's compiled implementation: `<pkg>/lib/types/index.js` — the
 // tsc emit the 0.1.2 tree ships instead of the exports-mapped `lib/index.js`.
 // realpathSync walks the node_modules symlink out to the upstream tree so the
@@ -80,7 +92,7 @@ const dshLlmAttribution = {
 }
 
 export default defineConfig({
-  plugins: [dshLlmAttribution],
+  plugins: linkedMode ? [dshLlmAttribution] : [],
   test: {
     // Feature worktrees under `.worktrees/` carry duplicate copies of
     // tests/; the default include glob picks them up (gitignore does not
@@ -93,20 +105,22 @@ export default defineConfig({
         // needs (see the header note): vitest externalizes node_modules
         // specifiers before aliases apply, so without inlining Node's loader
         // rejects them through their exports maps.
-        inline: [
-          /@deepseek-ai\/cordis/,
-          /@deepseek-ai\/cosmokit/,
-          /@deepseek-ai\/dsh-client-store/,
-          /@deepseek-ai\/dsh-client-ui-primitives/,
-          /@deepseek-ai\/dsh-settings/,
-          /@deepseek-ai\/dsh-llm/,
-          /@deepseek-ai\/dsh-llm-retry/,
-          /@deepseek-ai\/dsh-api-gateway/,
-          /@deepseek-ai\/dsh-typert-registry/,
-          /@deepseek-ai\/dsh-typert-protocol/,
-          /@deepseek-ai\/dsh-timeout/,
-          /@deepseek-ai\/dsh-util-crypto/,
-        ],
+        inline: linkedMode
+          ? [
+              /@deepseek-ai\/cordis/,
+              /@deepseek-ai\/cosmokit/,
+              /@deepseek-ai\/dsh-client-store/,
+              /@deepseek-ai\/dsh-client-ui-primitives/,
+              /@deepseek-ai\/dsh-settings/,
+              /@deepseek-ai\/dsh-llm/,
+              /@deepseek-ai\/dsh-llm-retry/,
+              /@deepseek-ai\/dsh-api-gateway/,
+              /@deepseek-ai\/dsh-typert-registry/,
+              /@deepseek-ai\/dsh-typert-protocol/,
+              /@deepseek-ai\/dsh-timeout/,
+              /@deepseek-ai\/dsh-util-crypto/,
+            ]
+          : [],
       },
     },
   },
@@ -116,24 +130,26 @@ export default defineConfig({
     // crash with "reading 'useRef'"). Pin the React pair to this root's
     // single copy.
     dedupe: ['react', 'react-dom'],
-    alias: [
-      // $-anchored so a subpath specifier never shadows. See the header note
-      // for what each target is.
-      { find: /^@deepseek-ai\/cordis$/, replacement: linked('@deepseek-ai/cordis') },
-      {
-        find: /^@deepseek-ai\/cosmokit$/,
-        replacement: linked('@deepseek-ai/cordis/node_modules/@deepseek-ai/cosmokit'),
-      },
-      { find: /^@deepseek-ai\/dsh-client-store$/, replacement: linked('@deepseek-ai/dsh-client-store') },
-      { find: /^@deepseek-ai\/dsh-settings$/, replacement: linked('@deepseek-ai/dsh-settings') },
-      { find: /^@deepseek-ai\/dsh-llm$/, replacement: linked('@deepseek-ai/dsh-llm') },
-      { find: /^@deepseek-ai\/dsh-llm-retry$/, replacement: linked('@deepseek-ai/dsh-llm-retry') },
-      { find: /^@deepseek-ai\/dsh-api-gateway$/, replacement: linked('@deepseek-ai/dsh-api-gateway') },
-      { find: /^@deepseek-ai\/dsh-typert-registry$/, replacement: linked('@deepseek-ai/dsh-typert-registry') },
-      { find: /^@deepseek-ai\/dsh-typert-protocol$/, replacement: linked('@deepseek-ai/dsh-typert-protocol') },
-      { find: /^@deepseek-ai\/dsh-timeout$/, replacement: linked('@deepseek-ai/dsh-timeout') },
-      { find: /^@deepseek-ai\/dsh-util-crypto$/, replacement: linked('@deepseek-ai/dsh-util-crypto') },
-      { find: /^@deepseek-ai\/dsh-client-ui-primitives$/, replacement: linkedSrc('@deepseek-ai/dsh-client-ui-primitives') },
-    ],
+    alias: linkedMode
+      ? [
+          // $-anchored so a subpath specifier never shadows. See the header
+          // note for what each target is.
+          { find: /^@deepseek-ai\/cordis$/, replacement: linked('@deepseek-ai/cordis') },
+          {
+            find: /^@deepseek-ai\/cosmokit$/,
+            replacement: linked('@deepseek-ai/cordis/node_modules/@deepseek-ai/cosmokit'),
+          },
+          { find: /^@deepseek-ai\/dsh-client-store$/, replacement: linked('@deepseek-ai/dsh-client-store') },
+          { find: /^@deepseek-ai\/dsh-settings$/, replacement: linked('@deepseek-ai/dsh-settings') },
+          { find: /^@deepseek-ai\/dsh-llm$/, replacement: linked('@deepseek-ai/dsh-llm') },
+          { find: /^@deepseek-ai\/dsh-llm-retry$/, replacement: linked('@deepseek-ai/dsh-llm-retry') },
+          { find: /^@deepseek-ai\/dsh-api-gateway$/, replacement: linked('@deepseek-ai/dsh-api-gateway') },
+          { find: /^@deepseek-ai\/dsh-typert-registry$/, replacement: linked('@deepseek-ai/dsh-typert-registry') },
+          { find: /^@deepseek-ai\/dsh-typert-protocol$/, replacement: linked('@deepseek-ai/dsh-typert-protocol') },
+          { find: /^@deepseek-ai\/dsh-timeout$/, replacement: linked('@deepseek-ai/dsh-timeout') },
+          { find: /^@deepseek-ai\/dsh-util-crypto$/, replacement: linked('@deepseek-ai/dsh-util-crypto') },
+          { find: /^@deepseek-ai\/dsh-client-ui-primitives$/, replacement: linkedSrc('@deepseek-ai/dsh-client-ui-primitives') },
+        ]
+      : [],
   },
 })

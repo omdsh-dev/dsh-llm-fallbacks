@@ -1847,7 +1847,7 @@ describe('recent-switch summary (spec §2.5 D-5)', () => {
     expect(api.session.follow).toHaveBeenCalledWith({
       address: { kind: 'session', sessionId: 'sess-1' },
       maxMessages: SWITCHES_HISTORY_PAGE,
-    })
+    }, expect.any(AbortSignal))
     expect(state.switchesStatus).toBe('ready')
     expect(state.switchesError).toBeNull()
     expect(state.switches.map(item => item.seq)).toEqual([9, 5])
@@ -1911,6 +1911,40 @@ describe('recent-switch summary (spec §2.5 D-5)', () => {
     expect(state.switches).toEqual([])
   })
 
+  it('aborts a wedged follow opening on dispose (store signal reaches the stream double)', async () => {
+    // qc3 F-003: `iterator.return()` is only reachable AFTER the opening
+    // frame settles — a dispose while the first frame is still pending must
+    // cancel the stream through the store's dispose AbortSignal instead of
+    // leaving the server-side session-follow registration open until the
+    // plugin mount abort. The double fails its pending `next()` on abort
+    // exactly like the real gateway inbox does.
+    const api = makeApi()
+    let opened: AbortSignal | undefined
+    api.session.follow.mockImplementation((_request: unknown, signal?: AbortSignal) => {
+      opened = signal
+      return (async function* (): AsyncGenerator<SessionFollowFrame> {
+        await new Promise<never>((_resolve, reject) => {
+          signal?.addEventListener('abort', () => reject(signal.reason), { once: true })
+        })
+      })()
+    })
+    const controller = new FallbacksSettingsController(api, makeRpc().rpc)
+    controller.setCurrentSession('sess-1' as never)
+    const loading = controller.loadSwitches()
+    // The stream double receives the store's dispose signal, still live.
+    expect(opened?.aborted).toBe(false)
+    controller.dispose()
+    // The double observes the abort (the wedged `next()` settles now).
+    expect(opened?.aborted).toBe(true)
+    await loading
+    const state = controller.store.getSnapshot()
+    // The abort-induced failure never publishes: dispose's generation guard
+    // freezes the block on the loading state it was left in.
+    expect(state.switchesStatus).not.toBe('ready')
+    expect(state.switchesStatus).not.toBe('error')
+    expect(state.switches).toEqual([])
+  })
+
   it('session switch reloads the summary for the new session once read', async () => {
     const api = makeApi()
     api.session.follow.mockImplementation(() => followAnswer([switchEntry(2)]))
@@ -1926,7 +1960,7 @@ describe('recent-switch summary (spec §2.5 D-5)', () => {
     expect(api.session.follow).toHaveBeenLastCalledWith({
       address: { kind: 'session', sessionId: 'sess-2' },
       maxMessages: SWITCHES_HISTORY_PAGE,
-    })
+    }, expect.any(AbortSignal))
 
     // The same id again → no reload.
     controller.setCurrentSession('sess-2' as never)
@@ -1945,7 +1979,7 @@ describe('recent-switch summary (spec §2.5 D-5)', () => {
     expect(api.session.follow).toHaveBeenCalledWith({
       address: { kind: 'session', sessionId: 'sess-1' },
       maxMessages: SWITCHES_HISTORY_PAGE,
-    })
+    }, expect.any(AbortSignal))
   })
 
   it('refreshSwitchesIfLoaded skips an idle block and refreshes an opened one', async () => {
@@ -1964,7 +1998,7 @@ describe('recent-switch summary (spec §2.5 D-5)', () => {
     expect(api.session.follow).toHaveBeenLastCalledWith({
       address: { kind: 'session', sessionId: 'sess-1' },
       maxMessages: SWITCHES_HISTORY_PAGE,
-    })
+    }, expect.any(AbortSignal))
   })
 })
 
@@ -2214,7 +2248,7 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
     expect(history).toHaveBeenCalledWith({
       address: { kind: 'session', sessionId: 'sess-1' },
       maxMessages: SWITCHES_HISTORY_PAGE,
-    })
+    }, expect.any(AbortSignal))
 
     // The user switches session → the list subscription reloads for the new id.
     current = 'sess-2'
@@ -2224,7 +2258,7 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
     expect(history).toHaveBeenLastCalledWith({
       address: { kind: 'session', sessionId: 'sess-2' },
       maxMessages: SWITCHES_HISTORY_PAGE,
-    })
+    }, expect.any(AbortSignal))
   })
 
   it('settings/document-updated (fallbacks ns) refreshes settings + switches, never the catalog', async () => {
