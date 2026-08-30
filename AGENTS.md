@@ -89,8 +89,10 @@ PR-driven, two steps — merging the release PR is the ONLY publish path
    version (the first release is `0.1.0-alpha.2`) or leave the input empty
    for an auto `--patch` bump.
 2. **Merge the PR** → `release.yml` runs on the merge commit: validate →
-   build → `npm publish --provenance --access public --tag latest` →
-   tag `vX.Y.Z` → GitHub Release (always a regular release — no Pre-release marker, user decision 2026-08-14; the npm `latest` dist-tag carries the channel semantics).
+   build → `npm publish --provenance --access public --tag <dist-tag>`
+   (the dist-tag is derived from the version: stable → `latest`,
+   prerelease → its channel tag such as `alpha`) → tag `vX.Y.Z` →
+   GitHub Release (always a regular release — no Pre-release marker, user decision 2026-08-14; the version-derived npm dist-tag carries the channel semantics).
 
 Secrets: **zero long-term secrets**. npm auth is Trusted Publishing (OIDC,
 tokenless) once the package exists; the one-time `NODE_AUTH_TOKEN` bootstrap

@@ -88,9 +88,9 @@ Before merging, verify:
 After the merge, `release.yml` triggers (`pull_request: closed` + `merged == true` + title with the `release v` prefix):
 
 1. Checks out the merge commit → `release:validate` → `pnpm build`;
-2. `npm publish --provenance --access public --tag latest` — **explicit `--tag latest`**: npm ≥ 11 (bundled with Node 24) requires an explicit `--tag` when publishing a prerelease, otherwise it hard-throws; the first version (`0.1.0-alpha.2`) lands on the default `latest` dist-tag (`npm i dsh-llm-fallbacks` resolves), and the later stable `0.1.0` naturally takes over `latest`. npm authentication is pure OIDC (Trusted Publishing configured on the npm side; see the "npm authentication" section);
+2. `npm publish --provenance --access public --tag <dist-tag>` — **the dist-tag is derived from the version**: stable `X.Y.Z` publishes under `latest`; prerelease `X.Y.Z-<channel>.N` publishes under `<channel>` (e.g. `0.4.0-alpha.1` → `alpha`, `1.0.0-rc.1` → `rc`), so a prerelease never steals `latest` from the newest stable (an explicit `--tag` is also required by npm ≥ 11, bundled with Node 24, when publishing a prerelease). The `next` tag is not used. npm authentication is pure OIDC (Trusted Publishing configured on the npm side; see the "npm authentication" section);
 3. Tags `v<v>` and pushes (skipped if it exists);
-4. Creates the GitHub Release from the changelog section — **always a regular release** (no Pre-release marker, user decision 2026-08-14); the npm `latest` dist-tag is the channel signal, the GitHub Release is the visible record.
+4. Creates the GitHub Release from the changelog section — **always a regular release** (no Pre-release marker, user decision 2026-08-14); the channel signal is the version-derived npm dist-tag (`latest` for stable, the prerelease channel such as `alpha` for prereleases), the GitHub Release is the visible record.
 
 ## Changelog fragment format
 
