@@ -1,7 +1,7 @@
 ---
 module: npm-release-pipeline
 date: 2026-08-14
-last_updated: 2026-08-14
+last_updated: 2026-08-30
 problem_type: best_practice
 category: best-practices
 severity: low
@@ -47,8 +47,9 @@ dsh-llm-fallbacks 建立 npm 发布流水线（单包），参考 mstar-harness 
 ### 坑 3：npm ≥ 11 发布 prerelease 版本**必须**显式 `--tag`
 
 - npm 11.x（Node 24 自带）发布 `X.Y.Z-pre.N` 无 `--tag` → hard-throw「You must specify a tag using --tag when publishing a prerelease version」（npm 11 源码 v11.0.0-v11.6.2 验证；npm 10 无此 guard）。
-- 首发 prerelease 用 `--tag latest`：默认 dist-tag 是 latest，`npm i <pkg>` 能解析；正式版后续自然接管。
-- 对应地，GitHub Release 的 `prerelease` 标志按版本推导：prerelease=$(node -p "/-/.test(require('./package.json').version)")。
+- prerelease 发布到**版本推导的 channel dist-tag**：`X.Y.Z-<channel>.N` → `--tag <channel>`（如 `0.4.0-alpha.1` → `--tag alpha`、`1.0.0-rc.1` → `--tag rc`；stable `X.Y.Z` → `--tag latest`）——prerelease 永不抢占 `latest`，`latest` 始终留在最新 stable 上。
+- 纯数字 channel（如 `1.0.0-1` → `1`）是合法 SemVer range，npm 拒绝其作为 dist-tag：release.yml 的 Resolve npm dist-tag 步骤会 `::error::` + exit 1，**必须**用具名 channel（`alpha`/`beta`/`rc`）。
+- GitHub Release **永远是 regular release**（2026-08-14 用户决策：不加 Pre-release 标记）——channel 信号由 npm dist-tag 承载，GitHub Release 只是发布的可见记录。
 
 ### 坑 4：流水线重跑/版本一致性防护
 

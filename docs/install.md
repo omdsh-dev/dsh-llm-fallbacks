@@ -51,7 +51,7 @@ Registry install notes:
 - **Version**: follows the npm dist-tag (default `latest`); pinning an exact version `dsh-llm-fallbacks@<version>` prevents a later publish from silently changing the code that actually runs.
 - **Mount-only, no patch steps**: a registry install is complete as-is — the plugin makes zero modifications to the dsh source tree (bundle row insert + client inject + its own gateway), no apply/revert scripts, and nothing to re-patch after a dsh upgrade.
 
-> **Release status**: published as `dsh-llm-fallbacks@0.1.0-alpha.2` (latest). The first publish used a one-time `NODE_AUTH_TOKEN` bootstrap secret; Trusted Publishing is configured afterwards for tokenless releases. Release process → [docs/release.md](docs/release.md).
+> **Release channels**: stable releases publish under the `latest` dist-tag (the default for `npm i dsh-llm-fallbacks`); prereleases publish under their channel dist-tag — install a prerelease line via its channel, e.g. `npm i dsh-llm-fallbacks@alpha`. npm authentication is tokenless Trusted Publishing. Release process → [docs/release.md](docs/release.md).
 
 ## 3. npm / pnpm package install
 
