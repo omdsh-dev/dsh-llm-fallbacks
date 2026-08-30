@@ -67,6 +67,15 @@ export const zh = {
   // rules.
   'mainAgent.label': '主代理',
   'subagents.label': '子代理',
+  // Host-policy status area (plan dsh-012-subagent-routing T5 / spec D4):
+  // read-only; never a second write-face. zh is the key-set source of truth.
+  'subagents.policy.label': '宿主子代理模型策略',
+  'subagents.policy.allowlist': '允许的模型',
+  'subagents.policy.head': '当前链头',
+  'subagents.policy.source.authorized': '宿主授权',
+  'subagents.policy.source.injected': '插件注入',
+  'subagents.policy.blocked': '降级候选均不在允许列表中 — 未切换',
+  'subagents.policy.unprovable': '策略存在但无法读取 — 插件切换已禁用',
   // Time-slot rows (plan fallbacks-timeslots Task 3; PR #62 feedback
   // round): the extra-row list sits under the 主代理 section; preset
   // Timezone picker lives inside expanded custom rows only; preset
@@ -296,6 +305,14 @@ export const en = {
   // rules.
   'mainAgent.label': 'Main agent',
   'subagents.label': 'Subagents',
+  // Host-policy status area (plan dsh-012-subagent-routing T5 / spec D4).
+  'subagents.policy.label': 'Host subagent model policy',
+  'subagents.policy.allowlist': 'Allowed models',
+  'subagents.policy.head': 'Effective chain head',
+  'subagents.policy.source.authorized': 'authorized',
+  'subagents.policy.source.injected': 'injected',
+  'subagents.policy.blocked': 'No in-allowlist fallback candidate — switch skipped',
+  'subagents.policy.unprovable': 'Policy present but unreadable — plugin switches disabled',
   // Time-slot rows: extra-row list under Main agent. Timezone picker
   // lives inside expanded custom rows only; preset windows stay UTC+8.
   'timeSlots.label': 'Time slots',

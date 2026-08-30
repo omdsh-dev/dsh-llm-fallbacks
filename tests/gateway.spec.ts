@@ -42,7 +42,6 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context, Service } from '@deepseek-ai/cordis'
-import { installSettingsSection } from '@deepseek-ai/dsh-settings'
 import TypertGatewayService from '@deepseek-ai/dsh-api-gateway'
 import { TypertRegistry } from '@deepseek-ai/dsh-typert-registry'
 import { apply } from '../src/index.ts'
@@ -54,6 +53,7 @@ import {
   FallbacksConfigGateway,
   fallbacksTypertContribution,
   type FallbacksSettingsBridge,
+  type SubagentPolicySnapshotFn,
 } from '../src/gateway.ts'
 import { FallbacksSeedManager } from '../src/seeds.ts'
 import { MemorySettings } from './support/memory-settings.ts'
@@ -87,18 +87,23 @@ function makeSeeds(): FallbacksSeedManager {
 
 /**
  * Build the `FallbacksSettingsBridge` exactly the way `apply()` wires it (the
- * same `installSettingsSection` + setSource/onChange hooks) — the gateway
- * under test consumes this live source.
+ * same conditional `ctx.inject(['settings'])` child calling
+ * `SettingsProvider.installSection` + setSource/onChange hooks) — the gateway
+ * under test consumes this live source. No settings service composed → the
+ * child never fires and the bridge serves the composition entry.
  */
 function installFallbacksBridge(ctx: Context, entry: FallbacksConfig): FallbacksSettingsBridge {
   let source = (): FallbacksConfig => entry
-  installSettingsSection(ctx, FALLBACKS_SETTINGS_NAMESPACE, Config, entry, {
-    setSource: (current) => {
-      source = current
-    },
-    onChange: () => {
-      // no bridge fan-out — the gateway reads source() live per call
-    },
+  ctx.inject(['settings'], (sctx) => {
+    sctx.settings.installSection(ctx, FALLBACKS_SETTINGS_NAMESPACE, Config, entry, {
+      setSource: (current) => {
+        source = current
+      },
+      onChange: () => {
+        // no bridge fan-out — the gateway reads source() live per call
+      },
+    })
+    return undefined
   })
   return {
     source: (): FallbacksConfig => source(),
@@ -943,7 +948,6 @@ type FakeRpcHandler = (endpoint: string, payload: unknown, signal: AbortSignal) 
 /** Records the `/api` interceptor the typertGateway mounts (advisor gateway.spec.ts pattern). */
 class FakeConnectionService extends Service {
   channel: string | undefined
-  authority: string | undefined
   matches: ((endpoint: string) => boolean) | undefined
   handler: FakeRpcHandler | undefined
 
@@ -954,20 +958,13 @@ class FakeConnectionService extends Service {
   get rpc() {
     const owner = this.ctx
     return {
-      intercept: (
-        channel: string,
-        matches: (endpoint: string) => boolean,
-        handler: FakeRpcHandler,
-        options: { readonly authority: string },
-      ) =>
+      intercept: (channel: string, matches: (endpoint: string) => boolean, handler: FakeRpcHandler) =>
         owner.effect(() => {
           this.channel = channel
-          this.authority = options.authority
           this.matches = matches
           this.handler = handler
           return () => {
             this.channel = undefined
-            this.authority = undefined
             this.matches = undefined
             this.handler = undefined
           }
@@ -1020,7 +1017,6 @@ describe('typertGateway endpoint claims + payload contract', () => {
     expect(ctx.typert.local.get('fallbacks/revert-seed')?.parameters).toEqual([
       { name: 'id', wire: 'id', source: 'json', codec: { mode: 'src-json' } },
     ])
-    expect(connection.authority).toBe('trusted-host')
     expect(connection.matches!('fallbacks/get')).toBe(true)
     expect(connection.matches!('fallbacks/set')).toBe(true)
     expect(connection.matches!('fallbacks/reset')).toBe(true)
@@ -1178,5 +1174,70 @@ describe('composed plugin (apply wires the gateway)', () => {
     expect(invokeConfig(reset)).toEqual(entry)
     const afterReset = ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)!
     expect(afterReset.user).toEqual({})
+  })
+})
+
+// ---------------------------------------------------------------------------
+// T5 fix round 1: explicit disabled projection + subagentPolicy write-omission
+// ---------------------------------------------------------------------------
+
+describe('subagentPolicy wire projection (plan dsh-012 T5 fix round 1)', () => {
+  const disabledSnapshot: SubagentPolicySnapshotFn = () => ({ policy: { state: 'disabled' } })
+
+  it('the 3-arg constructor still omits the field (byte-identical pre-T5 payload)', () => {
+    const ctx = track(new Context())
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()), makeSeeds())
+    expect(gateway.get()).toEqual({ config: entryConfig(), legacyKeys: [], seeds: [] })
+    expect('subagentPolicy' in gateway.get()).toBe(false)
+  })
+
+  it('a wired disabled snapshot emits { state: "disabled" } (never an active allowlist)', () => {
+    const ctx = track(new Context())
+    const gateway = new FallbacksConfigGateway(
+      ctx,
+      installFallbacksBridge(ctx, entryConfig()),
+      makeSeeds(),
+      disabledSnapshot,
+    )
+    expect(gateway.get().subagentPolicy).toEqual({ state: 'disabled' })
+    expect(gateway.get()).toEqual({
+      config: entryConfig(),
+      legacyKeys: [],
+      seeds: [],
+      subagentPolicy: { state: 'disabled' },
+    })
+  })
+
+  it('set/reset with a wired disabled snapshot keep emitting { state: "disabled" }', async () => {
+    const ctx = track(new Context())
+    await ctx.plugin(MemorySettings)
+    const gateway = new FallbacksConfigGateway(
+      ctx,
+      installFallbacksBridge(ctx, entryConfig()),
+      makeSeeds(),
+      disabledSnapshot,
+    )
+    await waitRegistered(ctx)
+    await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
+
+    const setResult = await gateway.set({ enabled: true })
+    expect(setResult.subagentPolicy).toEqual({ state: 'disabled' })
+    expect(gateway.get().subagentPolicy).toEqual({ state: 'disabled' })
+
+    const resetResult = await gateway.reset()
+    expect(resetResult.subagentPolicy).toEqual({ state: 'disabled' })
+  })
+
+  it('rejects a subagentPolicy patch (read-only wire field; never written)', async () => {
+    const ctx = track(new Context())
+    await ctx.plugin(MemorySettings)
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()), makeSeeds())
+    await waitRegistered(ctx)
+    await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
+
+    await expect(gateway.set({ subagentPolicy: { state: 'disabled' } } as never))
+      .rejects.toThrow(/unknown config key "subagentPolicy"/)
+    const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)!
+    expect(descriptor.user).toBeUndefined()
   })
 })

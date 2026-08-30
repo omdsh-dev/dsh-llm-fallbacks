@@ -1,7 +1,7 @@
 ---
 module: dsh-plugin-authoring
 date: 2026-08-10
-last_updated: 2026-08-17
+last_updated: 2026-08-28
 problem_type: best_practice
 category: best-practices
 severity: low
@@ -154,3 +154,24 @@ dsh 插件 = npm 包，package.json 声明 dsh.bundle.patch（指向 bundle/cord
 ## Examples
 
 本仓库 dsh-llm-fallbacks（package.json、scripts/setup-dsh-links.mjs、scripts/build-client.ts、src/client/、tests/support/memory-settings.ts 为可运行范例）。
+
+### 消费未发布的上游构建（types-only 链接，2026-08-28 实证）
+
+上游版本未发 npm（如 0.1.2-alpha.1）而 peer 已 bump 时，从本地 dsh checkout 消费：
+
+- **符号链接 > pnpm link/overrides**：脚本遍历上游 `packages/*/*` + `vendor/*`，把
+  `@deepseek-ai/dsh-*`（**含 `@deepseek-ai/cordis`→vendor/cordis**——registry 副本与
+  vendor 副本双身份会让 TS declaration merging 全部失效）symlink 进 `node_modules/@deepseek-ai/`；
+  非符号链接旧目录先备份。幂等重跑安全；不碰 package.json。
+- **上游只需构建类型面，不需 tsdown bundle**：`build:lib` 的 tsdown 段在 root face 会因
+  typert 生成面缺失而炸（`lib/types/{index,invariant,startup}.js`）。只要跑两个 tsc 复合构建
+  ——`tsc -b tsconfig.host.json`（host face）+ `tsc -b tsconfig.client.json`（client face：
+  client-store、ui-* 等）——所有 peer 的 `lib/types/*.d.ts` 即可用，typecheck 完全工作。
+  运行时 `lib/*.js` 不存在：vitest 用 `linkedMode` 探针（锚点文件 existsSync）门控别名块，
+  指到上游编译产物或 TS 源；alias 只进 vitest.config.ts（dev tooling），永不进产品 import。
+- **多 worktree 共享 node_modules**：feature worktree `ln -sfn <control>/node_modules node_modules`
+  即可——tsc/vitest 全部正常；不要在每个 worktree 重装。
+- **tsconfig anchors 会漂**：typecheck 直接 `node_modules/.bin/tsc -p tsconfig.build.json
+
+*Avoid:* 对上游 monorepo 全量 `pnpm build`（root face 炸）；为 types-only 消费去构建
+runtime bundle；在产品代码里 alias 上游源码。

@@ -25,13 +25,21 @@
  * `settings-conflict` branch is gone).
  */
 
+// 0.1.2 re-home: the connection client entry dropped the apiproxy-era view
+// types; they now live with their owner packages, re-exported through the
+// remotes assembly barrel (`ModelProviderGroup`/`SessionFollow*` →
+// api-session-controller types, `SettingsNamespaceView`/`SettingsDescribeValue`
+// → dsh-settings types, `LlmConfigurableProvider` → dsh-llm types).
 import type {
-  ClientConnectionRpc, ConfigurableProviderView, HistoryEntry, IApiClient,
-  ModelProviderGroup, SessionId, SettingsNamespaceView,
-} from '@deepseek-ai/dsh-client-connection/client'
+  LlmConfigurableProvider, ModelCatalog, ModelProviderGroup, SessionFollowFrame,
+  SessionFollowRequest, SessionId, SettingsDescribeValue, SettingsNamespaceView,
+} from '@deepseek-ai/dsh-api-remotes/client'
+import type { SessionEventLikeEntry } from '@deepseek-ai/dsh-api-session-controller/client'
+import type { ClientConnectionRpc } from '@deepseek-ai/dsh-client-connection/client'
 import {
   createSnapshotStore, type SnapshotStore,
-} from '@deepseek-ai/dsh-client-runtime/client'
+} from '@deepseek-ai/dsh-client-store'
+import type { RemoteResult } from '@deepseek-ai/dsh-typert-protocol'
 import {
   defaultFallbacksConfig, INHERIT_ROLE_ID,
   type FallbackStrategy, type FallbacksConfig, type FallbacksRole,
@@ -116,17 +124,17 @@ export interface FallbacksSettingsState {
   catalogStatus: 'idle' | 'loading' | 'ready' | 'error'
   /** Catalog read diagnostic: whole-load failure or per-provider lookups. */
   catalogError: string | null
-  /** Configurable-provider directory (`llm.providers`). */
-  providers: ConfigurableProviderView[]
+  /** Configurable-provider directory (`llm/listConfigurableProviders`). */
+  providers: LlmConfigurableProvider[]
   /**
    * The provider dropdown's offer set: catalog providers whose settings
    * profile resolves, with the Models page's `configured` join semantics
    * (spec §2.5 — see {@link configuredProvidersOf}). Unconfigured directory
    * providers never appear as options.
    */
-  configuredProviders: ConfigurableProviderView[]
-  /** Model catalog groups (`llm.models`). */
-  groups: ModelProviderGroup[]
+  configuredProviders: LlmConfigurableProvider[]
+  /** Model catalog groups (`session/modelCatalog`). */
+  groups: readonly ModelProviderGroup[]
   /** Bumped on every accepted catalog read; drives row re-classification. */
   catalogEpoch: number
   /** Recent-switch summary (spec §2.4 R-4a / §2.5 D-5). */
@@ -135,6 +143,12 @@ export interface FallbacksSettingsState {
   switchesError: string | null
   /** Most recent `fallbacks/switch` events of the current session, newest first. */
   switches: FallbacksSwitchSnapshot[]
+  /**
+   * Host subagent-model-selection policy (spec D4 / T5). `undefined` when
+   * the gateway omitted the additive field (old payload / policy off) —
+   * the card hides the status area and never renders an active allowlist.
+   */
+  subagentPolicy: SubagentPolicyView | undefined
 }
 
 function messageOf(error: unknown): string {
@@ -179,6 +193,78 @@ function parseSeedsWire(value: unknown): SeedsWireStatus[] {
   })
 }
 
+/** Source label of the effective subagent chain head (spec D4). */
+export type SubagentPolicyHeadSource = 'authorized' | 'injected'
+
+/** One exact route on the additive `subagentPolicy` wire field. */
+export type SubagentPolicyRoute = { provider: string; model: string }
+
+/**
+ * Client-side view of the additive host-policy payload. Structural twin of
+ * the gateway wire type — parsed from unknown, never imported from host
+ * modules (`src/client/**` consumes policy only via the gateway channel).
+ */
+export type SubagentPolicyView =
+  | {
+      state: 'enabled'
+      allowedModels: SubagentPolicyRoute[]
+      head?: { route: SubagentPolicyRoute; source: SubagentPolicyHeadSource }
+      blockedAttempt?: { at: number; route: SubagentPolicyRoute; reason: string }
+    }
+  | { state: 'disabled' }
+  | { state: 'unprovable' }
+
+function parsePolicyRoute(value: unknown): SubagentPolicyRoute | undefined {
+  if (!isRecord(value)) return undefined
+  if (typeof value.provider !== 'string' || value.provider.length === 0) return undefined
+  if (typeof value.model !== 'string' || value.model.length === 0) return undefined
+  return { provider: value.provider, model: value.model }
+}
+
+/**
+ * Shape-guard the additive `subagentPolicy` wire field (T5). Malformed
+ * payloads resolve to `undefined` (hide the status area) — the store never
+ * throws on an old or misshapen field (old-payload tolerance).
+ */
+export function parseSubagentPolicyWire(value: unknown): SubagentPolicyView | undefined {
+  if (!isRecord(value) || typeof value.state !== 'string') return undefined
+  if (value.state === 'disabled' || value.state === 'unprovable') {
+    return { state: value.state }
+  }
+  if (value.state !== 'enabled') return undefined
+  if (!Array.isArray(value.allowedModels)) return undefined
+  const allowedModels: SubagentPolicyRoute[] = []
+  for (const entry of value.allowedModels) {
+    const route = parsePolicyRoute(entry)
+    if (route === undefined) return undefined
+    allowedModels.push(route)
+  }
+  const view: Extract<SubagentPolicyView, { state: 'enabled' }> = {
+    state: 'enabled',
+    allowedModels,
+  }
+  if (isRecord(value.head) && (value.head.source === 'authorized' || value.head.source === 'injected')) {
+    const route = parsePolicyRoute(value.head.route)
+    if (route !== undefined) view.head = { route, source: value.head.source }
+  }
+  if (isRecord(value.blockedAttempt) && typeof value.blockedAttempt.at === 'number') {
+    const route = parsePolicyRoute(value.blockedAttempt.route)
+    if (route !== undefined) {
+      view.blockedAttempt = {
+        at: value.blockedAttempt.at,
+        route,
+        reason: typeof value.blockedAttempt.reason === 'string' ? value.blockedAttempt.reason : '',
+      }
+    }
+  }
+  return view
+}
+
+function subagentPolicyFromWire(value: unknown, fallback: SubagentPolicyView | undefined): SubagentPolicyView | undefined {
+  if (!isRecord(value) || !('subagentPolicy' in value)) return fallback
+  return parseSubagentPolicyWire(value.subagentPolicy)
+}
+
 /** Seed-default persona from a revert-seed wire body (issue #59). */
 function revertOutcomePersona(value: unknown): string | undefined {
   if (value === null || typeof value !== 'object' || !('outcome' in value)) return undefined
@@ -201,9 +287,9 @@ function revertOutcomePersona(value: unknown): string | undefined {
  * nothing is lost on save.
  */
 export function configuredProvidersOf(
-  providers: readonly ConfigurableProviderView[],
+  providers: readonly LlmConfigurableProvider[],
   namespaces: ReadonlyMap<string, SettingsNamespaceView>,
-): ConfigurableProviderView[] {
+): LlmConfigurableProvider[] {
   return providers.filter((entry) => {
     const namespace = namespaces.get(entry.settingsNs)
     return namespace !== undefined
@@ -402,7 +488,7 @@ export type CatalogSelection =
 
 /** The catalog faces row conversions classify raw values against (D-4). */
 export interface CatalogLookup {
-  providers: readonly ConfigurableProviderView[]
+  providers: readonly LlmConfigurableProvider[]
   groups: readonly ModelProviderGroup[]
 }
 
@@ -438,16 +524,19 @@ export function classifyModel(provider: string, raw: string, catalog: CatalogLoo
 
 /**
  * Extract the most recent `fallbacks/switch` events from one history page
- * (spec §2.5 D-5): filter by event type, order by `seq` descending, take at
- * most `limit`. Single-page read — fewer than `limit` events show as-is; no
- * multi-page backfill (Non-Goal).
+ * (spec §2.5 D-5): drop packed chunk runs, filter by event type, order by
+ * `seq` descending, take at most `limit`. Single-page read — fewer than
+ * `limit` events show as-is; no multi-page backfill (Non-Goal).
  */
 export function extractRecentSwitches(
-  entries: readonly HistoryEntry[],
+  entries: readonly SessionEventLikeEntry[],
   limit: number = RECENT_SWITCH_LIMIT,
 ): FallbacksSwitchSnapshot[] {
   const switches: FallbacksSwitchSnapshot[] = []
   for (const entry of entries) {
+    // 0.1.2 history pages interleave packed Assistant chunk runs
+    // (`type: 'chunks'`) with scalar events; only the scalar face is read.
+    if (entry.type !== 'event') continue
     const event = entry.event
     if (event.type !== 'fallbacks/switch') continue
     // The discriminated union narrows `event.data` to FallbacksSwitchEventData
@@ -762,6 +851,54 @@ export function rowsToRules(rows: readonly RoleRuleRow[]): FallbacksRoleRule[] {
     .filter(rule => rule.role !== '')
 }
 
+/**
+ * The settings Remote namespace face the fallbacks store reads
+ * (0.1.2 `ctx.remote.settings`; api-settings-controller `@Remote` methods).
+ */
+export interface FallbacksSettingsRemote {
+  /** Redacted describe: provider writability plus the namespace directory. */
+  describe(): Promise<RemoteResult<SettingsDescribeValue>>
+}
+
+/**
+ * The llm Remote namespace face the fallbacks store reads
+ * (0.1.2 `ctx.remote.llm`; dsh-llm `@Remote` methods).
+ */
+export interface FallbacksLlmRemote {
+  /** Declared configurable-provider directory, registered or dormant. */
+  listConfigurableProviders(): Promise<RemoteResult<LlmConfigurableProvider[]>>
+}
+
+/**
+ * The session Remote namespace face the fallbacks store reads
+ * (0.1.2 `ctx.remote.session`; api-session-controller `@Remote` methods).
+ */
+export interface FallbacksSessionRemote {
+  /** Host-generation model catalog: provider groups plus per-provider failures. */
+  modelCatalog(): Promise<RemoteResult<ModelCatalog>>
+  /**
+   * Live event stream for one durable session address; the opening snapshot
+   * frame carries the tail page this store reads, then the stream is
+   * cancelled (0.1.2 successor of the apiproxy `sessions.history` unary —
+   * `session/page` needs the follow opening frame's cursor, so a cold tail
+   * read goes through the follow opening).
+   */
+  follow(request: SessionFollowRequest, signal?: AbortSignal): AsyncIterable<SessionFollowFrame>
+}
+
+/**
+ * The generated Remote namespaces the fallbacks store consumes, as one
+ * structural face. The mount boundary casts `ctx.remote` once — the same
+ * pattern as the session-controller client's `ctx.remote as unknown as
+ * SessionRemotes` — because the generated `TypertRemoteNamespaceMap` merge
+ * ships with the host's build, not with the linked package types.
+ */
+export interface FallbacksRemote {
+  readonly settings: FallbacksSettingsRemote
+  readonly llm: FallbacksLlmRemote
+  readonly session: FallbacksSessionRemote
+}
+
 /** Controller joining Settings reads, writes, and pushed invalidations. */
 export class FallbacksSettingsController {
   /** Snapshot consumed by the section through `useSyncExternalStore`. */
@@ -782,6 +919,7 @@ export class FallbacksSettingsController {
     switchesStatus: 'idle',
     switchesError: null,
     switches: [],
+    subagentPolicy: undefined,
   })
 
   /** Read guard: a newer load() supersedes an older one's publish. */
@@ -797,15 +935,25 @@ export class FallbacksSettingsController {
   /** Every settings namespace from the last describe, keyed by ns — the configured-provider join's other input. */
   private namespaces: Map<string, SettingsNamespaceView> = new Map()
   private currentSession: SessionId | undefined
+  /**
+   * The store's dispose signal (qc3 F-003): created alongside the store
+   * lifecycle, threaded into every `session.follow` call, aborted once in
+   * {@link dispose} — a follow opening still mid-await at plugin unload
+   * (HMR / fiber dispose, or a wedged gateway stream) is cancelled promptly
+   * instead of staying open until the mount abort or socket failure.
+   */
+  private readonly followAbort = new AbortController()
 
   /**
-   * @param api - Settings / Llm / Sessions wire faces (describe `writable` +
-   *   namespace directory, provider/model catalog, session history).
+   * @param api - the Remote namespace faces the store reads (settings
+   *   describe `writable` + namespace directory, llm provider directory,
+   *   session model catalog + follow tail page) — `ctx.remote` cast once at
+   *   the mount boundary.
    * @param rpc - the connection's generic RPC caller for the host gateway
    *   channel (`/api`), injected from the connection handle.
    */
   constructor(
-    private readonly api: Pick<IApiClient, 'settings' | 'llm' | 'sessions'>,
+    private readonly api: FallbacksRemote,
     private readonly rpc: ClientConnectionRpc,
   ) {}
 
@@ -841,7 +989,7 @@ export class FallbacksSettingsController {
       // parallel so a refresh costs one round trip, not two (halves the
       // latency of every `settings/document-updated` push after a save).
       const [describeResult, getResult] = await Promise.all([
-        this.api.settings.describe({}),
+        this.api.settings.describe(),
         // A get failure — transport down, gateway not ready, no settings
         // service on the host — resolves to present=false (the
         // channel-unreachable notice), never a hard load error (KD-G5). The
@@ -854,9 +1002,9 @@ export class FallbacksSettingsController {
       // the write's accept() already published; discard the stale read on
       // both completion branches so it can never clobber the write result.
       if (writeGenerationAtStart !== this.writeGeneration) return
-      if (!describeResult.result.ok) throw describeResult.result.error
-      this.namespaces = new Map(describeResult.result.value.namespaces.map(entry => [entry.ns, entry]))
-      const writable = describeResult.result.value.writable
+      if (!describeResult.ok) throw describeResult.error
+      this.namespaces = new Map(describeResult.value.namespaces.map(entry => [entry.ns, entry]))
+      const writable = describeResult.value.writable
       // Draft seed invariant (I-1): a failed get must not clobber the
       // accepted config with defaults — `accept` only replaces
       // `state.config` from a REAL resolved value.
@@ -883,7 +1031,10 @@ export class FallbacksSettingsController {
           seeds = parseSeedsWire(getResult.value.seeds)
         }
       }
-      this.accept(config, writable, legacyKeys, seeds)
+      const subagentPolicy = getResult !== undefined && getResult.ok
+        ? subagentPolicyFromWire(getResult.value, undefined)
+        : undefined
+      this.accept(config, writable, legacyKeys, seeds, subagentPolicy)
     } catch (error) {
       if (generation !== this.readGeneration) return
       if (writeGenerationAtStart !== this.writeGeneration) return
@@ -892,7 +1043,8 @@ export class FallbacksSettingsController {
   }
 
   /**
-   * Refresh the provider/model catalog (`llm.providers` + `llm.models`), an
+   * Refresh the provider/model catalog (`llm/listConfigurableProviders` +
+   * `session/modelCatalog`), an
    * independent read path with its own generation guard so it can run
    * parallel to {@link load} without clobbering it (spec §2.5 D-4).
    * Per-provider lookup failures ride `catalogError` as a diagnostic without
@@ -907,16 +1059,16 @@ export class FallbacksSettingsController {
       state.catalogError = null
     })
     try {
-      const [providersResponse, modelsResponse] = await Promise.all([
-        this.api.llm.providers({}),
-        this.api.llm.models({}),
+      const [providersResponse, catalogResponse] = await Promise.all([
+        this.api.llm.listConfigurableProviders(),
+        this.api.session.modelCatalog(),
       ])
       if (generation !== this.catalogGeneration) return
-      if (!providersResponse.result.ok) throw providersResponse.result.error
-      if (!modelsResponse.result.ok) throw modelsResponse.result.error
-      const providers = providersResponse.result.value.providers
-      const groups = modelsResponse.result.value.groups
-      const failures = modelsResponse.result.value.failures
+      if (!providersResponse.ok) throw providersResponse.error
+      if (!catalogResponse.ok) throw catalogResponse.error
+      const providers = providersResponse.value
+      const groups = catalogResponse.value.groups
+      const failures = catalogResponse.value.failures
       this.store.update((state) => {
         state.catalogStatus = 'ready'
         state.catalogError = failures.length > 0
@@ -955,7 +1107,10 @@ export class FallbacksSettingsController {
 
   /**
    * Read the recent-switch summary for the current session (spec §2.5 D-5):
-   * one `sessions.history` page (`maxMessages` = {@link SWITCHES_HISTORY_PAGE}),
+   * one tail page (`maxMessages` = {@link SWITCHES_HISTORY_PAGE}) read from
+   * the `session/follow` opening snapshot — 0.1.2 has no unary tail-page
+   * read (`session/page` needs the follow opening frame's cursor), so the
+   * stream is cancelled right after its first frame —
    * `fallbacks/switch` events extracted newest-first capped at
    * {@link RECENT_SWITCH_LIMIT}. No current session → honest empty ready
    * state (no RPC); a read failure lands `switchesStatus: 'error'` and never
@@ -978,15 +1133,42 @@ export class FallbacksSettingsController {
       state.switchesError = null
     })
     try {
-      const response = await this.api.sessions.history({
-        sessionId,
-        maxMessages: SWITCHES_HISTORY_PAGE,
-      })
+      const frames = this.api.session.follow(
+        { address: { kind: 'session', sessionId }, maxMessages: SWITCHES_HISTORY_PAGE },
+        this.followAbort.signal,
+      )
+      const iterator = frames[Symbol.asyncIterator]()
+      let first
+      try {
+        first = await iterator.next()
+      } finally {
+        // One-shot read: cancelling after the opening snapshot propagates a
+        // stream-cancel frame through the gateway's mux client — the mux
+        // `open()` generator's `finally` sends `{ type: 'cancel', streamId }`
+        // when the consumer returns the iterator early (deepseek-harness
+        // packages/api/gateway/src/client/stream-client.ts:112-118; the
+        // worker-local carrier path delegates `return()` through `yield *`,
+        // gateway client index.ts:711-714). The store's dispose signal (qc3
+        // F-003) covers the window `return()` cannot reach — a first frame
+        // still pending at dispose: the abort fails the gateway inbox and
+        // settles the pending `next()`, closing the server-side follow
+        // registration promptly instead of at the plugin mount abort
+        // (gateway client index.ts:482-486 combines both signals when a
+        // caller signal is threaded). `return()` stays for the settled
+        // path — cheap and explicit.
+        await iterator.return?.()
+      }
       if (generation !== this.switchesGeneration) return
-      if (!response.result.ok) throw response.result.error
-      // Narrowing of `response.result` is lost inside the store-update closure,
-      // so extract before publishing (the `ok` check narrows at this level).
-      const switches = extractRecentSwitches(response.result.value.events)
+      if (first.done || first.value.type !== 'snapshot') {
+        throw new Error('session follow closed before its opening snapshot')
+      }
+      // The wire records are codec-validated SessionHistoryRecords; reading
+      // them under the client SessionEvent union is the same narrowing
+      // upstream's `historyEntries` performs (session-controller client
+      // sessions/history-records.ts).
+      const switches = extractRecentSwitches(
+        first.value.records as unknown as readonly SessionEventLikeEntry[],
+      )
       this.store.update((state) => {
         state.switchesStatus = 'ready'
         state.switchesError = null
@@ -1051,7 +1233,8 @@ export class FallbacksSettingsController {
           seeds = parseSeedsWire(wireSeeds)
         }
       }
-      this.accept(config, true, legacyKeys, seeds)
+      const subagentPolicy = subagentPolicyFromWire(value, this.store.getSnapshot().subagentPolicy)
+      this.accept(config, true, legacyKeys, seeds, subagentPolicy)
     } catch (error) {
       if (generation !== this.writeGeneration) return
       this.fail(error)
@@ -1101,7 +1284,8 @@ export class FallbacksSettingsController {
           seeds = parseSeedsWire(wireSeeds)
         }
       }
-      this.accept(config, true, legacyKeys, seeds)
+      const subagentPolicy = subagentPolicyFromWire(value, this.store.getSnapshot().subagentPolicy)
+      this.accept(config, true, legacyKeys, seeds, subagentPolicy)
     } catch (error) {
       if (generation !== this.writeGeneration) return
       this.fail(error)
@@ -1159,7 +1343,8 @@ export class FallbacksSettingsController {
           seeds = parseSeedsWire(wireSeeds)
         }
       }
-      this.accept(config, true, legacyKeys, seeds)
+      const subagentPolicy = subagentPolicyFromWire(value, this.store.getSnapshot().subagentPolicy)
+      this.accept(config, true, legacyKeys, seeds, subagentPolicy)
       return revertOutcomePersona(value)
     } catch (error) {
       if (generation !== this.writeGeneration) return undefined
@@ -1175,6 +1360,11 @@ export class FallbacksSettingsController {
     this.catalogGeneration += 1
     this.switchesGeneration += 1
     this.namespaces = new Map()
+    // qc3 F-003: the generation guard only drops settled responses; the
+    // dispose signal closes an in-flight follow stream whose opening frame
+    // has not settled (the `iterator.return()` in loadSwitches is
+    // unreachable mid-await).
+    this.followAbort.abort()
   }
 
   /**
@@ -1193,7 +1383,13 @@ export class FallbacksSettingsController {
    * only when a real config resolved — a transient channel-down keeps the
    * last accepted badge state.
    */
-  private accept(config: unknown, writable: boolean, legacyKeys: string[], seeds: SeedsWireStatus[]): void {
+  private accept(
+    config: unknown,
+    writable: boolean,
+    legacyKeys: string[],
+    seeds: SeedsWireStatus[],
+    subagentPolicy: SubagentPolicyView | undefined,
+  ): void {
     const parsed = config === undefined ? undefined : parseFallbacksConfig(config)
     // `roleAutoMatch` (plan fallbacks-role-automatch Task 1) is a boolean
     // with a schemastery schema default `true`, so the gateway composition
@@ -1221,6 +1417,10 @@ export class FallbacksSettingsController {
       // read that resolved no config (the badge is server truth, not a
       // client guess).
       state.seeds = parsed === undefined ? state.seeds : seeds
+      // Same honest rule for the host-policy snapshot: a get that resolved
+      // no config keeps the last accepted view; a real get settles even
+      // when the additive field is absent (`undefined` = off/old payload).
+      state.subagentPolicy = parsed === undefined ? state.subagentPolicy : subagentPolicy
       if (parsed !== undefined) {
         state.config = parsed
       }

@@ -41,6 +41,43 @@ export interface PendingSwitch {
   reason: FallbackSwitchReason
 }
 
+/**
+ * One plugin-originated subagent switch the host allowlist blocked (plan
+ * dsh-012-subagent-routing T3; spec D1). The intersection of the resolved
+ * candidates with the effective allowlist was empty while the 0.3.5 walk
+ * would have switched — the attempt is recorded in-memory only (issue #52:
+ * no durable session write) for the Subagents card warning (spec D4/T5).
+ */
+export interface BlockedSwitchAttempt {
+  /** Epoch ms when the switch was blocked. */
+  at: number
+  /** The route the 0.3.5 walk would have switched to (exact provider+model). */
+  route: { provider: string; model: string }
+  /** The failure reason that triggered the would-be switch. */
+  reason: FallbackSwitchReason
+}
+
+/**
+ * How the effective subagent chain head was chosen (plan dsh-012-subagent-routing
+ * T5 / T2 M3). Lives on a per-agent map (mirrors {@link BlockedSwitchAttempt}),
+ * not on {@link AgentFallbackState} — recording a head is not a switch intent
+ * (F-004: the fallback store grows only inside `commit()`).
+ */
+export type ChainHeadSource = 'authorized' | 'injected'
+
+/**
+ * The effective chain head for one subagent, plus the source label the
+ * Subagents card renders (spec D4). In-memory only (issue #52).
+ */
+export interface EffectiveChainHead {
+  /** Epoch ms when this head was recorded (recency for the card snapshot). */
+  at: number
+  /** Exact provider+model of the effective chain head. */
+  route: { provider: string; model: string }
+  /** `authorized` = host spawn preserved; `injected` = plugin role-inject. */
+  source: ChainHeadSource
+}
+
 /** The current (turn, step)'s failed-model set and switch budget (spec §5.1). */
 export interface StepFailures {
   turn: number

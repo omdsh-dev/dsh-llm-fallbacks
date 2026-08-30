@@ -23,6 +23,9 @@ dsh 私有 `@deepseek-ai/*` 包的开发期类型/测试解析方案：`pnpm-wor
 ### remote events（转发事件）
 host → client 的远程事件转发面：client 经 `ctx.remote.$on(key, listener)` 订阅，事件名受宿主转发白名单（`API_REMOTE_FORWARDED_EVENTS`）约束；与 client 本地事件（`ctx.on`）区分——本地事件在 client 进程内 emit，remote 事件由 host 侧转发帧推送。20260811 起 `settings/changed`、`models/changed` 客户端事件已移除，配置/目录变更通知迁移到 remote events：`settings/document-updated(ns, revision)`（订阅方按 ns 精确过滤）与 `llm/adapters-updated()`（payload-free）。*Avoid:* `settings/changed`、`models/changed`（20260811 已移除的死事件名）
 
+### subagent-model-selection（子代理模型选择政策）
+dsh 0.1.2+ 的宿主侧子代理路由授权面：`subagent-model-selection` 设置 allowlist（`SubagentModelSelectionConfig` 服务）+ 每会话 `subagent/model-selection-policy` 事件（payload `{ allowedModels: [{provider,model}] }`，写一次）+ spawn 期 `agentOptions` → `resolveChildAgentOptions`（routeChanged 剥 effort）→ 持久 `request/header`。插件侧统一规则（allowlist 硬约束 / 授权路由即链头 / unprovable fail-closed）→ `dsh-subagent-model-selection-policy` 知识文档。
+
 ## LLM fallbacks
 
 ### fallback 链（fallback chains）

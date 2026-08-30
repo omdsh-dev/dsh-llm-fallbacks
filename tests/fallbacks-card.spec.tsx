@@ -35,14 +35,17 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi, type Mock } from 'vitest'
 import type {
-  ClientConnectionRpc, ConfigurableProviderView, HistoryEntry, IApiClient, ModelProviderGroup, RpcResult,
+  LlmConfigurableProvider, ModelProviderGroup, SessionFollowFrame,
+} from '@deepseek-ai/dsh-api-remotes/client'
+import type { SessionEventLikeEntry } from '@deepseek-ai/dsh-api-session-controller/client'
+import type {
+  ClientConnectionRpc, RpcResult,
 } from '@deepseek-ai/dsh-client-connection/client'
 import { bindSnapshotSelector, type SnapshotSelectorHook } from '../src/client/use-snapshot.ts'
-import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import { FallbacksCard } from '../src/client/FallbacksCard.tsx'
 import type { FallbacksCardProps } from '../src/client/FallbacksCard.tsx'
 import { FallbacksSettingsController } from '../src/client/fallbacks-store.ts'
-import type { FallbacksSettingsState } from '../src/client/fallbacks-store.ts'
+import type { FallbacksRemote, FallbacksSettingsState, SubagentPolicyView } from '../src/client/fallbacks-store.ts'
 import type { SeedsWireStatus } from '../src/seeds.ts'
 import { presetRoles } from '../src/presets.ts'
 import { apply } from '../src/client/index.ts'
@@ -98,9 +101,9 @@ function failResult(message: string): RpcResult<unknown> {
   return { ok: false, error: { code: 'internal', message, details: {} } }
 }
 
-/** One settings/api RPC response envelope (describe/providers/models/history). */
-function ok(value: unknown) {
-  return { result: { ok: true, value } }
+/** One Remote success (0.1.2 flat `RemoteResult`, no `result` envelope). */
+function ok<T>(value: T) {
+  return { ok: true as const, value }
 }
 
 /**
@@ -108,8 +111,9 @@ function ok(value: unknown) {
  * store-spec / general-row fixture shape), for the status block's recent-switch
  * face (D-5 — `sessions.history`).
  */
-function switchEntry(seq: number, overrides: Partial<FallbacksSwitchEventData> = {}): HistoryEntry {
+function switchEntry(seq: number, overrides: Partial<FallbacksSwitchEventData> = {}): SessionEventLikeEntry {
   return {
+    type: 'event',
     event: {
       type: 'fallbacks/switch',
       seq,
@@ -124,11 +128,11 @@ function switchEntry(seq: number, overrides: Partial<FallbacksSwitchEventData> =
         ...overrides,
       },
     },
-  } as HistoryEntry
+  }
 }
 
 interface Scripted {
-  api: Pick<IApiClient, 'settings' | 'llm' | 'sessions'>
+  api: FallbacksRemote
   rpc: ClientConnectionRpc
   call: Mock
   get: Mock
@@ -154,8 +158,9 @@ function scriptedApi(options: {
   writable?: boolean
   legacyKeys?: string[]
   seeds?: SeedsWireStatus[]
-  catalog?: { providers: ConfigurableProviderView[]; groups: ModelProviderGroup[] }
-  historyEntries?: HistoryEntry[]
+  subagentPolicy?: SubagentPolicyView
+  catalog?: { providers: LlmConfigurableProvider[]; groups: ModelProviderGroup[] }
+  historyEntries?: SessionEventLikeEntry[]
   historyError?: string
 } = {}): Scripted {
   let current = options.config === undefined ? defaultFallbacksConfig : options.config
@@ -173,11 +178,15 @@ function scriptedApi(options: {
           revision: 1,
         }],
   })))
-  const providers = vi.fn(() => Promise.resolve(ok({ providers: options.catalog?.providers ?? [] })))
+  const providers = vi.fn(() => Promise.resolve(ok(options.catalog?.providers ?? [])))
   const models = vi.fn(() => Promise.resolve(ok({ groups: options.catalog?.groups ?? [], failures: [] })))
-  const history = vi.fn(() => options.historyError === undefined
-    ? Promise.resolve(ok({ events: options.historyEntries ?? [], hasMore: false }))
-    : Promise.reject(new Error(options.historyError)))
+  const history = vi.fn((): AsyncIterable<SessionFollowFrame> => (async function* (): AsyncGenerator<SessionFollowFrame> {
+    if (options.historyError !== undefined) throw new Error(options.historyError)
+    yield {
+      type: 'snapshot', records: options.historyEntries ?? [], hasMore: false,
+    } as unknown as SessionFollowFrame
+    await Promise.withResolvers().promise
+  })())
   const get = vi.fn(() => Promise.resolve(
     current === null
       ? failResult('fallbacks gateway is not ready')
@@ -187,6 +196,9 @@ function scriptedApi(options: {
           // spec §9.4: the additive seeds field rides the get response; an
           // absent option means "no seeds to badge" on this fixture.
           ...(options.seeds === undefined ? {} : { seeds: options.seeds }),
+          // Spec D4 / T5: additive host-policy snapshot. Absent option =
+          // old payload (field omitted) — the card must still render.
+          ...(options.subagentPolicy === undefined ? {} : { subagentPolicy: options.subagentPolicy }),
         }),
   ))
   const set = vi.fn((payload: { args: { patch: typeof defaultFallbacksConfig } }) => {
@@ -216,10 +228,10 @@ function scriptedApi(options: {
   })
   return {
     api: {
-      settings: { describe, openDocument: vi.fn(), update: vi.fn(), replace: vi.fn(), mutate: vi.fn() },
-      llm: { providers, models, discoverModels: vi.fn() },
-      sessions: { history },
-    } as unknown as Pick<IApiClient, 'settings' | 'llm' | 'sessions'>,
+      settings: { describe },
+      llm: { listConfigurableProviders: providers },
+      session: { modelCatalog: models, follow: history },
+    } as unknown as FallbacksRemote,
     rpc: { call } as unknown as ClientConnectionRpc,
     call, get, set, reset, revertSeed, describe,
   }
@@ -315,8 +327,8 @@ const LEGACY_ALL_DAY_CONFIG: typeof defaultFallbacksConfig = {
  */
 const CHAIN_CATALOG = {
   providers: [
-    { provider: 'openai', displayName: 'OpenAI', settingsNs: 'llm-providers', settingsPath: [], active: true },
-  ] as ConfigurableProviderView[],
+    { provider: 'openai', displayName: 'OpenAI', settingsNs: 'llm-providers', settingsPath: [] },
+  ] as LlmConfigurableProvider[],
   groups: [
     { id: 'openai', name: 'OpenAI', models: [{ id: 'gpt-4o', name: 'GPT-4o' }] },
   ] as ModelProviderGroup[],
@@ -507,11 +519,12 @@ function fakeRuntime() {
   }
   const ctx = {
     slots,
-    conversationEvents: {
-      // The transcript switch node Definition registry (plan 3 T2 D1):
-      // apply() registers the `fallbacks-switch` Definition; the card spec
-      // only pins that the call happens without disturbing the card.
-      register: (): (() => void) => () => {},
+    // `uiConversation` service double (the D1 Definition registry's home
+    // since 0.1.2): apply() registers the `fallbacks-switch` Definition
+    // through `ctx.uiConversation.events`; the card spec only pins that the
+    // call happens without disturbing the card.
+    uiConversation: {
+      events: { register: (): (() => void) => () => {} },
     },
     locale: {
       register: (ns: string, dict: unknown): (() => void) => {
@@ -523,11 +536,6 @@ function fakeRuntime() {
     get: (key: string): unknown => (
       key === 'connection'
         ? {
-            api: {
-              settings: { describe: vi.fn(), update: vi.fn(), replace: vi.fn(), mutate: vi.fn() },
-              llm: { providers: vi.fn(), models: vi.fn(), discoverModels: vi.fn() },
-              sessions: { history: vi.fn() },
-            },
             rpc: { call: vi.fn() },
           }
         : undefined
@@ -565,7 +573,7 @@ function fakeRuntime() {
 describe('FallbacksCard registration (settings.plugin.item)', () => {
   it('registers the fallbacks card and leaves no fallbacks entry in settings.section', () => {
     const { ctx, ledger, locales } = fakeRuntime()
-    apply(ctx as unknown as ClientContext)
+    apply(ctx as unknown as Parameters<typeof apply>[0])
 
     // The card ledger holds exactly one fallbacks card.
     const cards = ledger['settings.plugin.item'] ?? []
@@ -2292,9 +2300,9 @@ describe('FallbacksCard time-slot rows (plan fallbacks-timeslots Task 3)', () =>
   it('enables the GLM preset options once zai-coding-cn is configured (PR #62 UX round 4 part B)', async () => {
     const catalog = {
       providers: [
-        { provider: 'openai', displayName: 'OpenAI', settingsNs: 'llm-providers', settingsPath: [], active: true },
-        { provider: 'zai-coding-cn', displayName: 'ZAI', settingsNs: 'llm-providers', settingsPath: [], active: true },
-      ] as ConfigurableProviderView[],
+        { provider: 'openai', displayName: 'OpenAI', settingsNs: 'llm-providers', settingsPath: [] },
+        { provider: 'zai-coding-cn', displayName: 'ZAI', settingsNs: 'llm-providers', settingsPath: [] },
+      ] as LlmConfigurableProvider[],
       groups: [
         { id: 'openai', name: 'OpenAI', models: [{ id: 'gpt-4o', name: 'GPT-4o' }] },
         { id: 'zai-coding-cn', name: 'ZAI', models: [{ id: 'glm-4.6', name: 'GLM 4.6' }] },
@@ -2963,7 +2971,9 @@ describe('FallbacksCard status block (AC-2: recent switch only)', () => {
 
   it('shows the loading term while the switch history read is in flight', async () => {
     const scripted = scriptedApi({ config: ENABLED_CONFIG })
-    scripted.api.sessions.history = vi.fn(() => new Promise(() => {}))
+    scripted.api.session.follow = vi.fn((): AsyncIterable<SessionFollowFrame> => (async function* (): AsyncGenerator<SessionFollowFrame> {
+      await Promise.withResolvers().promise
+    })())
     const controller = new FallbacksSettingsController(scripted.api, scripted.rpc)
     await controller.load()
     controller.setCurrentSession('sess-1' as never)
@@ -2995,3 +3005,167 @@ describe('FallbacksCard status block (AC-2: recent switch only)', () => {
     expect(screen.queryByText(/manually selected in the web front end/i)).toBeNull()
   })
 })
+
+describe('FallbacksCard host-policy status (plan dsh-012-subagent-routing T5 / spec D4)', () => {
+  const POLICY_KEYS = [
+    'subagents.policy.label',
+    'subagents.policy.allowlist',
+    'subagents.policy.head',
+    'subagents.policy.source.authorized',
+    'subagents.policy.source.injected',
+    'subagents.policy.blocked',
+    'subagents.policy.unprovable',
+  ] as const
+
+  /** Distinct routes so text queries cannot collide with catalog models. */
+  const ALPHA = { provider: 'policy-test', model: 'alpha' }
+  const BETA = { provider: 'policy-test', model: 'beta' }
+
+  const ENABLED_POLICY: SubagentPolicyView = {
+    state: 'enabled',
+    allowedModels: [ALPHA, BETA],
+    head: { route: ALPHA, source: 'authorized' },
+    blockedAttempt: { at: 1, route: BETA, reason: 'empty-intersection' },
+  }
+
+  it('policy-on renders the allowlist, head/source, and empty-intersection warning', async () => {
+    const { view, props } = await mountCard({
+      config: ENABLED_CONFIG,
+      subagentPolicy: ENABLED_POLICY,
+    })
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    expect(screen.getByText(en['subagents.policy.label'])).toBeTruthy()
+    expect(screen.getByText(`${en['subagents.policy.allowlist']}: policy-test/alpha, policy-test/beta`)).toBeTruthy()
+    expect(screen.getByText(
+      `${en['subagents.policy.head']}: policy-test/alpha (${en['subagents.policy.source.authorized']})`,
+    )).toBeTruthy()
+    expect(screen.getByText(en['subagents.policy.blocked'])).toBeTruthy()
+    expect(screen.getByText(en['subagents.policy.blocked']).getAttribute('role')).toBe('alert')
+    expect(screen.queryByText(en['subagents.policy.unprovable'])).toBeNull()
+  })
+
+  it('policy-off / absent payload renders no active allowlist', async () => {
+    const { view, props } = await mountCard({ config: ENABLED_CONFIG })
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    expect(screen.getByText(en['subagents.label'])).toBeTruthy()
+    expect(screen.queryByText(en['subagents.policy.label'])).toBeNull()
+    expect(screen.queryByText(en['subagents.policy.allowlist'], { exact: false })).toBeNull()
+    expect(screen.queryByText('policy-test/alpha')).toBeNull()
+    cleanup()
+
+    const disabled = await mountCard({
+      config: ENABLED_CONFIG,
+      subagentPolicy: { state: 'disabled' },
+    })
+    toggleCard()
+    disabled.view.rerender(<FallbacksCard {...disabled.props} />)
+    expect(screen.queryByText(en['subagents.policy.label'])).toBeNull()
+    expect(screen.queryByText(en['subagents.policy.allowlist'], { exact: false })).toBeNull()
+  })
+
+  it('every new zh policy key has an en twin', () => {
+    for (const key of POLICY_KEYS) {
+      expect(zh[key], key).toBeTruthy()
+      expect(en[key], key).toBeTruthy()
+    }
+  })
+
+  it('payload without the new fields still renders (old-payload tolerance)', async () => {
+    const { view, props, controller } = await mountCard({ config: ENABLED_CONFIG })
+    expect(controller.store.getSnapshot().subagentPolicy).toBeUndefined()
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    expect(screen.getByText(en['subagents.label'])).toBeTruthy()
+    expect(screen.getByText(en['roles.list.label'])).toBeTruthy()
+    expect(screen.queryByText(en['subagents.policy.label'])).toBeNull()
+    expect(screen.queryByText(en['subagents.policy.unprovable'])).toBeNull()
+    expect(screen.queryByText(en['subagents.policy.blocked'])).toBeNull()
+  })
+
+  it('pins the head-source label: authorized vs injected', async () => {
+    const authorized = await mountCard({
+      config: ENABLED_CONFIG,
+      subagentPolicy: {
+        state: 'enabled',
+        allowedModels: [ALPHA],
+        head: { route: ALPHA, source: 'authorized' },
+      },
+    })
+    toggleCard()
+    authorized.view.rerender(<FallbacksCard {...authorized.props} />)
+    expect(screen.getByText(
+      `${en['subagents.policy.head']}: policy-test/alpha (${en['subagents.policy.source.authorized']})`,
+    )).toBeTruthy()
+    expect(screen.queryByText(en['subagents.policy.source.injected'])).toBeNull()
+    cleanup()
+
+    const injected = await mountCard({
+      config: ENABLED_CONFIG,
+      subagentPolicy: {
+        state: 'enabled',
+        allowedModels: [ALPHA],
+        head: { route: ALPHA, source: 'injected' },
+      },
+    })
+    toggleCard()
+    injected.view.rerender(<FallbacksCard {...injected.props} />)
+    expect(screen.getByText(
+      `${en['subagents.policy.head']}: policy-test/alpha (${en['subagents.policy.source.injected']})`,
+    )).toBeTruthy()
+    expect(screen.queryByText(`(${en['subagents.policy.source.authorized']})`)).toBeNull()
+  })
+
+  it('unprovable is its own state — not empty-intersection, not enabled', async () => {
+    const { view, props, controller } = await mountCard({
+      config: ENABLED_CONFIG,
+      subagentPolicy: { state: 'unprovable' },
+    })
+    expect(controller.store.getSnapshot().subagentPolicy).toEqual({ state: 'unprovable' })
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    expect(screen.getByText(en['subagents.policy.unprovable'])).toBeTruthy()
+    expect(screen.getByText(en['subagents.policy.unprovable']).getAttribute('role')).toBe('alert')
+    expect(screen.queryByText(en['subagents.policy.blocked'])).toBeNull()
+    expect(screen.queryByText(en['subagents.policy.label'])).toBeNull()
+    expect(screen.queryByText(en['subagents.policy.allowlist'], { exact: false })).toBeNull()
+    expect(screen.queryByText('policy-test/alpha')).toBeNull()
+  })
+
+  it('a write that returns { state: disabled } clears a previously-enabled allowlist (keep-last cannot retain it)', async () => {
+    const { view, props, controller, scripted } = await mountCard({
+      config: ENABLED_CONFIG,
+      subagentPolicy: ENABLED_POLICY,
+    })
+    expect(controller.store.getSnapshot().subagentPolicy?.state).toBe('enabled')
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    expect(screen.getByText(en['subagents.policy.label'])).toBeTruthy()
+
+    scripted.set.mockImplementation((payload: { args: { patch: typeof defaultFallbacksConfig } }) => (
+      Promise.resolve(okResult({
+        config: payload.args.patch,
+        subagentPolicy: { state: 'disabled' },
+      }))
+    ))
+    await controller.save(ENABLED_CONFIG)
+    view.rerender(<FallbacksCard {...props} />)
+    expect(controller.store.getSnapshot().subagentPolicy).toEqual({ state: 'disabled' })
+    expect(screen.queryByText(en['subagents.policy.label'])).toBeNull()
+    expect(screen.queryByText(en['subagents.policy.allowlist'], { exact: false })).toBeNull()
+    expect(screen.queryByText('policy-test/alpha')).toBeNull()
+  })
+
+  it('enabled with no recorded head still shows the allowlist and omits the head line', async () => {
+    const { view, props } = await mountCard({
+      config: ENABLED_CONFIG,
+      subagentPolicy: { state: 'enabled', allowedModels: [ALPHA] },
+    })
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    expect(screen.getByText(`${en['subagents.policy.allowlist']}: policy-test/alpha`)).toBeTruthy()
+    expect(screen.queryByText(en['subagents.policy.head'], { exact: false })).toBeNull()
+  })
+})
+

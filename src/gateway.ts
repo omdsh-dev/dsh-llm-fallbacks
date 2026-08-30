@@ -60,8 +60,7 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
-import type { SettingsProvider } from '@deepseek-ai/dsh-settings'
-import { settingsNamespace } from '@deepseek-ai/dsh-settings'
+import type { SettingsNamespace, SettingsProvider } from '@deepseek-ai/dsh-settings'
 import { TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import type { TypertContribution } from '@deepseek-ai/dsh-typert-registry'
 import { Config } from './schema'
@@ -70,8 +69,50 @@ import type { FallbacksConfig } from './config'
 import { PRESETS, isAllDayConforming } from './time-slots'
 import type { FallbacksSeedManager, SeedRevertOutcome, SeedsIo, SeedsWireStatus } from './seeds'
 
-/** The `fallbacks` settings namespace (registered when a settings service exists). */
-export const FALLBACKS_SETTINGS_NAMESPACE = settingsNamespace('fallbacks')
+/**
+ * The `fallbacks` settings namespace (registered when a settings service
+ * exists). 0.1.2 removed the `settingsNamespace` helper: the registered
+ * namespace is the lowercase-hyphenated literal itself, branded through the
+ * `SettingsNamespace` type the service APIs constrain on.
+ */
+export const FALLBACKS_SETTINGS_NAMESPACE: SettingsNamespace = 'fallbacks' as SettingsNamespace
+
+/** One exact child LLM route on the additive `subagentPolicy` wire field (T5). */
+export type SubagentPolicyRoute = { provider: string; model: string }
+
+/**
+ * Additive `/api/fallbacks/get` host-policy snapshot (spec D4 / T5).
+ * Omitted only when the snapshot is unwired (3-arg constructor) so older
+ * clients and gateway unit tests keep a byte-identical `{ config,
+ * legacyKeys, seeds }` payload. A wired snapshot always emits the field —
+ * `{ state: 'disabled' }` included — so a write after an enabled get cannot
+ * keep-last an allowlist. Never written through `set`/`reset`.
+ */
+export type SubagentPolicyWire =
+  | {
+      state: 'enabled'
+      allowedModels: SubagentPolicyRoute[]
+      head?: { route: SubagentPolicyRoute; source: 'authorized' | 'injected' }
+      blockedAttempt?: { at: number; route: SubagentPolicyRoute; reason: string }
+    }
+  | { state: 'disabled' }
+  | { state: 'unprovable' }
+
+/**
+ * Live host-policy snapshot the gateway projects onto the wire. Built in
+ * `apply()` from the SAME T1 reader the override paths use — no second
+ * policy source. Optional: the 3-arg constructor (gateway unit tests)
+ * omits the field entirely.
+ */
+export type SubagentPolicySnapshotFn = () => {
+  policy:
+    | { state: 'disabled' }
+    | { state: 'enabled'; allowedModels: readonly SubagentPolicyRoute[] }
+    | { state: 'unprovable' }
+  head?: { route: SubagentPolicyRoute; source: 'authorized' | 'injected' }
+  blockedAttempt?: { at: number; route: SubagentPolicyRoute; reason: string }
+}
+
 
 /**
  * The live configuration source for the gateway (guide §7 — the same bridge
@@ -97,6 +138,13 @@ export interface FallbacksReadResult {
   config: FallbacksConfig
   legacyKeys: string[]
   seeds: SeedsWireStatus[]
+  /**
+   * Host subagent-model-selection policy (spec D4). Additive — old readers
+   * ignore it; omitted only when no snapshot is wired. A wired snapshot
+   * always carries the field (`disabled` included) so keep-last cannot
+   * retain an allowlist after policy-off.
+   */
+  subagentPolicy?: SubagentPolicyWire
 }
 
 /** The `fallbacks/revert-seed` response — a read result plus the revert outcome. */
@@ -174,6 +222,12 @@ export class FallbacksConfigGateway extends TypertRemoteService {
   private readonly seeds: FallbacksSeedManager
   /** The live settings service once the optional inject child activates. */
   private settings: SettingsProvider | undefined
+  /**
+   * Optional host-policy snapshot (T5). When omitted the additive
+   * `subagentPolicy` field is absent on every read — the 3-arg constructor
+   * used by gateway unit tests stays byte-identical to the pre-T5 payload.
+   */
+  private readonly subagentPolicy: SubagentPolicySnapshotFn | undefined
 
   /**
    * @param ctx - owning context (the plugin fiber's ctx inside `apply`).
@@ -182,11 +236,19 @@ export class FallbacksConfigGateway extends TypertRemoteService {
    * @param seeds - the per-apply `FallbacksSeedManager` constructed in
    *   `apply()` — the gateway delegates badge state and revert to it (no
    *   copied manager logic), through the io seam built over this bridge.
+   * @param subagentPolicy - live host-policy snapshot from `apply()`; omit
+   *   to leave the additive field off the wire.
    */
-  constructor(ctx: Context, bridge: FallbacksSettingsBridge, seeds: FallbacksSeedManager) {
+  constructor(
+    ctx: Context,
+    bridge: FallbacksSettingsBridge,
+    seeds: FallbacksSeedManager,
+    subagentPolicy?: SubagentPolicySnapshotFn,
+  ) {
     super(ctx, 'fallbacks')
     this.bridge = bridge
     this.seeds = seeds
+    this.subagentPolicy = subagentPolicy
     // The settings service is optional (no settings → entry fallback). The
     // inject child activates only when a settings service is composed,
     // mirroring installSettingsSection's conditional child; the returned
@@ -333,11 +395,14 @@ export class FallbacksConfigGateway extends TypertRemoteService {
    */
   private readResult(): FallbacksReadResult {
     const source = this.bridge.source()
-    return {
+    const result: FallbacksReadResult = {
       config: this.readConfig(source),
       legacyKeys: detectLegacyKeys(source as unknown as Record<string, unknown>),
       seeds: this.seeds.wireStatus(this.seedsIo()),
     }
+    const projected = projectSubagentPolicy(this.subagentPolicy)
+    if (projected !== undefined) result.subagentPolicy = projected
+    return result
   }
 
   /**
@@ -363,6 +428,51 @@ export class FallbacksConfigGateway extends TypertRemoteService {
       },
     }
   }
+}
+
+/**
+ * Project the live host-policy snapshot onto the additive wire field.
+ * An unwired snapshot omits the field (3-arg constructor / old payload).
+ * A wired snapshot always emits: `disabled` as `{ state: 'disabled' }`
+ * (so save/reset keep-last cannot retain an allowlist), plus `unprovable`
+ * and `enabled`. Never throws: a throwing snapshot fails closed to
+ * `{ state: 'unprovable' }` (same outcome as an unreadable runtime policy
+ * — the card must not 500 the settings page).
+ */
+function projectSubagentPolicy(
+  snapshot: SubagentPolicySnapshotFn | undefined,
+): SubagentPolicyWire | undefined {
+  if (snapshot === undefined) return undefined
+  let captured: ReturnType<SubagentPolicySnapshotFn>
+  try {
+    captured = snapshot()
+  } catch {
+    return { state: 'unprovable' }
+  }
+  const { policy, head, blockedAttempt } = captured
+  if (policy.state === 'disabled') return { state: 'disabled' }
+  if (policy.state === 'unprovable') return { state: 'unprovable' }
+  const wire: SubagentPolicyWire = {
+    state: 'enabled',
+    allowedModels: policy.allowedModels.map((route) => ({
+      provider: route.provider,
+      model: route.model,
+    })),
+  }
+  if (head !== undefined) {
+    wire.head = {
+      route: { provider: head.route.provider, model: head.route.model },
+      source: head.source,
+    }
+  }
+  if (blockedAttempt !== undefined) {
+    wire.blockedAttempt = {
+      at: blockedAttempt.at,
+      route: { provider: blockedAttempt.route.provider, model: blockedAttempt.route.model },
+      reason: blockedAttempt.reason,
+    }
+  }
+  return wire
 }
 
 /**
