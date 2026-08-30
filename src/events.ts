@@ -13,6 +13,16 @@
  * @module dsh-llm-fallbacks/events
  */
 
+// 0.1.2: the `llm/retry` / `llm/retry-started` SessionEventMap entries are
+// declared by `@deepseek-ai/dsh-llm-retry` (host plugin augmenting
+// `@deepseek-ai/dsh-session/types`), not by the core session package. The
+// plugin's always-cap counting reads those durable events, so the peer's
+// augmentation must be part of this program's type graph — type-only import,
+// erased at runtime (same pattern as the client half's empty type-only
+// imports). The event DATA shape stays the alpha.2 `LlmRetryEventData` the
+// host appends (retryId/turn/step/provider/mode/policyKey/retry/...).
+import type {} from '@deepseek-ai/dsh-llm-retry/types'
+
 /**
  * Why a switch was decided (spec §5.1 `PendingSwitch.reason`).
  *

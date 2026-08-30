@@ -34,7 +34,6 @@
 
 import { createRequire } from 'node:module'
 import type { Context, Logger } from '@deepseek-ai/cordis'
-import { installSettingsSection } from '@deepseek-ai/dsh-settings'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { LlmCallConfig } from '@deepseek-ai/dsh-llm'
 import type { Session } from '@deepseek-ai/dsh-session'
@@ -632,29 +631,40 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   // instead. The gateway reads `source()` live per call, so the bridge
   // carries no change fan-out (dead machinery removed in the QC fix wave —
   // nothing ever subscribed).
-  installSettingsSection(ctx, FALLBACKS_SETTINGS_NAMESPACE, Config, entry, {
-    setSource: (current) => {
-      source = current
-    },
-    onChange: () => {
-      // A settings update can change roles.list / rootChain — roleIds and
-      // hasChains re-derive from the same live source the runtime reads.
-      // Validation (validateFallbacksConfig / detectLegacyKeys) is
-      // intentionally STARTUP-ONLY: a live settings merge is already
-      // schema-validated by the settings layer, and the defensive runtime
-      // (resolveRole / resolveChainViews / roleDef lookups) tolerates bad
-      // values with warn-not-crash semantics (qc1 F-006).
-      const current = source()
-      roleIds = new Map(current.roles.list.map((role) => [role.id.trim(), role.id] as const))
-      hasChains = current.rootChain.length > 0 || current.roles.list.some((role) => (role.chain?.length ?? 0) > 0)
-      // Virtual adapter registration reconcile (P2): enabled / all-day
-      // conformance transitions only — idempotent, slot edits no-op.
-      reconcileFallbacksAdapter()
-      // P7: a settings edit is a config change, not a wall-clock rotation —
-      // re-baseline the 分时切换 markers so the next root request starts
-      // from the new config instead of logging a spurious switch.
-      slotWinners.clear()
-    },
+  // 0.1.2 re-home: the standalone `installSettingsSection` helper is gone —
+  // `SettingsProvider.installSection(owner, ns, schema, entry, hooks)` is the
+  // service method (same setSource/onChange hook contract). The conditional
+  // `ctx.inject(['settings'])` child preserves the helper's optional-settings
+  // semantics: no settings service composed → no registration (the runtime
+  // keeps serving the composition entry), and the deferred callback settles
+  // one macrotask after apply (the "real installSettingsSection registers
+  // through ctx.inject" behavior the tests pin).
+  ctx.inject(['settings'], (sctx) => {
+    sctx.settings.installSection(ctx, FALLBACKS_SETTINGS_NAMESPACE, Config, entry, {
+      setSource: (current) => {
+        source = current
+      },
+      onChange: () => {
+        // A settings update can change roles.list / rootChain — roleIds and
+        // hasChains re-derive from the same live source the runtime reads.
+        // Validation (validateFallbacksConfig / detectLegacyKeys) is
+        // intentionally STARTUP-ONLY: a live settings merge is already
+        // schema-validated by the settings layer, and the defensive runtime
+        // (resolveRole / resolveChainViews / roleDef lookups) tolerates bad
+        // values with warn-not-crash semantics (qc1 F-006).
+        const current = source()
+        roleIds = new Map(current.roles.list.map((role) => [role.id.trim(), role.id] as const))
+        hasChains = current.rootChain.length > 0 || current.roles.list.some((role) => (role.chain?.length ?? 0) > 0)
+        // Virtual adapter registration reconcile (P2): enabled / all-day
+        // conformance transitions only — idempotent, slot edits no-op.
+        reconcileFallbacksAdapter()
+        // P7: a settings edit is a config change, not a wall-clock rotation —
+        // re-baseline the 分时切换 markers so the next root request starts
+        // from the new config instead of logging a spurious switch.
+        slotWinners.clear()
+      },
+    })
+    return undefined
   })
   const bridge: FallbacksSettingsBridge = {
     source: (): FallbacksConfig => source(),

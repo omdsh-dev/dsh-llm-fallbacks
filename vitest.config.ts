@@ -2,7 +2,7 @@
  * Vitest configuration.
  *
  * Type-level access flows through the REAL `@deepseek-ai/*` packages (the
- * `peerDependencies`; this dev tree links them to the local 0.1.2-alpha.1
+ * `peerDependencies`; this dev tree links them to the local 0.1.2-alpha.2
  * sources). The linked packages are tsc-built into `lib/types/` only — the
  * tsdown bundle step that would produce the exports-mapped `lib/index.js`
  * entries has not been run — so the test graph's VALUE imports (client and
@@ -91,8 +91,22 @@ const dshLlmAttribution = {
   },
 }
 
+// Registry packages ship `lib/index.js` with a trailing
+// `//# sourceMappingURL=…` comment but no sibling `.map` file; inlining them
+// makes vite's ssr pipeline try to read the map from the RAW source (before
+// transform hooks run) and log a noisy error per module. A `load` hook that
+// returns map-free code suppresses the attempt (test-only, cosmetic).
+const stripInlinedDepSourceMaps = {
+  name: 'strip-inlined-dep-sourcemaps',
+  load(id: string) {
+    if (!id.endsWith('@deepseek-ai/dsh-client-ui-primitives/lib/index.js')) return null
+    const code = readFileSync(id, 'utf8')
+    return { code: code.replace(/\/\/# sourceMappingURL=.*$/m, ''), map: null }
+  },
+}
+
 export default defineConfig({
-  plugins: linkedMode ? [dshLlmAttribution] : [],
+  plugins: [stripInlinedDepSourceMaps, ...(linkedMode ? [dshLlmAttribution] : [])],
   test: {
     // Feature worktrees under `.worktrees/` carry duplicate copies of
     // tests/; the default include glob picks them up (gitignore does not
@@ -101,26 +115,33 @@ export default defineConfig({
     exclude: [...defaultExclude, '**/.worktrees/**'],
     server: {
       deps: {
-        // Inline the linked peers whose VALUE imports the test graph
-        // needs (see the header note): vitest externalizes node_modules
-        // specifiers before aliases apply, so without inlining Node's loader
-        // rejects them through their exports maps.
-        inline: linkedMode
-          ? [
-              /@deepseek-ai\/cordis/,
-              /@deepseek-ai\/cosmokit/,
-              /@deepseek-ai\/dsh-client-store/,
-              /@deepseek-ai\/dsh-client-ui-primitives/,
-              /@deepseek-ai\/dsh-settings/,
-              /@deepseek-ai\/dsh-llm/,
-              /@deepseek-ai\/dsh-llm-retry/,
-              /@deepseek-ai\/dsh-api-gateway/,
-              /@deepseek-ai\/dsh-typert-registry/,
-              /@deepseek-ai\/dsh-typert-protocol/,
-              /@deepseek-ai\/dsh-timeout/,
-              /@deepseek-ai\/dsh-util-crypto/,
-            ]
-          : [],
+        // Inline the peers whose VALUE imports the test graph needs (see
+        // the header note): vitest externalizes node_modules specifiers
+        // before aliases apply, so without inlining Node's loader rejects
+        // them through their exports maps.
+        // `dsh-client-ui-primitives` is inlined in BOTH modes: its compiled
+        // lib/index.js imports sibling `.module.css` files, which only
+        // vite's transform pipeline can load (Node's loader throws
+        // "Unknown file extension .css"); vitest stubs the css imports to
+        // empty modules, so the card components render without class names.
+        inline: [
+          /@deepseek-ai\/dsh-client-ui-primitives/,
+          ...(linkedMode
+            ? [
+                /@deepseek-ai\/cordis/,
+                /@deepseek-ai\/cosmokit/,
+                /@deepseek-ai\/dsh-client-store/,
+                /@deepseek-ai\/dsh-settings/,
+                /@deepseek-ai\/dsh-llm/,
+                /@deepseek-ai\/dsh-llm-retry/,
+                /@deepseek-ai\/dsh-api-gateway/,
+                /@deepseek-ai\/dsh-typert-registry/,
+                /@deepseek-ai\/dsh-typert-protocol/,
+                /@deepseek-ai\/dsh-timeout/,
+                /@deepseek-ai\/dsh-util-crypto/,
+              ]
+            : []),
+        ],
       },
     },
   },

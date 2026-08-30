@@ -42,7 +42,6 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context, Service } from '@deepseek-ai/cordis'
-import { installSettingsSection } from '@deepseek-ai/dsh-settings'
 import TypertGatewayService from '@deepseek-ai/dsh-api-gateway'
 import { TypertRegistry } from '@deepseek-ai/dsh-typert-registry'
 import { apply } from '../src/index.ts'
@@ -88,18 +87,23 @@ function makeSeeds(): FallbacksSeedManager {
 
 /**
  * Build the `FallbacksSettingsBridge` exactly the way `apply()` wires it (the
- * same `installSettingsSection` + setSource/onChange hooks) — the gateway
- * under test consumes this live source.
+ * same conditional `ctx.inject(['settings'])` child calling
+ * `SettingsProvider.installSection` + setSource/onChange hooks) — the gateway
+ * under test consumes this live source. No settings service composed → the
+ * child never fires and the bridge serves the composition entry.
  */
 function installFallbacksBridge(ctx: Context, entry: FallbacksConfig): FallbacksSettingsBridge {
   let source = (): FallbacksConfig => entry
-  installSettingsSection(ctx, FALLBACKS_SETTINGS_NAMESPACE, Config, entry, {
-    setSource: (current) => {
-      source = current
-    },
-    onChange: () => {
-      // no bridge fan-out — the gateway reads source() live per call
-    },
+  ctx.inject(['settings'], (sctx) => {
+    sctx.settings.installSection(ctx, FALLBACKS_SETTINGS_NAMESPACE, Config, entry, {
+      setSource: (current) => {
+        source = current
+      },
+      onChange: () => {
+        // no bridge fan-out — the gateway reads source() live per call
+      },
+    })
+    return undefined
   })
   return {
     source: (): FallbacksConfig => source(),

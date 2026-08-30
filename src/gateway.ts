@@ -60,8 +60,7 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
-import type { SettingsProvider } from '@deepseek-ai/dsh-settings'
-import { settingsNamespace } from '@deepseek-ai/dsh-settings'
+import type { SettingsNamespace, SettingsProvider } from '@deepseek-ai/dsh-settings'
 import { TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import type { TypertContribution } from '@deepseek-ai/dsh-typert-registry'
 import { Config } from './schema'
@@ -70,8 +69,13 @@ import type { FallbacksConfig } from './config'
 import { PRESETS, isAllDayConforming } from './time-slots'
 import type { FallbacksSeedManager, SeedRevertOutcome, SeedsIo, SeedsWireStatus } from './seeds'
 
-/** The `fallbacks` settings namespace (registered when a settings service exists). */
-export const FALLBACKS_SETTINGS_NAMESPACE = settingsNamespace('fallbacks')
+/**
+ * The `fallbacks` settings namespace (registered when a settings service
+ * exists). 0.1.2 removed the `settingsNamespace` helper: the registered
+ * namespace is the lowercase-hyphenated literal itself, branded through the
+ * `SettingsNamespace` type the service APIs constrain on.
+ */
+export const FALLBACKS_SETTINGS_NAMESPACE: SettingsNamespace = 'fallbacks' as SettingsNamespace
 
 /** One exact child LLM route on the additive `subagentPolicy` wire field (T5). */
 export type SubagentPolicyRoute = { provider: string; model: string }

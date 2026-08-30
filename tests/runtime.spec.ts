@@ -30,8 +30,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Context, type Logger } from '@deepseek-ai/cordis'
 import type { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
-import { settingsNamespace } from '@deepseek-ai/dsh-settings'
 import { apply, countRetryEvents, stateStore } from '../src/index.ts'
+import { FALLBACKS_SETTINGS_NAMESPACE } from '../src/gateway.ts'
 import { resolveChainForDiagnostic } from '../src/commands.ts'
 import { defaultFallbacksConfig, type FallbacksConfig } from '../src/config.ts'
 import { MemorySettings } from './support/memory-settings.ts'
@@ -836,7 +836,7 @@ describe('per-agent state lifecycle', () => {
 describe('settings live re-read', () => {
   it('re-reads rootChain and enabled through the real settings service on update', async () => {
     const { agent } = makeAgent('agent-settings', { provider: 'mock', model: 'gpt-4o' })
-    const ns = settingsNamespace('fallbacks')
+    const ns = FALLBACKS_SETTINGS_NAMESPACE
     apply(ctx, cfg({ rootChain: ['other/gpt-4o'] }))
 
     // The real installSettingsSection registers through `ctx.inject` (a
