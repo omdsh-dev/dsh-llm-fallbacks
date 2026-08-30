@@ -6,6 +6,22 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.4.0-alpha.1] - 2026-08-30
+
+### Changed
+
+- Migrate the client half off the removed `@deepseek-ai/dsh-client-runtime` (deleted upstream in dsh 0.1.2) onto its 0.1.2 successor seams: the snapshot store VALUE-imports `@deepseek-ai/dsh-client-store`, session/context types come from `@deepseek-ai/dsh-api-session-controller/client` and cordis `Context`, conversation/chat slot types from `@deepseek-ai/dsh-client-ui-conversation/client` / `@deepseek-ai/dsh-client-ui-chat/client`, and the view types dropped by the 0.1.2 `dsh-client-connection/client` entry re-home to the api-remotes client barrel and session-controller client. Peers are re-pinned `^0.1.2-alpha.1` with the dead `dsh-client-runtime` peer removed; the plugin's own export surface (`.` and `./client`) is unchanged.
+- Align the client bundle composition with the 0.1.2 platform table: the former runtime entry in `CLIENT_EXTERNALS` becomes `@deepseek-ai/dsh-client-store` (the frozen loader-table store module the store VALUE import resolves from at runtime), and the `dsh.client.inject` list keeps only the client-plugin service graph (no store/runtime inject entry).
+- Adopt the 0.1.2 `imageRequestPricing` hook on the virtual chain adapter: image token metering on the fallback chain now resolves the SAME effective head `stream()` dispatches and delegates to that concrete route's adapter, so pricing is route-accurate instead of keyed off the virtual `provider`/`model` row (which carries no pricing of its own).
+- Unresolvable routes degrade safely: an unresolvable chain head, a vanished LLM runtime, or a throwing delegate returns `undefined`, so the token meter falls back to its neutral estimate and the hook never throws.
+- Upgrade every `@deepseek-ai/dsh-*` peer dependency (plus `@deepseek-ai/cordis` `^4.0.2` and `@deepseek-ai/schemastery` `^3.18.2`) to the published `^0.1.2-alpha.2` line (dsh 0.1.2-alpha.2, 2026-08-30; the alpha.1 line was never published). The settings section now registers through `SettingsProvider.installSection` (the 0.1.2 successor of the removed `installSettingsSection`/`settingsNamespace` helpers), and the always-mode retry cap counts the `llm/retry` events whose `SessionEventMap` vocabulary ships in `@deepseek-ai/dsh-llm-retry`.
+
+### Added
+
+- Reconcile with the dsh 0.1.2 host subagent model-selection policy under one runtime arbiter: when the host policy is enabled (session `subagent/model-selection-policy` event, else the `subagent-model-selection` settings allowlist), an explicit authorized spawn route is preserved as the chain head (role-inject skipped), inheritance role-inject heads and failure-switch targets are intersected with the effective allowlist, and an empty intersection skips the inject/switch with a warn log and an in-memory blocked-attempt record — no out-of-allowlist plugin-originated route is ever sent; a present-but-malformed policy fails closed (plugin injects/switches disabled, host seed stands). Policy disabled/absent keeps 0.3.5 inject/switch selection unchanged.
+- The Fallbacks card Subagents section gains a read-only host-policy status area: effective allowlist routes, effective chain head with its `authorized` / `injected` source label, and an empty-intersection warning when a switch was blocked — hidden when the policy is off, and never a second write-face.
+- `reasoningEffort` on override paths now follows the upstream routeChanged rule (policy-independent): an unchanged provider/model route keeps the seed effort, a route change without an explicit effort drops it (a stale effort is never carried into a different provider), and an effort explicitly named for the override always survives.
+
 ## [0.3.5] - 2026-08-26
 
 ### Added
