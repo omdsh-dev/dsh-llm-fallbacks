@@ -119,6 +119,14 @@ jobs:
             echo "::error::Could not derive an npm dist-tag from version \"${VERSION}\"."
             exit 1
           fi
+          # A digit-only channel (e.g. `1.0.0-1` -> `1`) is a valid SemVer range, which npm rejects as a dist-tag; use a named channel such as alpha/beta/rc.
+          case "$TAG" in
+            *[!0-9]*) ;;
+            *)
+              echo "::error::Dist-tag \"${TAG}\" (version ${VERSION}) is a valid SemVer range and cannot be an npm dist-tag; use a named channel such as alpha/beta/rc."
+              exit 1
+              ;;
+          esac
           echo "Resolved npm dist-tag: ${TAG} (version ${VERSION})"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
 
