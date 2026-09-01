@@ -2,7 +2,7 @@
  * Vitest configuration.
  *
  * Type-level access flows through the REAL `@deepseek-ai/*` packages (the
- * `peerDependencies`; this dev tree links them to the local 0.1.2-alpha.2
+ * `peerDependencies`; this dev tree links them to the local 0.1.2-alpha.3
  * sources). The linked packages are tsc-built into `lib/types/` only — the
  * tsdown bundle step that would produce the exports-mapped `lib/index.js`
  * entries has not been run — so the test graph's VALUE imports (client and
