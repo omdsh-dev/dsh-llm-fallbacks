@@ -71,7 +71,7 @@ export function makeAgent(
     status: 'idle' as const,
     session: {
       id,
-      events,
+      snapshotEvents: () => events,
       header,
       // Mirrors the real `Session.seq` (the next event's sequence number —
       // always the log length): the P5 `session/event` driver stamps emitted
@@ -97,12 +97,12 @@ export function makeAgent(
 
 /** Ordered `fallbacks/switch` events on an agent's session. */
 export function switchEvents(agent: Agent): SessionEvent<'fallbacks/switch'>[] {
-  return agent.session.events.filter((event) => event.type === 'fallbacks/switch') as SessionEvent<'fallbacks/switch'>[]
+  return agent.session.snapshotEvents().filter((event) => event.type === 'fallbacks/switch') as SessionEvent<'fallbacks/switch'>[]
 }
 
 /** Ordered `llm/retry` events on an agent's session (the llm-retry stub's durable records). */
 export function llmRetryEvents(agent: Agent): SessionEvent<'llm/retry'>[] {
-  return agent.session.events.filter((event) => event.type === 'llm/retry') as SessionEvent<'llm/retry'>[]
+  return agent.session.snapshotEvents().filter((event) => event.type === 'llm/retry') as SessionEvent<'llm/retry'>[]
 }
 
 /**

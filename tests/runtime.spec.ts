@@ -675,9 +675,9 @@ describe('switch log skip reasons (spec §2 行为可见性; T3 review Minor 1)'
 })
 
 describe('countRetryEvents — always-mode counting + fast path (T3 review Minor 4)', () => {
-  /** Minimal session double — `countRetryEvents` only reads `session.events`. */
+  /** Minimal session double — `countRetryEvents` only reads `session.snapshotEvents()`. */
   function sessionWith(events: Array<{ type: string; data: Record<string, unknown> }>): Session {
-    return { events: events as unknown as SessionEvent[] } as unknown as Session
+    return { snapshotEvents: () => events as unknown as SessionEvent[] } as unknown as Session
   }
 
   it('returns 0 without scanning earlier turns when the target (turn, step) has no retries', () => {
@@ -728,9 +728,9 @@ describe('lazy per-agent state on agent/request (T3 review Minor 3)', () => {
     // scanned per request.
     let eventReads = 0
     const events: Array<{ type: string; data: Record<string, unknown> }> = []
-    Object.defineProperty(agent.session, 'events', {
+    Object.defineProperty(agent.session, 'snapshotEvents', {
       configurable: true,
-      get() {
+      value: () => {
         eventReads += 1
         return events
       },

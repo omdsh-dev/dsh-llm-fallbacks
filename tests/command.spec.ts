@@ -631,7 +631,7 @@ describe('fallbacksConfigText — zh/en copy smoke', () => {
 
 describe('handler — factory-bound, read-only', () => {
   it('renders the controller snapshot as a success result for the invoking agent', () => {
-    const agent = { id: 'a1', session: { events: [] } }
+    const agent = { id: 'a1', session: { snapshotEvents: () => [] } }
     const controller: FallbacksCommandController = {
       getSnapshot: vi.fn(() => snapshot()),
       getConfig: vi.fn(() => configSummary()),
@@ -657,7 +657,7 @@ describe('handler — factory-bound, read-only', () => {
     const { definition } = captureRegistration(controller)
     const result = definition.handler({
       commandId: 'x',
-      agent: { id: 'a1', session: { events: [] } },
+      agent: { id: 'a1', session: { snapshotEvents: () => [] } },
       rawInput: '   whatever',
       signal: new AbortController().signal,
     } as unknown as CommandInvocation)
@@ -677,7 +677,7 @@ describe('handler — factory-bound, read-only', () => {
     const { definition } = captureRegistration(controller, 'en')
     const result = definition.handler({
       commandId: 'x',
-      agent: { id: 'a1', session: { events: [] } },
+      agent: { id: 'a1', session: { snapshotEvents: () => [] } },
       rawInput: ' config',
       signal: new AbortController().signal,
     } as unknown as CommandInvocation)
@@ -696,7 +696,7 @@ describe('handler — factory-bound, read-only', () => {
     const { definition } = captureRegistration(controller)
     const result = definition.handler({
       commandId: 'x',
-      agent: { id: 'a1', session: { events: [] } },
+      agent: { id: 'a1', session: { snapshotEvents: () => [] } },
       rawInput: undefined,
       signal: new AbortController().signal,
     } as unknown as CommandInvocation)
@@ -712,7 +712,7 @@ describe('handler — factory-bound, read-only', () => {
     )
     const result = definition.handler({
       commandId: 'x',
-      agent: { id: 'a1', session: { events: [] } },
+      agent: { id: 'a1', session: { snapshotEvents: () => [] } },
       rawInput: '',
       signal: new AbortController().signal,
     } as unknown as CommandInvocation)
@@ -728,7 +728,7 @@ describe('handler — factory-bound, read-only', () => {
     const { definition } = captureRegistration(controller, 'en')
     const result = await definition.handler({
       commandId: 'x',
-      agent: { id: 'a1', session: { events: [] } },
+      agent: { id: 'a1', session: { snapshotEvents: () => [] } },
       rawInput: ' config revert-seed coder',
       signal: new AbortController().signal,
     } as unknown as CommandInvocation)
@@ -749,7 +749,7 @@ describe('handler — factory-bound, read-only', () => {
     const en = captureRegistration(controller, 'en')
     const enResult = await en.definition.handler({
       commandId: 'x',
-      agent: { id: 'a1', session: { events: [] } },
+      agent: { id: 'a1', session: { snapshotEvents: () => [] } },
       rawInput: ' config revert-seed ghost',
       signal: new AbortController().signal,
     } as unknown as CommandInvocation)
@@ -760,7 +760,7 @@ describe('handler — factory-bound, read-only', () => {
     const zh = captureRegistration(controller)
     const zhResult = await zh.definition.handler({
       commandId: 'x',
-      agent: { id: 'a1', session: { events: [] } },
+      agent: { id: 'a1', session: { snapshotEvents: () => [] } },
       rawInput: ' config revert-seed ghost',
       signal: new AbortController().signal,
     } as unknown as CommandInvocation)
@@ -776,7 +776,7 @@ describe('handler — factory-bound, read-only', () => {
     const { definition } = captureRegistration(controller, 'en')
     const result = await definition.handler({
       commandId: 'x',
-      agent: { id: 'a1', session: { events: [] } },
+      agent: { id: 'a1', session: { snapshotEvents: () => [] } },
       rawInput: ' config revert-seed ghost',
       signal: new AbortController().signal,
     } as unknown as CommandInvocation)
@@ -797,7 +797,7 @@ describe('handler — factory-bound, read-only', () => {
     const { definition } = captureRegistration(controller, 'en')
     const result = await definition.handler({
       commandId: 'x',
-      agent: { id: 'a1', session: { events: [] } },
+      agent: { id: 'a1', session: { snapshotEvents: () => [] } },
       rawInput: ' config revert-seed coder',
       signal: new AbortController().signal,
     } as unknown as CommandInvocation)
@@ -814,14 +814,14 @@ describe('handler — factory-bound, read-only', () => {
     const { definition } = captureRegistration(controller)
     const bare = definition.handler({
       commandId: 'x',
-      agent: { id: 'a1', session: { events: [] } },
+      agent: { id: 'a1', session: { snapshotEvents: () => [] } },
       rawInput: '',
       signal: new AbortController().signal,
     } as unknown as CommandInvocation)
     expect(bare).toEqual({ kind: 'success', text: fallbacksCommandText(snapshot()) })
     const config = definition.handler({
       commandId: 'x',
-      agent: { id: 'a1', session: { events: [] } },
+      agent: { id: 'a1', session: { snapshotEvents: () => [] } },
       rawInput: ' config',
       signal: new AbortController().signal,
     } as unknown as CommandInvocation)
@@ -893,7 +893,7 @@ describe('apply() wiring — conditional commands child', () => {
     expect(text).not.toContain('无活跃冷却')
 
     // Read-only: the invocation must not have grown the store or replayed events.
-    expect(agent.session.events).toHaveLength(0)
+    expect(agent.session.snapshotEvents()).toHaveLength(0)
   })
 
   it('reports the slot as all-day when a legacy non-conforming all-day keeps the rows inert (qc1 F-001)', async () => {
@@ -971,7 +971,7 @@ describe('apply() wiring — conditional commands child', () => {
 
     const { agent } = makeAgent('cmd-malformed', { provider: 'mock', model: 'gpt-4o' })
     // Durable session log with stale/corrupted shapes (version skew).
-    const log = agent.session.events as unknown as Array<{ type: string; data: Record<string, unknown> }>
+    const log = agent.session.snapshotEvents() as unknown as Array<{ type: string; data: Record<string, unknown> }>
     log.push(
       { type: 'fallbacks/switch', data: { n: 1 } },
       { type: 'fallbacks/switch', data: { turn: 1, step: 1, from: { provider: 'a' }, to: { provider: 'b', model: 'm' }, role: 'inherit', reason: 'trigger-code' } },
@@ -1030,7 +1030,7 @@ describe('apply() wiring — conditional commands child', () => {
     expect(text).toContain('预置: none')
     expect(text).toContain('编辑：')
     // Read-only: the config readback must not grow the session log.
-    expect(agent.session.events).toHaveLength(0)
+    expect(agent.session.snapshotEvents()).toHaveLength(0)
   })
 
   it('/fallbacks config renders a hand-written days:[7] slot row without "undefined" (S-1)', async () => {
@@ -1066,7 +1066,7 @@ describe('apply() wiring — conditional commands child', () => {
     // The all-out-of-range mask drops its segment — a bare custom window.
     expect(text).toContain('custom 09:00-12:00（chain: 1）')
     expect(text).not.toContain('undefined')
-    expect(agent.session.events).toHaveLength(0)
+    expect(agent.session.snapshotEvents()).toHaveLength(0)
   })
 
   it('top-level inject list is unchanged (commands stays conditional)', async () => {
@@ -1116,7 +1116,7 @@ describe('apply() wiring — conditional commands child', () => {
 
     const result = await registered[0]!.handler({
       commandId: 'x',
-      agent: { id: 'a1', session: { events: [] } },
+      agent: { id: 'a1', session: { snapshotEvents: () => [] } },
       rawInput: ' config revert-seed coder',
       signal: new AbortController().signal,
     } as unknown as CommandInvocation)
@@ -1145,7 +1145,7 @@ describe('apply() wiring — conditional commands child', () => {
 
     const result = await registered[0]!.handler({
       commandId: 'x',
-      agent: { id: 'a1', session: { events: [] } },
+      agent: { id: 'a1', session: { snapshotEvents: () => [] } },
       rawInput: ' config revert-seed ghost',
       signal: new AbortController().signal,
     } as unknown as CommandInvocation)
@@ -1186,7 +1186,7 @@ describe('apply() wiring — conditional commands child', () => {
 
     const result = await registered[0]!.handler({
       commandId: 'x',
-      agent: { id: 'a1', session: { events: [] } },
+      agent: { id: 'a1', session: { snapshotEvents: () => [] } },
       rawInput: ' config revert-seed coder',
       signal: new AbortController().signal,
     } as unknown as CommandInvocation)

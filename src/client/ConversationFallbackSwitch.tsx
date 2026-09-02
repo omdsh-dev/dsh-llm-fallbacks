@@ -105,7 +105,7 @@ export const fallbackSwitchDefinition: ConversationNodeDefinition<FallbacksSwitc
       // into the title-only notice. The cast documents that the runtime
       // shape may intentionally deviate from the static well-formed type
       // (the version-skew premise this file degrades for).
-      return { seq, time } as FallbacksSwitchChatData
+      return { seq: seq as number, time } as FallbacksSwitchChatData
     }
     const { turn, step, from, to, role, reason } = match.event.data
     return {

@@ -338,7 +338,7 @@ async function makeModelExists(
  */
 export function countRetryEvents(session: Session, turn: number, step: number, provider: string): number {
   let count = 0
-  const events = session.events
+  const events = session.snapshotEvents()
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index]!
     const data = event.data as { turn?: number; step?: number }
@@ -488,7 +488,7 @@ function authorizedRouteView(ctx: Context, agent: Agent): AuthorizedRouteSession
   const parentOptions = parent?.options
   return {
     requestHeader: agent.session?.requestHeader()?.config,
-    events: agent.session?.events,
+    events: agent.session?.snapshotEvents(),
     options: agent.options,
     inherited: parentHeader
       ?? (typeof parentOptions?.provider === 'string' && typeof parentOptions?.model === 'string'
@@ -855,7 +855,7 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
       // skip as `'unprovable'` (warn + no switch, host seed stands).
       const settingsRead = readGuardedPolicySettings(ctx, agent.id, lastKnownPolicySettings, logger.warn)
       const policy = settingsRead.ok
-        ? effectivePolicy(readSessionPolicyEvent(agent.session.events), settingsRead.settings)
+        ? effectivePolicy(readSessionPolicyEvent(agent.session.snapshotEvents()), settingsRead.settings)
         : { state: 'unprovable' as const }
       if (policy.state === 'unprovable') {
         // Fail-closed (spec D1): no plugin-originated switch the plugin cannot
@@ -1176,7 +1176,7 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
         // policy constraining after the service disappears.
         const settingsRead = readGuardedPolicySettings(ctx, agent.id, lastKnownPolicySettings, logger.warn)
         const policy = settingsRead.ok
-          ? effectivePolicy(readSessionPolicyEvent(agent.session.events), settingsRead.settings)
+          ? effectivePolicy(readSessionPolicyEvent(agent.session.snapshotEvents()), settingsRead.settings)
           : { state: 'unprovable' as const }
         if (policy.state === 'unprovable') {
           // Fail-closed: no plugin-originated route the plugin cannot prove is
@@ -1383,7 +1383,7 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
         // strip; the switches section below is the 降级切换 side. Config
         // fact at `now` (a subagent session's chain display is unchanged).
         slot: resolveSlotState(config, new Date(), config.tz ?? 'Asia/Shanghai'),
-        switches: recentFallbacksSwitches(agent.session.events, RECENT_SWITCHES_LIMIT),
+        switches: recentFallbacksSwitches(agent.session.snapshotEvents(), RECENT_SWITCHES_LIMIT),
         cooldown: state === undefined
           ? []
           : recovery === 'half-open'
