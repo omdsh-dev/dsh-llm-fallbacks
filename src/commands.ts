@@ -47,7 +47,7 @@ export interface FallbacksCommandAgent {
   readonly options?: { readonly provider?: string; readonly model?: string }
   readonly session: {
     readonly header?: { readonly origin?: Origin }
-    readonly events: readonly unknown[]
+    readonly snapshotEvents: () => readonly unknown[]
   }
 }
 

@@ -20,7 +20,7 @@
  * logs remain; only the durable event is gone. These pins freeze the commit
  * path (`agent/request-error`): after `commit()` fires a switch,
  * `agent.session.append` is NOT called and the session event stream
- * (`agent.session.events`) contains no `fallbacks/switch` entry — while
+ * (`agent.session.snapshotEvents()`) contains no `fallbacks/switch` entry — while
  * pending/cooldown/failure/switchCount bookkeeping and the
  * `{ kind: 'retry' }` action behave exactly as before. The role-inject
  * append site is pinned in `session-event-registration-guard.spec.ts`.

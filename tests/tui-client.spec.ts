@@ -340,7 +340,7 @@ describe('apply() wiring — conditional tuiCommandTrees child', () => {
     await vi.waitFor(() => expect(invoke(' config').split('\n')[0]).toBe('Fallbacks 配置: 未启用'))
 
     // Read-only: the readbacks never grow the session log.
-    expect(agent.session.events).toHaveLength(0)
+    expect(agent.session.snapshotEvents()).toHaveLength(0)
   })
 
   it('registers the tuiCommandTrees child BEFORE the tail settings preset child (S-2 activation-order invariant)', () => {

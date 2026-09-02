@@ -93,7 +93,7 @@ describe('allowlist-constrained failure switching (spec D1, plan dsh-012 T3)', (
     expect(record?.route).toEqual({ provider: 'anthropic', model: 'claude-sonnet-4' })
     expect(record?.reason).toBe('trigger-code')
     expect(typeof record?.at).toBe('number')
-    expect(agent.session.events.some((event) => event.type === 'fallbacks/switch')).toBe(false)
+    expect(agent.session.snapshotEvents().some((event) => event.type === 'fallbacks/switch')).toBe(false)
     // F-004 preserved: the blocked decision did not grow the fallback store.
     expect(stateStore(ctx)?.peek('t3-empty')).toBeUndefined()
 
