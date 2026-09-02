@@ -7,7 +7,7 @@
 ![node](https://img.shields.io/badge/node-%3E%3D22-339933.svg)
 ![pnpm](https://img.shields.io/badge/pnpm-%3E%3D10-f69220.svg)
 ![dsh tui](https://img.shields.io/badge/dsh%20tui-compatible-4B32C3.svg)
-![dsh](https://img.shields.io/badge/DSH-0.1.2--alpha.4-4B32C3.svg)
+![dsh](https://img.shields.io/badge/DSH-0.1.2--alpha.5-4B32C3.svg)
 [![dshfind](https://dshfind.com/api/badge/omdsh-dev/dsh-llm-fallbacks?lang=en)](https://dshfind.com/zh/plugins/omdsh-dev/dsh-llm-fallbacks?ref=badge)
 
 Automatic provider/model fallback chains for dsh (DeepSeek Harness): when an agent's LLM requests keep failing — retries exhausted, auth errors, quota exceeded, rate limiting (429) — the plugin switches provider/model along the fallback chain for the current role, and the current step/turn continues on the target model: tasks are not interrupted by model problems.
