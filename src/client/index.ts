@@ -110,8 +110,15 @@ export { FallbacksSettingsController, FALLBACKS_SETTINGS_NS } from './fallbacks-
  * it reflectively and degrades to the switches empty state when absent
  * (`setCurrentSession` never called, `loadSwitches` ready with an empty
  * array, which the store already supports).
+ *
+ * rc.1 dotted-namespace contract: each client Remote namespace is a
+ * child-fiber service named `remote.<ns>` (upstream `remoteServiceKey`), and
+ * the traceable proxy forwards `ctx.remote.llm` / `.settings` / `.session`
+ * to those context properties — consumers MUST declare the dotted names
+ * here or the fiber walk throws `cannot get property "remote.llm" without
+ * inject`. `remote` stays for the `$on` invalidation face.
  */
-export const inject = ['slots', 'locale', 'connection', 'remote', 'uiConversation']
+export const inject = ['slots', 'locale', 'connection', 'remote', 'uiConversation', 'remote.llm', 'remote.settings', 'remote.session']
 
 /**
  * Register the `fallbacks` dictionaries and the plugin-config card once the
@@ -135,7 +142,13 @@ export function apply(ctx: ClientContext): void {
   // catalog, and the switch-history tail page ride `ctx.remote` (guide §9).
   // The generated namespace merge ships with the host build, so the boundary
   // casts once to the store's structural face — the session-controller
-  // client's `ctx.remote as unknown as SessionRemotes` pattern.
+  // client's `ctx.remote as unknown as SessionRemotes` pattern. The dotted
+  // namespace services `remote.llm` / `remote.settings` / `remote.session`
+  // are declared in `inject` (rc.1 dotted-namespace contract): the traceable
+  // proxy forwards `ctx.remote.<ns>` to the child-fiber service
+  // `remote.<ns>`, which the fiber walk only resolves when the dotted name
+  // is injected — dropping one throws `cannot get property "remote.settings"
+  // without inject` at card load.
   const controller = new FallbacksSettingsController(
     ctx.remote as unknown as FallbacksRemote,
     connection.rpc,

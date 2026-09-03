@@ -8,7 +8,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
-import { apply as applyClient } from '../src/client/index.ts'
+import { apply as applyClient, inject } from '../src/client/index.ts'
 
 let ctx: Context
 
@@ -32,6 +32,13 @@ beforeEach(() => {
     },
     rpc: { call: vi.fn() },
   })
+  // rc.1 dotted-namespace contract: each client Remote namespace is a
+  // child-fiber service named `remote.<ns>` (upstream `remoteServiceKey`);
+  // provide the dotted services (empty faces — this spec never reads
+  // namespaces) so the declared injects resolve like production.
+  ctx.provide('remote.llm', {})
+  ctx.provide('remote.settings', {})
+  ctx.provide('remote.session', {})
   ctx.provide('remote', { $on: () => () => {} })
 })
 
@@ -40,6 +47,17 @@ afterEach(async () => {
 })
 
 describe('client slot registration', () => {
+  it('declares the dotted remote namespace injects (rc.1 contract)', () => {
+    // Regression pin (upstream apply.client.spec.ts asserts the array
+    // literally): each client Remote namespace is a child-fiber service
+    // named `remote.<ns>`; without the dotted names the fiber walk throws
+    // `cannot get property "remote.llm" without inject` at card load.
+    expect(inject).toEqual([
+      'slots', 'locale', 'connection', 'remote', 'uiConversation',
+      'remote.llm', 'remote.settings', 'remote.session',
+    ])
+  })
+
   it('registers the settings.plugin.item card with both key and id', () => {
     const registered: Array<{ name: string; key?: string; id?: string }> = []
     ctx.provide('slots', {

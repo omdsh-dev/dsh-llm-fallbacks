@@ -158,16 +158,28 @@ function followThrow(error: Error): AsyncIterable<SessionFollowFrame> {
 }
 
 /**
- * A `remote` service double for the client apply wiring: records `$on`
- * subscriptions (returning per-event disposers, tracked for teardown
- * assertions) and dispatches the forwarded remote events
- * (`settings/document-updated`, `llm/adapters-updated`) through the recorded
- * listener, mirroring the gateway's one-way delivery. One `Set` per event
- * (qc2 S-5 / qc3 S-3): `Map.set` silently overwrote an earlier listener, so
- * a regressed duplicate `$on` registration would pass; the Set plus the
- * single-listener emit guard make any double subscription fail loudly.
+ * A `remote` service double for the client apply wiring: provides the rc.1
+ * dotted namespace services (`remote.settings` / `remote.llm` /
+ * `remote.session` — upstream `remoteServiceKey`) so the declared injects
+ * resolve through the same fiber walk production uses, and provides the
+ * assembly face (`remote`) whose namespace getters forward to the dotted
+ * services (mirror of the traceable proxy: `ctx.remote.llm` →
+ * `ctx['remote.llm']`). Records `$on` subscriptions (returning per-event
+ * disposers, tracked for teardown assertions) and dispatches the forwarded
+ * remote events (`settings/document-updated`, `llm/adapters-updated`)
+ * through the recorded listener, mirroring the gateway's one-way delivery.
+ * One `Set` per event (qc2 S-5 / qc3 S-3): `Map.set` silently overwrote an
+ * earlier listener, so a regressed duplicate `$on` registration would pass;
+ * the Set plus the single-listener emit guard make any double subscription
+ * fail loudly.
  */
-function makeRemote(namespaces: { settings?: unknown; llm?: unknown; session?: unknown } = {}) {
+function makeRemote(ctx: Context, namespaces: { settings?: unknown; llm?: unknown; session?: unknown } = {}) {
+  // rc.1 dotted-namespace contract: each client Remote namespace is a
+  // child-fiber service named `remote.<ns>`; provide them as separate
+  // dotted services so the fiber walk resolves them exactly like production.
+  for (const [ns, value] of Object.entries(namespaces)) {
+    ctx.provide(`remote.${ns}`, value)
+  }
   const listeners = new Map<string, Set<(...args: unknown[]) => void>>()
   const disposers: Array<{ invoked: boolean }> = []
   const $on = vi.fn((event: string, listener: (...args: unknown[]) => void): (() => void) => {
@@ -181,8 +193,16 @@ function makeRemote(namespaces: { settings?: unknown; llm?: unknown; session?: u
       entry.invoked = true
     }
   })
+  // The assembly face: `$on` invalidation seat + namespace getters
+  // forwarding to the dotted services (mirror of the traceable proxy).
+  const remote = {
+    $on,
+    get settings() { return ctx.get('remote.settings') },
+    get llm() { return ctx.get('remote.llm') },
+    get session() { return ctx.get('remote.session') },
+  }
+  ctx.provide('remote', remote)
   return {
-    remote: { $on, ...namespaces },
     $on,
     emit(event: string, ...args: unknown[]): void {
       const set = listeners.get(event)
@@ -2048,8 +2068,10 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
     // invalidations through `ctx.remote.$on` (20260811 remote events), and
     // the store reads the settings namespace through it (0.1.2:
     // `ConnectionHandle` dropped `api` — describe rides `ctx.remote`).
-    const { remote, disposers } = makeRemote({ settings: { describe } })
-    ctx.provide('remote', remote)
+    // makeRemote provides the rc.1 dotted namespace services
+    // (`remote.settings` / `remote.llm` / `remote.session`) + the assembly
+    // face, so the declared injects resolve like production.
+    const { disposers } = makeRemote(ctx, { settings: { describe } })
     // Slots service double: run the card-registration generator and capture the
     // injected controller — the seam apply() uses to hand the controller over.
     let controller: FallbacksSettingsController | undefined
@@ -2099,11 +2121,11 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
     ctx.provide('connection', {
       rpc: makeRpc().rpc,
     })
-    ctx.provide('remote', makeRemote({
+    makeRemote(ctx, {
       settings: { describe },
       llm: { listConfigurableProviders: providers },
       session: { modelCatalog: models, follow: history },
-    }).remote)
+    })
     let controller: FallbacksSettingsController | undefined
     ctx.provide('slots', {
       inject: (_name: string, thunk: () => Iterable<unknown>) => { for (const _dispose of thunk()) { /* run the registration generator */ } },
@@ -2159,12 +2181,11 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
     // Remote service double: the payload-free llm/adapters-updated event
     // (20260811 forwarding) is dispatched through the recorded listener; the
     // settings + llm + session namespaces ride it (0.1.2 remote face).
-    const { remote, emit } = makeRemote({
+    const { emit } = makeRemote(ctx, {
       settings: { describe },
       llm: { listConfigurableProviders: providers },
       session: { modelCatalog: models },
     })
-    ctx.provide('remote', remote)
     let controller: FallbacksSettingsController | undefined
     ctx.provide('slots', {
       inject: (_name: string, thunk: () => Iterable<unknown>) => { for (const _dispose of thunk()) { /* run the registration generator */ } },
@@ -2221,11 +2242,11 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
     })
     // Remote service double: the invalidation wiring subscribes through it;
     // `session/follow` is the status block's face (0.1.2 remote face).
-    ctx.provide('remote', makeRemote({
+    makeRemote(ctx, {
       settings: { describe: vi.fn() },
       llm: { listConfigurableProviders: vi.fn() },
       session: { modelCatalog: vi.fn(), follow: history },
-    }).remote)
+    })
     let controller: FallbacksSettingsController | undefined
     ctx.provide('slots', {
       inject: (_name: string, thunk: () => Iterable<unknown>) => { for (const _dispose of thunk()) { /* run the registration generator */ } },
@@ -2278,12 +2299,11 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
     })
     // Remote service double: describe + llm providers + session catalog/follow ride it
     // (0.1.2 remote face).
-    const { remote, emit } = makeRemote({
+    const { emit } = makeRemote(ctx, {
       settings: { describe },
       llm: { listConfigurableProviders: providers },
       session: { modelCatalog: models, follow: history },
     })
-    ctx.provide('remote', remote)
     let controller: FallbacksSettingsController | undefined
     ctx.provide('slots', {
       inject: (_name: string, thunk: () => Iterable<unknown>) => { for (const _dispose of thunk()) { /* run the registration generator */ } },
@@ -2331,12 +2351,11 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
       rpc: makeRpc().rpc,
     })
     // Remote service double: describe + session follow ride it (0.1.2 remote face).
-    const { remote, emit } = makeRemote({
+    const { emit } = makeRemote(ctx, {
       settings: { describe },
       llm: { listConfigurableProviders: vi.fn() },
       session: { modelCatalog: vi.fn(), follow: history },
     })
-    ctx.provide('remote', remote)
     let controller: FallbacksSettingsController | undefined
     ctx.provide('slots', {
       inject: (_name: string, thunk: () => Iterable<unknown>) => { for (const _dispose of thunk()) { /* run the registration generator */ } },
@@ -2377,12 +2396,11 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
     ctx.provide('connection', {
       rpc: makeRpc().rpc,
     })
-    const { remote } = makeRemote({
+    makeRemote(ctx, {
       settings: { describe },
       llm: { listConfigurableProviders: providers },
       session: { modelCatalog: models, follow: history },
     })
-    ctx.provide('remote', remote)
     let controller: FallbacksSettingsController | undefined
     ctx.provide('slots', {
       inject: (_name: string, thunk: () => Iterable<unknown>) => { for (const _dispose of thunk()) { /* run the registration generator */ } },
