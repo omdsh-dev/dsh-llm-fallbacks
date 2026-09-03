@@ -191,6 +191,17 @@ function fakeRuntime() {
   const ledger: Record<string, Array<{ name: string; options: Record<string, unknown>; component: unknown }>> = {}
   const disposers: Array<() => void> = []
   const locales: Record<string, unknown> = {}
+  // rc.1 dotted-namespace contract: each client Remote namespace is a
+  // child-fiber service named `remote.<ns>` (upstream `remoteServiceKey`);
+  // the fixture provides them as separate dotted services (empty faces —
+  // this spec never reads namespaces) so the declared injects resolve like
+  // production, and the assembly face forwards to them (mirror of the
+  // traceable proxy: `ctx.remote.llm` → `ctx['remote.llm']`).
+  const services: Record<string, unknown> = {
+    'remote.llm': {},
+    'remote.settings': {},
+    'remote.session': {},
+  }
   const slots = {
     register: (options: Record<string, unknown>, component: unknown): (() => void) => {
       const name = options.name as string
@@ -218,13 +229,12 @@ function fakeRuntime() {
       },
       bind: (): never => { throw new Error('test: apply must not bind t — the row t seat comes from PropsLocale') },
     },
-    get: (key: string): unknown => (
-      key === 'connection'
-        ? {
-            rpc: { call: vi.fn() },
-          }
-        : undefined
-    ),
+    get: (key: string): unknown => {
+      if (key === 'connection') {
+        return { rpc: { call: vi.fn() } }
+      }
+      return services[key]
+    },
     effect: (fn: () => unknown): (() => void) => {
       const disposer = fn()
       return typeof disposer === 'function' ? disposer as () => void : () => {}
@@ -242,6 +252,9 @@ function fakeRuntime() {
         }
         return () => {}
       },
+      get llm() { return services['remote.llm'] },
+      get settings() { return services['remote.settings'] },
+      get session() { return services['remote.session'] },
     },
   }
   return { ctx, ledger, locales }
