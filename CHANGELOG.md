@@ -6,6 +6,17 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-03
+
+### Changed
+
+- Prereleases now publish to npm under their channel dist-tag (e.g. `alpha`) instead of `latest`; `latest` stays on the newest stable release.
+- Install a prerelease line via its channel tag, e.g. `npm i dsh-llm-fallbacks@alpha`.
+- Upgrade every `@deepseek-ai/dsh-*` peer dependency to `^0.1.2-alpha.3` (dsh 0.1.2-alpha.3, 2026-08-31). Continuable subagent follow-up/steer now admits images; no source migration required beyond the peer/lock bump (already on alpha.2 APIs).
+- Upgrade every `@deepseek-ai/dsh-*` peer dependency to `^0.1.2-alpha.4` (dsh 0.1.2-alpha.4, 2026-09-01). Migrate `Session.events` reads to `Session.snapshotEvents()` (Session no longer exposes the events array; session logs are read on demand via `snapshotEvents()`/`eventAt()`).
+- Upgrade every `@deepseek-ai/dsh-*` peer dependency to `^0.1.2-alpha.5` (dsh 0.1.2-alpha.5, 2026-09-02). Storage version read-compat and backup-and-skip salvage are host-internal; no source migration required beyond the peer/lock bump.
+- Upgrade every `@deepseek-ai/dsh-*` peer dependency to `^0.1.2-rc.1` (dsh 0.1.2-rc.1, 2026-09-03). No source migration required beyond the peer/lock bump.
+
 ## [0.4.0-alpha.1] - 2026-08-30
 
 ### Changed
