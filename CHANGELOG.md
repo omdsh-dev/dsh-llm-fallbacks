@@ -6,6 +6,12 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-09-03
+
+### Fixed
+
+- Web settings surfaces no longer throw `cannot get property "remote.settings" without inject` on dsh 0.1.2-rc.1 (the client now declares the dotted `remote.llm` / `remote.settings` / `remote.session` namespace injects).
+
 ## [0.4.0] - 2026-09-03
 
 ### Changed
