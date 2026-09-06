@@ -246,11 +246,20 @@ export class FallbackStateStore {
   }
 
   /**
-   * Observed completion ⇒ close the circuit (plan P2 rule 6): acts only when
-   * the entry exists and is half-open; otherwise a no-op (a stale in-flight
-   * success must not cancel a fresher escalated re-suppression).
+   * Observed completion ⇒ close the circuit (plan P2 rule 6). The lazy
+   * expiry runs FIRST — the same read the decision path performs — so a
+   * cooldown that lapsed BEFORE this completion is treated as what it is:
+   * an expired suppression, not an active one. The completion is
+   * post-expiry evidence and closes the circuit even when no decision-path
+   * read has transitioned the entry to half-open yet (a manual
+   * re-selection of the route, or a route no walk ever consulted because the
+   * current route kept succeeding). An ACTIVE suppression (`until > now`,
+   * including the `Infinity` of `revertPolicy: 'never'`) is untouched:
+   * a stale in-flight success must not cancel a fresher escalated
+   * re-suppression.
    */
-  observeSuccess(state: AgentFallbackState, key: string): void {
+  observeSuccess(state: AgentFallbackState, key: string, now: number = Date.now()): void {
+    if (state.cooldown.peek(key) !== undefined) this.isSuppressed(state, key, now, 'half-open')
     state.recovery.close(key)
   }
 }

@@ -173,16 +173,45 @@ describe('P3 success observation — session/event listener (plan fallbacks-half
     apply(ctx, cfg({ recovery: 'half-open' }))
     const store = stateStore(ctx)!
     const state = store.get(agent.id)
+    // Wall-clock epochs: the listener reads `Date.now()`, so the suppression
+    // must be genuinely active at emit time (not a small literal epoch).
+    const now = Date.now()
     state.recovery.recordFailure('mock/gpt-4o')
-    store.suppress(state, 'mock/gpt-4o', 10_000)
-    expect(store.isSuppressed(state, 'mock/gpt-4o', 5_000, 'half-open')).toBe(true)
+    store.suppress(state, 'mock/gpt-4o', now + 10_000)
+    expect(store.isSuppressed(state, 'mock/gpt-4o', now, 'half-open')).toBe(true)
 
     emitAssistantMessage(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
 
     // The entry survives with its counter — a stale in-flight success must
     // not cancel a fresher escalated re-suppression.
     expect(state.recovery.isHalfOpen('mock/gpt-4o')).toBe(false)
+    expect(state.cooldown.peek('mock/gpt-4o')).toBe(now + 10_000)
     expect(state.recovery.recordFailure('mock/gpt-4o')).toBe(2)
+  })
+
+  it('closes a circuit whose cooldown lapsed before the completion, with no prior decision read (rule 6 — expiry precedes evidence)', () => {
+    const { agent } = makeAgent('p3-lapsed-unread', { provider: 'mock', model: 'gpt-4o' })
+    apply(ctx, cfg({ recovery: 'half-open' }))
+    const store = stateStore(ctx)!
+    const state = store.get(agent.id)
+    // What commit() writes: n = 1 and a finite suppression — which lapses
+    // with NO isSuppressed read in between: the current route kept
+    // succeeding, so no failure walk ever consulted this key, and the
+    // lazy transition to half-open never ran.
+    state.recovery.recordFailure('mock/gpt-4o')
+    store.suppress(state, 'mock/gpt-4o', Date.now() - 1)
+    expect(state.recovery.isHalfOpen('mock/gpt-4o')).toBe(false)
+
+    // The route serves a completion anyway (a manual re-selection).
+    emitAssistantMessage(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
+
+    // Post-expiry evidence closes the circuit directly: cooldown key
+    // dropped, recovery entry deleted, counter reset — the next failure is
+    // a flat first cooldown, not an escalated n + 1.
+    expect(state.recovery.isHalfOpen('mock/gpt-4o')).toBe(false)
+    expect(state.recovery.halfOpenEntries()).toEqual([])
+    expect(state.cooldown.peek('mock/gpt-4o')).toBeUndefined()
+    expect(state.recovery.recordFailure('mock/gpt-4o')).toBe(1)
   })
 
   it('ignores events for sessions with no tracked state (peek purity, F-004)', () => {
