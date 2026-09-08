@@ -245,20 +245,50 @@ describe('FallbackStateStore — half-open recovery (plan fallbacks-half-open-re
     const store = new FallbackStateStore()
     const state = store.get('a')
     // no entry — no-op
-    store.observeSuccess(state, 'mock/gpt-4o')
+    store.observeSuccess(state, 'mock/gpt-4o', 500)
     expect(state.recovery.isHalfOpen('mock/gpt-4o')).toBe(false)
     // actively suppressed (non-half-open) — no-op, counter survives
     state.recovery.recordFailure('mock/gpt-4o')
     store.suppress(state, 'mock/gpt-4o', 1_000)
-    store.observeSuccess(state, 'mock/gpt-4o')
+    store.observeSuccess(state, 'mock/gpt-4o', 500)
     expect(state.recovery.isHalfOpen('mock/gpt-4o')).toBe(false)
     expect(state.recovery.recordFailure('mock/gpt-4o')).toBe(2)
     // half-open — closes and resets the counter
     store.isSuppressed(state, 'mock/gpt-4o', 2_000, 'half-open')
     expect(state.recovery.isHalfOpen('mock/gpt-4o')).toBe(true)
-    store.observeSuccess(state, 'mock/gpt-4o')
+    store.observeSuccess(state, 'mock/gpt-4o', 2_000)
     expect(state.recovery.isHalfOpen('mock/gpt-4o')).toBe(false)
     expect(state.recovery.halfOpenEntries()).toEqual([])
+  })
+
+  it('observeSuccess applies the lazy expiry first: a completion after the cooldown lapsed closes without a prior read', () => {
+    const store = new FallbackStateStore()
+    const state = store.get('a')
+    // What commit() writes: n = 1 and a finite suppression. No isSuppressed
+    // read follows — the current route kept succeeding, so no walk consulted
+    // this key — and the suppression lapses unobserved.
+    state.recovery.recordFailure('mock/gpt-4o')
+    store.suppress(state, 'mock/gpt-4o', 1_000)
+    expect(state.recovery.isHalfOpen('mock/gpt-4o')).toBe(false)
+    // A completion observed AFTER expiry is post-expiry evidence: the entry
+    // transitions and closes in one read — cooldown key dropped, recovery
+    // entry deleted, counter reset.
+    store.observeSuccess(state, 'mock/gpt-4o', 2_000)
+    expect(state.recovery.isHalfOpen('mock/gpt-4o')).toBe(false)
+    expect(state.recovery.halfOpenEntries()).toEqual([])
+    expect(state.cooldown.peek('mock/gpt-4o')).toBeUndefined()
+    expect(state.recovery.recordFailure('mock/gpt-4o')).toBe(1)
+  })
+
+  it('observeSuccess leaves an Infinity suppression (revertPolicy never) untouched', () => {
+    const store = new FallbackStateStore()
+    const state = store.get('a')
+    state.recovery.recordFailure('mock/gpt-4o')
+    store.suppress(state, 'mock/gpt-4o', Number.POSITIVE_INFINITY)
+    store.observeSuccess(state, 'mock/gpt-4o', Number.MAX_SAFE_INTEGER)
+    expect(state.cooldown.peek('mock/gpt-4o')).toBe(Number.POSITIVE_INFINITY)
+    expect(state.recovery.isHalfOpen('mock/gpt-4o')).toBe(false)
+    expect(state.recovery.recordFailure('mock/gpt-4o')).toBe(2)
   })
 
   it('clearStepState does not clear recovery (cooldown-survival rationale)', () => {
