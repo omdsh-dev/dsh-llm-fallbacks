@@ -37,7 +37,9 @@ import {
   mergeRoleExtras,
   FALLBACKS_SETTINGS_NS,
   FallbacksSettingsController,
+  fetchSubagentRoleRecord,
   parseFallbacksConfig,
+  parseSubagentRoleRecord,
   refreshCatalogIfLoaded,
   refreshFallbacksIfLoaded,
   refreshSwitchesIfLoaded,
@@ -2331,5 +2333,120 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
     expect(describe).toHaveBeenCalledTimes(3)
     expect(history).toHaveBeenCalledTimes(3)
     expect(providers).toHaveBeenCalledTimes(3)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// plan subagent-role-badge T4 case (f): the session-header role badge's wire
+// face — the `parseSubagentRoleRecord` shape guard (malformed degrades, never
+// throws) and the `fetchSubagentRoleRecord` never-reject contract.
+// ---------------------------------------------------------------------------
+
+/** One well-formed wire role record (the gateway `subagentRoles` projection shape). */
+function wireRoleRecord(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    role: 'coder',
+    model: { provider: 'anthropic', model: 'claude-sonnet-4' },
+    at: 1_725_900_000_000,
+    ...overrides,
+  }
+}
+
+describe('parseSubagentRoleRecord (badge shape guard, T4 case f)', () => {
+  it('parses a well-formed record, normalized to the known keys', () => {
+    expect(parseSubagentRoleRecord(wireRoleRecord({ bogus: 'extra' }))).toEqual({
+      role: 'coder',
+      model: { provider: 'anthropic', model: 'claude-sonnet-4' },
+      at: 1_725_900_000_000,
+    })
+  })
+
+  it('fails the WHOLE record on a non-object, a blank role, or a non-number at', () => {
+    expect(parseSubagentRoleRecord('coder')).toBeUndefined()
+    expect(parseSubagentRoleRecord(null)).toBeUndefined()
+    expect(parseSubagentRoleRecord(undefined)).toBeUndefined()
+    expect(parseSubagentRoleRecord(wireRoleRecord({ role: '   ' }))).toBeUndefined()
+    expect(parseSubagentRoleRecord(wireRoleRecord({ role: 42 }))).toBeUndefined()
+    expect(parseSubagentRoleRecord(wireRoleRecord({ at: '1725900000000' }))).toBeUndefined()
+    expect(parseSubagentRoleRecord(wireRoleRecord({ at: undefined }))).toBeUndefined()
+  })
+
+  it('drops a malformed model FIELD while the record still parses (the badge hovers the role alone)', () => {
+    expect(parseSubagentRoleRecord(wireRoleRecord({ model: { provider: 'anthropic' } }))).toEqual({
+      role: 'coder',
+      at: 1_725_900_000_000,
+    })
+    expect(parseSubagentRoleRecord(wireRoleRecord({ model: 'anthropic/claude-sonnet-4' }))).toEqual({
+      role: 'coder',
+      at: 1_725_900_000_000,
+    })
+    // Model absent (wire skew tolerance — the writer always sets it).
+    expect(parseSubagentRoleRecord({ role: 'coder', at: 1_725_900_000_000 })).toEqual({
+      role: 'coder',
+      at: 1_725_900_000_000,
+    })
+  })
+
+  it('PINNED (Task-3 review Minor 1): the at guard is typeof-only and admits non-finite numbers', () => {
+    // Decision (T4, tests-only scope): pin the CURRENT behavior instead of
+    // tightening to `Number.isFinite`. `at` is metadata the badge never
+    // renders — the hover reads role/model only — and the gateway writer
+    // stamps `Date.now()` (always finite), so a non-finite `at` cannot affect
+    // any rendered output. Tightening the guard would be a production change
+    // outside this task's tests-only brief.
+    const nan = parseSubagentRoleRecord(wireRoleRecord({ at: Number.NaN }))
+    expect(nan).toBeDefined()
+    expect(nan!.at).toBeNaN()
+    const infinity = parseSubagentRoleRecord(wireRoleRecord({ at: Number.POSITIVE_INFINITY }))
+    expect(infinity).toBeDefined()
+    expect(infinity!.at).toBe(Number.POSITIVE_INFINITY)
+  })
+})
+
+describe('fetchSubagentRoleRecord (never-reject contract, Task-3 review Minor 2 — T4 pins)', () => {
+  /** A bare rpc face over one spy (the helper's only member the fetch touches). */
+  function rpcWith(call: ReturnType<typeof vi.fn>): ClientConnectionRpc {
+    return { call } as unknown as ClientConnectionRpc
+  }
+
+  it('calls the batch endpoint with the one-id batch and parses the record (happy path)', async () => {
+    const call = vi.fn(() => Promise.resolve(okResult({ 'sess-1': wireRoleRecord() })))
+    const record = await fetchSubagentRoleRecord(rpcWith(call), 'sess-1')
+    expect(record).toEqual({
+      role: 'coder',
+      model: { provider: 'anthropic', model: 'claude-sonnet-4' },
+      at: 1_725_900_000_000,
+    })
+    // The pinned wire call shape (T2): `/api` claim family, batch-of-ids args.
+    expect(call).toHaveBeenCalledWith('/api', 'fallbacks/subagent-roles', { args: { ids: ['sess-1'] } })
+  })
+
+  it('resolves undefined when the rpc rejects (channel down / old gateway without the endpoint)', async () => {
+    // Path 1 of the fail-closed trio: the rpc layer fails — a transport
+    // rejection (including the gateway's `method-unavailable` fold for a
+    // pre-T2 host). The promise must RESOLVE undefined, never reject: the
+    // badge effect leans on this (`.then` without `.catch`).
+    const call = vi.fn(() => Promise.reject(new Error('gateway/method-unavailable')))
+    await expect(fetchSubagentRoleRecord(rpcWith(call), 'sess-1')).resolves.toBeUndefined()
+  })
+
+  it('resolves undefined on a non-ok result (rpcFailure business/transport fold)', async () => {
+    // Path 2: the rpc answered with a failure envelope.
+    const call = vi.fn(() => Promise.resolve(failResult('fallbacks gateway is not ready')))
+    await expect(fetchSubagentRoleRecord(rpcWith(call), 'sess-1')).resolves.toBeUndefined()
+  })
+
+  it('resolves undefined on a malformed payload (non-object value / malformed record / unknown id)', async () => {
+    // Path 3: an ok envelope whose value fails the shape guard.
+    const nonObject = vi.fn(() => Promise.resolve(okResult('nope')))
+    await expect(fetchSubagentRoleRecord(rpcWith(nonObject), 'sess-1')).resolves.toBeUndefined()
+
+    const malformedRecord = vi.fn(() => Promise.resolve(okResult({ 'sess-1': { role: 42, at: 'nope' } })))
+    await expect(fetchSubagentRoleRecord(rpcWith(malformedRecord), 'sess-1')).resolves.toBeUndefined()
+
+    // A known-shaped object without THIS session's id (unknown ids are
+    // omitted by the gateway) reads as "no record".
+    const missingId = vi.fn(() => Promise.resolve(okResult({ 'other-session': wireRoleRecord() })))
+    await expect(fetchSubagentRoleRecord(rpcWith(missingId), 'sess-1')).resolves.toBeUndefined()
   })
 })
