@@ -177,7 +177,7 @@ fallbacks:
 
 ## 预设角色（Preset roles）
 
-插件内置 **5 个通用子代理角色**，开箱即用——`reviewer` / `scout` / `security-reviewer` / `sonic` / `task`——`apply` 时自动以 seeded `roles.list` 行（`{ id, persona }`）声明：幂等，且绝不覆盖 operator 同名 persona。它们出现在设置卡的 seed 徽标（id 不可改）与 `/fallbacks config` 的角色摘要中，可直接被 `roles.rules` 引用。（`designer` 与 `librarian` 不再内置：早期版本保存的行保留其 persona，但现在显示 source `user`——尽管 operator 并未写过这些行。）
+插件内置 **5 个通用子代理角色**，开箱即用——`reviewer` / `scout` / `security-reviewer` / `sonic` / `task`——`apply` 时自动以 seeded `roles.list` 行（`{ id, persona }`）声明：幂等，且绝不覆盖 operator 同名 persona。它们以只读行的形式出现在设置卡中（每行带来源徽标，id 与 persona 均不可在卡内编辑），并出现在 `/fallbacks config` 的角色摘要中，可直接被 `roles.rules` 引用。（`designer` 与 `librarian` 不再内置：早期版本保存的行保留其 persona，但现在显示 source `user`——尽管 operator 并未写过这些行。）
 
 - **开关**：`fallbacks.presets`——`'bundled'`（默认）在 apply 时声明预设角色；`'none'` 关闭自动声明（已物化行保留）。
 - 完整语义（升级行为、冲突处理、`presetRoles` 库复用）→ [docs/configuration.md](docs/configuration.md)。

@@ -2028,6 +2028,11 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                     // renders no badge: the degradation path, never an
                     // error.
                     const seedBadge = seedBadgeLabel(seed, t)
+                    // The brief's blank verdict: a whitespace-only persona is
+                    // the same `(not set)` empty state as an empty one — no
+                    // brief text and NO disclosure chevron (there is nothing
+                    // to disclose).
+                    const personaBlank = row.persona.trim() === ''
                     // Collapse summary (PR #62 feedback round): the first
                     // chain model, or the raw strategy token when the chain
                     // is empty (inherit-root = the role rides the root
@@ -2121,18 +2126,19 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                             <>
                               <div className={css.personaBriefRow}>
                                 <span
-                                  className={row.persona === ''
+                                  className={personaBlank
                                     ? `${css.personaBrief} ${css.personaBriefEmpty}`
                                     : css.personaBrief}
                                 >
-                                  {row.persona === '' ? t('roles.persona.empty') : row.persona}
+                                  {personaBlank ? t('roles.persona.empty') : row.persona}
                                 </span>
-                                {row.persona !== '' && (
+                                {!personaBlank && (
                                   <button
                                     type="button"
                                     className={css.iconButton}
                                     aria-expanded={row.personaOpen}
                                     aria-label={t(row.personaOpen ? 'roles.persona.collapse' : 'roles.persona.expand')}
+                                    data-tip={t(row.personaOpen ? 'roles.persona.collapse' : 'roles.persona.expand')}
                                     onClick={() => { updateRoleRow(index, { personaOpen: !row.personaOpen }) }}
                                   >
                                     <IconChevronDownOutline14 className={row.personaOpen ? `${css.chevron} ${css.chevronOpen}` : css.chevron} />

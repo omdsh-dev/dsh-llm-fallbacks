@@ -138,7 +138,6 @@ interface Scripted {
   get: Mock
   set: Mock
   reset: Mock
-  revertSeed: Mock
   describe: Mock
 }
 
@@ -211,19 +210,11 @@ function scriptedApi(options: {
     current = defaultFallbacksConfig
     return Promise.resolve(okResult({ config: current }))
   })
-  // The revert-seed fake keeps the effective config (no persona registry in
-  // this fixture); tests script specific post-write read results with
-  // `mockReturnValueOnce` when they exercise the accepted response.
-  const revertSeed = vi.fn((payload: { args: { id: string } }) => {
-    if (current === null) throw new Error('test: revert-seed on an unavailable gateway')
-    return Promise.resolve(okResult({ config: current }))
-  })
   const call = vi.fn((channel: string, endpoint: string, payload: unknown) => {
     if (channel !== '/api') throw new Error(`test: unexpected channel ${channel}`)
     if (endpoint === 'fallbacks/get') return get()
     if (endpoint === 'fallbacks/set') return set(payload as { args: { patch: typeof defaultFallbacksConfig } })
     if (endpoint === 'fallbacks/reset') return reset()
-    if (endpoint === 'fallbacks/revert-seed') return revertSeed(payload as { args: { id: string } })
     throw new Error(`test: unexpected endpoint ${endpoint}`)
   })
   return {
@@ -233,7 +224,7 @@ function scriptedApi(options: {
       session: { modelCatalog: models, follow: history },
     } as unknown as FallbacksRemote,
     rpc: { call } as unknown as ClientConnectionRpc,
-    call, get, set, reset, revertSeed, describe,
+    call, get, set, reset, describe,
   }
 }
 
@@ -2443,16 +2434,21 @@ describe('FallbacksCard seeded roles (plan fallbacks-role-seeds T5)', () => {
     // The brief's chevron discloses the full persona text (client-local
     // state — no write rides it).
     const expandPersona = within(rolesGroup).getByRole('button', { name: en['roles.persona.expand'] })
+    // The iconButton contract: the label rides `data-tip` too — no empty
+    // tooltip pill on hover/focus (the only iconButton without one, wave-1 fix).
+    expect(expandPersona.getAttribute('data-tip')).toBe(en['roles.persona.expand'])
     expect(expandPersona.getAttribute('aria-expanded')).toBe('false')
     fireEvent.click(expandPersona)
     view.rerender(<FallbacksCard {...props} />)
     const collapsePersona = within(rolesGroup).getByRole('button', { name: en['roles.persona.collapse'] })
+    expect(collapsePersona.getAttribute('data-tip')).toBe(en['roles.persona.collapse'])
     expect(collapsePersona.getAttribute('aria-expanded')).toBe('true')
     expect(within(rolesGroup).getAllByText('Designs systems')).toHaveLength(2)
     fireEvent.click(collapsePersona)
     view.rerender(<FallbacksCard {...props} />)
     expect(within(rolesGroup).getAllByText('Designs systems')).toHaveLength(1)
-    expect(scripted.revertSeed).not.toHaveBeenCalled()
+    // No revert RPC can fire from the row (the store's revertSeed write
+    // path is removed with the button — the card has no revert caller).
     expect(scripted.call).not.toHaveBeenCalledWith('/api', 'fallbacks/revert-seed', expect.anything())
   })
 
@@ -2633,34 +2629,39 @@ describe('FallbacksCard seeded-role read-only UX (plan role-card-seeded-ux T3)',
   // brief fallback, the dirty-computation contract, the read-only
   // (writable:false) disclosure gate, and the bilingual string parity.
 
-  it('renders an empty seeded persona as the (not set) brief with the chevron withheld', async () => {
+  it('renders an empty or whitespace-only seeded persona as the (not set) brief with the chevron withheld', async () => {
     // The brief fallback for a seeded row with no persona (plan Task 2's
     // third string group): the read-only presentation still applies — the
     // hint-tone empty label replaces the brief text, and the expand chevron
     // is WITHHELD (there is nothing to disclose), so no persona
-    // expand/collapse control exists on the row.
-    const config: typeof defaultFallbacksConfig = {
-      ...defaultFallbacksConfig,
-      enabled: true,
-      roles: {
-        list: [
-          { id: 'architect', persona: '', chain: [], fallback: 'inherit-root' },
-          { id: 'reviewer', persona: 'Reviews code', chain: ['anthropic/claude-3-5-sonnet'], fallback: 'inherit-root' },
-        ],
-        rules: [],
-      },
+    // expand/collapse control exists on the row. The blank verdict is a
+    // TRIM check: a whitespace-only persona degrades to the same empty
+    // state instead of an invisible brief + chevron (wave-1 fix).
+    for (const persona of ['', '   ']) {
+      const config: typeof defaultFallbacksConfig = {
+        ...defaultFallbacksConfig,
+        enabled: true,
+        roles: {
+          list: [
+            { id: 'architect', persona, chain: [], fallback: 'inherit-root' },
+            { id: 'reviewer', persona: 'Reviews code', chain: ['anthropic/claude-3-5-sonnet'], fallback: 'inherit-root' },
+          ],
+          rules: [],
+        },
+      }
+      const { view, props } = await mountCard({
+        config,
+        seeds: [{ id: 'architect', overridden: false, source: 'bundled' }],
+      })
+      toggleCard()
+      expandAllRoles()
+      view.rerender(<FallbacksCard {...props} />)
+      const rolesGroup = screen.getByText(en['roles.list.label']).closest('[role="group"]') as HTMLElement
+      expect(within(rolesGroup).getByText(en['roles.persona.empty'])).toBeTruthy()
+      expect(within(rolesGroup).queryByRole('button', { name: en['roles.persona.expand'] })).toBeNull()
+      expect(within(rolesGroup).queryByRole('button', { name: en['roles.persona.collapse'] })).toBeNull()
+      view.unmount()
     }
-    const { view, props } = await mountCard({
-      config,
-      seeds: [{ id: 'architect', overridden: false, source: 'bundled' }],
-    })
-    toggleCard()
-    expandAllRoles()
-    view.rerender(<FallbacksCard {...props} />)
-    const rolesGroup = screen.getByText(en['roles.list.label']).closest('[role="group"]') as HTMLElement
-    expect(within(rolesGroup).getByText(en['roles.persona.empty'])).toBeTruthy()
-    expect(within(rolesGroup).queryByRole('button', { name: en['roles.persona.expand'] })).toBeNull()
-    expect(within(rolesGroup).queryByRole('button', { name: en['roles.persona.collapse'] })).toBeNull()
   })
 
   it('keeps the seeded persona disclosure non-dirty while a chain edit still dirties and saves', async () => {

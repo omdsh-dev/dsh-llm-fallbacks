@@ -279,16 +279,6 @@ function subagentPolicyFromWire(value: unknown, fallback: SubagentPolicyView | u
   return parseSubagentPolicyWire(value.subagentPolicy)
 }
 
-/** Seed-default persona from a revert-seed wire body (issue #59). */
-function revertOutcomePersona(value: unknown): string | undefined {
-  if (value === null || typeof value !== 'object' || !('outcome' in value)) return undefined
-  const outcome: unknown = value.outcome
-  if (outcome === null || typeof outcome !== 'object') return undefined
-  if (!('reverted' in outcome) || outcome.reverted !== true) return undefined
-  if (!('persona' in outcome) || typeof outcome.persona !== 'string') return undefined
-  return outcome.persona
-}
-
 
 /**
  * The provider dropdown's offer set (spec §2.5 D-4): catalog providers whose
@@ -1313,67 +1303,6 @@ export class FallbacksSettingsController {
     } catch (error) {
       if (generation !== this.writeGeneration) return
       this.fail(error)
-    }
-  }
-
-  /**
-   * Revert one seeded role to its CURRENT declared seed default (spec §9.4,
-   * AC-3) through the gateway channel (`/api/fallbacks/revert-seed`). Same
-   * write guards as {@link save} — writable / saving / write-generation —
-   * and the same KD-G3 error handling: any business rejection or transport
-   * failure surfaces its message in `state.error` for the error banner and
-   * the form stays editable for retry. A business `{ reverted: false,
-   * reason }` outcome is still a successful RPC — the post-write read
-   * result (config / legacyKeys / seeds) lands either way, and the revert
-   * button stays disabled while the write is in flight.
-   *
-   * Returns the seed-default persona when the outcome is `{ reverted:
-   * true, persona }` — including the persist no-op (persisted already
-   * equals the seed). The card applies that string to the row's **draft**
-   * so an unsaved persona edit still snaps back (issue #59).
-   * @param id - the seeded role id; the host matches it by trimmed id
-   *   against the seed registry (spec §9.3).
-   */
-  async revertSeed(id: string): Promise<string | undefined> {
-    const state = this.store.getSnapshot()
-    if (!state.writable || state.status === 'saving') return undefined
-    const generation = ++this.writeGeneration
-    this.store.update((draft) => {
-      draft.status = 'saving'
-      draft.error = null
-    })
-    try {
-      const result = await this.rpc.call('/api', 'fallbacks/revert-seed', { args: { id } })
-      if (generation !== this.writeGeneration) return undefined
-      if (!result.ok) throw result.error
-      const value: unknown = result.value
-      const config = value !== null && typeof value === 'object' && 'config' in value
-        ? value.config
-        : undefined
-      // Same keep-last rules as {@link save}: the revert response carries
-      // the post-write read result (W-1/F-1); an absent legacyKeys or seeds
-      // field keeps the last accepted value — only a `get` may settle truth.
-      let legacyKeys: string[] = this.store.getSnapshot().legacyKeys
-      if (value !== null && typeof value === 'object' && 'legacyKeys' in value) {
-        const wireLegacyKeys: unknown = value.legacyKeys
-        if (Array.isArray(wireLegacyKeys)) {
-          legacyKeys = wireLegacyKeys.filter((key): key is string => typeof key === 'string')
-        }
-      }
-      let seeds: SeedsWireStatus[] = this.store.getSnapshot().seeds
-      if (value !== null && typeof value === 'object' && 'seeds' in value) {
-        const wireSeeds: unknown = value.seeds
-        if (Array.isArray(wireSeeds)) {
-          seeds = parseSeedsWire(wireSeeds)
-        }
-      }
-      const subagentPolicy = subagentPolicyFromWire(value, this.store.getSnapshot().subagentPolicy)
-      this.accept(config, true, legacyKeys, seeds, subagentPolicy)
-      return revertOutcomePersona(value)
-    } catch (error) {
-      if (generation !== this.writeGeneration) return undefined
-      this.fail(error)
-      return undefined
     }
   }
 
