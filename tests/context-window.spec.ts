@@ -5,8 +5,8 @@
  * Two behaviors, both entered only when the operator lists
  * `CONTEXT_WINDOW_EXCEEDED` in `triggerCodes` (dsh core's canonical code for a
  * provider 400 "maximum context length"; not retryable, so llm-retry never
- * owns it, and `compaction-basic` has already spent its own overflow-retry
- * budget by the time the failure reaches this waterfall):
+ * owns it, and once listed this plugin handles the rejection before the
+ * harness's compaction plugin compacts anything):
  *
  * - **commit scope**: a context-window rejection is a REQUEST failure on a
  *   healthy route, so `commit()` keeps the step-scoped bookkeeping (failed set
@@ -18,8 +18,8 @@
  *   skipped (`skipped: context-window` in the candidates log); an undisclosed
  *   window keeps the candidate, and the catalog is probed only for this
  *   trigger. Windows are read from the advertised catalog row when it carries
- *   one, else from the exact route's `resolveModelInfo` metadata (where dsh
- *   0.1.2-rc.1 puts `context.contextWindow`).
+ *   one, else from `resolveModelInfo(provider, model)`'s
+ *   `context.contextWindow` (where dsh 0.1.2-rc.1 puts it).
  *
  * Drives the real plugin `apply()` against the shared harness fake
  * agent/session (`tests/support/harness.ts`), like `tests/runtime.spec.ts`.

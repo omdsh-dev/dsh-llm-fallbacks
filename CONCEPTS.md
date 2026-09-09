@@ -48,7 +48,8 @@ fallbacks 配置的自明结构：块 1 = `rootChain`（root 主代理一条链�
 `fallbacks/switch` 事件类型词汇（from/to/role/reason）——2026-08-17 起插件**不再写入** durable 事件（issue #52：apply() 时的事件类型注册被证伪无效，含该事件的会话在 dsh 重启后拒绝加载），「行为可见」由 info 日志承载；旧版写入的会话事件由 `scripts/repair-fallbacks-switch-logs.ts` 标记 ignorable 后恢复加载。reason 是开放字符串（未知值客户端原样渲染，向后兼容）；`role-inject` 是分发时角色注入的附加 reason 值（additive，非结构变更——见三段式分发角色解析）。
 
 ### triggerCodes
-触发 fallback 决策的失败码集合，默认 `['AUTH', 'QUOTA', 'RATE_LIMIT']`（dsh 稳定失败码；注意是 `QUOTA` 不是 `QUOTA_EXCEEDED`）。重试型失败（5xx/TRANSPORT）由 llm-retry 先行退避，预算耗尽后同样进入 fallback 决策。
+触发 fallback 决策的失败码集合，默认 `['AUTH', 'QUOTA', 'RATE_LIMIT']`（dsh 稳定失败码；注意是 `QUOTA` 不是 `QUOTA_EXCEEDED`）。重试型失败（5xx/TRANSPORT）由 llm-retry 先行退避，预算耗尽后同样进入 fallback 决策。接受任意 dsh 失败码——`CONTEXT_WINDOW_EXCEEDED` 一旦列入，本插件的 `agent/request-error` 监听**先于**宿主压缩插件处理该拒绝：首次超限即把会话切到 fallback 模型，上下文不会被压缩；想先尝试压缩就不要列入该码。
+*Avoid:* 「压缩先行、插件只在压缩预算耗尽后才看到该错误」（2026-09-09 实测证伪：列入触发码后首次超限即降级，未发生压缩）
 
 ### 路由级 vs 请求级失败（route-scoped / request-scoped）
 失败归因的二分，决定切换是否冷却 from 路由：**路由级**（缺省，`PendingSwitch.scope` 省略即此）= provider/model 本身不健康（AUTH/QUOTA/RATE_LIMIT…），照旧 `suppress` + 恢复计数；**请求级**（`REQUEST_SCOPED_CODES`，当前仅 `CONTEXT_WINDOW_EXCEEDED`）= 路由健康、这一次请求太大——step 级记账（本步失败集合 + 切换计数）保留，但**不写**冷却与半开恢复计数（冷却健康路由会把下一条短提示词无谓地推给 fallback，并浪费一次半开探针）。

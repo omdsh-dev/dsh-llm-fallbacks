@@ -204,11 +204,11 @@ fallbacks:
     - deepseek-official/deepseek-v4-flash  # 兜底（Flash 或 Pro）
 ```
 
-**顺序——压缩先行。** `compaction-basic` 监听同一条 `agent/request-error` waterfall 且组合在本插件之前：遇到 `CONTEXT_WINDOW_EXCEEDED` 时它先压缩上下文并在**同一路由**上重试，直至自身的 `maxOverflowRetries` 预算耗尽，才把失败继续下传。因此降级走链是第二道防线，绝不替代压缩——切换前你在失败路由上看到的那次额外尝试，是压缩在工作，而非盲目重试。
+**顺序——降级先于压缩。** 只要 `triggerCodes` 含 `CONTEXT_WINDOW_EXCEEDED`，本插件的 `agent/request-error` 监听就会**先于**宿主压缩插件处理该拒绝：首次超限即把会话切到 fallback 模型，上下文完全不会被压缩。若更希望先尝试压缩，就不要把该码列入 `triggerCodes`。
 
 **请求级切换。** 上下文超限说明**这一次请求**太大，而不是路由不健康。此类切换是**请求级（request-scoped）**：from 路由仍记入本 step 的失败集合（本 step 不会立刻弹回该模型）、仍计入 `maxSwitchesPerStep`，但**不**进入 `cooldownMs` 冷却、也不累加半开恢复计数器——下一条更短的提示词照常走主模型，不会在从未故障的路由上浪费一次半开探针。其余触发码一律保持**路由级（route-scoped）**（冷却 + 恢复记账），与既有行为一致。
 
-**装不下的候选被跳过。** 上下文超限走链时，凡是已知上下文窗口不大于失败模型的候选一律跳过——从 128k 模型降到 8k 只会再失败一次。窗口取自宿主模型目录（目录行公开的 `contextWindow`，否则取精确路由解析出的 `context.contextWindow`）；未公开窗口的模型保留为候选，因此缺少容量元数据的 provider 绝不会把链清空。被跳过的候选在切换日志行中标注 `skipped: context-window`。
+**装不下的候选被跳过。** 上下文超限走链时，凡是已知上下文窗口不大于失败模型的候选一律跳过——从 128k 模型降到 8k 只会再失败一次。窗口取自宿主模型目录：目录行自带 `contextWindow` 时取之，否则取 `llm.resolveModelInfo(provider, model)` 的 `context.contextWindow`。两处都未公开窗口的模型保留为候选，因此缺少容量元数据的 provider 绝不会把链清空。被跳过的候选在切换日志行中标注 `skipped: context-window`。
 
 ## 宿主子代理模型策略（dsh 0.1.2）
 

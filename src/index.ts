@@ -233,8 +233,11 @@ export { presetRoles } from './presets.ts'
  * failure codes as plain strings and never imports a peer value.
  *
  * It is NOT in llm-retry's retryable set, so the plugin sees it only when the
- * operator lists it in `triggerCodes`, and only after `compaction-basic` has
- * spent its own `maxOverflowRetries` compaction budget on the same failure.
+ * operator lists it in `triggerCodes` — and once listed, this listener handles
+ * the rejection BEFORE the harness's compaction plugin compacts anything
+ * (measured 2026-09-09: the first overflow switches to the fallback, no
+ * compaction happens). Operators who want compaction tried first leave the
+ * code out of `triggerCodes`.
  */
 const CONTEXT_WINDOW_EXCEEDED_CODE = 'CONTEXT_WINDOW_EXCEEDED'
 
@@ -250,8 +253,10 @@ const REQUEST_SCOPED_CODES: ReadonlySet<string> = new Set([CONTEXT_WINDOW_EXCEED
  * Model-catalog service shape the wildcard existence probe reads (`ctx.llm`).
  *
  * `contextWindow` is the advisory catalog row's window when the host's
- * adapter discloses one there; `resolveModelInfo` is the exact-route metadata
- * dsh 0.1.2-rc.1 actually carries it on (`LlmResolvedModelInfo.context`).
+ * adapter discloses one there; `resolveModelInfo(provider, model)` is the
+ * exact-route metadata dsh 0.1.2-rc.1 actually carries it on
+ * (`LlmResolvedModelInfo.context.contextWindow`) — `LlmModelInfo`, what
+ * `listModels` returns there, has no window field at all.
  * Both are optional and read structurally — a host service that offers
  * neither simply reports every window as unknown (see
  * {@link makeContextWindowOf}).
