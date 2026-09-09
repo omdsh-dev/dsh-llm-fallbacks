@@ -181,9 +181,12 @@ function getPath(value: unknown, path: readonly string[]): unknown {
 /**
  * Shape-guard the wire `seeds` badge field (spec §9.4): only `{ id,
  * overridden }` entries survive — the `legacyKeys` element-filter
- * precedent. A non-array value resolves to `[]`; malformed entries are
- * dropped, so an all-bad array also lands `[]`. The store never trusts a
- * misshapen badge field.
+ * precedent. `source` is optional on the wire (gateway version skew), so
+ * the guard deliberately does not require it: an entry without the field
+ * still parses and consumers treat a missing label as "no badge". A
+ * non-array value resolves to `[]`; malformed entries are dropped, so an
+ * all-bad array also lands `[]`. The store never trusts a misshapen badge
+ * field.
  */
 function parseSeedsWire(value: unknown): SeedsWireStatus[] {
   if (!Array.isArray(value)) return []

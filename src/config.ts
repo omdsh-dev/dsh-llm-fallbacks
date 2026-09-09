@@ -98,7 +98,7 @@ export interface FallbacksConfig {
   maxSwitchesPerStep: number
   alwaysModeRetryCap: number
   /**
-   * Preset-role injection switch: `'bundled'` declares the 7 preset roles
+   * Preset-role injection switch: `'bundled'` declares the 5 preset roles
    * (spec §9.2) as seed rows on apply; `'none'` disables declaration.
    * Optional on purpose — a required field would break library consumers
    * that construct `FallbacksConfig` literals with the existing 8 keys

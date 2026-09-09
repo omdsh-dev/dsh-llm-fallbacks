@@ -48,11 +48,13 @@ validateFallbacksConfig(config, logger)
 | `defaultFallbacksConfig` | Default config object (`enabled: false`, default `triggerCodes`, empty chains). |
 | `provide` | Declarative service metadata `['llm-fallbacks'] as const` (for loader/tool recognition; actual registration happens inside the plugin's settings inject child — see the named service section below). |
 | `SelectorError` | The catchable error class thrown by `parseSelector` — catch-side type safety depends on it. |
-| `presetRoles` | The 7 bundled omp-style preset role declarations — `readonly SeedDeclaration[]`, pure data module, the exact payload the plugin self-declares on apply. Derivation: omp bundled agent prompts `packages/coding-agent/src/prompts/agents/`, snapshot 2026-08-16; persona text frozen per the plugin spec §9.2. See [Preset roles](#preset-roles). |
+| `presetRoles` | The 5 bundled omp-style preset role declarations — `readonly SeedDeclaration[]`, pure data module, the exact payload the plugin self-declares on apply. Derivation: omp bundled agent prompts `packages/coding-agent/src/prompts/agents/`, snapshot 2026-08-16; persona text frozen per the plugin spec §9.2. See [Preset roles](#preset-roles). |
 
 ### Preset roles
 
-`presetRoles` is the single source of the plugin's bundled preset-role declarations — the identical 7-item payload `apply()` self-declares when `presets: 'bundled'` (the default). The 7 ids are `designer` / `librarian` / `reviewer` / `scout` / `security-reviewer` / `sonic` / `task`; each persona is a concise instruction set distilled from the omp bundled agent prompts (`packages/coding-agent/src/prompts/agents/`, snapshot 2026-08-16), not a verbatim copy of a full prompt.
+`presetRoles` is the single source of the plugin's bundled preset-role declarations — the identical 5-item payload `apply()` self-declares when `presets: 'bundled'` (the default). The 5 ids are `reviewer` / `scout` / `security-reviewer` / `sonic` / `task`; each persona is a concise instruction set distilled from the omp bundled agent prompts (`packages/coding-agent/src/prompts/agents/`, snapshot 2026-08-16), not a verbatim copy of a full prompt.
+
+> **Preset trim**: the bundled set previously carried 7 ids — `designer` and `librarian` were removed. Rows saved by earlier versions keep their persona and survive untouched, but they now show source `user` even though the operator never wrote those rows: they are no longer in the declared batch, so they lose the seeded badge / revert affordance and become ordinary config rows again. Delete them by hand if unwanted.
 
 Reuse it through any seed face:
 
@@ -66,11 +68,13 @@ if (fb !== undefined) await fb.declareSeeds(presetRoles)
 // (b) class face: new FallbacksSeedManager(logger).declare(presetRoles, seedsIo)
 ```
 
+A consumer's declare of `presetRoles` is an external declare: the plugin's own preset self-declaration is the only declare labeled `bundled` (reserved label, unreachable through the service face). Pass `{ set: 'my-plugin' }` as the second argument to label the batch with your registered set name — see [Role seeds](#role-seeds-service-seeding-api).
+
 Operator-facing behavior of the automatic declaration (config key `presets: 'bundled' | 'none'`, upgrade / conflict / deletion semantics) → [docs/configuration.md → Preset roles](configuration.md#preset-roles-presets-key).
 
 ### Type exports
 
-`FallbacksConfig` / `FallbacksRole` / `FallbacksRoles` / `FallbacksRoleRule` / `FallbackStrategy` / `RevertPolicy` / `RecoveryPolicy` / `Origin` / `AgentLike` / `Selector` / `FailingModel` / `AnnotatedCandidate` / `CandidateSkipReason` / `CandidateFilterOptions` / `FallbacksConfigLogger` / `FallbacksService` — all `export type`, compile-time only. The role-seeds types (`SeedDeclaration` / `SeedSkipReason` / `SeedConflict` / `SeedDeclareOutcome` / `EffectiveRole` / `EffectiveRolesReadback` / `SeedRevertFailReason` / `SeedRevertOutcome` / `SeedsWireStatus` / `SeedsIo`) and the `FallbacksSeedManager` class are also re-exported from the package root — see [Role seeds](#role-seeds-service-seeding-api).
+`FallbacksConfig` / `FallbacksRole` / `FallbacksRoles` / `FallbacksRoleRule` / `FallbackStrategy` / `RevertPolicy` / `RecoveryPolicy` / `Origin` / `AgentLike` / `Selector` / `FailingModel` / `AnnotatedCandidate` / `CandidateSkipReason` / `CandidateFilterOptions` / `FallbacksConfigLogger` / `FallbacksService` — all `export type`, compile-time only. The role-seeds types (`SeedDeclaration` / `SeedSkipReason` / `SeedConflict` / `SeedDeclareOutcome` / `EffectiveRole` / `EffectiveRolesReadback` / `SeedRevertFailReason` / `SeedRevertOutcome` / `SeedsWireStatus` / `SeedsDeclareOptions` / `SeedSource` / `SeedsIo`) and the `FallbacksSeedManager` class are also re-exported from the package root — see [Role seeds](#role-seeds-service-seeding-api).
 
 ### Existing plugin exports (unchanged)
 
@@ -92,7 +96,7 @@ Once the plugin's settings write channel is bound, a service is registered on th
   resolveChain: typeof resolveChain
   validateFallbacksConfig: typeof validateFallbacksConfig
   detectLegacyKeys: typeof detectLegacyKeys
-  declareSeeds: (seeds: readonly SeedDeclaration[]) => Promise<SeedDeclareOutcome>
+  declareSeeds: (seeds: readonly SeedDeclaration[], options?: SeedsDeclareOptions) => Promise<SeedDeclareOutcome>
   getEffectiveRoles: () => EffectiveRolesReadback
   revertSeededPersona: (id: string) => Promise<SeedRevertOutcome>
 }
@@ -125,15 +129,15 @@ Importing this package automatically merges the `Context` type (`declare module 
 The service grows three additive keys — the six pre-existing keys are unchanged (strictly additive, spec §9.1). Companion plugins use them to auto-provision role rows into the taxonomy with **zero operator hand-edit** (no config block, no bundle-row write): a seeded role is a plain `roles.list` row, and the settings card surfaces the same state (seed badge + revert) over the gateway wire — the card renders the seeded role's id as a disabled (immutable) field, so the id of any seed/preset role cannot be changed in the card (R2); persona, chain and fallback stay editable.
 
 ```ts
-declareSeeds(seeds: readonly SeedDeclaration[]): Promise<SeedDeclareOutcome>
+declareSeeds(seeds: readonly SeedDeclaration[], options?: SeedsDeclareOptions): Promise<SeedDeclareOutcome>
 getEffectiveRoles(): EffectiveRolesReadback
 revertSeededPersona(id: string): Promise<SeedRevertOutcome>
 ```
 
 | Method | Surface | Notes |
 |---|---|---|
-| `declareSeeds(seeds)` | (a) declare | **Replacement semantics**: the batch is the companion's full current declaration set; ids omitted from the batch drop out of the seed registry (the role row and the operator's chain remain — R2). Per-id validation **as declared** — an id failing `ROLE_ID_PATTERN` (`/^[a-z0-9-]{1,32}$/`) or equal to the reserved `'inherit'` is skipped with a warn (never coerced); valid siblings in the same batch still apply. Re-declaring the same payload is a no-op (no settings write). |
-| `getEffectiveRoles()` | (b) readback | Sync. The effective taxonomy with per-role seed annotations (`seeded` / `personaOverridden` / `seedPersona`). |
+| `declareSeeds(seeds, options?)` | (a) declare | **Replacement semantics**: the batch is the companion's full current declaration set; ids omitted from the batch drop out of the seed registry (the role row and the operator's chain remain — R2). Per-id validation **as declared** — an id failing `ROLE_ID_PATTERN` (`/^[a-z0-9-]{1,32}$/`) or equal to the reserved `'inherit'` is skipped with a warn (never coerced); valid siblings in the same batch still apply. The optional `options.set` labels the whole batch's provenance (trimmed): an empty-after-trim, non-string, or reserved value (`bundled` / `user` / `external`) warns once and degrades the batch to the unnamed `external` source — the seeds still apply. Re-declaring the same payload is a no-op (no settings write). |
+| `getEffectiveRoles()` | (b) readback | Sync. The effective taxonomy with per-role seed annotations (`seeded` / `personaOverridden` / `seedPersona` / `source`). |
 | `revertSeededPersona(id)` | (c) revert | Restores one id to the **currently declared** seed default — never a snapshot of the first seed. `{ reverted: false, reason: 'not-seeded' }` when the id was never declared (no write, no throw). |
 
 #### Minimal example
@@ -141,16 +145,17 @@ revertSeededPersona(id: string): Promise<SeedRevertOutcome>
 ```ts
 const fb = ctx.get('llm-fallbacks')
 if (fb !== undefined) {
-  // (a) declare — the FULL current set; re-declaring the same payload is a no-op
+  // (a) declare — the FULL current set; re-declaring the same payload is a no-op.
+  // `set` labels the batch's provenance (omit it for the generic `external` label)
   const outcome = await fb.declareSeeds([
     { id: 'code-reviewer', persona: 'Reviews code for correctness and security' },
     { id: 'fullstack-dev', persona: 'Backend-led fullstack implementation' },
-  ])
+  ], { set: 'code-companion' })
   // outcome: { applied: string[], skipped: Array<{ id, reason }>, conflicts: Array<{ id, kind }> }
 
   // (b) read back effective roles with seed annotations
   const { roles } = fb.getEffectiveRoles()
-  // roles[i].seeded / roles[i].personaOverridden / roles[i].seedPersona
+  // roles[i].seeded / roles[i].personaOverridden / roles[i].seedPersona / roles[i].source
 
   // (c) revert one id to the CURRENT declared seed default
   const outcome2 = await fb.revertSeededPersona('code-reviewer')
@@ -163,9 +168,9 @@ if (fb !== undefined) {
 Two stores, strictly separated (spec §9.2):
 
 1. **Operator config (persisted — the only persisted store)**: a seeded role is a plain `roles.list` row `{ id, persona }`. `chain` / `fallback` / `prompt` / `permissions` are **omitted** on insert — seeds never write those values (R4).
-2. **Seed registry (in-memory, per-apply)**: `Map<id, seedPersona>`; declare = replacement.
+2. **Seed registry (in-memory, per-apply)**: `Map<id, { persona, set }>` (the declared default persona plus the batch's provenance label); declare = replacement.
 
-`seeded` and `personaOverridden` are **derived at read time**, never stored — because nothing override-shaped is persisted, a config round-trip cannot orphan an override (AC-3).
+`seeded`, `personaOverridden`, and `source` are **derived at read time**, never stored — because nothing override-shaped or provenance-shaped is persisted, a config round-trip cannot orphan an override (AC-3), and provenance can never churn a settings write.
 
 - An operator persona edit is an **override** (the row persona differs from the seed default); the card shows override state.
 - Revert always restores the **currently declared** seed default — when the companion re-declares a new persona for the same id, revert goes to that new default.
@@ -174,16 +179,33 @@ Two stores, strictly separated (spec §9.2):
 - Seeds never write `chain` / `fallback`: an existing chain is preserved byte-for-byte, and a new seeded role keeps an empty chain for the operator to fill (R4).
 - **Honest limitation**: the registry dies with the fiber/process. Until the companion re-declares, seeded rows are ordinary config rows (badge/revert absent); after re-declare, "was at default" is indistinguishable from "operator-edited", so the conservative row-untouched path applies and a differing persona is flagged `'persona-source'`. Revert always restores the current declared default; no data is ever lost or silently overwritten.
 
+#### Per-row source (provenance contract)
+
+Every row carries a provenance label (`SeedSource`) on both the `EffectiveRole` readback and the gateway `seeds` wire entries (`SeedsWireStatus.source` — additive wire field: older clients ignore unknown fields, and a gateway predating the field may omit it, in which case the client treats the entry as badgeless). `bundled` is reserved for the plugin's own preset self-declare and is unreachable through the service face — the face forwards only the public `{ set }` key to the declare pipeline:
+
+| `source` value | When |
+|---|---|
+| `bundled` | The plugin's own bundled preset self-declare (internal marker, not a consumer option). |
+| `<set name>` | A companion declare with a valid `options.set` (trimmed). |
+| `external` | A companion declare without `set`, or with an invalid one (empty after trim / non-string / a reserved name — warns once, the seeds still apply). |
+| `user` | No live declaration covers the row. |
+
+Reserved set names (`bundled` / `user` / `external`) are invalid by contract — a declare under a reserved name would forge or shadow the fixed labels, so it warns once and degrades to `external`.
+
+**Copy honesty**: `user` does not mean "the operator wrote this row" — it means no live declaration covers it. After the preset trim, the `designer` / `librarian` rows persisted by earlier versions survive untouched with their persona and now show source `user`, even though the operator never wrote those rows.
+
 #### Types
 
 | Type | Shape | Meaning |
 |---|---|---|
 | `SeedDeclaration` | `{ id: string; persona: string }` | One declared seed (`persona` is free text, not validated — payload hygiene is the companion's job). |
 | `SeedDeclareOutcome` | `{ applied: string[]; skipped: Array<{ id, reason }>; conflicts: Array<{ id, kind }> }` | Structured result of `declareSeeds` — the readable status channel; per-id skip never fails the batch. `reason` ∈ `'invalid-id'` \| `'reserved-id'` \| `'duplicate-in-batch'`; `kind` ∈ `'persona-source'`. |
-| `EffectiveRole` | `{ id, persona, chain?, fallback?, seeded, personaOverridden, seedPersona? }` | One effective role with seed annotations (`chain` / `fallback` are passthrough — never touched by seeds). |
+| `SeedsDeclareOptions` | `{ set?: string }` | Optional second `declareSeeds` argument — the batch's registered provenance set name (trimmed; empty / non-string / reserved warns once and degrades to `external`, the seeds still apply). |
+| `SeedSource` | `'bundled'` \| `'external'` \| `'user'` \| (set name) | Per-row provenance label, read-time derived, never persisted — see [Per-row source](#per-row-source-provenance-contract). |
+| `EffectiveRole` | `{ id, persona, chain?, fallback?, seeded, personaOverridden, source, seedPersona? }` | One effective role with seed annotations (`chain` / `fallback` are passthrough — never touched by seeds; `source` is the provenance label). |
 | `EffectiveRolesReadback` | `{ roles: EffectiveRole[] }` | Result of `getEffectiveRoles`. |
 | `SeedRevertOutcome` | `{ reverted, persona?, reason? }` | Result of `revertSeededPersona`; `reason` ∈ `'not-seeded'` \| `'row-absent'` \| `'settings-unavailable'`. |
-| `SeedsWireStatus` | `{ id: string; overridden: boolean }` | Gateway wire entry (card badge state); the gateway `seeds` field is an array of these. |
+| `SeedsWireStatus` | `{ id: string; overridden: boolean; source?: SeedSource }` | Gateway wire entry (card badge state + provenance); the gateway `seeds` field is an array of these. `source` is optional — a gateway predating the field omits it (version skew) and consumers treat a missing label as "no badge". |
 
 ## Version metadata
 

@@ -200,7 +200,7 @@ describe('llm-fallbacks named cordis service', () => {
 
   it('declareSeeds materializes rows and getEffectiveRoles reads them back (manager single point of truth)', async () => {
     // Pin to `presets: 'none'` (fallbacks-preset-roles T3): the bundled
-    // preset self-declaration would otherwise add 7 preset rows to the
+    // preset self-declaration would otherwise add 5 preset rows to the
     // registry and break the exact-shape readback assertion below — this
     // test exercises the service seed surface, not presets.
     //

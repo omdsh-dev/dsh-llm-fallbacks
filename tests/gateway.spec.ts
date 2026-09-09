@@ -398,7 +398,7 @@ describe('with a settings service (set writes the user layer)', () => {
       },
     })
     expect(outcome).toEqual({ applied: ['architect'], skipped: [], conflicts: [] })
-    expect(gateway.get().seeds).toEqual([{ id: 'architect', overridden: false }])
+    expect(gateway.get().seeds).toEqual([{ id: 'architect', overridden: false, source: 'external' }])
 
     // An operator edit flips the badge to override; the set response reports
     // the POST-WRITE state (the merge keeps the rows — set is not a reset).
@@ -406,8 +406,8 @@ describe('with a settings service (set writes the user layer)', () => {
       roles: { list: [{ id: 'architect', persona: 'operator edit' }], rules: [] },
     })
     const setResult = await gateway.set({ enabled: true })
-    expect(setResult.seeds).toEqual([{ id: 'architect', overridden: true }])
-    expect(gateway.get().seeds).toEqual([{ id: 'architect', overridden: true }])
+    expect(setResult.seeds).toEqual([{ id: 'architect', overridden: true, source: 'external' }])
+    expect(gateway.get().seeds).toEqual([{ id: 'architect', overridden: true, source: 'external' }])
 
     // reset clears the user layer — the materialized seed rows go with it,
     // so the honest post-write badge state is empty (the in-memory registry
@@ -1138,7 +1138,7 @@ describe('composed plugin (apply wires the gateway)', () => {
     await ctx.plugin(TypertRegistry)
     await ctx.plugin(TypertGatewayService)
     // Pin the entry to `presets: 'none'` (fallbacks-preset-roles T3): the
-    // bundled preset self-declaration would otherwise materialize 7 preset
+    // bundled preset self-declaration would otherwise materialize 5 preset
     // rows into the composed config and break every byte-identical entry
     // comparison below — this test exercises gateway mechanics, not presets.
     const entry = entryConfig({ cooldownMs: 120_000, presets: 'none' })
