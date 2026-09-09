@@ -1033,6 +1033,8 @@ describe('FallbacksSettingsController', () => {
   it('loads seeds from the gateway get response (the card badge source)', async () => {
     // spec §9.4: the additive seeds field rides the get response exactly
     // like legacyKeys — the wire value is authoritative for the badge.
+    // A blank/whitespace-only `source` counts as malformed (it would
+    // render a textless badge): the field drops, the entry still parses.
     const api = makeApi()
     api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
     const { rpc, get } = makeRpc()
@@ -1041,6 +1043,8 @@ describe('FallbacksSettingsController', () => {
       seeds: [
         { id: 'architect', overridden: false },
         { id: 'qa-engineer', overridden: true },
+        { id: 'writer', overridden: false, source: '' },
+        { id: 'scout', overridden: false, source: '   ' },
       ],
     })))
     const controller = new FallbacksSettingsController(api, rpc)
@@ -1048,6 +1052,8 @@ describe('FallbacksSettingsController', () => {
     expect(controller.store.getSnapshot().seeds).toEqual([
       { id: 'architect', overridden: false },
       { id: 'qa-engineer', overridden: true },
+      { id: 'writer', overridden: false },
+      { id: 'scout', overridden: false },
     ])
   })
 

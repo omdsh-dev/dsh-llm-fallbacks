@@ -184,7 +184,9 @@ function getPath(value: unknown, path: readonly string[]): unknown {
  * precedent. `source` is optional on the wire (gateway version skew): a
  * present-and-string label is kept, an absent/malformed one drops the
  * field while the entry itself still parses — consumers treat a missing
- * label as "no badge" (the degradation path, never an error). Entries are
+ * label as "no badge" (the degradation path, never an error). A blank or
+ * whitespace-only label counts as malformed (it would render a textless
+ * badge). Entries are
  * NORMALIZED to the known keys, so a wire entry can never smuggle a
  * non-string `source` past the guard's type. A non-array value resolves
  * to `[]`; malformed entries are dropped, so an all-bad array also lands
@@ -199,7 +201,7 @@ function parseSeedsWire(value: unknown): SeedsWireStatus[] {
     entries.push({
       id: entry.id,
       overridden: entry.overridden,
-      ...(typeof entry.source === 'string' ? { source: entry.source } : {}),
+      ...(typeof entry.source === 'string' && entry.source.trim() !== '' ? { source: entry.source } : {}),
     })
   }
   return entries
