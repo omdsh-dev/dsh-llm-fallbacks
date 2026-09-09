@@ -47,7 +47,7 @@ import { firstExactCandidate, resolveRoleAtDispatch } from './role-resolution.ts
 import { detectAuthorizedRoute, type AuthorizedRouteSession } from './authorized-route.ts'
 import { firstAllowedCandidate, resolvedRoutes } from './route-allowlist.ts'
 import { effectivePolicy, readSessionPolicyEvent, type PolicySettings } from './subagent-policy.ts'
-import { FallbackStateStore, type AgentFallbackState, type BlockedSwitchAttempt, type EffectiveChainHead, type PendingSwitch } from './state.ts'
+import { FallbackStateStore, type AgentFallbackState, type BlockedSwitchAttempt, type EffectiveChainHead, type PendingSwitch, type SwitchScope } from './state.ts'
 import { escalatedCooldownMs } from './recovery.ts'
 import { overrideConfigWithRouteRule, type LlmReasoningEffort } from './override.ts'
 import {
@@ -150,7 +150,7 @@ export { Config }
 /** The plugin's composition config — the `fallbacks` settings schema (spec §4). */
 export type Config = FallbacksConfig
 export type { FallbackSwitchReason, FallbacksSwitchEventData } from './events.ts'
-export type { AgentFallbackState, BlockedSwitchAttempt, FallbackStateStore, PendingSwitch, StepFailures } from './state.ts'
+export type { AgentFallbackState, BlockedSwitchAttempt, FallbackStateStore, PendingSwitch, StepFailures, SwitchScope } from './state.ts'
 /** @internal T5 test-seam types (mirrors `BlockedSwitchAttempt`; not public API). */
 export type { ChainHeadSource, EffectiveChainHead } from './state.ts'
 
@@ -224,9 +224,41 @@ export {
 // agent prompts, snapshot 2026-08-16; frozen text = spec §9.2).
 export { presetRoles } from './presets.ts'
 
-/** Model-catalog service shape the wildcard existence probe reads (`ctx.llm`). */
+/**
+ * dsh core's canonical failure code for a request larger than the model's
+ * context window (`@deepseek-ai/dsh-llm` `CONTEXT_WINDOW_EXCEEDED_CODE`; the
+ * DeepSeek adapter's `httpErrorCode()` and llm-pi-ai's `mapStopReason()` both
+ * map the provider 400 "maximum context length" to it). Declared as a literal
+ * for the same reason `triggerCodes` is `string[]` — the plugin compares dsh
+ * failure codes as plain strings and never imports a peer value.
+ *
+ * It is NOT in llm-retry's retryable set, so the plugin sees it only when the
+ * operator lists it in `triggerCodes`, and only after `compaction-basic` has
+ * spent its own `maxOverflowRetries` compaction budget on the same failure.
+ */
+const CONTEXT_WINDOW_EXCEEDED_CODE = 'CONTEXT_WINDOW_EXCEEDED'
+
+/**
+ * Failure codes whose switch is REQUEST-scoped (see {@link SwitchScope}): the
+ * route is healthy and the request was the problem, so `commit()` must not
+ * cool the from-route down or feed the half-open recovery counter. A set, so
+ * a future code (`INVALID_REQUEST`) joins by one line.
+ */
+const REQUEST_SCOPED_CODES: ReadonlySet<string> = new Set([CONTEXT_WINDOW_EXCEEDED_CODE])
+
+/**
+ * Model-catalog service shape the wildcard existence probe reads (`ctx.llm`).
+ *
+ * `contextWindow` is the advisory catalog row's window when the host's
+ * adapter discloses one there; `resolveModelInfo` is the exact-route metadata
+ * dsh 0.1.2-rc.1 actually carries it on (`LlmResolvedModelInfo.context`).
+ * Both are optional and read structurally — a host service that offers
+ * neither simply reports every window as unknown (see
+ * {@link makeContextWindowOf}).
+ */
 interface ModelCatalogService {
-  listModels(provider: string): Promise<readonly { id: string }[]>
+  listModels(provider: string): Promise<readonly { id: string; contextWindow?: number }[]>
+  resolveModelInfo?(provider: string, model: string): Promise<{ context?: { contextWindow?: number } }>
 }
 
 /**
@@ -321,6 +353,57 @@ async function makeModelExists(
     }
   }))
   return (provider, model) => catalog.get(provider)?.has(model) ?? false
+}
+
+/**
+ * The context-window lookup for a `CONTEXT_WINDOW_EXCEEDED` decision: a
+ * `provider/model → contextWindow` map over the failing route plus every
+ * resolved candidate route, fetched once per decision (the `makeModelExists`
+ * pattern — failure-driven and rare, never cached across decisions).
+ *
+ * Two sources, cheapest first: the advertised catalog row when it discloses a
+ * window (one `listModels` per distinct provider), then — for routes still
+ * unknown — the exact-route `resolveModelInfo` metadata, which is where dsh
+ * 0.1.2-rc.1 puts `context.contextWindow`. A missing `llm` service, a service
+ * without either method, a throwing probe, or a route that discloses nothing
+ * all read as UNKNOWN (`undefined`), and unknown always KEEPS the candidate:
+ * an undisclosed window must never empty a chain (warn-not-crash, the same
+ * permissiveness the exact-entry existence contract has).
+ */
+async function makeContextWindowOf(
+  ctx: Context,
+  routes: readonly FailingModel[],
+): Promise<(provider: string, model: string) => number | undefined> {
+  const llm = ctx.get('llm') as ModelCatalogService | undefined
+  if (llm === undefined) return () => undefined
+  const windows = new Map<string, number>()
+  if (typeof llm.listModels === 'function') {
+    await Promise.all([...new Set(routes.map((route) => route.provider))].map(async (provider) => {
+      try {
+        for (const model of await llm.listModels(provider)) {
+          if (typeof model.contextWindow === 'number') {
+            windows.set(selectorKey(provider, model.id), model.contextWindow)
+          }
+        }
+      } catch {
+        // An unreachable catalog leaves its routes unknown — never a skip.
+      }
+    }))
+  }
+  const resolveModelInfo = llm.resolveModelInfo?.bind(llm)
+  if (resolveModelInfo !== undefined) {
+    await Promise.all(routes.map(async (route) => {
+      const key = selectorKey(route.provider, route.model)
+      if (windows.has(key)) return
+      try {
+        const window = (await resolveModelInfo(route.provider, route.model))?.context?.contextWindow
+        if (typeof window === 'number') windows.set(key, window)
+      } catch {
+        // Same degradation as the catalog probe: unknown, never a skip.
+      }
+    }))
+  }
+  return (provider, model) => windows.get(selectorKey(provider, model))
 }
 
 /**
@@ -771,6 +854,12 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
    * yet (F-004 — the store is only grown on a real switch intent, inside
    * `commit`). With no state there is no step bookkeeping, so the valve check
    * passes and cooldown/step-failed reads are false.
+   *
+   * `failureCode` is the dsh failure code that triggered the walk (absent for
+   * the always-cap path, which has no failure of its own): a
+   * `CONTEXT_WINDOW_EXCEEDED` trigger additionally filters candidates by
+   * context window — a model no larger than the one that just rejected the
+   * request cannot fit it either.
    */
   async function decide(
     agent: Agent,
@@ -779,6 +868,7 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     current: FailingModel,
     reason: FallbackSwitchReason,
     state: AgentFallbackState | undefined,
+    failureCode?: string,
   ): Promise<PendingSwitch | null> {
     const config = source()
     if (state !== undefined) {
@@ -833,7 +923,22 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     const failed = {
       has: (key: string) => state !== undefined && state.stepFailures.failed.has(key),
     }
-    const filter = createCandidateFilter({ current, cooldown, failed })
+    // Context-window trigger: the request did not fit the failing model, so a
+    // candidate whose own KNOWN window is not larger cannot fit it either —
+    // switching there just fails again. The lookup spans the failing route and
+    // every resolved candidate route, and is built ONLY for this trigger, so
+    // every other decision stays zero-probe (mirrors the F-002 wildcard gate
+    // above). Unknown on either side keeps the candidate (chains.ts).
+    const contextWindowOf = failureCode === CONTEXT_WINDOW_EXCEEDED_CODE
+      ? await makeContextWindowOf(ctx, [
+        current,
+        ...all.flatMap((candidate) => candidate.model === undefined
+          ? []
+          : [{ provider: candidate.provider, model: candidate.model }]),
+      ])
+      : undefined
+    const minContextWindow = contextWindowOf?.(current.provider, current.model)
+    const filter = createCandidateFilter({ current, cooldown, failed, minContextWindow, contextWindowOf })
     const surviving = selectCandidates(all, wildcard, filter, modelExists)
     // T3 (plan dsh-012-subagent-routing): allowlist-constrained failure
     // switching. The subagent host policy — read PER DECISION through the T1
@@ -929,9 +1034,9 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
       reason,
       // spec §2 行为可见性: the log shows the candidate attempt order AND why
       // each candidate was skipped (cooldown / step-failed / same-as-current /
-      // target-provider missing id); survivors (including the target) are
-      // unlabelled.
-      annotateCandidates(all, surviving, { current, cooldown, failed })
+      // too-small context window / target-provider missing id); survivors
+      // (including the target) are unlabelled.
+      annotateCandidates(all, surviving, { current, cooldown, failed, minContextWindow, contextWindowOf })
         .map(({ candidate, skip }) => skip === undefined
           ? `${candidate.provider}/${candidate.model}`
           : `${candidate.provider}/${candidate.model} (skipped: ${skip})`),
@@ -948,24 +1053,35 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   function commit(state: AgentFallbackState, pending: PendingSwitch, turn: number, step: number): void {
     const config = source()
     const fromKey = selectorKey(pending.from.provider, pending.from.model)
-    // P2 rule 1 (plan fallbacks-half-open-recovery Task 4): under half-open
-    // mode the suppression duration escalates with the consecutive-failure
-    // counter (n = 1 is flat cooldownMs); 'never' and 'timer' run today's
-    // line verbatim. The states.recordFailure/recordSwitch bookkeeping below
-    // is untouched — escalation changes duration only, never the per-step
-    // switch count.
-    const until = config.revertPolicy === 'never'
-      ? Number.POSITIVE_INFINITY
-      : config.recovery === 'half-open'
-        ? Date.now() + escalatedCooldownMs(config.cooldownMs, state.recovery.recordFailure(fromKey))
-        : Date.now() + config.cooldownMs
     // F-004 follow-up: a state freshly created by `states.get` at the commit
     // site carries no (turn, step) markers — sync them here so the next
     // decision's valve/failed-set bookkeeping sees this committed step (a
     // no-op for states `decide` already synced at the same (turn, step)).
     states.syncStep(state, turn, step)
     states.writePending(state, pending)
-    states.suppress(state, fromKey, until)
+    // Route-scoped (the default, and every switch before request-scoped codes
+    // existed): the from-route itself is unhealthy, so it is suppressed for
+    // cooldownMs. P2 rule 1 (plan fallbacks-half-open-recovery Task 4): under
+    // half-open mode the duration escalates with the consecutive-failure
+    // counter (n = 1 is flat cooldownMs); 'never' and 'timer' run today's line
+    // verbatim.
+    //
+    // Request-scoped (`REQUEST_SCOPED_CODES`, e.g. CONTEXT_WINDOW_EXCEEDED):
+    // the route is healthy — this one request was too big — so neither the
+    // suppression nor the recovery counter is written. Cooling it down would
+    // send the next SHORT prompt to the fallback for no reason and burn a
+    // half-open probe on a route that never failed. The step-scoped
+    // bookkeeping below is deliberately kept for both scopes: recordFailure so
+    // this step does not bounce straight back to the model that just rejected
+    // it, recordSwitch so `maxSwitchesPerStep` still caps the walk.
+    if ((pending.scope ?? 'route') === 'route') {
+      const until = config.revertPolicy === 'never'
+        ? Number.POSITIVE_INFINITY
+        : config.recovery === 'half-open'
+          ? Date.now() + escalatedCooldownMs(config.cooldownMs, state.recovery.recordFailure(fromKey))
+          : Date.now() + config.cooldownMs
+      states.suppress(state, fromKey, until)
+    }
     states.recordFailure(state, fromKey)
     states.recordSwitch(state)
     // issue #52: no durable `fallbacks/switch` session event is written — the
@@ -1019,12 +1135,17 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     try {
       // F-004: peek, never create — a null decision must not grow the store.
       const state = states.peek(agent.id)
-      const pending = await decide(agent, turn, step, current, 'trigger-code', state)
+      const pending = await decide(agent, turn, step, current, 'trigger-code', state, failure.code)
       if (pending === null) {
         failHalfOpenProbe(agent.id, current)
         return next()
       }
-      commit(states.get(agent.id), pending, turn, step)
+      // A request-scoped code describes the REQUEST, not the route: the switch
+      // still happens (and is still step-scoped bookkept), but commit() leaves
+      // the healthy from-route uncooled. Every other code keeps the scope
+      // absent — verbatim route-scoped semantics.
+      const scope: SwitchScope | undefined = REQUEST_SCOPED_CODES.has(failure.code) ? 'request' : undefined
+      commit(states.get(agent.id), scope === undefined ? pending : { ...pending, scope }, turn, step)
       return { kind: 'retry' }
     } catch (error) {
       logger.warn(

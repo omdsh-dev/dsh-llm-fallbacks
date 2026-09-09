@@ -50,6 +50,10 @@ fallbacks 配置的自明结构：块 1 = `rootChain`（root 主代理一条链�
 ### triggerCodes
 触发 fallback 决策的失败码集合，默认 `['AUTH', 'QUOTA', 'RATE_LIMIT']`（dsh 稳定失败码；注意是 `QUOTA` 不是 `QUOTA_EXCEEDED`）。重试型失败（5xx/TRANSPORT）由 llm-retry 先行退避，预算耗尽后同样进入 fallback 决策。
 
+### 路由级 vs 请求级失败（route-scoped / request-scoped）
+失败归因的二分，决定切换是否冷却 from 路由：**路由级**（缺省，`PendingSwitch.scope` 省略即此）= provider/model 本身不健康（AUTH/QUOTA/RATE_LIMIT…），照旧 `suppress` + 恢复计数；**请求级**（`REQUEST_SCOPED_CODES`，当前仅 `CONTEXT_WINDOW_EXCEEDED`）= 路由健康、这一次请求太大——step 级记账（本步失败集合 + 切换计数）保留，但**不写**冷却与半开恢复计数（冷却健康路由会把下一条短提示词无谓地推给 fallback，并浪费一次半开探针）。
+*Avoid:* 把请求级切换当「不记账」（step 级记账仍在，只是不冷却路由）
+
 ### documented degradation（文档化降级）
 被接受的功能落差必须「非静默」呈现：替代方案有测试证明，**或**降级说明（设置页/文档）+ QA 实测证据闭环，二选一（PD-4 口径）。当前实例：model-selection 协调在 mount-only 下无可靠覆写 seam → 当步路由由监听注册顺序决定，设置页 `status.selectionNote`（zh/en）诚实标注、组合测试钉住语义。
 

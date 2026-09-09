@@ -33,12 +33,33 @@ import { CooldownStore, StepFailureSet } from './cooldown.ts'
 import { RecoveryStore } from './recovery.ts'
 import type { RecoveryPolicy } from './config.ts'
 
+/**
+ * What a switch's failure was actually about.
+ *
+ * `'route'` (the default) is every failure the plugin has ever walked: the
+ * provider/model itself is unhealthy (auth, quota, rate limit, ...), so the
+ * from-route is cooled down and counted as a route failure.
+ * `'request'` is a failure of the REQUEST on a healthy route — a
+ * `CONTEXT_WINDOW_EXCEEDED` rejection is the request being too big, not the
+ * model being down. `commit()` keeps the step-scoped bookkeeping for those
+ * but writes no suppression and no recovery failure (see `src/index.ts`
+ * `REQUEST_SCOPED_CODES`).
+ */
+export type SwitchScope = 'route' | 'request'
+
 /** Decision awaiting application at the next `agent/request` boundary (spec §5.1). */
 export interface PendingSwitch {
   from: { provider: string; model: string }
   to: { provider: string; model: string }
   role: string
   reason: FallbackSwitchReason
+  /**
+   * What the failure was about — absent means `'route'`, the semantics every
+   * switch had before request-scoped codes existed (same optional-with-a-
+   * documented-default idiom as `FallbacksRole.fallback`). Only the
+   * `agent/request-error` listener ever sets `'request'`.
+   */
+  scope?: SwitchScope
 }
 
 /**

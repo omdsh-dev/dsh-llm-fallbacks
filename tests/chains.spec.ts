@@ -8,8 +8,8 @@
  * (keep failing model id, swap provider only),
  * entry-level skip logic (`resolveCandidate` with `modelExists`),
  * malformed-entry resilience, the caller-side candidate filter (cooldown /
- * failed-set / same-as-current / absent model id), and the
- * `hasWildcardEntry` probe on the same concatenated candidates.
+ * failed-set / same-as-current / absent model id / too-small context window),
+ * and the `hasWildcardEntry` probe on the same concatenated candidates.
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -284,6 +284,62 @@ describe('createCandidateFilter — caller-side candidate filtering', () => {
   })
 })
 
+describe('createCandidateFilter — context-window exclusion (CONTEXT_WINDOW_EXCEEDED walk)', () => {
+  const failing = { provider: 'openai', model: 'gpt-4o' }
+  /** Advertised windows; a route absent from the map discloses none (unknown). */
+  const windows: Record<string, number> = {
+    'openai/gpt-4o': 8_192,
+    'anthropic/claude-3-5-sonnet': 200_000,
+    'local/tiny': 4_096,
+    'mistral/mistral-large': 8_192,
+  }
+
+  const sel = (provider: string, model: string): Selector => ({ provider, model, raw: `${provider}/${model}` })
+
+  function makeFilter(overrides: Partial<Parameters<typeof createCandidateFilter>[0]> = {}) {
+    return createCandidateFilter({
+      current: failing,
+      cooldown: new CooldownStore(),
+      failed: new StepFailureSet(),
+      minContextWindow: windows['openai/gpt-4o'],
+      contextWindowOf: (provider, model) => windows[`${provider}/${model}`],
+      ...overrides,
+    })
+  }
+
+  it('keeps a candidate whose window is larger than the failing model\'s', () => {
+    expect(makeFilter()(sel('anthropic', 'claude-3-5-sonnet'))).toBe(true)
+  })
+
+  it('skips a candidate whose window is smaller (it cannot fit the request either)', () => {
+    expect(makeFilter()(sel('local', 'tiny'))).toBe(false)
+  })
+
+  it('skips a candidate whose window is exactly equal (larger is required, not equal)', () => {
+    expect(makeFilter()(sel('mistral', 'mistral-large'))).toBe(false)
+  })
+
+  it('keeps a candidate that discloses no window (unknown on the candidate side)', () => {
+    expect(makeFilter()(sel('google', 'gemini-1.5-pro'))).toBe(true)
+  })
+
+  it('keeps every candidate when the failing model discloses no window (unknown on the failing side)', () => {
+    const filter = makeFilter({ minContextWindow: undefined })
+    expect(filter(sel('local', 'tiny'))).toBe(true)
+    expect(filter(sel('mistral', 'mistral-large'))).toBe(true)
+  })
+
+  it('is inert without a lookup (every non context-window walk keeps today\'s filtering)', () => {
+    expect(makeFilter({ contextWindowOf: undefined })(sel('local', 'tiny'))).toBe(true)
+  })
+
+  it('keeps the earlier exclusions ahead of it (same-as-current wins over a known window)', () => {
+    // The failing model's own window is never "larger than itself" — the
+    // same-as-current check must still be the reason it is dropped.
+    expect(makeFilter()(sel('openai', 'gpt-4o'))).toBe(false)
+  })
+})
+
 describe('annotateCandidates — per-candidate skip reasons (T3 review Minor 1)', () => {
   const failing = { provider: 'openai', model: 'gpt-4o' }
 
@@ -328,6 +384,40 @@ describe('annotateCandidates — per-candidate skip reasons (T3 review Minor 1)'
     const annotated = annotateCandidates(candidates, [candidates[1]!], options)
     expect(annotated[0]?.skip).toBe('missing-id')
     expect(annotated[1]?.skip).toBeUndefined()
+  })
+
+  it('labels a candidate dropped only by the context-window filter as context-window', () => {
+    const { options } = makeBase()
+    // An 8k failing model: the 4k candidate cannot fit the request either, the
+    // 200k one can, and the candidate that discloses no window is kept.
+    const contextOptions = {
+      ...options,
+      minContextWindow: 8_192,
+      contextWindowOf: (provider: string) => ({ local: 4_096, anthropic: 200_000 } as Record<string, number>)[provider],
+    }
+    const candidates: Selector[] = [
+      { provider: 'local', model: 'tiny', raw: 'local/tiny' },
+      { provider: 'google', model: 'gemini-1.5-pro', raw: 'google/gemini-1.5-pro' },
+      { provider: 'anthropic', model: 'claude-3-5-sonnet', raw: 'anthropic/claude-3-5-sonnet' },
+    ]
+    const annotated = annotateCandidates(candidates, [candidates[1]!, candidates[2]!], contextOptions)
+    expect(annotated.map(({ candidate, skip }) => [candidate.raw, skip])).toEqual([
+      ['local/tiny', 'context-window'],
+      ['google/gemini-1.5-pro', undefined],
+      ['anthropic/claude-3-5-sonnet', undefined],
+    ])
+  })
+
+  it('reports cooldown ahead of context-window (same precedence as the filter)', () => {
+    const { options, cooldown } = makeBase()
+    cooldown.suppress('local/tiny', Infinity)
+    const candidates: Selector[] = [{ provider: 'local', model: 'tiny', raw: 'local/tiny' }]
+    const annotated = annotateCandidates(candidates, [], {
+      ...options,
+      minContextWindow: 8_192,
+      contextWindowOf: () => 4_096,
+    })
+    expect(annotated[0]?.skip).toBe('cooldown')
   })
 
   it('keeps the considered order and preserves duplicates', () => {

@@ -74,7 +74,7 @@ Operator-facing behavior of the automatic declaration (config key `presets: 'bun
 
 ### Existing plugin exports (unchanged)
 
-`name` / `Config` (schemastery schema) / `stateStore` / `countRetryEvents` / `apply` and the event and state types (`FallbackSwitchReason` / `FallbacksSwitchEventData` / `AgentFallbackState` / `FallbackStateStore` / `PendingSwitch` / `StepFailures`) continue to be exported from the package root, zero regression.
+`name` / `Config` (schemastery schema) / `stateStore` / `countRetryEvents` / `apply` and the event and state types (`FallbackSwitchReason` / `FallbacksSwitchEventData` / `AgentFallbackState` / `FallbackStateStore` / `PendingSwitch` / `SwitchScope` / `StepFailures`) continue to be exported from the package root, zero regression.
 
 > **Mechanical guard (S-3)**: the SSOT for the runtime export inventory above (functions / values / existing plugin exports) is `LIBRARY_EXPORT_KEYS` in `tests/export-surface.spec.ts` — adding or removing any runtime key in this inventory requires syncing that array (and the `valueExports` type mapping in the same file), or CI fails. The type export inventory is pinned by the `expectTypeOf` block in the same file (dev-time type pin, checked by local tsc).
 
