@@ -13,7 +13,9 @@
 - The named service `llm-fallbacks` appears only once the plugin's settings
   write channel is bound (probe it with `ctx.get('llm-fallbacks')`).
   Registration order inside the settings
-  inject child is: bind `writeRoles` first, then `ctx.provide('llm-fallbacks', …)`
+  inject child is: bind `writeRoles` first, then `sctx.provide('llm-fallbacks', …)`
+  (child-context provide — this makes the settings child the owner fiber, so
+  the service unregisters on settings teardown)
   — both synchronous in the same callback body.
 - **Consumer invariant**: "the service probes non-`undefined`" implies
   "`declareSeeds` can write". The documented declare-on-probe pattern
