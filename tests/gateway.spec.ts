@@ -398,7 +398,7 @@ describe('with a settings service (set writes the user layer)', () => {
       },
     })
     expect(outcome).toEqual({ applied: ['architect'], skipped: [], conflicts: [] })
-    expect(gateway.get().seeds).toEqual([{ id: 'architect', overridden: false }])
+    expect(gateway.get().seeds).toEqual([{ id: 'architect', overridden: false, source: 'external' }])
 
     // An operator edit flips the badge to override; the set response reports
     // the POST-WRITE state (the merge keeps the rows — set is not a reset).
@@ -406,8 +406,8 @@ describe('with a settings service (set writes the user layer)', () => {
       roles: { list: [{ id: 'architect', persona: 'operator edit' }], rules: [] },
     })
     const setResult = await gateway.set({ enabled: true })
-    expect(setResult.seeds).toEqual([{ id: 'architect', overridden: true }])
-    expect(gateway.get().seeds).toEqual([{ id: 'architect', overridden: true }])
+    expect(setResult.seeds).toEqual([{ id: 'architect', overridden: true, source: 'external' }])
+    expect(gateway.get().seeds).toEqual([{ id: 'architect', overridden: true, source: 'external' }])
 
     // reset clears the user layer — the materialized seed rows go with it,
     // so the honest post-write badge state is empty (the in-memory registry

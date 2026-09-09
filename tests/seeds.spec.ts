@@ -337,7 +337,7 @@ describe('FallbacksSeedManager — materialization (spec §9.2 table)', () => {
       personaOverridden: false,
     })
     expect(readback.roles.find((r) => r.id === 'coder')!.seedPersona).toBeUndefined()
-    expect(manager.wireStatus(f.io)).toEqual([{ id: 'reviewer', overridden: false }])
+    expect(manager.wireStatus(f.io)).toEqual([{ id: 'reviewer', overridden: false, source: 'external' }])
   })
 
   it('re-declaring a previously dropped id re-materializes conservatively (spec §9.2 honest limitation)', async () => {
@@ -636,6 +636,7 @@ describe('FallbacksSeedManager — derived readback state', () => {
         fallback: 'none',
         seeded: true,
         personaOverridden: false,
+        source: 'external',
         seedPersona: 'seed',
       },
       {
@@ -643,6 +644,7 @@ describe('FallbacksSeedManager — derived readback state', () => {
         persona: 'operator',
         seeded: true,
         personaOverridden: true,
+        source: 'external',
         seedPersona: 'default-r',
       },
       {
@@ -650,6 +652,7 @@ describe('FallbacksSeedManager — derived readback state', () => {
         persona: 'x',
         seeded: false,
         personaOverridden: false,
+        source: 'user',
       },
     ])
   })
@@ -658,9 +661,9 @@ describe('FallbacksSeedManager — derived readback state', () => {
     const manager = new FallbacksSeedManager({ warn: vi.fn() })
     const f = fakeIo(baseConfig({ list: [{ id: 'coder', persona: 'op' }], rules: [] }))
     await manager.declare([{ id: 'coder', persona: 'seed' }], f.io)
-    expect(manager.wireStatus(f.io)).toEqual([{ id: 'coder', overridden: true }])
+    expect(manager.wireStatus(f.io)).toEqual([{ id: 'coder', overridden: true, source: 'external' }])
 
     await manager.revert('coder', f.io)
-    expect(manager.wireStatus(f.io)).toEqual([{ id: 'coder', overridden: false }])
+    expect(manager.wireStatus(f.io)).toEqual([{ id: 'coder', overridden: false, source: 'external' }])
   })
 })

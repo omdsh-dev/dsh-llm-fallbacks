@@ -120,7 +120,7 @@ describe('bundled preset self-declaration (real apply)', () => {
     })
     // Badge: all seven rows seeded at their default (nothing overridden).
     expect(gateway(ctx).get().seeds).toEqual(
-      presetRoles.map((preset) => ({ id: preset.id, overridden: false })),
+      presetRoles.map((preset) => ({ id: preset.id, overridden: false, source: 'external' })),
     )
     // The service readback agrees (single point of truth).
     expect(service(ctx).getEffectiveRoles().roles.map((role) => role.id)).toEqual(presetRoles.map((preset) => preset.id))
@@ -145,7 +145,7 @@ describe('bundled preset self-declaration (real apply)', () => {
       roles: { list: presetRoles.map((preset) => ({ id: preset.id, persona: preset.persona })), rules: [] },
     })
     expect(gateway(ctx).get().seeds).toEqual(
-      presetRoles.map((preset) => ({ id: preset.id, overridden: false })),
+      presetRoles.map((preset) => ({ id: preset.id, overridden: false, source: 'external' })),
     )
   })
 
@@ -285,7 +285,7 @@ describe('bundled preset self-declaration (real apply)', () => {
     // The operator persona survives; the preset default is NOT written over it.
     expect(rows.find((row) => row.id === 'designer')!.persona).toBe('operator persona')
     // The badge marks the override (derived, not persisted).
-    expect(gateway(ctx).get().seeds.find((seed) => seed.id === 'designer')).toEqual({ id: 'designer', overridden: true })
+    expect(gateway(ctx).get().seeds.find((seed) => seed.id === 'designer')).toEqual({ id: 'designer', overridden: true, source: 'external' })
 
     const warns = logs.filter((message) => message.type === 'warn').map((message) => String(message.args[0]))
     expect(warns).toContain(
@@ -465,7 +465,7 @@ describe('bundled preset self-declaration (real apply)', () => {
     expect(rows.map((row) => row.persona)).toEqual(presetRoles.map((preset) => preset.persona))
     expect(userSection(ctx)).toEqual(persisted)
     expect(gateway(ctx).get().seeds).toEqual(
-      presetRoles.map((preset) => ({ id: preset.id, overridden: false })),
+      presetRoles.map((preset) => ({ id: preset.id, overridden: false, source: 'external' })),
     )
   })
 })

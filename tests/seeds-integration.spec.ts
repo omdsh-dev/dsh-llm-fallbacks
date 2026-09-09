@@ -102,8 +102,8 @@ describe('seeds → gateway integration (real apply)', () => {
     expect(result.config.roles.list[1]).toMatchObject({ id: 'qa-engineer', persona: 'Guards release quality' })
     // The additive badge state reports both ids at their seed default.
     expect(result.seeds).toEqual([
-      { id: 'architect', overridden: false },
-      { id: 'qa-engineer', overridden: false },
+      { id: 'architect', overridden: false, source: 'external' },
+      { id: 'qa-engineer', overridden: false, source: 'external' },
     ])
     // The service readback agrees with the gateway wire (single point of truth).
     expect(service(ctx).getEffectiveRoles().roles.map((role) => role.id)).toEqual(['architect', 'qa-engineer'])
@@ -118,7 +118,7 @@ describe('seeds → gateway integration (real apply)', () => {
     const rows = gateway(ctx).get().config.roles.list
     expect(rows).toHaveLength(1)
     expect(rows[0]).toMatchObject({ id: 'architect', persona: 'default' })
-    expect(gateway(ctx).get().seeds).toEqual([{ id: 'architect', overridden: false }])
+    expect(gateway(ctx).get().seeds).toEqual([{ id: 'architect', overridden: false, source: 'external' }])
     // The user layer holds exactly the one materialized RAW row — the
     // two-key `{ id, persona }` write shape (R4 — chain/fallback/prompt/
     // permissions keys omitted on insert), and no revision churn from the
@@ -188,7 +188,7 @@ describe('seeds → gateway integration (real apply)', () => {
     expect(rows).toHaveLength(1)
     expect(rows[0]).toMatchObject({ id: 'architect', persona: 'operator edit', chain: ['op-chain'] })
     // The badge reflects the override, not a lost row.
-    expect(gateway(second).get().seeds).toEqual([{ id: 'architect', overridden: true }])
+    expect(gateway(second).get().seeds).toEqual([{ id: 'architect', overridden: true, source: 'external' }])
   })
 
   it('skip + conflict warns carry the llm-fallbacks: seeds: prefix (AC-2/5)', async () => {
@@ -262,11 +262,11 @@ describe('seeds → gateway integration (real apply)', () => {
     await ctx.settings.update(FALLBACKS_SETTINGS_NAMESPACE, {
       roles: { list: [{ id: 'architect', persona: 'operator edit' }], rules: [] },
     })
-    expect(gateway(ctx).get().seeds).toEqual([{ id: 'architect', overridden: true }])
+    expect(gateway(ctx).get().seeds).toEqual([{ id: 'architect', overridden: true, source: 'external' }])
 
     // Service-side revert (surface (c)) restores the declared default.
     await expect(service(ctx).revertSeededPersona('architect')).resolves.toEqual({ reverted: true, persona: 'v1' })
-    expect(gateway(ctx).get().seeds).toEqual([{ id: 'architect', overridden: false }])
+    expect(gateway(ctx).get().seeds).toEqual([{ id: 'architect', overridden: false, source: 'external' }])
 
     // Operator edits again; gateway-side revert (the card endpoint) restores
     // the same current default and reports the post-write read result.
@@ -276,7 +276,7 @@ describe('seeds → gateway integration (real apply)', () => {
     const viaGateway = await gateway(ctx).revertSeed('architect')
     expect(viaGateway.outcome).toEqual({ reverted: true, persona: 'v1' })
     expect(viaGateway.config.roles.list).toMatchObject([{ id: 'architect', persona: 'v1' }])
-    expect(viaGateway.seeds).toEqual([{ id: 'architect', overridden: false }])
+    expect(viaGateway.seeds).toEqual([{ id: 'architect', overridden: false, source: 'external' }])
 
     // The companion re-declares a NEW persona → revert goes to the NEW
     // default, never a historical snapshot (R3).
@@ -293,6 +293,6 @@ describe('seeds → gateway integration (real apply)', () => {
     await expect(service(ctx).revertSeededPersona('nobody')).resolves.toEqual({ reverted: false, reason: 'not-seeded' })
     const missing = await gateway(ctx).revertSeed('nobody')
     expect(missing.outcome).toEqual({ reverted: false, reason: 'not-seeded' })
-    expect(missing.seeds).toEqual([{ id: 'architect', overridden: false }])
+    expect(missing.seeds).toEqual([{ id: 'architect', overridden: false, source: 'external' }])
   })
 })

@@ -16,6 +16,10 @@
 
 import { afterEach, describe, expect, expectTypeOf, it, vi } from 'vitest'
 import * as index from '../src/index.ts'
+// `SeedSource` is not yet re-exported from the package root (the declare
+// options surface lands with the service signature change) — type-import
+// from the seeds module directly.
+import type { SeedSource } from '../src/seeds.ts'
 
 /**
  * SSOT for the docs/consumer-api.md export inventory — the runtime keys its
@@ -239,7 +243,11 @@ describe('export surface: type exports (compile-time only)', () => {
       persona?: string
       reason?: index.SeedRevertFailReason
     }>()
-    expectTypeOf<index.SeedsWireStatus>().toEqualTypeOf<{ id: string; overridden: boolean }>()
+    expectTypeOf<index.SeedsWireStatus>().toEqualTypeOf<{
+      id: string
+      overridden: boolean
+      source: SeedSource
+    }>()
     expectTypeOf<index.SeedsIo>().toEqualTypeOf<{
       read: () => index.FallbacksConfig
       writeRoles: (roles: index.FallbacksRoles) => Promise<void>

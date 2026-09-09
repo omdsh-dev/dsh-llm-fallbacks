@@ -11,10 +11,13 @@
  * State model (spec §9.2) — two stores, strictly separated:
  * 1. operator config rows (persisted; a seeded role is a plain
  *    `roles.list` row `{ id, persona }`), and
- * 2. an in-memory per-apply seed registry (`Map<id, seedPersona>`),
- *    declare = replacement (the batch is the companion's full current set).
- * `seeded` / `personaOverridden` are DERIVED at read time, never stored —
- * a config round-trip cannot orphan an override (AC-3).
+ * 2. an in-memory per-apply seed registry (`Map<id, { persona, set }>` —
+ *    the declared default persona plus its provenance label), declare =
+ *    replacement (the batch is the companion's full current set).
+ * `seeded` / `personaOverridden` / `source` are DERIVED at read time, never
+ * stored — a config round-trip cannot orphan an override (AC-3), and
+ * provenance rides the in-memory registry only, so it can never churn a
+ * settings write.
  *
  * Materialization (spec §9.2): append `{ id, persona }` (two keys only,
  * R4) / attach row untouched / at-default tracking / override preserved +
@@ -41,6 +44,35 @@ import {
 export interface SeedDeclaration {
   id: string
   persona: string
+}
+
+/**
+ * Per-row provenance label (spec §2). The fixed labels: `bundled` (the
+ * plugin's own bundled preset self-declare), `external` (a companion
+ * declare without a set name — or with an invalid one, degraded), `user`
+ * (no live declaration). Any other value is a declared set name; the
+ * reserved names can never be declared as a set, so the fixed labels are
+ * unambiguous.
+ */
+export type SeedSource = 'bundled' | 'external' | 'user' | (string & {})
+
+/**
+ * Optional provenance for one `declare()` call (spec §2). `set` is the
+ * public face (a companion's registered set name); `bundled` is an
+ * INTERNAL marker for the plugin's own preset self-declare — not reachable
+ * through the `FallbacksService.declareSeeds` face (consumers can never
+ * label a declare `bundled`: reserved).
+ */
+export interface SeedsDeclareOptions {
+  /**
+   * Registered set name — trimmed. Empty after trim, non-string, or a
+   * reserved value (`bundled` / `user` / `external`) warns once and
+   * degrades the batch to the unnamed `external` source; the seeds still
+   * apply (a bad label must never drop roles).
+   */
+  set?: string
+  /** INTERNAL — bundled preset self-declare provenance. Not a consumer option. */
+  bundled?: true
 }
 
 /**
@@ -83,6 +115,8 @@ export interface EffectiveRole {
   seeded: boolean
   /** `seeded` && row persona !== current seed default. */
   personaOverridden: boolean
+  /** Where the row's seed state comes from (read-time derived, never persisted) — `user` iff not seeded. */
+  source: SeedSource
   /** Present iff seeded. */
   seedPersona?: string
 }
@@ -105,6 +139,8 @@ export interface SeedRevertOutcome {
 export interface SeedsWireStatus {
   id: string
   overridden: boolean
+  /** Provenance label (spec §2) — additive wire field; older clients ignore it. */
+  source: SeedSource
 }
 
 /**
@@ -118,6 +154,12 @@ export interface SeedsIo {
   writeRoles(roles: FallbacksRoles): Promise<void>
 }
 
+/** Internal registry value (never persisted): the declared persona + its provenance label. */
+interface SeedRegistryEntry {
+  persona: string
+  set: SeedSource
+}
+
 /**
  * In-memory per-apply seed manager (spec §9.2): declare / readback /
  * revert over the operator config through a `SeedsIo` seam. Created in
@@ -125,7 +167,8 @@ export interface SeedsIo {
  * warn messages carry the `llm-fallbacks: seeds:` prefix (spec §9.7).
  */
 export class FallbacksSeedManager {
-  private registry = new Map<string, string>()
+  /** Per-apply declaration registry: declared default persona + provenance label. */
+  private registry = new Map<string, SeedRegistryEntry>()
 
   constructor(private readonly logger: FallbacksConfigLogger) {}
 
@@ -134,6 +177,10 @@ export class FallbacksSeedManager {
    * companion's FULL current declaration set; ids omitted from the batch
    * drop out of the registry while their rows remain (R2).
    *
+   * `options` labels the whole batch's provenance (spec §2), resolved once
+   * per call: an invalid set name warns once and degrades to the unnamed
+   * `external` case — the seeds still apply.
+   *
    * Per-id validation AS DECLARED (spec §9.3): non-string / pattern miss /
    * reserved `inherit` / duplicate-in-batch → skip + warn; valid siblings
    * still apply (AC-5). Materializes per spec §9.2, writes only when the
@@ -141,9 +188,14 @@ export class FallbacksSeedManager {
    * (idempotent, AC-1), and commits the registry only after a successful
    * write (compute → write → commit; retry-safe).
    */
-  async declare(seeds: readonly SeedDeclaration[], io: SeedsIo): Promise<SeedDeclareOutcome> {
+  async declare(
+    seeds: readonly SeedDeclaration[],
+    io: SeedsIo,
+    options?: SeedsDeclareOptions,
+  ): Promise<SeedDeclareOutcome> {
     const outcome: SeedDeclareOutcome = { applied: [], skipped: [], conflicts: [] }
-    const registry = new Map<string, string>()
+    const source = resolveSource(options, this.logger)
+    const entries = new Map<string, SeedRegistryEntry>()
     for (const seed of seeds) {
       if (typeof seed.id !== 'string' || !ROLE_ID_PATTERN.test(seed.id)) {
         outcome.skipped.push({ id: String(seed.id), reason: 'invalid-id' })
@@ -155,12 +207,12 @@ export class FallbacksSeedManager {
         this.warnSkip(seed.id, 'reserved-id')
         continue
       }
-      if (registry.has(seed.id)) {
+      if (entries.has(seed.id)) {
         outcome.skipped.push({ id: seed.id, reason: 'duplicate-in-batch' })
         this.warnSkip(seed.id, 'duplicate-in-batch')
         continue
       }
-      registry.set(seed.id, seed.persona)
+      entries.set(seed.id, { persona: seed.persona, set: source })
       outcome.applied.push(seed.id)
     }
 
@@ -172,7 +224,7 @@ export class FallbacksSeedManager {
     // settings write still throws (retry-safe, KD-G5).
     const currentList = roleRows(config)
     const currentRules = roleRules(config)
-    const newList = materialize(currentList, registry, this.registry, outcome.conflicts)
+    const newList = materialize(currentList, personaView(entries), personaView(this.registry), outcome.conflicts)
     for (const conflict of outcome.conflicts) {
       this.logger.warn(
         `llm-fallbacks: seeds: persona-source conflict for seed id ${JSON.stringify(conflict.id)} — operator row persona kept (never overwritten)`,
@@ -189,27 +241,30 @@ export class FallbacksSeedManager {
       // (retry-safe: the next declare re-computes from the fresh read).
       await io.writeRoles(computed)
     }
-    this.registry = registry
+    this.registry = entries
     return outcome
   }
 
   /**
    * Readback (b) — sync, derived: every config row annotated with
    * `seeded` / `personaOverridden` / `seedPersona` (trimmed row-id
-   * membership in the live declaration set; persona inequality). Nothing
+   * membership in the live declaration set; persona inequality) plus the
+   * row's provenance `source` (spec §2): the declaring set's label, or
+   * `user` when no live declaration covers the row. Nothing
    * override-shaped is stored, so a config round-trip cannot orphan state.
    */
   effectiveRoles(io: SeedsIo): EffectiveRolesReadback {
     const roles: EffectiveRole[] = roleRows(io.read()).map((row) => {
-      const seedPersona = this.registry.get(row.id.trim())
-      const seeded = seedPersona !== undefined
+      const entry = this.registry.get(row.id.trim())
+      const seeded = entry !== undefined
       const effective: EffectiveRole = {
         id: row.id,
         persona: row.persona,
         seeded,
-        personaOverridden: seeded && row.persona !== seedPersona,
+        personaOverridden: seeded && row.persona !== entry.persona,
+        source: seeded ? entry.set : 'user',
       }
-      if (seeded) effective.seedPersona = seedPersona
+      if (seeded) effective.seedPersona = entry.persona
       if (row.chain !== undefined) effective.chain = row.chain
       if (row.fallback !== undefined) effective.fallback = row.fallback
       return effective
@@ -217,13 +272,13 @@ export class FallbacksSeedManager {
     return { roles }
   }
 
-  /** Card badge state (spec §9.4): seeded rows, with the override flag. */
+  /** Card badge state (spec §9.4): seeded rows, with the override flag and the provenance label. */
   wireStatus(io: SeedsIo): SeedsWireStatus[] {
     const status: SeedsWireStatus[] = []
     for (const row of roleRows(io.read())) {
-      const seedPersona = this.registry.get(row.id.trim())
-      if (seedPersona === undefined) continue
-      status.push({ id: row.id, overridden: row.persona !== seedPersona })
+      const entry = this.registry.get(row.id.trim())
+      if (entry === undefined) continue
+      status.push({ id: row.id, overridden: row.persona !== entry.persona, source: entry.set })
     }
     return status
   }
@@ -237,8 +292,8 @@ export class FallbacksSeedManager {
    */
   async revert(id: string, io: SeedsIo): Promise<SeedRevertOutcome> {
     const seedId = id.trim()
-    const seedPersona = this.registry.get(seedId)
-    if (seedPersona === undefined) return { reverted: false, reason: 'not-seeded' }
+    const entry = this.registry.get(seedId)
+    if (entry === undefined) return { reverted: false, reason: 'not-seeded' }
     // Same containment guard as `declare` (qc2 S-1): a malformed/legacy
     // `roles` shape degrades to empty rows instead of throwing — the id
     // is then simply absent, and the business outcome stays a value.
@@ -247,10 +302,10 @@ export class FallbacksSeedManager {
     const rules = roleRules(config)
     const index = rows.findIndex((row) => row.id.trim() === seedId)
     if (index === -1) return { reverted: false, reason: 'row-absent' }
-    if (rows[index].persona === seedPersona) return { reverted: true, persona: seedPersona }
-    const nextList = rows.map((row, i) => (i === index ? { ...row, persona: seedPersona } : row))
+    if (rows[index].persona === entry.persona) return { reverted: true, persona: entry.persona }
+    const nextList = rows.map((row, i) => (i === index ? { ...row, persona: entry.persona } : row))
     await io.writeRoles({ list: nextList, rules })
-    return { reverted: true, persona: seedPersona }
+    return { reverted: true, persona: entry.persona }
   }
 
   private warnSkip(id: unknown, reason: SeedSkipReason): void {
@@ -267,6 +322,40 @@ export class FallbacksSeedManager {
       this.logger.warn(`llm-fallbacks: seeds: skipping seed id ${shown} — duplicate-in-batch (first wins)`)
     }
   }
+}
+
+/** Reserved provenance labels (spec §2) — no declare may claim them as a set name. */
+const RESERVED_SET_NAMES: readonly string[] = ['bundled', 'user', 'external']
+
+/**
+ * Resolve one declare call's provenance label (spec §2): the internal
+ * bundled marker wins; an absent `set` is the unnamed external case;
+ * otherwise the name is trimmed and validated — empty after trim,
+ * non-string, or reserved warns ONCE and degrades to `external` (the
+ * seeds still apply — a bad label must never drop roles).
+ */
+function resolveSource(options: SeedsDeclareOptions | undefined, logger: FallbacksConfigLogger): SeedSource {
+  if (options?.bundled === true) return 'bundled'
+  const raw = options?.set
+  if (raw === undefined) return 'external'
+  if (typeof raw === 'string' && raw.trim() !== '' && !RESERVED_SET_NAMES.includes(raw.trim())) return raw.trim()
+  const shown = typeof raw === 'string' ? JSON.stringify(raw) : String(raw)
+  const reserved = RESERVED_SET_NAMES.map((name) => JSON.stringify(name)).join(' / ')
+  logger.warn(
+    `llm-fallbacks: seeds: ignoring declare set name ${shown} — invalid (empty after trim, non-string, or a reserved label ${reserved}); provenance degrades to "external", the seeds still apply`,
+  )
+  return 'external'
+}
+
+/**
+ * The persona-only view of a registry — materialize's input shape (spec
+ * §9.2): provenance (`set`) rides alongside in the registry but never
+ * enters the row comparison, so the R2 / no-delta logic is untouched by it.
+ */
+function personaView(entries: ReadonlyMap<string, SeedRegistryEntry>): Map<string, string> {
+  const personas = new Map<string, string>()
+  for (const [id, entry] of entries) personas.set(id, entry.persona)
+  return personas
 }
 
 /**
