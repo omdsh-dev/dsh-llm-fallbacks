@@ -775,21 +775,31 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     // `fallbacks/revert-seed` both delegate to it (spec §9.4 single point of
     // truth); the gateway builds its io over the bridge + its own settings
     // capture.
-    new FallbacksConfigGateway(ctx, bridge, seeds, () => {
-      // Same T1 reader the inject/switch paths use (no second policy source).
-      // get() is settings-page scoped: no live session, so the event read is
-      // "absent" and settings (or disabled) decide — identical to a session
-      // that has not yet recorded `subagent/model-selection-policy`.
-      try {
-        return {
-          policy: effectivePolicy({ ok: false, present: false }, readSubagentSettings(ctx)),
-          head: latestByAt(chainHeadMap),
-          blockedAttempt: latestByAt(blockedAttemptMap),
+    new FallbacksConfigGateway(
+      ctx,
+      bridge,
+      seeds,
+      () => {
+        // Same T1 reader the inject/switch paths use (no second policy source).
+        // get() is settings-page scoped: no live session, so the event read is
+        // "absent" and settings (or disabled) decide — identical to a session
+        // that has not yet recorded `subagent/model-selection-policy`.
+        try {
+          return {
+            policy: effectivePolicy({ ok: false, present: false }, readSubagentSettings(ctx)),
+            head: latestByAt(chainHeadMap),
+            blockedAttempt: latestByAt(blockedAttemptMap),
+          }
+        } catch {
+          return { policy: { state: 'unprovable' as const } }
         }
-      } catch {
-        return { policy: { state: 'unprovable' as const } }
-      }
-    })
+      },
+      // Plan subagent-role-badge T2: the badge readback closes over the SAME
+      // T1 map the inject block writes (no second record source). A plain
+      // Map read — infallible in practice; a throw degrades to `{}` in the
+      // gateway (`subagentRoles` fail-closed).
+      () => subagentRoleRecordMap,
+    )
   } catch (error) {
     if (!(error instanceof Error) || !error.message.includes('has been registered')) throw error
     ctx.logger('llm-fallbacks').debug('fallbacks gateway already registered — no gateway on this fiber (multi-fiber dedupe)')
