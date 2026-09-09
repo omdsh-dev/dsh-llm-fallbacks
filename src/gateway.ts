@@ -2,7 +2,7 @@
  * T1 (plan llm-fallbacks-settings-gateway) + T3 (plan fallbacks-role-seeds) —
  * host-side `fallbacks` config gateway: the `/api/fallbacks/get` +
  * `/api/fallbacks/set` + `/api/fallbacks/reset` + `/api/fallbacks/revert-seed`
- * endpoints.
+ * + `/api/fallbacks/subagent-roles` endpoints.
  *
  * Transport: the typertGateway `/api` interceptor is the single host-wide RPC
  * slot (a plugin must NOT `connection.rpc.intercept('/api')` again — it would
@@ -43,6 +43,11 @@
  * `revert-seed` exposes revert-to-current-seed-default for one id — both
  * delegate to the per-apply `FallbacksSeedManager` passed into the
  * constructor (single point of truth, no copied manager logic).
+ * `subagent-roles` (plan subagent-role-badge T2) is the read-only badge
+ * readback: it projects the per-apply dispatch-resolved role-record map
+ * (same T1 map the inject block writes, via the optional snapshot fn) for a
+ * batch of session ids — unknown ids are omitted, an unwired or throwing
+ * snapshot degrades to `{}`, never an error.
  *
  * The settings service is OPTIONAL (no settings service → the bridge source
  * stays the entry, `get` still works; `set`/`reset` fail with a clear
@@ -112,6 +117,37 @@ export type SubagentPolicySnapshotFn = () => {
   head?: { route: SubagentPolicyRoute; source: 'authorized' | 'injected' }
   blockedAttempt?: { at: number; route: SubagentPolicyRoute; reason: string }
 }
+
+/**
+ * One dispatch-resolved subagent role record on the wire (plan
+ * subagent-role-badge T2): the role the subagent's dispatch resolved and the
+ * route it actually runs after the inject decision. `model` is optional on
+ * the WIRE type only — the writer (T1) always sets it, but a record without
+ * one still reads back as `{ role, at }` instead of failing the readback.
+ */
+export type SubagentRoleRecord = {
+  role: string
+  model?: { provider: string; model: string }
+  at: number
+}
+
+/**
+ * Live role-record snapshot the gateway reads through (plan
+ * subagent-role-badge T2) — the `SubagentPolicySnapshotFn` pattern: built in
+ * `apply()` over the SAME T1 map the dispatch inject block writes, no second
+ * record source. Optional: constructors that omit it make the
+ * `/api/fallbacks/subagent-roles` endpoint return `{}`.
+ */
+export type SubagentRolesSnapshotFn = () => ReadonlyMap<string, SubagentRoleRecord>
+
+/**
+ * Batch bound of the `subagentRoles` readback (QC fix wave): the loop and the
+ * result projection are O(n) on the host's main thread, so the request size
+ * must be caller-capped. 256 ≫ any real badge fan-out (one id per viewed
+ * session); larger batches reject with a TypeError, the endpoint's existing
+ * malformed-input contract.
+ */
+const SUBAGENT_ROLES_MAX_IDS = 256
 
 
 /**
@@ -228,6 +264,12 @@ export class FallbacksConfigGateway extends TypertRemoteService {
    * used by gateway unit tests stays byte-identical to the pre-T5 payload.
    */
   private readonly subagentPolicy: SubagentPolicySnapshotFn | undefined
+  /**
+   * Optional role-record snapshot (plan subagent-role-badge T2). When omitted
+   * the `subagentRoles` endpoint returns `{}` — every existing constructor
+   * call site keeps its payload byte-identical.
+   */
+  private readonly subagentRolesSnapshot: SubagentRolesSnapshotFn | undefined
 
   /**
    * @param ctx - owning context (the plugin fiber's ctx inside `apply`).
@@ -238,17 +280,22 @@ export class FallbacksConfigGateway extends TypertRemoteService {
    *   copied manager logic), through the io seam built over this bridge.
    * @param subagentPolicy - live host-policy snapshot from `apply()`; omit
    *   to leave the additive field off the wire.
+   * @param subagentRoles - live dispatch-resolved role-record snapshot from
+   *   `apply()` (plan subagent-role-badge T2); omit to make the
+   *   `subagent-roles` endpoint return `{}`.
    */
   constructor(
     ctx: Context,
     bridge: FallbacksSettingsBridge,
     seeds: FallbacksSeedManager,
     subagentPolicy?: SubagentPolicySnapshotFn,
+    subagentRoles?: SubagentRolesSnapshotFn,
   ) {
     super(ctx, 'fallbacks')
     this.bridge = bridge
     this.seeds = seeds
     this.subagentPolicy = subagentPolicy
+    this.subagentRolesSnapshot = subagentRoles
     // The settings service is optional (no settings → entry fallback). The
     // inject child activates only when a settings service is composed,
     // mirroring installSettingsSection's conditional child; the returned
@@ -362,6 +409,49 @@ export class FallbacksConfigGateway extends TypertRemoteService {
   }
 
   /**
+   * Batch readback of dispatch-resolved subagent role records (plan
+   * subagent-role-badge T2) — the read side of the session-header role badge.
+   * Ids are agent ids (≡ session ids: the same id space the dispatch inject
+   * block records under). Unknown/absent ids are OMITTED from the result,
+   * never an error — the badge renders nothing for them. No snapshot wired
+   * (pre-T2 constructors) or a throwing snapshot ⇒ `{}` — degrade-never-crash,
+   * the same fail-closed shape as `projectSubagentPolicy`.
+   * @param ids - the session ids to read (at most
+   *   {@link SUBAGENT_ROLES_MAX_IDS} entries).
+   * @returns a plain JSON object keyed by KNOWN id only, each carrying the
+   *   wire record (`role`, `at`, `model` when the record has one).
+   * @throws TypeError when `ids` is not an array of strings or the batch
+   *   exceeds {@link SUBAGENT_ROLES_MAX_IDS} entries.
+   */
+  subagentRoles(ids: string[]): Record<string, SubagentRoleRecord> {
+    if (!Array.isArray(ids) || ids.some((id) => typeof id !== 'string')) {
+      throw new TypeError('dsh-llm-fallbacks: subagent-roles ids must be an array of strings')
+    }
+    if (ids.length > SUBAGENT_ROLES_MAX_IDS) {
+      throw new TypeError(
+        `dsh-llm-fallbacks: subagent-roles ids batch exceeds ${SUBAGENT_ROLES_MAX_IDS} entries`,
+      )
+    }
+    if (this.subagentRolesSnapshot === undefined) return {}
+    let records: ReadonlyMap<string, SubagentRoleRecord>
+    try {
+      records = this.subagentRolesSnapshot()
+    } catch {
+      return {}
+    }
+    // Own-property projection (QC fix wave): project per unique id into a
+    // Map, then materialize with `Object.fromEntries` — it creates OWN data
+    // properties, never the inherited `__proto__` accessor a plain
+    // `result[id] = …` assignment would trigger for a pathological id key.
+    const projected = new Map<string, SubagentRoleRecord>()
+    for (const id of ids) {
+      const record = records.get(id)
+      if (record !== undefined) projected.set(id, projectSubagentRoleRecord(record))
+    }
+    return Object.fromEntries(projected)
+  }
+
+  /**
    * Read the live composed config and normalize it to the typertGateway JSON
    * wire boundary. Containment (guide §10): a malformed stored user layer
    * that the non-strict settings schema let through (e.g. an unknown key)
@@ -471,6 +561,19 @@ function projectSubagentPolicy(
       route: { provider: blockedAttempt.route.provider, model: blockedAttempt.route.model },
       reason: blockedAttempt.reason,
     }
+  }
+  return wire
+}
+
+/**
+ * Copy one role record to the typertGateway JSON wire boundary: only the
+ * declared fields cross, `model` is omitted when absent — never
+ * present-as-undefined (the result validator rejects undefined values).
+ */
+function projectSubagentRoleRecord(record: SubagentRoleRecord): SubagentRoleRecord {
+  const wire: SubagentRoleRecord = { role: record.role, at: record.at }
+  if (record.model !== undefined) {
+    wire.model = { provider: record.model.provider, model: record.model.model }
   }
   return wire
 }
@@ -699,6 +802,24 @@ export function fallbacksTypertContribution(): TypertContribution {
         invocation: { kind: 'direct' },
         parameters: [
           { name: 'id', wire: 'id', source: 'json', codec: { mode: 'src-json' } },
+        ],
+        result: { mode: 'src-json' },
+      },
+      {
+        // The badge readback endpoint (plan subagent-role-badge T2): same
+        // hyphenated-wire-method shape — `implementation` aliases the service
+        // member `subagentRoles` (the typertGateway dispatches through
+        // `implementation ?? method`, so an omitted alias would look up a
+        // non-existent `subagent-roles` member). One plain-object `args`
+        // field: `subagentRoles(ids)` → `{ args: { ids } }`.
+        id: 'dsh-llm-fallbacks#fallbacks/subagent-roles',
+        service: 'fallbacks',
+        namespace: 'fallbacks',
+        method: 'subagent-roles',
+        implementation: 'subagentRoles',
+        invocation: { kind: 'direct' },
+        parameters: [
+          { name: 'ids', wire: 'ids', source: 'json', codec: { mode: 'src-json' } },
         ],
         result: { mode: 'src-json' },
       },

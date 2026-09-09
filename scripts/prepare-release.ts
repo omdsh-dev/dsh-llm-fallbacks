@@ -79,7 +79,7 @@ export function parseArgs(argv: string[]): { version?: string; autoBump: boolean
  * version stays in its prerelease line, bumping only the numeric tail.
  */
 export function autoBumpPatch(current: string): string {
-  const m = /^(\d+)\.(\d+)\.(\d+)(?:-(.+))?$/.exec(current)
+  const m = current.match(/^(\d+)\.(\d+)\.(\d+)(?:-(.+))?$/)
   if (!m) throw new Error(`Cannot auto-bump "${current}": not a parseable X.Y.Z[-pre] version`)
   const [, major, minor, patch, pre] = m
   if (pre === undefined) return `${major}.${minor}.${Number(patch) + 1}`

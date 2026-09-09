@@ -394,12 +394,14 @@ export function buildFallbacksTuiSection(): TuiSettingsSection {
 
 /**
  * Register the `fallbacks` section on the optional `tuiSettingsSections`
- * service. First-fiber-only (`serviceOwned === true` — mirrors
- * `installTuiClient` and the gateway/typert multi-fiber dedupe; the host
- * registry throws on a duplicate namespace, so a deduped later fiber must
- * never register). The service is optional: a composition without
- * `dsh-tui-settings-sections` keeps the plugin working and simply omits the
- * TUI settings surface.
+ * service. Gated by `serviceOwned` — the optimistic apply-time claim (see
+ * `apply()` in src/index.ts) — with a sibling dedupe guard inside the child,
+ * mirroring `installTuiClient`: the claim is not a fact, so a fiber applying
+ * inside the claim window can race another fiber's registration, and the
+ * host registry's duplicate throw must degrade (no-op disposer + debug log)
+ * instead of failing the child. Any other error stays loud. The service is
+ * optional: a composition without `dsh-tui-settings-sections` keeps the
+ * plugin working and simply omits the TUI settings surface.
  *
  * The inject child returns the registry disposer so cordis withdraws the
  * registration when this fiber (or the service) goes away.
@@ -414,6 +416,16 @@ export function installTuiSettingsSection(ctx: Context, opts: { serviceOwned: bo
       tuiSettingsSections?: { register(section: TuiSettingsSection): () => void }
     }).tuiSettingsSections
     if (registry === undefined) return
-    return registry.register(buildFallbacksTuiSection())
+    try {
+      return registry.register(buildFallbacksTuiSection())
+    } catch (error) {
+      // Sibling dedupe guard (mirrors installTuiClient): the host registry
+      // throws on a duplicate namespace, and an optimistic-claim-window
+      // fiber can race another fiber's registration. Degrade to a no-op
+      // disposer with a debug log; any other error stays loud.
+      if (!(error instanceof Error) || !error.message.includes('already registered')) throw error
+      tctx.logger('llm-fallbacks').debug('llm-fallbacks: tui settings section already registered — no section on this fiber')
+      return () => {}
+    }
   })
 }

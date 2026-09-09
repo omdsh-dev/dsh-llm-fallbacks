@@ -82,6 +82,7 @@ import { GeneralFallbacksRow } from './GeneralFallbacksRow.tsx'
 import {
   ConversationFallbackSwitch, fallbackSwitchDefinition,
 } from './ConversationFallbackSwitch.tsx'
+import { SubagentRoleBadge } from './SubagentRoleBadge.tsx'
 import {
   FallbacksSettingsController, FALLBACKS_SETTINGS_NS,
   refreshCatalogIfLoaded, refreshFallbacksIfLoaded, refreshSwitchesIfLoaded,
@@ -94,6 +95,7 @@ export type { GeneralFallbacksRowInjected, GeneralFallbacksRowProps } from './Ge
 export type {
   ConversationFallbackSwitchProps, FallbacksSwitchChatData,
 } from './ConversationFallbackSwitch.tsx'
+export type { SubagentRoleBadgeInjected, SubagentRoleBadgeProps } from './SubagentRoleBadge.tsx'
 export type { FallbacksSettingsState } from './fallbacks-store.ts'
 export { FallbacksSettingsController, FALLBACKS_SETTINGS_NS } from './fallbacks-store.ts'
 
@@ -305,5 +307,30 @@ export function apply(ctx: ClientContext): void {
       key: 'fallbacks-switch',
       locale: NS,
     }, ConversationFallbackSwitch)
+  })
+
+  // Session-header subagent role badge (plan subagent-role-badge T3): a
+  // compact read-only pill in the `conversation.session.header.utilities`
+  // list slot (scope 'session') showing which Subagent role the viewed
+  // session's dispatch resolved — hover `role → provider/model`. Render-only
+  // (C4 pattern): a view contribution, no message construction, no
+  // model-context injection. Degrade-never-crash: missing record /
+  // `inherit` / readback error render `null` (the component reads the
+  // session-kit `sessionId` seat structurally — the compiled peer types do
+  // not carry the ui-session merge into this program; see the component
+  // docblock). List-slot shape (`id` + `order`) matches the upstream
+  // ui-open-in-app registration; order -20 keeps the badge title-adjacent,
+  // ahead of the host's open-in-app (-10). The inject face carries the SAME
+  // controller as the card + General row — the badge fetches its one id
+  // through `controller.fetchSubagentRole` (the `/api` gateway channel, T2),
+  // no second rpc handle.
+  ctx.slots.inject('conversation.session.header.utilities', function* () {
+    yield ctx.slots.register({
+      name: 'conversation.session.header.utilities',
+      id: 'fallbacks-subagent-role',
+      order: -20,
+      locale: NS,
+      inject: () => ({ controller }),
+    }, SubagentRoleBadge)
   })
 }
