@@ -16,6 +16,11 @@
  *   `inherit` — the component guard is skew defense in depth).
  * - a version-skewed host without the session standard kit (`sessionId` seat
  *   absent or empty) renders nothing and never touches the channel.
+ * - QC fix wave F-001: a record landing AFTER mount is picked up by the
+ *   bounded delayed re-probe (fake-timer pins: appears on a later probe;
+ *   stops probing once found; stops on unmount; capped at 5 re-probes).
+ * - QC fix wave F-002: a session switch never paints the previous session's
+ *   badge — the record state is reset during render, synchronously.
  */
 
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
@@ -157,5 +162,141 @@ describe('SubagentRoleBadge (plan subagent-role-badge T4 case f)', () => {
     await act(async () => {})
     expect(blankSeat.firstChild).toBeNull()
     expect(blank).not.toHaveBeenCalled()
+  })
+})
+
+describe('SubagentRoleBadge re-probe + session-switch (QC fix wave F-001 / F-002)', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  /**
+   * Flush the fetch microtasks + the resulting React update (fake timers do
+   * not touch the promise queue): act ticks drain the readback chain's
+   * promise hops and flush the state update it schedules.
+   */
+  async function flushFetch(): Promise<void> {
+    await act(async () => {})
+    await act(async () => {})
+    await act(async () => {})
+  }
+
+  it('appears on a later probe when the record lands after mount (open-before-first-dispatch ordering)', async () => {
+    vi.useFakeTimers()
+    let payload: Record<string, unknown> = {}
+    const call = vi.fn(() => Promise.resolve(ok(payload)))
+    const { container } = renderBadge(call, 'sess-1')
+
+    // The header mounted BEFORE the subagent's first dispatch resolved: the
+    // initial readback is empty and nothing renders.
+    await flushFetch()
+    expect(call).toHaveBeenCalledTimes(1)
+    expect(container.firstChild).toBeNull()
+
+    // The record lands server-side; the first scheduled re-probe (2s later)
+    // picks it up.
+    payload = { 'sess-1': wireRoleRecord() }
+    await act(async () => {
+      vi.advanceTimersByTime(2_000)
+    })
+    await flushFetch()
+    expect(screen.getByText('coder')).toBeTruthy()
+  })
+
+  it('stops probing once a record is found', async () => {
+    vi.useFakeTimers()
+    let payload: Record<string, unknown> = {}
+    const call = vi.fn(() => Promise.resolve(ok(payload)))
+    renderBadge(call, 'sess-1')
+
+    await flushFetch()
+    payload = { 'sess-1': wireRoleRecord() }
+    await act(async () => {
+      vi.advanceTimersByTime(2_000)
+    })
+    await flushFetch()
+    // Initial readback + one probe found the record — probing stops there.
+    expect(call).toHaveBeenCalledTimes(2)
+
+    await act(async () => {
+      vi.advanceTimersByTime(60_000)
+    })
+    await flushFetch()
+    expect(call).toHaveBeenCalledTimes(2)
+    expect(screen.getByText('coder')).toBeTruthy()
+  })
+
+  it('stops probing on unmount', async () => {
+    vi.useFakeTimers()
+    const call = vi.fn(() => Promise.resolve(ok({})))
+    const { unmount } = renderBadge(call, 'sess-1')
+
+    // Two re-probes while empty (initial + probes at 2s and 4s). Each probe's
+    // fetch must resolve (flush) before its timer fires, so flush between
+    // advances — the next probe timer is scheduled by the resolving fetch.
+    await flushFetch()
+    await act(async () => {
+      vi.advanceTimersByTime(2_000)
+    })
+    await flushFetch()
+    await act(async () => {
+      vi.advanceTimersByTime(2_000)
+    })
+    await flushFetch()
+    expect(call).toHaveBeenCalledTimes(3)
+
+    // …then unmount clears the pending probe timer: no further fetches, ever.
+    unmount()
+    await act(async () => {
+      vi.advanceTimersByTime(60_000)
+    })
+    await flushFetch()
+    expect(call).toHaveBeenCalledTimes(3)
+  })
+
+  it('caps the probing at 5 re-probes (a session with no record goes quiet)', async () => {
+    vi.useFakeTimers()
+    const call = vi.fn(() => Promise.resolve(ok({})))
+    const { container } = renderBadge(call, 'sess-1')
+
+    // Initial readback + probes at 2s, 4s, 6s, 8s, 10s = 6 fetches total.
+    await flushFetch()
+    for (let probe = 0; probe < 5; probe += 1) {
+      await act(async () => {
+        vi.advanceTimersByTime(2_000)
+      })
+      await flushFetch()
+    }
+    expect(call).toHaveBeenCalledTimes(6)
+    expect(container.firstChild).toBeNull()
+
+    // Past the cap the component goes quiet — advancing time fetches nothing.
+    await act(async () => {
+      vi.advanceTimersByTime(60_000)
+    })
+    await flushFetch()
+    expect(call).toHaveBeenCalledTimes(6)
+  })
+
+  it('never paints the previous session’s badge across a session switch (render-time reset, F-002)', async () => {
+    const call = vi.fn((_channel: unknown, _method: unknown, payload: { args: { ids: string[] } }) => {
+      const id = payload.args.ids[0]
+      return Promise.resolve(ok(id === 'sess-a' ? { 'sess-a': wireRoleRecord() } : {}))
+    })
+    const controller = new FallbacksSettingsController(makeApi(), { call } as unknown as ClientConnectionRpc)
+    const view = render(<SubagentRoleBadge {...badgeProps(controller, 'sess-a')} />)
+    expect(await screen.findByText('coder')).toBeTruthy()
+
+    // Switch to a session with NO record: synchronously after the rerender —
+    // before any effect or fetch could run — nothing of session A renders.
+    view.rerender(<SubagentRoleBadge {...badgeProps(controller, 'sess-b')} />)
+    expect(view.container.firstChild).toBeNull()
+
+    // The new session fetches under its own id and stays empty.
+    await waitFor(() =>
+      expect(call).toHaveBeenCalledWith('/api', 'fallbacks/subagent-roles', { args: { ids: ['sess-b'] } }),
+    )
+    await act(async () => {})
+    expect(view.container.firstChild).toBeNull()
   })
 })

@@ -19,8 +19,11 @@
  *   typecheck program (that package is deliberately not a plugin peer), so
  *   the seat is read structurally and guarded — a version-skewed host without
  *   it renders nothing, never throws.
- * - Data: one `fallbacks/subagent-roles` gateway readback per mount via the
- *   injected fetch face ({@link fetchSubagentRoleRecord} — never throws).
+ * - Data: `fallbacks/subagent-roles` gateway readbacks via the injected fetch
+ *   face ({@link fetchSubagentRoleRecord} — never throws): one on mount +
+ *   whenever the viewed session changes, then a BOUNDED delayed re-probe
+ *   while no record has landed (the record is written at the subagent's first
+ *   dispatch request, which can land after this header mounted).
  * - Render-only discipline (C4 pattern, same as `ConversationFallbackSwitch`):
  *   the badge contributes a view; no message construction, no model-context
  *   injection. Degrade-never-crash: a missing record, an `inherit` role, or
@@ -55,6 +58,17 @@ export type SubagentRoleBadgeProps =
   PropsRuntime<'conversation.session.header.utilities'> & PropsLocale<'fallbacks'> & SubagentRoleBadgeInjected
 
 /**
+ * Bounded delayed re-probe (QC fix wave F-001): while the viewed session has
+ * no record yet, re-fetch up to {@link ROLE_RECORD_PROBES} times
+ * {@link ROLE_RECORD_PROBE_DELAY_MS} apart (~10s window) and stop on the
+ * first record, a session switch, or unmount. The record is written once, at
+ * the subagent's FIRST dispatch request — a header opened before that moment
+ * would otherwise never see the badge until remount.
+ */
+const ROLE_RECORD_PROBE_DELAY_MS = 2_000
+const ROLE_RECORD_PROBES = 5
+
+/**
  * Render the viewed session's dispatch-resolved role badge.
  * @param props - composed slot props (the `sessionId` session-kit seat is
  *   read structurally — see the module docblock).
@@ -67,20 +81,48 @@ export function SubagentRoleBadge(props: SubagentRoleBadgeProps): ReactNode {
   // structurally, guard, degrade.
   const seatSessionId: unknown = (props as { sessionId?: unknown }).sessionId
   const sessionId = typeof seatSessionId === 'string' && seatSessionId !== '' ? seatSessionId : undefined
-  const [record, setRecord] = useState<SubagentRoleView | undefined>(undefined)
+  // The record is session-STAMPED and reset DURING RENDER when `sessionId`
+  // changes (QC fix wave F-002): a reset that only ran in the effect executed
+  // post-paint, leaving a one-paint window where a session switch could show
+  // the previous session's badge. The render-time adjustment re-renders with
+  // the reset state before anything commits — no frame ever paints a foreign
+  // session's record, regardless of host remount semantics.
+  const [stamped, setStamped] = useState<{ sessionId: string | undefined; record: SubagentRoleView | undefined }>({
+    sessionId,
+    record: undefined,
+  })
+  if (stamped.sessionId !== sessionId) {
+    setStamped({ sessionId, record: undefined })
+  }
+  const record = stamped.sessionId === sessionId ? stamped.record : undefined
 
-  // Fetch on mount + whenever the viewed session changes. `setRecord(undefined)`
-  // up front so a session switch never flashes the previous session's badge;
-  // the cancelled latch drops an in-flight response after a switch/unmount.
+  // Fetch on mount + whenever the viewed session changes; while the record
+  // has not landed yet (empty readback), re-probe a bounded number of times
+  // with a short delay (see the probe constants) — the cancellation latch and
+  // the pending-timer clear drop every in-flight probe on a switch/unmount,
+  // and finding a record stops the probing.
   useEffect(() => {
     if (sessionId === undefined) return
     let cancelled = false
-    setRecord(undefined)
-    void controller.fetchSubagentRole(sessionId).then((next) => {
-      if (!cancelled) setRecord(next)
-    })
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const probe = (attempt: number): void => {
+      void controller.fetchSubagentRole(sessionId).then((next) => {
+        if (cancelled) return
+        if (next !== undefined) {
+          setStamped({ sessionId, record: next })
+          return
+        }
+        if (attempt >= ROLE_RECORD_PROBES) return
+        timer = setTimeout(() => {
+          timer = undefined
+          probe(attempt + 1)
+        }, ROLE_RECORD_PROBE_DELAY_MS)
+      })
+    }
+    probe(0)
     return () => {
       cancelled = true
+      if (timer !== undefined) clearTimeout(timer)
     }
   }, [controller, sessionId])
 
