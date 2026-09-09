@@ -108,10 +108,12 @@ const FALLBACKS_PROVIDER: TuiCommandTreeProvider = {
  * guard inside the child: the claim is not a fact, so a fiber applying
  * inside the claim window registers here and, when it loses the race for
  * the host registry's root, degrades via the `already registered` catch
- * below — only a fiber deduped after that window (claim corrected to false)
- * skips at this gate. The service is optional: a composition without
- * `dsh-tui-command-trees` keeps the plugin working and simply omits the TUI
- * surface.
+ * below — only a post-settlement duplicate fiber skips at this gate (its
+ * claim INITIALIZED false: the service was already visible when the claim
+ * was taken; the child-side catch correction settles strictly after apply()
+ * and can never influence this synchronous read). The service is optional:
+ * a composition without `dsh-tui-command-trees` keeps the plugin working
+ * and simply omits the TUI surface.
  *
  * The inject child returns the registry disposer so cordis withdraws the
  * registration when this fiber (or the service) goes away.

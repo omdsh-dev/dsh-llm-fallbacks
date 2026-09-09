@@ -14,7 +14,13 @@
  *   without aborting — the first fiber owns the service, both TUI
  *   registrations land exactly once (the duplicate attempts hit the host
  *   duplicate throw and degrade via the installers' `already registered`
- *   catches), and the preset self-declare fires exactly once (T2c/T2d).
+ *   catches), and the preset self-declare fires exactly once (T2c/T2d);
+ * - a NON-dedupe provide failure inside the settings child (the name
+ *   pre-declared as an accessor → cordis `property ... is already declared
+ *   as accessor`, distinct from the multi-fiber `has been registered`
+ *   duplicate) sets `serviceOwned` to false BEFORE the rethrow, so the tail
+ *   preset child fires afterwards and SKIPS — no preset rows, no apply abort
+ *   beyond the one child-fiber error (qc1 S-004 / qc3 S-1 pin).
  *
  * The registry doubles mirror the host rule that matters here — `register`
  * throws the host duplicate message on a second registration — with attempt
@@ -31,6 +37,7 @@ import { FALLBACKS_TUI_ROOT } from '../src/tui.ts'
 import { FALLBACKS_TUI_SECTION_NS } from '../src/tui-settings.ts'
 import { presetRoles } from '../src/presets.ts'
 import { MemorySettings } from './support/memory-settings.ts'
+import { settle } from './support/settle.ts'
 
 /** Minimal `tuiCommandTrees` double: attempt counting + the host duplicate-root throw. */
 class CommandTreesRegistry {
@@ -94,13 +101,6 @@ function captureLogs(ctx: Context): Array<{ type: string; name: string; args: un
   const logs: Array<{ type: string; name: string; args: unknown[] }> = []
   ctx.logger.exporter({ levels: { default: 3 }, export: (message) => logs.push(message) })
   return logs
-}
-
-/** Let pending microtasks/macrotasks settle (negative-assertion window; presets-integration pattern). */
-function settle(): Promise<void> {
-  const { promise, resolve } = Promise.withResolvers<void>()
-  setTimeout(resolve, 50)
-  return promise
 }
 
 describe('seeds declare window — service visibility ordering (issue #105)', () => {
@@ -189,13 +189,63 @@ describe('seeds declare window — service visibility ordering (issue #105)', ()
     expect(rows).toHaveLength(presetRoles.length)
     expect(new Set(rows.map((row) => row.id)).size).toBe(presetRoles.length)
     expect(rows.find((row) => row.id === 'designer')!.persona).toBe('operator persona')
-    // No llm-fallbacks child failed loud in the window: the plugin's own
-    // surfaces all degrade via their dedupe catches. (The deduped fiber's
-    // unconditional settings-section child still logs a PRE-EXISTING root
-    // `settings namespace "fallbacks" is already registered` fiber error —
-    // unchanged by this plan and out of scope here.)
-    expect(
-      logs.filter((message) => message.type === 'error' && message.name === 'llm-fallbacks'),
-    ).toHaveLength(0)
+    // No unexpected child failed loud in the window. The deduped fiber's
+    // unconditional settings-section child still logs ONE PRE-EXISTING cordis
+    // root-logger fiber error (`settings namespace "fallbacks" is already
+    // registered` — unchanged by this plan and out of scope here); it must
+    // occur EXACTLY ONCE and be the ONLY non-plugin-named error. An uncaught
+    // child-fiber failure logs under the fiber-derived `root` name rather
+    // than `llm-fallbacks`, so the whitelist is asserted exhaustively — a NEW
+    // loud child failure fails this test instead of being filtered away.
+    const knownSectionDuplicate = logs.filter(
+      (message) =>
+        message.type === 'error'
+        && message.name !== 'llm-fallbacks'
+        && String(message.args[0]).includes('settings namespace "fallbacks" is already registered'),
+    )
+    expect(knownSectionDuplicate).toHaveLength(1)
+    expect(logs.filter((message) => message.type === 'error' && message.name !== 'llm-fallbacks')).toEqual(
+      knownSectionDuplicate,
+    )
+    // The plugin's own surfaces additionally never fail under their own name:
+    // every degradation rides the dedupe catches.
+    expect(logs.filter((message) => message.type === 'error' && message.name === 'llm-fallbacks')).toHaveLength(0)
+  })
+
+  it('non-dedupe provide failure: the claim is corrected before the preset child fires — no rows, no abort (qc1 S-004)', async () => {
+    const ctx = track(new Context())
+    await ctx.plugin(MemorySettings)
+    const logs = captureLogs(ctx)
+
+    // Pre-declare the name as an ACCESSOR (cordis reflect `ctx.accessor`):
+    // the settings child's `sctx.provide` then throws the NON-dedupe
+    // `property "llm-fallbacks" is already declared as accessor` — distinct
+    // from the multi-fiber `has been registered` duplicate. The accessor is
+    // not in the service store, so the optimistic claim still reads TRUE at
+    // apply time and only the child-side catch can correct it.
+    ctx.reflect.accessor('llm-fallbacks', { get: () => undefined })
+
+    // The child settles after apply() returns: no synchronous abort — only
+    // the child fiber itself fails loud (asserted below).
+    expect(() => apply(ctx)).not.toThrow()
+    await settle()
+
+    // The service never appeared, and the fallbacks namespace IS registered:
+    // the installSection child fired after the failed provide child (FIFO
+    // registration order holds across a child failure), so the preset child
+    // — last registered — fired too and read the corrected `serviceOwned`
+    // flag. The empty user layer is therefore the skip path, not
+    // "children never fired": zero preset rows despite presets being enabled.
+    expect(ctx.get('llm-fallbacks')).toBeUndefined()
+    expect(ctx.settings.describe().some((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)).toBe(true)
+    expect(userSection(ctx)).toBeUndefined()
+
+    // Exactly ONE error — the rethrown non-dedupe failure, logged by the
+    // child fiber under its own (non-plugin) name; no preset declare error
+    // on top of it (the terminal catch never ran because the child skipped).
+    const errors = logs.filter((message) => message.type === 'error')
+    expect(errors).toHaveLength(1)
+    expect(String(errors[0]!.args[0])).toContain('property "llm-fallbacks" is already declared as accessor')
+    expect(errors[0]!.name).not.toBe('llm-fallbacks')
   })
 })

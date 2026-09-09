@@ -47,6 +47,7 @@ import {
 } from '../src/index.ts'
 import { FALLBACKS_SETTINGS_NAMESPACE } from '../src/gateway.ts'
 import { MemorySettings } from './support/memory-settings.ts'
+import { settle } from './support/settle.ts'
 
 let ctx: Context
 
@@ -74,13 +75,6 @@ async function appliedService(config: FallbacksConfig = defaultFallbacksConfig):
     expect(ctx.get('llm-fallbacks')).toBeDefined()
   })
   return ctx.get('llm-fallbacks')!
-}
-
-/** Let pending microtasks/macrotasks settle (negative-assertion window; presets-integration pattern). */
-function settle(): Promise<void> {
-  const { promise, resolve } = Promise.withResolvers<void>()
-  setTimeout(resolve, 50)
-  return promise
 }
 
 describe('llm-fallbacks named cordis service', () => {

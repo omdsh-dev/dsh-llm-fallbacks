@@ -13,8 +13,8 @@
  * - operator same-name row → persona kept + `llm-fallbacks: seeds:` conflict
  *   warn (AC-4);
  * - headless (no settings service) → no service at all (D1), no fire, no
- *   seeds write, no error log, no unhandled rejection, runtime dispatches
- *   (D9.3-b headless boundary);
+ *   seeds write, no materialized rows from any seed source, no error log, no
+ *   unhandled rejection, runtime dispatches (D9.3-b headless boundary);
  * - write failure (persist rejects) → exactly one `llm-fallbacks: seeds:`
  *   logger.error, registry not committed, apply/runtime unaffected (D9.3-b);
  * - multi-fiber: same-root second apply does NOT re-fire (no second conflict
@@ -28,6 +28,7 @@ import { apply, defaultFallbacksConfig, type FallbacksService } from '../src/ind
 import { FALLBACKS_SETTINGS_NAMESPACE, type FallbacksConfigGateway } from '../src/gateway.ts'
 import { presetRoles } from '../src/presets.ts'
 import { MemorySettings } from './support/memory-settings.ts'
+import { settle } from './support/settle.ts'
 import { cfg, dispatchRequestError, makeAgent } from './support/harness.ts'
 
 /** Track every test context and dispose it after the case (settings/gateway effects hygiene). */
@@ -89,13 +90,6 @@ class RejectingSettings extends MemorySettings {
   protected override async persist(_ns: SettingsNamespace, _section: Record<string, unknown>): Promise<void> {
     throw new Error('persist boom')
   }
-}
-
-/** Let pending microtasks/macrotasks settle (negative-assertion window). */
-function settle(): Promise<void> {
-  const { promise, resolve } = Promise.withResolvers<void>()
-  setTimeout(resolve, 50)
-  return promise
 }
 
 /** §9.2 frozen text anchor — the designer persona verbatim (implementer SSOT copy). */
@@ -299,10 +293,14 @@ describe('bundled preset self-declaration (real apply)', () => {
     )
   })
 
-  it('headless (no settings service): no service, no fire, no error, runtime dispatches (D9.3-b + D1)', async () => {
+  it('headless (no settings service): no service, no fire, no error, no materialized rows, runtime dispatches (D9.3-b + D1)', async () => {
     const ctx = track(new Context())
     const logs = captureLogs(ctx)
-    apply(ctx, cfg({ rootChain: ['other/gpt-4o'] }))
+    // presets stay BUNDLED (the default) on purpose: the pin below is only
+    // load-bearing if a preset declare WOULD materialize when the tail child
+    // wrongly fires — with `presets: 'none'` the no-rows assertion would
+    // hold trivially even in that regression (qc1 S-003 re-home).
+    apply(ctx, cfg({ rootChain: ['other/gpt-4o'], presets: 'bundled' }))
 
     // D1 (seeds-declare-window): the provide lives INSIDE the settings inject
     // child — headless, that child never activates and the service NEVER
@@ -324,6 +322,14 @@ describe('bundled preset self-declaration (real apply)', () => {
     // Zero error log — the preset child never fired, no unhandled rejection.
     const errors = logs.filter((message) => message.type === 'error')
     expect(errors).toHaveLength(0)
+
+    // Zero materialization from any seed source: the composed roles.list is
+    // exactly the entry's (empty — no preset rows appended) and the seeds
+    // badge is empty. The gateway IS registered headless (an unconditional
+    // provide in apply), so this readback replaces the dropped
+    // getEffectiveRoles readback (no service exists to read through).
+    expect(gateway(ctx).get().config.roles.list).toEqual([])
+    expect(gateway(ctx).get().seeds).toEqual([])
   })
 
   it('write failure: exactly one llm-fallbacks: seeds: error, registry not committed, runtime unaffected (D9.3-b)', async () => {
