@@ -2731,11 +2731,18 @@ describe('FallbacksCard seeded-role read-only UX (plan role-card-seeded-ux T3)',
     // chevron's effect (`personaOpen`) stays REAL in read-only (the render
     // honors it unconditionally) and the disclosure is non-mutating
     // client-local state, so it keeps NO writable gate: read-only doctrine
-    // is content reachable, mutating controls inert. The assertions below
-    // cover the component's OWN gate surface — jsdom does not propagate
-    // fieldset[disabled] to buttons (the documented limitation behind the
-    // advanced toggle's explicit `disabled`), so a future explicit gate on
-    // the chevron fails these pins and forces a conscious decision flip.
+    // is content reachable, mutating controls inert. The chevron is a
+    // span[role="button"], NOT a native <button> (QA finding e, fix wave
+    // 2): the row sits inside the form body's `disabled` fieldset, and
+    // fieldset[disabled] propagation disables every descendant form control
+    // in real browsers — QA confirmed the old native button live in real
+    // Chromium (`matches(':disabled')=true`, clicks inert) exactly when the
+    // forced-open read-only rows made it the only way to read the persona.
+    // jsdom cannot model fieldset propagation, so this pin asserts the
+    // MECHANISM rather than a live click: no disabled attribute and a
+    // non-form-control tag (span), which propagation cannot reach by
+    // construction — a regression back to a native button fails here, and
+    // real-browser operability is re-verified by the QA gate's live repro.
     const { view, props } = await mountCard({
       config: {
         ...defaultFallbacksConfig,
@@ -2765,10 +2772,12 @@ describe('FallbacksCard seeded-role read-only UX (plan role-card-seeded-ux T3)',
       expect((toggle as HTMLButtonElement).disabled).toBe(true)
       expect(toggle.getAttribute('aria-expanded')).toBe('true')
     }
-    // The seeded persona chevron carries no disabled gate and still
-    // round-trips the disclosure in the read-only view.
-    const expandPersona = within(rolesGroup).getByRole('button', { name: en['roles.persona.expand'] }) as HTMLButtonElement
-    expect(expandPersona.disabled).toBe(false)
+    // The seeded persona chevron carries no disabled gate and is a
+    // non-form-control (span), so the disabled fieldset cannot reach it —
+    // and it still round-trips the disclosure in the read-only view.
+    const expandPersona = within(rolesGroup).getByRole('button', { name: en['roles.persona.expand'] })
+    expect(expandPersona.hasAttribute('disabled')).toBe(false)
+    expect(expandPersona.tagName).toBe('SPAN')
     fireEvent.click(expandPersona)
     view.rerender(<FallbacksCard {...props} />)
     const collapsePersona = within(rolesGroup).getByRole('button', { name: en['roles.persona.collapse'] })

@@ -2133,16 +2133,43 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                                   {personaBlank ? t('roles.persona.empty') : row.persona}
                                 </span>
                                 {!personaBlank && (
-                                  <button
-                                    type="button"
+                                  /* NOT a native <button> (QA finding e, plan
+                                   * role-card-seeded-ux fix wave 2): this row
+                                   * sits inside the form body's `disabled`
+                                   * fieldset (`<fieldset disabled={!writable}>`,
+                                   * the 主代理 form opening tag) and
+                                   * fieldset[disabled] propagation kills every descendant form
+                                   * control in real browsers — a button here
+                                   * renders but is implicitly dead exactly in
+                                   * the read-only view whose forced-open rows
+                                   * make the disclosure the only way to read
+                                   * the full persona (live-confirmed in
+                                   * Chromium). The disclosure toggles
+                                   * client-local `personaOpen` only, so the
+                                   * control is a span with role="button": the
+                                   * aria/tooltip/click contract is identical,
+                                   * and a non-form-control is immune to
+                                   * fieldset propagation while keeping the
+                                   * DOM in place. A span has no native button
+                                   * semantics, so Enter/Space activation is
+                                   * carried explicitly. */
+                                  <span
+                                    role="button"
+                                    tabIndex={0}
                                     className={css.iconButton}
                                     aria-expanded={row.personaOpen}
                                     aria-label={t(row.personaOpen ? 'roles.persona.collapse' : 'roles.persona.expand')}
                                     data-tip={t(row.personaOpen ? 'roles.persona.collapse' : 'roles.persona.expand')}
                                     onClick={() => { updateRoleRow(index, { personaOpen: !row.personaOpen }) }}
+                                    onKeyDown={event => {
+                                      if (event.key === 'Enter' || event.key === ' ') {
+                                        event.preventDefault()
+                                        updateRoleRow(index, { personaOpen: !row.personaOpen })
+                                      }
+                                    }}
                                   >
                                     <IconChevronDownOutline14 className={row.personaOpen ? `${css.chevron} ${css.chevronOpen}` : css.chevron} />
-                                  </button>
+                                  </span>
                                 )}
                               </div>
                               {row.personaOpen && (
