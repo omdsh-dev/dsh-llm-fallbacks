@@ -450,8 +450,11 @@ describe('rootChain/role/rule row editors (pure round-trips)', () => {
         // UI-only collapse state (PR #62 UX round 2) — role cards start
         // collapsed and the flag never serializes back.
         collapsed: true,
+        // UI-only seeded-persona brief disclosure (plan
+        // role-card-seeded-ux) — starts collapsed, never serializes back.
+        personaOpen: false,
       },
-      { id: 'architect', persona: '', selectors: [], fallback: 'inherit-root', collapsed: true },
+      { id: 'architect', persona: '', selectors: [], fallback: 'inherit-root', collapsed: true, personaOpen: false },
     ])
     expect(rowsToRoles(rows)).toEqual(roles)
   })

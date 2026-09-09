@@ -181,19 +181,28 @@ function getPath(value: unknown, path: readonly string[]): unknown {
 /**
  * Shape-guard the wire `seeds` badge field (spec §9.4): only `{ id,
  * overridden }` entries survive — the `legacyKeys` element-filter
- * precedent. `source` is optional on the wire (gateway version skew), so
- * the guard deliberately does not require it: an entry without the field
- * still parses and consumers treat a missing label as "no badge". A
- * non-array value resolves to `[]`; malformed entries are dropped, so an
- * all-bad array also lands `[]`. The store never trusts a misshapen badge
- * field.
+ * precedent. `source` is optional on the wire (gateway version skew): a
+ * present-and-string label is kept, an absent/malformed one drops the
+ * field while the entry itself still parses — consumers treat a missing
+ * label as "no badge" (the degradation path, never an error). Entries are
+ * NORMALIZED to the known keys, so a wire entry can never smuggle a
+ * non-string `source` past the guard's type. A non-array value resolves
+ * to `[]`; malformed entries are dropped, so an all-bad array also lands
+ * `[]`. The store never trusts a misshapen badge field.
  */
 function parseSeedsWire(value: unknown): SeedsWireStatus[] {
   if (!Array.isArray(value)) return []
-  return value.filter((entry): entry is SeedsWireStatus => {
-    if (!isRecord(entry)) return false
-    return typeof entry.id === 'string' && typeof entry.overridden === 'boolean'
-  })
+  const entries: SeedsWireStatus[] = []
+  for (const entry of value) {
+    if (!isRecord(entry)) continue
+    if (typeof entry.id !== 'string' || typeof entry.overridden !== 'boolean') continue
+    entries.push({
+      id: entry.id,
+      overridden: entry.overridden,
+      ...(typeof entry.source === 'string' ? { source: entry.source } : {}),
+    })
+  }
+  return entries
 }
 
 /** Source label of the effective subagent chain head (spec D4). */
@@ -738,6 +747,13 @@ export interface RoleRow {
   fallback: FallbackStrategy
   /** UI-only collapse state — never serialized (dropped by rowsToRoles). */
   collapsed: boolean
+  /**
+   * UI-only seeded-persona brief disclosure (plan role-card-seeded-ux) —
+   * never serialized (dropped by rowsToRoles). Only seeded rows render the
+   * affordance (a read-only single-line brief + the expandable full text);
+   * ordinary rows ignore the flag.
+   */
+  personaOpen: boolean
 }
 
 /** Project the declared roles into editable rows (chain selectors classified). */
@@ -751,6 +767,9 @@ export function rolesToRows(roles: readonly FallbacksRole[], catalog?: CatalogLo
     // (id + first chain model) is the quiet default; the editor opens on
     // the header click. The flag never serializes back.
     collapsed: true,
+    // The seeded persona brief starts collapsed too (the brief's one line
+    // is the quiet default; the full text opens on the chevron).
+    personaOpen: false,
   }))
 }
 
