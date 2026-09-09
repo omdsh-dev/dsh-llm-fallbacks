@@ -1333,16 +1333,19 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
               }
               // Plan subagent-role-badge T1: record the resolved role with the
               // route the subagent will actually run — the override target when
-              // it applies, else the host seed (always in scope here). Written
-              // for EVERY resolved non-`inherit` role in BOTH policy paths;
-              // `inherit` and the two role-never-resolved branches above
+              // one was resolved (a `to` deep-equal to the seed routes
+              // identically; the override gate below applies the same way),
+              // else the host seed copy (always in scope here). `to ?? seed-copy`
+              // is the single expression of that rule (QC fix wave: the record
+              // must not re-state the override condition — drift there would
+              // desync the hover route from the applied override).
+              // Written for EVERY resolved non-`inherit` role in BOTH policy
+              // paths; `inherit` and the two role-never-resolved branches above
               // (`'unprovable'`, authorized route) stay unrecorded — nothing
               // for the badge to show there.
               subagentRoleRecordMap.set(agent.id, {
                 role,
-                model: to !== undefined && !(to.provider === seed.provider && to.model === seed.model)
-                  ? { provider: to.provider, model: to.model }
-                  : { provider: seed.provider, model: seed.model },
+                model: to ?? { provider: seed.provider, model: seed.model },
                 at: Date.now(),
               })
               if (to !== undefined && !(to.provider === seed.provider && to.model === seed.model)) {
