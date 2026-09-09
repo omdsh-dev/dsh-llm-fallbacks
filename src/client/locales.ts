@@ -147,9 +147,15 @@ export const zh = {
   'roles.idPlaceholder': '例如 reviewer',
   'roles.persona': '人格提示',
   'roles.personaPlaceholder': '例如：你是资深代码审查员',
-  'roles.seedDefault': 'seed 默认',
-  'roles.seedOverride': 'seed 覆盖',
-  'roles.revertPersona': '还原 Seed 默认',
+  // Seeded-row read-only UX (plan role-card-seeded-ux): the persona brief's
+  // expand/collapse a11y labels and the empty-persona fallback. The source
+  // badge renders set names and the generic `external` verbatim — only
+  // `bundled` and the operator's own rows carry locale entries.
+  'roles.persona.expand': '展开人格提示',
+  'roles.persona.collapse': '收起人格提示',
+  'roles.persona.empty': '（未设置）',
+  'roles.seedSource.bundled': '内置',
+  'roles.seedSource.user': '用户',
   'roles.seedChainOptional': '角色 "{id}" 为 seed 角色：链可留空，保存不会被拦截',
   'roles.fallback': '链拼接策略',
   'roles.fallback.inherit-root': '继承 root（角色链后追加 rootChain）',
@@ -382,9 +388,15 @@ export const en = {
   'roles.idPlaceholder': 'e.g. reviewer',
   'roles.persona': 'Persona',
   'roles.personaPlaceholder': 'e.g. you are a senior code reviewer',
-  'roles.seedDefault': 'Seed default',
-  'roles.seedOverride': 'Seed override',
-  'roles.revertPersona': 'Revert to seed default',
+  // Seeded-row read-only UX (plan role-card-seeded-ux): the persona brief's
+  // expand/collapse a11y labels and the empty-persona fallback. The source
+  // badge renders set names and the generic `external` verbatim — only
+  // `bundled` and the operator's own rows carry locale entries.
+  'roles.persona.expand': 'Expand persona',
+  'roles.persona.collapse': 'Collapse persona',
+  'roles.persona.empty': '(not set)',
+  'roles.seedSource.bundled': 'bundled',
+  'roles.seedSource.user': 'User',
   'roles.seedChainOptional': 'Role "{id}" is a seed role: the chain may stay empty',
   'roles.fallback': 'Chain append',
   'roles.fallback.inherit-root': 'Inherit root (append rootChain after the role chain)',

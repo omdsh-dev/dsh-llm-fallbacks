@@ -54,7 +54,7 @@ validateFallbacksConfig(config, logger)
 
 `presetRoles` is the single source of the plugin's bundled preset-role declarations — the identical 5-item payload `apply()` self-declares when `presets: 'bundled'` (the default). The 5 ids are `reviewer` / `scout` / `security-reviewer` / `sonic` / `task`; each persona is a concise instruction set distilled from the omp bundled agent prompts (`packages/coding-agent/src/prompts/agents/`, snapshot 2026-08-16), not a verbatim copy of a full prompt.
 
-> **Preset trim**: the bundled set previously carried 7 ids — `designer` and `librarian` were removed. Rows saved by earlier versions keep their persona and survive untouched, but they now show source `user` even though the operator never wrote those rows: they are no longer in the declared batch, so they lose the seeded badge / revert affordance and become ordinary config rows again. Delete them by hand if unwanted.
+> **Preset trim**: the bundled set previously carried 7 ids — `designer` and `librarian` were removed. Rows saved by earlier versions keep their persona and survive untouched, but they now show source `user` even though the operator never wrote those rows: they are no longer in the declared batch, so the card renders them as ordinary editable rows — the `User` badge, full editing UI, no seeded-row read-only treatment. Delete them by hand if unwanted.
 
 Reuse it through any seed face:
 
@@ -126,7 +126,7 @@ Importing this package automatically merges the `Context` type (`declare module 
 
 ### Role seeds (service seeding API)
 
-The service grows three additive keys — the six pre-existing keys are unchanged (strictly additive, spec §9.1). Companion plugins use them to auto-provision role rows into the taxonomy with **zero operator hand-edit** (no config block, no bundle-row write): a seeded role is a plain `roles.list` row, and the settings card surfaces the same state (seed badge + revert) over the gateway wire — the card renders the seeded role's id as a disabled (immutable) field, so the id of any seed/preset role cannot be changed in the card (R2); persona, chain and fallback stay editable.
+The service grows three additive keys — the six pre-existing keys are unchanged (strictly additive, spec §9.1). Companion plugins use them to auto-provision role rows into the taxonomy with **zero operator hand-edit** (no config block, no bundle-row write): a seeded role is a plain `roles.list` row, and the settings card surfaces the seed state over the gateway wire — a seeded row presents as reference material, not editable config: no id input (the collapse title carries the immutable id, so the id of any seed/preset role cannot be changed in the card, R2), the persona renders as a read-only single-line brief with an expandable full view (no persona editor, no revert button), while chain and fallback stay editable; every row carries a source badge (`bundled` / declared set name, `external` when unnamed / `User`).
 
 ```ts
 declareSeeds(seeds: readonly SeedDeclaration[], options?: SeedsDeclareOptions): Promise<SeedDeclareOutcome>
@@ -172,12 +172,12 @@ Two stores, strictly separated (spec §9.2):
 
 `seeded`, `personaOverridden`, and `source` are **derived at read time**, never stored — because nothing override-shaped or provenance-shaped is persisted, a config round-trip cannot orphan an override (AC-3), and provenance can never churn a settings write.
 
-- An operator persona edit is an **override** (the row persona differs from the seed default); the card shows override state.
+- An operator persona edit is an **override** (the row persona differs from the seed default); the card shows the effective persona (read-only on seeded rows).
 - Revert always restores the **currently declared** seed default — when the companion re-declares a new persona for the same id, revert goes to that new default.
 - A declared id that already has an operator row is **attached, never duplicated**; a differing persona is flagged loudly as a `'persona-source'` conflict — the operator persona is retained, never silently overwritten.
-- When a declaration is removed, the role row and the operator's chain remain; only the seed-default / revert affordance disappears (R2).
+- When a declaration is removed, the role row and the operator's chain remain; the row drops out of the live seed status, so the card renders it as an ordinary editable row and its source reads `user` (R2).
 - Seeds never write `chain` / `fallback`: an existing chain is preserved byte-for-byte, and a new seeded role keeps an empty chain for the operator to fill (R4).
-- **Honest limitation**: the registry dies with the fiber/process. Until the companion re-declares, seeded rows are ordinary config rows (badge/revert absent); after re-declare, "was at default" is indistinguishable from "operator-edited", so the conservative row-untouched path applies and a differing persona is flagged `'persona-source'`. Revert always restores the current declared default; no data is ever lost or silently overwritten.
+- **Honest limitation**: the registry dies with the fiber/process. Until the companion re-declares, seeded rows are ordinary config rows (source `user`); after re-declare, "was at default" is indistinguishable from "operator-edited", so the conservative row-untouched path applies and a differing persona is flagged `'persona-source'`. Revert always restores the current declared default; no data is ever lost or silently overwritten.
 
 #### Per-row source (provenance contract)
 
