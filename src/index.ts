@@ -78,6 +78,7 @@ import {
   type SeedDeclaration,
   type SeedDeclareOutcome,
   type SeedRevertOutcome,
+  type SeedsDeclareOptions,
   type SeedsIo,
 } from './seeds.ts'
 import { presetRoles } from './presets.ts'
@@ -128,8 +129,14 @@ export interface FallbacksService {
   resolveChain: typeof resolveChain
   validateFallbacksConfig: typeof validateFallbacksConfig
   detectLegacyKeys: typeof detectLegacyKeys
-  /** (a) Declare the companion's FULL current seed set (replacement semantics, spec §9.1). */
-  declareSeeds(seeds: readonly SeedDeclaration[]): Promise<SeedDeclareOutcome>
+  /**
+   * (a) Declare the companion's FULL current seed set (replacement semantics,
+   * spec §9.1). The optional `options.set` records the batch's registered
+   * provenance set name (read back as the rows' `source`); there is
+   * deliberately no way to label a declare `bundled` — reserved for the
+   * plugin's own preset self-declare.
+   */
+  declareSeeds(seeds: readonly SeedDeclaration[], options?: SeedsDeclareOptions): Promise<SeedDeclareOutcome>
   /** (b) Sync readback — effective taxonomy with seed annotations. */
   getEffectiveRoles(): EffectiveRolesReadback
   /** (c) Revert one id to the CURRENT declared seed default. */
@@ -213,15 +220,20 @@ export {
   type SeedRevertFailReason,
   type SeedRevertOutcome,
   type SeedSkipReason,
+  type SeedSource,
+  type SeedsDeclareOptions,
   type SeedsIo,
   type SeedsWireStatus,
 } from './seeds.ts'
 // --- Bundled preset roles (plan fallbacks-preset-roles T3) ---
-// The 7 omp-style bundled preset role declarations re-exported from the
+// The 5 omp-style bundled preset role declarations re-exported from the
 // package root so library consumers can `import { presetRoles } from
 // 'dsh-llm-fallbacks'` and `declareSeeds(presetRoles)` — the SAME data
 // source apply()'s self-declaration fires (derivation: omp coding-agent
-// agent prompts, snapshot 2026-08-16; frozen text = spec §9.2).
+// agent prompts, snapshot 2026-08-16; frozen text = spec §9.2). The
+// self-declare is the ONLY declare labeled `bundled` (internal marker at
+// the preset child; the service face accepts the public
+// `SeedsDeclareOptions` — `set` only, reserved labels unreachable).
 export { presetRoles } from './presets.ts'
 
 /** Model-catalog service shape the wildcard existence probe reads (`ctx.llm`). */
@@ -554,7 +566,8 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
         // (a)(b)(c) — plan fallbacks-role-seeds T2: additive seed surface. Each
         // method delegates to the per-apply manager through the io seam
         // (single point of truth — no copied logic).
-        declareSeeds: (declarations: readonly SeedDeclaration[]) => seeds.declare(declarations, seedsIo),
+        declareSeeds: (declarations: readonly SeedDeclaration[], options?: SeedsDeclareOptions) =>
+          seeds.declare(declarations, seedsIo, options),
         getEffectiveRoles: () => seeds.effectiveRoles(seedsIo),
         revertSeededPersona: (id: string) => seeds.revert(id, seedsIo),
       })
@@ -1526,7 +1539,12 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   ctx.inject(['settings'], () => {
     if (!serviceOwned) return
     if (seedsIo.read().presets === 'none') return
-    seeds.declare(presetRoles, seedsIo).catch((error) => {
+    // `{ bundled: true }` — the INTERNAL provenance marker (seed-source
+    // provenance plan): the preset self-declare is the only declare labeled
+    // `bundled`. The marker is module-internal to seeds.ts (never exported)
+    // and deliberately absent from the `FallbacksService.declareSeeds` face
+    // — consumers can never forge the reserved label.
+    seeds.declare(presetRoles, seedsIo, { bundled: true }).catch((error) => {
       logger.error(
         'llm-fallbacks: seeds: preset role declaration failed — %s',
         (error as Error)?.message ?? String(error),

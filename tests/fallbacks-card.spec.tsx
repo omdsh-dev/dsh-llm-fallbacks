@@ -2670,7 +2670,7 @@ describe('FallbacksCard seeded roles (plan fallbacks-role-seeds T5)', () => {
     expect((ids[1] as HTMLInputElement).disabled).toBe(true)
   })
 
-  it('locks preset-materialized rows too: a designer preset row id is disabled (regression pin)', async () => {
+  it('locks preset-materialized rows too: a scout preset row id is disabled (regression pin)', async () => {
     // Presets land as seeded two-key rows through the seeds face (spec
     // §9.3), so a preset row IS a seeded row — the same `seededIds`
     // derivation must lock its id (R2, plan fallbacks-preset-roles). The
@@ -2679,15 +2679,15 @@ describe('FallbacksCard seeded roles (plan fallbacks-role-seeds T5)', () => {
     // verbatim to spec §9.2). The chain/fallback keys are config-shape
     // requirements of this card fixture — the lock keys on the id match
     // only, so they are irrelevant to the asserted behavior.
-    const designer = presetRoles.find((role) => role.id === 'designer')
-    expect(designer).toBeDefined()
-    if (!designer) throw new Error('preset designer removed')
+    const scout = presetRoles.find((role) => role.id === 'scout')
+    expect(scout).toBeDefined()
+    if (!scout) throw new Error('preset scout removed')
     const config: typeof defaultFallbacksConfig = {
       ...defaultFallbacksConfig,
       enabled: true,
       roles: {
         list: [
-          { id: 'designer', persona: designer.persona, chain: [], fallback: 'inherit-root' },
+          { id: 'scout', persona: scout.persona, chain: [], fallback: 'inherit-root' },
           { id: 'reviewer', persona: 'Reviews code', chain: ['anthropic/claude-3-5-sonnet'], fallback: 'inherit-root' },
         ],
         rules: [],
@@ -2695,14 +2695,14 @@ describe('FallbacksCard seeded roles (plan fallbacks-role-seeds T5)', () => {
     }
     const { view, props } = await mountCard({
       config,
-      seeds: [{ id: 'designer', overridden: false }],
+      seeds: [{ id: 'scout', overridden: false }],
     })
     toggleCard()
     expandAllRoles()
     view.rerender(<FallbacksCard {...props} />)
     const ids = screen.getAllByLabelText(en['roles.id'])
     expect(ids).toHaveLength(2)
-    expect((ids[0] as HTMLInputElement).value).toBe('designer')
+    expect((ids[0] as HTMLInputElement).value).toBe('scout')
     expect((ids[1] as HTMLInputElement).value).toBe('reviewer')
     expect((ids[0] as HTMLInputElement).disabled).toBe(true)
     expect((ids[1] as HTMLInputElement).disabled).toBe(false)

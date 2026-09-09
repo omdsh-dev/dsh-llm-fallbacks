@@ -1,13 +1,15 @@
 /**
  * Bundled preset self-declaration integration tests (plan fallbacks-preset-roles
  * Task 3): real `Context` + `MemorySettings` + `apply()` — the apply() tail
- * settings child fires `seeds.declare(presetRoles, seedsIo)` one tick after
- * apply (spec §9.3 D9.3-a), so EVERY assertion on the materialized rows must
- * waitFor (same compose/vi.waitFor pattern as tests/seeds-integration.spec.ts).
+ * settings child fires `seeds.declare(presetRoles, seedsIo, { bundled: true })`
+ * one tick after apply (spec §9.3 D9.3-a; the internal marker labels the
+ * batch's provenance `bundled`), so EVERY assertion on the materialized rows
+ * must waitFor (same compose/vi.waitFor pattern as
+ * tests/seeds-integration.spec.ts).
  *
  * Covers (spec §9.5):
- * - default apply → 7 two-key rows materialized (persona = §9.2 via the same
- *   presetRoles source) + gateway `seeds` badge all seeded (AC-1);
+ * - default apply → 5 two-key rows materialized (persona = §9.2 via the same
+ *   presetRoles source) + gateway `seeds` badge all seeded `bundled` (AC-1);
  * - repeated apply / dispose→re-apply → no-delta zero write + single rows (AC-1);
  * - `presets: 'none'` → zero declaration, zero write (AC-2);
  * - operator same-name row → persona kept + `llm-fallbacks: seeds:` conflict
@@ -92,12 +94,12 @@ class RejectingSettings extends MemorySettings {
   }
 }
 
-/** §9.2 frozen text anchor — the designer persona verbatim (implementer SSOT copy). */
-const DESIGNER_PERSONA =
-  'UI/UX specialist for design implementation, review, and visual refinement. Analyze the existing design system first (tokens, theme, and primitives) and compose with it; if none exists, define a minimal system before implementing. Cover loading, empty, error, disabled, hover, and focus states; verify accessibility (contrast, focus rings, semantic HTML) and responsive layout. Avoid generic AI-slop patterns; in review, cite file and line with a concrete issue and a specific fix.'
+/** §9.2 frozen text anchor — the scout persona verbatim (implementer SSOT copy). */
+const SCOUT_PERSONA =
+  'Read-only scout for exploratory codebase research, rapid analysis, and broad pattern search. Return compressed, structured findings another agent can reuse without re-reading the tree. Run searches in parallel; if a search is empty, try at least one alternate strategy before concluding the target is absent. Infer thoroughness from the task (quick, medium, or thorough; default medium); never write, edit, or run state-changing commands.'
 
 describe('bundled preset self-declaration (real apply)', () => {
-  it('default apply materializes the 7 two-key preset rows; gateway seeds badge all seeded (AC-1)', async () => {
+  it('default apply materializes the 5 two-key preset rows; gateway seeds badge all seeded bundled (AC-1)', async () => {
     const ctx = await compose()
 
     // The fire happens in the tail settings child — a tick after apply, so
@@ -111,22 +113,23 @@ describe('bundled preset self-declaration (real apply)', () => {
     const rows = gateway(ctx).get().config.roles.list
     expect(rows.map((row) => row.id)).toEqual(presetRoles.map((preset) => preset.id))
     expect(rows.map((row) => row.persona)).toEqual(presetRoles.map((preset) => preset.persona))
-    // §9.2 frozen-text anchor (verbatim copy, designer).
-    expect(rows.find((row) => row.id === 'designer')!.persona).toBe(DESIGNER_PERSONA)
+    // §9.2 frozen-text anchor (verbatim copy, scout).
+    expect(rows.find((row) => row.id === 'scout')!.persona).toBe(SCOUT_PERSONA)
     // The RAW write shape is the two-key `{ id, persona }` (R4 — no
     // chain/fallback/prompt/permissions invented on insert).
     expect(userSection(ctx)).toEqual({
       roles: { list: presetRoles.map((preset) => ({ id: preset.id, persona: preset.persona })), rules: [] },
     })
-    // Badge: all seven rows seeded at their default (nothing overridden).
+    // Badge: all five rows seeded at their default (nothing overridden), all
+    // carrying the internal self-declare's `bundled` provenance.
     expect(gateway(ctx).get().seeds).toEqual(
-      presetRoles.map((preset) => ({ id: preset.id, overridden: false, source: 'external' })),
+      presetRoles.map((preset) => ({ id: preset.id, overridden: false, source: 'bundled' })),
     )
     // The service readback agrees (single point of truth).
     expect(service(ctx).getEffectiveRoles().roles.map((role) => role.id)).toEqual(presetRoles.map((preset) => preset.id))
   })
 
-  it("enabled: false still materializes the 7 preset rows (D9.3-c — no `enabled` gate)", async () => {
+  it("enabled: false still materializes the 5 preset rows (D9.3-c — no `enabled` gate)", async () => {
     // Explicit `enabled: false` (the default): the preset fire is NOT gated
     // by `enabled` — docs/configuration.md "Not gated by enabled" (F-002).
     // The default-value coincidence in compose() must not be the only pin.
@@ -145,7 +148,7 @@ describe('bundled preset self-declaration (real apply)', () => {
       roles: { list: presetRoles.map((preset) => ({ id: preset.id, persona: preset.persona })), rules: [] },
     })
     expect(gateway(ctx).get().seeds).toEqual(
-      presetRoles.map((preset) => ({ id: preset.id, overridden: false, source: 'external' })),
+      presetRoles.map((preset) => ({ id: preset.id, overridden: false, source: 'bundled' })),
     )
   })
 
@@ -272,7 +275,7 @@ describe('bundled preset self-declaration (real apply)', () => {
     // the dev-time mirror of a provider whose document already carries the
     // row when the owning plugin loads.
     ;(ctx.settings as unknown as MemorySettings).seed(FALLBACKS_SETTINGS_NAMESPACE, {
-      roles: { list: [{ id: 'designer', persona: 'operator persona' }], rules: [] },
+      roles: { list: [{ id: 'scout', persona: 'operator persona' }], rules: [] },
     })
     const logs = captureLogs(ctx)
     apply(ctx)
@@ -283,13 +286,14 @@ describe('bundled preset self-declaration (real apply)', () => {
     const rows = gateway(ctx).get().config.roles.list
     expect(rows).toHaveLength(presetRoles.length)
     // The operator persona survives; the preset default is NOT written over it.
-    expect(rows.find((row) => row.id === 'designer')!.persona).toBe('operator persona')
-    // The badge marks the override (derived, not persisted).
-    expect(gateway(ctx).get().seeds.find((seed) => seed.id === 'designer')).toEqual({ id: 'designer', overridden: true, source: 'external' })
+    expect(rows.find((row) => row.id === 'scout')!.persona).toBe('operator persona')
+    // The badge marks the override (derived, not persisted) with the preset
+    // self-declare's `bundled` provenance.
+    expect(gateway(ctx).get().seeds.find((seed) => seed.id === 'scout')).toEqual({ id: 'scout', overridden: true, source: 'bundled' })
 
     const warns = logs.filter((message) => message.type === 'warn').map((message) => String(message.args[0]))
     expect(warns).toContain(
-      'llm-fallbacks: seeds: persona-source conflict for seed id "designer" — operator row persona kept (never overwritten)',
+      'llm-fallbacks: seeds: persona-source conflict for seed id "scout" — operator row persona kept (never overwritten)',
     )
   })
 
@@ -370,7 +374,7 @@ describe('bundled preset self-declaration (real apply)', () => {
     const settings = ctx.settings as unknown as CountingSettings
     // A conflict on the FIRST fire makes a second fire observable via warns.
     ;(ctx.settings as unknown as MemorySettings).seed(FALLBACKS_SETTINGS_NAMESPACE, {
-      roles: { list: [{ id: 'designer', persona: 'operator persona' }], rules: [] },
+      roles: { list: [{ id: 'scout', persona: 'operator persona' }], rules: [] },
     })
     const logs = captureLogs(ctx)
     apply(ctx)
@@ -403,7 +407,7 @@ describe('bundled preset self-declaration (real apply)', () => {
     ).toHaveLength(1)
     const rows = gateway(ctx).get().config.roles.list
     expect(rows).toHaveLength(presetRoles.length)
-    expect(rows.find((row) => row.id === 'designer')!.persona).toBe('operator persona')
+    expect(rows.find((row) => row.id === 'scout')!.persona).toBe('operator persona')
   })
 
   it('settings service removal + restore (provider reload) re-fires the preset child: no duplicate rows, no-delta zero write, badge correct (F-005)', async () => {
@@ -465,7 +469,7 @@ describe('bundled preset self-declaration (real apply)', () => {
     expect(rows.map((row) => row.persona)).toEqual(presetRoles.map((preset) => preset.persona))
     expect(userSection(ctx)).toEqual(persisted)
     expect(gateway(ctx).get().seeds).toEqual(
-      presetRoles.map((preset) => ({ id: preset.id, overridden: false, source: 'external' })),
+      presetRoles.map((preset) => ({ id: preset.id, overridden: false, source: 'bundled' })),
     )
   })
 })

@@ -16,10 +16,6 @@
 
 import { afterEach, describe, expect, expectTypeOf, it, vi } from 'vitest'
 import * as index from '../src/index.ts'
-// `SeedSource` is not yet re-exported from the package root (the declare
-// options surface lands with the service signature change) — type-import
-// from the seeds module directly.
-import type { SeedSource } from '../src/seeds.ts'
 
 /**
  * SSOT for the docs/consumer-api.md export inventory — the runtime keys its
@@ -59,7 +55,7 @@ const LIBRARY_EXPORT_KEYS = [
   // class is the only runtime value among the seeds exports; the §9.1 types
   // are compile-time only (pinned in the type-exports block below).
   'FallbacksSeedManager',
-  // Bundled preset roles (plan fallbacks-preset-roles T3) — the 7 preset
+  // Bundled preset roles (plan fallbacks-preset-roles T3) — the 5 preset
   // declarations re-exported from the package root (pure data module).
   'presetRoles',
 ] as const
@@ -203,10 +199,12 @@ describe('export surface: type exports (compile-time only)', () => {
     expectTypeOf<index.StepFailures>().toMatchTypeOf<{ turn: number; step: number }>()
     expectTypeOf<index.FallbackStateStore>().toMatchTypeOf<object>()
     // Service contract (plan fallbacks-consumer-api T2 + fallbacks-role-seeds
-    // T2): the static `provide` metadata value and the `FallbacksService`
-    // interface (the typed `ctx.get('llm-fallbacks')` surface via the cordis
-    // Context merge). Nine keys — the six-key face plus the three additive
-    // seed methods (D7).
+    // T2 + seed-source-provenance T2): the static `provide` metadata value and
+    // the `FallbacksService` interface (the typed `ctx.get('llm-fallbacks')`
+    // surface via the cordis Context merge). Nine keys — the six-key face plus
+    // the three additive seed methods (D7); `declareSeeds` takes the PUBLIC
+    // options face (`set` only — no `bundled`, reserved for the plugin's own
+    // preset self-declare).
     expectTypeOf(index.provide).toEqualTypeOf<readonly ['llm-fallbacks']>()
     expectTypeOf<index.FallbacksService>().toEqualTypeOf<{
       name: 'llm-fallbacks'
@@ -215,7 +213,10 @@ describe('export surface: type exports (compile-time only)', () => {
       resolveChain: typeof index.resolveChain
       validateFallbacksConfig: typeof index.validateFallbacksConfig
       detectLegacyKeys: typeof index.detectLegacyKeys
-      declareSeeds: (seeds: readonly index.SeedDeclaration[]) => Promise<index.SeedDeclareOutcome>
+      declareSeeds: (
+        seeds: readonly index.SeedDeclaration[],
+        options?: index.SeedsDeclareOptions,
+      ) => Promise<index.SeedDeclareOutcome>
       getEffectiveRoles: () => index.EffectiveRolesReadback
       revertSeededPersona: (id: string) => Promise<index.SeedRevertOutcome>
     }>()
@@ -234,6 +235,7 @@ describe('export surface: type exports (compile-time only)', () => {
       persona: string
       seeded: boolean
       personaOverridden: boolean
+      source: index.SeedSource
       seedPersona?: string
     }>()
     expectTypeOf<index.EffectiveRolesReadback>().toEqualTypeOf<{ roles: index.EffectiveRole[] }>()
@@ -243,10 +245,16 @@ describe('export surface: type exports (compile-time only)', () => {
       persona?: string
       reason?: index.SeedRevertFailReason
     }>()
+    // Seed provenance (seed-source-provenance plan): the per-row source
+    // label, the public declare options face (`set` only — the INTERNAL
+    // `bundled` marker is module-internal to seeds.ts and never re-exported),
+    // and the wire status carrying `source`.
+    expectTypeOf<index.SeedSource>().toEqualTypeOf<'bundled' | 'external' | 'user' | (string & {})>()
+    expectTypeOf<index.SeedsDeclareOptions>().toEqualTypeOf<{ set?: string }>()
     expectTypeOf<index.SeedsWireStatus>().toEqualTypeOf<{
       id: string
       overridden: boolean
-      source: SeedSource
+      source: index.SeedSource
     }>()
     expectTypeOf<index.SeedsIo>().toEqualTypeOf<{
       read: () => index.FallbacksConfig

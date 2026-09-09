@@ -129,7 +129,7 @@ describe('seeds declare window — service visibility ordering (issue #105)', ()
       expect(ctx.get('llm-fallbacks')).toBeDefined()
     })
     // ...and the tail preset child (last-registered) still fires after both
-    // TUI children: the 7 bundled rows materialize as the two-key shape.
+    // TUI children: the 5 bundled rows materialize as the two-key shape.
     await vi.waitFor(() => {
       expect(userSection(ctx)).toEqual({
         roles: { list: presetRoles.map((preset) => ({ id: preset.id, persona: preset.persona })), rules: [] },
@@ -142,9 +142,9 @@ describe('seeds declare window — service visibility ordering (issue #105)', ()
     await ctx.plugin(MemorySettings)
     // A conflict on the preset fire makes a wrongful SECOND fire observable
     // (presets-integration multi-fiber pattern): each fiber's manager is
-    // fresh, so every fired declare emits its own designer conflict warn.
+    // fresh, so every fired declare emits its own scout conflict warn.
     ;(ctx.settings as unknown as MemorySettings).seed(FALLBACKS_SETTINGS_NAMESPACE, {
-      roles: { list: [{ id: 'designer', persona: 'operator persona' }], rules: [] },
+      roles: { list: [{ id: 'scout', persona: 'operator persona' }], rules: [] },
     })
     const logs = captureLogs(ctx)
     const trees = new CommandTreesRegistry()
@@ -188,7 +188,7 @@ describe('seeds declare window — service visibility ordering (issue #105)', ()
     const rows = userSection(ctx)!.roles.list
     expect(rows).toHaveLength(presetRoles.length)
     expect(new Set(rows.map((row) => row.id)).size).toBe(presetRoles.length)
-    expect(rows.find((row) => row.id === 'designer')!.persona).toBe('operator persona')
+    expect(rows.find((row) => row.id === 'scout')!.persona).toBe('operator persona')
     // No unexpected child failed loud in the window. The deduped fiber's
     // unconditional settings-section child still logs ONE PRE-EXISTING cordis
     // root-logger fiber error (`settings namespace "fallbacks" is already

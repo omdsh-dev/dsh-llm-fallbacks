@@ -57,11 +57,10 @@ export interface SeedDeclaration {
 export type SeedSource = 'bundled' | 'external' | 'user' | (string & {})
 
 /**
- * Optional provenance for one `declare()` call (spec §2). `set` is the
- * public face (a companion's registered set name); `bundled` is an
- * INTERNAL marker for the plugin's own preset self-declare — not reachable
- * through the `FallbacksService.declareSeeds` face (consumers can never
- * label a declare `bundled`: reserved).
+ * Optional provenance for one `declare()` call (spec §2) — the PUBLIC
+ * options face (a companion's registered set name). This is also the type
+ * of the `FallbacksService.declareSeeds` second parameter: consumers can
+ * never label a declare `bundled` (reserved).
  */
 export interface SeedsDeclareOptions {
   /**
@@ -71,6 +70,16 @@ export interface SeedsDeclareOptions {
    * apply (a bad label must never drop roles).
    */
   set?: string
+}
+
+/**
+ * The manager-level declare options — the public face plus the INTERNAL
+ * bundled marker for the plugin's own preset self-declare. Module-internal
+ * (never exported, never re-exported from the package root): only the
+ * preset child call site passes `bundled`, and only a structurally-checked
+ * object literal at that — the type itself is not nameable by consumers.
+ */
+interface SeedsInternalDeclareOptions extends SeedsDeclareOptions {
   /** INTERNAL — bundled preset self-declare provenance. Not a consumer option. */
   bundled?: true
 }
@@ -191,7 +200,7 @@ export class FallbacksSeedManager {
   async declare(
     seeds: readonly SeedDeclaration[],
     io: SeedsIo,
-    options?: SeedsDeclareOptions,
+    options?: SeedsInternalDeclareOptions,
   ): Promise<SeedDeclareOutcome> {
     const outcome: SeedDeclareOutcome = { applied: [], skipped: [], conflicts: [] }
     const source = resolveSource(options, this.logger)
@@ -334,7 +343,10 @@ const RESERVED_SET_NAMES: readonly string[] = ['bundled', 'user', 'external']
  * non-string, or reserved warns ONCE and degrades to `external` (the
  * seeds still apply — a bad label must never drop roles).
  */
-function resolveSource(options: SeedsDeclareOptions | undefined, logger: FallbacksConfigLogger): SeedSource {
+function resolveSource(
+  options: SeedsInternalDeclareOptions | undefined,
+  logger: FallbacksConfigLogger,
+): SeedSource {
   if (options?.bundled === true) return 'bundled'
   const raw = options?.set
   if (raw === undefined) return 'external'
