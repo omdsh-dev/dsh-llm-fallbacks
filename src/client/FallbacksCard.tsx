@@ -315,6 +315,36 @@ function emptyValidationErrors(): Record<ValidationSection, string[]> {
 }
 
 /**
+ * One live seed entry's card-facing bits (trimmed-id keyed, derived from
+ * the wire `seeds` — spec §9.4). `source` is the provenance label and is
+ * OPTIONAL: a gateway predating the field (version skew) sends entries
+ * without it, and the card degrades to no badge.
+ */
+interface SeedRowInfo {
+  /** The gateway's persona-override verdict (informational). */
+  overridden: boolean
+  /** Provenance label — absent under gateway version skew. */
+  source?: string
+}
+
+/**
+ * Badge label for one row's provenance (plan role-card-seeded-ux): every
+ * row states where its seed state comes from. A live seed renders its
+ * declaring set's label VERBATIM (case-preserved — no case-folding; the
+ * unnamed case is the literal `external`), the bundled presets and the
+ * operator's own rows resolve to their localized labels. `null` = no
+ * badge: a currently-seeded row whose wire entry lacks `source` (gateway
+ * version skew) — the degradation path, never an error.
+ */
+function seedBadgeLabel(seed: SeedRowInfo | undefined, t: FallbacksCardProps['t']): string | null {
+  if (seed === undefined) return t('roles.seedSource.user')
+  if (seed.source === undefined) return null
+  if (seed.source === 'bundled') return t('roles.seedSource.bundled')
+  if (seed.source === 'user') return t('roles.seedSource.user')
+  return seed.source
+}
+
+/**
  * Pre-save validation of the assembled draft (spec §8 / plan Task 3):
  * role id format/reserved word/duplicates, undeclared rule role references
  * (only reachable through the synthetic outside option — the dropdown
@@ -328,16 +358,16 @@ function emptyValidationErrors(): Record<ValidationSection, string[]> {
  * {@link save} — the draft is never written. `persona` is free text and
  * never validated.
  *
- * `seededIds` is the live trimmed-id → overridden map derived from
+ * `seedInfo` is the live trimmed-id → seed-entry map derived from
  * `state.seeds` (spec §9.4): the empty-chain block relaxes for seeded ids
  * only (spec §9.6 / AC-3 — a seeded role's chain is legitimately empty by
- * design, R4, and its persona edits must stay persistable); non-seeded
- * behavior is byte-identical.
+ * design, R4, and the row must stay persistable through a section save);
+ * non-seeded behavior is byte-identical.
  */
 function validateDraft(
   draft: FallbacksConfig,
   t: FallbacksCardProps['t'],
-  seededIds: ReadonlyMap<string, boolean>,
+  seedInfo: ReadonlyMap<string, SeedRowInfo>,
 ): Record<ValidationSection, string[]> {
   const errors = emptyValidationErrors()
   const declaredIds = new Set<string>()
@@ -365,9 +395,9 @@ function validateDraft(
     // the save is blocked with an inline hint on the role card. Seeded
     // roles are the one exception (spec §9.6 / AC-3): seeds never invent a
     // chain (R4), so a seeded role's chain is legitimately empty by design
-    // and the block relaxes for seeded ids only — the persona edit stays
-    // persistable. Non-seeded behavior is byte-identical.
-    if ((role.chain ?? []).length === 0 && !seededIds.has(role.id.trim())) {
+    // and the block relaxes for seeded ids only — the row rides a section
+    // save instead of blocking it. Non-seeded behavior is byte-identical.
+    if ((role.chain ?? []).length === 0 && !seedInfo.has(role.id.trim())) {
       errors.sub.push(t('validation.roleChainRequired', { id: role.id }))
     }
   }
@@ -777,13 +807,6 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
   // placeholders came from `defaultFallbacksConfig`), which must always
   // land the real config — `firstSeed` bypasses the dirty gates once.
   const firstSeedDone = useRef(false)
-  // PR #62 UX round 3: a write that is NOT one of the card's per-section
-  // saves (the seed-revert — `controller.revertSeed`) must still re-seed
-  // the WHOLE form: the accepted config is the new truth, and the
-  // per-section gates exist to protect UNSAVED user edits, not to keep
-  // stale editor state after a user-initiated revert. The revert click
-  // sets this flag; the next config reseed consumes it as a full reseed.
-  const forceReseed = useRef(false)
   useEffect(() => {
     if (state.status !== 'ready') return
     const key = JSON.stringify(state.config)
@@ -791,20 +814,18 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
     seededConfigKey.current = key
     const firstSeed = !firstSeedDone.current
     firstSeedDone.current = true
-    const force = forceReseed.current
-    forceReseed.current = false
     const catalog = catalogOf(state)
-    if (firstSeed || force || !mainDirty) {
+    if (firstSeed || !mainDirty) {
       setAllDayModel(allDayModelOf(state.config.rootChain))
       setAllDayChainRow(allDayChainRowOf(state.config.rootChain, catalog))
       setTimeSlotRows(timeSlotsToRows(state.config.timeSlots ?? [], catalog))
       setScalars(prev => ({ ...prev, enabled: state.config.enabled, tz: state.config.tz ?? 'Asia/Shanghai' }))
     }
-    if (firstSeed || force || !subDirty) {
+    if (firstSeed || !subDirty) {
       setRoleRows(rolesToRows(state.config.roles.list, catalog))
       setRuleRows(rulesToRows(state.config.roles.rules, catalog))
     }
-    if (firstSeed || force || !advancedDirty) {
+    if (firstSeed || !advancedDirty) {
       setScalars(prev => ({
         ...prev,
         triggerCodes: [...state.config.triggerCodes],
@@ -967,8 +988,9 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
 
   const addRole = (): void => {
     // PR #62 UX round 2: a freshly added role card starts collapsed like
-    // every other role card.
-    setRoleRows(rows => [...rows, { id: '', persona: '', selectors: [], fallback: 'inherit-root', collapsed: true }])
+    // every other role card (and its persona brief flag is moot — a fresh
+    // row is never seeded — but the field is required on every row).
+    setRoleRows(rows => [...rows, { id: '', persona: '', selectors: [], fallback: 'inherit-root', collapsed: true, personaOpen: false }])
   }
 
   const removeRole = (index: number): void => {
@@ -1028,14 +1050,15 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
   // attempt (same derivation pattern — red borders on the start/end inputs).
   const invalidSlotRows = validationAttempted ? collectInvalidSlotRows(timeSlotRows) : null
   // Seeded-role badge state, derived ONCE per render from the wire `seeds`
-  // (spec §9.4; the qc3 F-3 same-derivation pattern): trimmed role id →
-  // whether the persona is currently an operator override. The same map
-  // drives the badge pill, the revert affordance, and the seeded-only Save
-  // relax — each row's membership is a single lookup, and non-seeded rows
-  // are indistinguishable from a card without seeds at all.
-  const seededIds = new Map<string, boolean>()
+  // (spec §9.4; the qc3 F-3 same-derivation pattern): trimmed role id → the
+  // entry's override verdict + provenance label. The same map drives the
+  // source badge, the read-only persona presentation, and the seeded-only
+  // Save relax — each row's membership is a single lookup. Non-seeded rows
+  // keep the ordinary editing UX (they carry the `User` badge); a seeded
+  // entry without `source` (gateway version skew) degrades to no badge.
+  const seedInfo = new Map<string, SeedRowInfo>()
   for (const seed of state.seeds) {
-    seededIds.set(seed.id.trim(), seed.overridden)
+    seedInfo.set(seed.id.trim(), { overridden: seed.overridden, source: seed.source })
   }
 
   // The compact recent-switch line: the most recent switch (from → to +
@@ -1132,7 +1155,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
 
   const save = (section: ValidationSection): void => {
     setLastSaveSection(section)
-    const errors = validateDraft(draft, t, seededIds)
+    const errors = validateDraft(draft, t, seedInfo)
     // An empty rule row is invisible to validateDraft (rowsToRules dropped
     // it from the draft) — the row would vanish on a successful save with no
     // explanation. Block the SUB save alongside the draft violations (qc3
@@ -1224,13 +1247,13 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
     // The empty-rule-row violation lives outside the draft (rowsToRules
     // dropped the row), so it must clear on the ROW state, not just the
     // assembled draft (qc3 F-4).
-    const errors = validateDraft(draft, t, seededIds)
+    const errors = validateDraft(draft, t, seedInfo)
     if (errors.main.length === 0 && errors.sub.length === 0 && errors.advanced.length === 0
       && !ruleRows.some(row => row.role === '')) {
       setValidationErrors(emptyValidationErrors())
       setValidationAttempted(false)
     }
-    // `seededIds` is intentionally NOT a dep: it is a fresh Map per render
+    // `seedInfo` is intentionally NOT a dep: it is a fresh Map per render
     // (derived from state.seeds, spec §9.4) and `draft` already re-runs
     // this effect on every render — listing it would only re-run the
     // bounded validateDraft pass with zero behavioral change (qc1 S-8).
@@ -1239,13 +1262,9 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
   // PR #62 UX round 2: a store write failure renders under the section
   // whose Save was clicked; once the store settles READY (a successful
   // write or load) the section anchor is no longer meaningful — a later
-  // load failure must go back to the card-top notice + Retry. A write
-  // ERROR also clears the revert's force-reseed flag: a failed revert
-  // leaves the config untouched, so the flag must not leak into the next
-  // (section) save's reseed and clobber unrelated unsaved edits.
+  // load failure must go back to the card-top notice + Retry.
   useEffect(() => {
     if (state.status === 'ready') setLastSaveSection(null)
-    if (state.status === 'error') forceReseed.current = false
   }, [state.status])
 
   // Disclosure is card-local USER state (upstream rationale): the healthy
@@ -1982,25 +2001,38 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                  * format hint inline; a blocked save attempt marks offending
                  * ids with the red border (aria-invalid). Seeded rows (R2 —
                  * incl. preset-materialized rows, which surface as seeded
-                 * rows) have their id input disabled: seed/preset role ids
-                 * are immutable from the card. Only the id is locked —
-                 * persona (R3 override/revert) and chain/fallback (R4) stay
-                 * editable. A rename can only arrive via an external config
-                 * edit; a row whose id no longer matches the wire's seed
-                 * declaration renders as an ordinary row. */}
+                 * rows) present as reference material (plan
+                 * role-card-seeded-ux): no id input (the collapse title
+                 * carries the id), a read-only persona brief instead of the
+                 * textarea, no revert button; the chain/fallback editors and
+                 * the remove action stay operator-owned (R4). A rename can
+                 * only arrive via an external config edit; a row whose id no
+                 * longer matches the wire's seed declaration renders as an
+                 * ordinary row. */}
                 <div className={css.list}>
                   {roleRows.map((row, index) => {
                     const invalid = invalidRoleIds?.has(row.id.trim()) ?? false
-                    // undefined = not a currently seeded row (no badge, no
-                    // revert, no Save relax — the row is an ordinary config
-                    // row; R2: dropping a declaration keeps the row). Seeded
-                    // rows (incl. preset-materialized ones) are id-immutable
-                    // (R2): their id input is disabled below — only the id is
-                    // locked; persona/chain/fallback stay editable. Renames
-                    // arrive only via external config edits; a row whose id
-                    // no longer matches the wire's seed declaration renders
-                    // as an ordinary row.
-                    const seed = seededIds.get(row.id.trim())
+                    // undefined = not a currently seeded row (ordinary config
+                    // row: full editing UX; R2 — dropping a declaration keeps
+                    // the row). A seeded row (incl. preset-materialized ones)
+                    // is identity+persona read-only: the id hides (the title
+                    // carries it) and the persona brief replaces the editor.
+                    // Renames arrive only via external config edits; a row
+                    // whose id no longer matches the wire's seed declaration
+                    // renders as an ordinary row again.
+                    const seed = seedInfo.get(row.id.trim())
+                    // The provenance badge rides EVERY collapse title (plan
+                    // role-card-seeded-ux): the declaring set's label
+                    // verbatim / localized bundled / User. null (a seeded
+                    // entry without a wire `source` — gateway version skew)
+                    // renders no badge: the degradation path, never an
+                    // error.
+                    const seedBadge = seedBadgeLabel(seed, t)
+                    // The brief's blank verdict: a whitespace-only persona is
+                    // the same `(not set)` empty state as an empty one — no
+                    // brief text and NO disclosure chevron (there is nothing
+                    // to disclose).
+                    const personaBlank = row.persona.trim() === ''
                     // Collapse summary (PR #62 feedback round): the first
                     // chain model, or the raw strategy token when the chain
                     // is empty (inherit-root = the role rides the root
@@ -2031,74 +2063,119 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                         >
                           <IconChevronDownOutline14 className={roleExpanded ? `${css.chevron} ${css.chevronOpen}` : css.chevron} />
                           <span className={css.collapseTitle}>{row.id}</span>
+                          {seedBadge !== null && (
+                            // Non-interactive — it rides the whole-row toggle
+                            // hit area (PR #62 pattern), so no stopPropagation
+                            // is needed. The title tooltip carries uncapped
+                            // set names verbatim (case-preserved; the CSS
+                            // ellipsizes instead of wrapping).
+                            <span className={css.seedBadge} title={seedBadge}>{seedBadge}</span>
+                          )}
                           <span className={css.collapseMeta}>{roleSummary}</span>
                         </button>
                       </div>
                       {roleExpanded && (
                       <>
-                      <div className={css.ruleGrid}>
-                        <div className={css.ruleCell}>
-                          <span className={css.ruleCellLabel}>{t('roles.id')}</span>
-                          <input
-                            className={`${css.input} ${invalid ? css.inputInvalid : ''}`}
-                            value={row.id}
-                            placeholder={t('roles.idPlaceholder')}
-                            aria-label={t('roles.id')}
-                            aria-invalid={invalid ? true : undefined}
-                            disabled={!writable || seed !== undefined}
-                            onChange={event => { updateRoleRow(index, { id: event.target.value }) }}
-                          />
-                          <span className={css.hint}>{t('roles.id.hint')}</span>
+                      {seed === undefined && (
+                        // Seeded rows render no id field at all: the id is
+                        // seed-immutable (R2) and the collapse title already
+                        // carries it (plan role-card-seeded-ux).
+                        <div className={css.ruleGrid}>
+                          <div className={css.ruleCell}>
+                            <span className={css.ruleCellLabel}>{t('roles.id')}</span>
+                            <input
+                              className={`${css.input} ${invalid ? css.inputInvalid : ''}`}
+                              value={row.id}
+                              placeholder={t('roles.idPlaceholder')}
+                              aria-label={t('roles.id')}
+                              aria-invalid={invalid ? true : undefined}
+                              disabled={!writable}
+                              onChange={event => { updateRoleRow(index, { id: event.target.value }) }}
+                            />
+                            <span className={css.hint}>{t('roles.id.hint')}</span>
+                          </div>
                         </div>
-                      </div>
+                      )}
                       <div className={css.ruleGrid}>
                         <div className={css.ruleCell}>
                           <span className={css.ruleCellLabel}>{t('roles.persona')}</span>
-                          <textarea
-                            rows={3}
-                            className={`${css.input} ${css.inputTextarea}`}
-                            value={row.persona}
-                            placeholder={t('roles.personaPlaceholder')}
-                            aria-label={t('roles.persona')}
-                            disabled={!writable}
-                            onChange={event => { updateRoleRow(index, { persona: event.target.value }) }}
-                          />
-                          {seed !== undefined && (
-                            // Seed badge + revert (spec §9.4 / AC-3 — R3, not
-                            // polish): only CURRENTLY seeded rows carry the
-                            // default-vs-override pill and the revert
-                            // affordance; dropping a seed declaration leaves
-                            // the row ordinary (R2). Revert restores the
-                            // CURRENTLY declared seed default through the
-                            // gateway, never depends on a card Save, and is
-                            // disabled while the card cannot write or a write
-                            // is in flight. The pill reuses the `pending`
-                            // pill vocabulary and the row rides the `hint`
-                            // rhythm — no new control shapes.
-                            <span className={css.hint}>
-                              <span className={css.pending}>
-                                {t(seed ? 'roles.seedOverride' : 'roles.seedDefault')}
-                              </span>
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                disabled={!writable || saving}
-                                onClick={() => {
-                                  // Issue #59: revert must also snap the
-                                  // **draft** persona. The RPC no-ops when
-                                  // persisted already equals the seed, so
-                                  // the reseed effect never fires — apply
-                                  // the returned seed persona locally.
-                                  forceReseed.current = true
-                                  void controller.revertSeed(row.id.trim()).then(persona => {
-                                    if (persona === undefined) return
-                                    updateRoleRow(index, { persona })
-                                  })
-                                }}
-                              >
-                                {t('roles.revertPersona')}
-                              </Button>
-                            </span>
+                          {seed === undefined ? (
+                            <textarea
+                              rows={3}
+                              className={`${css.input} ${css.inputTextarea}`}
+                              value={row.persona}
+                              placeholder={t('roles.personaPlaceholder')}
+                              aria-label={t('roles.persona')}
+                              disabled={!writable}
+                              onChange={event => { updateRoleRow(index, { persona: event.target.value }) }}
+                            />
+                          ) : (
+                            // Seeded persona = reference material (plan
+                            // role-card-seeded-ux): a read-only single-line
+                            // brief (CSS ellipsis) plus a chevron disclosing
+                            // the full multi-line text. The disclosure is
+                            // CLIENT-LOCAL state (`row.personaOpen`, the row
+                            // collapse's twin) — never a settings write —
+                            // and the persona never changes through this
+                            // surface: rowsToRoles passes it through
+                            // unchanged. No revert affordance: the card no
+                            // longer offers the seed-persona revert (an
+                            // override arrives via an external config edit
+                            // and the brief honestly shows the effective
+                            // persona).
+                            <>
+                              <div className={css.personaBriefRow}>
+                                <span
+                                  className={personaBlank
+                                    ? `${css.personaBrief} ${css.personaBriefEmpty}`
+                                    : css.personaBrief}
+                                >
+                                  {personaBlank ? t('roles.persona.empty') : row.persona}
+                                </span>
+                                {!personaBlank && (
+                                  /* NOT a native <button> (QA finding e, plan
+                                   * role-card-seeded-ux fix wave 2): this row
+                                   * sits inside the form body's `disabled`
+                                   * fieldset (`<fieldset disabled={!writable}>`,
+                                   * the 主代理 form opening tag) and
+                                   * fieldset[disabled] propagation kills every descendant form
+                                   * control in real browsers — a button here
+                                   * renders but is implicitly dead exactly in
+                                   * the read-only view whose forced-open rows
+                                   * make the disclosure the only way to read
+                                   * the full persona (live-confirmed in
+                                   * Chromium). The disclosure toggles
+                                   * client-local `personaOpen` only, so the
+                                   * control is a span with role="button": the
+                                   * aria/tooltip/click contract is identical,
+                                   * and a non-form-control is immune to
+                                   * fieldset propagation while keeping the
+                                   * DOM in place. A span has no native button
+                                   * semantics, so Enter/Space activation is
+                                   * carried explicitly. */
+                                  <span
+                                    role="button"
+                                    tabIndex={0}
+                                    className={css.iconButton}
+                                    aria-expanded={row.personaOpen}
+                                    aria-label={t(row.personaOpen ? 'roles.persona.collapse' : 'roles.persona.expand')}
+                                    data-tip={t(row.personaOpen ? 'roles.persona.collapse' : 'roles.persona.expand')}
+                                    onClick={() => { updateRoleRow(index, { personaOpen: !row.personaOpen }) }}
+                                    onKeyDown={event => {
+                                      if (event.key === 'Enter' || event.key === ' ') {
+                                        event.preventDefault()
+                                        updateRoleRow(index, { personaOpen: !row.personaOpen })
+                                      }
+                                    }}
+                                  >
+                                    <IconChevronDownOutline14 className={row.personaOpen ? `${css.chevron} ${css.chevronOpen}` : css.chevron} />
+                                  </span>
+                                )}
+                              </div>
+                              {row.personaOpen && (
+                                <p className={css.personaFull}>{row.persona}</p>
+                              )}
+                            </>
                           )}
                         </div>
                       </div>
@@ -2125,8 +2202,9 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                           // chain entry. Seeded: the chain is legitimately
                           // empty by design (R4 — seeds never invent one), so
                           // the hint turns non-blocking (seedChainOptional)
-                          // and the Save relax persists the persona edit
-                          // (spec §9.6 / AC-3).
+                          // and the Save relax lets the seeded row ride a
+                          // section save (e.g. a sibling edit) instead of
+                          // blocking it (spec §9.6 / AC-3).
                           <span className={css.hint}>
                             {seed !== undefined
                               ? t('roles.seedChainOptional', { id: row.id })

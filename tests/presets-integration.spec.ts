@@ -1,19 +1,22 @@
 /**
  * Bundled preset self-declaration integration tests (plan fallbacks-preset-roles
  * Task 3): real `Context` + `MemorySettings` + `apply()` — the apply() tail
- * settings child fires `seeds.declare(presetRoles, seedsIo)` one tick after
- * apply (spec §9.3 D9.3-a), so EVERY assertion on the materialized rows must
- * waitFor (same compose/vi.waitFor pattern as tests/seeds-integration.spec.ts).
+ * settings child fires `seeds.declare(presetRoles, seedsIo, { bundled: true })`
+ * one tick after apply (spec §9.3 D9.3-a; the internal marker labels the
+ * batch's provenance `bundled`), so EVERY assertion on the materialized rows
+ * must waitFor (same compose/vi.waitFor pattern as
+ * tests/seeds-integration.spec.ts).
  *
  * Covers (spec §9.5):
- * - default apply → 7 two-key rows materialized (persona = §9.2 via the same
- *   presetRoles source) + gateway `seeds` badge all seeded (AC-1);
+ * - default apply → 5 two-key rows materialized (persona = §9.2 via the same
+ *   presetRoles source) + gateway `seeds` badge all seeded `bundled` (AC-1);
  * - repeated apply / dispose→re-apply → no-delta zero write + single rows (AC-1);
  * - `presets: 'none'` → zero declaration, zero write (AC-2);
  * - operator same-name row → persona kept + `llm-fallbacks: seeds:` conflict
  *   warn (AC-4);
- * - headless (no settings service) → no fire, no seeds write, no error log,
- *   no unhandled rejection, runtime dispatches (D9.3-b headless boundary);
+ * - headless (no settings service) → no service at all (D1), no fire, no
+ *   seeds write, no materialized rows from any seed source, no error log, no
+ *   unhandled rejection, runtime dispatches (D9.3-b headless boundary);
  * - write failure (persist rejects) → exactly one `llm-fallbacks: seeds:`
  *   logger.error, registry not committed, apply/runtime unaffected (D9.3-b);
  * - multi-fiber: same-root second apply does NOT re-fire (no second conflict
@@ -27,6 +30,7 @@ import { apply, defaultFallbacksConfig, type FallbacksService } from '../src/ind
 import { FALLBACKS_SETTINGS_NAMESPACE, type FallbacksConfigGateway } from '../src/gateway.ts'
 import { presetRoles } from '../src/presets.ts'
 import { MemorySettings } from './support/memory-settings.ts'
+import { settle } from './support/settle.ts'
 import { cfg, dispatchRequestError, makeAgent } from './support/harness.ts'
 
 /** Track every test context and dispose it after the case (settings/gateway effects hygiene). */
@@ -90,19 +94,12 @@ class RejectingSettings extends MemorySettings {
   }
 }
 
-/** Let pending microtasks/macrotasks settle (negative-assertion window). */
-function settle(): Promise<void> {
-  const { promise, resolve } = Promise.withResolvers<void>()
-  setTimeout(resolve, 50)
-  return promise
-}
-
-/** §9.2 frozen text anchor — the designer persona verbatim (implementer SSOT copy). */
-const DESIGNER_PERSONA =
-  'UI/UX specialist for design implementation, review, and visual refinement. Analyze the existing design system first (tokens, theme, and primitives) and compose with it; if none exists, define a minimal system before implementing. Cover loading, empty, error, disabled, hover, and focus states; verify accessibility (contrast, focus rings, semantic HTML) and responsive layout. Avoid generic AI-slop patterns; in review, cite file and line with a concrete issue and a specific fix.'
+/** §9.2 frozen text anchor — the scout persona verbatim (implementer SSOT copy). */
+const SCOUT_PERSONA =
+  'Read-only scout for exploratory codebase research, rapid analysis, and broad pattern search. Return compressed, structured findings another agent can reuse without re-reading the tree. Run searches in parallel; if a search is empty, try at least one alternate strategy before concluding the target is absent. Infer thoroughness from the task (quick, medium, or thorough; default medium); never write, edit, or run state-changing commands.'
 
 describe('bundled preset self-declaration (real apply)', () => {
-  it('default apply materializes the 7 two-key preset rows; gateway seeds badge all seeded (AC-1)', async () => {
+  it('default apply materializes the 5 two-key preset rows; gateway seeds badge all seeded bundled (AC-1)', async () => {
     const ctx = await compose()
 
     // The fire happens in the tail settings child — a tick after apply, so
@@ -116,22 +113,23 @@ describe('bundled preset self-declaration (real apply)', () => {
     const rows = gateway(ctx).get().config.roles.list
     expect(rows.map((row) => row.id)).toEqual(presetRoles.map((preset) => preset.id))
     expect(rows.map((row) => row.persona)).toEqual(presetRoles.map((preset) => preset.persona))
-    // §9.2 frozen-text anchor (verbatim copy, designer).
-    expect(rows.find((row) => row.id === 'designer')!.persona).toBe(DESIGNER_PERSONA)
+    // §9.2 frozen-text anchor (verbatim copy, scout).
+    expect(rows.find((row) => row.id === 'scout')!.persona).toBe(SCOUT_PERSONA)
     // The RAW write shape is the two-key `{ id, persona }` (R4 — no
     // chain/fallback/prompt/permissions invented on insert).
     expect(userSection(ctx)).toEqual({
       roles: { list: presetRoles.map((preset) => ({ id: preset.id, persona: preset.persona })), rules: [] },
     })
-    // Badge: all seven rows seeded at their default (nothing overridden).
+    // Badge: all five rows seeded at their default (nothing overridden), all
+    // carrying the internal self-declare's `bundled` provenance.
     expect(gateway(ctx).get().seeds).toEqual(
-      presetRoles.map((preset) => ({ id: preset.id, overridden: false })),
+      presetRoles.map((preset) => ({ id: preset.id, overridden: false, source: 'bundled' })),
     )
     // The service readback agrees (single point of truth).
     expect(service(ctx).getEffectiveRoles().roles.map((role) => role.id)).toEqual(presetRoles.map((preset) => preset.id))
   })
 
-  it("enabled: false still materializes the 7 preset rows (D9.3-c — no `enabled` gate)", async () => {
+  it("enabled: false still materializes the 5 preset rows (D9.3-c — no `enabled` gate)", async () => {
     // Explicit `enabled: false` (the default): the preset fire is NOT gated
     // by `enabled` — docs/configuration.md "Not gated by enabled" (F-002).
     // The default-value coincidence in compose() must not be the only pin.
@@ -150,7 +148,7 @@ describe('bundled preset self-declaration (real apply)', () => {
       roles: { list: presetRoles.map((preset) => ({ id: preset.id, persona: preset.persona })), rules: [] },
     })
     expect(gateway(ctx).get().seeds).toEqual(
-      presetRoles.map((preset) => ({ id: preset.id, overridden: false })),
+      presetRoles.map((preset) => ({ id: preset.id, overridden: false, source: 'bundled' })),
     )
   })
 
@@ -277,7 +275,7 @@ describe('bundled preset self-declaration (real apply)', () => {
     // the dev-time mirror of a provider whose document already carries the
     // row when the owning plugin loads.
     ;(ctx.settings as unknown as MemorySettings).seed(FALLBACKS_SETTINGS_NAMESPACE, {
-      roles: { list: [{ id: 'designer', persona: 'operator persona' }], rules: [] },
+      roles: { list: [{ id: 'scout', persona: 'operator persona' }], rules: [] },
     })
     const logs = captureLogs(ctx)
     apply(ctx)
@@ -288,41 +286,54 @@ describe('bundled preset self-declaration (real apply)', () => {
     const rows = gateway(ctx).get().config.roles.list
     expect(rows).toHaveLength(presetRoles.length)
     // The operator persona survives; the preset default is NOT written over it.
-    expect(rows.find((row) => row.id === 'designer')!.persona).toBe('operator persona')
-    // The badge marks the override (derived, not persisted).
-    expect(gateway(ctx).get().seeds.find((seed) => seed.id === 'designer')).toEqual({ id: 'designer', overridden: true })
+    expect(rows.find((row) => row.id === 'scout')!.persona).toBe('operator persona')
+    // The badge marks the override (derived, not persisted) with the preset
+    // self-declare's `bundled` provenance.
+    expect(gateway(ctx).get().seeds.find((seed) => seed.id === 'scout')).toEqual({ id: 'scout', overridden: true, source: 'bundled' })
 
     const warns = logs.filter((message) => message.type === 'warn').map((message) => String(message.args[0]))
     expect(warns).toContain(
-      'llm-fallbacks: seeds: persona-source conflict for seed id "designer" — operator row persona kept (never overwritten)',
+      'llm-fallbacks: seeds: persona-source conflict for seed id "scout" — operator row persona kept (never overwritten)',
     )
   })
 
-  it('headless (no settings service): child never activates — no fire, no write, no error, runtime dispatches (D9.3-b)', async () => {
+  it('headless (no settings service): no service, no fire, no error, no materialized rows, runtime dispatches (D9.3-b + D1)', async () => {
     const ctx = track(new Context())
     const logs = captureLogs(ctx)
-    apply(ctx, cfg({ rootChain: ['other/gpt-4o'] }))
-    await vi.waitFor(() => {
-      expect(ctx.get('llm-fallbacks')).toBeDefined()
-    })
+    // presets stay BUNDLED (the default) on purpose: the pin below is only
+    // load-bearing if a preset declare WOULD materialize when the tail child
+    // wrongly fires — with `presets: 'none'` the no-rows assertion would
+    // hold trivially even in that regression (qc1 S-003 re-home).
+    apply(ctx, cfg({ rootChain: ['other/gpt-4o'], presets: 'bundled' }))
+
+    // D1 (seeds-declare-window): the provide lives INSIDE the settings inject
+    // child — headless, that child never activates and the service NEVER
+    // appears (it used to be visible synchronously during apply with a
+    // throwing write channel). Consumers cannot obtain a seed surface whose
+    // write channel is unbound.
+    await settle()
+    expect(ctx.get('llm-fallbacks')).toBeUndefined()
 
     // The fallback runtime dispatches normally without a settings service.
     const { agent } = makeAgent('headless-agent', { provider: 'mock', model: 'gpt-4o' })
     const action = await dispatchRequestError(ctx, agent, { failure: { message: 'denied', code: 'AUTH' } })
     expect(action).toEqual({ kind: 'retry' })
 
-    // Give the tail settings child its activation window (a tick + settle,
-    // same negative-assertion style as the `presets: 'none'` case): if it
-    // could fire, the write would land by now (F-004). The structural
-    // guarantee — the inject child only activates when a settings service is
-    // composed — stays the primary pin; the settle is the belt-and-braces
-    // window.
+    // Give any (incorrectly) scheduled fire its activation window (a tick +
+    // settle, same negative-assertion style as the `presets: 'none'` case).
     await settle()
 
-    // Zero declaration, zero write, zero error log — the child never fired.
-    expect(service(ctx).getEffectiveRoles().roles).toEqual([])
+    // Zero error log — the preset child never fired, no unhandled rejection.
     const errors = logs.filter((message) => message.type === 'error')
     expect(errors).toHaveLength(0)
+
+    // Zero materialization from any seed source: the composed roles.list is
+    // exactly the entry's (empty — no preset rows appended) and the seeds
+    // badge is empty. The gateway IS registered headless (an unconditional
+    // provide in apply), so this readback replaces the dropped
+    // getEffectiveRoles readback (no service exists to read through).
+    expect(gateway(ctx).get().config.roles.list).toEqual([])
+    expect(gateway(ctx).get().seeds).toEqual([])
   })
 
   it('write failure: exactly one llm-fallbacks: seeds: error, registry not committed, runtime unaffected (D9.3-b)', async () => {
@@ -363,7 +374,7 @@ describe('bundled preset self-declaration (real apply)', () => {
     const settings = ctx.settings as unknown as CountingSettings
     // A conflict on the FIRST fire makes a second fire observable via warns.
     ;(ctx.settings as unknown as MemorySettings).seed(FALLBACKS_SETTINGS_NAMESPACE, {
-      roles: { list: [{ id: 'designer', persona: 'operator persona' }], rules: [] },
+      roles: { list: [{ id: 'scout', persona: 'operator persona' }], rules: [] },
     })
     const logs = captureLogs(ctx)
     apply(ctx)
@@ -396,7 +407,7 @@ describe('bundled preset self-declaration (real apply)', () => {
     ).toHaveLength(1)
     const rows = gateway(ctx).get().config.roles.list
     expect(rows).toHaveLength(presetRoles.length)
-    expect(rows.find((row) => row.id === 'designer')!.persona).toBe('operator persona')
+    expect(rows.find((row) => row.id === 'scout')!.persona).toBe('operator persona')
   })
 
   it('settings service removal + restore (provider reload) re-fires the preset child: no duplicate rows, no-delta zero write, badge correct (F-005)', async () => {
@@ -419,6 +430,13 @@ describe('bundled preset self-declaration (real apply)', () => {
     await vi.waitFor(() => {
       expect(gateway(ctx).get().config.roles.list).toEqual([])
     })
+    // The settings child unload withdraws the service WITH it (the provide
+    // disposer runs on the same child unload — seeds-declare-window teardown
+    // semantics): consumers probing now see `undefined`, not a dead write
+    // channel (case f).
+    await vi.waitFor(() => {
+      expect(ctx.get('llm-fallbacks')).toBeUndefined()
+    })
     // The write channel is gone while the provider is absent (KD-G5).
     await expect(gateway(ctx).set({ enabled: true })).rejects.toThrow(/settings service is unavailable/)
 
@@ -428,6 +446,13 @@ describe('bundled preset self-declaration (real apply)', () => {
     // re-activate (a cordis-init publish would otherwise wipe the doc).
     const fresh = new CountingSettings(ctx)
     fresh.seed(FALLBACKS_SETTINGS_NAMESPACE, persisted!)
+
+    // The re-fired settings child re-binds the write channel and re-provides
+    // the service — the old registration was withdrawn with the child unload,
+    // so the re-provide hits no duplicate-registration failure (case f).
+    await vi.waitFor(() => {
+      expect(ctx.get('llm-fallbacks')).toBeDefined()
+    })
 
     // The re-activated preset child re-fires: declare reads the composed
     // source (entry + persisted user layer) → no-delta → zero writes, no
@@ -444,7 +469,7 @@ describe('bundled preset self-declaration (real apply)', () => {
     expect(rows.map((row) => row.persona)).toEqual(presetRoles.map((preset) => preset.persona))
     expect(userSection(ctx)).toEqual(persisted)
     expect(gateway(ctx).get().seeds).toEqual(
-      presetRoles.map((preset) => ({ id: preset.id, overridden: false })),
+      presetRoles.map((preset) => ({ id: preset.id, overridden: false, source: 'bundled' })),
     )
   })
 })

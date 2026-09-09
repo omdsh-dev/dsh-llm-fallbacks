@@ -82,19 +82,23 @@ class TuiSettingsSectionsStub {
  * A stub Context whose `inject` mirrors cordis' child-activation contract:
  * with a service present the child activates immediately (receiving the
  * service bag), and its returned disposer is captured; with no service the
- * child never activates. The stub ctx is cast to `Context` — the real
- * `Context` surface is not needed, `installTuiSettingsSection` only touches
- * `inject`.
+ * child never activates. The child bag carries the service + a logger
+ * surface (the minimal slice of a real child context the dedupe guard logs
+ * through — tui-client.spec.ts makeStubContext pattern). The stub ctx is
+ * cast to `Context` — the real `Context` surface is not needed,
+ * `installTuiSettingsSection` only touches `inject`.
  */
 function makeStubContext(service: TuiSettingsSectionsStub | undefined): {
   ctx: Context
   disposer: (() => void) | undefined
+  debugLog: ReturnType<typeof vi.fn>
 } {
   let disposer: (() => void) | undefined
+  const debugLog = vi.fn()
   const ctx = {
     inject(names: readonly string[], callback: (tctx: unknown) => unknown) {
       if (service === undefined) return
-      const returned = callback({ tuiSettingsSections: service })
+      const returned = callback({ tuiSettingsSections: service, logger: () => ({ debug: debugLog }) })
       if (typeof returned === 'function') disposer = returned as () => void
     },
   } as unknown as Context
@@ -105,6 +109,7 @@ function makeStubContext(service: TuiSettingsSectionsStub | undefined): {
     get disposer() {
       return disposer
     },
+    debugLog,
   }
 }
 
@@ -214,6 +219,28 @@ describe('installTuiSettingsSection — registration shape (AC-1)', () => {
     expect(() => installTuiSettingsSection(ctx, { serviceOwned: true })).not.toThrow()
     expect(registry.nss).toHaveLength(0)
     expect(registry.sections.size).toBe(0)
+  })
+
+  it('degrades to a no-op disposer when another section already owns the ns (M-1 dedupe guard, T1c)', () => {
+    const registry = new TuiSettingsSectionsStub()
+    // In-claim-window conflict (seeds-declare-window T1c): with the optimistic
+    // apply-time claim, a fiber applying inside the window can race another
+    // fiber's registration — the host duplicate-ns throw inside the inject
+    // child must degrade like installTuiClient's, not fail the child.
+    registry.register(buildFallbacksTuiSection())
+    const stub = makeStubContext(registry)
+
+    expect(() => installTuiSettingsSection(stub.ctx, { serviceOwned: true })).not.toThrow()
+    // The dedupe catch logged the degradation at debug level...
+    expect(stub.debugLog).toHaveBeenCalledWith(
+      'llm-fallbacks: tui settings section already registered — no section on this fiber',
+    )
+    // ...and returned a no-op disposer (nothing was registered to withdraw).
+    expect(typeof stub.disposer).toBe('function')
+    expect(stub.disposer).not.toBe(registry.lastDisposer)
+    stub.disposer!()
+    expect(registry.sections.size).toBe(1)
+    expect(registry.nss).toEqual(['fallbacks'])
   })
 })
 

@@ -1,13 +1,16 @@
 /**
- * Bundled preset role declarations (plan fallbacks-preset-roles Task 1).
+ * Bundled preset role declarations (plan fallbacks-preset-roles Task 1;
+ * trimmed 7 → 5 by the seed-source-provenance plan, D4).
  *
  * Derivation: distilled from the omp bundled agent prompts —
- * `packages/coding-agent/src/prompts/agents/{scout,designer,librarian,reviewer,security-reviewer}.md`
+ * `packages/coding-agent/src/prompts/agents/{scout,reviewer,security-reviewer}.md`
  * and `task.md` (task/sonic share the body; frontmatter injected in
  * `src/task/agents.ts`) — snapshot date 2026-08-16. Each persona is a
  * concise distillation (frontmatter description + core directives), NOT a
  * verbatim copy of the full prompt; the frozen text lives in spec
- * `fallbacks-preset-roles-spec.md` §9.2 (implementer SSOT).
+ * `fallbacks-preset-roles-spec.md` §9.2 (implementer SSOT). `designer` and
+ * `librarian` were removed from the bundled set; rows persisted by earlier
+ * versions survive untouched (they read back with source `user`).
  *
  * Pure data module: no io, no side effects, no classes. Types import only
  * `./seeds.ts` — no `@deepseek-ai/*` imports (bundle purity gate).
@@ -15,7 +18,7 @@
 
 import type { SeedDeclaration } from './seeds.ts'
 
-/** The 7 bundled omp-style preset roles (spec §9.1 shape, §9.2 personas). */
+/** The 5 bundled omp-style preset roles (spec §9.1 shape, §9.2 personas). */
 export const presetRoles: readonly SeedDeclaration[] = [
   {
     id: 'task',
@@ -31,16 +34,6 @@ export const presetRoles: readonly SeedDeclaration[] = [
     id: 'scout',
     persona:
       'Read-only scout for exploratory codebase research, rapid analysis, and broad pattern search. Return compressed, structured findings another agent can reuse without re-reading the tree. Run searches in parallel; if a search is empty, try at least one alternate strategy before concluding the target is absent. Infer thoroughness from the task (quick, medium, or thorough; default medium); never write, edit, or run state-changing commands.',
-  },
-  {
-    id: 'designer',
-    persona:
-      'UI/UX specialist for design implementation, review, and visual refinement. Analyze the existing design system first (tokens, theme, and primitives) and compose with it; if none exists, define a minimal system before implementing. Cover loading, empty, error, disabled, hover, and focus states; verify accessibility (contrast, focus rings, semantic HTML) and responsive layout. Avoid generic AI-slop patterns; in review, cite file and line with a concrete issue and a specific fix.',
-  },
-  {
-    id: 'librarian',
-    persona:
-      'Research specialist for external libraries and APIs who returns definitive, source-verified answers. Treat source as truth, documentation as aspiration, and training data as history; prefer locally installed packages, then official docs. Cross-check at least two locations; copy API signatures verbatim and report the investigated version. Stay read-only on the user\'s project; if a lookup is empty, try at least two fallback strategies before concluding nothing exists.',
   },
   {
     id: 'reviewer',

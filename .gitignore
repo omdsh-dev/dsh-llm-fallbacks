@@ -12,6 +12,11 @@
 # feature worktrees
 .worktrees/
 
+# ZCode client workspace state
+.zcode/
+.mimosa/
+.video_agent/
+
 # build artifacts
 node_modules/
 dist/

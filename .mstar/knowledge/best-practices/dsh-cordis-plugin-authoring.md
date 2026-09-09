@@ -1,7 +1,7 @@
 ---
 module: dsh-plugin-authoring
 date: 2026-08-10
-last_updated: 2026-08-28
+last_updated: 2026-09-10
 problem_type: best_practice
 category: best-practices
 severity: low
@@ -132,6 +132,19 @@ dsh 插件 = npm 包，package.json 声明 dsh.bundle.patch（指向 bundle/cord
 - **服务面纪律**：只暴露**纯函数面**（解析/校验函数 + name/version 元信息），**不暴露运行态**（store/事件发射器）——跨插件读状态是实现细节非契约；运行态请走事件（如 fallbacks/switch）。
 - 单点真相：服务方法 = 直接引用 index re-export 的同一函数（`toBe` 同一性测试钉住），不复制逻辑。
 - **有状态方法的身份（2026-08-15 实证）**：服务面可以是「无状态纯函数 + 有状态闭包」混合——legacy 纯函数方法与库 re-export **同一绑定**（`toBe` 同一），但 per-apply 有状态方法（如 seeds `declareSeeds`/`revertSeededPersona`）是**闭包**（捕获 apply() 内建的 manager），与库 re-export **不是**同一引用。文档必须区分两种身份（写「与库导出同一绑定」会过度声称，2026-08-15 修过此 doc bug）；测试同样分型钉住（纯函数 `toBe` vs 闭包行为）。
+
+### 服务可见性 = 写通道就绪（provide 进注入子 + 乐观 ownership 声明，2026-09-09 实证，issue #105）
+
+当具名服务的某些方法依赖另一个服务（如 settings）时，「服务出现」必须蕴含「方法可用」——否则文档化的"服务出现即调用"模式会确定性踩进绑定窗口。修法不是 retry 文档化，而是**把 provide 挪进依赖注入子**：
+
+- **`sctx.provide`（不是 `ctx.provide`）才转移 ownership**：在 `ctx.inject(['settings'], (sctx) => { ... })` 内注册服务必须用**子上下文**的 provide——cordis `provide` 经 `this.ctx.fiber.effect` 注册（`reflect.ts:277-305`），只有子上下文的 provide 让**注入子 fiber 成为服务 owner**，settings 撤销时服务随之注销（不变量双向成立）。外层 `ctx.provide` 会静默保留旧行为（服务 linger + 写通道死掉）。
+- **绑定先于 provide，同一同步回调体**：先赋值写通道闭包、后 provide，都在子回调内同步完成——严格 get 在 owner fiber LOADING 期间返回 `undefined`（`reflect.ts:233-243`），所以「apply 返回后立即可探测」本来就不成立，延迟一个子激活 tick 是唯一可观察差异；可见 ⟹ 可写严格成立。
+- **同步读 ownership 的调用点需要乐观声明**：apply 内**同步**读 serviceOwned 布尔的调用方（如 TUI 安装器）在 provide 延迟后会恒读 false → 功能静默消失。修法：apply 时乐观置 true（`ctx.get('llm-fallbacks') === undefined`）+ 注入子内 dedupe catch 校正为 false；所有同类安装器都必须带 `already registered` dedupe catch（两个 fiber 在子激活窗口内都可达注册点）。
+- **注册序保持 FIFO**：同一服务的注入子按注册序激活（`reflect.notify` 走 `runtime.fibers` FIFO + 各 fiber `_reload` 在首个 await 挂起）——写通道子 → installSection 子 → 自声明子的既有次序不因新 provide 位置改变；依赖前者的动作继续注册在最后。
+- **teardown 语义变化是修复不是回归**：owner 子卸载 = 服务注销（旧行为：服务 linger + thrower 方法）。重激活 = 重绑定 + 幂等重声明。文档生命周期必须同步改写（consumer-api 的「Available after apply」段）。
+- gateway typert 描述符侧配对知识：host 分发按 `descriptor.implementation ?? descriptor.method` 解析类成员（`dsh-api-gateway/lib/index.js:752`，未命中 throw `gateway/method-unavailable`）——wire 方法名是 kebab-case 时**必须显式 `implementation: 'camelCase'`**（`revert-seed` 先例），漏写只在真实 wire 调用时炸。
+
+完整案例：dsh-llm-fallbacks issue #105 修复（`src/index.ts` settings 子内 bind+provide、乐观 `serviceOwned`、TUI dedupe catch、teardown 重声明）；契约 → `.mstar/specs/seeds-consumer-contract-v1.md`；测试面 → `tests/seeds-declare-window.spec.ts`（乐观窗口 / no-settings 无服务 / 拆除即注销 / 重活体重声明）。
 
 ### 条件注入子 fire 模式（apply 尾部触发后台动作，2026-08-16 实证）
 

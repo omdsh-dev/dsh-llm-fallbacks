@@ -529,6 +529,44 @@
   line-height: 20px;
 }
 
+/* Seeded persona brief (plan role-card-seeded-ux): a read-only single-line
+   summary at the input font scale — CSS ellipsis, never wrapping — with the
+   chevron toggle beside it disclosing the full multi-line text (client-local
+   state, not a settings write). */
+.personaBriefRow {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.personaBrief {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--dsw-alias-label-primary);
+}
+
+/* Empty-persona fallback copy: the brief stays honest at the hint tone. */
+.personaBriefEmpty {
+  color: var(--dsw-alias-label-tertiary);
+}
+
+/* The expanded full persona text: multi-line reference copy — pre-wrap so
+   the authored line structure survives verbatim. */
+.personaFull {
+  margin: 0;
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--dsw-alias-label-secondary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 /* Pre-save validation failure (role id format/reserved/duplicate): the
    offending input keeps the error border even on focus — the brand focus
    ring would otherwise mask the error state the user is trying to fix. */
@@ -661,6 +699,29 @@ select.input {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Source badge (plan role-card-seeded-ux): the provenance pill riding the
+   collapse title row — the `pending` pill vocabulary (r999 quiet fill,
+   caption size) at the layer-1 tone so it reads on the editorCard's
+   module-platform surface. Set names are case-preserved and length-uncapped
+   server-side, so the badge ellipsizes long names (never wraps) and the
+   `title` attribute carries the full label as a tooltip. Non-interactive:
+   it rides the whole-row collapse toggle hit area. */
+.seedBadge {
+  flex: none;
+  max-width: 40%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-radius: 999px;
+  padding: 1px 8px;
+  font-size: 11px;
+  line-height: 17px;
+  font-weight: 500;
+  white-space: nowrap;
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-secondary);
 }
 
 /* PR #62 UX round 4: compact non-interactive chips in the collapsed slot

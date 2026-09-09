@@ -37,7 +37,9 @@ import {
   mergeRoleExtras,
   FALLBACKS_SETTINGS_NS,
   FallbacksSettingsController,
+  fetchSubagentRoleRecord,
   parseFallbacksConfig,
+  parseSubagentRoleRecord,
   refreshCatalogIfLoaded,
   refreshFallbacksIfLoaded,
   refreshSwitchesIfLoaded,
@@ -94,24 +96,16 @@ function makeRpc(config?: FallbacksConfig | null) {
     current = defaultFallbacksConfig
     return Promise.resolve(okResult({ config: current }))
   })
-  // The revert-seed fake keeps the effective config (no persona registry
-  // here); tests script specific post-write read results with
-  // `mockReturnValueOnce` when they exercise the accepted response.
-  const revertSeed = vi.fn((payload: { args: { id: string } }) => {
-    if (current === null) throw new Error('test: revert-seed on an unavailable gateway')
-    return Promise.resolve(okResult({ config: current }))
-  })
   const call = vi.fn((channel: string, endpoint: string, payload: unknown) => {
     if (channel !== '/api') throw new Error(`test: unexpected channel ${channel}`)
     if (endpoint === 'fallbacks/get') return get()
     if (endpoint === 'fallbacks/set') return set(payload as { args: { patch: FallbacksConfig } })
     if (endpoint === 'fallbacks/reset') return reset()
-    if (endpoint === 'fallbacks/revert-seed') return revertSeed(payload as { args: { id: string } })
     throw new Error(`test: unexpected endpoint ${endpoint}`)
   })
   return {
     rpc: { call } as unknown as ClientConnectionRpc,
-    call, get, set, reset, revertSeed,
+    call, get, set, reset,
   }
 }
 
@@ -450,8 +444,11 @@ describe('rootChain/role/rule row editors (pure round-trips)', () => {
         // UI-only collapse state (PR #62 UX round 2) — role cards start
         // collapsed and the flag never serializes back.
         collapsed: true,
+        // UI-only seeded-persona brief disclosure (plan
+        // role-card-seeded-ux) — starts collapsed, never serializes back.
+        personaOpen: false,
       },
-      { id: 'architect', persona: '', selectors: [], fallback: 'inherit-root', collapsed: true },
+      { id: 'architect', persona: '', selectors: [], fallback: 'inherit-root', collapsed: true, personaOpen: false },
     ])
     expect(rowsToRoles(rows)).toEqual(roles)
   })
@@ -1030,6 +1027,8 @@ describe('FallbacksSettingsController', () => {
   it('loads seeds from the gateway get response (the card badge source)', async () => {
     // spec §9.4: the additive seeds field rides the get response exactly
     // like legacyKeys — the wire value is authoritative for the badge.
+    // A blank/whitespace-only `source` counts as malformed (it would
+    // render a textless badge): the field drops, the entry still parses.
     const api = makeApi()
     api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
     const { rpc, get } = makeRpc()
@@ -1038,6 +1037,8 @@ describe('FallbacksSettingsController', () => {
       seeds: [
         { id: 'architect', overridden: false },
         { id: 'qa-engineer', overridden: true },
+        { id: 'writer', overridden: false, source: '' },
+        { id: 'scout', overridden: false, source: '   ' },
       ],
     })))
     const controller = new FallbacksSettingsController(api, rpc)
@@ -1045,6 +1046,8 @@ describe('FallbacksSettingsController', () => {
     expect(controller.store.getSnapshot().seeds).toEqual([
       { id: 'architect', overridden: false },
       { id: 'qa-engineer', overridden: true },
+      { id: 'writer', overridden: false },
+      { id: 'scout', overridden: false },
     ])
   })
 
@@ -1258,114 +1261,6 @@ describe('FallbacksSettingsController', () => {
     expect(after.config.cooldownMs).toBe(55_000)
   })
 
-  it('reverts one seeded role through the gateway revert-seed endpoint and adopts the post-write result', async () => {
-    // spec §9.4: revertSeed mirrors save — the endpoint call, then accept()
-    // of the post-write read result (config + legacyKeys + seeds).
-    const api = makeApi()
-    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
-    const { rpc, call, revertSeed } = makeRpc()
-    const controller = new FallbacksSettingsController(api, rpc)
-    await controller.load()
-    revertSeed.mockReturnValueOnce(Promise.resolve(okResult({
-      config: { ...defaultFallbacksConfig, roles: { list: [{ id: 'architect', persona: 'v1' }], rules: [] } },
-      legacyKeys: [],
-      seeds: [{ id: 'architect', overridden: false }],
-      outcome: { reverted: true, persona: 'v1' },
-    })))
-    await expect(controller.revertSeed('architect')).resolves.toBe('v1')
-    expect(call).toHaveBeenLastCalledWith('/api', 'fallbacks/revert-seed', { args: { id: 'architect' } })
-    expect(revertSeed).toHaveBeenCalledTimes(1)
-    const state = controller.store.getSnapshot()
-    expect(state.status).toBe('ready')
-    expect(state.present).toBe(true)
-    expect(state.config.roles.list).toEqual([{ id: 'architect', persona: 'v1', chain: [], fallback: 'inherit-root' }])
-    expect(state.seeds).toEqual([{ id: 'architect', overridden: false }])
-  })
-
-  it('revertSeed returns the outcome persona even when persist is a no-op (issue #59)', async () => {
-    const alreadySeed = {
-      ...defaultFallbacksConfig,
-      roles: { list: [{ id: 'architect', persona: 'Designs systems' }], rules: [] },
-    }
-    const api = makeApi()
-    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
-    const { rpc, revertSeed } = makeRpc(alreadySeed)
-    const controller = new FallbacksSettingsController(api, rpc)
-    await controller.load()
-    revertSeed.mockReturnValueOnce(Promise.resolve(okResult({
-      config: alreadySeed,
-      seeds: [{ id: 'architect', overridden: false }],
-      outcome: { reverted: true, persona: 'Designs systems' },
-    })))
-    await expect(controller.revertSeed('architect')).resolves.toBe('Designs systems')
-  })
-
-
-  it('a revert-seed response without seeds keeps the last badge state (W-1/F-1)', async () => {
-    const api = makeApi()
-    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
-    const { rpc, get } = makeRpc()
-    get.mockReturnValueOnce(Promise.resolve(okResult({
-      config: defaultFallbacksConfig,
-      seeds: [{ id: 'architect', overridden: true }],
-    })))
-    const controller = new FallbacksSettingsController(api, rpc)
-    await controller.load()
-    expect(controller.store.getSnapshot().seeds).toEqual([{ id: 'architect', overridden: true }])
-    // The gateway revert-seed response omits the field (older gateway):
-    // the last accepted badge value is kept, never cleared on silence.
-    await controller.revertSeed('architect')
-    expect(controller.store.getSnapshot().seeds).toEqual([{ id: 'architect', overridden: true }])
-  })
-
-  it('refuses a revert while a save is in flight (saving guard)', async () => {
-    const api = makeApi()
-    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
-    const { rpc, set, revertSeed } = makeRpc()
-    const controller = new FallbacksSettingsController(api, rpc)
-    await controller.load()
-    // A save hangs in flight → status is 'saving'; the revert must not
-    // start a second write on the same write generation.
-    const gate = Promise.withResolvers<unknown>()
-    set.mockReturnValueOnce(gate.promise)
-    const saving = controller.save({ ...defaultFallbacksConfig, cooldownMs: 11_000 })
-    await controller.revertSeed('architect')
-    expect(revertSeed).not.toHaveBeenCalled()
-    // Let the save finish to keep the test clean.
-    gate.resolve(okResult({ config: { ...defaultFallbacksConfig, cooldownMs: 11_000 } }))
-    await saving
-  })
-
-  it('surfaces a revert-seed rejection as the error banner (KD-G3)', async () => {
-    const api = makeApi()
-    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
-    const { rpc, call, revertSeed } = makeRpc({ ...defaultFallbacksConfig, cooldownMs: 99_000 })
-    const controller = new FallbacksSettingsController(api, rpc)
-    await controller.load()
-    revertSeed.mockReturnValueOnce(Promise.resolve(failResult('revert refused')))
-    await controller.revertSeed('architect')
-    expect(call).toHaveBeenLastCalledWith('/api', 'fallbacks/revert-seed', { args: { id: 'architect' } })
-    const state = controller.store.getSnapshot()
-    expect(state.status).toBe('error')
-    expect(state.error).toBe('revert refused')
-    // The refused revert did not corrupt the accepted config or flip present.
-    expect(state.present).toBe(true)
-    expect(state.config.cooldownMs).toBe(99_000)
-  })
-
-  it('surfaces a revert-seed transport throw as the error banner (KD-G3)', async () => {
-    const api = makeApi()
-    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
-    const { rpc, revertSeed } = makeRpc()
-    const controller = new FallbacksSettingsController(api, rpc)
-    await controller.load()
-    revertSeed.mockRejectedValueOnce(new Error('transport down'))
-    await controller.revertSeed('architect')
-    const state = controller.store.getSnapshot()
-    expect(state.status).toBe('error')
-    expect(state.error).toBe('transport down')
-  })
-
   it('refuses writes when the provider is not writable', async () => {
     const api = makeApi()
     api.settings.describe.mockResolvedValue(ok({ writable: false, hasDocument: false, namespaces: [] }))
@@ -1374,8 +1269,7 @@ describe('FallbacksSettingsController', () => {
     await controller.load()
     await controller.save(defaultFallbacksConfig)
     await controller.resetToDefaults()
-    await controller.revertSeed('architect')
-    // Only the load's get crossed the channel; set/reset/revert-seed never ran.
+    // Only the load's get crossed the channel; set/reset never ran.
     expect(call).toHaveBeenCalledTimes(1)
     expect(call).toHaveBeenCalledWith('/api', 'fallbacks/get', { args: {} })
   })
@@ -2439,5 +2333,120 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
     expect(describe).toHaveBeenCalledTimes(3)
     expect(history).toHaveBeenCalledTimes(3)
     expect(providers).toHaveBeenCalledTimes(3)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// plan subagent-role-badge T4 case (f): the session-header role badge's wire
+// face — the `parseSubagentRoleRecord` shape guard (malformed degrades, never
+// throws) and the `fetchSubagentRoleRecord` never-reject contract.
+// ---------------------------------------------------------------------------
+
+/** One well-formed wire role record (the gateway `subagentRoles` projection shape). */
+function wireRoleRecord(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    role: 'coder',
+    model: { provider: 'anthropic', model: 'claude-sonnet-4' },
+    at: 1_725_900_000_000,
+    ...overrides,
+  }
+}
+
+describe('parseSubagentRoleRecord (badge shape guard, T4 case f)', () => {
+  it('parses a well-formed record, normalized to the known keys', () => {
+    expect(parseSubagentRoleRecord(wireRoleRecord({ bogus: 'extra' }))).toEqual({
+      role: 'coder',
+      model: { provider: 'anthropic', model: 'claude-sonnet-4' },
+      at: 1_725_900_000_000,
+    })
+  })
+
+  it('fails the WHOLE record on a non-object, a blank role, or a non-number at', () => {
+    expect(parseSubagentRoleRecord('coder')).toBeUndefined()
+    expect(parseSubagentRoleRecord(null)).toBeUndefined()
+    expect(parseSubagentRoleRecord(undefined)).toBeUndefined()
+    expect(parseSubagentRoleRecord(wireRoleRecord({ role: '   ' }))).toBeUndefined()
+    expect(parseSubagentRoleRecord(wireRoleRecord({ role: 42 }))).toBeUndefined()
+    expect(parseSubagentRoleRecord(wireRoleRecord({ at: '1725900000000' }))).toBeUndefined()
+    expect(parseSubagentRoleRecord(wireRoleRecord({ at: undefined }))).toBeUndefined()
+  })
+
+  it('drops a malformed model FIELD while the record still parses (the badge hovers the role alone)', () => {
+    expect(parseSubagentRoleRecord(wireRoleRecord({ model: { provider: 'anthropic' } }))).toEqual({
+      role: 'coder',
+      at: 1_725_900_000_000,
+    })
+    expect(parseSubagentRoleRecord(wireRoleRecord({ model: 'anthropic/claude-sonnet-4' }))).toEqual({
+      role: 'coder',
+      at: 1_725_900_000_000,
+    })
+    // Model absent (wire skew tolerance — the writer always sets it).
+    expect(parseSubagentRoleRecord({ role: 'coder', at: 1_725_900_000_000 })).toEqual({
+      role: 'coder',
+      at: 1_725_900_000_000,
+    })
+  })
+
+  it('PINNED (Task-3 review Minor 1): the at guard is typeof-only and admits non-finite numbers', () => {
+    // Decision (T4, tests-only scope): pin the CURRENT behavior instead of
+    // tightening to `Number.isFinite`. `at` is metadata the badge never
+    // renders — the hover reads role/model only — and the gateway writer
+    // stamps `Date.now()` (always finite), so a non-finite `at` cannot affect
+    // any rendered output. Tightening the guard would be a production change
+    // outside this task's tests-only brief.
+    const nan = parseSubagentRoleRecord(wireRoleRecord({ at: Number.NaN }))
+    expect(nan).toBeDefined()
+    expect(nan!.at).toBeNaN()
+    const infinity = parseSubagentRoleRecord(wireRoleRecord({ at: Number.POSITIVE_INFINITY }))
+    expect(infinity).toBeDefined()
+    expect(infinity!.at).toBe(Number.POSITIVE_INFINITY)
+  })
+})
+
+describe('fetchSubagentRoleRecord (never-reject contract, Task-3 review Minor 2 — T4 pins)', () => {
+  /** A bare rpc face over one spy (the helper's only member the fetch touches). */
+  function rpcWith(call: ReturnType<typeof vi.fn>): ClientConnectionRpc {
+    return { call } as unknown as ClientConnectionRpc
+  }
+
+  it('calls the batch endpoint with the one-id batch and parses the record (happy path)', async () => {
+    const call = vi.fn(() => Promise.resolve(okResult({ 'sess-1': wireRoleRecord() })))
+    const record = await fetchSubagentRoleRecord(rpcWith(call), 'sess-1')
+    expect(record).toEqual({
+      role: 'coder',
+      model: { provider: 'anthropic', model: 'claude-sonnet-4' },
+      at: 1_725_900_000_000,
+    })
+    // The pinned wire call shape (T2): `/api` claim family, batch-of-ids args.
+    expect(call).toHaveBeenCalledWith('/api', 'fallbacks/subagent-roles', { args: { ids: ['sess-1'] } })
+  })
+
+  it('resolves undefined when the rpc rejects (channel down / old gateway without the endpoint)', async () => {
+    // Path 1 of the fail-closed trio: the rpc layer fails — a transport
+    // rejection (including the gateway's `method-unavailable` fold for a
+    // pre-T2 host). The promise must RESOLVE undefined, never reject: the
+    // badge effect leans on this (`.then` without `.catch`).
+    const call = vi.fn(() => Promise.reject(new Error('gateway/method-unavailable')))
+    await expect(fetchSubagentRoleRecord(rpcWith(call), 'sess-1')).resolves.toBeUndefined()
+  })
+
+  it('resolves undefined on a non-ok result (rpcFailure business/transport fold)', async () => {
+    // Path 2: the rpc answered with a failure envelope.
+    const call = vi.fn(() => Promise.resolve(failResult('fallbacks gateway is not ready')))
+    await expect(fetchSubagentRoleRecord(rpcWith(call), 'sess-1')).resolves.toBeUndefined()
+  })
+
+  it('resolves undefined on a malformed payload (non-object value / malformed record / unknown id)', async () => {
+    // Path 3: an ok envelope whose value fails the shape guard.
+    const nonObject = vi.fn(() => Promise.resolve(okResult('nope')))
+    await expect(fetchSubagentRoleRecord(rpcWith(nonObject), 'sess-1')).resolves.toBeUndefined()
+
+    const malformedRecord = vi.fn(() => Promise.resolve(okResult({ 'sess-1': { role: 42, at: 'nope' } })))
+    await expect(fetchSubagentRoleRecord(rpcWith(malformedRecord), 'sess-1')).resolves.toBeUndefined()
+
+    // A known-shaped object without THIS session's id (unknown ids are
+    // omitted by the gateway) reads as "no record".
+    const missingId = vi.fn(() => Promise.resolve(okResult({ 'other-session': wireRoleRecord() })))
+    await expect(fetchSubagentRoleRecord(rpcWith(missingId), 'sess-1')).resolves.toBeUndefined()
   })
 })

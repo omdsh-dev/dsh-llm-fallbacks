@@ -78,6 +78,7 @@ import {
   type SeedDeclaration,
   type SeedDeclareOutcome,
   type SeedRevertOutcome,
+  type SeedsDeclareOptions,
   type SeedsIo,
 } from './seeds.ts'
 import { presetRoles } from './presets.ts'
@@ -128,8 +129,14 @@ export interface FallbacksService {
   resolveChain: typeof resolveChain
   validateFallbacksConfig: typeof validateFallbacksConfig
   detectLegacyKeys: typeof detectLegacyKeys
-  /** (a) Declare the companion's FULL current seed set (replacement semantics, spec §9.1). */
-  declareSeeds(seeds: readonly SeedDeclaration[]): Promise<SeedDeclareOutcome>
+  /**
+   * (a) Declare the companion's FULL current seed set (replacement semantics,
+   * spec §9.1). The optional `options.set` records the batch's registered
+   * provenance set name (read back as the rows' `source`); there is
+   * deliberately no way to label a declare `bundled` — reserved for the
+   * plugin's own preset self-declare.
+   */
+  declareSeeds(seeds: readonly SeedDeclaration[], options?: SeedsDeclareOptions): Promise<SeedDeclareOutcome>
   /** (b) Sync readback — effective taxonomy with seed annotations. */
   getEffectiveRoles(): EffectiveRolesReadback
   /** (c) Revert one id to the CURRENT declared seed default. */
@@ -213,15 +220,20 @@ export {
   type SeedRevertFailReason,
   type SeedRevertOutcome,
   type SeedSkipReason,
+  type SeedSource,
+  type SeedsDeclareOptions,
   type SeedsIo,
   type SeedsWireStatus,
 } from './seeds.ts'
 // --- Bundled preset roles (plan fallbacks-preset-roles T3) ---
-// The 7 omp-style bundled preset role declarations re-exported from the
+// The 5 omp-style bundled preset role declarations re-exported from the
 // package root so library consumers can `import { presetRoles } from
 // 'dsh-llm-fallbacks'` and `declareSeeds(presetRoles)` — the SAME data
 // source apply()'s self-declaration fires (derivation: omp coding-agent
-// agent prompts, snapshot 2026-08-16; frozen text = spec §9.2).
+// agent prompts, snapshot 2026-08-16; frozen text = spec §9.2). The
+// self-declare is the ONLY declare labeled `bundled` (internal marker at
+// the preset child; the service face accepts the public
+// `SeedsDeclareOptions` — `set` only, reserved labels unreachable).
 export { presetRoles } from './presets.ts'
 
 /** Model-catalog service shape the wildcard existence probe reads (`ctx.llm`). */
@@ -283,6 +295,38 @@ const chainHeadStores = new WeakMap<Context, ReadonlyMap<string, EffectiveChainH
  */
 export function chainHeads(ctx: Context): ReadonlyMap<string, EffectiveChainHead> | undefined {
   return chainHeadStores.get(ctx)
+}
+
+/**
+ * One dispatch-resolved subagent role record (plan subagent-role-badge T1):
+ * the role `resolveRoleAtDispatch` resolved at the subagent's first request
+ * and the route the subagent will actually run after the inject decision
+ * (the override target when it applies, else the host seed).
+ */
+type SubagentRoleRecord = {
+  role: string
+  model: { provider: string; model: string }
+  at: number
+}
+
+/**
+ * Per-apply dispatch-resolved subagent role records, keyed by context. Weak
+ * so entries die with the context; the plugin's own dispose effect clears
+ * the map contents (mirrors `chainHeadStores`).
+ * @internal
+ */
+const subagentRoleRecordStores = new WeakMap<Context, ReadonlyMap<string, SubagentRoleRecord>>()
+
+/**
+ * @internal Test seam (mirrors `chainHeads`): the per-agent dispatch-resolved
+ * role records written by the role-inject block (plan subagent-role-badge T1)
+ * for the plugin applied to `ctx`. Not part of the plugin's public surface;
+ * lets tests read the badge record without reaching into the closure (the
+ * gateway readback closes over the per-apply map directly). `undefined` when
+ * no plugin is applied.
+ */
+export function subagentRoleRecords(ctx: Context): ReadonlyMap<string, SubagentRoleRecord> | undefined {
+  return subagentRoleRecordStores.get(ctx)
 }
 
 /** Latest map value by `at` (the Subagents card shows the current one). */
@@ -518,8 +562,60 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   let writeRoles: SeedsIo['writeRoles'] = () => {
     throw new Error(seedsSettingsUnavailable)
   }
+  // The settings inject child owns the whole service lifecycle (issue #105):
+  // its callback binds the write channel FIRST, then provides the named
+  // service synchronously in the same body — both done before the callback
+  // returns, so "the service probes non-undefined" implies "declareSeeds can
+  // write" (service visibility ⟹ write channel bound; a declare-on-probe
+  // consumer can no longer hit the settings-unavailable window). The provide
+  // is made on `sctx`, making THIS child the service's owner fiber (cordis
+  // `provide` registers via the receiver context's fiber effect): the child
+  // fiber stays LOADING until the callback returns, so strict `ctx.get` only
+  // sees the service after bind+provide completed; when the child unloads
+  // (settings teardown or plugin dispose) the provide disposer unregisters
+  // the service with it, and on settings re-appearance the child re-fires:
+  // re-bind → re-provide → the preset child re-declares (idempotent).
+  // VALUE-form registration — cordis 4 `ReflectService.provide` stores the
+  // value directly, so a factory shape would register the function itself as
+  // the service. The object references the SAME re-exported functions (single
+  // point of truth, no copied logic). Multi-fiber dedupe (W-1): a later
+  // fiber applying over a shared context root hits cordis' loud
+  // duplicate-key failure (`service "llm-fallbacks" has been registered at
+  // <…>`). Mirror advisor's multi-fiber dedupe: the catch lets the FIRST
+  // fiber own the service while later fibers degrade gracefully; it also
+  // clears `serviceOwned` BEFORE rethrowing any other error, so the preset
+  // child skips when the child fiber fails (the fiber logs the failure).
   ctx.inject(['settings'], (sctx) => {
     writeRoles = (roles) => sctx.settings.update(FALLBACKS_SETTINGS_NAMESPACE, { roles })
+    try {
+      sctx.provide('llm-fallbacks', {
+        name: 'llm-fallbacks',
+        version,
+        resolveRole,
+        resolveChain,
+        validateFallbacksConfig,
+        detectLegacyKeys,
+        // (a)(b)(c) — plan fallbacks-role-seeds T2: additive seed surface. Each
+        // method delegates to the per-apply manager through the io seam
+        // (single point of truth — no copied logic).
+        declareSeeds: (declarations: readonly SeedDeclaration[], options?: SeedsDeclareOptions) =>
+          // Whitelist the public contract (qc2 W-001 / qc3 W-1): forward ONLY
+          // `{ set }` — every other key on a plain-JS or cast options object
+          // (including the internal `bundled` marker) is stripped before it
+          // can reach `resolveSource`, so the reserved label is
+          // runtime-unreachable through this face, not just type-level. The
+          // preset child declares through the manager directly and does not
+          // cross this boundary.
+          seeds.declare(declarations, seedsIo, options?.set === undefined ? undefined : { set: options.set }),
+        getEffectiveRoles: () => seeds.effectiveRoles(seedsIo),
+        revertSeededPersona: (id: string) => seeds.revert(id, seedsIo),
+      })
+      serviceOwned = true
+    } catch (error) {
+      serviceOwned = false
+      if (!(error instanceof Error) || !error.message.includes('has been registered')) throw error
+      ctx.logger('llm-fallbacks').debug('fallbacks service already registered — no service on this fiber (multi-fiber dedupe)')
+    }
     return () => {
       writeRoles = () => {
         throw new Error(seedsSettingsUnavailable)
@@ -533,46 +629,18 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     read: () => source(),
     writeRoles: (roles) => writeRoles(roles),
   }
-  // The named service surface (responsive capability probe for consumers like
-  // mstar-harness): VALUE-form registration — cordis 4 `ReflectService.provide`
-  // stores the value directly, so a factory shape would register the function
-  // itself as the service. The object references the SAME re-exported
-  // functions (single point of truth, no copied logic). Registration is
-  // fiber-scoped via `ctx.fiber.effect` — the fiber unload on plugin dispose
-  // auto-unregisters it, so the returned disposer is ignored here.
-  // Multi-fiber dedupe (W-1): a later fiber applying over a shared context
-  // root hits cordis' loud duplicate-key failure (`service "llm-fallbacks"
-  // has been registered at <…>`), which would abort apply() BEFORE the
-  // dedupe-guarded gateway/typert registrations below. Mirror advisor's
-  // multi-fiber dedupe: the catch lets the FIRST fiber own the service while
-  // later fibers degrade gracefully (no service on that fiber).
   // Preset self-declaration ownership (plan fallbacks-preset-roles T3, spec
-  // §9.3 D9.3-a W-1): `serviceOwned` records which fiber successfully
-  // registered the service — only that fiber's tail settings child fires
-  // the bundled preset declare; a deduped later fiber must not re-fire (no
-  // duplicate conflict warns, no duplicate writes).
-  let serviceOwned = false
-  try {
-    ctx.provide('llm-fallbacks', {
-      name: 'llm-fallbacks',
-      version,
-      resolveRole,
-      resolveChain,
-      validateFallbacksConfig,
-      detectLegacyKeys,
-      // (a)(b)(c) — plan fallbacks-role-seeds T2: additive seed surface. Each
-      // method delegates to the per-apply manager through the io seam
-      // (single point of truth — no copied logic).
-      declareSeeds: (declarations: readonly SeedDeclaration[]) => seeds.declare(declarations, seedsIo),
-      getEffectiveRoles: () => seeds.effectiveRoles(seedsIo),
-      revertSeededPersona: (id: string) => seeds.revert(id, seedsIo),
-    })
-    serviceOwned = true
-  } catch (error) {
-    if (!(error instanceof Error) || !error.message.includes('has been registered')) throw error
-    serviceOwned = false
-    ctx.logger('llm-fallbacks').debug('fallbacks service already registered — no service on this fiber (multi-fiber dedupe)')
-  }
+  // §9.3 D9.3-a W-1): `serviceOwned` records whether this fiber owns the
+  // service — only the owning fiber's tail settings child fires the bundled
+  // preset declare; a deduped later fiber must not re-fire (no duplicate
+  // conflict warns, no duplicate writes). Claimed OPTIMISTICALLY at apply
+  // time: the provide now settles inside the settings inject child (after
+  // apply returns), while the TUI installers below read this flag
+  // synchronously during apply(). The claim is correct whenever settings is
+  // absent or arrives later; the child's catch corrects it to false for a
+  // deduped/failed fiber BEFORE the preset child fires (same-service inject
+  // children settle in registration order — the provide child fires first).
+  let serviceOwned = ctx.get('llm-fallbacks') === undefined
   let source: () => FallbacksConfig = () => entry
   // Virtual FallbacksChain/Auto adapter (plan fallbacks-virtual-chain
   // Task 1, P2; PR #62 feedback): ONE conditional `ctx.inject(['llm'])`
@@ -638,7 +706,10 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   // semantics: no settings service composed → no registration (the runtime
   // keeps serving the composition entry), and the deferred callback settles
   // one macrotask after apply (the "real installSettingsSection registers
-  // through ctx.inject" behavior the tests pin).
+  // through ctx.inject" behavior the tests pin). Registration order matters:
+  // this child fires AFTER the writeRoles+provide child above (the service's
+  // owner fiber), so its fire sees the write channel already bound and the
+  // service provided.
   ctx.inject(['settings'], (sctx) => {
     sctx.settings.installSection(ctx, FALLBACKS_SETTINGS_NAMESPACE, Config, entry, {
       setSource: (current) => {
@@ -685,6 +756,18 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   chainHeadStores.set(ctx, chainHeadMap)
   const blockedAttemptMap = new Map<string, BlockedSwitchAttempt>()
   blockedAttemptStores.set(ctx, blockedAttemptMap)
+  // Plan subagent-role-badge T1: dispatch-resolved subagent role records —
+  // `{ role, model, at }` per subagent session, written by the role-inject
+  // block for EVERY resolved non-`inherit` role, in BOTH policy paths, with
+  // `model` = the route the subagent actually runs (override target when it
+  // applies, else the host seed). Separate from `chainHeadMap`: that map
+  // records only under an ENABLED host policy (Subagents card), while the
+  // badge record must exist policy-off too. Repeated dispatches into the
+  // same session overwrite (last-wins = the current role). Grown here so the
+  // gateway snapshot (T2) can close over it; cleaned on agent/disposed +
+  // plugin dispose (mirrors `slotWinners`). In-memory only.
+  const subagentRoleRecordMap = new Map<string, SubagentRoleRecord>()
+  subagentRoleRecordStores.set(ctx, subagentRoleRecordMap)
 
   try {
     // T3 (plan fallbacks-role-seeds): the gateway receives the SAME per-apply
@@ -692,21 +775,31 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     // `fallbacks/revert-seed` both delegate to it (spec §9.4 single point of
     // truth); the gateway builds its io over the bridge + its own settings
     // capture.
-    new FallbacksConfigGateway(ctx, bridge, seeds, () => {
-      // Same T1 reader the inject/switch paths use (no second policy source).
-      // get() is settings-page scoped: no live session, so the event read is
-      // "absent" and settings (or disabled) decide — identical to a session
-      // that has not yet recorded `subagent/model-selection-policy`.
-      try {
-        return {
-          policy: effectivePolicy({ ok: false, present: false }, readSubagentSettings(ctx)),
-          head: latestByAt(chainHeadMap),
-          blockedAttempt: latestByAt(blockedAttemptMap),
+    new FallbacksConfigGateway(
+      ctx,
+      bridge,
+      seeds,
+      () => {
+        // Same T1 reader the inject/switch paths use (no second policy source).
+        // get() is settings-page scoped: no live session, so the event read is
+        // "absent" and settings (or disabled) decide — identical to a session
+        // that has not yet recorded `subagent/model-selection-policy`.
+        try {
+          return {
+            policy: effectivePolicy({ ok: false, present: false }, readSubagentSettings(ctx)),
+            head: latestByAt(chainHeadMap),
+            blockedAttempt: latestByAt(blockedAttemptMap),
+          }
+        } catch {
+          return { policy: { state: 'unprovable' as const } }
         }
-      } catch {
-        return { policy: { state: 'unprovable' as const } }
-      }
-    })
+      },
+      // Plan subagent-role-badge T2: the badge readback closes over the SAME
+      // T1 map the inject block writes (no second record source). A plain
+      // Map read — infallible in practice; a throw degrades to `{}` in the
+      // gateway (`subagentRoles` fail-closed).
+      () => subagentRoleRecordMap,
+    )
   } catch (error) {
     if (!(error instanceof Error) || !error.message.includes('has been registered')) throw error
     ctx.logger('llm-fallbacks').debug('fallbacks gateway already registered — no gateway on this fiber (multi-fiber dedupe)')
@@ -1238,6 +1331,23 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
                   to = { provider: head.provider, model: head.model }
                 }
               }
+              // Plan subagent-role-badge T1: record the resolved role with the
+              // route the subagent will actually run — the override target when
+              // one was resolved (a `to` deep-equal to the seed routes
+              // identically; the override gate below applies the same way),
+              // else the host seed copy (always in scope here). `to ?? seed-copy`
+              // is the single expression of that rule (QC fix wave: the record
+              // must not re-state the override condition — drift there would
+              // desync the hover route from the applied override).
+              // Written for EVERY resolved non-`inherit` role in BOTH policy
+              // paths; `inherit` and the two role-never-resolved branches above
+              // (`'unprovable'`, authorized route) stay unrecorded — nothing
+              // for the badge to show there.
+              subagentRoleRecordMap.set(agent.id, {
+                role,
+                model: to ?? { provider: seed.provider, model: seed.model },
+                at: Date.now(),
+              })
               if (to !== undefined && !(to.provider === seed.provider && to.model === seed.model)) {
                 // issue #52: no durable `fallbacks/switch` role-inject event is
                 // written (same reason as commit() — the registration seam was
@@ -1316,6 +1426,7 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     slotWinners.delete(agent.id)
     blockedAttemptMap.delete(agent.id)
     chainHeadMap.delete(agent.id)
+    subagentRoleRecordMap.delete(agent.id)
     lastKnownPolicySettings.delete(agent.id)
   })
 
@@ -1346,6 +1457,7 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     slotWinners.clear()
     blockedAttemptMap.clear()
     chainHeadMap.clear()
+    subagentRoleRecordMap.clear()
     lastKnownPolicySettings.clear()
   }, 'llm-fallbacks: clear per-agent state')
 
@@ -1461,9 +1573,12 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   // /fallbacks provider (localized root descriptions + `config` →
   // `revert-seed` subcommand completion — the provider now supplies both,
   // not just `config`). Conditional inject child like the commands/typert
-  // children — absent service = clean no-op. First-fiber-only via
-  // `serviceOwned` (the host registry throws on duplicate roots, so a
-  // deduped later fiber must never register). Registered here — after the
+  // children — absent service = clean no-op. Gated by `serviceOwned`, now
+  // the OPTIMISTIC apply-time claim (the provide settles inside the settings
+  // child, after apply returns): a post-settlement duplicate fiber reads
+  // false and skips, while a fiber applying inside the claim window
+  // registers here and degrades via the installer's own `already
+  // registered` catch (never aborts). Registered here — after the
   // commands child, BEFORE the tail settings preset child — so the tail
   // child's last-registered activation order is preserved.
   installTuiClient(ctx, { serviceOwned })
@@ -1471,18 +1586,23 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   // dsh-tui settings write surface (plan fallbacks-tui-settings Task 1,
   // AC-1/AC-2): register the `tuiSettingsSections` `fallbacks` section —
   // the `/settings` editable form with full web-card parity. Same
-  // conditional inject child + first-fiber-only `serviceOwned` gate as the
-  // command-tree client; absent service = clean no-op. Registered here,
-  // right after installTuiClient and before the tail settings preset child
-  // (the tail child must stay last-registered — see below).
+  // conditional inject child + `serviceOwned` gate (optimistic claim, see
+  // above) as the command-tree client; absent service = clean no-op, and an
+  // in-claim-window duplicate degrades via the installer's own `already
+  // registered` catch. Registered here, right after installTuiClient and
+  // before the tail settings preset child (the tail child must stay
+  // last-registered — see below).
   installTuiSettingsSection(ctx, { serviceOwned })
 
   // Bundled preset self-declaration (plan fallbacks-preset-roles T3, spec
   // §9.3 D9.3-a): a NEW conditional settings inject child, registered LAST
-  // (after the writeRoles child and installSettingsSection's internal
-  // child), so by cordis' activation order its fire sees the composed live
-  // source (setSource already ran) and a live write channel — reusing the
-  // writeRoles child would materialize against the base-only entry and
+  // (after the writeRoles+provide child — the service's owner fiber — and
+  // installSettingsSection's internal child), so by cordis' activation
+  // order its fire sees the composed live source (setSource already ran), a
+  // live write channel, and the provide child's final `serviceOwned`
+  // verdict (a deduped/failed fiber had its optimistic claim corrected to
+  // false before this child fires) — reusing the writeRoles child would
+  // materialize against the base-only entry and
   // clobber operator user-layer rows. apply() stays synchronous (D9.3-a):
   // the fire is fire-and-forget with a terminal catch — a failed write
   // never FAILEDs this fiber (cordis would treat a rejected thenable apply
@@ -1499,7 +1619,13 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   ctx.inject(['settings'], () => {
     if (!serviceOwned) return
     if (seedsIo.read().presets === 'none') return
-    seeds.declare(presetRoles, seedsIo).catch((error) => {
+    // `{ bundled: true }` — the INTERNAL provenance marker (seed-source
+    // provenance plan): the preset self-declare is the only declare labeled
+    // `bundled`. The marker is module-internal to seeds.ts (never exported)
+    // and deliberately absent from the `FallbacksService.declareSeeds` face,
+    // which forwards only the public `{ set }` key — consumers can never
+    // forge the reserved label.
+    seeds.declare(presetRoles, seedsIo, { bundled: true }).catch((error) => {
       logger.error(
         'llm-fallbacks: seeds: preset role declaration failed — %s',
         (error as Error)?.message ?? String(error),
