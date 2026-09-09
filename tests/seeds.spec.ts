@@ -1,18 +1,21 @@
 /**
- * Role-seeds domain module tests (plan fallbacks-role-seeds Task 1):
+ * Role-seeds domain module tests (plan fallbacks-role-seeds Task 1;
+ * provenance labels added by seed-source-provenance Task 3):
  * per-id validation as declared (AC-5), the spec §9.2 materialization
  * table, replacement semantics, idempotent no-write (AC-1), revert →
  * current default (AC-3), removal keeps rows (AC-2), attach conflicts
  * never overwrite (AC-2/4), R4 chain/fallback/prompt/permissions
- * preservation on every write path, derived readback state, and the
- * `llm-fallbacks: seeds:` warn prefix (spec §9.7).
+ * preservation on every write path, derived readback state, the
+ * `llm-fallbacks: seeds:` warn prefix (spec §9.7), and the spec §2
+ * per-row provenance `source` labels (named set / bundled marker /
+ * external degrade / user / provenance-only no-write).
  *
  * The manager is exercised through a fake `SeedsIo` capturing writes —
  * no `@deepseek-ai/*` packages on this path (bundle purity gate).
  */
 
 import { describe, expect, it, vi } from 'vitest'
-import { FallbacksSeedManager, type SeedsIo } from '../src/seeds.ts'
+import { FallbacksSeedManager, type SeedsDeclareOptions, type SeedsIo } from '../src/seeds.ts'
 // Config types come from `./config.ts` — the SSOT (not re-exported by
 // seeds.ts; `tsconfig` includes src only, so type-only imports here are
 // erased at runtime, but importing from the SSOT keeps the hygiene).
@@ -665,5 +668,118 @@ describe('FallbacksSeedManager — derived readback state', () => {
 
     await manager.revert('coder', f.io)
     expect(manager.wireStatus(f.io)).toEqual([{ id: 'coder', overridden: false, source: 'external' }])
+  })
+})
+
+describe('FallbacksSeedManager — provenance source (seed-source-provenance, spec §2)', () => {
+  it('a named set labels the batch: readback source is the set name; rows outside the batch stay user (a/c)', async () => {
+    const manager = new FallbacksSeedManager({ warn: vi.fn() })
+    const f = fakeIo(baseConfig({ list: [{ id: 'solo', persona: 'operator row' }], rules: [] }))
+    await manager.declare([
+      { id: 'coder', persona: 'Coder' },
+      { id: 'reviewer', persona: 'Reviewer' },
+    ], f.io, { set: 'mstar' })
+
+    const roles = manager.effectiveRoles(f.io).roles
+    expect(roles.find((role) => role.id === 'coder')).toMatchObject({
+      seeded: true,
+      source: 'mstar',
+      seedPersona: 'Coder',
+    })
+    expect(roles.find((role) => role.id === 'reviewer')).toMatchObject({ seeded: true, source: 'mstar' })
+    // The pre-existing row is not in the batch → no live declaration → user (c).
+    expect(roles.find((role) => role.id === 'solo')).toMatchObject({
+      seeded: false,
+      personaOverridden: false,
+      source: 'user',
+    })
+    expect(manager.wireStatus(f.io)).toEqual([
+      { id: 'coder', overridden: false, source: 'mstar' },
+      { id: 'reviewer', overridden: false, source: 'mstar' },
+    ])
+  })
+
+  it('a one-arg declare labels the batch external (d)', async () => {
+    const manager = new FallbacksSeedManager({ warn: vi.fn() })
+    const f = fakeIo(baseConfig())
+    await manager.declare([{ id: 'coder', persona: 'Coder' }], f.io)
+
+    expect(manager.effectiveRoles(f.io).roles[0]).toMatchObject({ seeded: true, source: 'external' })
+    expect(manager.wireStatus(f.io)).toEqual([{ id: 'coder', overridden: false, source: 'external' }])
+  })
+
+  it('the internal bundled marker labels the self-declare bundled (b — mechanism pin; end-to-end in presets-integration)', async () => {
+    // Mirrors the only legitimate call site (the preset child in apply(),
+    // `src/index.ts`: `seeds.declare(presetRoles, seedsIo, { bundled: true })`).
+    // The marker type is module-internal to seeds.ts — a structurally-checked
+    // literal here, exactly like the src call site.
+    const manager = new FallbacksSeedManager({ warn: vi.fn() })
+    const f = fakeIo(baseConfig())
+    await manager.declare([{ id: 'scout', persona: 'Scout' }], f.io, { bundled: true })
+
+    expect(manager.effectiveRoles(f.io).roles[0]).toMatchObject({ seeded: true, source: 'bundled' })
+    expect(manager.wireStatus(f.io)).toEqual([{ id: 'scout', overridden: false, source: 'bundled' }])
+  })
+
+  it('invalid set names warn once and degrade to external — the seeds still apply (e)', async () => {
+    // Empty after trim, whitespace-only, non-string, the three reserved
+    // labels, and a padded reserved value (reserved is checked on the TRIMMED
+    // name). Each declare: exactly one warn with the mandated prefix, the
+    // batch applied in full, and the provenance degraded to `external` —
+    // a bad label must never drop roles.
+    const invalidSets: unknown[] = ['', '   ', 42, 'bundled', 'user', 'external', '  bundled  ']
+    for (const set of invalidSets) {
+      const { logger } = warnLogger()
+      const manager = new FallbacksSeedManager(logger)
+      const f = fakeIo(baseConfig())
+      const outcome = await manager.declare([{ id: 'coder', persona: 'Coder' }], f.io, {
+        set,
+      } as unknown as SeedsDeclareOptions)
+
+      expect(outcome.applied).toEqual(['coder'])
+      expect(outcome.skipped).toEqual([])
+      expect(outcome.conflicts).toEqual([])
+      expect(f.io.read().roles.list).toEqual([{ id: 'coder', persona: 'Coder' }])
+      expect(manager.effectiveRoles(f.io).roles[0]).toMatchObject({ seeded: true, source: 'external' })
+      expect(manager.wireStatus(f.io)).toEqual([{ id: 'coder', overridden: false, source: 'external' }])
+      const messages = messagesOf(logger)
+      expect(messages).toHaveLength(1) // warn ONCE per declare call
+      expect(messages[0]).toMatch(/^llm-fallbacks: seeds: /)
+    }
+  })
+
+  it('a valid padded set name is trimmed — no warn, source reads back trimmed', async () => {
+    const { logger } = warnLogger()
+    const manager = new FallbacksSeedManager(logger)
+    const f = fakeIo(baseConfig())
+    await manager.declare([{ id: 'coder', persona: 'Coder' }], f.io, { set: '  mstar  ' })
+
+    expect(manager.effectiveRoles(f.io).roles[0]).toMatchObject({ seeded: true, source: 'mstar' })
+    expect(messagesOf(logger)).toEqual([])
+  })
+
+  it('a provenance-only re-declare performs no settings write — idempotency preserved (h)', async () => {
+    const manager = new FallbacksSeedManager({ warn: vi.fn() })
+    const f = fakeIo(baseConfig())
+    await manager.declare([{ id: 'coder', persona: 'Coder' }], f.io, { set: 'mstar' })
+    expect(f.writes).toHaveLength(1)
+
+    // Same batch, same label → no delta → no write.
+    await manager.declare([{ id: 'coder', persona: 'Coder' }], f.io, { set: 'mstar' })
+    expect(f.writes).toHaveLength(1)
+
+    // Provenance-ONLY change (mstar → unnamed external): the rows are
+    // identical, so the no-delta gate suppresses the write — only the
+    // read-time source flips (provenance is registry-only, never persisted).
+    await manager.declare([{ id: 'coder', persona: 'Coder' }], f.io)
+    expect(f.writes).toHaveLength(1)
+    expect(manager.effectiveRoles(f.io).roles[0]).toMatchObject({ seeded: true, source: 'external' })
+
+    // And external → a different named set: still no write.
+    await manager.declare([{ id: 'coder', persona: 'Coder' }], f.io, { set: 'other' })
+    expect(f.writes).toHaveLength(1)
+    expect(f.io.read().roles.list).toEqual([{ id: 'coder', persona: 'Coder' }])
+    expect(manager.effectiveRoles(f.io).roles[0]).toMatchObject({ seeded: true, source: 'other' })
+    expect(manager.wireStatus(f.io)).toEqual([{ id: 'coder', overridden: false, source: 'other' }])
   })
 })

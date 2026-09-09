@@ -14,7 +14,13 @@
  * - skip/conflict warns carry the `llm-fallbacks: seeds:` prefix (AC-2/5);
  * - service-side and gateway-side revert both restore the CURRENT declared
  *   seed default; a companion re-declare of a new persona moves the revert
- *   target (AC-3/6c).
+ *   target (AC-3/6c);
+ * - provenance labels (seed-source-provenance Task 3, spec §2): a named
+ *   `declareSeeds(seeds, { set })` batch carries the set name as the wire
+ *   `source`, rows outside any live batch read back `user` (a/c);
+ * - the designer/librarian trim upgrade (spec §3): a pre-trim persisted
+ *   layer survives the 5-id bundled declare untouched — the trimmed rows
+ *   read back `user` with zero `llm-fallbacks: seeds:` warns (g/i).
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -24,8 +30,10 @@ import {
   FALLBACKS_SETTINGS_NAMESPACE,
   type FallbacksConfigGateway,
 } from '../src/gateway.ts'
+import { presetRoles } from '../src/presets.ts'
 import type { SeedDeclareOutcome } from '../src/seeds.ts'
 import { MemorySettings } from './support/memory-settings.ts'
+import { settle } from './support/settle.ts'
 
 /** Track every test context and dispose it after the case (settings/gateway effects hygiene). */
 const contexts = new Set<Context>()
@@ -46,7 +54,7 @@ async function compose(): Promise<Context> {
   const ctx = track(new Context())
   await ctx.plugin(MemorySettings)
   // Pin to `presets: 'none'` (fallbacks-preset-roles QC fix wave F-001): the
-  // bundled preset self-declaration would otherwise materialize 7 preset rows
+  // bundled preset self-declaration would otherwise materialize 5 preset rows
   // on apply and race the exact row-count/badge assertions below (same
   // rationale as the T3 pins elsewhere in this file). This suite exercises
   // companion-declared seeds, not presets.
@@ -72,8 +80,17 @@ function gateway(ctx: Context): FallbacksConfigGateway {
  * VISIBLE service resolves on the first attempt; the waitFor below is the
  * visibility wait.
  */
-async function declare(ctx: Context, seeds: Array<{ id: string; persona: string }>): Promise<SeedDeclareOutcome> {
-  return vi.waitFor(async () => service(ctx).declareSeeds(seeds))
+async function declare(
+  ctx: Context,
+  seeds: Array<{ id: string; persona: string }>,
+  options?: { set?: string },
+): Promise<SeedDeclareOutcome> {
+  return vi.waitFor(async () => service(ctx).declareSeeds(seeds, options))
+}
+
+/** The raw user-layer roles section of the fallbacks settings namespace. */
+function userSection(ctx: Context): { roles: { list: Array<{ id: string; persona: string }>; rules: unknown[] } } | undefined {
+  return ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)?.user
 }
 
 /** Capture every ctx.logger export (info/warn/...) from this point on (runtime.spec.ts pattern). */
@@ -131,7 +148,7 @@ describe('seeds → gateway integration (real apply)', () => {
     const first = track(new Context())
     await first.plugin(MemorySettings)
     // Pin to `presets: 'none'` (fallbacks-preset-roles T3): the bundled
-    // preset self-declaration would otherwise materialize 7 preset rows on
+    // preset self-declaration would otherwise materialize 5 preset rows on
     // each apply and break the exact row-count/badge assertions below — this
     // test exercises the fiber-swap seed semantics, not presets.
     apply(first, { ...defaultFallbacksConfig, presets: 'none' })
@@ -196,7 +213,7 @@ describe('seeds → gateway integration (real apply)', () => {
     await ctx.plugin(MemorySettings)
     const logs = captureLogs(ctx)
     // Pin to `presets: 'none'` (fallbacks-preset-roles T3): the bundled
-    // preset self-declaration would otherwise pre-materialize 7 preset rows
+    // preset self-declaration would otherwise pre-materialize 5 preset rows
     // and break the exact single-row assertion below — this test exercises
     // the declare skip/conflict warn channel, not presets.
     apply(ctx, { ...defaultFallbacksConfig, presets: 'none' })
@@ -294,5 +311,137 @@ describe('seeds → gateway integration (real apply)', () => {
     const missing = await gateway(ctx).revertSeed('nobody')
     expect(missing.outcome).toEqual({ reverted: false, reason: 'not-seeded' })
     expect(missing.seeds).toEqual([{ id: 'architect', overridden: false, source: 'external' }])
+  })
+})
+
+describe('seed provenance — source labels on the wire (seed-source-provenance, spec §2)', () => {
+  it('declareSeeds(seeds, { set }) carries the set name as the wire source; rows outside any batch read back user (a/c)', async () => {
+    const ctx = await compose()
+    // An operator row that no companion ever declares — its provenance must
+    // stay `user` while the declared batch carries the set name.
+    await ctx.settings.update(FALLBACKS_SETTINGS_NAMESPACE, {
+      roles: { list: [{ id: 'solo', persona: 'operator row' }], rules: [] },
+    })
+    await declare(ctx, [
+      { id: 'coder', persona: 'Coders the flow' },
+      { id: 'reviewer', persona: 'Reviews the flow' },
+    ], { set: 'mstar' })
+
+    // The gateway wire entries carry the declared set name...
+    expect(gateway(ctx).get().seeds).toEqual([
+      { id: 'coder', overridden: false, source: 'mstar' },
+      { id: 'reviewer', overridden: false, source: 'mstar' },
+    ])
+    // ...and the service readback marks the never-declared row `user`.
+    const roles = service(ctx).getEffectiveRoles().roles
+    expect(roles.find((role) => role.id === 'solo')).toMatchObject({ seeded: false, source: 'user' })
+    expect(roles.find((role) => role.id === 'coder')).toMatchObject({ seeded: true, source: 'mstar' })
+
+    // A later unnamed declare re-labels only its own batch (replacement
+    // semantics): coder degrades to `external`, reviewer drops to `user`.
+    await declare(ctx, [{ id: 'coder', persona: 'Coders the flow' }])
+    expect(gateway(ctx).get().seeds).toEqual([{ id: 'coder', overridden: false, source: 'external' }])
+    expect(service(ctx).getEffectiveRoles().roles.find((role) => role.id === 'reviewer')).toMatchObject({
+      seeded: false,
+      source: 'user',
+    })
+  })
+})
+
+describe('seed provenance — designer/librarian trim upgrade (seed-source-provenance, spec §3)', () => {
+  /**
+   * The two personas removed from the bundled set (grill D4), verbatim from
+   * the pre-trim §9.2 frozen text — what a pre-trim version (<= 0.1.6)
+   * persisted, i.e. exactly the upgrading-operator fixture.
+   */
+  const DESIGNER_PERSONA =
+    'UI/UX specialist for design implementation, review, and visual refinement. Analyze the existing design system first (tokens, theme, and primitives) and compose with it; if none exists, define a minimal system before implementing. Cover loading, empty, error, disabled, hover, and focus states; verify accessibility (contrast, focus rings, semantic HTML) and responsive layout. Avoid generic AI-slop patterns; in review, cite file and line with a concrete issue and a specific fix.'
+  const LIBRARIAN_PERSONA =
+    "Research specialist for external libraries and APIs who returns definitive, source-verified answers. Treat source as truth, documentation as aspiration, and training data as history; prefer locally installed packages, then official docs. Cross-check at least two locations; copy API signatures verbatim and report the investigated version. Stay read-only on the user's project; if a lookup is empty, try at least two fallback strategies before concluding nothing exists."
+
+  /** The full pre-trim user layer: the 5 surviving presets + the two trimmed rows. */
+  function preTrimUserLayer(): { roles: { list: Array<{ id: string; persona: string }>; rules: unknown[] } } {
+    return {
+      roles: {
+        list: [
+          ...presetRoles.map((preset) => ({ id: preset.id, persona: preset.persona })),
+          { id: 'designer', persona: DESIGNER_PERSONA },
+          { id: 'librarian', persona: LIBRARIAN_PERSONA },
+        ],
+        rules: [],
+      },
+    }
+  }
+
+  /** Compose over a PRE-TRIM persisted user layer with presets BUNDLED (the upgrade path). */
+  async function composeOverPreTrimLayer(): Promise<Context> {
+    const ctx = track(new Context())
+    await ctx.plugin(MemorySettings)
+    ;(ctx.settings as unknown as MemorySettings).seed(FALLBACKS_SETTINGS_NAMESPACE, preTrimUserLayer())
+    apply(ctx)
+    // The preset fire commits: exactly the 5 in-batch ids are seeded (the
+    // trimmed ids are outside the batch, so the badge never covers them).
+    await vi.waitFor(() => {
+      expect(gateway(ctx).get().seeds).toHaveLength(presetRoles.length)
+    })
+    return ctx
+  }
+
+  it('upgrade fixture: persisted designer/librarian rows survive the trimmed declare and read back user (g)', async () => {
+    const ctx = await composeOverPreTrimLayer()
+
+    // All 7 rows survive — the trimmed ids are omitted from the batch, and
+    // materialize leaves absent ids' rows untouched (R2, no destructive write).
+    const rows = gateway(ctx).get().config.roles.list
+    expect(rows).toHaveLength(presetRoles.length + 2)
+    expect(rows.find((row) => row.id === 'designer')).toMatchObject({ persona: DESIGNER_PERSONA })
+    expect(rows.find((row) => row.id === 'librarian')).toMatchObject({ persona: LIBRARIAN_PERSONA })
+
+    // The wire badge covers ONLY the surviving bundled ids.
+    expect(gateway(ctx).get().seeds).toEqual(
+      presetRoles.map((preset) => ({ id: preset.id, overridden: false, source: 'bundled' })),
+    )
+
+    // The trimmed rows read back as plain operator rows (spec §3: source user).
+    const roles = service(ctx).getEffectiveRoles().roles
+    expect(roles.find((role) => role.id === 'designer')).toMatchObject({
+      seeded: false,
+      personaOverridden: false,
+      source: 'user',
+    })
+    expect(roles.find((role) => role.id === 'librarian')).toMatchObject({ seeded: false, source: 'user' })
+
+    // The persisted user layer is content-identical to the pre-trim document —
+    // the fire was a no-delta declare, no rewrite, no row dropped.
+    expect(userSection(ctx)).toEqual(preTrimUserLayer())
+  })
+
+  it('pre-trim restart at seed personas: the next declare logs no persona-source conflict for the trimmed ids (i)', async () => {
+    const ctx = track(new Context())
+    await ctx.plugin(MemorySettings)
+    // Pre-trim layer with every row AT ITS SEED PERSONA (5 surviving + the
+    // 2 trimmed ids) — the honest upgrade/restart fixture.
+    ;(ctx.settings as unknown as MemorySettings).seed(FALLBACKS_SETTINGS_NAMESPACE, preTrimUserLayer())
+    const logs = captureLogs(ctx)
+    apply(ctx)
+    // The preset fire commits: exactly the 5 in-batch ids are seeded.
+    await vi.waitFor(() => {
+      expect(gateway(ctx).get().seeds).toHaveLength(presetRoles.length)
+    })
+    await settle()
+
+    // ZERO `llm-fallbacks: seeds:` warns: the trimmed ids sit OUTSIDE the
+    // batch (the R2 `incoming === undefined` path — no conflict), and every
+    // in-batch row sits at its seed persona, so the post-restart conservative
+    // branch (which only fires for in-batch ids whose persisted persona
+    // differs from the incoming default) has nothing to flag either.
+    const warns = logs.filter((message) => message.type === 'warn').map((message) => String(message.args[0]))
+    expect(warns.filter((message) => message.startsWith('llm-fallbacks: seeds:'))).toEqual([])
+
+    // The rows survive with personas intact.
+    const rows = gateway(ctx).get().config.roles.list
+    expect(rows).toHaveLength(presetRoles.length + 2)
+    expect(rows.find((row) => row.id === 'designer')).toMatchObject({ persona: DESIGNER_PERSONA })
+    expect(rows.find((row) => row.id === 'librarian')).toMatchObject({ persona: LIBRARIAN_PERSONA })
   })
 })
