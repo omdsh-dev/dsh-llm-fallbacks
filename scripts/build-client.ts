@@ -362,7 +362,12 @@ for (const match of injectedCssMatches) {
     }
   }
 }
-const classMapMatches = [...bundleText.matchAll(/\b\w+_module_css_default\s*=\s*(\{[\s\S]*?\n\s*\});/g)]
+// The class-map object literal is FLAT (string → string, emitted by
+// cssModuleContents as one JSON.stringify), so the lazy match to the first
+// `};` is exact for both emit shapes the printer produces — multi-entry maps
+// across lines and a single-entry map inline (`{ "badge": "_<8hex>_badge" };`
+// has no newline before its closing brace).
+const classMapMatches = [...bundleText.matchAll(/\b\w+_module_css_default\s*=\s*(\{[\s\S]*?\});/g)]
 if (classMapMatches.length === 0) {
   throw new Error('client bundle contract: no inlined css-module class map found — check the dsh-css-modules-inline plugin')
 }
