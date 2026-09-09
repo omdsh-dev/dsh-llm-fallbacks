@@ -518,8 +518,52 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   let writeRoles: SeedsIo['writeRoles'] = () => {
     throw new Error(seedsSettingsUnavailable)
   }
+  // The settings inject child owns the whole service lifecycle (issue #105):
+  // its callback binds the write channel FIRST, then provides the named
+  // service synchronously in the same body — both done before the callback
+  // returns, so "the service probes non-undefined" implies "declareSeeds can
+  // write" (service visibility ⟹ write channel bound; a declare-on-probe
+  // consumer can no longer hit the settings-unavailable window). The provide
+  // is made on `sctx`, making THIS child the service's owner fiber (cordis
+  // `provide` registers via the receiver context's fiber effect): the child
+  // fiber stays LOADING until the callback returns, so strict `ctx.get` only
+  // sees the service after bind+provide completed; when the child unloads
+  // (settings teardown or plugin dispose) the provide disposer unregisters
+  // the service with it, and on settings re-appearance the child re-fires:
+  // re-bind → re-provide → the preset child re-declares (idempotent).
+  // VALUE-form registration — cordis 4 `ReflectService.provide` stores the
+  // value directly, so a factory shape would register the function itself as
+  // the service. The object references the SAME re-exported functions (single
+  // point of truth, no copied logic). Multi-fiber dedupe (W-1): a later
+  // fiber applying over a shared context root hits cordis' loud
+  // duplicate-key failure (`service "llm-fallbacks" has been registered at
+  // <…>`). Mirror advisor's multi-fiber dedupe: the catch lets the FIRST
+  // fiber own the service while later fibers degrade gracefully; it also
+  // clears `serviceOwned` BEFORE rethrowing any other error, so the preset
+  // child skips when the child fiber fails (the fiber logs the failure).
   ctx.inject(['settings'], (sctx) => {
     writeRoles = (roles) => sctx.settings.update(FALLBACKS_SETTINGS_NAMESPACE, { roles })
+    try {
+      sctx.provide('llm-fallbacks', {
+        name: 'llm-fallbacks',
+        version,
+        resolveRole,
+        resolveChain,
+        validateFallbacksConfig,
+        detectLegacyKeys,
+        // (a)(b)(c) — plan fallbacks-role-seeds T2: additive seed surface. Each
+        // method delegates to the per-apply manager through the io seam
+        // (single point of truth — no copied logic).
+        declareSeeds: (declarations: readonly SeedDeclaration[]) => seeds.declare(declarations, seedsIo),
+        getEffectiveRoles: () => seeds.effectiveRoles(seedsIo),
+        revertSeededPersona: (id: string) => seeds.revert(id, seedsIo),
+      })
+      serviceOwned = true
+    } catch (error) {
+      serviceOwned = false
+      if (!(error instanceof Error) || !error.message.includes('has been registered')) throw error
+      ctx.logger('llm-fallbacks').debug('fallbacks service already registered — no service on this fiber (multi-fiber dedupe)')
+    }
     return () => {
       writeRoles = () => {
         throw new Error(seedsSettingsUnavailable)
@@ -533,46 +577,18 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     read: () => source(),
     writeRoles: (roles) => writeRoles(roles),
   }
-  // The named service surface (responsive capability probe for consumers like
-  // mstar-harness): VALUE-form registration — cordis 4 `ReflectService.provide`
-  // stores the value directly, so a factory shape would register the function
-  // itself as the service. The object references the SAME re-exported
-  // functions (single point of truth, no copied logic). Registration is
-  // fiber-scoped via `ctx.fiber.effect` — the fiber unload on plugin dispose
-  // auto-unregisters it, so the returned disposer is ignored here.
-  // Multi-fiber dedupe (W-1): a later fiber applying over a shared context
-  // root hits cordis' loud duplicate-key failure (`service "llm-fallbacks"
-  // has been registered at <…>`), which would abort apply() BEFORE the
-  // dedupe-guarded gateway/typert registrations below. Mirror advisor's
-  // multi-fiber dedupe: the catch lets the FIRST fiber own the service while
-  // later fibers degrade gracefully (no service on that fiber).
   // Preset self-declaration ownership (plan fallbacks-preset-roles T3, spec
-  // §9.3 D9.3-a W-1): `serviceOwned` records which fiber successfully
-  // registered the service — only that fiber's tail settings child fires
-  // the bundled preset declare; a deduped later fiber must not re-fire (no
-  // duplicate conflict warns, no duplicate writes).
-  let serviceOwned = false
-  try {
-    ctx.provide('llm-fallbacks', {
-      name: 'llm-fallbacks',
-      version,
-      resolveRole,
-      resolveChain,
-      validateFallbacksConfig,
-      detectLegacyKeys,
-      // (a)(b)(c) — plan fallbacks-role-seeds T2: additive seed surface. Each
-      // method delegates to the per-apply manager through the io seam
-      // (single point of truth — no copied logic).
-      declareSeeds: (declarations: readonly SeedDeclaration[]) => seeds.declare(declarations, seedsIo),
-      getEffectiveRoles: () => seeds.effectiveRoles(seedsIo),
-      revertSeededPersona: (id: string) => seeds.revert(id, seedsIo),
-    })
-    serviceOwned = true
-  } catch (error) {
-    if (!(error instanceof Error) || !error.message.includes('has been registered')) throw error
-    serviceOwned = false
-    ctx.logger('llm-fallbacks').debug('fallbacks service already registered — no service on this fiber (multi-fiber dedupe)')
-  }
+  // §9.3 D9.3-a W-1): `serviceOwned` records whether this fiber owns the
+  // service — only the owning fiber's tail settings child fires the bundled
+  // preset declare; a deduped later fiber must not re-fire (no duplicate
+  // conflict warns, no duplicate writes). Claimed OPTIMISTICALLY at apply
+  // time: the provide now settles inside the settings inject child (after
+  // apply returns), while the TUI installers below read this flag
+  // synchronously during apply(). The claim is correct whenever settings is
+  // absent or arrives later; the child's catch corrects it to false for a
+  // deduped/failed fiber BEFORE the preset child fires (same-service inject
+  // children settle in registration order — the provide child fires first).
+  let serviceOwned = ctx.get('llm-fallbacks') === undefined
   let source: () => FallbacksConfig = () => entry
   // Virtual FallbacksChain/Auto adapter (plan fallbacks-virtual-chain
   // Task 1, P2; PR #62 feedback): ONE conditional `ctx.inject(['llm'])`
@@ -638,7 +654,10 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   // semantics: no settings service composed → no registration (the runtime
   // keeps serving the composition entry), and the deferred callback settles
   // one macrotask after apply (the "real installSettingsSection registers
-  // through ctx.inject" behavior the tests pin).
+  // through ctx.inject" behavior the tests pin). Registration order matters:
+  // this child fires AFTER the writeRoles+provide child above (the service's
+  // owner fiber), so its fire sees the write channel already bound and the
+  // service provided.
   ctx.inject(['settings'], (sctx) => {
     sctx.settings.installSection(ctx, FALLBACKS_SETTINGS_NAMESPACE, Config, entry, {
       setSource: (current) => {
@@ -1461,9 +1480,12 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   // /fallbacks provider (localized root descriptions + `config` →
   // `revert-seed` subcommand completion — the provider now supplies both,
   // not just `config`). Conditional inject child like the commands/typert
-  // children — absent service = clean no-op. First-fiber-only via
-  // `serviceOwned` (the host registry throws on duplicate roots, so a
-  // deduped later fiber must never register). Registered here — after the
+  // children — absent service = clean no-op. Gated by `serviceOwned`, now
+  // the OPTIMISTIC apply-time claim (the provide settles inside the settings
+  // child, after apply returns): a post-settlement duplicate fiber reads
+  // false and skips, while a fiber applying inside the claim window
+  // registers here and degrades via the installer's own `already
+  // registered` catch (never aborts). Registered here — after the
   // commands child, BEFORE the tail settings preset child — so the tail
   // child's last-registered activation order is preserved.
   installTuiClient(ctx, { serviceOwned })
@@ -1471,18 +1493,23 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   // dsh-tui settings write surface (plan fallbacks-tui-settings Task 1,
   // AC-1/AC-2): register the `tuiSettingsSections` `fallbacks` section —
   // the `/settings` editable form with full web-card parity. Same
-  // conditional inject child + first-fiber-only `serviceOwned` gate as the
-  // command-tree client; absent service = clean no-op. Registered here,
-  // right after installTuiClient and before the tail settings preset child
-  // (the tail child must stay last-registered — see below).
+  // conditional inject child + `serviceOwned` gate (optimistic claim, see
+  // above) as the command-tree client; absent service = clean no-op, and an
+  // in-claim-window duplicate degrades via the installer's own `already
+  // registered` catch. Registered here, right after installTuiClient and
+  // before the tail settings preset child (the tail child must stay
+  // last-registered — see below).
   installTuiSettingsSection(ctx, { serviceOwned })
 
   // Bundled preset self-declaration (plan fallbacks-preset-roles T3, spec
   // §9.3 D9.3-a): a NEW conditional settings inject child, registered LAST
-  // (after the writeRoles child and installSettingsSection's internal
-  // child), so by cordis' activation order its fire sees the composed live
-  // source (setSource already ran) and a live write channel — reusing the
-  // writeRoles child would materialize against the base-only entry and
+  // (after the writeRoles+provide child — the service's owner fiber — and
+  // installSettingsSection's internal child), so by cordis' activation
+  // order its fire sees the composed live source (setSource already ran), a
+  // live write channel, and the provide child's final `serviceOwned`
+  // verdict (a deduped/failed fiber had its optimistic claim corrected to
+  // false before this child fires) — reusing the writeRoles child would
+  // materialize against the base-only entry and
   // clobber operator user-layer rows. apply() stays synchronous (D9.3-a):
   // the fire is fire-and-forget with a terminal catch — a failed write
   // never FAILEDs this fiber (cordis would treat a rejected thenable apply
