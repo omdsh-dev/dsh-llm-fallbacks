@@ -279,6 +279,66 @@ function subagentPolicyFromWire(value: unknown, fallback: SubagentPolicyView | u
   return parseSubagentPolicyWire(value.subagentPolicy)
 }
 
+/**
+ * One dispatch-resolved subagent role record as the session-header badge
+ * reads it (plan subagent-role-badge T3) — a structural twin of the gateway
+ * wire type, parsed from unknown, never imported from host modules
+ * (`src/client/**` consumes the gateway channel only — the
+ * `SubagentPolicyView` precedent). `model` is optional on the wire (gateway
+ * version skew); the writer always sets it.
+ */
+export interface SubagentRoleView {
+  /** The dispatch-resolved role id (never `inherit` — the writer skips it). */
+  role: string
+  /** The route the subagent actually runs (override target, else the seed). */
+  model?: { provider: string; model: string }
+  /** Record time, Unix epoch milliseconds. */
+  at: number
+}
+
+/**
+ * Shape-guard one wire role record (`fallbacks/subagent-roles` readback).
+ * A non-object, a blank/non-string `role`, or a non-number `at` fails the
+ * WHOLE record (`undefined` → the badge renders nothing). A present-but-
+ * malformed `model` drops the FIELD while the record still parses (the
+ * `parseSeedsWire` `source` rule) — the badge then hovers the role alone
+ * instead of disappearing. Records are NORMALIZED to the known keys, so a
+ * wire record can never smuggle a non-string `model` past the guard's type.
+ */
+export function parseSubagentRoleRecord(value: unknown): SubagentRoleView | undefined {
+  if (!isRecord(value)) return undefined
+  if (typeof value.role !== 'string' || value.role.trim() === '') return undefined
+  if (typeof value.at !== 'number') return undefined
+  const model = parsePolicyRoute(value.model)
+  return { role: value.role, ...(model === undefined ? {} : { model }), at: value.at }
+}
+
+/**
+ * Read this session's dispatch-resolved role record through the plugin
+ * gateway channel (plan subagent-role-badge T3): the batch-of-ids endpoint
+ * called with the one id the badge cares about. NEVER throws — a channel
+ * down, an old gateway without the endpoint (rpc failure), or a malformed
+ * payload all resolve `undefined` (the badge renders nothing —
+ * degrade-never-crash, the fail-closed shape of `parseSubagentPolicyWire`).
+ * @param rpc - the connection's generic RPC caller (`/api` channel).
+ * @param sessionId - the session whose record to read.
+ * @returns the parsed record, or `undefined` when absent/failed.
+ */
+export async function fetchSubagentRoleRecord(
+  rpc: ClientConnectionRpc,
+  sessionId: string,
+): Promise<SubagentRoleView | undefined> {
+  try {
+    const result = await rpc.call('/api', 'fallbacks/subagent-roles', { args: { ids: [sessionId] } })
+    if (!result.ok) return undefined
+    const value: unknown = result.value
+    if (!isRecord(value)) return undefined
+    return parseSubagentRoleRecord(value[sessionId])
+  } catch {
+    return undefined
+  }
+}
+
 
 /**
  * The provider dropdown's offer set (spec §2.5 D-4): catalog providers whose
@@ -1304,6 +1364,21 @@ export class FallbacksSettingsController {
       if (generation !== this.writeGeneration) return
       this.fail(error)
     }
+  }
+
+  /**
+   * Read one session's dispatch-resolved subagent role record through the
+   * gateway channel (plan subagent-role-badge T3 — the session-header badge's
+   * data face). Thin delegate over {@link fetchSubagentRoleRecord} on the
+   * SAME rpc caller the store rides: the batch-of-ids readback called with
+   * the one id the badge cares about. Never throws — a channel down, an old
+   * gateway without the endpoint, or a malformed payload all resolve
+   * `undefined` (the badge renders nothing).
+   * @param sessionId - the session whose record to read.
+   * @returns the parsed record, or `undefined` when absent/failed.
+   */
+  fetchSubagentRole(sessionId: string): Promise<SubagentRoleView | undefined> {
+    return fetchSubagentRoleRecord(this.rpc, sessionId)
   }
 
   /** Stop in-flight responses from publishing after plugin disposal. */
