@@ -66,11 +66,11 @@ function gateway(ctx: Context): FallbacksConfigGateway {
 }
 
 /**
- * Declare through the service. The seed io write channel activates a tick
- * after apply (conditional inject child — gateway pattern), so the first
- * attempt can hit the transient settings-unavailable throw; the manager is
- * retry-safe (a failed write never commits the registry), so the retried
- * declare re-computes from a fresh read.
+ * Declare through the service. The service itself becomes visible only after
+ * the settings inject child settles (seeds-declare-window) — and visibility
+ * implies the write channel is bound (issue #105), so a declare through a
+ * VISIBLE service resolves on the first attempt; the waitFor below is the
+ * visibility wait.
  */
 async function declare(ctx: Context, seeds: Array<{ id: string; persona: string }>): Promise<SeedDeclareOutcome> {
   return vi.waitFor(async () => service(ctx).declareSeeds(seeds))
@@ -135,6 +135,11 @@ describe('seeds → gateway integration (real apply)', () => {
     // each apply and break the exact row-count/badge assertions below — this
     // test exercises the fiber-swap seed semantics, not presets.
     apply(first, { ...defaultFallbacksConfig, presets: 'none' })
+    // The service appears only after the settings inject child settles
+    // (seeds-declare-window) — wait for visibility before grabbing it.
+    await vi.waitFor(() => {
+      expect(first.get('llm-fallbacks')).toBeDefined()
+    })
     const fb = service(first)
     await vi.waitFor(async () => {
       await expect(fb.declareSeeds([{ id: 'architect', persona: 'seed default' }])).resolves.toEqual({
@@ -195,18 +200,21 @@ describe('seeds → gateway integration (real apply)', () => {
     // and break the exact single-row assertion below — this test exercises
     // the declare skip/conflict warn channel, not presets.
     apply(ctx, { ...defaultFallbacksConfig, presets: 'none' })
+    // The service appears only after the settings inject child settles
+    // (seeds-declare-window) — wait for visibility before grabbing it.
+    await vi.waitFor(() => {
+      expect(ctx.get('llm-fallbacks')).toBeDefined()
+    })
     const fb = service(ctx)
 
-    // Activate the seed write channel first (the inject child settles a tick
-    // after apply) so the warns below come from ONE declare attempt — the
-    // waitFor retry of a channel-unavailable declare would re-emit the
-    // validation warns per attempt.
-    await vi.waitFor(async () => {
-      await expect(fb.declareSeeds([{ id: 'architect', persona: 'v1' }])).resolves.toEqual({
-        applied: ['architect'],
-        skipped: [],
-        conflicts: [],
-      })
+    // Grab the service reference AFTER it is visible (above): a visible
+    // service implies the write channel is bound (issue #105), so the first
+    // declare below resolves on the first attempt and the warns collected
+    // after the reset come from exactly ONE declare.
+    await expect(fb.declareSeeds([{ id: 'architect', persona: 'v1' }])).resolves.toEqual({
+      applied: ['architect'],
+      skipped: [],
+      conflicts: [],
     })
     logs.length = 0
 

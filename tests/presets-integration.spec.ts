@@ -12,8 +12,9 @@
  * - `presets: 'none'` → zero declaration, zero write (AC-2);
  * - operator same-name row → persona kept + `llm-fallbacks: seeds:` conflict
  *   warn (AC-4);
- * - headless (no settings service) → no fire, no seeds write, no error log,
- *   no unhandled rejection, runtime dispatches (D9.3-b headless boundary);
+ * - headless (no settings service) → no service at all (D1), no fire, no
+ *   seeds write, no error log, no unhandled rejection, runtime dispatches
+ *   (D9.3-b headless boundary);
  * - write failure (persist rejects) → exactly one `llm-fallbacks: seeds:`
  *   logger.error, registry not committed, apply/runtime unaffected (D9.3-b);
  * - multi-fiber: same-root second apply does NOT re-fire (no second conflict
@@ -298,29 +299,29 @@ describe('bundled preset self-declaration (real apply)', () => {
     )
   })
 
-  it('headless (no settings service): child never activates — no fire, no write, no error, runtime dispatches (D9.3-b)', async () => {
+  it('headless (no settings service): no service, no fire, no error, runtime dispatches (D9.3-b + D1)', async () => {
     const ctx = track(new Context())
     const logs = captureLogs(ctx)
     apply(ctx, cfg({ rootChain: ['other/gpt-4o'] }))
-    await vi.waitFor(() => {
-      expect(ctx.get('llm-fallbacks')).toBeDefined()
-    })
+
+    // D1 (seeds-declare-window): the provide lives INSIDE the settings inject
+    // child — headless, that child never activates and the service NEVER
+    // appears (it used to be visible synchronously during apply with a
+    // throwing write channel). Consumers cannot obtain a seed surface whose
+    // write channel is unbound.
+    await settle()
+    expect(ctx.get('llm-fallbacks')).toBeUndefined()
 
     // The fallback runtime dispatches normally without a settings service.
     const { agent } = makeAgent('headless-agent', { provider: 'mock', model: 'gpt-4o' })
     const action = await dispatchRequestError(ctx, agent, { failure: { message: 'denied', code: 'AUTH' } })
     expect(action).toEqual({ kind: 'retry' })
 
-    // Give the tail settings child its activation window (a tick + settle,
-    // same negative-assertion style as the `presets: 'none'` case): if it
-    // could fire, the write would land by now (F-004). The structural
-    // guarantee — the inject child only activates when a settings service is
-    // composed — stays the primary pin; the settle is the belt-and-braces
-    // window.
+    // Give any (incorrectly) scheduled fire its activation window (a tick +
+    // settle, same negative-assertion style as the `presets: 'none'` case).
     await settle()
 
-    // Zero declaration, zero write, zero error log — the child never fired.
-    expect(service(ctx).getEffectiveRoles().roles).toEqual([])
+    // Zero error log — the preset child never fired, no unhandled rejection.
     const errors = logs.filter((message) => message.type === 'error')
     expect(errors).toHaveLength(0)
   })
@@ -419,6 +420,13 @@ describe('bundled preset self-declaration (real apply)', () => {
     await vi.waitFor(() => {
       expect(gateway(ctx).get().config.roles.list).toEqual([])
     })
+    // The settings child unload withdraws the service WITH it (the provide
+    // disposer runs on the same child unload — seeds-declare-window teardown
+    // semantics): consumers probing now see `undefined`, not a dead write
+    // channel (case f).
+    await vi.waitFor(() => {
+      expect(ctx.get('llm-fallbacks')).toBeUndefined()
+    })
     // The write channel is gone while the provider is absent (KD-G5).
     await expect(gateway(ctx).set({ enabled: true })).rejects.toThrow(/settings service is unavailable/)
 
@@ -428,6 +436,13 @@ describe('bundled preset self-declaration (real apply)', () => {
     // re-activate (a cordis-init publish would otherwise wipe the doc).
     const fresh = new CountingSettings(ctx)
     fresh.seed(FALLBACKS_SETTINGS_NAMESPACE, persisted!)
+
+    // The re-fired settings child re-binds the write channel and re-provides
+    // the service — the old registration was withdrawn with the child unload,
+    // so the re-provide hits no duplicate-registration failure (case f).
+    await vi.waitFor(() => {
+      expect(ctx.get('llm-fallbacks')).toBeDefined()
+    })
 
     // The re-activated preset child re-fires: declare reads the composed
     // source (entry + persisted user layer) → no-delta → zero writes, no
