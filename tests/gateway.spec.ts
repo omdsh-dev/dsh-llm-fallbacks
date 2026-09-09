@@ -1322,6 +1322,35 @@ describe('subagentRoles readback (plan subagent-role-badge T4 case e)', () => {
     expect(() => gateway.subagentRoles(['session-a', null as never])).toThrow(TypeError)
   })
 
+  it('rejects a batch above the 256-id cap with a TypeError (QC fix wave: bounded batch)', () => {
+    const gateway = gatewayWithSnapshot(new Map([['session-a', roleRecord()]]))
+    const oversized = Array.from({ length: 257 }, (_, i) => `session-${i}`)
+    expect(() => gateway.subagentRoles(oversized)).toThrow(TypeError)
+    expect(() => gateway.subagentRoles(oversized)).toThrow(/ids batch exceeds 256 entries/)
+    // The bound is inclusive at the boundary: exactly 256 ids is a legal batch
+    // (known ids still project through it).
+    const atCap = ['session-a', ...Array.from({ length: 255 }, (_, i) => `session-${i}`)]
+    expect(atCap).toHaveLength(256)
+    expect(gateway.subagentRoles(atCap)).toEqual({ 'session-a': roleRecord() })
+  })
+
+  it('projects a pathological `__proto__` id as an OWN property (never the prototype setter)', () => {
+    // A Map can legitimately hold the key; a plain `result[id] = …` assignment
+    // would trigger the inherited `__proto__` accessor and the record would
+    // silently vanish from the JSON response. The fromEntries projection
+    // creates an own data property instead (QC fix wave).
+    const gateway = gatewayWithSnapshot(new Map([['__proto__', roleRecord()]]))
+
+    const result = gateway.subagentRoles(['__proto__'])
+    expect(Object.hasOwn(result, '__proto__')).toBe(true)
+    expect(Object.keys(result)).toEqual(['__proto__'])
+    expect(result['__proto__']).toEqual(roleRecord())
+    // Still a plain object — and the serialized wire response carries the
+    // record (the original failure mode was the key vanishing from the JSON).
+    expect(Object.getPrototypeOf(result)).toBe(Object.prototype)
+    expect(JSON.stringify(result)).toContain('"__proto__"')
+  })
+
   it('returns an empty object when no snapshot is wired (pre-T2 constructors stay byte-identical)', () => {
     const ctx = track(new Context())
     const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()), makeSeeds())
@@ -1383,6 +1412,11 @@ describe('fallbacks/subagent-roles endpoint on the live typertGateway (T4 case e
     const nonString = await connection.handler!('fallbacks/subagent-roles', { args: { ids: ['session-a', 42] } }, signal)
     expect(nonString.ok).toBe(false)
     if (!nonString.ok) expect(nonString.error.message).toContain('ids must be an array of strings')
+
+    // The batch bound folds the same way at the wire (QC fix wave).
+    const oversized = await connection.handler!('fallbacks/subagent-roles', { args: { ids: Array.from({ length: 257 }, () => 'session-a') } }, signal)
+    expect(oversized.ok).toBe(false)
+    if (!oversized.ok) expect(oversized.error.message).toContain('ids batch exceeds 256 entries')
   })
 
   it('enforces the descriptor wire shape: an unknown args field is rejected', async () => {

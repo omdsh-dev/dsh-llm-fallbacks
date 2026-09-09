@@ -140,6 +140,15 @@ export type SubagentRoleRecord = {
  */
 export type SubagentRolesSnapshotFn = () => ReadonlyMap<string, SubagentRoleRecord>
 
+/**
+ * Batch bound of the `subagentRoles` readback (QC fix wave): the loop and the
+ * result projection are O(n) on the host's main thread, so the request size
+ * must be caller-capped. 256 ≫ any real badge fan-out (one id per viewed
+ * session); larger batches reject with a TypeError, the endpoint's existing
+ * malformed-input contract.
+ */
+const SUBAGENT_ROLES_MAX_IDS = 256
+
 
 /**
  * The live configuration source for the gateway (guide §7 — the same bridge
@@ -407,14 +416,21 @@ export class FallbacksConfigGateway extends TypertRemoteService {
    * never an error — the badge renders nothing for them. No snapshot wired
    * (pre-T2 constructors) or a throwing snapshot ⇒ `{}` — degrade-never-crash,
    * the same fail-closed shape as `projectSubagentPolicy`.
-   * @param ids - the session ids to read.
+   * @param ids - the session ids to read (at most
+   *   {@link SUBAGENT_ROLES_MAX_IDS} entries).
    * @returns a plain JSON object keyed by KNOWN id only, each carrying the
    *   wire record (`role`, `at`, `model` when the record has one).
-   * @throws TypeError when `ids` is not an array of strings.
+   * @throws TypeError when `ids` is not an array of strings or the batch
+   *   exceeds {@link SUBAGENT_ROLES_MAX_IDS} entries.
    */
   subagentRoles(ids: string[]): Record<string, SubagentRoleRecord> {
     if (!Array.isArray(ids) || ids.some((id) => typeof id !== 'string')) {
       throw new TypeError('dsh-llm-fallbacks: subagent-roles ids must be an array of strings')
+    }
+    if (ids.length > SUBAGENT_ROLES_MAX_IDS) {
+      throw new TypeError(
+        `dsh-llm-fallbacks: subagent-roles ids batch exceeds ${SUBAGENT_ROLES_MAX_IDS} entries`,
+      )
     }
     if (this.subagentRolesSnapshot === undefined) return {}
     let records: ReadonlyMap<string, SubagentRoleRecord>
@@ -423,13 +439,16 @@ export class FallbacksConfigGateway extends TypertRemoteService {
     } catch {
       return {}
     }
-    const result: Record<string, SubagentRoleRecord> = {}
+    // Own-property projection (QC fix wave): project per unique id into a
+    // Map, then materialize with `Object.fromEntries` — it creates OWN data
+    // properties, never the inherited `__proto__` accessor a plain
+    // `result[id] = …` assignment would trigger for a pathological id key.
+    const projected = new Map<string, SubagentRoleRecord>()
     for (const id of ids) {
       const record = records.get(id)
-      if (record === undefined) continue
-      result[id] = projectSubagentRoleRecord(record)
+      if (record !== undefined) projected.set(id, projectSubagentRoleRecord(record))
     }
-    return result
+    return Object.fromEntries(projected)
   }
 
   /**
