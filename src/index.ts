@@ -567,7 +567,14 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
         // method delegates to the per-apply manager through the io seam
         // (single point of truth — no copied logic).
         declareSeeds: (declarations: readonly SeedDeclaration[], options?: SeedsDeclareOptions) =>
-          seeds.declare(declarations, seedsIo, options),
+          // Whitelist the public contract (qc2 W-001 / qc3 W-1): forward ONLY
+          // `{ set }` — every other key on a plain-JS or cast options object
+          // (including the internal `bundled` marker) is stripped before it
+          // can reach `resolveSource`, so the reserved label is
+          // runtime-unreachable through this face, not just type-level. The
+          // preset child declares through the manager directly and does not
+          // cross this boundary.
+          seeds.declare(declarations, seedsIo, options?.set === undefined ? undefined : { set: options.set }),
         getEffectiveRoles: () => seeds.effectiveRoles(seedsIo),
         revertSeededPersona: (id: string) => seeds.revert(id, seedsIo),
       })
@@ -1542,8 +1549,9 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     // `{ bundled: true }` — the INTERNAL provenance marker (seed-source
     // provenance plan): the preset self-declare is the only declare labeled
     // `bundled`. The marker is module-internal to seeds.ts (never exported)
-    // and deliberately absent from the `FallbacksService.declareSeeds` face
-    // — consumers can never forge the reserved label.
+    // and deliberately absent from the `FallbacksService.declareSeeds` face,
+    // which forwards only the public `{ set }` key — consumers can never
+    // forge the reserved label.
     seeds.declare(presetRoles, seedsIo, { bundled: true }).catch((error) => {
       logger.error(
         'llm-fallbacks: seeds: preset role declaration failed — %s',

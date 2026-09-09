@@ -17,7 +17,10 @@
  *   target (AC-3/6c);
  * - provenance labels (seed-source-provenance Task 3, spec §2): a named
  *   `declareSeeds(seeds, { set })` batch carries the set name as the wire
- *   `source`, rows outside any live batch read back `user` (a/c);
+ *   `source`, rows outside any live batch read back `user` (a/c); a
+ *   plain-JS `{ bundled: true }` forge attempt through the SERVICE FACE
+ *   degrades to `external` — the reserved label is runtime-unreachable
+ *   (qc2 W-001: the face whitelists `{ set }` only);
  * - the designer/librarian trim upgrade (spec §3): a pre-trim persisted
  *   layer survives the 5-id bundled declare untouched — the trimmed rows
  *   read back `user` with zero `llm-fallbacks: seeds:` warns (g/i).
@@ -31,7 +34,7 @@ import {
   type FallbacksConfigGateway,
 } from '../src/gateway.ts'
 import { presetRoles } from '../src/presets.ts'
-import type { SeedDeclareOutcome } from '../src/seeds.ts'
+import type { SeedDeclareOutcome, SeedsDeclareOptions } from '../src/seeds.ts'
 import { MemorySettings } from './support/memory-settings.ts'
 import { settle } from './support/settle.ts'
 
@@ -345,6 +348,30 @@ describe('seed provenance — source labels on the wire (seed-source-provenance,
       seeded: false,
       source: 'user',
     })
+  })
+
+  it('a plain-JS { bundled: true } forge attempt through the SERVICE FACE yields external, never bundled (qc2 W-001: the face whitelists { set })', async () => {
+    // A plain-JS companion (dsh plugins need not be TypeScript) rides the
+    // internal marker past the TypeScript type system; the service-face
+    // closure forwards ONLY `{ set }` to the manager, so the marker never
+    // reaches `resolveSource`. The `{ bundled: true }` channel is the
+    // preset child's alone (it calls the manager directly).
+    const ctx = await compose()
+    const forged = { bundled: true } as unknown as SeedsDeclareOptions
+    await expect(
+      service(ctx).declareSeeds([{ id: 'scout', persona: 'Scouts the flow' }], forged),
+    ).resolves.toEqual({ applied: ['scout'], skipped: [], conflicts: [] })
+    expect(gateway(ctx).get().seeds).toEqual([{ id: 'scout', overridden: false, source: 'external' }])
+    expect(service(ctx).getEffectiveRoles().roles[0]).toMatchObject({ seeded: true, source: 'external' })
+
+    // The public channel stays intact: a legitimate `set` is honored even
+    // when a forged `bundled` rides alongside it (extra key stripped).
+    await expect(service(ctx).declareSeeds([{ id: 'scout', persona: 'Scouts the flow' }], {
+      set: 'mstar',
+      bundled: true,
+    } as unknown as SeedsDeclareOptions)).resolves.toEqual({ applied: ['scout'], skipped: [], conflicts: [] })
+    expect(gateway(ctx).get().seeds).toEqual([{ id: 'scout', overridden: false, source: 'mstar' }])
+    expect(service(ctx).getEffectiveRoles().roles[0]).toMatchObject({ seeded: true, source: 'mstar' })
   })
 })
 

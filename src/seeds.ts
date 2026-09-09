@@ -148,8 +148,12 @@ export interface SeedRevertOutcome {
 export interface SeedsWireStatus {
   id: string
   overridden: boolean
-  /** Provenance label (spec §2) — additive wire field; older clients ignore it. */
-  source: SeedSource
+  /**
+   * Provenance label (spec §2) — additive and OPTIONAL on the wire: a
+   * gateway predating the field (version skew) sends entries without it;
+   * consumers treat a missing label as "no badge".
+   */
+  source?: SeedSource
 }
 
 /**

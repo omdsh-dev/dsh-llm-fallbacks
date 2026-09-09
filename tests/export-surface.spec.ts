@@ -248,13 +248,15 @@ describe('export surface: type exports (compile-time only)', () => {
     // Seed provenance (seed-source-provenance plan): the per-row source
     // label, the public declare options face (`set` only — the INTERNAL
     // `bundled` marker is module-internal to seeds.ts and never re-exported),
-    // and the wire status carrying `source`.
+    // and the wire status. `source` is OPTIONAL on the wire: a gateway
+    // predating the field (version skew) omits it — consumers treat a
+    // missing label as "no badge" (`EffectiveRole.source` stays required).
     expectTypeOf<index.SeedSource>().toEqualTypeOf<'bundled' | 'external' | 'user' | (string & {})>()
     expectTypeOf<index.SeedsDeclareOptions>().toEqualTypeOf<{ set?: string }>()
     expectTypeOf<index.SeedsWireStatus>().toEqualTypeOf<{
       id: string
       overridden: boolean
-      source: index.SeedSource
+      source?: index.SeedSource
     }>()
     expectTypeOf<index.SeedsIo>().toEqualTypeOf<{
       read: () => index.FallbacksConfig

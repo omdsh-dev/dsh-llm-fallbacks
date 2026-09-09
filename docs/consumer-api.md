@@ -181,7 +181,7 @@ Two stores, strictly separated (spec §9.2):
 
 #### Per-row source (provenance contract)
 
-Every row carries a provenance label (`SeedSource`) on both the `EffectiveRole` readback and the gateway `seeds` wire entries (`SeedsWireStatus.source` — additive wire field, older clients ignore unknown fields):
+Every row carries a provenance label (`SeedSource`) on both the `EffectiveRole` readback and the gateway `seeds` wire entries (`SeedsWireStatus.source` — additive wire field: older clients ignore unknown fields, and a gateway predating the field may omit it, in which case the client treats the entry as badgeless). `bundled` is reserved for the plugin's own preset self-declare and is unreachable through the service face — the face forwards only the public `{ set }` key to the declare pipeline:
 
 | `source` value | When |
 |---|---|
@@ -205,7 +205,7 @@ Reserved set names (`bundled` / `user` / `external`) are invalid by contract —
 | `EffectiveRole` | `{ id, persona, chain?, fallback?, seeded, personaOverridden, source, seedPersona? }` | One effective role with seed annotations (`chain` / `fallback` are passthrough — never touched by seeds; `source` is the provenance label). |
 | `EffectiveRolesReadback` | `{ roles: EffectiveRole[] }` | Result of `getEffectiveRoles`. |
 | `SeedRevertOutcome` | `{ reverted, persona?, reason? }` | Result of `revertSeededPersona`; `reason` ∈ `'not-seeded'` \| `'row-absent'` \| `'settings-unavailable'`. |
-| `SeedsWireStatus` | `{ id: string; overridden: boolean; source: SeedSource }` | Gateway wire entry (card badge state + provenance); the gateway `seeds` field is an array of these. |
+| `SeedsWireStatus` | `{ id: string; overridden: boolean; source?: SeedSource }` | Gateway wire entry (card badge state + provenance); the gateway `seeds` field is an array of these. `source` is optional — a gateway predating the field omits it (version skew) and consumers treat a missing label as "no badge". |
 
 ## Version metadata
 
