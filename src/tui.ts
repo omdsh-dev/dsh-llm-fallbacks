@@ -102,11 +102,18 @@ const FALLBACKS_PROVIDER: TuiCommandTreeProvider = {
 
 /**
  * Register the `/fallbacks` provider on the optional `tuiCommandTrees`
- * service. First-fiber-only (`serviceOwned === true` — mirrors the
- * gateway/typert multi-fiber dedupe; the host registry throws on duplicate
- * roots, so a deduped later fiber must never register). The service is
- * optional: a composition without `dsh-tui-command-trees` keeps the plugin
- * working and simply omits the TUI surface.
+ * service. Gated by the OPTIMISTIC `serviceOwned` claim taken at apply time
+ * (the service itself is provided inside the settings inject child, after
+ * apply returns — see `apply()` in src/index.ts), with the sibling dedupe
+ * guard inside the child: the claim is not a fact, so a fiber applying
+ * inside the claim window registers here and, when it loses the race for
+ * the host registry's root, degrades via the `already registered` catch
+ * below — only a post-settlement duplicate fiber skips at this gate (its
+ * claim INITIALIZED false: the service was already visible when the claim
+ * was taken; the child-side catch correction settles strictly after apply()
+ * and can never influence this synchronous read). The service is optional:
+ * a composition without `dsh-tui-command-trees` keeps the plugin working
+ * and simply omits the TUI surface.
  *
  * The inject child returns the registry disposer so cordis withdraws the
  * registration when this fiber (or the service) goes away.
