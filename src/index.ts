@@ -297,6 +297,38 @@ export function chainHeads(ctx: Context): ReadonlyMap<string, EffectiveChainHead
   return chainHeadStores.get(ctx)
 }
 
+/**
+ * One dispatch-resolved subagent role record (plan subagent-role-badge T1):
+ * the role `resolveRoleAtDispatch` resolved at the subagent's first request
+ * and the route the subagent will actually run after the inject decision
+ * (the override target when it applies, else the host seed).
+ */
+type SubagentRoleRecord = {
+  role: string
+  model: { provider: string; model: string }
+  at: number
+}
+
+/**
+ * Per-apply dispatch-resolved subagent role records, keyed by context. Weak
+ * so entries die with the context; the plugin's own dispose effect clears
+ * the map contents (mirrors `chainHeadStores`).
+ * @internal
+ */
+const subagentRoleRecordStores = new WeakMap<Context, ReadonlyMap<string, SubagentRoleRecord>>()
+
+/**
+ * @internal Test seam (mirrors `chainHeads`): the per-agent dispatch-resolved
+ * role records written by the role-inject block (plan subagent-role-badge T1)
+ * for the plugin applied to `ctx`. Not part of the plugin's public surface;
+ * lets tests read the badge record without reaching into the closure (the
+ * gateway readback closes over the per-apply map directly). `undefined` when
+ * no plugin is applied.
+ */
+export function subagentRoleRecords(ctx: Context): ReadonlyMap<string, SubagentRoleRecord> | undefined {
+  return subagentRoleRecordStores.get(ctx)
+}
+
 /** Latest map value by `at` (the Subagents card shows the current one). */
 function latestByAt<T extends { at: number }>(map: ReadonlyMap<string, T>): T | undefined {
   let latest: T | undefined
@@ -724,6 +756,18 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   chainHeadStores.set(ctx, chainHeadMap)
   const blockedAttemptMap = new Map<string, BlockedSwitchAttempt>()
   blockedAttemptStores.set(ctx, blockedAttemptMap)
+  // Plan subagent-role-badge T1: dispatch-resolved subagent role records —
+  // `{ role, model, at }` per subagent session, written by the role-inject
+  // block for EVERY resolved non-`inherit` role, in BOTH policy paths, with
+  // `model` = the route the subagent actually runs (override target when it
+  // applies, else the host seed). Separate from `chainHeadMap`: that map
+  // records only under an ENABLED host policy (Subagents card), while the
+  // badge record must exist policy-off too. Repeated dispatches into the
+  // same session overwrite (last-wins = the current role). Grown here so the
+  // gateway snapshot (T2) can close over it; cleaned on agent/disposed +
+  // plugin dispose (mirrors `slotWinners`). In-memory only.
+  const subagentRoleRecordMap = new Map<string, SubagentRoleRecord>()
+  subagentRoleRecordStores.set(ctx, subagentRoleRecordMap)
 
   try {
     // T3 (plan fallbacks-role-seeds): the gateway receives the SAME per-apply
@@ -1277,6 +1321,20 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
                   to = { provider: head.provider, model: head.model }
                 }
               }
+              // Plan subagent-role-badge T1: record the resolved role with the
+              // route the subagent will actually run — the override target when
+              // it applies, else the host seed (always in scope here). Written
+              // for EVERY resolved non-`inherit` role in BOTH policy paths;
+              // `inherit` and the two role-never-resolved branches above
+              // (`'unprovable'`, authorized route) stay unrecorded — nothing
+              // for the badge to show there.
+              subagentRoleRecordMap.set(agent.id, {
+                role,
+                model: to !== undefined && !(to.provider === seed.provider && to.model === seed.model)
+                  ? { provider: to.provider, model: to.model }
+                  : { provider: seed.provider, model: seed.model },
+                at: Date.now(),
+              })
               if (to !== undefined && !(to.provider === seed.provider && to.model === seed.model)) {
                 // issue #52: no durable `fallbacks/switch` role-inject event is
                 // written (same reason as commit() — the registration seam was
@@ -1355,6 +1413,7 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     slotWinners.delete(agent.id)
     blockedAttemptMap.delete(agent.id)
     chainHeadMap.delete(agent.id)
+    subagentRoleRecordMap.delete(agent.id)
     lastKnownPolicySettings.delete(agent.id)
   })
 
@@ -1385,6 +1444,7 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     slotWinners.clear()
     blockedAttemptMap.clear()
     chainHeadMap.clear()
+    subagentRoleRecordMap.clear()
     lastKnownPolicySettings.clear()
   }, 'llm-fallbacks: clear per-agent state')
 
