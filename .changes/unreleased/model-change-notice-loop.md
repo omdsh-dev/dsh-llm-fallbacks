@@ -1,0 +1,8 @@
+---
+category: Fixed
+---
+- With `FallbacksChain` / `Auto` selected, the host's model-change notice is no longer re-armed on every step: the root request is now served and recorded as the virtual pair (the `agent/request` rewrite to the chain head is removed) and the virtual adapter's delegate dispatches the effective head, so the durable `request/header` matches the session selection and the notice appears once on a genuine model change instead of continuously.
+- `llm-deepseek.retryPolicy` — including `mode: 'always'` — now applies on the virtual route: the adapter reports the effective head's policy instead of the permissive default (the host captures that policy once at registration, so a later policy edit or a slot-driven head-provider rotation takes effect only after re-registration).
+- `alwaysModeRetryCap` now trips on the virtual route; it was unreachable there because the removed rewrite always returned the chain head before the cap check.
+- Half-open recovery works on the virtual route: a served completion now closes the head's circuit (the success observer had keyed on the virtual pair while failures keyed on the served head, so the circuit could never close and its suppression kept escalating despite successful requests).
+- Subagent role rules keep matching on the virtual route: a rule keyed on the real chain head still resolves for a delegated child whose recorded route is the virtual row (dispatch-time rule matching now accepts either **whole** pair — the recorded one or the served one — so a rule that crosses the two, e.g. the virtual provider with the head's model, no longer matches).

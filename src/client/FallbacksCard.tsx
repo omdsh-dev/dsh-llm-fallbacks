@@ -329,17 +329,19 @@ interface SeedRowInfo {
 
 /**
  * Badge label for one row's provenance (plan role-card-seeded-ux): every
- * row states where its seed state comes from. A live seed renders its
- * declaring set's label VERBATIM (case-preserved — no case-folding; the
- * unnamed case is the literal `external`), the bundled presets and the
- * operator's own rows resolve to their localized labels. `null` = no
- * badge: a currently-seeded row whose wire entry lacks `source` (gateway
- * version skew) — the degradation path, never an error.
+ * row states where its seed state comes from. The three reserved labels
+ * localize — `bundled`, `external` (the shared unnamed-producer slice;
+ * plan seeds-source-and-persona-width), and the operator's own rows —
+ * while a live seed declared under a registered set name renders that
+ * name VERBATIM (case-preserved — no case-folding). `null` = no badge: a
+ * currently-seeded row whose wire entry lacks `source` (gateway version
+ * skew) — the degradation path, never an error.
  */
 function seedBadgeLabel(seed: SeedRowInfo | undefined, t: FallbacksCardProps['t']): string | null {
   if (seed === undefined) return t('roles.seedSource.user')
   if (seed.source === undefined) return null
   if (seed.source === 'bundled') return t('roles.seedSource.bundled')
+  if (seed.source === 'external') return t('roles.seedSource.external')
   if (seed.source === 'user') return t('roles.seedSource.user')
   return seed.source
 }
@@ -2021,11 +2023,11 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                     // renders as an ordinary row again.
                     const seed = seedInfo.get(row.id.trim())
                     // The provenance badge rides EVERY collapse title (plan
-                    // role-card-seeded-ux): the declaring set's label
-                    // verbatim / localized bundled / User. null (a seeded
-                    // entry without a wire `source` — gateway version skew)
-                    // renders no badge: the degradation path, never an
-                    // error.
+                    // role-card-seeded-ux): the declaring set's name
+                    // verbatim, the reserved labels localized (bundled /
+                    // external / User). null (a seeded entry without a
+                    // wire `source` — gateway version skew) renders no
+                    // badge: the degradation path, never an error.
                     const seedBadge = seedBadgeLabel(seed, t)
                     // The brief's blank verdict: a whitespace-only persona is
                     // the same `(not set)` empty state as an empty one — no

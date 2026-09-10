@@ -11,20 +11,34 @@
  * State model (spec §9.2) — two stores, strictly separated:
  * 1. operator config rows (persisted; a seeded role is a plain
  *    `roles.list` row `{ id, persona }`), and
- * 2. an in-memory per-apply seed registry (`Map<id, { persona, set }>` —
- *    the declared default persona plus its provenance label), declare =
- *    replacement (the batch is the companion's full current set).
+ * 2. an in-memory per-apply seed registry keyed by PRODUCER LABEL
+ *    (`bundled` | set name | `external`), each slice holding that
+ *    producer's current id → `{ persona, set }` declarations. Declare =
+ *    replacement PER PRODUCER: a declare replaces only its own slice, so
+ *    the plugin's bundled presets stay `bundled` even when a companion
+ *    merge-preserves them into its own batch (plan
+ *    seeds-source-and-persona-width, Decisions #1).
  * `seeded` / `personaOverridden` / `source` are DERIVED at read time, never
  * stored — a config round-trip cannot orphan an override (AC-3), and
  * provenance rides the in-memory registry only, so it can never churn a
  * settings write.
  *
+ * Resolution precedence (Decisions #2): `bundled` wins for any id the
+ * plugin's own preset self-declare currently declares; otherwise the most
+ * recent non-bundled producer declaring the id wins (its set name, or
+ * `external` when unnamed); no live declaration ⇒ `user`. Unnamed producers
+ * share the `external` slice (Decisions #3); `{ set }` is the remedy.
+ *
  * Materialization (spec §9.2): append `{ id, persona }` (two keys only,
  * R4) / attach row untouched / at-default tracking / override preserved +
- * `'persona-source'` conflict / omitted id drops from the registry while
- * the row stays (R2). No delta → no settings write (idempotent, AC-1).
- * Compute → write → commit registry: a failed write throws and leaves the
- * registry unchanged (retry-safe).
+ * `'persona-source'` conflict / omitted id drops from the declaring
+ * producer's slice while the row stays (R2). Tracking is driven by the
+ * id's RESOLVED effective default — `prior` = resolved before the
+ * declare, `incoming` = resolved after the candidate slice commit — so a
+ * producer that is not the resolution winner for an id it declares never
+ * rewrites the row (F-001). No delta → no settings write (idempotent,
+ * AC-1). Compute → write → commit registry: a failed write throws and
+ * leaves the registry unchanged (retry-safe).
  *
  * @module dsh-llm-fallbacks/seeds
  */
@@ -174,21 +188,42 @@ interface SeedRegistryEntry {
 }
 
 /**
+ * One producer's current declaration slice (never persisted): the id →
+ * entry map plus the monotonic declare sequence that makes "most recent
+ * producer" decidable for resolution precedence (Decisions #2).
+ */
+interface SeedRegistrySlice {
+  /** Monotonic declare sequence — the most recent non-bundled producer wins on id collisions. */
+  seq: number
+  /** The producer's current id → persona slice. */
+  entries: Map<string, SeedRegistryEntry>
+}
+
+/**
  * In-memory per-apply seed manager (spec §9.2): declare / readback /
  * revert over the operator config through a `SeedsIo` seam. Created in
  * `apply()` (per-apply, no module-level global) with a structured logger;
  * warn messages carry the `llm-fallbacks: seeds:` prefix (spec §9.7).
  */
 export class FallbacksSeedManager {
-  /** Per-apply declaration registry: declared default persona + provenance label. */
-  private registry = new Map<string, SeedRegistryEntry>()
+  /**
+   * Per-producer declaration registry: producer label (`bundled` | set
+   * name | `external`) → that producer's current slice. A declare replaces
+   * only its own slice; an empty batch drops the slice.
+   */
+  private registry = new Map<string, SeedRegistrySlice>()
+  /** Monotonic declare counter — "most recent producer" for resolution precedence. */
+  private declareSeq = 0
 
   constructor(private readonly logger: FallbacksConfigLogger) {}
 
   /**
-   * Declare seeds with replacement semantics — the batch is the
-   * companion's FULL current declaration set; ids omitted from the batch
-   * drop out of the registry while their rows remain (R2).
+   * Declare seeds with replacement semantics PER PRODUCER — the batch is
+   * the producer's FULL current declaration set; ids omitted from the
+   * batch drop out of that producer's slice while their rows remain (R2).
+   * Other producers' slices are untouched, so a companion merge-preserving
+   * the bundled presets into its own batch never re-labels them (Decisions
+   * #1).
    *
    * `options` labels the whole batch's provenance (spec §2), resolved once
    * per call: an invalid set name warns once and degrades to the unnamed
@@ -196,10 +231,14 @@ export class FallbacksSeedManager {
    *
    * Per-id validation AS DECLARED (spec §9.3): non-string / pattern miss /
    * reserved `inherit` / duplicate-in-batch → skip + warn; valid siblings
-   * still apply (AC-5). Materializes per spec §9.2, writes only when the
-   * computed `{ list, rules }` differs from the current composed roles
-   * (idempotent, AC-1), and commits the registry only after a successful
-   * write (compute → write → commit; retry-safe).
+   * still apply (AC-5). Materializes per spec §9.2 against the id's
+   * RESOLVED effective default before/after the candidate slice commit
+   * (at-default tracking follows the resolution winner — a producer that
+   * is not the winner for an id it declares never rewrites the row),
+   * writes only when the computed `{ list, rules }` differs from the
+   * current composed roles (idempotent, AC-1), and commits the slice only
+   * after a successful write (compute → write → commit; retry-safe). An
+   * empty batch drops the producer's slice.
    */
   async declare(
     seeds: readonly SeedDeclaration[],
@@ -237,7 +276,29 @@ export class FallbacksSeedManager {
     // settings write still throws (retry-safe, KD-G5).
     const currentList = roleRows(config)
     const currentRules = roleRules(config)
-    const newList = materialize(currentList, personaView(entries), personaView(this.registry), outcome.conflicts)
+    // Candidate registry: this registry with the declaring slice replaced
+    // (or deleted for an empty batch) — the state resolution would see
+    // after this declare commits. Tracking is driven by the id's RESOLVED
+    // effective default (F-001): `prior` = resolved BEFORE the declare,
+    // `incoming` = resolved AFTER the candidate commit. A producer that is
+    // not the resolution winner for an id it declares never rewrites the
+    // row, so the row persona, badge, `seedPersona`, and revert target
+    // stay mutually consistent.
+    const candidate = new Map(this.registry)
+    if (entries.size === 0) {
+      candidate.delete(source)
+    } else {
+      candidate.set(source, { seq: this.declareSeq + 1, entries })
+    }
+    const prior = new Map<string, string>()
+    const incoming = new Map<string, string>()
+    for (const id of entries.keys()) {
+      const before = this.resolveDeclared(id)?.persona
+      const after = this.resolveDeclared(id, candidate)?.persona
+      if (before !== undefined) prior.set(id, before)
+      if (after !== undefined) incoming.set(id, after)
+    }
+    const newList = materialize(currentList, incoming, prior, outcome.conflicts)
     for (const conflict of outcome.conflicts) {
       this.logger.warn(
         `llm-fallbacks: seeds: persona-source conflict for seed id ${JSON.stringify(conflict.id)} — operator row persona kept (never overwritten)`,
@@ -254,30 +315,66 @@ export class FallbacksSeedManager {
       // (retry-safe: the next declare re-computes from the fresh read).
       await io.writeRoles(computed)
     }
-    this.registry = entries
+    // Commit: replace only this producer's slice (an empty batch drops it).
+    if (entries.size === 0) {
+      this.registry.delete(source)
+    } else {
+      this.registry.set(source, { seq: ++this.declareSeq, entries })
+    }
     return outcome
+  }
+
+  /**
+   * Resolve one id's live declaration across producer slices (spec §2,
+   * Decisions #2): the bundled preset self-declare wins for any id it
+   * currently declares; otherwise the most recent non-bundled producer
+   * declaring the id wins (its set name, or `external` when unnamed); no
+   * live declaration ⇒ `undefined` (the row reads `user`). Single place —
+   * `effectiveRoles`, `wireStatus`, and `revert` can never disagree. The
+   * optional `registry` argument resolves against a CANDIDATE registry
+   * (the declaring slice already replaced) — the same precedence, used by
+   * `declare` to compute the post-commit effective default for tracking.
+   */
+  private resolveDeclared(
+    id: string,
+    registry: ReadonlyMap<string, SeedRegistrySlice> = this.registry,
+  ): { persona: string; source: SeedSource } | undefined {
+    const bundled = registry.get('bundled')?.entries.get(id)
+    if (bundled !== undefined) return { persona: bundled.persona, source: 'bundled' }
+    let winner: { persona: string; source: SeedSource; seq: number } | undefined
+    for (const [label, slice] of registry) {
+      if (label === 'bundled') continue
+      const entry = slice.entries.get(id)
+      if (entry === undefined) continue
+      if (winner === undefined || slice.seq > winner.seq) {
+        winner = { persona: entry.persona, source: label, seq: slice.seq }
+      }
+    }
+    if (winner === undefined) return undefined
+    return { persona: winner.persona, source: winner.source }
   }
 
   /**
    * Readback (b) — sync, derived: every config row annotated with
    * `seeded` / `personaOverridden` / `seedPersona` (trimmed row-id
    * membership in the live declaration set; persona inequality) plus the
-   * row's provenance `source` (spec §2): the declaring set's label, or
-   * `user` when no live declaration covers the row. Nothing
-   * override-shaped is stored, so a config round-trip cannot orphan state.
+   * row's provenance `source` (spec §2): the winning producer's label per
+   * `resolveDeclared`, or `user` when no live declaration covers the row.
+   * Nothing override-shaped is stored, so a config round-trip cannot
+   * orphan state.
    */
   effectiveRoles(io: SeedsIo): EffectiveRolesReadback {
     const roles: EffectiveRole[] = roleRows(io.read()).map((row) => {
-      const entry = this.registry.get(row.id.trim())
-      const seeded = entry !== undefined
+      const declared = this.resolveDeclared(row.id.trim())
+      const seeded = declared !== undefined
       const effective: EffectiveRole = {
         id: row.id,
         persona: row.persona,
         seeded,
-        personaOverridden: seeded && row.persona !== entry.persona,
-        source: seeded ? entry.set : 'user',
+        personaOverridden: seeded && row.persona !== declared.persona,
+        source: seeded ? declared.source : 'user',
       }
-      if (seeded) effective.seedPersona = entry.persona
+      if (seeded) effective.seedPersona = declared.persona
       if (row.chain !== undefined) effective.chain = row.chain
       if (row.fallback !== undefined) effective.fallback = row.fallback
       return effective
@@ -289,24 +386,26 @@ export class FallbacksSeedManager {
   wireStatus(io: SeedsIo): SeedsWireStatus[] {
     const status: SeedsWireStatus[] = []
     for (const row of roleRows(io.read())) {
-      const entry = this.registry.get(row.id.trim())
-      if (entry === undefined) continue
-      status.push({ id: row.id, overridden: row.persona !== entry.persona, source: entry.set })
+      const declared = this.resolveDeclared(row.id.trim())
+      if (declared === undefined) continue
+      status.push({ id: row.id, overridden: row.persona !== declared.persona, source: declared.source })
     }
     return status
   }
 
   /**
-   * Revert one id to the CURRENT declared seed default (AC-3). Writes
-   * persona only — the row is otherwise copied verbatim (R4). Ids absent
-   * from the registry (`not-seeded`) or with a deleted row (`row-absent`)
+   * Revert one id to the CURRENT declared seed default (AC-3) — resolved
+   * through the same precedence as the readbacks, so a preserved bundled id
+   * reverts to the bundled persona, never a companion's copy. Writes
+   * persona only — the row is otherwise copied verbatim (R4). Ids with no
+   * live declaration (`not-seeded`) or with a deleted row (`row-absent`)
    * return a non-reverted outcome without throwing; a failed settings
    * write propagates loudly (spec §9.1).
    */
   async revert(id: string, io: SeedsIo): Promise<SeedRevertOutcome> {
     const seedId = id.trim()
-    const entry = this.registry.get(seedId)
-    if (entry === undefined) return { reverted: false, reason: 'not-seeded' }
+    const declared = this.resolveDeclared(seedId)
+    if (declared === undefined) return { reverted: false, reason: 'not-seeded' }
     // Same containment guard as `declare` (qc2 S-1): a malformed/legacy
     // `roles` shape degrades to empty rows instead of throwing — the id
     // is then simply absent, and the business outcome stays a value.
@@ -315,10 +414,10 @@ export class FallbacksSeedManager {
     const rules = roleRules(config)
     const index = rows.findIndex((row) => row.id.trim() === seedId)
     if (index === -1) return { reverted: false, reason: 'row-absent' }
-    if (rows[index].persona === entry.persona) return { reverted: true, persona: entry.persona }
-    const nextList = rows.map((row, i) => (i === index ? { ...row, persona: entry.persona } : row))
+    if (rows[index].persona === declared.persona) return { reverted: true, persona: declared.persona }
+    const nextList = rows.map((row, i) => (i === index ? { ...row, persona: declared.persona } : row))
     await io.writeRoles({ list: nextList, rules })
-    return { reverted: true, persona: entry.persona }
+    return { reverted: true, persona: declared.persona }
   }
 
   private warnSkip(id: unknown, reason: SeedSkipReason): void {
@@ -364,57 +463,54 @@ function resolveSource(
 }
 
 /**
- * The persona-only view of a registry — materialize's input shape (spec
- * §9.2): provenance (`set`) rides alongside in the registry but never
- * enters the row comparison, so the R2 / no-delta logic is untouched by it.
- */
-function personaView(entries: ReadonlyMap<string, SeedRegistryEntry>): Map<string, string> {
-  const personas = new Map<string, string>()
-  for (const [id, entry] of entries) personas.set(id, entry.persona)
-  return personas
-}
-
-/**
  * Materialize the row list for a declare (spec §9.2 table): existing rows
  * are copied verbatim or persona-tracked, then rows are appended for
- * declared ids with no trimmed-id match.
+ * declared ids with no trimmed-id match. `prior` is the id's RESOLVED
+ * effective default BEFORE the declare and `incoming` the RESOLVED
+ * effective default AFTER the candidate slice commit (F-001) — a row
+ * tracks only when it sits at `prior` AND the effective default actually
+ * changed, so a producer that is not the resolution winner for an id it
+ * declares never rewrites the row. New rows append with the effective
+ * persona.
  */
 function materialize(
   rows: readonly FallbacksRole[],
-  registry: ReadonlyMap<string, string>,
-  previous: ReadonlyMap<string, string>,
+  incoming: ReadonlyMap<string, string>,
+  prior: ReadonlyMap<string, string>,
   conflicts: SeedConflict[],
 ): FallbacksRole[] {
   const next: FallbacksRole[] = []
   for (const row of rows) {
     const seedId = row.id.trim()
-    const incoming = registry.get(seedId)
-    if (incoming === undefined) {
+    const inc = incoming.get(seedId)
+    if (inc === undefined) {
       // Id omitted from the batch — row untouched (R2).
       next.push(row)
       continue
     }
-    const prior = previous.get(seedId)
-    if (prior === undefined) {
-      // Row exists, no previous default (post-restart/HMR or re-declared
-      // after a drop): conservative row-untouched — a differing persona is
-      // flagged as an operator override (spec §9.2).
-      if (row.persona !== incoming) conflicts.push({ id: seedId, kind: 'persona-source' })
+    const before = prior.get(seedId)
+    if (before === undefined) {
+      // No resolved default before the declare (post-restart/HMR or
+      // re-declared after a drop): conservative row-untouched — a differing
+      // persona is flagged as an operator override (spec §9.2).
+      if (row.persona !== inc) conflicts.push({ id: seedId, kind: 'persona-source' })
       next.push(row)
       continue
     }
-    if (row.persona === prior) {
-      // Still at the previous default → tracks companion updates (not an
-      // operator edit); the row is otherwise copied verbatim (R4).
-      next.push({ ...row, persona: incoming })
+    if (row.persona === before && inc !== before) {
+      // Row at the previous EFFECTIVE default and the effective default
+      // actually changed → tracks the winner's update (not an operator
+      // edit); the row is otherwise copied verbatim (R4).
+      next.push({ ...row, persona: inc })
       continue
     }
-    // Operator override — preserved; conflict iff it differs from the
-    // incoming default (equal → override resolved, quiet).
-    if (row.persona !== incoming) conflicts.push({ id: seedId, kind: 'persona-source' })
+    // Operator override, or no effective default change — preserved;
+    // conflict iff it differs from the incoming effective default (equal →
+    // override resolved, quiet).
+    if (row.persona !== inc) conflicts.push({ id: seedId, kind: 'persona-source' })
     next.push(row)
   }
-  for (const [id, persona] of registry) {
+  for (const [id, persona] of incoming) {
     if (!rows.some((row) => row.id.trim() === id)) next.push({ id, persona })
   }
   return next

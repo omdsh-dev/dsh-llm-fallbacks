@@ -1,60 +1,50 @@
 /**
- * In-test semantic double for `installModelSelection`
- * (`@deepseek-ai/dsh-agent/model-selection`). Mirrors the REAL host
- * listener's `agent/request` contract (packages/core/agent/src/model-selection.ts):
- * `await next()`, then apply the assembled selection on top of the resolved
- * config, dropping any inherited `reasoningEffort` (the
- * `withoutInheritedEffort` pattern). It is the host-NATIVE double — the
- * fallback-routing marker check that used to live here (spec §2.5 D-1,
- * local dsh-agent patch) is gone with the patch removal (plan
- * llm-fallbacks-runtime-depatch, T2).
+ * In-test registration seam for the host's `installModelSelection`
+ * (`@deepseek-ai/dsh-agent/model-selection`).
  *
- * The real one registers on an agent-scoped context; the double registers on
- * the shared test context — waterfall registration order is exactly what the
- * composition tests assert (cordis: first-registered listener = outer =
+ * **The real host implementation is registered here — nothing is mirrored.**
+ * A hand copy lived here until plan `model-change-notice-loop` QC1 I-2: the
+ * repo's own policy is that the real `@deepseek-ai/dsh-agent` module is the only
+ * truth (`tests/host-native.spec.ts`), the function is a public root export
+ * (`@deepseek-ai/dsh-agent/lib/index.js`, re-exported by
+ * `lib/types/index.d.ts`), and a copy is exactly the failure mode this suite
+ * already paid for once — Task 4 had to *add* the omitted `agent/pre-step`
+ * notice listener because the copy mirrored only `agent/request`, which is why
+ * the suite stayed green while production injected a durable
+ * `[model changed: …]` notice on every admitted step (evidence E21). With the
+ * copy gone, any upstream change to the listener, its comparison, or its
+ * guards reaches this suite automatically (the plan's deferred upstream fix,
+ * residual R-001, can no longer flip real behavior while the suite stays green).
+ *
+ * Registering the real function also installs its `system-prompt/assemble`
+ * listener. That listener writes `selection.assembled` from `selection.current`
+ * during prompt assembly; the shared test harness never dispatches
+ * `system-prompt/assemble`, so a test that hand-sets `assembled` (the
+ * composition-order cases) keeps full control of the captured selection while
+ * the assemble arm stays real and inert. A test that wants the assemble arm to
+ * run seeds `selection.current` and dispatches the event itself.
+ *
+ * The real function registers on an agent-scoped context; this seam registers
+ * it on the shared test context — waterfall registration order is exactly what
+ * the composition tests assert (cordis: first-registered listener = outer =
  * final say after `next()`), so the shared context is the right seam.
  *
  * @module tests/support/model-selection-stub
  */
 
 import type { Context } from '@deepseek-ai/cordis'
-import type { LlmCallConfig, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
+import { installModelSelection } from '@deepseek-ai/dsh-agent'
+import type { ModelSelection, ModelSelectionRef } from '@deepseek-ai/dsh-agent'
 
-/** Complete provider, model, and optional reasoning effort selected for one live Agent. */
-export interface ModelSelection {
-  provider: string
-  model: string
-  reasoningEffort?: ReasoningEffortId
-}
-
-/** Mutable model selection plus the value captured for the current step. */
-export interface ModelSelectionRef {
-  /** Model selected for the next step that enters prompt assembly. */
-  current: ModelSelection | undefined
-  /** Selection captured when the current step entered prompt assembly. */
-  assembled: ModelSelection | undefined
-}
+export type { ModelSelection, ModelSelectionRef }
 
 /**
- * Install the model-selection double: an `agent/request` listener that applies
- * `selection.assembled` on top of the resolved config whenever one exists —
- * unconditionally, exactly like the host-native listener. Under an active
- * selection this re-apply clobbers an inner plugin's switch override (the
- * documented degradation); when the plugin's listener is outer, the plugin
- * applies its switch AFTER this listener's re-apply, so the switch wins.
- * @returns the disposer (listeners also die with the context fiber).
+ * Register the REAL host `installModelSelection` on `ctx`.
+ *
+ * @param ctx - the context to register on (the shared test context).
+ * @param selection - the mutable selection the host listeners read.
+ * @returns the host disposer (the listeners also die with the context fiber).
  */
 export function installModelSelectionStub(ctx: Context, selection: ModelSelectionRef): () => void {
-  return ctx.on('agent/request', async (_payload, next): Promise<LlmCallConfig> => {
-    const resolved = await next()
-    const selected = selection.assembled
-    if (selected === undefined) return resolved
-    const { reasoningEffort: _inheritedEffort, ...withoutInheritedEffort } = resolved
-    return {
-      ...withoutInheritedEffort,
-      provider: selected.provider,
-      model: selected.model,
-      ...(selected.reasoningEffort === undefined ? {} : { reasoningEffort: selected.reasoningEffort }),
-    }
-  })
+  return installModelSelection(ctx, selection)
 }

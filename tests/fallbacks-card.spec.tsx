@@ -76,6 +76,12 @@ const interpolatingT: FallbacksCardProps['t'] = (key, params) => {
 }
 
 /**
+ * The zh `t` seat (same synthesized-locale pattern as {@link t}) — the
+ * locale-sensitive badge specs rerender the mounted card with it.
+ */
+const zhT: FallbacksCardProps['t'] = key => zh[key as keyof typeof zh]
+
+/**
  * Full card props the renderer would bind: the registrant's business inject
  * face (controller + useSnapshot), the framework-synthesized `t` seat, and
  * the runtime's global seat (session-list / workspace-list selector hooks —
@@ -2380,10 +2386,12 @@ describe('FallbacksCard seeded roles (plan fallbacks-role-seeds T5)', () => {
 
   it('badges every row with its source: bundled / set name / User — none under version skew', async () => {
     // The provenance badge rides every collapse title (plan
-    // role-card-seeded-ux): a live seed shows its declaring set's label —
-    // `bundled` resolves to its localized label, an unnamed set is the
-    // literal `external`, a named set renders VERBATIM (case-preserved) —
-    // and a row no live declaration covers is the operator's own (`User`).
+    // role-card-seeded-ux): a live seed shows its declaring producer's
+    // label — `bundled` resolves to its localized label, an unnamed
+    // producer's `external` localizes too (plan
+    // seeds-source-and-persona-width), a named set renders VERBATIM
+    // (case-preserved) — and a row no live declaration covers is the
+    // operator's own (`User`).
     const config: typeof defaultFallbacksConfig = {
       ...defaultFallbacksConfig,
       enabled: true,
@@ -2410,7 +2418,7 @@ describe('FallbacksCard seeded roles (plan fallbacks-role-seeds T5)', () => {
     const rolesGroup = screen.getByText(en['roles.list.label']).closest('[role="group"]') as HTMLElement
     within(rolesGroup).getByText(en['roles.seedSource.bundled'])
     within(rolesGroup).getByText('Prod presets')
-    within(rolesGroup).getByText('external')
+    within(rolesGroup).getByText(en['roles.seedSource.external'])
     within(rolesGroup).getByText(en['roles.seedSource.user'])
     first.view.unmount()
 
@@ -2447,6 +2455,69 @@ describe('FallbacksCard seeded roles (plan fallbacks-role-seeds T5)', () => {
     // User label, per the normal derivation.
     expect(within(thirdGroup).getAllByText(en['roles.seedSource.user'])).toHaveLength(2)
     third.view.unmount()
+  })
+
+  it('badges the unnamed external producer with the localized label in both locales — never the raw token', async () => {
+    // plan seeds-source-and-persona-width Task 2: `external` is a FIXED
+    // label (the shared unnamed-producer slice), so it localizes like
+    // `bundled` / `User`; only registered set names render verbatim. The
+    // en label coincides with the raw token, so the zh render is the
+    // discriminating half (the en half pins the vocabulary contract).
+    const config: typeof defaultFallbacksConfig = {
+      ...defaultFallbacksConfig,
+      enabled: true,
+      roles: {
+        list: [
+          { id: 'architect', persona: 'Designs systems', chain: ['anthropic/claude-3-5-sonnet'], fallback: 'inherit-root' },
+          { id: 'reviewer', persona: 'Reviews code', chain: ['anthropic/claude-3-5-sonnet'], fallback: 'inherit-root' },
+        ],
+        rules: [],
+      },
+    }
+    const { view, props } = await mountCard({
+      config,
+      seeds: [{ id: 'architect', overridden: false, source: 'external' }],
+    })
+    toggleCard()
+    const enGroup = screen.getByText(en['roles.list.label']).closest('[role="group"]') as HTMLElement
+    expect(within(enGroup).getByText('external')).toBeTruthy()
+    // zh seat: the badge reads 外部 and the raw English token never
+    // renders. (The literal matches zh['roles.seedSource.external'] — the
+    // dictionary parity spec pins the key's value.)
+    view.rerender(<FallbacksCard {...{ ...props, t: zhT }} />)
+    const zhGroup = screen.getByText(zh['roles.list.label']).closest('[role="group"]') as HTMLElement
+    expect(within(zhGroup).getByText('外部')).toBeTruthy()
+    expect(within(zhGroup).queryByText('external')).toBeNull()
+  })
+
+  it('renders a registered set name badge verbatim (case-preserved) while external localizes', async () => {
+    // plan seeds-source-and-persona-width Task 2: the verbatim contract is
+    // UNCHANGED for registered set names — a companion named `mstar` badges
+    // as `mstar`, never folded to a locale key; only the reserved labels
+    // (bundled / external / user) localize.
+    const config: typeof defaultFallbacksConfig = {
+      ...defaultFallbacksConfig,
+      enabled: true,
+      roles: {
+        list: [
+          { id: 'architect', persona: 'Designs systems', chain: ['anthropic/claude-3-5-sonnet'], fallback: 'inherit-root' },
+          { id: 'reviewer', persona: 'Reviews code', chain: ['anthropic/claude-3-5-sonnet'], fallback: 'inherit-root' },
+        ],
+        rules: [],
+      },
+    }
+    const { view, props } = await mountCard({
+      config,
+      seeds: [
+        { id: 'architect', overridden: false, source: 'mstar' },
+        { id: 'reviewer', overridden: false, source: 'external' },
+      ],
+    })
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    const rolesGroup = screen.getByText(en['roles.list.label']).closest('[role="group"]') as HTMLElement
+    expect(within(rolesGroup).getByText('mstar')).toBeTruthy()
+    expect(within(rolesGroup).getByText(en['roles.seedSource.external'])).toBeTruthy()
   })
 
   it('presents a seeded row read-only: no revert button, no persona editor, brief + expand instead', async () => {
@@ -2834,16 +2905,21 @@ describe('FallbacksCard seeded-role read-only UX (plan role-card-seeded-ux T3)',
       'roles.persona.collapse',
       'roles.persona.empty',
       'roles.seedSource.bundled',
+      'roles.seedSource.external',
       'roles.seedSource.user',
     ] as const
     for (const key of keys) {
       expect(zh[key]).toBeTruthy()
       expect(en[key]).toBeTruthy()
     }
-    // The en badge labels ARE the plan Goal's vocabulary contract: the
-    // rendered badges read exactly `bundled` / `User`.
+    // The badge labels ARE the plan Goal's vocabulary contract: the
+    // rendered badges read exactly `bundled` / `external` / `User` (en) —
+    // `external` localizes too (plan seeds-source-and-persona-width Task
+    // 2): the zh label is 外部, never the raw token.
     expect(en['roles.seedSource.bundled']).toBe('bundled')
+    expect(en['roles.seedSource.external']).toBe('external')
     expect(en['roles.seedSource.user']).toBe('User')
+    expect(zh['roles.seedSource.external']).toBe('外部')
   })
 })
 

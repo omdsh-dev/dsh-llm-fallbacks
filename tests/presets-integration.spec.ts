@@ -472,4 +472,90 @@ describe('bundled preset self-declaration (real apply)', () => {
       presetRoles.map((preset) => ({ id: preset.id, overridden: false, source: 'bundled' })),
     )
   })
+
+  it('a companion merge-preserve declare through the service face leaves the 5 preset rows bundled; its own rows external (per-producer provenance)', async () => {
+    const ctx = await compose()
+    await vi.waitFor(() => {
+      expect(gateway(ctx).get().seeds).toHaveLength(presetRoles.length)
+    })
+
+    // The companion rebuilds its batch from getEffectiveRoles() and
+    // preserves the currently seeded non-own ids verbatim (mstar-harness
+    // fallbacks-seeds protocol) — one-arg ⇒ external.
+    const companionOwn = [
+      { id: 'architect', persona: 'Architect' },
+      { id: 'code-reviewer', persona: 'Code Reviewer' },
+      { id: 'frontend-dev', persona: 'Frontend Dev' },
+      { id: 'fullstack-dev', persona: 'Fullstack Dev' },
+      { id: 'backend-dev', persona: 'Backend Dev' },
+      { id: 'data-engineer', persona: 'Data Engineer' },
+      { id: 'ml-engineer', persona: 'ML Engineer' },
+      { id: 'product-manager', persona: 'Product Manager' },
+      { id: 'project-manager', persona: 'Project Manager' },
+      { id: 'qa-engineer', persona: 'QA Engineer' },
+      { id: 'ops-engineer', persona: 'Ops Engineer' },
+      { id: 'writing-specialist', persona: 'Writing Specialist' },
+      { id: 'prompt-engineer', persona: 'Prompt Engineer' },
+    ]
+    const mergePreserve = [
+      ...companionOwn.map((seed) => ({ ...seed })),
+      ...presetRoles.map((preset) => ({ ...preset })),
+    ]
+    await service(ctx).declareSeeds(mergePreserve)
+
+    const seeds = gateway(ctx).get().seeds
+    expect(seeds).toHaveLength(presetRoles.length + companionOwn.length)
+    for (const preset of presetRoles) {
+      expect(seeds.find((seed) => seed.id === preset.id)).toEqual({
+        id: preset.id,
+        overridden: false,
+        source: 'bundled',
+      })
+    }
+    for (const seed of companionOwn) {
+      expect(seeds.find((entry) => entry.id === seed.id)).toEqual({
+        id: seed.id,
+        overridden: false,
+        source: 'external',
+      })
+    }
+    // The service readback agrees (single point of truth).
+    const roles = service(ctx).getEffectiveRoles().roles
+    for (const preset of presetRoles) {
+      expect(roles.find((role) => role.id === preset.id)).toMatchObject({ seeded: true, source: 'bundled' })
+    }
+    for (const seed of companionOwn) {
+      expect(roles.find((role) => role.id === seed.id)).toMatchObject({ seeded: true, source: 'external' })
+    }
+  })
+
+  it('qc2: a companion re-declaring a preset id with a different persona cannot rewrite the bundled row (F-001 fix)', async () => {
+    const ctx = await compose()
+    await vi.waitFor(() => {
+      expect(gateway(ctx).get().seeds).toHaveLength(presetRoles.length)
+    })
+    const task = presetRoles.find((preset) => preset.id === 'task')!
+
+    // Companion same-persona attach — quiet (bundled still wins the label).
+    await service(ctx).declareSeeds([{ id: 'task', persona: task.persona }])
+    // Companion re-declares task with a DIFFERENT persona — bundled still
+    // wins, so the row must stay at the bundled default (F-001 fix: a
+    // non-winning producer never rewrites the row).
+    await service(ctx).declareSeeds([{ id: 'task', persona: 'Companion Task' }])
+
+    const rows = gateway(ctx).get().config.roles.list
+    expect(rows.find((row) => row.id === 'task')!.persona).toBe(task.persona)
+    expect(gateway(ctx).get().seeds.find((seed) => seed.id === 'task')).toEqual({
+      id: 'task',
+      overridden: false,
+      source: 'bundled',
+    })
+    expect(service(ctx).getEffectiveRoles().roles.find((role) => role.id === 'task')).toMatchObject({
+      persona: task.persona,
+      seeded: true,
+      source: 'bundled',
+      seedPersona: task.persona,
+      personaOverridden: false,
+    })
+  })
 })
