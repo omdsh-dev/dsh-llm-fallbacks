@@ -27,7 +27,7 @@ validateFallbacksConfig(config, logger)
 
 | Export | Description |
 |---|---|
-| `resolveRole(agent, rules, roleIds, warn?)` | Matches `roles.rules` in `origin`/`provider`/`model` order and returns the matched role id; returns the built-in `'inherit'` when no rule matches or a referenced role is undeclared. |
+| `resolveRole(agent, rules, roleIds, warn?, servedRoute?)` | Matches `roles.rules` in `origin`/`provider`/`model` order and returns the matched role id; returns the built-in `'inherit'` when no rule matches or a referenced role is undeclared. `servedRoute` is the optional route the request was **actually served by** (omitted by every non-virtual caller, which leaves the behavior unchanged); when it is present a rule matches if it matches **either whole pair** — the recorded one or the served one, never a mix of the two — so a rule keyed on the real chain head keeps matching for a delegated child whose recorded pair is the virtual `FallbacksChain/Auto` row. |
 | `resolveCandidate(entry, failing, modelExists?)` | Resolves a single chain entry into a candidate; `provider/*` wildcards expand to the failing models; returns `null` for invalid entries or failed existence probes. |
 | `resolveChainViews(roles, rootChain, role, provider, model, warn?)` | Single-pass resolution of a role's concatenated chain, returning the unfiltered candidate views `{ all, wildcard }` (`wildcard[i]` marks whether candidate `all[i]` came from a wildcard entry). |
 | `selectCandidates(all, wildcard, filter?, modelExists?)` | Applies the filter and existence probes to the candidate views, returning the list of surviving candidates. |
