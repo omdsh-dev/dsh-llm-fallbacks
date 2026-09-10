@@ -498,6 +498,22 @@ describe('decodeRows', () => {
     expect(rows).toHaveLength(2)
   })
 
+  it('reassembles a line split across a frame boundary', () => {
+    // Frames are consumed one at a time (nothing joins them first), so a line that
+    // straddles two frames must still parse as exactly one row.
+    const rows = decodeRows([
+      '{"type":"session","version":0,"id":"sess',
+      'ion-x"}\n{"type":"turn/start","seq":1}\n{"type":"turn/',
+      'end","seq":2}\n',
+    ])
+
+    expect(rows).toEqual([
+      { seq: 0, type: 'session', version: 0, id: 'session-x' },
+      { type: 'turn/start', seq: 1 },
+      { type: 'turn/end', seq: 2 },
+    ])
+  })
+
   it('fails loudly on a malformed row instead of truncating the log', () => {
     expect(() => decodeRows(['{"type":"session","version":0,"id":"session-x"}\n', 'not json\n'])).toThrow(/row 2 is not JSON/)
     expect(() => decodeRows(['{"type":"session","version":0,"id":"session-x"}\n', '[1,2]\n'])).toThrow(

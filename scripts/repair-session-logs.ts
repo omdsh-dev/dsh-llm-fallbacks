@@ -528,12 +528,18 @@ async function readableDirectoryProblem(dir: string): Promise<string | null> {
  * row fails loudly (the log is then reported as `decompress-failed`, never
  * silently truncated).
  *
+ * Frames are consumed one at a time from ANY iterable (the publisher's decoder is
+ * a generator), so a session's whole plaintext is never materialized — neither as
+ * one joined string nor as the split array of every line. A line split across two
+ * frames is reassembled exactly like concatenating the frames first would, so the
+ * framing stays irrelevant to the row stream.
+ *
  * @param frames decoded frame plaintexts, in file order.
  */
-export function decodeRows(frames: readonly string[]): ParsedRow[] {
+export function decodeRows(frames: Iterable<string>): ParsedRow[] {
   const rows: ParsedRow[] = []
-  for (const line of frames.join('').split('\n')) {
-    if (line.length === 0) continue
+  const push = (line: string): void => {
+    if (line.length === 0) return
     let record: unknown
     try {
       record = JSON.parse(line)
@@ -545,13 +551,29 @@ export function decodeRows(frames: readonly string[]): ParsedRow[] {
     }
     if (rows.length === 0) {
       rows.push({ seq: 0, ...(record as Record<string, unknown>) } as unknown as ParsedRow)
-      continue
+      return
     }
     if (typeof (record as Record<string, unknown>)['type'] !== 'string') {
       throw new Error(`row ${rows.length + 1} has no string "type"`)
     }
     rows.push(record as unknown as ParsedRow)
   }
+  // One frame's plaintext at a time: only the current line and the current frame
+  // are alive, and the frame's last (possibly partial) line is carried into the
+  // next frame so a line split across a frame boundary still parses.
+  let pending = ''
+  for (const frame of frames) {
+    const text = pending === '' ? frame : pending + frame
+    let start = 0
+    for (;;) {
+      const end = text.indexOf('\n', start)
+      if (end < 0) break
+      push(text.slice(start, end))
+      start = end + 1
+    }
+    pending = text.slice(start)
+  }
+  push(pending)
   if (rows.length === 0) throw new Error('the log carries no JSONL record')
   return rows
 }
@@ -796,7 +818,13 @@ interface InspectContext {
    * cannot import this statically). One implementation — no local copy here.
    */
   successorFilename(version: number): string
-  decodeZstdFrames(bytes: Buffer): string[]
+  /**
+   * The publisher's frame decoder, one frame's plaintext at a time (`decodeRows`
+   * consumes it lazily, so a log's whole plaintext is never materialized). Typed as
+   * an iterable — not `string[]` — on purpose: the array form would defeat exactly
+   * that.
+   */
+  decodeFrameTexts(bytes: Buffer): Iterable<string>
   publishSuccessor: (
     logPath: string,
     rows: readonly ParsedRow[],
@@ -1044,7 +1072,7 @@ async function analyzeLog(candidate: LogGeneration, context: InspectContext): Pr
     // successor from any other revision (C-2): decoding and publishing must be
     // about the same bytes.
     sourceDigest = sha256(sourceBytes)
-    rows = decodeRows(context.decodeZstdFrames(sourceBytes))
+    rows = decodeRows(context.decodeFrameTexts(sourceBytes))
   } catch (error) {
     return {
       ...base,
@@ -1322,7 +1350,7 @@ async function analyzeLog(candidate: LogGeneration, context: InspectContext): Pr
  */
 async function classifyFile(path: string, context: InspectContext): Promise<RefusalClass> {
   try {
-    const rows = decodeRows(context.decodeZstdFrames(await readFile(path)))
+    const rows = decodeRows(context.decodeFrameTexts(await readFile(path)))
     // The report's structural pass uses the RUN'S policy rules (not the default
     // registry): an existing successor is judged by the same rule set this run was
     // invoked with. The catalog-null arm is DEFENSIVE — this function's only call
@@ -1447,7 +1475,7 @@ export async function runRepair(
     dropLegacyEvents: options.dropLegacyEvents,
     catalog,
     successorFilename: publishing.successorFilename,
-    decodeZstdFrames: publishing.decodeZstdFrames,
+    decodeFrameTexts: publishing.decodeZstdFrameTexts,
     publishSuccessor: publishing.publishSuccessor,
     stalePublicationPath: (error) =>
       error instanceof publishing.PublishedFromStaleSourceError ? error.successorPath : null,
