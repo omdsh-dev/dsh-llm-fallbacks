@@ -266,7 +266,7 @@ function withoutRoleAutoMatch(config: typeof defaultFallbacksConfig): typeof def
 
 /**
  * A two-block config (spec §8) exercising every new editing surface: a
- * CONFORMING all-day rootChain (official V4 head — the 默认模型 panel),
+ * CONFORMING all-day rootChain (official Flash head — the 默认模型 panel),
  * two declared role entities (one `inherit-root`, one
  * `fallback: none` — both with their own chains so the draft is save-valid
  * under the role model-config rule, plan fallbacks-feedback-round T2), and
