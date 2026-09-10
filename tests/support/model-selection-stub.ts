@@ -1,132 +1,50 @@
 /**
- * In-test semantic double for `installModelSelection`
- * (`@deepseek-ai/dsh-agent/model-selection`). Mirrors the REAL host
- * listener's `agent/request` contract (packages/core/agent/src/model-selection.ts):
- * `await next()`, then apply the assembled selection on top of the resolved
- * config, dropping any inherited `reasoningEffort` (the
- * `withoutInheritedEffort` pattern). It is the host-NATIVE double — the
- * fallback-routing marker check that used to live here (spec §2.5 D-1,
- * local dsh-agent patch) is gone with the patch removal (plan
- * llm-fallbacks-runtime-depatch, T2).
+ * In-test registration seam for the host's `installModelSelection`
+ * (`@deepseek-ai/dsh-agent/model-selection`).
  *
- * The `agent/pre-step` notice listener is part of the double (plan
- * model-change-notice-loop Task 4). Omitting it is what kept this suite green
- * while production injected a durable `[model changed: …]` notice on every
- * admitted step (evidence E21): the double mirrored only `agent/request`, so
- * nothing here ever dispatched the listener that does the comparing. It
- * mirrors `@deepseek-ai/dsh-agent/lib/types/model-selection.js:77-89` verbatim
- * — the `sameRoute(selection.assembled, requestHeader().config)` comparison,
- * the empty-decision carve-out, and `{ prepend: true }` (the real listener sits
- * at the FRONT of the waterfall) — so the double appends a notice exactly when
- * the real listener would. A route that permanently disagrees with the
- * selection (a plugin rewriting the request away from the selected pair)
- * therefore re-arms the notice on every step here too.
+ * **The real host implementation is registered here — nothing is mirrored.**
+ * A hand copy lived here until plan `model-change-notice-loop` QC1 I-2: the
+ * repo's own policy is that the real `@deepseek-ai/dsh-agent` module is the only
+ * truth (`tests/host-native.spec.ts`), the function is a public root export
+ * (`@deepseek-ai/dsh-agent/lib/index.js`, re-exported by
+ * `lib/types/index.d.ts`), and a copy is exactly the failure mode this suite
+ * already paid for once — Task 4 had to *add* the omitted `agent/pre-step`
+ * notice listener because the copy mirrored only `agent/request`, which is why
+ * the suite stayed green while production injected a durable
+ * `[model changed: …]` notice on every admitted step (evidence E21). With the
+ * copy gone, any upstream change to the listener, its comparison, or its
+ * guards reaches this suite automatically (the plan's deferred upstream fix,
+ * residual R-001, can no longer flip real behavior while the suite stays green).
  *
- * The real one registers on an agent-scoped context; the double registers on
- * the shared test context — waterfall registration order is exactly what the
- * composition tests assert (cordis: first-registered listener = outer =
+ * Registering the real function also installs its `system-prompt/assemble`
+ * listener. That listener writes `selection.assembled` from `selection.current`
+ * during prompt assembly; the shared test harness never dispatches
+ * `system-prompt/assemble`, so a test that hand-sets `assembled` (the
+ * composition-order cases) keeps full control of the captured selection while
+ * the assemble arm stays real and inert. A test that wants the assemble arm to
+ * run seeds `selection.current` and dispatches the event itself.
+ *
+ * The real function registers on an agent-scoped context; this seam registers
+ * it on the shared test context — waterfall registration order is exactly what
+ * the composition tests assert (cordis: first-registered listener = outer =
  * final say after `next()`), so the shared context is the right seam.
  *
  * @module tests/support/model-selection-stub
  */
 
 import type { Context } from '@deepseek-ai/cordis'
-import { boundContextSummary, createUserMessage } from '@deepseek-ai/dsh-llm'
-import type { LlmCallConfig, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
+import { installModelSelection } from '@deepseek-ai/dsh-agent'
+import type { ModelSelection, ModelSelectionRef } from '@deepseek-ai/dsh-agent'
 
-/** Complete provider, model, and optional reasoning effort selected for one live Agent. */
-export interface ModelSelection {
-  provider: string
-  model: string
-  reasoningEffort?: ReasoningEffortId
-}
-
-/** Mutable model selection plus the value captured for the current step. */
-export interface ModelSelectionRef {
-  /** Model selected for the next step that enters prompt assembly. */
-  current: ModelSelection | undefined
-  /** Selection captured when the current step entered prompt assembly. */
-  assembled: ModelSelection | undefined
-}
-
-/** One route pair the notice comparison reads — a selection or a logged request header. */
-interface Route {
-  provider: string
-  model: string
-}
-
-/** Host `sameRoute` (`model-selection.js:6-8`). */
-function sameRoute(left: Route, right: Route): boolean {
-  return left.provider === right.provider && left.model === right.model
-}
+export type { ModelSelection, ModelSelectionRef }
 
 /**
- * Host `routeLabel` (`model-selection.js:9-11`): a route is named by provider
- * ONLY when the two routes cross providers, so a same-provider change reads as
- * `deepseek-flash → deepseek-pro` and a cross-provider one as
- * `deepseek-official/deepseek-flash → FallbacksChain/Auto`.
- */
-function routeLabel(route: Route, other: Route): string {
-  return route.provider === other.provider ? route.model : `${route.provider}/${route.model}`
-}
-
-/**
- * Host `modelSwitchNotice` (`model-selection.js:12-27`) — the durable user-role
- * notice, source block included (`plugin: 'model-selection'`, `form: 'notice'`,
- * the bounded `from → to` summary the GUI renders as the injection chip).
- */
-function modelSwitchNotice(previous: Route, selected: Route) {
-  const from = routeLabel(previous, selected)
-  const to = routeLabel(selected, previous)
-  return createUserMessage({
-    content: [{
-      type: 'text',
-      text: `[model changed: assistant turns above this point were generated by ${from}; the session continues with ${to}]`,
-    }],
-    source: {
-      kind: 'plugin',
-      plugin: 'model-selection',
-      form: 'notice',
-      summary: boundContextSummary(`${from} → ${to}`),
-    },
-  })
-}
-
-/**
- * Install the model-selection double: the host's `agent/request` listener that
- * applies `selection.assembled` on top of the resolved config whenever one
- * exists — unconditionally, exactly like the host-native listener — plus the
- * host's `agent/pre-step` notice listener. Under an active selection the
- * `agent/request` re-apply clobbers an inner plugin's switch override (the
- * documented degradation); when the plugin's listener is outer, the plugin
- * applies its switch AFTER this listener's re-apply, so the switch wins.
- * @returns the disposer (listeners also die with the context fiber).
+ * Register the REAL host `installModelSelection` on `ctx`.
+ *
+ * @param ctx - the context to register on (the shared test context).
+ * @param selection - the mutable selection the host listeners read.
+ * @returns the host disposer (the listeners also die with the context fiber).
  */
 export function installModelSelectionStub(ctx: Context, selection: ModelSelectionRef): () => void {
-  const disposeRequest = ctx.on('agent/request', async (_payload, next): Promise<LlmCallConfig> => {
-    const resolved = await next()
-    const selected = selection.assembled
-    if (selected === undefined) return resolved
-    const { reasoningEffort: _inheritedEffort, ...withoutInheritedEffort } = resolved
-    return {
-      ...withoutInheritedEffort,
-      provider: selected.provider,
-      model: selected.model,
-      ...(selected.reasoningEffort === undefined ? {} : { reasoningEffort: selected.reasoningEffort }),
-    }
-  })
-  const disposeNotice = ctx.on('agent/pre-step', async ({ agent, messages, signal, step }, next) => {
-    const decision = await next()
-    if (decision.kind === 'reject' || signal.aborted) return decision
-    // The loop skips an empty first step and an emptied offered continuation.
-    if (decision.messages.length === 0 && (step === 1 || messages.length > 0)) return decision
-    const selected = selection.assembled
-    const previous = agent.session.requestHeader()?.config
-    if (selected === undefined || previous === undefined || sameRoute(selected, previous)) return decision
-    return { ...decision, messages: [...decision.messages, modelSwitchNotice(previous, selected)] }
-  }, { prepend: true })
-  return () => {
-    disposeRequest()
-    disposeNotice()
-  }
+  return installModelSelection(ctx, selection)
 }
