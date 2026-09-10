@@ -7,6 +7,7 @@
  * head-delegate through the host LLM runtime, gated on a conforming
  * all-day; `resolveModel` proxies the current effective head with a
  * permissive fallback; `imageRequestPricing` delegates to the SAME head,
+ * never throwing; `providerRetryPolicy` mirrors the head's captured policy,
  * never throwing).
  *
  * Runs against the REAL `LlmRuntime` (`@deepseek-ai/dsh-llm`) with a stub
@@ -23,6 +24,7 @@ import {
   type GenerateOptions,
   type LlmImageRequestPricing,
   type LlmResolvedModelInfo,
+  type ResolvedRetryPolicy,
   type StreamChunk,
 } from '@deepseek-ai/dsh-llm'
 import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
@@ -40,7 +42,7 @@ import {
 } from '../src/virtual-adapter.ts'
 import { FALLBACKS_SETTINGS_NAMESPACE } from '../src/gateway.ts'
 import { MemorySettings } from './support/memory-settings.ts'
-import { cfg, dispatchRequest, makeAgent } from './support/harness.ts'
+import { alwaysPolicy, cfg, dispatchRequest, makeAgent } from './support/harness.ts'
 
 const HEAD_PROVIDER = 'deepseek-official'
 const HEAD_MODEL = 'deepseek-flash'
@@ -67,6 +69,8 @@ class StubHeadAdapter extends LlmAdapter {
   readonly pricingCalls: Array<{ provider: string; model: string }> = []
   /** Route pricing served for the head pair; `undefined` declares none (the base default). */
   pricing: LlmImageRequestPricing | undefined
+  /** Route retry policy declared for the head; `undefined` declares none (the base default). */
+  policy: ResolvedRetryPolicy | undefined
 
   constructor(public info: Partial<LlmResolvedModelInfo> = {}) {
     super()
@@ -89,6 +93,10 @@ class StubHeadAdapter extends LlmAdapter {
     return this.pricing
   }
 
+  override providerRetryPolicy(): ResolvedRetryPolicy | undefined {
+    return this.policy
+  }
+
   override async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
     this.calls.push({ provider: options.provider, model: options.model, options })
     yield { type: 'text-delta', index: 0, text: 'hello from head' }
@@ -105,7 +113,12 @@ async function collect(stream: AsyncIterable<StreamChunk>): Promise<StreamChunk[
 
 /** Whether the virtual route is currently registered on the real runtime. */
 function listed(): boolean {
-  return ctx.llm.listProviders().some((provider) => provider.id === FALLBACKS_PROVIDER)
+  return listedOn(ctx)
+}
+
+/** {@link listed} for a locally constructed runtime (fixture-free arms). */
+function listedOn(target: Context): boolean {
+  return target.llm.listProviders().some((provider) => provider.id === FALLBACKS_PROVIDER)
 }
 
 let ctx: Context
@@ -527,5 +540,100 @@ describe('imageRequestPricing (0.1.2 adoption)', () => {
     apply(ctx, cfg({ rootChain: [] }))
     await vi.waitFor(() => expect(listed()).toBe(true))
     expect(ctx.llm.imageRequestPricing(FALLBACKS_PROVIDER, FALLBACKS_CHAIN_MODEL)).toBeUndefined()
+  })
+})
+
+/**
+ * Retry attribution (`dsh-llm` `prepareRoutes`): the host captures
+ * `adapter.providerRetryPolicy(provider) ?? resolveRetryPolicy(void 0, …)`
+ * ONCE, when a route is registered — so a virtual route declaring no policy
+ * of its own silently hands `FallbacksChain` the permissive normal default
+ * and drops the `retryPolicy` the user configured on the head actually served
+ * by the delegate. The proxy answers with the SAME captured object the head's
+ * own route returns; an unresolvable head answers `undefined` (the host
+ * default) rather than a fabricated policy — and never throws, because that
+ * throw happens INSIDE `registerAdapter` and would take the whole virtual
+ * route down.
+ */
+describe('providerRetryPolicy (route-accurate retry attribution)', () => {
+  /** Unmistakable head policy: `always` + a backoff the host default never has. */
+  const HEAD_POLICY: ResolvedRetryPolicy = alwaysPolicy({ initialDelayMs: 1234, maxDelayMs: 4321 })
+
+  it('reports the effective head policy, not the permissive default', async () => {
+    const local = new Context()
+    try {
+      new LlmRuntime(local)
+      const headStub = new StubHeadAdapter()
+      // Declared BEFORE the registration below — the host captures it there.
+      headStub.policy = HEAD_POLICY
+      local.llm.registerAdapter([HEAD_PROVIDER], headStub)
+      apply(local, cfg({ rootChain: [OFFICIAL_FLASH] }))
+      await vi.waitFor(() => expect(listedOn(local)).toBe(true))
+
+      const virtual = local.llm.providerRetryPolicy(FALLBACKS_PROVIDER)
+      // The head route's own captured object came back — identity, not a copy.
+      expect(virtual).toBe(local.llm.providerRetryPolicy(HEAD_PROVIDER))
+      expect(virtual).toMatchObject({ mode: 'always', initialDelayMs: 1234, maxDelayMs: 4321 })
+    } finally {
+      await local.fiber.dispose()
+    }
+  })
+
+  it('reports the runtime default when no head is dispatchable (head-gated, not policy-gated)', async () => {
+    // The head route DOES declare `always`, but this legacy non-conforming
+    // all-day chain resolves to no head at all — so the proxy answers
+    // `undefined` and the HOST resolves its own normal default. The head
+    // route's own `always` answer in the same runtime is what makes this arm
+    // discriminating: the proxy is gated on a dispatchable head, not a
+    // blanket echo of every policy the runtime happens to hold.
+    const local = new Context()
+    try {
+      new LlmRuntime(local)
+      const headStub = new StubHeadAdapter()
+      headStub.policy = HEAD_POLICY
+      local.llm.registerAdapter([HEAD_PROVIDER], headStub)
+      apply(local, cfg({ rootChain: ['other/gpt-4o', 'other/gpt-5'] }))
+      await vi.waitFor(() => expect(listedOn(local)).toBe(true))
+
+      expect(local.llm.providerRetryPolicy(HEAD_PROVIDER)).toMatchObject({ mode: 'always' })
+      expect(local.llm.providerRetryPolicy(FALLBACKS_PROVIDER)).toMatchObject({
+        mode: 'normal',
+        maxRetries: 5,
+        initialDelayMs: 500,
+        maxDelayMs: 10_000,
+        jitterRatio: 0.1,
+      })
+    } finally {
+      await local.fiber.dispose()
+    }
+  })
+
+  it('absorbs an unregistered head provider instead of failing registration', async () => {
+    // The chain resolves to a conforming head but no adapter owns that route,
+    // so the runtime's own lookup throws `NO_ADAPTER` — inside the plugin's
+    // `registerAdapter` call. Absorbing it is what keeps the row selectable.
+    const bare = new Context()
+    try {
+      new LlmRuntime(bare)
+      apply(bare, cfg({ rootChain: [OFFICIAL_FLASH] }))
+      await vi.waitFor(() => expect(listedOn(bare)).toBe(true))
+      expect(bare.llm.providerRetryPolicy(FALLBACKS_PROVIDER)).toMatchObject({ mode: 'normal', maxRetries: 5 })
+    } finally {
+      await bare.fiber.dispose()
+    }
+  })
+
+  it('answers undefined when the llm runtime is gone (mid-teardown guard)', () => {
+    // Direct construction: the registration lifecycle cannot reach a
+    // registered route whose `llm` vanished, so the guard is unit-tested on
+    // the class directly (mirrors the pricing guard above).
+    const config: FallbacksConfig = {
+      ...defaultFallbacksConfig,
+      enabled: true,
+      rootChain: [OFFICIAL_FLASH],
+      presets: 'none',
+    }
+    const adapter = new FallbacksChainAdapter(() => config, () => undefined)
+    expect(adapter.providerRetryPolicy(FALLBACKS_PROVIDER)).toBeUndefined()
   })
 })

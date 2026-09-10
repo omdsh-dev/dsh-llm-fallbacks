@@ -26,7 +26,9 @@
  * `agent/request-error`, where the existing engine walks from there).
  * `resolveModel` proxies the current effective head's metadata when
  * resolvable (modalities/context-window/reasoning follow the head) with a
- * permissive default otherwise — never throws.
+ * permissive default otherwise — never throws. `providerRetryPolicy` and
+ * `imageRequestPricing` mirror the same head for the host-captured retry
+ * policy and the token meter — also never throwing.
  *
  * @module dsh-llm-fallbacks/virtual-adapter
  */
@@ -40,6 +42,7 @@ import {
   type LlmModelInfo,
   type LlmResolvedModelInfo,
   type LlmRuntime,
+  type ResolvedRetryPolicy,
   type StreamChunk,
 } from '@deepseek-ai/dsh-llm'
 import type { FallbacksConfig } from './config.ts'
@@ -226,6 +229,36 @@ export class FallbacksChainAdapter extends LlmAdapter {
       }
     }
     return { provider, id: model, name: model }
+  }
+
+  /**
+   * Route-accurate retry attribution: the virtual row declares no policy of
+   * its own — the virtual `provider` argument is intentionally ignored. The
+   * host captures `adapter.providerRetryPolicy(provider) ??
+   * resolveRetryPolicy(void 0, …)` ONCE, when a route is registered, so
+   * answering here with the SAME policy the concrete head route declared
+   * (e.g. a user's `llm-deepseek.retryPolicy`, including `mode: 'always'`)
+   * keeps retries behaving exactly as they do on the head `stream()`
+   * dispatches. Never throws: an unresolvable head, a vanished `llm`, or an
+   * unregistered head provider degrades to `undefined` — the host's own
+   * default. That last arm matters: the runtime's lookup THROWS `NO_ADAPTER`
+   * for an unknown provider, and this call happens inside the plugin's
+   * `registerAdapter`, so an escaping throw would take the whole virtual
+   * route down instead of just degrading its policy.
+   */
+  override providerRetryPolicy(_provider: string): ResolvedRetryPolicy | undefined {
+    try {
+      const head = effectiveHeadOf(this.readConfig(), new Date())
+      // Defensive recursion guard (mirroring imageRequestPricing):
+      // `effectiveHeadOf` already refuses self-routes, so a
+      // `FallbacksChain/*` head is impossible — assert it anyway so a future
+      // resolution change can never re-enter the virtual adapter's own
+      // registration.
+      if (head === undefined || head.provider === FALLBACKS_PROVIDER) return undefined
+      return this.getLlm()?.providerRetryPolicy(head.provider)
+    } catch {
+      return undefined // unknown provider route → the host's own default
+    }
   }
 
   /**
