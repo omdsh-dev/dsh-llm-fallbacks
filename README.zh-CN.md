@@ -108,7 +108,7 @@ fallbacks:
 
 **2. 配置全时段 `rootChain`。** 前面的条目是降级链，请求失败时先走；**最后**一项是默认模型。
 
-> **链尾合规**：最后一项必须是恰好一个官方模型——`deepseek-official/deepseek-flash` 或 `deepseek-official/deepseek-pro`（二选一）。设置卡与 gateway 在保存时拒绝其它尾巴；遗留的非合规尾巴启动时告警并继续按 fallback-only 走原链，但无法原样保存。已退役的 `deepseek-v4-flash` / `deepseek-v4-pro` 不再是合法链尾——已保存的 V4 尾巴现在会告警、进入惰性（分时行 + 虚拟选择器）、并在选到合法链尾前阻止保存。`deepseek-pro` 是合法选择器但其模型尚未进入目录：设置卡中显示为禁用（「暂不可用」），请求在 gateway 启用该 id 前会失败；仅含 `deepseek-pro` 的链没有可派发链头（虚拟行覆盖会告警拒绝——前面有可用条目的链仍可覆盖）。
+> **链尾合规**：最后一项必须是恰好一个官方模型——`deepseek-official/deepseek-flash` 或 `deepseek-official/deepseek-pro`（二选一）。设置卡与 gateway 在保存时拒绝其它尾巴；遗留的非合规尾巴启动时告警并继续按 fallback-only 走原链，但无法原样保存。已退役的 `deepseek-v4-flash` / `deepseek-v4-pro` 不再是合法链尾——已保存的 V4 尾巴现在会告警、进入惰性（分时行 + 虚拟选择器）、并在选到合法链尾前阻止保存。`deepseek-pro` 是合法选择器但其模型尚未进入目录：设置卡中显示为禁用（「暂不可用」），请求在 gateway 启用该 id 前会在 provider 处失败。插件不探测目录可用性——含 `deepseek-pro` 的链会像其它精确条目一样派发到它；覆盖解析生效链的第一个精确链头，因此 Pro 之前有可用条目的链仍路由到更早的条目。
 
 **3. 添加 `timeSlots`（可选）。** 各行按墙钟窗口轮换生效 root 链。预设行使用冻结的 UTC+8 窗口（仅链可编辑；存在预设行时 `tz` 锁定 `Asia/Shanghai`）；自定义行使用 `start`/`end`（可跨午夜）与可选的 `days` 列表。第一个窗口包含当前时刻的行生效；无行命中 → 全时段 `rootChain`。分时切换是路由种子——在下一个 root 请求生效、不消耗冷却（见 [峰谷无忧](#峰谷无忧)）。
 
