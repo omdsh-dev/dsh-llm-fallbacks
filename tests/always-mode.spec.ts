@@ -18,7 +18,10 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import type { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
-import { apply } from '../src/index.ts'
+import { apply, stateStore } from '../src/index.ts'
+import { FALLBACKS_CHAIN_MODEL, FALLBACKS_PROVIDER } from '../src/virtual-adapter.ts'
+import { OFFICIAL_FLASH } from '../src/time-slots.ts'
+import { selectorKey } from '../src/selectors.ts'
 import { MemorySettings } from './support/memory-settings.ts'
 import { installLlmRetryStub } from './support/llm-retry-stub.ts'
 import {
@@ -155,5 +158,56 @@ describe('always-mode cap at the agent/request boundary (spec §2 clause 5 / ADR
     expect(llmRetryEvents(agent).every((event) => event.data.mode === 'always')).toBe(true)
     // Stop-write: the end-to-end cap switch applies but no durable event is written.
     expect(switchEvents(agent)).toHaveLength(0)
+  })
+})
+
+/**
+ * Plan model-change-notice-loop Task 2 follow-up (implementer concern C-1):
+ * the always-cap caller must start its walk at the head the virtual picker row
+ * was SERVED by, exactly like the trigger-code caller does.
+ *
+ * Post-T1 a root-origin `FallbacksChain/Auto` seed is served unchanged, so the
+ * loop records the virtual pair while `FallbacksChainAdapter.stream()` really
+ * dispatches the effective chain's first dispatchable exact head. A cap-tripped
+ * decision handed the raw seed pair would therefore commit
+ * `FallbacksChain/Auto → <head>` — "switching" straight back into the route
+ * that was just being retried — and would key the cooldown / step-failed
+ * bookkeeping on the picker key instead of the failing route (plan Decision 3).
+ */
+describe('always-mode cap anchored at the served head (root virtual route)', () => {
+  /** The virtual picker row as a request seed (exact strings, spec lock). */
+  const virtualSeed = { provider: FALLBACKS_PROVIDER, model: FALLBACKS_CHAIN_MODEL }
+
+  it('starts a cap-tripped walk at the served head and keeps the picker key out of the bookkeeping', async () => {
+    const { agent } = makeAgent('cap-anchor', { provider: 'mock', model: 'gpt-4o' }, { origin: 'root' })
+    // A conforming all-day chain (official tail) whose first dispatchable exact
+    // head is a real route: the adapter serves the virtual row from there, and
+    // the walk has a target past it.
+    apply(ctx, cfg({
+      rootChain: ['anthropic/claude-sonnet-4', 'openai/gpt-4o', OFFICIAL_FLASH],
+      alwaysModeRetryCap: 3,
+    }))
+
+    // The virtual row is served unchanged, so llm-retry accounts its retries to
+    // the served route — which post-T1 IS the virtual pair.
+    expect(await dispatchRequest(ctx, agent, virtualSeed)).toEqual(virtualSeed)
+
+    for (let retry = 1; retry <= 3; retry += 1) {
+      appendLlmRetry(agent, { turn: 1, step: 1, provider: FALLBACKS_PROVIDER, mode: 'always', retry })
+    }
+
+    // Cap tripped: the walk must move PAST the served head, not re-target it.
+    expect(await dispatchRequest(ctx, agent, virtualSeed)).toEqual({ provider: 'openai', model: 'gpt-4o' })
+
+    const state = stateStore(ctx)?.peek(agent.id)
+    // Route-scoped bookkeeping belongs to the route the walk STARTED at — the
+    // head the virtual row was served by. (The cap applies its pending switch
+    // inside the same call, so the surviving evidence of `from` is the cooldown
+    // / step-failed keys `commit` wrote for it; pre-fix both landed on the
+    // picker key and neither landed on the head.)
+    expect(state?.cooldown.peek('anthropic/claude-sonnet-4')).toBeDefined()
+    expect(state?.cooldown.peek(selectorKey(FALLBACKS_PROVIDER, FALLBACKS_CHAIN_MODEL))).toBeUndefined()
+    expect(state?.stepFailures.failed.has('anthropic/claude-sonnet-4')).toBe(true)
+    expect(state?.stepFailures.failed.has(selectorKey(FALLBACKS_PROVIDER, FALLBACKS_CHAIN_MODEL))).toBe(false)
   })
 })

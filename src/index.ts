@@ -1508,11 +1508,20 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
       // grown when the decision actually commits (F-004: a null decision —
       // e.g. all candidates filtered — leaves no entry behind).
       const decisionState = states.peek(agent.id)
+      // Same anchor as the trigger-code caller (T2): on a root-origin virtual
+      // route the loop hands this listener the picker pair while the delegate
+      // dispatched the effective chain's head, so the walk must START there —
+      // anchored on the picker pair it would commit `FallbacksChain/Auto →
+      // <head>` ("switching" back into the route the cap just kept retrying)
+      // and key the cooldown / step-failed bookkeeping on the picker key
+      // (plan Decision 3). Resolved ONCE and shared with the half-open probe
+      // below, so a slot boundary inside this branch cannot name two heads.
+      const capRoute = anchorServedRoute(config, { provider: seed.provider, model: seed.model }, new Date())
       const pending = await decide(
         agent,
         turn,
         step,
-        { provider: seed.provider, model: seed.model },
+        capRoute,
         'always-cap',
         decisionState,
       )
@@ -1525,7 +1534,7 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
           return overrideConfig(seed, appliedCap.to)
         }
       } else {
-        failHalfOpenProbe(agent.id, { provider: seed.provider, model: seed.model })
+        failHalfOpenProbe(agent.id, capRoute)
       }
     }
     return seed
