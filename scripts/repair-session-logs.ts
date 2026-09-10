@@ -18,7 +18,31 @@
  *
  * USAGE (via the `repair:session-logs` npm script):
  *   pnpm repair:session-logs -- [--root DIR] [--apply] [--class NAME]
- *                              [--catalog PATH] [--backup] [--json] [--quiet]
+ *                              [--catalog PATH] [--backup] [--drop-legacy-events]
+ *                              [--json] [--quiet]
+ *
+ * LOSSY MODE (`--drop-legacy-events`, off by default): the legacy
+ * `fallbacks/switch` event type this repo's own pre-`#52` plugin wrote is refused
+ * by the frozen V0→V1 edge even with `ignorable: true`, so no rewrite can make
+ * such a row load — the row can only be removed, which loses the provider/model
+ * switch audit entry it carries. That removal is the ONLY lossy operation this
+ * tool can perform, it needs the explicit opt-in, and `--apply` with it REQUIRES
+ * `--backup` (the original generation is the only copy of the dropped rows once
+ * a successor is published). A row of any other unknown event type is never
+ * dropped: such a log stays unrepairable. The run reports the dropped-event count
+ * per log (`droppedEventCount` in `--json`) and warns loudly on stderr; the
+ * post-drop restore and the published read-back are still the proof of success.
+ *
+ * WHAT THE DROP CAN AND CANNOT FIX: the same V0→V1 edge requires every event's
+ * `seq` to equal its running event count, so removing a row is loadable only when
+ * the removed rows are the LAST events of the generation — a legacy row in the
+ * middle leaves the survivors with a gap (`expected N, got N+1`) and the
+ * pre-write proof refuses the log, writing nothing. That is the measured shape of
+ * every legacy-blocked log in this repository's own namespace (25/25 sit
+ * mid-sequence), so the flag is currently an opt-in that fails closed rather than
+ * a repair for them; closing that gap needs a seq-renumbering mechanism this tool
+ * deliberately does not have (it would rewrite survivors that `sourceEventSeqs`
+ * rows reference).
  *
  * DISCOVERY: `<root>/<namespace>/<session>/` — exactly two directory levels —
  * and inside each session directory the newest CANONICAL generation whose
@@ -54,8 +78,8 @@
  *
  * EXIT CODES: 0 = nothing refused, or every refusal repaired; 1 = completed with
  * at least one log still refused/unrepairable (or a repair failed); 2 = fatal
- * (bad arguments, missing `--root`, `--apply` without a resolved catalog, or a
- * runtime without zstd).
+ * (bad arguments, missing `--root`, `--apply` without a resolved catalog,
+ * `--apply --drop-legacy-events` without `--backup`, or a runtime without zstd).
  */
 import { constants as fsConstants } from 'node:fs'
 import { copyFile, readFile, readdir, stat } from 'node:fs/promises'
@@ -63,9 +87,9 @@ import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { classifyRows } from './session-logs/classify.ts'
-import { CATALOG_ENV_VAR, classifyWithCatalog, resolveCatalog } from './session-logs/catalog.ts'
+import { CATALOG_ENV_VAR, classifyWithCatalog, resolveCatalog, restoreRows } from './session-logs/catalog.ts'
 import type { CatalogHandle, CatalogResolvedBy } from './session-logs/catalog.ts'
-import { BUILT_IN_RULES } from './session-logs/rules.ts'
+import { BUILT_IN_RULES, dropLegacyEventsRule, droppedEventCount, fallbacksSwitchRule } from './session-logs/rules.ts'
 import type { Finding, LogRule, ParsedRow, RefusalClass } from './session-logs/rules.ts'
 
 /** Program name used in every diagnostic line. */
@@ -123,6 +147,13 @@ export interface CliOptions {
   catalogPath: string | undefined
   /** `--backup`: copy the original generation to `<name>.bak` before publishing. */
   backup: boolean
+  /**
+   * `--drop-legacy-events`: LOSSY recovery — remove the legacy
+   * `fallbacks/switch` rows instead of refusing the log (default: off). Report
+   * mode only counts what it would drop; `--apply` additionally requires
+   * `--backup`.
+   */
+  dropLegacyEvents: boolean
   /** `--json`: emit one machine-readable JSON document instead of the text report. */
   json: boolean
   /** `--quiet`: suppress the per-log lines and the by-class table. */
@@ -178,6 +209,7 @@ export function parseArgs(argv: readonly string[], env: NodeJS.ProcessEnv = proc
     classFilter: null,
     catalogPath: undefined,
     backup: false,
+    dropLegacyEvents: false,
     json: false,
     quiet: false,
   }
@@ -195,6 +227,9 @@ export function parseArgs(argv: readonly string[], env: NodeJS.ProcessEnv = proc
         break
       case '--backup':
         options.backup = true
+        break
+      case '--drop-legacy-events':
+        options.dropLegacyEvents = true
         break
       case '--json':
         options.json = true
@@ -401,6 +436,12 @@ export interface LogOutcome {
   detail: string
   /** Structural findings collected over the rows (may be empty). */
   findings: Finding[]
+  /**
+   * Legacy `fallbacks/switch` events this run removes (in apply mode, from the
+   * published successor) or would remove (report mode). Always `0` unless
+   * `--drop-legacy-events` is on — the default path is strictly non-lossy.
+   */
+  droppedEventCount: number
   /** Whether `--class` let this run repair this log. */
   selected: boolean
   /** Basename of the successor generation this run published, else `null`. */
@@ -437,10 +478,13 @@ export interface RunSummary {
   byClass: Record<RefusalClass, number>
 }
 
+/** Whether one run writes (`apply`) or only reports (`report`). */
+export type RunMode = 'report' | 'apply'
+
 /** Everything one run produced. */
 export interface RunResult {
   root: string
-  mode: 'report' | 'apply'
+  mode: RunMode
   classFilter: RefusalClass | null
   catalog:
     | { resolved: true; modulePath: string; resolvedBy: CatalogResolvedBy }
@@ -464,6 +508,9 @@ function messageOf(error: unknown): string {
  * This is the PROOF gate: the chain is all-or-nothing, so a single unprovable
  * finding refuses the whole log and nothing is ever published for it. The input
  * rows are never mutated (each rule returns a new array).
+ *
+ * The chain runs in report mode too (it writes nothing), which is what lets a
+ * dry run report the lossy drop count without touching a file.
  */
 function runProof(
   rows: readonly ParsedRow[],
@@ -485,7 +532,16 @@ interface InspectContext {
   apply: boolean
   backup: boolean
   classFilter: RefusalClass | null
+  /**
+   * Every rule this run's POLICY allows, unfiltered: the default registry, plus
+   * the opt-in lossy rule when `--drop-legacy-events` is on. The structural
+   * report pass uses this set (the report always covers every log, whatever
+   * `--class` selected).
+   */
+  reportRules: readonly LogRule[]
+  /** The rules the proof chain applies: `reportRules` narrowed by `--class`. */
   rules: readonly LogRule[]
+  dropLegacyEvents: boolean
   catalog: CatalogHandle | null
   decodeZstdFrames(bytes: Buffer): string[]
   publishSuccessor: (
@@ -510,6 +566,59 @@ async function writeBackup(logPath: string): Promise<string> {
   return backupPath
 }
 
+/** The lossy evidence one log's detail line carries, or `''` in the non-lossy path. */
+function lossyNote(count: number, applied: boolean): string {
+  if (count === 0) return ''
+  return applied
+    ? `; LOSSY: ${count} legacy fallbacks/switch event(s) removed from the published successor`
+    : `; LOSSY: ${count} legacy fallbacks/switch event(s) would be removed by --apply`
+}
+
+/**
+ * The lossy drop's own PRE-WRITE proof: nothing is trusted, least of all the
+ * count the chain reported.
+ *
+ *   (a) the reported count must be the number of PARSED legacy rows in the source
+ *       log AND the real row-count delta of the repair, and no parsed legacy row
+ *       may survive it. Byte-identity of every survivor is proven by the drop
+ *       rule itself, over the same unmodified input (the drop rule runs first in
+ *       a lossy chain) — see `legacyDropRefusal`;
+ *   (b) the repaired rows must restore through the released catalog under the
+ *       publisher's own STRICT policy, so a differently-unknown or unparseable
+ *       row cannot hide behind the drop.
+ *
+ * @returns the reason the drop must not be written, or `null` when it is proven.
+ */
+function lossyDropRefusal(
+  rows: readonly ParsedRow[],
+  repaired: readonly ParsedRow[],
+  reported: number,
+  catalog: CatalogHandle | null,
+): string | null {
+  const removable = dropLegacyEventsRule.detect(rows).length
+  if (reported !== removable) {
+    return `the reported dropped count ${reported} is not the ${removable} parsed legacy fallbacks/switch row(s) of the source log`
+  }
+  const delta = rows.length - repaired.length
+  if (delta !== removable) {
+    return `the repair removed ${delta} row(s), while the source log carries ${removable} parsed legacy fallbacks/switch row(s)`
+  }
+  if (dropLegacyEventsRule.detect(repaired).length !== 0) {
+    return 'a parsed legacy fallbacks/switch row survived the drop'
+  }
+  if (catalog === null) {
+    return 'no released catalog resolved, so the post-drop restore cannot be proven — pass --catalog '
+      + `(or set ${CATALOG_ENV_VAR}); nothing was written`
+  }
+  try {
+    restoreRows(catalog.catalog, repaired, { recovery: 'strict', validation: 'transformed' })
+  } catch (error) {
+    return 'the repaired rows do not restore through the released catalog '
+      + `(${messageOf(error)}), so a differently-unknown or unparseable row would remain; nothing was written`
+  }
+  return null
+}
+
 /** Classify one log, prove its repair, and publish it when `--apply` asks. */
 async function inspectLog(candidate: LogGeneration, context: InspectContext): Promise<LogOutcome> {
   const base = {
@@ -520,6 +629,7 @@ async function inspectLog(candidate: LogGeneration, context: InspectContext): Pr
     alreadyPublished: false,
     failed: false,
     findings: [] as Finding[],
+    droppedEventCount: 0,
   }
 
   let rows: ParsedRow[]
@@ -534,9 +644,9 @@ async function inspectLog(candidate: LogGeneration, context: InspectContext): Pr
     }
   }
 
-  // Structural pass over the FULL registry is the report's evidence even when
-  // the oracle (the released chain) is the authority on the class.
-  const structural = classifyRows(rows, BUILT_IN_RULES)
+  // Structural pass over the FULL policy rule set is the report's evidence even
+  // when the oracle (the released chain) is the authority on the class.
+  const structural = classifyRows(rows, context.reportRules)
   const refusal =
     context.catalog === null ? structural.class : classifyWithCatalog(rows, context.catalog)
 
@@ -544,7 +654,15 @@ async function inspectLog(candidate: LogGeneration, context: InspectContext): Pr
     return { ...base, class: 'ok', status: 'ok', detail: 'no refusal', findings: structural.findings }
   }
 
-  if (!REPAIRABLE_CLASSES.has(refusal)) {
+  // The lossy opt-in is the ONLY way `unknown-event-type` becomes repairable, and
+  // only for a log that actually carries a legacy row to remove: a log refused for
+  // any OTHER unknown event type keeps the fail-closed verdict, because no
+  // registered rule removes that row (and nothing may ever drop it).
+  const droppable = context.dropLegacyEvents ? dropLegacyEventsRule.detect(rows).length : 0
+  const repairableClass =
+    REPAIRABLE_CLASSES.has(refusal) || (refusal === 'unknown-event-type' && droppable > 0)
+
+  if (!repairableClass) {
     return {
       ...base,
       class: refusal,
@@ -561,6 +679,26 @@ async function inspectLog(candidate: LogGeneration, context: InspectContext): Pr
       class: refusal,
       status: 'unrepairable',
       detail: `${refusal}: the repair proof refused — ${proof.refused}`,
+      findings: structural.findings,
+    }
+  }
+
+  // Reported only when the run actually removes those rows from a published
+  // successor (apply) or would remove them from one (report): a repair that
+  // published nothing has dropped nothing.
+  const dropped = droppedEventCount(proof.findings)
+
+  // The lossy path's own PRE-WRITE proof. It gates BOTH modes, so a log whose drop
+  // would leave another unknown event type (or an unparseable row) behind is
+  // reported unrepairable instead of being repaired on hope; in apply mode nothing
+  // is written — not even the --backup copy — before it passes.
+  const lossyRefusal = dropped === 0 ? null : lossyDropRefusal(rows, proof.rows, dropped, context.catalog)
+  if (lossyRefusal !== null) {
+    return {
+      ...base,
+      class: refusal,
+      status: 'unrepairable',
+      detail: `${refusal}: the lossy drop was refused before any write — ${lossyRefusal}`,
       findings: structural.findings,
     }
   }
@@ -596,9 +734,12 @@ async function inspectLog(candidate: LogGeneration, context: InspectContext): Pr
       status: 'repairable',
       selected,
       alreadyPublished,
-      detail: alreadyPublished
-        ? `repairable; the successor ${String(expected)} is already published and loadable${successorNote}`
-        : `repairable; run with --apply to publish the successor generation${successorNote}`,
+      droppedEventCount: dropped,
+      detail: `${
+        alreadyPublished
+          ? `repairable; the successor ${String(expected)} is already published and loadable${successorNote}`
+          : `repairable; run with --apply to publish the successor generation${successorNote}`
+      }${lossyNote(dropped, false)}`,
       findings: structural.findings,
     }
   }
@@ -640,9 +781,12 @@ async function inspectLog(candidate: LogGeneration, context: InspectContext): Pr
       selected: true,
       published,
       alreadyPublished: existingSuccessor !== null,
-      detail: existingSuccessor !== null
-        ? `already published ${published} (verified byte-identical)`
-        : `published ${published}; read back through the catalog with validation: 'current'`,
+      droppedEventCount: dropped,
+      detail: `${
+        existingSuccessor !== null
+          ? `already published ${published} (verified byte-identical)`
+          : `published ${published}; read back through the catalog with validation: 'current'`
+      }${lossyNote(dropped, true)}`,
       findings: structural.findings,
     }
   } catch (error) {
@@ -693,16 +837,49 @@ async function isDirectory(path: string): Promise<boolean> {
 /* ------------------------------------------------------------------ */
 
 /**
+ * The rules one run's POLICY allows, in check order.
+ *
+ * The default is the strictly non-lossy registry. With `--drop-legacy-events` the
+ * never-repairable `fallbacks-switch` detector is REPLACED by the lossy
+ * `drop-legacy-events` rule: both cover exactly the legacy rows, one refuses what
+ * the other removes, and only one of them may sit in a chain.
+ *
+ * The drop rule runs FIRST so its input is the UNMODIFIED log: that is what lets
+ * the rule prove every survivor byte-identical to its source row (any later
+ * position would see the other rules' legitimate rewrites).
+ */
+function policyRules(dropLegacyEvents: boolean): readonly LogRule[] {
+  if (!dropLegacyEvents) return BUILT_IN_RULES
+  return [
+    dropLegacyEventsRule,
+    ...BUILT_IN_RULES.filter((rule) => rule.id !== fallbacksSwitchRule.id),
+  ]
+}
+
+/**
  * Do the work: resolve the oracle, triage every candidate, and publish when
  * `--apply` asks for it.
  *
  * @throws FatalError on a missing `--root`, a runtime without `node:zlib` zstd,
- *   or `--apply` without a resolved catalog (no write happens in those cases).
+ *   `--apply` without a resolved catalog, or `--apply --drop-legacy-events`
+ *   without `--backup` (no write happens in those cases).
  */
 export async function runRepair(
   options: CliOptions,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<RunResult> {
+  // The lossy opt-in is the one write that removes data from the readable
+  // session, so an `--apply` run must not proceed without a byte copy of the only
+  // generation that still holds those bytes. Checked before anything is read.
+  if (options.apply && options.dropLegacyEvents && !options.backup) {
+    throw new FatalError(
+      '--drop-legacy-events with --apply requires --backup: the dropped rows are the provider/model '
+      + 'switch audit trail of the session, and the original generation is the only place those bytes '
+      + 'survive. Re-run with --backup (the original is copied to <name>.bak before publication), or '
+      + 'drop --apply for a read-only report of what would be dropped.',
+    )
+  }
+
   if (!(await isDirectory(options.root))) {
     throw new FatalError(`--root directory not found: ${options.root}`)
   }
@@ -724,16 +901,19 @@ export async function runRepair(
     }
   }
 
+  const reportRules = policyRules(options.dropLegacyEvents)
   const rules =
     options.classFilter === null
-      ? BUILT_IN_RULES
-      : BUILT_IN_RULES.filter((rule) => rule.class === options.classFilter)
+      ? reportRules
+      : reportRules.filter((rule) => rule.class === options.classFilter)
   const candidates = await findGenerations(options.root)
   const context: InspectContext = {
     apply: options.apply,
     backup: options.backup,
     classFilter: options.classFilter,
+    reportRules,
     rules,
+    dropLegacyEvents: options.dropLegacyEvents,
     catalog,
     decodeZstdFrames: publishing.decodeZstdFrames,
     publishSuccessor: publishing.publishSuccessor,
@@ -811,11 +991,17 @@ export function consoleIO(): CliIO {
   }
 }
 
-/** The per-log status token: `ok`, the class, or `unrepairable`. */
-function token(log: LogOutcome): string {
+/**
+ * The per-log status token: `ok`, the class, `unrepairable`, or — when the lossy
+ * opt-in removes (or would remove) legacy events — a distinct `lossy` token.
+ */
+function token(log: LogOutcome, mode: RunMode): string {
   if (log.status === 'ok') return 'ok'
   if (log.status === 'unrepairable') return 'unrepairable'
-  return log.class
+  if (log.droppedEventCount === 0) return log.class
+  return mode === 'apply'
+    ? `repaired-lossy (${log.droppedEventCount} events dropped)`
+    : `lossy-repairable (${log.droppedEventCount} events to drop)`
 }
 
 /** The loud `--apply` precondition line (never suppressed, not even by --quiet). */
@@ -825,6 +1011,40 @@ export function preconditionNotice(): string {
     '!! The successor generation is linked beside the original WITHOUT observing the host flock lease,',
     "!! so a dsh that is still appending to the old generation would be orphaned once the host prefers",
     '!! the successor. Stop dsh first. Rollback = delete the successor generation (the original stays).',
+  ].join('\n')
+}
+
+/**
+ * The loud static data-loss warning for a lossy `--apply` run, printed BEFORE the
+ * run (never suppressed, not even by --quiet): the counts are only known once the
+ * logs are decoded, so they follow in {@link lossyResultNotice}.
+ */
+export function lossyApplyNotice(): string {
+  return [
+    '!! --drop-legacy-events is LOSSY: every published successor leaves out its legacy',
+    '!! fallbacks/switch events. Those rows are the provider/model switch audit trail of the',
+    '!! session. The original generation is never modified and --backup keeps a byte copy of it,',
+    '!! so the successor is the only readable generation that lacks them. An unknown event type of',
+    '!! any OTHER name is never dropped: such a log stays unrepairable and nothing is written for it.',
+  ].join('\n')
+}
+
+/**
+ * The count-bearing lossy report of one finished run, or `null` when this run
+ * drops nothing (every non-lossy run, and any lossy run that published nothing).
+ */
+export function lossyResultNotice(result: RunResult): string | null {
+  const logs = result.logs.filter((log) => log.droppedEventCount > 0)
+  if (logs.length === 0) return null
+  const dropped = logs.reduce((total, log) => total + log.droppedEventCount, 0)
+  const effect = result.mode === 'apply'
+    ? 'those audit rows are gone from the published successor(s); the original generations and their '
+      + '--backup copies keep the bytes'
+    : 'nothing was written: an --apply run with --backup is what removes them'
+  return [
+    `!! LOSSY: ${result.mode === 'apply' ? 'dropped' : 'would drop'} ${dropped} legacy fallbacks/switch `
+    + `event(s) in ${logs.length} log(s) —`,
+    `!! ${effect}.`,
   ].join('\n')
 }
 
@@ -851,7 +1071,7 @@ function reportText(result: RunResult, io: CliIO, quiet: boolean): void {
       io.out(`  no session log with a canonical generation below v${CURRENT_VERSION_FLOOR} under this root`)
     }
     for (const log of result.logs) {
-      io.out(`  ${token(log).padEnd(TOKEN_WIDTH)} ${log.path} (v${log.generation}): ${log.detail}`)
+      io.out(`  ${token(log, result.mode).padEnd(TOKEN_WIDTH)} ${log.path} (v${log.generation}): ${log.detail}`)
     }
     io.out('')
     io.out('class                        logs')
@@ -887,6 +1107,7 @@ export async function execute(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<number> {
   if (options.apply) io.err(preconditionNotice())
+  if (options.apply && options.dropLegacyEvents) io.err(lossyApplyNotice())
   let result: RunResult
   try {
     result = await runRepair(options, env)
@@ -899,6 +1120,8 @@ export async function execute(
   }
   if (options.json) reportJson(result, io)
   else reportText(result, io, options.quiet)
+  const lossy = lossyResultNotice(result)
+  if (lossy !== null) io.err(lossy)
   return result.exitCode
 }
 
@@ -909,7 +1132,8 @@ export async function execute(
 /** The full usage text (`--help`), including the `--apply` precondition. */
 export function usage(): string {
   return `usage: pnpm repair:session-logs -- [--root DIR] [--apply] [--class NAME]
-                         [--catalog PATH] [--backup] [--json] [--quiet]
+                         [--catalog PATH] [--backup] [--drop-legacy-events]
+                         [--json] [--quiet]
 
 Triage (default, read-only) and repair (--apply) pre-V3 dsh session logs. A log is
 refused when the FROZEN released migration chain cannot classify it; this tool names
@@ -933,6 +1157,21 @@ original generation is never modified and never truncated.
                  it, or its module entry file). Default resolution order:
                  $${CATALOG_ENV_VAR}, the dsh binary on PATH, newest ~/.npm/_npx install.
   --backup       copy the original generation to <name>.bak before publishing.
+  --drop-legacy-events
+                 LOSSY, off by default: remove the legacy fallbacks/switch rows (the
+                 provider/model switch audit trail this repo's own pre-#52 plugin wrote)
+                 instead of refusing the log. The frozen V0->V1 edge refuses that event
+                 type even with "ignorable: true", so no rewrite can keep it: removal is
+                 the only in-repo recovery, and the rows survive only in the original
+                 .zstd (hence the --backup requirement below). Report mode writes
+                 nothing and only counts what would be dropped; with --apply this flag
+                 REQUIRES --backup (exit 2 without it). An unknown event type of any
+                 other name is never dropped.
+                 LIMIT (measured): the same edge requires each event's seq to equal its
+                 running event count, so a removed row leaves a seq gap unless it is the
+                 LAST event of the generation. A mid-sequence legacy row therefore makes
+                 the run refuse the log and write nothing (the shape of every
+                 legacy-blocked log in this repo's own store).
   --json         emit one machine-readable JSON document instead of the text report.
   --quiet        suppress the per-log lines and the by-class table (the header and the
                  summary line still print; warnings and errors are never suppressed).
@@ -949,7 +1188,8 @@ engines.node allows >= 22); a runtime without it fails closed with exit 2.
 
 EXIT CODES: 0 = nothing refused, or every refusal repaired; 1 = completed with at least
 one log still refused/unrepairable (or a repair failed); 2 = fatal (bad arguments,
-missing --root, --apply without a resolved catalog, or a runtime without node:zlib zstd).`
+missing --root, --apply without a resolved catalog, --apply --drop-legacy-events without
+--backup, or a runtime without node:zlib zstd).`
 }
 
 /**

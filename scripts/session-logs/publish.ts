@@ -41,10 +41,10 @@
  *      policy classification uses records the first issue and drops the rows
  *      after it until a `turn/end` row surfaces it);
  *   5. write to a noncanonical temporary name, verify it by reading the frames
- *      back through the same catalog with `validation: 'current'` (the policy
- *      the host applies to a current generation), then publish it exclusively
- *      with `link` so an existing successor is never overwritten with different
- *      bytes;
+ *      back through the same catalog with `validation: 'current'` (STRONGER than
+ *      the host's own header restore, which runs `{ recovery: 'strict',
+ *      validation: 'transformed' }`), then publish it exclusively with `link` so
+ *      an existing successor is never overwritten with different bytes;
  *   6. remove the temporary and re-verify the original's sha256.
  * A failure at any step writes nothing canonical and removes the temporary.
  */
@@ -253,8 +253,11 @@ export async function publishSuccessor(
   )
 
   const temporaryPath = join(dirname(logPath), `session.repair.${randomBytes(6).toString('hex')}.jsonl.zstd.tmp`)
-  await writeFile(temporaryPath, bytes, { flag: 'wx', mode: 0o600 })
   try {
+    // Inside the guarded region: a failure MID-write (ENOSPC, quota, a killed
+    // process) leaves a truncated temporary behind, and the cleanup below is what
+    // guarantees no `.tmp` is ever stranded.
+    await writeFile(temporaryPath, bytes, { flag: 'wx', mode: 0o600 })
     // Read the staged generation back with the host's current-generation policy
     // BEFORE it becomes visible under its canonical name.
     verifyGeneration(handle.catalog, await readFile(temporaryPath), generation)
@@ -287,10 +290,11 @@ export async function publishSuccessor(
 /**
  * Read one complete published generation back through the catalog.
  *
- * `validation: 'current'` runs every installed current-format check, so this is
- * stronger than the transform check and equal to what the host does when it
- * opens a current generation (the released reader also uses the strict policy
- * for current generations).
+ * `validation: 'current'` runs every installed current-format check, which is
+ * STRICTER than the host's own header restore for a current generation: the host
+ * restores with `{ recovery: 'strict', validation: 'transformed' }`, while this
+ * read-back holds the staged bytes to the full current-format validation before
+ * they become visible under a canonical name.
  *
  * @param catalog released catalog to read with.
  * @param bytes published container bytes.

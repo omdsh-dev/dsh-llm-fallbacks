@@ -32,10 +32,16 @@
  *     above.
  *   - `unknown-event-type`: the same V0→V1 edge refuses an event type outside
  *     the released inventory even when the row carries `ignorable: true`, so
- *     the legacy `fallbacks/switch` rows are NEVER repairable.
+ *     the legacy `fallbacks/switch` rows are NEVER repairable by the default
+ *     registry — the only in-repo recovery is the LOSSY `drop-legacy-events`
+ *     rule below, which an explicit opt-in must add to a run.
+ *   - `drop-legacy-events` (OPT-IN, lossy, deliberately NOT in `BUILT_IN_RULES`):
+ *     removes exactly the `fallbacks/switch` rows and counts every removed one.
  *
- * Purity: no rule mutates its input. `detect` only reads; `normalize` copies
- * every row and every container on the path of a rewrite.
+ * Purity: no rule mutates its input. `detect` only reads; `normalize` always
+ * returns a NEW row array, and copies a row (plus every container on the path of
+ * a change) only when it actually changes that row — a pass-through row keeps its
+ * identity.
  * Fail closed: a rule refuses whenever admissibility is unproven — it never
  * bumps a value because the change "looks" safe.
  */
@@ -97,7 +103,14 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0
 }
 
-/** Render a JSON value for a diagnostic message (never throws). */
+/**
+ * Render a JSON value for a diagnostic message.
+ *
+ * Not total: `JSON.stringify` throws on a `BigInt` member, so the only values
+ * this is called with are the streamed JSON payload members of a parsed row
+ * (which can never carry one). A violation surfaces as a loud rule failure, not
+ * as a silent misreport.
+ */
 function describe(value: unknown): string {
   return JSON.stringify(value) ?? String(value)
 }
@@ -228,11 +241,17 @@ function isForeignKind(value: unknown): boolean {
  * shape cannot be carried over:
  *   - `plugin` records the original kind (stable identity, DSH's own
  *     precedent);
- *   - `form` / `summary` / `sections` survive because `pluginSourceValue`
- *     admits them — but only in the combination it admits (`summary` needs the
- *     `notice` form, `sections` need `snapshot` with exact `{ name, text }`
- *     members);
+ *   - `form` / `summary` / `sections` survive when the released
+ *     `pluginSourceValue` admits the combination (`summary` with the `notice`
+ *     form, `sections` with `snapshot` as exact `{ name, text }` members);
  *   - every other member is dropped, because the released arm admits none.
+ *
+ * This is a CONSERVATIVE SUBSET of that released arm, deliberately stricter:
+ * `pluginSourceValue` returns early when `form` is absent, so it would admit a
+ * foreign `summary` / `sections` payload with no `form` at all — this rewrite
+ * refuses those instead, because the missing `form` is what gave those members
+ * their meaning, and a rewrite whose result is not provably the same message is
+ * a rewrite this rule must not make.
  */
 function toPluginSource(source: Record<string, unknown>): { source: Record<string, unknown> } | { refusal: string } {
   const kind = source['kind']
@@ -458,7 +477,7 @@ function normalizeDescriptorVersions(
 }
 
 /* ------------------------------------------------------------------ */
-/* fallbacks-switch (legacy, never repairable)                        */
+/* fallbacks-switch (legacy, never repairable by default)              */
 /* ------------------------------------------------------------------ */
 
 const FALLBACKS_SWITCH_TYPE = 'fallbacks/switch'
@@ -474,6 +493,99 @@ function detectFallbacksSwitch(rows: readonly ParsedRow[]): Finding[] {
       class: 'unknown-event-type' as const,
       detail: `${FALLBACKS_SWITCH_TYPE} ${row.seq} is outside the released event inventory; ${FALLBACKS_SWITCH_REFUSAL}`,
     }))
+}
+
+/* ------------------------------------------------------------------ */
+/* drop-legacy-events (OPT-IN, lossy, never in the registry)          */
+/* ------------------------------------------------------------------ */
+
+const DROP_LEGACY_EVENTS_RULE_ID = 'drop-legacy-events'
+
+const DROP_LEGACY_EVENTS_LOSS =
+  'no rewrite can make a fallbacks/switch row load, so the row can only be removed — which loses the '
+  + 'provider/model switch audit entry it carries'
+
+/**
+ * Whether one PARSED row is a removable legacy event.
+ *
+ * The decision is the parsed record's own `type` member compared for exact
+ * equality — never a substring/pattern match on the serialized line, because the
+ * string `fallbacks/switch` legitimately occurs inside user data and inside
+ * message bodies. A row that did not parse never reaches a rule at all: the
+ * reader refuses the whole log (`decompress-failed`) before any rule runs.
+ */
+function isRemovableLegacyEvent(row: ParsedRow): boolean {
+  return row.type === FALLBACKS_SWITCH_TYPE
+}
+
+function detectDroppableLegacyEvents(rows: readonly ParsedRow[]): Finding[] {
+  return rows
+    .filter(isRemovableLegacyEvent)
+    .map((row) => ({
+      ruleId: DROP_LEGACY_EVENTS_RULE_ID,
+      class: 'unknown-event-type' as const,
+      detail: `${FALLBACKS_SWITCH_TYPE} ${row.seq} is dropped, not repaired: ${DROP_LEGACY_EVENTS_LOSS}`,
+    }))
+}
+
+/**
+ * The drop's own proof, run over the rule's own input/output pair rather than
+ * assumed from the loop that produced it: walk the input rows in order, re-
+ * serialize each one (`JSON.stringify`) and match it against the next survivor.
+ * A survivor whose bytes differ from the row it came from, or a removed row that
+ * is NOT a parsed `fallbacks/switch` row, refuses the whole drop — so the
+ * survivor count is provably `input − dropped`.
+ *
+ * Exported because this is the rule's load-bearing safety property: the pinning
+ * tests feed it a tampered survivor / a removed foreign row directly, which the
+ * rule's own construction path can never produce.
+ *
+ * @returns the reason to refuse, or `null` when the drop is proven.
+ */
+export function legacyDropRefusal(
+  input: readonly ParsedRow[],
+  survivors: readonly ParsedRow[],
+): string | null {
+  let cursor = 0
+  for (const [index, row] of input.entries()) {
+    const survivor = survivors[cursor]
+    if (survivor !== undefined && JSON.stringify(survivor) === JSON.stringify(row)) {
+      cursor += 1
+      continue
+    }
+    if (isRemovableLegacyEvent(row)) continue
+    return `row ${index + 1} (${row.type}) is neither kept byte-identically nor a removable ${FALLBACKS_SWITCH_TYPE} row, so it must not be dropped`
+  }
+  if (cursor !== survivors.length) {
+    return `the drop produced ${survivors.length} survivor(s) from ${input.length} row(s), but only ${cursor} match the input in order`
+  }
+  return null
+}
+
+/**
+ * Remove every `fallbacks/switch` row and nothing else, in row order; one
+ * finding per removed row, so `findings.length` IS the dropped-event count (see
+ * {@link droppedEventCount}).
+ *
+ * All-or-nothing: when {@link legacyDropRefusal} cannot prove the survivors
+ * byte-identical to their source rows the rule refuses, and the caller writes
+ * nothing.
+ */
+function normalizeDroppedLegacyEvents(
+  rows: readonly ParsedRow[],
+): { rows: ParsedRow[]; findings: Finding[] } | { refused: string } {
+  const survivors = rows.filter((row) => !isRemovableLegacyEvent(row))
+  const refusal = legacyDropRefusal(rows, survivors)
+  if (refusal !== null) return { refused: refusal }
+  return { rows: survivors, findings: detectDroppableLegacyEvents(rows) }
+}
+
+/**
+ * The rows the opt-in lossy rule removes from one log: its `normalize` reports
+ * exactly one finding per dropped row, so counting them is exact.
+ */
+export function droppedEventCount(findings: readonly Finding[]): number {
+  return findings.filter((finding) => finding.ruleId === DROP_LEGACY_EVENTS_RULE_ID).length
 }
 
 /* ------------------------------------------------------------------ */
@@ -506,8 +618,34 @@ export const fallbacksSwitchRule: LogRule = {
 }
 
 /**
+ * The OPT-IN lossy recovery for the legacy `fallbacks/switch` rows: `normalize`
+ * removes exactly those rows and reports one finding per removed row.
+ *
+ * DELIBERATELY NOT a member of {@link BUILT_IN_RULES}: the default registry stays
+ * strictly non-lossy, so this rule can only enter a run through the CLI's
+ * explicit `--drop-legacy-events`. Scope is exact and self-proven — only a row
+ * whose PARSED `type` is `fallbacks/switch` is removed, every survivor is
+ * re-serialized and matched against its source row before the rule returns, and a
+ * row of any other unknown event type is left in place (which leaves such a log
+ * unrepairable rather than silently lossy). It therefore runs FIRST in a lossy
+ * chain, so its input is the unmodified log. Replacing the detector it stands
+ * beside (`fallbacks-switch`) is the caller's decision: both policies cover the
+ * same rows, and the detector refuses what this rule removes.
+ */
+export const dropLegacyEventsRule: LogRule = {
+  id: DROP_LEGACY_EVENTS_RULE_ID,
+  class: 'unknown-event-type',
+  detect: detectDroppableLegacyEvents,
+  normalize: normalizeDroppedLegacyEvents,
+}
+
+/**
  * Built-in rules in check order: the first refused row decides the log's class,
  * and within one row the first rule here decides it.
+ *
+ * Strictly non-lossy by construction: every rule either proves a shape-preserving
+ * rewrite or refuses, so an unrepairable log is never silently modified. The
+ * lossy `dropLegacyEventsRule` is absent here on purpose.
  */
 export const BUILT_IN_RULES: readonly LogRule[] = [
   sourceKindRule,

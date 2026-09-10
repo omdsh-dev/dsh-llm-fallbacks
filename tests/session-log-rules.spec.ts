@@ -4,7 +4,9 @@
  *     class of a parsed log;
  *   - the built-in rules (scripts/session-logs/rules.ts) — `source-kind`,
  *     `subagent-descriptor-version`, and the never-repairable legacy
- *     `fallbacks-switch` class.
+ *     `fallbacks-switch` class;
+ *   - the OPT-IN lossy rule `drop-legacy-events`, which the default registry must
+ *     never contain and whose drop proves its own survivors.
  *
  * Every fixture here is SYNTHESIZED from the measured payload shapes; no real
  * session content is committed. The expected target shapes are the released
@@ -15,7 +17,8 @@
  *   - a descriptor `version` 2 (or 1) whose payload key set is a subset of the
  *     version-3 admitted set for its `mode` bumps to 3;
  *   - `fallbacks/switch` rows are refused — the frozen chain rejects unknown
- *     event types even with `ignorable: true`.
+ *     event types even with `ignorable: true` — and the opt-in lossy rule is the
+ *     only thing that can REMOVE them.
  *
  * Purity is asserted explicitly: normalization must never mutate its input.
  */
@@ -23,7 +26,10 @@ import { describe, expect, it } from 'vitest'
 import { classifyRows } from '../scripts/session-logs/classify.ts'
 import {
   BUILT_IN_RULES,
+  dropLegacyEventsRule,
+  droppedEventCount,
   fallbacksSwitchRule,
+  legacyDropRefusal,
   sourceKindRule,
   subagentDescriptorVersionRule,
   type LogRule,
@@ -285,7 +291,7 @@ describe('sourceKindRule', () => {
     expect(result.findings[0].detail).toContain('source.kind "advisor" → { kind: "plugin", plugin: "advisor" }')
   })
 
-  it('keeps form/summary/sections only in the combination the released arm admits', () => {
+  it('keeps form/summary/sections only in the combination this rule admits (a conservative subset of the released arm)', () => {
     expect(
       rewrite({
         kind: 'advisor',
@@ -299,6 +305,21 @@ describe('sourceKindRule', () => {
       form: 'snapshot',
       sections: [{ name: 'summary', text: 'body' }],
     })
+  })
+
+  it('is deliberately STRICTER than `pluginSourceValue`: form-less summary/sections are refused', () => {
+    // The released arm returns early when `form` is absent, so it would admit
+    // these; this rule refuses them because the missing form is what gave those
+    // members their meaning — the stricter behaviour is the fail-closed choice,
+    // not an equivalence claim.
+    for (const source of [
+      { kind: 'advisor', summary: 'no form' },
+      { kind: 'advisor', sections: [] },
+      { kind: 'advisor', summary: 'no form', sections: [{ name: 'a', text: 'b' }] },
+    ]) {
+      const result = sourceKindRule.normalize([HEADER, userMessage(1, source)])
+      expect('refused' in result, JSON.stringify(source)).toBe(true)
+    }
   })
 
   it('is idempotent: a normalized log has no further findings', () => {
@@ -505,6 +526,91 @@ describe('fallbacksSwitchRule', () => {
   it('passes a log without switch rows through unchanged', () => {
     const rows = [HEADER, userMessage(1, { kind: 'user' })]
     expect(fallbacksSwitchRule.normalize(rows)).toEqual({ rows, findings: [] })
+  })
+})
+
+describe('dropLegacyEventsRule (opt-in, lossy)', () => {
+  /** A second legacy row, so a count of 1 cannot pass by accident. */
+  const SWITCH_ROW_2: ParsedRow = { ...SWITCH_ROW, seq: 114514 }
+  /** A row that merely MENTIONS the legacy type name in its payload. */
+  const MENTIONS_SWITCH: ParsedRow = {
+    type: 'user/message',
+    seq: 12,
+    time: 1786949105471,
+    data: {
+      role: 'user',
+      id: 'message-12',
+      content: [{ type: 'text', text: 'the legacy "fallbacks/switch" event was removed' }],
+      source: { kind: 'user' },
+    },
+  }
+  const KEPT: ParsedRow[] = [HEADER, userMessage(1, { kind: 'user' }), MENTIONS_SWITCH]
+
+  it('detects every parsed legacy row, one finding per row, and nothing else', () => {
+    const findings = dropLegacyEventsRule.detect([...KEPT, SWITCH_ROW, SWITCH_ROW_2])
+    expect(findings).toHaveLength(2)
+    expect(findings.map((finding) => finding.ruleId)).toEqual(['drop-legacy-events', 'drop-legacy-events'])
+    expect(findings[0]).toMatchObject({ ruleId: 'drop-legacy-events', class: 'unknown-event-type' })
+    expect(findings[0].detail).toContain('fallbacks/switch 114513 is dropped, not repaired')
+    expect(dropLegacyEventsRule.detect(KEPT)).toEqual([])
+  })
+
+  it('drops exactly the parsed legacy rows, keeps every other row byte-identical and in order', () => {
+    const rows = [HEADER, SWITCH_ROW, ...KEPT.slice(1), SWITCH_ROW_2]
+    const result = dropLegacyEventsRule.normalize(rows)
+    if ('refused' in result) throw new Error(`unexpected refusal: ${result.refused}`)
+
+    // Survivors are the same objects in the same order, byte-for-byte.
+    expect(result.rows).toEqual([HEADER, ...KEPT.slice(1)])
+    expect(result.rows.map((row) => JSON.stringify(row))).toEqual([HEADER, ...KEPT.slice(1)].map((row) => JSON.stringify(row)))
+    // The count IS the finding count, and the delta IS the count.
+    expect(droppedEventCount(result.findings)).toBe(2)
+    expect(rows.length - result.rows.length).toBe(droppedEventCount(result.findings))
+  })
+
+  it('is a no-op with no findings on a log without legacy rows', () => {
+    const result = dropLegacyEventsRule.normalize(KEPT)
+    if ('refused' in result) throw new Error(`unexpected refusal: ${result.refused}`)
+    expect(result).toEqual({ rows: KEPT, findings: [] })
+  })
+
+  it('decides per PARSED row, never by substring: a payload mentioning the type survives', () => {
+    const result = dropLegacyEventsRule.normalize([HEADER, MENTIONS_SWITCH])
+    if ('refused' in result) throw new Error(`unexpected refusal: ${result.refused}`)
+    expect(result.findings).toEqual([])
+    expect(result.rows).toEqual([HEADER, MENTIONS_SWITCH])
+  })
+
+  it('refuses the whole drop when a survivor would change or a foreign row would be removed', () => {
+    // The rule's own construction path cannot produce either case, so the guard is
+    // pinned directly: both are hard refusals (the caller then writes nothing).
+    const tampered = JSON.stringify({ ...MENTIONS_SWITCH, seq: 13 })
+    expect(
+      legacyDropRefusal([HEADER, MENTIONS_SWITCH], [HEADER, JSON.parse(tampered) as ParsedRow]),
+    ).toContain('neither kept byte-identically nor a removable fallbacks/switch row')
+    expect(legacyDropRefusal([HEADER, MENTIONS_SWITCH], [HEADER])).toContain(
+      'neither kept byte-identically nor a removable fallbacks/switch row',
+    )
+    // An extra survivor that exists in no input row is refused too.
+    expect(legacyDropRefusal([HEADER], [HEADER, MENTIONS_SWITCH])).toContain(
+      'only 1 match the input in order',
+    )
+    // The honest pair is proven.
+    expect(legacyDropRefusal([HEADER, SWITCH_ROW], [HEADER])).toBeNull()
+  })
+
+  it('never mutates the input rows', () => {
+    const rows = deepFreeze([HEADER, SWITCH_ROW, MENTIONS_SWITCH])
+    expect(() => dropLegacyEventsRule.detect(rows)).not.toThrow()
+    const result = dropLegacyEventsRule.normalize(rows)
+    if ('refused' in result) throw new Error(`unexpected refusal: ${result.refused}`)
+    expect(JSON.stringify(rows)).toBe(JSON.stringify([HEADER, SWITCH_ROW, MENTIONS_SWITCH]))
+  })
+
+  it('is NOT a member of the default registry (which stays strictly non-lossy)', () => {
+    expect(BUILT_IN_RULES.map((rule) => rule.id)).not.toContain('drop-legacy-events')
+    // The class it covers is still represented by the never-repairable detector.
+    expect(BUILT_IN_RULES.filter((rule) => rule.class === 'unknown-event-type')).toEqual([fallbacksSwitchRule])
   })
 })
 

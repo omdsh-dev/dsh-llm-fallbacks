@@ -107,6 +107,7 @@ function optionsFor(overrides: Partial<CliOptions> = {}): CliOptions {
     classFilter: null,
     catalogPath: undefined,
     backup: false,
+    dropLegacyEvents: false,
     json: false,
     quiet: false,
     ...overrides,
@@ -161,6 +162,17 @@ const FALLBACKS_SWITCH: Record<string, unknown> = {
   data: { turn: 4, step: 30, reason: 'trigger-code' },
 }
 
+/**
+ * An unknown event type of a DIFFERENT name: the lossy opt-in must never drop it,
+ * so a log blocked by this row stays unrepairable whatever the flag says.
+ */
+const OTHER_UNKNOWN: Record<string, unknown> = {
+  type: 'legacy/unknown-note',
+  seq: 10,
+  time: 1786865067796,
+  data: { note: 'synthesized' },
+}
+
 /** A row the released chain refuses for a reason no rule models. */
 const ODD_ROW: Record<string, unknown> = { type: 'example/odd', seq: 8, time: 1786865067794, data: {} }
 
@@ -211,12 +223,17 @@ function outcomeFor(result: RunResult, session: string): RunResult['logs'][numbe
  * hermetically — no DSH install, no npx cache, no PATH lookup.
  *
  * It accepts everything once it has been normalized: `plugin` is a released
- * kind, `version: 3` is the released descriptor version.
+ * kind, `version: 3` is the released descriptor version. Two unknown historical
+ * event types are refused (`fallbacks/switch` — the one the lossy opt-in drops —
+ * and `legacy/unknown-note`, which may never be dropped), and the events it
+ * accepted are ECHOED by `finish()`, so a test can assert what a published
+ * successor actually carries.
  */
 const FAKE_CATALOG_BODY = `const RELEASED_KINDS = new Set(['user', 'plugin', 'model', 'tool'])
 export const sessionFormatCatalog = {
   currentVersion: 3,
   createRestore(header, options) {
+    const events = []
     return {
       header: { version: 3 },
       decodeRow(row) {
@@ -232,14 +249,21 @@ export const sessionFormatCatalog = {
               '; migration refuses unknown historical events even when ignorable',
           )
         }
+        if (row && row.type === 'legacy/unknown-note') {
+          throw new Error(
+            'format v0 contains unknown historical event type "legacy/unknown-note" at seq ' + row.seq +
+              '; migration refuses unknown historical events even when ignorable',
+          )
+        }
         if (row && row.type === 'example/odd') throw new Error('released Session row is malformed')
         const source = row && row.data && row.data.source
         if (source && typeof source.kind === 'string' && !RELEASED_KINDS.has(source.kind)) {
           throw new Error('cannot safely transform unclassified message source')
         }
+        events.push(row)
       },
       finish() {
-        return { header: { version: 3 }, inheritedEventCount: 0, events: [] }
+        return { header: { version: 3 }, inheritedEventCount: 0, events }
       },
     }
   },
@@ -298,6 +322,7 @@ describe('parseArgs', () => {
       classFilter: null,
       catalogPath: undefined,
       backup: false,
+      dropLegacyEvents: false,
       json: false,
       quiet: false,
     })
@@ -311,7 +336,7 @@ describe('parseArgs', () => {
 
   it('parses every documented flag and skips the pnpm `--` separator', () => {
     const options = parseArgs(
-      ['--', '--root', '/tmp/example-root', '--apply', '--class', 'source-kind', '--catalog', '/tmp/cat', '--backup', '--json', '--quiet'],
+      ['--', '--root', '/tmp/example-root', '--apply', '--class', 'source-kind', '--catalog', '/tmp/cat', '--backup', '--drop-legacy-events', '--json', '--quiet'],
       bareEnv(),
     )
 
@@ -322,6 +347,7 @@ describe('parseArgs', () => {
       classFilter: 'source-kind',
       catalogPath: '/tmp/cat',
       backup: true,
+      dropLegacyEvents: true,
       json: true,
       quiet: true,
     })
@@ -842,6 +868,37 @@ describe('apply', () => {
     expect(sink.out()).toContain('not selected 1')
   })
 
+  it('reports a pre-V3 generation that reads ok beside a v3 successor as ok and rewrites nothing (AC-7 dual-generation shape)', async () => {
+    const root = tempDir('rsl-dual-generation-')
+    const catalogPath = writeFakeCatalog()
+    const log = writeGeneration(root, 'example-ns', 'session-dual', 'session.jsonl.zstd', V0_HEADER, [PLAIN_ROW])
+    // The released chain already migrated this session: a current generation sits
+    // beside the pre-V3 one (AC-7's 7 extra namespace directories).
+    writeGeneration(root, 'example-ns', 'session-dual', 'session.v3.jsonl.zstd', { ...V0_HEADER, version: 3 }, [PLAIN_ROW])
+    const successorPath = join(log.dir, 'session.v3.jsonl.zstd')
+    const successorDigest = sha256(successorPath)
+    const sink = captureIO()
+
+    // Report mode: the selected pre-V3 generation reads `ok`, so the directory is
+    // an extra NON-refusal row — not a decompress failure, not `other-refusal`.
+    const result = await runRepair(optionsFor({ root, catalogPath }), bareEnv())
+    expect(outcomeFor(result, 'session-dual')).toMatchObject({
+      class: 'ok',
+      status: 'ok',
+      generation: 0,
+      published: null,
+    })
+    expect(result.summary).toMatchObject({ total: 1, ok: 1, repairable: 0, refused: 0 })
+    expect(result.exitCode).toBe(0)
+
+    // Apply mode: an `ok` log is never rewritten and the existing successor keeps
+    // exactly its bytes.
+    const code = await execute(optionsFor({ root, catalogPath, apply: true }), sink.io, bareEnv())
+    expect(code).toBe(0)
+    expect(listing(log.dir)).toEqual(['session.jsonl.zstd', 'session.v3.jsonl.zstd'])
+    expect(sha256(successorPath)).toBe(successorDigest)
+  })
+
   it('fails closed with exit 2 and writes nothing when --apply has no catalog', async () => {
     const root = tempDir('rsl-apply-nocatalog-')
     const descriptor = writeGeneration(root, 'example-ns', 'session-descriptor', 'session.jsonl.zstd', V0_HEADER, [DESCRIPTOR_V2])
@@ -859,6 +916,376 @@ describe('apply', () => {
     expect(listing(descriptor.dir)).toEqual(['session.jsonl.zstd'])
 
     await expect(runRepair(optionsFor({ root, apply: true }), bareEnv())).rejects.toBeInstanceOf(FatalError)
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/* the lossy opt-in (--drop-legacy-events)                             */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The lossy fixtures below use CONTIGUOUS event seqs ending with the legacy rows
+ * (`seq 1`, `seq 2`), which is the only shape in which removing rows leaves the
+ * released v0→v1 edge's `seq === eventCount` invariant intact. The hermetic fake
+ * catalog does NOT model that invariant (it mirrors the released SHAPE and the
+ * released REFUSAL MESSAGES only), so the loadability of a lossy successor is
+ * proven against the REAL released catalog at the bottom of this file; the
+ * measured real-store shape (a legacy row MID-sequence) is pinned there too.
+ */
+const LOSSY_DESCRIPTOR: Record<string, unknown> = { ...DESCRIPTOR_V2, seq: 0 }
+const LOSSY_SWITCH_A: Record<string, unknown> = { ...FALLBACKS_SWITCH, seq: 1 }
+const LOSSY_SWITCH_B: Record<string, unknown> = {
+  ...FALLBACKS_SWITCH,
+  seq: 2,
+  time: 1786865067795,
+  data: { turn: 5, step: 31, reason: 'half-open' },
+}
+
+/** One log carrying a repairable descriptor AND two TRAILING legacy rows. */
+function writeLossyTree(): { root: string; dir: string; path: string } {
+  const root = tempDir('rsl-lossy-')
+  const log = writeGeneration(
+    root,
+    'example-ns',
+    'session-lossy',
+    'session.jsonl.zstd',
+    V0_HEADER,
+    [LOSSY_DESCRIPTOR, LOSSY_SWITCH_A, LOSSY_SWITCH_B],
+  )
+  return { root, ...log }
+}
+
+describe('--drop-legacy-events', () => {
+  it('is off by default: the same log stays unrepairable and nothing is written', async () => {
+    const { root, dir, path } = writeLossyTree()
+    const catalogPath = writeFakeCatalog()
+    const digest = sha256(path)
+    const sink = captureIO()
+
+    const code = await execute(optionsFor({ root, catalogPath, apply: true, backup: true }), sink.io, bareEnv())
+
+    // The all-or-nothing default chain refuses the legacy rows, so the descriptor
+    // bump never reaches a file (this is the frozen pre-flag behaviour).
+    expect(code).toBe(1)
+    expect(sink.out()).toContain('the repair proof refused')
+    expect(sink.out()).not.toContain('repaired-lossy')
+    expect(sink.err()).toContain('--apply PRECONDITION')
+    expect(sink.err()).not.toContain('LOSSY')
+    expect(sha256(path)).toBe(digest)
+    expect(listing(dir)).toEqual(['session.jsonl.zstd'])
+  })
+
+  it('reports what would be dropped and its count in a dry run, without writing', async () => {
+    const { root, dir, path } = writeLossyTree()
+    const catalogPath = writeFakeCatalog()
+    const digest = sha256(path)
+    const sink = captureIO()
+
+    const code = await execute(optionsFor({ root, catalogPath, dropLegacyEvents: true }), sink.io, bareEnv())
+
+    // Report mode still refuses (nothing was published), but the lossy plan is
+    // named per log and counted loudly.
+    expect(code).toBe(1)
+    expect(sink.out()).toContain('lossy-repairable (2 events to drop)')
+    expect(sink.out()).toContain('LOSSY: 2 legacy fallbacks/switch event(s) would be removed by --apply')
+    expect(sink.err()).toContain('would drop 2 legacy fallbacks/switch event(s) in 1 log(s)')
+    expect(sink.err()).toContain('nothing was written')
+    expect(sha256(path)).toBe(digest)
+    expect(listing(dir)).toEqual(['session.jsonl.zstd'])
+  })
+
+  it('carries droppedEventCount per log in --json', async () => {
+    const { root } = writeLossyTree()
+    const catalogPath = writeFakeCatalog()
+    const sink = captureIO()
+
+    const code = await execute(optionsFor({ root, catalogPath, dropLegacyEvents: true, json: true }), sink.io, bareEnv())
+    const document = JSON.parse(sink.out()) as RunResult
+
+    expect(code).toBe(1)
+    expect(document.logs[0]).toMatchObject({
+      class: 'subagent-descriptor-version',
+      status: 'repairable',
+      droppedEventCount: 2,
+      published: null,
+    })
+  })
+
+  it('refuses --apply without --backup (exit 2), naming the flag pair, and writes nothing', async () => {
+    const { root, dir, path } = writeLossyTree()
+    const catalogPath = writeFakeCatalog()
+    const digest = sha256(path)
+    const sink = captureIO()
+
+    const code = await execute(
+      optionsFor({ root, catalogPath, apply: true, dropLegacyEvents: true }),
+      sink.io,
+      bareEnv(),
+    )
+
+    expect(code).toBe(2)
+    expect(sink.err()).toContain('--drop-legacy-events with --apply requires --backup')
+    expect(sink.err()).toContain('--drop-legacy-events is LOSSY')
+    expect(sink.out()).toBe('')
+    expect(sha256(path)).toBe(digest)
+    expect(listing(dir)).toEqual(['session.jsonl.zstd'])
+
+    await expect(
+      runRepair(optionsFor({ root, catalogPath, apply: true, dropLegacyEvents: true }), bareEnv()),
+    ).rejects.toBeInstanceOf(FatalError)
+  })
+
+  it('drops exactly the legacy rows with --apply --backup and reads the successor back as current', async () => {
+    const { root, dir, path } = writeLossyTree()
+    const catalogPath = writeFakeCatalog()
+    const original = readFileSync(path)
+    const digest = sha256(path)
+    const sink = captureIO()
+
+    const code = await execute(
+      optionsFor({ root, catalogPath, apply: true, backup: true, dropLegacyEvents: true }),
+      sink.io,
+      bareEnv(),
+    )
+
+    expect(code).toBe(0)
+    // The loud data-loss warning names the count and the kind of rows lost.
+    expect(sink.err()).toContain('--drop-legacy-events is LOSSY')
+    expect(sink.err()).toContain('dropped 2 legacy fallbacks/switch event(s) in 1 log(s)')
+    expect(sink.err()).toContain('provider/model switch audit trail')
+    expect(sink.out()).toContain('repaired-lossy (2 events dropped)')
+    expect(sink.out()).toContain('published session.v3.jsonl.zstd')
+    expect(sink.out()).toContain("validation: 'current'")
+
+    // The original is byte-identical, the noncanonical backup holds those bytes,
+    // and no staging file survives.
+    expect(sha256(path)).toBe(digest)
+    expect(readFileSync(`${path}.bak`)).toEqual(original)
+    const successor = join(dir, 'session.v3.jsonl.zstd')
+    expect(listing(dir)).toEqual(['session.jsonl.zstd', 'session.jsonl.zstd.bak', 'session.v3.jsonl.zstd'])
+
+    // Read the published generation back with the host's current policy: the
+    // switch rows are gone, the descriptor bump is in, nothing else was touched.
+    const catalog = (await resolveCatalog({ catalogPath, env: bareEnv() })) as CatalogHandle
+    const readBack = readBackGeneration(catalog, successor)
+    expect(readBack.version).toBe(3)
+    expect(readBack.events.map((event) => (event as { type: string }).type)).toEqual([
+      'subagent/descriptor',
+    ])
+    expect(readBack.events[0]).toMatchObject({ data: { version: 3, mode: 'one-shot' } })
+  })
+
+  it('is idempotent: a second lossy --apply keeps the same successor bytes and drops nothing more', async () => {
+    const { root, dir, path } = writeLossyTree()
+    const catalogPath = writeFakeCatalog()
+    const options = optionsFor({ root, catalogPath, apply: true, backup: true, dropLegacyEvents: true })
+
+    expect(await execute(options, captureIO().io, bareEnv())).toBe(0)
+    const publishedDigest = sha256(join(dir, 'session.v3.jsonl.zstd'))
+
+    const second = captureIO()
+    expect(await execute(options, second.io, bareEnv())).toBe(0)
+
+    expect(second.out()).toContain('already published session.v3.jsonl.zstd (verified byte-identical)')
+    expect(sha256(join(dir, 'session.v3.jsonl.zstd'))).toBe(publishedDigest)
+    expect(sha256(path)).toBe(sha256(`${path}.bak`))
+    expect(listing(dir)).toEqual(['session.jsonl.zstd', 'session.jsonl.zstd.bak', 'session.v3.jsonl.zstd'])
+  })
+
+  it('never drops an unknown event type of any other name', async () => {
+    const root = tempDir('rsl-lossy-other-unknown-')
+    const catalogPath = writeFakeCatalog()
+    const log = writeGeneration(
+      root,
+      'example-ns',
+      'session-other-unknown',
+      'session.jsonl.zstd',
+      V0_HEADER,
+      [OTHER_UNKNOWN],
+    )
+    const digest = sha256(log.path)
+    const sink = captureIO()
+
+    const code = await execute(
+      optionsFor({ root, catalogPath, apply: true, backup: true, dropLegacyEvents: true }),
+      sink.io,
+      bareEnv(),
+    )
+
+    // The log is refused for a row the lossy rule cannot remove, so the class gate
+    // keeps the fail-closed verdict: unrepairable, nothing written, no drop.
+    expect(code).toBe(1)
+    expect(sink.out()).toContain('unrepairable')
+    expect(sink.out()).toContain('unknown-event-type: no registered normalize step can make this log load')
+    expect(sink.err()).not.toContain('!! LOSSY: dropped')
+    expect(sha256(log.path)).toBe(digest)
+    expect(listing(log.dir)).toEqual(['session.jsonl.zstd'])
+  })
+
+  it('does not rescue a log that additionally carries another unknown type: nothing is written at all', async () => {
+    const root = tempDir('rsl-lossy-mixed-unknown-')
+    const catalogPath = writeFakeCatalog()
+    const log = writeGeneration(
+      root,
+      'example-ns',
+      'session-mixed-unknown',
+      'session.jsonl.zstd',
+      V0_HEADER,
+      [FALLBACKS_SWITCH, OTHER_UNKNOWN],
+    )
+    const digest = sha256(log.path)
+    const sink = captureIO()
+
+    const code = await execute(
+      optionsFor({ root, catalogPath, apply: true, backup: true, dropLegacyEvents: true }),
+      sink.io,
+      bareEnv(),
+    )
+
+    // The drop itself is provable, but the pre-write proof refuses it because the
+    // repaired rows still do not restore: the other unknown row would remain, so
+    // the log stays unrepairable and NOTHING is written — not even the --backup
+    // copy — and no event is reported as dropped.
+    expect(code).toBe(1)
+    expect(sink.out()).toContain('unrepairable')
+    expect(sink.out()).toContain('the lossy drop was refused before any write')
+    expect(sink.out()).toContain('do not restore through the released catalog')
+    expect(sink.out()).toContain('unknown historical event type "legacy/unknown-note"')
+    expect(sink.err()).not.toContain('!! LOSSY: dropped')
+    expect(sha256(log.path)).toBe(digest)
+    expect(listing(log.dir)).toEqual(['session.jsonl.zstd'])
+  })
+
+  it('reports the same refusal in dry run: a differently-unknown neighbour is never dropped', async () => {
+    const root = tempDir('rsl-lossy-mixed-unknown-report-')
+    const catalogPath = writeFakeCatalog()
+    const log = writeGeneration(
+      root,
+      'example-ns',
+      'session-mixed-unknown',
+      'session.jsonl.zstd',
+      V0_HEADER,
+      [FALLBACKS_SWITCH, OTHER_UNKNOWN],
+    )
+    const digest = sha256(log.path)
+    const sink = captureIO()
+
+    const code = await execute(optionsFor({ root, catalogPath, dropLegacyEvents: true }), sink.io, bareEnv())
+
+    expect(code).toBe(1)
+    expect(sink.out()).toContain('unrepairable')
+    expect(sink.out()).toContain('the lossy drop was refused before any write')
+    expect(sink.out()).not.toContain('lossy-repairable')
+    expect(sink.err()).not.toContain('!! LOSSY:')
+    expect(sha256(log.path)).toBe(digest)
+    expect(listing(log.dir)).toEqual(['session.jsonl.zstd'])
+  })
+
+  it('keeps an unparseable line fatal: a malformed row beside legacy rows is decompress-failed, never dropped', async () => {
+    const root = tempDir('rsl-lossy-malformed-')
+    const catalogPath = writeFakeCatalog()
+    // A genuine legacy row, then a line that parses as JSON but is not a row.
+    const log = writeGeneration(root, 'example-ns', 'session-malformed', 'session.jsonl.zstd', V0_HEADER, [
+      FALLBACKS_SWITCH,
+      'not-a-row' as unknown as Record<string, unknown>,
+    ])
+    const digest = sha256(log.path)
+    const sink = captureIO()
+
+    const code = await execute(
+      optionsFor({ root, catalogPath, apply: true, backup: true, dropLegacyEvents: true }),
+      sink.io,
+      bareEnv(),
+    )
+
+    // The drop must never make a line it could not parse disappear, so the whole
+    // log is refused as undecodable and nothing is written.
+    expect(code).toBe(1)
+    expect(sink.out()).toContain('decompress-failed')
+    expect(sink.out()).toContain('unrepairable')
+    expect(sink.out()).toContain('not a JSON object')
+    expect(sink.out()).not.toContain('LOSSY')
+    expect(sha256(log.path)).toBe(digest)
+    expect(listing(log.dir)).toEqual(['session.jsonl.zstd'])
+  })
+
+  it('never drops a row that merely CONTAINS the legacy type name in its data', async () => {
+    const root = tempDir('rsl-lossy-substring-')
+    const catalogPath = writeFakeCatalog()
+    const mentions: Record<string, unknown> = {
+      type: 'user/message',
+      seq: 0,
+      time: 1786865067792,
+      data: { text: 'the legacy "fallbacks/switch" row was dropped', role: 'user' },
+    }
+    const log = writeGeneration(
+      root,
+      'example-ns',
+      'session-mentions',
+      'session.jsonl.zstd',
+      V0_HEADER,
+      [mentions, { ...FALLBACKS_SWITCH, seq: 1 }],
+    )
+    const sink = captureIO()
+
+    const code = await execute(
+      optionsFor({ root, catalogPath, apply: true, backup: true, dropLegacyEvents: true }),
+      sink.io,
+      bareEnv(),
+    )
+
+    // Only the PARSED `type` decides: the mentioning message survives with its
+    // bytes intact, exactly one event is dropped.
+    expect(code).toBe(0)
+    expect(sink.out()).toContain('repaired-lossy (1 events dropped)')
+    const catalog = (await resolveCatalog({ catalogPath, env: bareEnv() })) as CatalogHandle
+    const readBack = readBackGeneration(catalog, join(log.dir, 'session.v3.jsonl.zstd'))
+    expect(readBack.events).toEqual([mentions])
+  })
+
+  it('fails closed in report mode without a catalog: the post-drop restore cannot be proven', async () => {
+    const { root, dir, path } = writeLossyTree()
+    const digest = sha256(path)
+    const sink = captureIO()
+
+    const code = await execute(optionsFor({ root, dropLegacyEvents: true }), sink.io, bareEnv())
+
+    expect(code).toBe(1)
+    expect(sink.out()).toContain('lossy drop was refused before any write')
+    expect(sink.out()).toContain('no released catalog resolved')
+    expect(sink.out()).not.toContain('lossy-repairable')
+    expect(sha256(path)).toBe(digest)
+    expect(listing(dir)).toEqual(['session.jsonl.zstd'])
+  })
+
+  it('keeps --class authoritative over the lossy rule', async () => {
+    const root = tempDir('rsl-lossy-class-filter-')
+    const catalogPath = writeFakeCatalog()
+    const log = writeGeneration(
+      root,
+      'example-ns',
+      'session-lossy',
+      'session.jsonl.zstd',
+      V0_HEADER,
+      [FALLBACKS_SWITCH],
+    )
+    const digest = sha256(log.path)
+    const sink = captureIO()
+
+    // `--class source-kind` excludes the drop rule from this run's proof chain, so
+    // the legacy log is reported as repairable-but-not-selected and never written.
+    const code = await execute(
+      optionsFor({ root, catalogPath, apply: true, backup: true, dropLegacyEvents: true, classFilter: 'source-kind' }),
+      sink.io,
+      bareEnv(),
+    )
+
+    expect(code).toBe(1)
+    expect(sink.out()).toContain('--class source-kind excludes this class from this run')
+    expect(sink.out()).toContain('not selected 1')
+    expect(sink.err()).not.toContain('!! LOSSY: dropped')
+    expect(sha256(log.path)).toBe(digest)
+    expect(listing(log.dir)).toEqual(['session.jsonl.zstd'])
   })
 })
 
@@ -899,6 +1326,13 @@ describe('main — fatal arguments and help', () => {
     expect(sink.out()).toContain('flock lease')
     expect(sink.out()).toContain('Node >= 22.15')
     expect(sink.out()).toContain('Rollback: delete the successor generation')
+    // The lossy opt-in is documented, including its --backup requirement and its
+    // measured limit (the frozen edge's contiguous-seq requirement).
+    expect(sink.out()).toContain('--drop-legacy-events')
+    expect(sink.out()).toContain('LOSSY, off by default')
+    expect(sink.out()).toContain('REQUIRES --backup')
+    expect(sink.out()).toContain('LIMIT (measured): the same edge requires each event\'s seq')
+    expect(sink.out()).toContain('refuse the log and write nothing')
     expect(sink.err()).toBe('')
     expect(usage()).toBe(sink.out())
   })
@@ -985,7 +1419,9 @@ if (realCatalog === null) {
   )
 }
 
-/** A synthesized v0 log: one descriptor v2 plus one unclassified source kind. */
+/**
+ * A synthesized v0 log: one descriptor v2 plus one unclassified source kind.
+ */
 const REAL_FIXTURE_EVENTS: readonly Record<string, unknown>[] = [
   { type: 'permission/preset', seq: 0, time: 1786864997350, data: { preset: 'workspace-write' } },
   { type: 'sandbox/mode', seq: 1, time: 1786864997350, data: { mode: 'workspace-write' } },
@@ -996,6 +1432,34 @@ const REAL_FIXTURE_EVENTS: readonly Record<string, unknown>[] = [
   SOURCE_KIND,
   { type: 'step/end', seq: 7, time: 1786865070943, data: { turn: 1, step: 1 } },
   { type: 'turn/end', seq: 8, time: 1786865237513, data: { turn: 1, reason: { kind: 'completed' } } },
+]
+
+/** One legacy `fallbacks/switch` event at the requested seq. */
+function legacySwitch(seq: number): Record<string, unknown> {
+  return { ...FALLBACKS_SWITCH, seq }
+}
+
+/**
+ * The measured real-store shape that CAN be dropped: the legacy rows are the LAST
+ * events, so removing them leaves the released edge's `seq === eventCount`
+ * invariant intact (seqs 0..8, then the dropped 9 and 10).
+ */
+const REAL_LOSSY_TRAILING_EVENTS: readonly Record<string, unknown>[] = [
+  ...REAL_FIXTURE_EVENTS,
+  legacySwitch(9),
+  legacySwitch(10),
+]
+
+/**
+ * The measured real-store shape that CANNOT be dropped: the legacy row occupies a
+ * seq slot in the MIDDLE of the log, so removing it leaves the survivors with a
+ * gap (`expected 5, got 6`) and the frozen V0→V1 edge refuses the whole file.
+ * This is the shape of all 25 blocked namespace logs.
+ */
+const REAL_LOSSY_MID_SEQUENCE_EVENTS: readonly Record<string, unknown>[] = [
+  ...REAL_FIXTURE_EVENTS.slice(0, 5).map((row) => ({ ...row })),
+  legacySwitch(5),
+  ...REAL_FIXTURE_EVENTS.slice(5).map((row) => ({ ...row, seq: (row['seq'] as number) + 1 })),
 ]
 
 describe.skipIf(realCatalog === null)('CLI against the real released catalog', () => {
@@ -1033,5 +1497,88 @@ describe.skipIf(realCatalog === null)('CLI against the real released catalog', (
     expect(existsSync(successor)).toBe(true)
     expect(readBackGeneration(oracle, successor).version).toBe(3)
     expect(listing(log.dir).filter((name) => name.endsWith('.tmp'))).toEqual([])
+  })
+
+  it('drop-legacy-events: recovers a log whose legacy rows are TRAILING (real catalog proof)', async () => {
+    const oracle = realCatalog as CatalogHandle
+    const root = tempDir('rsl-real-lossy-trailing-')
+    const session = 'session-22222222-2222-4222-8222-222222222222'
+    const log = writeGeneration(
+      root,
+      '--example-namespace--',
+      session,
+      'session.jsonl.zstd',
+      V0_HEADER,
+      REAL_LOSSY_TRAILING_EVENTS,
+    )
+    const original = readFileSync(log.path)
+    const digest = sha256(log.path)
+    const sink = captureIO()
+
+    // Without the flag the legacy rows still block the default chain.
+    const report = await runRepair(optionsFor({ root, catalogPath: oracle.modulePath }), process.env)
+    expect(outcomeFor(report, session)).toMatchObject({ class: 'subagent-descriptor-version', status: 'unrepairable' })
+
+    // With the opt-in + --backup the successor is published and read back.
+    const code = await execute(
+      optionsFor({ root, catalogPath: oracle.modulePath, apply: true, backup: true, dropLegacyEvents: true }),
+      sink.io,
+      process.env,
+    )
+
+    expect(code).toBe(0)
+    expect(sink.out()).toContain('repaired-lossy (2 events dropped)')
+    expect(sink.err()).toContain('dropped 2 legacy fallbacks/switch event(s) in 1 log(s)')
+    // The original is byte-identical, the backup holds those bytes, no temp remains.
+    expect(sha256(log.path)).toBe(digest)
+    expect(readFileSync(`${log.path}.bak`)).toEqual(original)
+    const successor = join(log.dir, 'session.v3.jsonl.zstd')
+    expect(listing(log.dir)).toEqual(['session.jsonl.zstd', 'session.jsonl.zstd.bak', 'session.v3.jsonl.zstd'])
+    // The published generation reads back as current through the REAL released
+    // catalog, and its events are the survivors with no legacy row left. The
+    // migration may synthesize events of its own, so the assertion is on content.
+    const readBack = readBackGeneration(oracle, successor)
+    expect(readBack.version).toBe(3)
+    const types = readBack.events.map((event) => (event as { type?: string }).type)
+    expect(types).not.toContain('fallbacks/switch')
+    expect(types).toEqual(
+      expect.arrayContaining(['sandbox/mode', 'subagent/descriptor', 'user/message', 'turn/end']),
+    )
+    // The descriptor bump the same run performed is inside the published artifact.
+    expect(
+      readBack.events.find((event) => (event as { type?: string }).type === 'subagent/descriptor'),
+    ).toMatchObject({ data: { version: 3 } })
+  })
+
+  it('drop-legacy-events: REFUSES the measured mid-sequence shape — no write at all (real catalog proof)', async () => {
+    const oracle = realCatalog as CatalogHandle
+    const root = tempDir('rsl-real-lossy-mid-')
+    const session = 'session-33333333-3333-4333-8333-333333333333'
+    const log = writeGeneration(
+      root,
+      '--example-namespace--',
+      session,
+      'session.jsonl.zstd',
+      V0_HEADER,
+      REAL_LOSSY_MID_SEQUENCE_EVENTS,
+    )
+    const digest = sha256(log.path)
+    const sink = captureIO()
+
+    const code = await execute(
+      optionsFor({ root, catalogPath: oracle.modulePath, apply: true, backup: true, dropLegacyEvents: true }),
+      sink.io,
+      process.env,
+    )
+
+    // The drop would leave `expected 5, got 6`: the frozen V0→V1 edge requires
+    // contiguous seqs, so the pre-write proof refuses and NOTHING is written —
+    // the log stays unrepairable (this is why all 25 real namespace logs refuse).
+    expect(code).toBe(1)
+    expect(sink.out()).toContain('the lossy drop was refused before any write')
+    expect(sink.out()).toContain('seq gap')
+    expect(sink.err()).not.toContain('!! LOSSY: dropped')
+    expect(sha256(log.path)).toBe(digest)
+    expect(listing(log.dir)).toEqual(['session.jsonl.zstd'])
   })
 })
