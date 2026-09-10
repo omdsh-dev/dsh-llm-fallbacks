@@ -54,7 +54,7 @@ validateFallbacksConfig(config, logger)
 
 `presetRoles` is the single source of the plugin's bundled preset-role declarations — the identical 5-item payload `apply()` self-declares when `presets: 'bundled'` (the default). The 5 ids are `reviewer` / `scout` / `security-reviewer` / `sonic` / `task`; each persona is a concise instruction set distilled from the omp bundled agent prompts (`packages/coding-agent/src/prompts/agents/`, snapshot 2026-08-16), not a verbatim copy of a full prompt.
 
-> **Preset trim**: the bundled set previously carried 7 ids — `designer` and `librarian` were removed. Rows saved by earlier versions keep their persona and survive untouched, but they now show source `user` even though the operator never wrote those rows: they are no longer in the declared batch, so the card renders them as ordinary editable rows — the `User` badge, full editing UI, no seeded-row read-only treatment. Delete them by hand if unwanted.
+> **Preset trim**: the bundled set previously carried 7 ids — `designer` and `librarian` were removed. Rows saved by earlier versions keep their persona and survive bundled declares untouched; omission from that producer's slice means only that the plugin no longer has a live declaration for these ids. They now show source `user` only when no live producer still declares the id, even though the operator never wrote those rows: only then does the card render them as ordinary editable rows — the `User` badge, full editing UI, no seeded-row read-only treatment. A row a companion still declares stays seeded and read-only, with the winning producer's source label (`external` when unnamed, otherwise its registered set name); the mstar merge-preserve pattern can do this by copying currently seeded non-own ids verbatim. Delete them by hand if unwanted.
 
 Reuse it through any seed face:
 
@@ -128,6 +128,8 @@ Importing this package automatically merges the `Context` type (`declare module 
 
 The service grows three additive keys — the six pre-existing keys are unchanged (strictly additive, spec §9.1). Companion plugins use them to auto-provision role rows into the taxonomy with **zero operator hand-edit** (no config block, no bundle-row write): a seeded role is a plain `roles.list` row, and the settings card surfaces the seed state over the gateway wire — a seeded row presents as reference material, not editable config: no id input (the collapse title carries the immutable id, so the id of any seed/preset role cannot be changed in the card, R2), the persona renders as a read-only single-line brief with an expandable full view (no persona editor, no revert button), while chain and fallback stay editable; every row carries a source badge (`bundled` / declared set name, `external` when unnamed / `User`).
 
+The seeded persona stays inside the card: the collapsed brief ellipsizes and the expanded view wraps, without widening the settings panel.
+
 ```ts
 declareSeeds(seeds: readonly SeedDeclaration[], options?: SeedsDeclareOptions): Promise<SeedDeclareOutcome>
 getEffectiveRoles(): EffectiveRolesReadback
@@ -136,17 +138,17 @@ revertSeededPersona(id: string): Promise<SeedRevertOutcome>
 
 | Method | Surface | Notes |
 |---|---|---|
-| `declareSeeds(seeds, options?)` | (a) declare | **Replacement semantics**: the batch is the companion's full current declaration set; ids omitted from the batch drop out of the seed registry (the role row and the operator's chain remain — R2). Per-id validation **as declared** — an id failing `ROLE_ID_PATTERN` (`/^[a-z0-9-]{1,32}$/`) or equal to the reserved `'inherit'` is skipped with a warn (never coerced); valid siblings in the same batch still apply. The optional `options.set` labels the whole batch's provenance (trimmed): an empty-after-trim, non-string, or reserved value (`bundled` / `user` / `external`) warns once and degrades the batch to the unnamed `external` source — the seeds still apply. Re-declaring the same payload is a no-op (no settings write). |
+| `declareSeeds(seeds, options?)` | (a) declare | **Per-producer replacement semantics**: the batch is the declaring producer's full current declaration set; it replaces only that producer's slice. Ids omitted from the batch leave that slice, not other producers' slices; they remain seeded while any live declaration covers them (the role row and the operator's chain remain — R2). Per-id validation **as declared** — an id failing `ROLE_ID_PATTERN` (`/^[a-z0-9-]{1,32}$/`) or equal to the reserved `'inherit'` is skipped with a warn (never coerced); valid siblings in the same batch still apply. The optional `options.set` selects the producer label (trimmed): an empty-after-trim, non-string, or reserved value (`bundled` / `user` / `external`) warns once and degrades the batch to the shared unnamed `external` slice — the seeds still apply. Re-declaring the same payload performs no settings write. |
 | `getEffectiveRoles()` | (b) readback | Sync. The effective taxonomy with per-role seed annotations (`seeded` / `personaOverridden` / `seedPersona` / `source`). |
-| `revertSeededPersona(id)` | (c) revert | Restores one id to the **currently declared** seed default — never a snapshot of the first seed. `{ reverted: false, reason: 'not-seeded' }` when the id was never declared (no write, no throw). |
+| `revertSeededPersona(id)` | (c) revert | Restores one id to the **currently declared** seed default resolved through the same producer precedence as readback — never a snapshot of the first seed. `{ reverted: false, reason: 'not-seeded' }` when no live declaration covers the id (no write, no throw). |
 
 #### Minimal example
 
 ```ts
 const fb = ctx.get('llm-fallbacks')
 if (fb !== undefined) {
-  // (a) declare — the FULL current set; re-declaring the same payload is a no-op.
-  // `set` labels the batch's provenance (omit it for the generic `external` label)
+  // (a) declare — this producer's FULL current set; the same payload performs no settings write.
+  // `set` selects an independent producer slice (omit it to share the `external` slice)
   const outcome = await fb.declareSeeds([
     { id: 'code-reviewer', persona: 'Reviews code for correctness and security' },
     { id: 'fullstack-dev', persona: 'Backend-led fullstack implementation' },
@@ -168,31 +170,38 @@ if (fb !== undefined) {
 Two stores, strictly separated (spec §9.2):
 
 1. **Operator config (persisted — the only persisted store)**: a seeded role is a plain `roles.list` row `{ id, persona }`. `chain` / `fallback` / `prompt` / `permissions` are **omitted** on insert — seeds never write those values (R4).
-2. **Seed registry (in-memory, per-apply)**: `Map<id, { persona, set }>` (the declared default persona plus the batch's provenance label); declare = replacement.
+2. **Seed registry (in-memory, per-apply)**: keyed by producer label (`bundled` / registered set name / `external`), with each producer's current id → default-persona slice and declaration recency; declare = replacement **per producer**, never of the whole registry.
 
 `seeded`, `personaOverridden`, and `source` are **derived at read time**, never stored — because nothing override-shaped or provenance-shaped is persisted, a config round-trip cannot orphan an override (AC-3), and provenance can never churn a settings write.
 
+Declare keeps its compute → write → commit order and zero-delta check: a failed settings write does not commit the new slice, and a provenance-only change performs zero settings writes. Revert uses the same precedence as readback. At-default tracking/materialization drives row writes from the id's **resolved effective default** (`prior` = the resolved default before the declare; `incoming` = the resolved default after the candidate commit), with an existing row tracking only when its persona equals `prior` and `incoming` differs. A producer that does not win the id cannot advance its persisted persona; a same-persona attach is quiet, and omission from a batch leaves the row untouched (R2).
+
 - An operator persona edit is an **override** (the row persona differs from the seed default); the card shows the effective persona (read-only on seeded rows).
-- Revert always restores the **currently declared** seed default — when the companion re-declares a new persona for the same id, revert goes to that new default.
+- Revert always restores the **currently declared** seed default resolved through the producer precedence below — when the winning producer re-declares a new persona for the same id, revert goes to that new default.
 - A declared id that already has an operator row is **attached, never duplicated**; a differing persona is flagged loudly as a `'persona-source'` conflict — the operator persona is retained, never silently overwritten.
-- When a declaration is removed, the role row and the operator's chain remain; the row drops out of the live seed status, so the card renders it as an ordinary editable row and its source reads `user` (R2).
+- When a producer removes a declaration, the role row and the operator's chain remain; another producer's live declaration keeps the row seeded. Only when no live declaration covers it does the row drop out of the live seed status, render as an ordinary editable row, and read source `user` (R2).
 - Seeds never write `chain` / `fallback`: an existing chain is preserved byte-for-byte, and a new seeded role keeps an empty chain for the operator to fill (R4).
-- **Honest limitation**: the registry dies with the fiber/process. Until the companion re-declares, seeded rows are ordinary config rows (source `user`); after re-declare, "was at default" is indistinguishable from "operator-edited", so the conservative row-untouched path applies and a differing persona is flagged `'persona-source'`. Revert always restores the current declared default; no data is ever lost or silently overwritten.
+- **Honest limitation**: the registry dies with the fiber/process. Until a producer re-declares a row, it is an ordinary config row (source `user`); after re-declare, "was at default" is indistinguishable from "operator-edited", so the conservative row-untouched path applies and a differing persona is flagged `'persona-source'`. Revert always restores the current declared default; no data is ever lost or silently overwritten.
+- **Slice lifetime/growth**: slices are dropped only by an empty declare under the same producer label or when the fiber/process ends; there is no other pruning. For the remaining fiber/process lifetime, a producer that stops declaring keeps its rows seeded and keeps winning readback/revert unless superseded by the documented precedence. Producers should use a stable `{ set }` label: varying labels grow the registry and the per-row resolution scan.
 
 #### Per-row source (provenance contract)
 
 Every row carries a provenance label (`SeedSource`) on both the `EffectiveRole` readback and the gateway `seeds` wire entries (`SeedsWireStatus.source` — additive wire field: older clients ignore unknown fields, and a gateway predating the field may omit it, in which case the client treats the entry as badgeless). `bundled` is reserved for the plugin's own preset self-declare and is unreachable through the service face — the face forwards only the public `{ set }` key to the declare pipeline:
 
+**Resolution precedence**: `bundled` wins for any id the plugin's own preset self-declare currently declares; otherwise the **most recent non-bundled producer** declaring the id wins; no live declaration means `user`. Unnamed producers share **one `external` slice** — declare with `{ set: '<name>' }` to keep an independent slice.
+
 | `source` value | When |
 |---|---|
-| `bundled` | The plugin's own bundled preset self-declare (internal marker, not a consumer option). |
-| `<set name>` | A companion declare with a valid `options.set` (trimmed). |
-| `external` | A companion declare without `set`, or with an invalid one (empty after trim / non-string / a reserved name — warns once, the seeds still apply). |
+| `bundled` | The plugin's own bundled preset self-declare currently declares the id, even if another producer also declares it (internal marker, not a consumer option). |
+| `<set name>` | No bundled declaration covers the id, and the most recent non-bundled producer declaring it has this valid `options.set` (trimmed). |
+| `external` | No bundled declaration covers the id, and the most recent non-bundled producer declaring it is the shared unnamed slice: no `set`, or an invalid one (empty after trim / non-string / a reserved name — warns once, the seeds still apply). |
 | `user` | No live declaration covers the row. |
 
 Reserved set names (`bundled` / `user` / `external`) are invalid by contract — a declare under a reserved name would forge or shadow the fixed labels, so it warns once and degrades to `external`.
 
-**Copy honesty**: `user` does not mean "the operator wrote this row" — it means no live declaration covers it. After the preset trim, the `designer` / `librarian` rows persisted by earlier versions survive untouched with their persona and now show source `user`, even though the operator never wrote those rows.
+The card localizes the fixed labels `bundled` / `user` / `external` as `内置` / `用户` / `外部` in zh and `bundled` / `User` / `external` in en. Registered set names render verbatim, case-preserved.
+
+**Copy honesty**: the mstar merge-preserve pattern (readback → copy currently seeded non-own ids verbatim → one-arg declare) leaves the plugin's bundled rows `bundled` and seeded; the companion's copies in the `external` slice do not replace the bundled producer's slice. If the bundled producer later drops an id, a still-live companion copy keeps it seeded and resolves through the same precedence. `user` does not mean "the operator wrote this row" — it means no live declaration covers it. After the preset trim, the `designer` / `librarian` rows persisted by earlier versions survive untouched with their persona and show source `user` when no producer still declares them, even though the operator never wrote those rows.
 
 #### Types
 
@@ -200,7 +209,7 @@ Reserved set names (`bundled` / `user` / `external`) are invalid by contract —
 |---|---|---|
 | `SeedDeclaration` | `{ id: string; persona: string }` | One declared seed (`persona` is free text, not validated — payload hygiene is the companion's job). |
 | `SeedDeclareOutcome` | `{ applied: string[]; skipped: Array<{ id, reason }>; conflicts: Array<{ id, kind }> }` | Structured result of `declareSeeds` — the readable status channel; per-id skip never fails the batch. `reason` ∈ `'invalid-id'` \| `'reserved-id'` \| `'duplicate-in-batch'`; `kind` ∈ `'persona-source'`. |
-| `SeedsDeclareOptions` | `{ set?: string }` | Optional second `declareSeeds` argument — the batch's registered provenance set name (trimmed; empty / non-string / reserved warns once and degrades to `external`, the seeds still apply). |
+| `SeedsDeclareOptions` | `{ set?: string }` | Optional second `declareSeeds` argument — selects the producer's independent registered slice (trimmed; empty / non-string / reserved warns once and degrades to the shared `external` slice, the seeds still apply). |
 | `SeedSource` | `'bundled'` \| `'external'` \| `'user'` \| (set name) | Per-row provenance label, read-time derived, never persisted — see [Per-row source](#per-row-source-provenance-contract). |
 | `EffectiveRole` | `{ id, persona, chain?, fallback?, seeded, personaOverridden, source, seedPersona? }` | One effective role with seed annotations (`chain` / `fallback` are passthrough — never touched by seeds; `source` is the provenance label). |
 | `EffectiveRolesReadback` | `{ roles: EffectiveRole[] }` | Result of `getEffectiveRoles`. |

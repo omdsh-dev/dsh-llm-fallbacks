@@ -11,13 +11,27 @@
  * owns the column width — the 720px page wrapper is gone): a bordered box
  * whose header is a button (name over description, dirty pill, rotating
  * chevron) and whose open state shows a divided body — divider, notices /
- * form / status block. PR #62 UX round 2: the card footer is gone — each
- * big section (主代理 / 子代理 / 高级选项) carries its own Save/Discard
- * actions and error surface. */
+ * form / status block. Width containment is self-contained: `.card` and
+ * `.fieldset` each carry `min-width: 0` (see their rules), so a long nowrap
+ * persona brief is clipped inside the card without depending on the host
+ * clamping its own grid/flex track. PR #62 UX round 2: the card footer is
+ * gone — each big section (主代理 / 子代理 / 高级选项) carries its own
+ * Save/Discard actions and error surface. */
 
-/* The card box. */
+/* The card box. `min-width: 0` keeps the card's width containment
+   self-contained (plan seeds-source-and-persona-width, QC fix wave 1b): the
+   card is one <li>, and wherever the host lays the card list out as
+   grid/flex tracks the card is a grid/flex item whose `min-width: auto`
+   resolves to a content-based automatic minimum — so the `.fieldset` clamp
+   alone still lets the host track inherit the persona brief's full-string
+   width. It removes a shrink constraint; it does not shrink content.
+   Measured in real Chromium on the plan probe with the probe's host-side
+   clamp removed (matrix in fix-wave-1b-report.md): fieldset-only ⇒ panel
+   scrollWidth 2855px at a 720px track, no ellipsis; fieldset+card ⇒
+   720/720, brief ellipsizing. */
 .card {
   list-style: none;
+  min-width: 0;
   border: 1px solid var(--dsw-alias-border-l2);
   border-radius: 12px;
   background: var(--dsw-alias-bg-layer-3);
@@ -233,7 +247,25 @@
 
 /* The form body (the enabled-gated group) is one fieldset without a legend:
    the enabled toggle above it is the group's question (the advisor
-   fieldset). `disabled` propagates to every control inside. */
+   fieldset). `disabled` propagates to every control inside.
+
+   `min-width: 0` is the card-internal half of the persona width clamp (plan
+   seeds-source-and-persona-width): a fieldset keeps a content-based minimum
+   (the UA default `min-inline-size: min-content`), and the nowrap
+   `.personaBrief` makes that minimum the FULL persona string, so without
+   this rule the fieldset itself cannot shrink and the brief's ellipsis
+   never engages. It removes a shrink constraint; it does not shrink
+   content. It is NOT sufficient on its own: the same content-based minimum
+   re-emerges one level up at the card's own box wherever the card is a host
+   grid/flex item, which is why `.card` carries the matching clamp. Measured
+   in real Chromium on the plan probe
+   (.mstar/sdd/seeds-source-and-persona-width/persona-overflow-probe.html)
+   with the probe's host-side clamp removed, 720px panel, 435-char persona:
+   fieldset-only ⇒ panel scrollWidth 2855px / clientWidth 720px, brief
+   2769px with no ellipsis; fieldset+card ⇒ panel 720/720 in both states,
+   brief ellipsizing (clientWidth 634 vs scrollWidth 2769), the expanded
+   `.personaFull` wrapping to 5 lines at the 654px cell width. Full matrix:
+   fix-wave-1b-report.md. */
 .fieldset {
   margin: 0;
   padding: 0;
@@ -241,6 +273,7 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
+  min-width: 0;
 }
 
 /* Field grouping: label + hint + controls. `min-width: 0` keeps long option

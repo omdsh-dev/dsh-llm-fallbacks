@@ -340,13 +340,18 @@ describe('seed provenance — source labels on the wire (seed-source-provenance,
     expect(roles.find((role) => role.id === 'solo')).toMatchObject({ seeded: false, source: 'user' })
     expect(roles.find((role) => role.id === 'coder')).toMatchObject({ seeded: true, source: 'mstar' })
 
-    // A later unnamed declare re-labels only its own batch (replacement
-    // semantics): coder degrades to `external`, reviewer drops to `user`.
+    // A later unnamed declare replaces only its own (external) slice
+    // (per-producer replacement semantics, plan seeds-source-and-persona-width
+    // Decisions #1): coder degrades to `external`, while the mstar slice —
+    // and reviewer with it — is untouched.
     await declare(ctx, [{ id: 'coder', persona: 'Coders the flow' }])
-    expect(gateway(ctx).get().seeds).toEqual([{ id: 'coder', overridden: false, source: 'external' }])
+    expect(gateway(ctx).get().seeds).toEqual([
+      { id: 'coder', overridden: false, source: 'external' },
+      { id: 'reviewer', overridden: false, source: 'mstar' },
+    ])
     expect(service(ctx).getEffectiveRoles().roles.find((role) => role.id === 'reviewer')).toMatchObject({
-      seeded: false,
-      source: 'user',
+      seeded: true,
+      source: 'mstar',
     })
   })
 

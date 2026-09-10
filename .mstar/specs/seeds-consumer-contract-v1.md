@@ -48,23 +48,65 @@
 - **Reserved set names**: `bundled`, `user`, `external`. A companion cannot
   declare under a reserved name (it would forge or shadow the fixed
   provenance labels).
+- **Per-producer replacement semantics**: the in-memory, per-apply registry is
+  keyed by producer label (`bundled` / registered set name / `external`).
+  Each producer has its current id → default-persona slice and declaration
+  recency. A declare is that producer's full current declaration set and
+  replaces **only that producer's slice**, never the whole registry.
+  Omitted ids leave that slice; other producers' slices remain untouched.
+  A row stays seeded while any live declaration covers it; only when none
+  remains does it read `user`. Its persisted row and operator chain remain
+  untouched (R2).
+- **Slice lifetime/growth**: slices are dropped only by an empty declare under
+  the same producer label or when the fiber/process ends; there is no other
+  pruning. For the remaining fiber/process lifetime, a producer that stops
+  declaring keeps its rows seeded and keeps winning readback/revert unless
+  superseded by the documented precedence. Producers should use a stable
+  `{ set }` label: varying labels grow the registry and the per-row
+  resolution scan.
+- **Unnamed producers share one `external` slice**: the API carries no caller
+  identity. Declare with `{ set: '<name>' }` to keep an independent slice.
+- **Resolution precedence**: `bundled` wins for any id the plugin's own preset
+  self-declare currently declares; otherwise the **most recent non-bundled
+  producer** declaring the id wins (registered set name or `external`);
+  no live declaration means `user`. Readback, gateway seed status, and revert
+  resolve through this same precedence.
 - Per-row `source` on every effective-role readback (`EffectiveRole.source`)
   and on the gateway `seeds` wire entries (`SeedsWireStatus.source`), derived
   at read time from the live declaration registries — never persisted:
 
   | Source value | Meaning |
   |---|---|
-  | `bundled` | the plugin's own bundled preset self-declare |
-  | the trimmed set name | declared by a companion plugin with `{ set }` |
-  | `external` | declared by a companion plugin without a set name |
+  | `bundled` | the plugin's own bundled preset self-declare currently declares the id, even if another producer also declares it |
+  | the trimmed set name | no bundled declaration covers the id, and the most recent non-bundled producer declaring it has this registered `{ set }` name |
+  | `external` | no bundled declaration covers the id, and the most recent non-bundled producer declaring it is the shared unnamed slice (no set name or an invalid one) |
   | `user` | no live declaration (operator config row) |
 
+- The card localizes the fixed labels `bundled` / `user` / `external` as
+  `内置` / `用户` / `外部` in zh and `bundled` / `User` / `external` in en.
+  Registered set names render verbatim, case-preserved.
+- **Copy honesty**: the mstar merge-preserve pattern (readback → copy
+  currently seeded non-own ids verbatim → one-arg declare) leaves the plugin's
+  bundled rows `bundled` and seeded. The companion's copies in the `external`
+  slice do not replace the bundled producer's slice. If the bundled producer
+  later drops an id, a still-live companion copy keeps it seeded and resolves
+  through the same precedence. `user` means no live declaration covers the
+  row, not that the operator originally wrote it.
 - The wire addition is additive; older clients ignore unknown fields. A
   missing or unknown `source` on the wire degrades gracefully (the card
   renders no badge), never a crash.
-- Provenance is metadata only: no change to materialization, conflict (R2 /
-  `persona-source`), revert, or idempotency semantics. A provenance-only
-  change performs no settings write.
+- Provenance is metadata only. At-default tracking/materialization drives row
+  writes from the id's **resolved effective default** (`prior` = the resolved
+  default before the declare; `incoming` = the resolved default after the
+  candidate commit), with an existing row tracking only when its persona
+  equals `prior` and `incoming` differs.
+  A producer that does not win the id cannot advance its persisted persona;
+  a same-persona attach is quiet, and omission from a batch leaves the row
+  untouched (R2). Revert restores the currently declared default resolved by
+  the same precedence.
+  Declare keeps compute → write → commit and its zero-delta check: a failed
+  settings write does not commit the new slice, and a provenance-only change
+  performs zero settings writes. No provenance is persisted.
 
 ## 3. Bundled preset set
 
@@ -74,9 +116,9 @@
   changed. The bundled self-declare records `bundled` provenance internally —
   consumers can never label their own declares as `bundled` (reserved name).
 - **Upgrade semantics (R2, no destructive write)**: previously persisted
-  designer/librarian rows survive every subsequent declare untouched
+  designer/librarian rows survive subsequent bundled declares untouched
   (`materialize` leaves ids omitted from the batch alone) and read back as
-  `source: 'user'`. No settings-schema migration, no auto-delete, no
+  `source: 'user'` unless another live producer still declares them. No settings-schema migration, no auto-delete, no
   spurious warns on the upgrade path (the post-restart conservative branch
   only flags a persona that differs from the incoming default — quiet when
   rows sit at their seed defaults).
