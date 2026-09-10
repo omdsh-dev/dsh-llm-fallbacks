@@ -53,7 +53,7 @@ matching `pnpm-lock.yaml` update together with `package.json`.
 |---|---|
 | `pnpm test` | vitest run — the full suite, including the release-script contract tests in `tests/release-scripts.spec.ts`. |
 | `pnpm build` | Full build: `tsc -p tsconfig.build.json` → `tsdown` → `build-client` → `tsc` → `verify-dist`. |
-| `pnpm typecheck` | TypeScript only (host build config + project emit check); faster than the full build. |
+| `pnpm typecheck` | TypeScript only (host build config + project emit check, then `typecheck:scripts` over `scripts/**`); faster than the full build. |
 | `pnpm release:prepare [-- <version> \| -- --patch]` | Release prep: bump the version, assemble `.changes/unreleased/` fragments into `CHANGELOG.md`, archive them, and open/update the `release vX.Y.Z` PR (normally run through the Release prep workflow). |
 | `pnpm release:validate -- v<version>` | Version/tag consistency check. |
 | `actionlint .github/workflows/*.yml` | Workflow lint for the ci, release-prep, and release workflows. Local-only — this step is not part of CI. |
@@ -72,8 +72,8 @@ locally if those suites fail for you with a missing-binary error.
 3. **Write conventional English commit messages**: `feat:`, `fix:`, `docs:`,
    `chore:`, and so on.
 4. **Run the checks before opening the PR**: `pnpm test`, `pnpm build`, and
-   `pnpm typecheck`. CI runs `pnpm test` and `pnpm build` on every PR
-   (`.github/workflows/ci.yml`).
+   `pnpm typecheck`. CI runs `pnpm test`, `pnpm typecheck` and `pnpm build` on
+   every PR (`.github/workflows/ci.yml`).
 5. **Add a changelog fragment** for any user-visible change (next section).
 
 ## Changelog fragments

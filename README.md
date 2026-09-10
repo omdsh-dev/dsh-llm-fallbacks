@@ -44,19 +44,6 @@ dsh plugin --profile dsh-tui add dsh-llm-fallbacks  # dsh-tui terminal profile
 
 Same plugin, either front end — the only difference is the `--profile` flag. Pin a version with `@<version>`. A registry install fetches the **built package** (`dist/`), nothing builds on the target machine. Registry / git / local-directory variants, uninstall, and `--dump-config` verification → [docs/install.md](docs/install.md).
 
-### Repair existing sessions (versions before 0.2.2)
-
-Versions before 0.2.2 wrote durable `fallbacks/switch` session events that newer dsh releases refuse to load (issue #52 — the apply()-time event-type registration is ineffective because plugin and host resolve different module instances). If existing sessions fail to open after an upgrade, clone this repository and run the detector:
-
-```sh
-git clone https://github.com/omdsh-dev/dsh-llm-fallbacks.git
-cd dsh-llm-fallbacks
-pnpm install
-pnpm repair:fallbacks-switch-logs -- --dry-run
-```
-
-The script scans `~/.dsh/sessions` by default (override with `--root <dir>`). **It cannot repair these logs**: the released session-format migration chain (v0→v1) refuses unknown event types even when marked `ignorable: true`, so a "repaired" log would still be rejected on load. The script therefore fails closed — it only reports which sessions contain `fallbacks/switch` events, never writes or backs up any file, and exits non-zero when it finds any (the legacy `--apply` / `--backup` flags are accepted as no-ops). The durable fix belongs upstream at the migration edges. From 0.2.2 on, the plugin stops writing durable switch events, so no new sessions need attention.
-
 ### Configuration surfaces
 
 The plugin's settings live in a shared `fallbacks:` namespace, editable from three surfaces:
@@ -122,6 +109,76 @@ Full reference (role entities, fallback strategies, rules, selectors, preset rol
 
 Save the config and restart the session, then type `/fallbacks` — the read-only in-session diagnostics (origin, resolved role, chain, recent fallback switches, cooldown status). In a dsh-tui profile, `/fallbacks config` reads back the composed configuration; see [dsh-tui profile (terminal)](#dsh-tui-profile-terminal).
 
+## Repair existing sessions
+
+A session log reaches the GUI only through the **frozen released migration chain**. That chain throws at the first row it cannot classify, so a pre-V3 log written by an older release — or by any plugin that merged a custom message-source kind — makes the session fail to load, and the bytes never change on their own. Two classes cover nearly every case, and both are the same kind of root cause: content outside what a released format edge admits.
+
+| Class | What the log carries | Root cause |
+|---|---|---|
+| `source-kind` | a message `source.kind` outside the released vocabulary | the vocabulary is frozen **per format edge**, so a plugin that merged a custom kind into `MessageSourceMap` leaves the V2→V3 edge refusing the log (`cannot safely transform unclassified message source`). The released kinds are `user`, `plugin`, `model`, `tool`, `agent-instructions`, `session-reference`, `team-message`, `goal`, `skill-invocation`, `skill-catalog`, `coordinator`, `subagent-report`, `subagent-settled`, `webhook`, `agent-message` |
+| `subagent-descriptor-version` | a `subagent/descriptor` row with `version: 2` | the V0→V1 edge admits only descriptor `version: 3`, and dsh releases `v0.1.0-rc.7` … `v0.1.1-rc.2` wrote version 2 |
+
+A third class — the legacy `fallbacks/switch` event type — is **not** repairable by a rewrite: see [Lossy recovery for `fallbacks/switch`](#lossy-recovery-for-fallbacksswitch-opt-in).
+
+**If you author a plugin: never add a custom `source.kind`.** The persisted vocabulary is frozen per format edge, so a custom kind makes every session that carries it unreadable by later dsh releases. Use the sanctioned `plugin` arm instead — `{ kind: 'plugin', plugin: '<stable-id>', form: … }` — exactly as dsh's own `model-selection` notice does; the stable id records what the original kind was.
+
+### Usage
+
+The tool is run from this repository (clone + `pnpm install`). Its sources do ship in the npm tarball, but there is no runnable entry there — no `bin` is registered and `tsx` is a dev dependency — so a registry install cannot run it. It is a **read-only report by default**: it walks a session root, classifies every pre-V3 log into exactly one refusal class and prints per-class counts. Nothing is written unless `--apply` is given.
+
+```sh
+git clone https://github.com/omdsh-dev/dsh-llm-fallbacks.git
+cd dsh-llm-fallbacks
+pnpm install
+pnpm repair:session-logs                             # read-only report (the default)
+pnpm repair:session-logs -- --root ~/.dsh/sessions   # explicit session root
+pnpm repair:session-logs -- --apply                  # publish a repaired successor generation
+```
+
+`--dry-run` no longer exists: the report **is** the default mode, and `--dry-run` is rejected as an unknown argument (exit 2).
+
+| Flag | Meaning |
+|---|---|
+| `--root DIR` | session root to walk (default: `$DSH_HOME` or `~/.dsh`, then `/sessions`) |
+| `--apply` | run the rules' proofs and publish a current-generation successor beside each repaired original (requires a resolved released catalog) |
+| `--class NAME` | restrict what `--apply` repairs to one refusal class; the listing, the class table and the exit code still cover every log, and the repairable verdict is always computed over the **full** policy, so it can never hide a refusal or promise a repair this invocation cannot perform |
+| `--catalog PATH` | explicit released catalog path (package directory, a directory holding it, or its module entry file). The resolved module is **executed**, not parsed — the same privilege as running this tool — and must declare a current format version ≥ 3; a below-version catalog, or a file candidate owned by a different package, is refused (exit 2) rather than trusted to verify its own output |
+| `--backup` | copy the original generation to `<name>.bak` before publishing; a run that publishes nothing removes the copy it created again (a pre-existing one is never touched, and one holding different bytes blocks the repair until you inspect and delete it) |
+| `--drop-legacy-events` | opt-in **lossy** recovery for legacy `fallbacks/switch` rows (see below) |
+| `--json` | machine-readable report instead of the text report |
+| `--quiet` | suppress the per-log lines and the by-class table (warnings and errors are never suppressed) |
+| `--help`, `-h` | print the usage text (including the `--apply` precondition) and exit 0 |
+
+The original generation is never modified and never truncated; rollback is deleting the published successor, which makes the original the generation dsh opens again.
+
+**`--apply` precondition: run it only while NO dsh instance is writing the sessions under `--root`.** The publisher links the successor into the session directory **without observing the host's flock lease** (that lease is host-internal and cannot be taken from this repo), so a dsh that is still appending to the old generation would be orphaned once the host prefers the successor. Stop dsh first.
+
+**Runtime floor: Node ≥ 22.15.** Reading and writing need `node:zlib` zstd, which that release added (`engines.node` allows `>= 22`); an older runtime fails closed with an actionable message instead of a module-link stack trace.
+
+**Two policies, and `ok-truncated`.** A log's class and its `ok` come from the **host loader's** policy — the one that decides whether the GUI opens the session — but that policy can swallow a refusal and drop every row after it. Every `ok` log is therefore cross-checked with the **same loader policy under strict recovery** (one axis apart, so a refusal there means rows were dropped rather than "not current-shaped"): when it refuses, the log is reported **`ok-truncated`** (a `strictRefusal` reason in `--json`, an `ok-truncated` count in the summary) because the session opens **without** the rows that refusal swallowed. Such sessions still exit `0` — they do load.
+
+**Discovery never fails open.** A namespace/session directory that cannot be read, a canonical generation **below the format floor** that is a symlink or not a regular file, and a leftover `session.repair.*.jsonl.zstd.tmp` are **reported** (a `skipped`/`staleStagingFiles` entry, always printed and never hidden by `--quiet`), suppress the "no session log …" line, and make the run exit `1`. Symlinks are reported, never followed: a repair writes beside the generation it repairs, which must stay inside `--root`. An unreadable `--root` is fatal (exit `2`) — never an empty report.
+
+**`--apply` refuses a revision it did not decode.** The digest of the bytes this run read is compared with the file before anything is staged, so a concurrent append is refused before the first write. If the source moves *after* a publication this run created, that successor is removed again; if it moves after accepting a pre-existing identical successor, the failure names that file and says to delete it — never "nothing was published".
+
+**Exit codes**: `0` = every log loads (a session that opens with rows dropped under the strict policy is `ok-truncated` and still exits `0`); `1` = at least one log is still refused/unrepairable, a repair failed, a log was left unpublished (including one `--class` excluded), an input could not be inspected (a `skipped` path), or a stale `session.repair.*.jsonl.zstd.tmp` was found under the root; `2` = fatal (bad arguments, a missing or unreadable `--root`, `--apply` without a resolved catalog, a catalog below format v3, `--apply --drop-legacy-events` without `--backup`, or a runtime without `node:zlib` zstd).
+
+### Lossy recovery for `fallbacks/switch` (opt-in)
+
+Versions before 0.2.2 wrote durable `fallbacks/switch` session events (issue #52: the apply()-time event-type registration is ineffective because plugin and host resolve different module instances). The frozen V0→V1 edge refuses that event type **even when the row carries `ignorable: true`**, so no rewrite can make such a row load — removal is the only in-repo recovery. Opting in means accepting two consequences:
+
+1. **The session's recorded provider/model switch audit rows are deleted.** They survive only in the original generation (and in its `.bak` when `--backup` is used): the published successor is the only readable generation that lacks them.
+2. **The surviving events are renumbered.** The same edge requires every event's `seq` to equal its running event count, so each surviving event receives the `seq` of its position in the surviving event stream and every Session-seq reference it carries is shifted with it. Their content is otherwise unchanged, byte for byte.
+
+```sh
+pnpm repair:session-logs -- --drop-legacy-events                   # report: count what would be dropped
+pnpm repair:session-logs -- --drop-legacy-events --apply --backup  # --backup is required here
+```
+
+The mode is **off by default**, report mode writes nothing, and `--apply --drop-legacy-events` **requires `--backup`** (exit 2 without it). It fails closed, writing nothing, when a surviving row references a seq that would be dropped, when the source rows are not densely numbered, or when the renumber would cross the header's seed cut. `--json` reports `legacyEventCount` (legacy rows in the source log), `droppedEventCount`, `renumberedEventCount` and a machine-readable `lossyRefusal` reason per log; text runs print the dropped/renumbered counts as a loud warning. A row of any *other* unknown event type is never dropped — such a log stays unrepairable. Without the flag those sessions stay unreadable by design, with their bytes preserved.
+
+The durable fix belongs upstream at the migration edges (the frozen V0→V1 edge admitting the descriptor versions it shipped, and custom message-source kinds moving to the `plugin` arm).
+
 ## Features
 
 - **Automatic fallback for root and subagents**: any agent switches down the chain to the next available provider/model on model failure — no manual model switching.
@@ -134,7 +191,7 @@ Save the config and restart the session, then type `/fallbacks` — the read-onl
 - **Cooldown and revert**: failed / switched-away models are not re-selected during cooldown; `revertPolicy: cooldown-expiry` returns to the primary model automatically.
 - **Host subagent model policy (dsh 0.1.2)**: when the host `subagent-model-selection` policy is enabled, its allowlist is a hard constraint on every plugin-originated subagent route — an explicit authorized spawn route stays the chain head (role-inject skipped), inheritance inject heads and failure-switch targets are intersected with the effective allowlist, and an empty intersection skips the inject/switch (warn log + read-only card warning; no out-of-allowlist request is ever sent). A present-but-unreadable policy fails closed. Policy off/absent → inject and failure-switch selection exactly as 0.3.5. Override `reasoningEffort` follows the upstream routeChanged rule on every path (same route → keep; route change → drop unless explicit). See [Host subagent model policy](#host-subagent-model-policy-dsh-012).
 - **Half-open recovery (opt-in)**: `recovery: half-open` makes recovery evidence-driven — an expired cooldown leaves the route half-open for one logged probe instead of restoring the preference; consecutive failures escalate the suppression duration (×2 per failure, capped at 1 h); an observed completion closes the circuit and fully restores the preference. `revertPolicy: 'never'` keeps the mechanism inert; state is session-scoped in-memory (a restart resets). YAML-only — the default `timer` keeps every existing behavior byte-identical (see [docs/configuration.md](docs/configuration.md#recovery-mode-recovery-key)).
-- **Visible behavior**: every switch is recorded in an info-level log line (from/to/role/reason) — no silent model switching. The plugin deliberately writes **no** durable `fallbacks/switch` session events (issue #52: the apply()-time event-type registration was proven ineffective, and a session containing the event refused to load after a dsh restart). Sessions written by older plugin versions that contain such events **cannot** be repaired by an `ignorable` flag — the released session-format migration chain (v0→v1) refuses unknown event types even when marked ignorable — so `scripts/repair-fallbacks-switch-logs.ts` now fails closed and only reports such logs (the durable fix belongs upstream at the migration edges).
+- **Visible behavior**: every switch is recorded in an info-level log line (from/to/role/reason) — no silent model switching. The plugin deliberately writes **no** durable `fallbacks/switch` session events (issue #52: the apply()-time event-type registration was proven ineffective, and a session containing the event refused to load after a dsh restart). Sessions written by older plugin versions that contain such events **cannot** be repaired by an `ignorable` flag — the released session-format migration chain (v0→v1) refuses unknown event types even when marked ignorable — so `pnpm repair:session-logs` reports them (and recovers them only with the opt-in lossy `--drop-legacy-events` — see [Repair existing sessions](#repair-existing-sessions)).
 - **Safety valves**: `maxSwitchesPerStep` caps switches per step and `alwaysModeRetryCap` caps always-mode retries — chain loops cannot amplify latency.
 - **No-config no-op**: with no chains configured the plugin behaves exactly like not being installed (`enabled` is off by default — see [Minimal configuration](#minimal-configuration)).
 
