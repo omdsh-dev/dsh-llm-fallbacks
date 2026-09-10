@@ -82,7 +82,11 @@
  * summary line wait for the end of the walk — so a run that dies mid-walk (a
  * crash, an OOM, a Ctrl-C, a closed stdout) keeps every line it already
  * reported. `--json` is unchanged: ONE document built from the finished run.
- * `--quiet` is unchanged too (see its own contract below).
+ * `--quiet` is unchanged too (see its own contract below). A consumer that stops
+ * reading — a closed stdout/stderr, the ordinary `| head -n 5` — is not a store
+ * event: the first EPIPE stops writes to that stream, the run still finishes (an
+ * `--apply` pass publishes every remaining successor) and the exit code keeps
+ * describing the store (see `pipeSafeWriter`).
  *
  * `--class NAME` restricts RULE APPLICATION to one class (default: all rules),
  * which is what `--apply` will repair. It never narrows the listing, the class
@@ -1603,15 +1607,52 @@ export interface CliIO {
   err(text: string): void
 }
 
-/** The default sinks: one line per call on stdout / stderr. */
+/**
+ * A stream's guarded writer, once: the closed-pipe state belongs to the STREAM, so a
+ * second `consoleIO()` in the same process reuses the writer instead of stacking a
+ * second 'error' listener on a process stream.
+ */
+const guardedWriters = new WeakMap<NodeJS.WriteStream, (text: string) => void>()
+
+/**
+ * A writer for ONE process stream that survives its reader going away.
+ *
+ * Piping the report into a consumer that stops reading (`… | head -n 5`) closes the
+ * read end, and the next write then raises `EPIPE` as an UNHANDLED `'error'` event:
+ * a raw `node:events … write EPIPE` stack trace and an exit code that says nothing
+ * about the store — the exact opposite of what this tool's exit codes mean. A reader
+ * is not a store event, so the FIRST `EPIPE` marks this stream dead, every later
+ * write to it is skipped, and the run itself finishes normally (an `--apply` pass
+ * still publishes every remaining successor) with the exit code it computed.
+ *
+ * A stream error that is NOT `EPIPE` keeps the previous behaviour (an uncaught
+ * error): a report that genuinely could not be delivered (a full disk, an I/O
+ * failure) must never be swallowed silently.
+ */
+function pipeSafeWriter(stream: NodeJS.WriteStream): (text: string) => void {
+  const existing = guardedWriters.get(stream)
+  if (existing !== undefined) return existing
+  let closed = false
+  stream.on('error', (error: NodeJS.ErrnoException) => {
+    if (error.code === 'EPIPE') {
+      closed = true
+      return
+    }
+    throw error
+  })
+  const write = (text: string): void => {
+    if (closed) return
+    stream.write(`${text}\n`)
+  }
+  guardedWriters.set(stream, write)
+  return write
+}
+
+/** The default sinks: one line per call on stdout / stderr, closed-pipe safe. */
 export function consoleIO(): CliIO {
   return {
-    out: (text) => {
-      process.stdout.write(`${text}\n`)
-    },
-    err: (text) => {
-      process.stderr.write(`${text}\n`)
-    },
+    out: pipeSafeWriter(process.stdout),
+    err: pipeSafeWriter(process.stderr),
   }
 }
 
@@ -1932,6 +1973,12 @@ under --root. The successor is linked into the session directory without observi
 host's flock lease (that lease is host-internal and cannot be taken from this repo), so
 a dsh that is still appending to the old generation would be orphaned once the host
 prefers the successor. Stop dsh first. Rollback: delete the successor generation.
+
+CLOSED OUTPUT: a consumer that stops reading the report — a closed stdout or stderr,
+the ordinary "| head -n 5" — is NOT a store event. The first EPIPE stops further
+writes to that stream (no stack trace), while the run itself still finishes: an
+--apply pass publishes every remaining successor, and the exit code keeps describing
+the STORE (see EXIT CODES). Any other stream error is not swallowed.
 
 RUNTIME: reading and writing session logs needs node:zlib zstd (Node >= 22.15, while
 engines.node allows >= 22); a runtime without it fails closed with exit 2. A frame whose

@@ -23,7 +23,7 @@
  * No real session content is used anywhere: every fixture is invented here, and
  * the real-log smoke run lives outside this suite.
  */
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import {
   chmodSync,
@@ -38,6 +38,7 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
+import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
 import { afterAll, describe, expect, it } from 'vitest'
 import {
@@ -1784,6 +1785,135 @@ describe('CLI entry point (child process)', () => {
     expect(document.logs).toHaveLength(4)
     expect(document.summary.byClass).toMatchObject({ ok: 1, 'source-kind': 1, 'subagent-descriptor-version': 1 })
     expect(document.exitCode).toBe(1)
+  })
+
+  /* ---------------------------------------------------------------- */
+  /* a consumer that stops reading (the `| head -n 5` EPIPE shape)     */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * Spawn the real CLI and close the READ end of its stdout pipe after `lines`
+   * lines — exactly what `| head -n 5` does to the writer. Resolves with the CLI's
+   * OWN exit status (a shell pipeline would report the reader's) plus its stderr
+   * and the stdout collected before the close.
+   */
+  function runCliWithClosedStdout(
+    args: string[],
+    lines: number,
+  ): Promise<{ status: number; stderr: string; stdout: string }> {
+    return new Promise((resolve, reject) => {
+      const child = spawn(TSX_BIN, [SCRIPT, ...args], { cwd: REPO_ROOT })
+      const err: string[] = []
+      const out: string[] = []
+      child.stderr.setEncoding('utf8')
+      child.stdout.setEncoding('utf8')
+      child.stderr.on('data', (chunk: string) => err.push(chunk))
+      child.stdout.on('data', (chunk: string) => out.push(chunk))
+      const reader = createInterface({ input: child.stdout })
+      let seen = 0
+      reader.on('line', () => {
+        if (++seen < lines) return
+        reader.close()
+        // Closes the pipe's read end: the next write by the child raises EPIPE.
+        child.stdout.destroy()
+      })
+      child.on('error', reject)
+      child.on('close', (code) => resolve({ status: code ?? -1, stderr: err.join(''), stdout: out.join('') }))
+    })
+  }
+
+  /** The same for stderr: the reader leaves after the first chunk it receives. */
+  function runCliWithClosedStderr(
+    args: string[],
+  ): Promise<{ status: number; stdout: string }> {
+    return new Promise((resolve, reject) => {
+      const child = spawn(TSX_BIN, [SCRIPT, ...args], { cwd: REPO_ROOT })
+      const out: string[] = []
+      child.stdout.setEncoding('utf8')
+      child.stdout.on('data', (chunk: string) => out.push(chunk))
+      child.stderr.once('data', () => child.stderr.destroy())
+      child.on('error', reject)
+      child.on('close', (code) => resolve({ status: code ?? -1, stdout: out.join('') }))
+    })
+  }
+
+  it('keeps the --apply store pass running when the report reader leaves early', { timeout: 60_000 }, async () => {
+    const root = tempDir('rsl-epipe-apply-')
+    const catalogPath = writeFakeCatalog()
+    const sessions = Array.from({ length: 40 }, (_, index) => `session-${String(index).padStart(2, '0')}`)
+    for (const session of sessions) {
+      writeGeneration(root, 'example-ns', session, 'session.jsonl.zstd', V0_HEADER, [DESCRIPTOR_V2])
+    }
+
+    // A reader that takes ONE line and leaves — the closing end of `| head -n 1`.
+    const { status, stderr } = await runCliWithClosedStdout(
+      ['--root', root, '--catalog', catalogPath, '--apply'],
+      1,
+    )
+
+    // (i) A closed reader is not an unhandled stream error: no raw node trace.
+    expect(stderr).not.toContain('EPIPE')
+    expect(stderr).not.toContain('node:events')
+    expect(stderr).not.toContain('Unhandled')
+    // stderr itself stayed alive and still carried the --apply precondition.
+    expect(stderr).toContain('--apply PRECONDITION')
+    // (ii) The exit code still describes the STORE (0: every log repaired), not the
+    // reader (the uncaught EPIPE used to exit 1).
+    expect(status).toBe(0)
+    // (iii) The reader leaving did NOT abandon the store pass: every remaining log
+    // was still inspected AND published after the pipe was closed.
+    const published = sessions.filter((session) =>
+      listing(join(root, 'example-ns', session)).includes('session.v3.jsonl.zstd'),
+    )
+    expect(published).toHaveLength(sessions.length)
+  })
+
+  it("still exits with the store's refusal code when the reader leaves early", { timeout: 60_000 }, async () => {
+    const root = tempDir('rsl-epipe-refused-')
+    const catalogPath = writeFakeCatalog()
+    const repairable = Array.from({ length: 20 }, (_, index) => `session-repairable-${String(index).padStart(2, '0')}`)
+    for (const session of repairable) {
+      writeGeneration(root, 'example-ns', session, 'session.jsonl.zstd', V0_HEADER, [DESCRIPTOR_V2])
+    }
+    // One log that can never be repaired: the run must report it (exit 1) even though
+    // its report has no reader.
+    writeGeneration(root, 'example-ns', 'session-switch', 'session.jsonl.zstd', V0_HEADER, [FALLBACKS_SWITCH])
+
+    const { status, stderr } = await runCliWithClosedStdout(
+      ['--root', root, '--catalog', catalogPath, '--apply'],
+      1,
+    )
+
+    expect(stderr).not.toContain('EPIPE')
+    expect(stderr).not.toContain('node:events')
+    expect(status).toBe(1)
+    // The store pass still finished: the repairable logs carry successors and the
+    // unrepairable one was left alone.
+    for (const session of repairable) {
+      expect(listing(join(root, 'example-ns', session))).toEqual(['session.jsonl.zstd', 'session.v3.jsonl.zstd'])
+    }
+    expect(listing(join(root, 'example-ns', 'session-switch'))).toEqual(['session.jsonl.zstd'])
+  })
+
+  it('survives a reader that leaves stderr early and still finishes the run', { timeout: 60_000 }, async () => {
+    // The lossy path writes to stderr at the START (the static notices) and again at
+    // the END (the count-bearing result notice), so a reader that leaves after the
+    // first chunk guarantees a later stderr write lands on a closed pipe. The trace
+    // that would follow the crash would itself go to that dead stream, so the
+    // observables are the exit code, the untouched stdout report and the outcome.
+    const { root } = writeLossyTree()
+    const catalogPath = writeFakeCatalog()
+
+    const { status, stdout } = await runCliWithClosedStderr(
+      ['--root', root, '--catalog', catalogPath, '--apply', '--backup', '--drop-legacy-events'],
+    )
+
+    expect(status).toBe(0)
+    expect(stdout).toContain('repaired-lossy (2 events dropped)')
+    expect(stdout).toContain('summary: 1 log(s)')
+    // The store pass completed on its own terms, not half-way.
+    expect(listing(join(root, 'example-ns', 'session-lossy')))
+      .toEqual(['session.jsonl.zstd', 'session.jsonl.zstd.bak', 'session.v3.jsonl.zstd'])
   })
 })
 
