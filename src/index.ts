@@ -47,6 +47,7 @@ import { firstExactCandidate, resolveRoleAtDispatch } from './role-resolution.ts
 import { detectAuthorizedRoute, type AuthorizedRouteSession } from './authorized-route.ts'
 import { firstAllowedCandidate, resolvedRoutes } from './route-allowlist.ts'
 import { effectivePolicy, readSessionPolicyEvent, type PolicySettings } from './subagent-policy.ts'
+import { installSubagentSeam } from './subagents-seam.ts'
 import { FallbackStateStore, type AgentFallbackState, type BlockedSwitchAttempt, type EffectiveChainHead, type PendingSwitch, type SwitchScope } from './state.ts'
 import { escalatedCooldownMs } from './recovery.ts'
 import { overrideConfigWithRouteRule, type LlmReasoningEffort } from './override.ts'
@@ -856,6 +857,22 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   // plugin dispose (mirrors `slotWinners`). In-memory only.
   const subagentRoleRecordMap = new Map<string, SubagentRoleRecord>()
   subagentRoleRecordStores.set(ctx, subagentRoleRecordMap)
+  // Plan role-based-subagent-adoption Task 1: the dispatch-seam role record —
+  // ONE cordis `internal/get` wrapper over `subagents` resolving the Assignment
+  // `**Execute as**: <id>` role at `start`/`startContinuable` and keying a
+  // per-child record by the CHILD SESSION ID the wrapped start returns. The
+  // wrapper is additive: with no declared role the native request object and
+  // result pass through untouched, and any seam failure degrades to the native
+  // path with one debug log. Task 2 merges the role persona at the wrapper's
+  // single resolution point; Task 3 emits the once-per-child notice row from
+  // `subagentSeam.records`. Cleaned on agent/disposed + plugin dispose below
+  // (mirrors `subagentRoleRecordMap`).
+  const subagentSeam = installSubagentSeam(ctx, {
+    // Live binding read: the settings onChange below re-derives `roleIds` in
+    // place, so the seam sees role edits without a re-install.
+    roleIds: () => roleIds,
+    debug: (message) => logger.debug(message),
+  })
 
   try {
     // T3 (plan fallbacks-role-seeds): the gateway receives the SAME per-apply
@@ -1553,6 +1570,7 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     blockedAttemptMap.delete(agent.id)
     chainHeadMap.delete(agent.id)
     subagentRoleRecordMap.delete(agent.id)
+    subagentSeam.records.delete(agent.id)
     lastKnownPolicySettings.delete(agent.id)
   })
 
@@ -1584,6 +1602,8 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     blockedAttemptMap.clear()
     chainHeadMap.clear()
     subagentRoleRecordMap.clear()
+    subagentSeam.records.clear()
+    subagentSeam.dispose()
     lastKnownPolicySettings.clear()
   }, 'llm-fallbacks: clear per-agent state')
 
