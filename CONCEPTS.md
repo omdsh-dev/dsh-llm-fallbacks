@@ -45,7 +45,7 @@ fallbacks 配置的自明结构：块 1 = `rootChain`（root 主代理一条链�
 *Avoid:* 与 `inherit`（角色 id）混用
 
 ### fallbacks/switch 事件
-`fallbacks/switch` 事件类型词汇（from/to/role/reason）——2026-08-17 起插件**不再写入** durable 事件（issue #52：apply() 时的事件类型注册被证伪无效，含该事件的会话在 dsh 重启后拒绝加载），「行为可见」由 info 日志承载；旧版写入的会话事件由 `scripts/repair-fallbacks-switch-logs.ts` 标记 ignorable 后恢复加载。reason 是开放字符串（未知值客户端原样渲染，向后兼容）；`role-inject` 是分发时角色注入的附加 reason 值（additive，非结构变更——见三段式分发角色解析）。
+`fallbacks/switch` 事件类型词汇（from/to/role/reason）——2026-08-17 起插件**不再写入** durable 事件（issue #52：apply() 时的事件类型注册被证伪无效，含该事件的会话在 dsh 重启后拒绝加载），「行为可见」由 info 日志承载；旧版写入的会话事件**无法**通过 `ignorable` 标记修复（已发布的 session-format 迁移链即使事件带 `ignorable` 也拒绝未知事件类型），`scripts/repair-fallbacks-switch-logs.ts` 因此 fail-closed——只检测并报告此类日志、绝不写入。reason 是开放字符串（未知值客户端原样渲染，向后兼容）；`role-inject` 是分发时角色注入的附加 reason 值（additive，非结构变更——见三段式分发角色解析）。
 
 ### triggerCodes
 触发 fallback 决策的失败码集合，默认 `['AUTH', 'QUOTA', 'RATE_LIMIT']`（dsh 稳定失败码；注意是 `QUOTA` 不是 `QUOTA_EXCEEDED`）。重试型失败（5xx/TRANSPORT）由 llm-retry 先行退避，预算耗尽后同样进入 fallback 决策。接受任意 dsh 失败码——`CONTEXT_WINDOW_EXCEEDED` 一旦列入，本插件的 `agent/request-error` 监听**先于**宿主压缩插件处理该拒绝：首次超限即把会话切到 fallback 模型，上下文不会被压缩；想先尝试压缩就不要列入该码。

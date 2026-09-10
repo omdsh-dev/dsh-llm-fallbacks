@@ -37,7 +37,7 @@ dsh 的 agent loop 在模型请求失败时派发 agent/request-error waterfall�
 
 ### 核心模式：决策在 request-error、应用在 request（ADR-1/ADR-4）
 
-1. agent/request-error 监听（注册在 llm-retry 之后）：未启用 / code 不在 triggerCodes → next()（always 模式同样透传）；命中候选 → 写每-agent pendingSwitch + cooldown 抑制 + stepFailures 记账（**不再 append durable fallbacks/switch 事件**——2026-08-17 停写决策，issue #52：apply() 运行时注册因模块实例不共享被证伪，含该事件的会话重启后拒绝加载；切换以 info 日志记录；旧日志由 `scripts/repair-fallbacks-switch-logs.ts` 标记 ignorable 恢复加载）→ 返回 {kind:'retry'}（拥有恢复，不调 next）。无候选 / 安全阀超限 → next()（原错误语义不变）。
+1. agent/request-error 监听（注册在 llm-retry 之后）：未启用 / code 不在 triggerCodes → next()（always 模式同样透传）；命中候选 → 写每-agent pendingSwitch + cooldown 抑制 + stepFailures 记账（**不再 append durable fallbacks/switch 事件**——2026-08-17 停写决策，issue #52：apply() 运行时注册因模块实例不共享被证伪，含该事件的会话重启后拒绝加载；切换以 info 日志记录；旧日志**无法**通过 `ignorable` 标记修复——已发布的 session-format 迁移链拒绝未知事件类型，`scripts/repair-fallbacks-switch-logs.ts` 只检测并报告、绝不写入）→ 返回 {kind:'retry'}（拥有恢复，不调 next）。无候选 / 安全阀超限 → next()（原错误语义不变）。
 2. agent/request 监听：await next() 后应用 pendingSwitch（provider/model 覆写、丢弃继承的 reasoningEffort——installModelSelection 的 withoutInheritedEffort 模式）并清除；appliedTurnStep 防重放。
 3. 候选过滤：当前模型 / 冷却中 / 本步已失败 / provider/* 条目目标 provider 无此模型 id（存在性探针，仅 wildcard 条目受探针约束；exact 条目永不探针过滤）。
 

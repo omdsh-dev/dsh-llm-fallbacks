@@ -86,7 +86,7 @@ The plugin ships **5 bundled omp-style preset roles** — generic subagent roles
 
 ## Entry syntax
 
-**Chain entries** (the values of `roles.list[].chain` / `timeSlots[].chain`, ordered; the all-day `rootChain` is a single-entry list — exactly one official model):
+**Chain entries** (the values of `roles.list[].chain` / `timeSlots[].chain`, ordered; the all-day `rootChain` is an ordered chain whose LAST entry must be exactly one official model — leading entries are optional walk targets before that last-resort tail):
 
 - `provider/model` — exact switch: switch to the specified model; the model id may itself contain `/` (e.g. NVIDIA NIM `nvidia/minimaxai/minimax-m3` or Hugging Face `org/repo`-style names);
 - `provider/*` — keep the failed model id and switch the provider only; when the target provider lacks this model id the candidate is skipped (fuzzy near-match resolution is out of scope for this iteration).

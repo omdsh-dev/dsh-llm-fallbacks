@@ -131,6 +131,11 @@ export function markFallbacksSwitchIgnorable(lines: string[]): MarkFallbacksSwit
  * is present, so ANY such row makes the log unrepairable — this is the
  * fail-closed detection, separate from the pure transform's `changed` count
  * (which only counts rows the transform would modify).
+ *
+ * Detection is valid-JSON-only: an unparseable line (e.g. a truncated row)
+ * is skipped, so a log whose switch row is itself malformed classifies as
+ * `unchanged` — the raw-substring alternative is deliberately rejected
+ * because `fallbacks/switch` legitimately appears inside user data.
  */
 export function countFallbacksSwitchRows(lines: string[]): number {
   let count = 0
@@ -154,9 +159,6 @@ export function countFallbacksSwitchRows(lines: string[]): number {
 
 interface CliOptions {
   root: string
-  dryRun: boolean
-  backup: boolean
-  apply: boolean
 }
 
 function usage(): string {
@@ -179,9 +181,6 @@ function expandHome(p: string): string {
 
 export function parseArgs(argv: string[]): CliOptions {
   let root = join(homedir(), '.dsh', 'sessions')
-  let dryRun = false
-  let backup = false
-  let apply = false
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]
     // pnpm run <script> -- <args> forwards the separator `--`; skip it.
@@ -193,24 +192,16 @@ export function parseArgs(argv: string[]): CliOptions {
         root = expandHome(argv[i])
         break
       case '--dry-run':
-        dryRun = true
-        break
       case '--backup':
-        backup = true
-        break
       case '--apply':
-        apply = true
+        // Legacy mutation-era flags: accepted as no-ops — the tool never
+        // writes, so no flag controls a write or a precondition.
         break
       default:
         throw new Error(`${usage()}\n\nunknown argument: ${arg}`)
     }
   }
-  if (apply && !backup) {
-    throw new Error(
-      `${usage()}\n\n--apply requires --backup: real modification must keep a .bak copy of every replaced session log (run with --dry-run first to review)`,
-    )
-  }
-  return { root, dryRun, backup, apply }
+  return { root }
 }
 
 /** Resolve the zstd CLI binary; throw a clear error when it is missing. */
@@ -253,28 +244,6 @@ type FileOutcome =
   | { action: 'unchanged'; changed: 0 }
   | { action: 'refused'; changed: number; error: string }
   | { action: 'error'; changed: number; error: string }
-
-/**
- * Encode plaintext as concatenated zstd frames (frame 1 = header line +
- * `\n` only; frame 2 = remaining lines) — the framing shape the released
- * `assertZstdHeaderFrame` requires. Retained for the transform-boundary
- * tests; the CLI never writes (the released chain refuses the marked
- * events, see the module docblock).
- */
-export function encodeRepairedSessionLog(zstd: string, lines: string[]): Buffer {
-  const header = lines[0] ?? ''
-  const headerPlain = header.endsWith('\n') ? header : `${header}\n`
-  const zstdOut = { input: headerPlain, maxBuffer: MAX_BUFFER }
-  const frame1 = execFileSync(zstd, ['-c'], zstdOut)
-  const rest = lines.slice(1)
-  if (rest.length === 0 || (rest.length === 1 && rest[0] === '')) return frame1
-  const restPlain = rest.join('\n')
-  const frame2 = execFileSync(zstd, ['-c'], {
-    input: restPlain.endsWith('\n') ? restPlain : `${restPlain}\n`,
-    maxBuffer: MAX_BUFFER,
-  })
-  return Buffer.concat([frame1, frame2])
-}
 
 /**
  * Decompress one log and classify it: `unchanged` when it carries no

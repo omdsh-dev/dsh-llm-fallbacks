@@ -4,9 +4,11 @@
  * Writing is stopped (issue #52): the plugin no longer appends this event —
  * the apply()-time event-type registration was proven ineffective (module
  * instance mismatch), and a session containing the event refused to load
- * after a dsh restart. The event now exists only in history: old logs are
- * repaired by `scripts/repair-fallbacks-switch-logs.ts`, which marks legacy
- * events ignorable so affected sessions load again.
+ * after a dsh restart. The event now exists only in history: old logs that
+ * contain it cannot be repaired by an `ignorable` flag (the released
+ * session-format chain refuses unknown event types even when marked
+ * ignorable), so `scripts/repair-fallbacks-switch-logs.ts` is a detector
+ * that reports such logs and never writes.
  * The module is type-only — the augmentation is erased at runtime; the
  * plugin's runtime behavior lives in `src/index.ts`.
  *

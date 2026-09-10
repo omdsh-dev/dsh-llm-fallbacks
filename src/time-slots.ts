@@ -23,6 +23,14 @@ export const OFFICIAL_V4_FLASH = 'deepseek-official/deepseek-v4-flash'
 export const OFFICIAL_V4_PRO = 'deepseek-official/deepseek-v4-pro'
 export const OFFICIAL_FLASH = 'deepseek-official/deepseek-flash'
 
+/** The three official all-day tail ids (XOR — exactly one legal tail). */
+export const OFFICIAL_ALL_DAY_IDS = [OFFICIAL_V4_FLASH, OFFICIAL_V4_PRO, OFFICIAL_FLASH] as const
+
+/** Whether `id` is one of the three official all-day tail ids. */
+export function isOfficialAllDayId(id: string): boolean {
+  return id === OFFICIAL_V4_FLASH || id === OFFICIAL_V4_PRO || id === OFFICIAL_FLASH
+}
+
 /** The four frozen preset ids (exact strings, spec lock). */
 export const PRESET_IDS = ['liang-peak', 'liang-valley', 'glm-peak', 'glm-valley'] as const
 
@@ -234,7 +242,7 @@ function labelOf(row: SlotRowConfig): string {
 export function isAllDayConforming(chain: readonly string[]): boolean {
   if (chain.length < 1) return false
   const tail = chain[chain.length - 1]
-  return tail === OFFICIAL_V4_FLASH || tail === OFFICIAL_V4_PRO || tail === OFFICIAL_FLASH
+  return isOfficialAllDayId(tail)
 }
 
 /**
