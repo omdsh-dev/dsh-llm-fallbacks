@@ -580,13 +580,13 @@ export interface LogOutcome {
   class: RefusalClass
   status: LogStatus
   /**
-   * Why the STRICT, current-format policy refuses this log while the host loader's
-   * lenient policy called it `ok`, or `null` when both agree.
-   *
-   * The lenient policy can swallow a refusal and drop the rows after it, so an
-   * `ok` verdict alone would claim a session opens intact when it opens with rows
-   * missing; this field is that cross-check's evidence (and `token()` prints
-   * `ok-truncated` for it).
+   * Why the released chain with STRICT recovery (the host loader's own validation
+   * axis) refuses this log while the loader's lenient policy called it `ok`, or
+   * `null` when that stricter attempt accepts the log — and also `null` when NO
+   * oracle resolved, because then there is no strict verdict to report at all (the
+   * report says STRUCTURAL ONLY). The two policies differ exactly by `recovery`, so
+   * a refusal here means the session opens with the rows after it dropped; that is
+   * why `token()` prints `ok-truncated` for it instead of a clean `ok`.
    */
   strictRefusal: string | null
   /** Human-facing one-line explanation. */
@@ -600,7 +600,11 @@ export interface LogOutcome {
    * derived from {@link droppedEventCount}). `0` therefore means "this log
    * carries no legacy row at all"; a non-zero population with
    * `droppedEventCount === 0` means the drop was refused or not requested.
-   * Stays `0` for a log that could not be decoded: its population is unknown.
+   *
+   * It stays `0` for the two states where the population is NOT measured, and both
+   * are reported as such in `detail` (never presented as a measured zero): a log
+   * that could not be decoded, and a log whose analysis threw before the count was
+   * taken (`analysisFailureOutcome`).
    */
   legacyEventCount: number
   /**
@@ -628,6 +632,14 @@ export interface LogOutcome {
   selected: boolean
   /** Basename of the successor generation this run published, else `null`. */
   published: string | null
+  /**
+   * Absolute path of a successor that IS on disk and was published from a stale
+   * snapshot this run did not create, else `null`. Structured on purpose: with
+   * `published: null` and `alreadyPublished: false` the free-text `detail` would be
+   * the only thing distinguishing "nothing was published" from "a file is there and
+   * must be deleted", which is exactly the reading C-2 forbids.
+   */
+  stalePublicationPath: string | null
   /**
    * A successor generation was ALREADY published and is proven to load: in
    * report mode by reading it back through the oracle, in apply mode by the
@@ -755,7 +767,12 @@ function sha256(bytes: Buffer): string {
 function strictRefusalOf(rows: readonly ParsedRow[], catalog: CatalogHandle | null): string | null {
   if (catalog === null) return null
   try {
-    restoreRows(catalog.catalog, structuredClone(rows), { recovery: 'strict', validation: 'current' })
+    // STRICT RECOVERY, the host loader's own validation axis: the lenient policy
+    // differs from this one exactly by `recovery`, so a refusal found here can only
+    // mean the rows after it are dropped — not merely that the session is not
+    // current-shaped. Using the publisher's `validation: 'current'` axis here would
+    // over-claim truncation for a log that loses no rows at all.
+    restoreRows(catalog.catalog, structuredClone(rows), { recovery: 'strict', validation: 'transformed' })
     return null
   } catch (error) {
     const cause = error instanceof Error ? error.cause : undefined
@@ -870,13 +887,13 @@ function lossyDropRefusal(
   }
   // Re-derivation, NOT an independent oracle: the renumber is recomputed over the
   // drop's own survivors through the SAME gate (`legacyDropSplit` +
-  // `renumberSurvivingEvents`), so a bug shared by both layers would agree with
-  // itself here. What it buys is that the reported count and refusal reason are
-  // properties of the ROWS rather than of the report; the genuinely independent
-  // evidence is the released strict restore below, and the rule adds an
-  // output-side dense-`seq` invariant so the two layers fail on different
-  // evidence. The later rules legitimately rewrite rows, so only the drop's own
-  // row count is compared.
+  // `renumberSurvivingEvents`), so a bug shared by the two would agree with itself
+  // here — the rule's output-side dense-`seq` check and this re-derivation live in
+  // the same function and therefore add input-walk-vs-output-rows evidence, not
+  // independent evidence. What this buys is that the reported count and refusal
+  // reason are properties of the ROWS rather than of the report; the genuinely
+  // independent gate is the released strict restore below. The later rules
+  // legitimately rewrite rows, so only the drop's own row count is compared.
   const { survivors } = legacyDropSplit(rows)
   if (survivors.length !== repaired.length) {
     return {
@@ -937,10 +954,13 @@ export function analysisFailureOutcome(candidate: LogGeneration, error: unknown)
   return {
     path: candidate.path,
     generation: candidate.generation,
+    // `other-refusal` is the vocabulary's own "no class could be established"
+    // bucket: the failure happened before the refusal was known, so no measured
+    // class is being claimed (and `failed: true` is what counts it).
     class: 'other-refusal',
     status: 'unrepairable',
     strictRefusal: null,
-    detail: `analysis failed, nothing was written for this log: ${messageOf(error)}`,
+    detail: `analysis failed before this log's counts were known, nothing was written for this log: ${messageOf(error)}`,
     findings: [],
     legacyEventCount: 0,
     droppedEventCount: 0,
@@ -949,6 +969,7 @@ export function analysisFailureOutcome(candidate: LogGeneration, error: unknown)
     selected: true,
     published: null,
     alreadyPublished: false,
+    stalePublicationPath: null,
     failed: true,
   }
 }
@@ -968,6 +989,7 @@ async function analyzeLog(candidate: LogGeneration, context: InspectContext): Pr
     renumberedEventCount: 0,
     lossyRefusal: null as LossyRefusalReason | null,
     strictRefusal: null as string | null,
+    stalePublicationPath: null as string | null,
   }
 
   let rows: ParsedRow[]
@@ -1017,8 +1039,8 @@ async function analyzeLog(candidate: LogGeneration, context: InspectContext): Pr
       legacyEventCount: legacy,
       detail: strictRefusal === null
         ? 'no refusal'
-        : "the host loader's policy reads no refusal, but the STRICT current-format policy refuses this session, so "
-          + `it opens with the rows after that refusal silently dropped: ${strictRefusal}`,
+        : "the host loader's policy reads no refusal, but the same loader policy with STRICT recovery refuses this "
+          + `session, so it opens with the rows after that refusal silently dropped: ${strictRefusal}`,
       findings: structural.findings,
     }
   }
@@ -1060,6 +1082,25 @@ async function analyzeLog(candidate: LogGeneration, context: InspectContext): Pr
   // not, the run says so and writes nothing for it — the report must not promise a
   // repair the same invocation cannot perform.
   const proof = context.classFilter === null ? fullProof : runProof(rows, context.rules)
+  // A filtered chain can also succeed while performing LESS than the full policy:
+  // with `--drop-legacy-events --class source-kind` the drop rule is out of the
+  // selected chain, so the policy's only repair for the legacy rows is not applied
+  // and `--apply` would hand rows the publisher then refuses. The promise must
+  // account for the enabled policy, not only for the selected class.
+  if (context.classFilter !== null
+    && droppedEventCount(fullProof.findings) > 0
+    && droppedEventCount('findings' in proof ? proof.findings : []) === 0) {
+    return {
+      ...base,
+      class: refusal,
+      status: 'repairable',
+      selected: false,
+      legacyEventCount: legacy,
+      detail: `repairable by the full policy, but --class ${String(context.classFilter)} excludes the rule that `
+        + 'removes this log\'s legacy fallbacks/switch row(s), so --apply with this filter cannot publish it',
+      findings: structural.findings,
+    }
+  }
   if ('refused' in proof) {
     return {
       ...base,
@@ -1100,10 +1141,11 @@ async function analyzeLog(candidate: LogGeneration, context: InspectContext): Pr
   }
   const renumbered = verdict === null ? 0 : verdict.renumberedEventCount
 
-  // The catalog is guaranteed here: a repairable class can only come from the
-  // rule registry when no oracle resolved, and the publisher needs the oracle
-  // anyway. Without an oracle the successor name is unknown, so nothing is
-  // probed and `--apply` was already refused as fatal by the caller.
+  // The successor NAME needs the catalog's current version, so it is only known
+  // with a resolved oracle: in report mode without one nothing is probed (the log
+  // is still reported `repairable` from the rule registry alone), and `--apply`
+  // was already refused as fatal by the caller — which is why the null case is
+  // checked here rather than assumed away.
   const catalog = context.catalog
   const expected = catalog === null ? null : successorFilename(catalog.catalog.currentVersion)
   const successorPath = expected === null ? null : join(candidate.sessionDir, expected)
@@ -1203,6 +1245,7 @@ async function analyzeLog(candidate: LogGeneration, context: InspectContext): Pr
       status: 'unrepairable',
       failed: true,
       legacyEventCount: legacy,
+      stalePublicationPath: stalePath,
       detail: stalePath === null
         ? `repair failed, nothing was published: ${messageOf(error)}`
         : `a successor WAS published from a snapshot that is now stale — DELETE ${stalePath} to roll the `
@@ -1219,7 +1262,15 @@ async function analyzeLog(candidate: LogGeneration, context: InspectContext): Pr
 async function classifyFile(path: string, context: InspectContext): Promise<RefusalClass> {
   try {
     const rows = decodeRows(context.decodeZstdFrames(await readFile(path)))
-    return context.catalog === null ? classifyRows(rows, BUILT_IN_RULES).class : classifyWithCatalog(rows, context.catalog)
+    // The report's structural pass uses the RUN'S policy rules (not the default
+    // registry): an existing successor is judged by the same rule set this run was
+    // invoked with. The catalog-null arm is DEFENSIVE — this function's only call
+    // site sits behind `existingSuccessor !== null`, which already requires a
+    // resolved oracle for the successor name — but it must not silently classify
+    // with a different policy if a future caller reaches it.
+    return context.catalog === null
+      ? classifyRows(rows, context.reportRules).class
+      : classifyWithCatalog(rows, context.catalog)
   } catch {
     return 'decompress-failed'
   }
@@ -1363,8 +1414,12 @@ export async function runRepair(
     skipped: discovery.skipped,
     staleStagingFiles: discovery.staleStagingFiles,
     // An input this run could not inspect is not a clean run, and neither is a log
-    // still not loadable: both exit 1 (a fatal input problem exits 2 above).
-    exitCode: summary.refused > 0 || discovery.skipped.length > 0 ? EXIT_REFUSED : EXIT_CLEAN,
+    // still not loadable; a stranded staging file is the residue of an interrupted
+    // publication this run cannot vouch for either (it never deletes it). All three
+    // exit 1 (a fatal input problem exits 2 above).
+    exitCode: summary.refused > 0 || discovery.skipped.length > 0 || discovery.staleStagingFiles.length > 0
+      ? EXIT_REFUSED
+      : EXIT_CLEAN,
   }
 }
 
@@ -1510,22 +1565,26 @@ function reportText(result: RunResult, io: CliIO, quiet: boolean): void {
     )
   }
 
+  // Never silent, and never hidden by --quiet: an input the walk could not inspect
+  // (named with its errno) and the residue of an interrupted publication. These are
+  // diagnostics about the ROOT, not per-log report rows, and each of them makes the
+  // run exit 1 — which is what the README promises.
+  if (result.logs.length === 0 && result.skipped.length === 0 && result.staleStagingFiles.length === 0) {
+    io.out(`  no session log with a canonical generation below v${CURRENT_VERSION_FLOOR} under this root`)
+  }
+  for (const entry of result.skipped) {
+    io.out(`  ${'skipped'.padEnd(TOKEN_WIDTH)} ${entry.path}: ${entry.reason}`)
+  }
+  for (const path of result.staleStagingFiles) {
+    io.out(
+      `  ${'stale staging'.padEnd(TOKEN_WIDTH)} ${path}: residue of an interrupted publication; `
+      + 'this tool never removes it, delete it once no run is active',
+    )
+  }
+
   if (!quiet) {
-    if (result.logs.length === 0 && result.skipped.length === 0) {
-      io.out(`  no session log with a canonical generation below v${CURRENT_VERSION_FLOOR} under this root`)
-    }
     for (const log of result.logs) {
       io.out(`  ${token(log, result.mode).padEnd(TOKEN_WIDTH)} ${log.path} (v${log.generation}): ${log.detail}`)
-    }
-    // Never silent: an input the walk could not inspect is named, with its errno.
-    for (const entry of result.skipped) {
-      io.out(`  ${'skipped'.padEnd(TOKEN_WIDTH)} ${entry.path}: ${entry.reason}`)
-    }
-    for (const path of result.staleStagingFiles) {
-      io.out(
-        `  ${'stale staging'.padEnd(TOKEN_WIDTH)} ${path}: residue of an interrupted publication; `
-        + 'this tool never removes it, delete it once no run is active',
-      )
     }
     io.out('')
     io.out('class                        logs')
@@ -1604,10 +1663,12 @@ original generation is never modified and never truncated.
                  present beside it is reported as an already published successor (proven
                  by a read-back) instead of being a repair target.
                  A namespace/session directory that cannot be read, a canonical
-                 generation that is a symlink or not a regular file, and a stale
-                 session.repair.*.jsonl.zstd.tmp are REPORTED (a skipped/stale entry in
-                 the text report and in --json) and make the run exit 1; they suppress
-                 the "no session log ..." line. An unreadable ROOT is fatal (exit 2).
+                 generation BELOW the format floor that is a symlink or not a regular
+                 file, and a stale session.repair.*.jsonl.zstd.tmp are REPORTED (a
+                 skipped/stale entry, always printed, not hidden by --quiet) and make the
+                 run exit 1; they suppress the "no session log ..." line. An unreadable
+                 ROOT is fatal (exit 2). Above the floor a name is not a candidate at
+                 all, so its shape is not inspected.
                  Symlinks are reported, never followed: a repair writes beside the
                  generation it repairs, which must stay inside --root.
   --apply        run the rules' proofs and publish a successor generation per repaired
@@ -1668,10 +1729,12 @@ original generation is never modified and never truncated.
 
 POLICIES: a log's class and its "ok" come from the host loader's policy (what decides
 whether the GUI opens the session), but that policy can swallow a refusal and drop the
-rows after it. Every ok log is therefore cross-checked with the strict, current-format
-policy: when that refuses, the log is reported "ok-truncated" (with a strictRefusal
-reason in --json and an ok-truncated count in the summary) because the session opens
-WITHOUT the rows the strict policy rejects. Such logs still exit 0 — they do load.
+rows after it. Every ok log is therefore cross-checked with the SAME loader policy under
+STRICT recovery — one axis apart, so a refusal there means rows were dropped, not merely
+that the session is not current-shaped. When it refuses, the log is reported
+"ok-truncated" (with a strictRefusal reason in --json and an ok-truncated count in the
+summary) because the session opens WITHOUT the rows that refusal swallowed. Such logs
+still exit 0 — they do load.
 
 PRECONDITION for --apply: run it only while NO dsh instance is writing the sessions
 under --root. The successor is linked into the session directory without observing the

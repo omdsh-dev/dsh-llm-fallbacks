@@ -49,7 +49,8 @@
     "release:validate": "tsx scripts/validate-release-version.ts",
     "repair:session-logs": "tsx scripts/repair-session-logs.ts",
     "test": "vitest run",
-    "typecheck": "tsc -p tsconfig.build.json --noEmit && tsc --noEmit",
+    "typecheck": "tsc -p tsconfig.build.json --noEmit && tsc --noEmit && pnpm run typecheck:scripts",
+    "typecheck:scripts": "tsc -p tsconfig.scripts.json",
     "prepare": "pnpm run build"
   },
   "engines": {

@@ -806,6 +806,28 @@ describe('publication revision pin (C-2)', () => {
   })
 })
 
+describe('stale-publication settlement (seat 3 N-1)', () => {
+  it('names the successor when the unlink of a created target fails', async () => {
+    const dir = tempDir('slr-stale-rm-fails-')
+    const logPath = join(dir, 'session.jsonl.zstd')
+    const targetPath = join(dir, 'session.v3.jsonl.zstd')
+    writeFileSync(logPath, 'source bytes')
+    // A DIRECTORY at the target path makes `rm(target, { force: true })` fail.
+    mkdirSync(targetPath)
+    writeFileSync(join(targetPath, 'occupied'), 'x')
+
+    const failure = await settleStalePublication(logPath, targetPath, 'created').catch((error: unknown) => error)
+
+    // The file this call created is still there, so "nothing was published" would be
+    // wrong: the failure must name it and ask for a manual delete.
+    expect(failure).toBeInstanceOf(PublishedFromStaleSourceError)
+    expect((failure as PublishedFromStaleSourceError).successorPath).toBe(targetPath)
+    expect((failure as Error).message).toContain('could NOT be removed')
+    expect((failure as Error).message).toContain('delete it manually')
+    expect(existsSync(targetPath)).toBe(true)
+  })
+})
+
 describe('catalog release pin (C-3)', () => {
   it('accepts a catalog at or above the required version and refuses one below it', () => {
     const handle = (currentVersion: number): CatalogHandle => ({

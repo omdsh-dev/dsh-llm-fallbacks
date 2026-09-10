@@ -421,7 +421,20 @@ export async function settleStalePublication(
   outcome: PublicationOutcome,
 ): Promise<never> {
   if (outcome === 'created') {
-    await rm(targetPath, { force: true })
+    try {
+      await rm(targetPath, { force: true })
+    } catch (error) {
+      // The unlink itself failed, so the file this call created IS still on disk:
+      // say that (and name it) instead of letting the raw fs error surface as
+      // "nothing was published" while a successor exists.
+      throw new PublishedFromStaleSourceError(
+        `the source generation changed during publication: ${logPath}, and the successor this call created `
+        + `(${targetPath}) could NOT be removed (${error instanceof Error ? error.message : String(error)}) — `
+        + 'delete it manually to roll the publication back.',
+        targetPath,
+        outcome,
+      )
+    }
     throw new Error(
       `the source generation changed during publication: ${logPath}. The successor this call created `
       + `(${targetPath}) was removed; nothing was published.`,

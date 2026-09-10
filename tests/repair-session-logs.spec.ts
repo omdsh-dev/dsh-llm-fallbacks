@@ -1469,8 +1469,11 @@ describe('--drop-legacy-events', () => {
     const digest = sha256(log.path)
     const sink = captureIO()
 
-    // `--class source-kind` excludes the drop rule from this run's proof chain, so
-    // the legacy log is reported as repairable-but-not-selected and never written.
+    // `--class source-kind` excludes the drop rule from this run's proof chain. The
+    // full policy repairs the log, so it is reported `repairable`, but with the
+    // filter the policy's only repair for the legacy rows is not applied — the
+    // promise must say that instead of "run with --apply" (which would fail at the
+    // publisher's strict restore), and nothing may be written.
     const code = await execute(
       optionsFor({ root, catalogPath, apply: true, backup: true, dropLegacyEvents: true, classFilter: 'source-kind' }),
       sink.io,
@@ -1478,11 +1481,27 @@ describe('--drop-legacy-events', () => {
     )
 
     expect(code).toBe(1)
-    expect(sink.out()).toContain('--class source-kind excludes this class from this run')
+    expect(sink.out()).toContain(
+      "--class source-kind excludes the rule that removes this log's legacy fallbacks/switch row(s)",
+    )
+    expect(sink.out()).toContain('so --apply with this filter cannot publish it')
+    expect(sink.out()).not.toContain('run with --apply')
     expect(sink.out()).toContain('not selected 1')
     expect(sink.err()).not.toContain('!! LOSSY: dropped')
     expect(sha256(log.path)).toBe(digest)
     expect(listing(log.dir)).toEqual(['session.jsonl.zstd'])
+
+    // Report mode makes the same promise correction (no --apply involved).
+    const report = captureIO()
+    expect(
+      await execute(
+        optionsFor({ root, catalogPath, dropLegacyEvents: true, classFilter: 'source-kind' }),
+        report.io,
+        bareEnv(),
+      ),
+    ).toBe(1)
+    expect(report.out()).toContain('so --apply with this filter cannot publish it')
+    expect(report.out()).not.toContain('run with --apply')
   })
 })
 
@@ -1875,6 +1894,48 @@ describe('discovery never fails open (C-1)', () => {
     }
   })
 
+  it('folds stale staging and skips into the exit code, the empty-root line and --quiet', async () => {
+    // A root whose ONLY content is the residue of an interrupted publication: no
+    // candidate, no unreadable input — but the store is not "clean", so the run says
+    // so everywhere the docs promise it does.
+    const staleRoot = tempDir('rsl-stale-only-')
+    const staleDir = join(staleRoot, 'example-ns', 'session-stale')
+    mkdirSync(staleDir, { recursive: true })
+    writeFileSync(join(staleDir, 'session.repair.deadbeef.jsonl.zstd.tmp'), 'staged bytes')
+    const stale = captureIO()
+
+    expect(await execute(optionsFor({ root: staleRoot }), stale.io, bareEnv())).toBe(1)
+    expect(stale.out()).toContain('stale staging')
+    expect(stale.out()).toContain('session.repair.deadbeef.jsonl.zstd.tmp')
+    expect(stale.out()).not.toContain('no session log with a canonical generation')
+    expect(stale.out()).toContain('stale staging 1')
+
+    // --quiet keeps the named diagnostics (only the per-log lines and the by-class
+    // table are suppressed), which is what the README promises.
+    const quiet = captureIO()
+    expect(await execute(optionsFor({ root: staleRoot, quiet: true }), quiet.io, bareEnv())).toBe(1)
+    expect(quiet.out()).toContain('stale staging')
+    expect(quiet.out()).toContain('session.repair.deadbeef.jsonl.zstd.tmp')
+    expect(quiet.out()).not.toContain('class                        logs')
+
+    // The suppression branch with NO candidates and at least one SKIP (the C-1 tests
+    // always keep a healthy log in the tree): a root with one symlinked session only.
+    const skipRoot = tempDir('rsl-skip-only-')
+    const target = join(skipRoot, 'target-session')
+    mkdirSync(target, { recursive: true })
+    writeFileSync(join(target, 'session.jsonl.zstd'), encodeZstdFrames(V0_HEADER, [{ ...PLAIN_ROW, seq: 0 }]))
+    const namespaceDir = join(skipRoot, 'example-ns')
+    mkdirSync(namespaceDir, { recursive: true })
+    symlinkSync(target, join(namespaceDir, 'session-linked'))
+    const skippedOnly = captureIO()
+
+    expect(await execute(optionsFor({ root: skipRoot }), skippedOnly.io, bareEnv())).toBe(1)
+    expect(skippedOnly.out()).toContain('skipped')
+    expect(skippedOnly.out()).toContain('session-linked')
+    expect(skippedOnly.out()).not.toContain('no session log with a canonical generation')
+    expect(skippedOnly.out()).toContain('skipped 1')
+  })
+
   it.skipIf(UID === 0)('makes an unreadable --root fatal (exit 2) instead of an empty report', async () => {
     const root = tempDir('rsl-root-eacces-')
     chmodSync(root, 0o000)
@@ -1943,11 +2004,151 @@ describe('publication revision pin (C-2)', () => {
     expect(listing(log.dir)).toEqual(['session.jsonl.zstd'])
   })
 
+  /**
+   * The fake catalog, but appending one row to the log while it ENCODES the
+   * successor — i.e. after the pre-write revision check and after the publication
+   * itself, which is the only window the post-publication settlement handles.
+   */
+  function appendOnEncodeCatalogBody(target: string): string {
+    // `JSON.stringify` keeps the appended row a legal JS string literal inside the
+    // generated module: a raw newline there would make the module fail to parse, and
+    // the catalog would then simply not resolve.
+    const appendedRow = JSON.stringify(
+      '{"type":"turn/end","seq":1,"time":2,"data":{"turn":1,"reason":{"kind":"completed"}}}\n',
+    )
+    return FAKE_CATALOG_BODY
+      .replace(
+        'export const sessionFormatCatalog = {',
+        `import { appendFileSync } from 'node:fs'
+let appendedOnEncode = false
+export const sessionFormatCatalog = {`,
+      )
+      .replace(
+        '  encodeCurrentEvent: (event) => ({ ...event }),',
+        `  encodeCurrentEvent: (event) => {
+    if (!appendedOnEncode) {
+      appendedOnEncode = true
+      appendFileSync(${JSON.stringify(target)}, ${appendedRow})
+    }
+    return { ...event }
+  },`,
+      )
+  }
+
+  /** A repairable log (descriptor v2) the fake catalog can publish. */
+  function writePublishableLog(root: string, session: string): { dir: string; path: string } {
+    return writeGeneration(root, 'example-ns', session, 'session.jsonl.zstd', V0_HEADER, [
+      { ...PLAIN_ROW, seq: 0 },
+      { ...DESCRIPTOR_V2, seq: 1 },
+    ])
+  }
+
+  it('removes a successor it created when the source moved after publication (end to end)', async () => {
+    const root = tempDir('rsl-stale-after-created-')
+    const log = writePublishableLog(root, 'session-stale-created')
+    const catalogPath = writeFakeCatalog(undefined, appendOnEncodeCatalogBody(log.path))
+    const sink = captureIO()
+
+    const code = await execute(optionsFor({ root, catalogPath, apply: true, json: true }), sink.io, bareEnv())
+    const document = JSON.parse(sink.out()) as RunResult
+
+    // The created successor was unlinked again, so "nothing was published" is true
+    // and there is no stale path to report.
+    expect(code).toBe(1)
+    expect(document.logs[0]).toMatchObject({ status: 'unrepairable', failed: true, published: null })
+    expect(document.logs[0]?.stalePublicationPath).toBeNull()
+    expect(document.logs[0]?.detail).toContain('nothing was published')
+    expect(listing(log.dir)).toEqual(['session.jsonl.zstd'])
+  })
+
+  it('names an ACCEPTED successor left on disk when the source moved after publication (end to end)', async () => {
+    const root = tempDir('rsl-stale-after-accepted-')
+    const log = writePublishableLog(root, 'session-stale-accepted')
+    // First publication (no race): this creates the canonical successor.
+    expect(await execute(optionsFor({ root, catalogPath: writeFakeCatalog(), apply: true }), captureIO().io, bareEnv())).toBe(0)
+    const successor = join(log.dir, 'session.v3.jsonl.zstd')
+    const publishedDigest = sha256(successor)
+
+    // Second run with the appending oracle: the identical target is ACCEPTED, then the
+    // source is found changed — the file is NOT this run's to delete.
+    const catalogPath = writeFakeCatalog(undefined, appendOnEncodeCatalogBody(log.path))
+    const sink = captureIO()
+    const code = await execute(optionsFor({ root, catalogPath, apply: true, json: true }), sink.io, bareEnv())
+    const document = JSON.parse(sink.out()) as RunResult
+
+    expect(code).toBe(1)
+    expect(document.logs[0]).toMatchObject({
+      status: 'unrepairable',
+      failed: true,
+      published: null,
+      alreadyPublished: false,
+    })
+    // Structured, not free text: a consumer cannot read this as "nothing was published".
+    expect(document.logs[0]?.stalePublicationPath).toBe(successor)
+    expect(document.logs[0]?.detail).toContain('a successor WAS published from a snapshot that is now stale')
+    expect(document.logs[0]?.detail).toContain(successor)
+    expect(existsSync(successor)).toBe(true)
+    expect(sha256(successor)).toBe(publishedDigest)
+    expect(listing(log.dir)).toEqual(['session.jsonl.zstd', 'session.v3.jsonl.zstd'])
+  })
+
   it('keeps the "nothing was published" wording only when nothing was published', async () => {
     const candidate = { path: '/tmp/example/session.jsonl.zstd', generation: 0, sessionDir: '/tmp/example' }
     const outcome = analysisFailureOutcome(candidate, new Error('boom'))
     expect(outcome).toMatchObject({ status: 'unrepairable', failed: true, published: null })
-    expect(outcome.detail).toContain('analysis failed, nothing was written for this log: boom')
+    expect(outcome.detail).toContain("analysis failed before this log's counts were known")
+    expect(outcome.detail).toContain('nothing was written for this log: boom')
+    expect(outcome.stalePublicationPath).toBeNull()
+  })
+})
+
+describe('ok-truncated cross-check axis (seat 2 N-3)', () => {
+  /**
+   * A catalog that refuses according to the policy it is asked for, so the axis the
+   * cross-check uses is directly observable: `onCurrent` mirrors the old
+   * `validation: 'current'` choice, `onStrictRecovery` mirrors the cross-check's.
+   */
+  function axisCatalogBody(mode: 'onCurrent' | 'onStrictRecovery'): string {
+    return FAKE_CATALOG_BODY
+      .replace(
+        '  createRestore(header, options) {',
+        `  createRestore(header, options) {
+    if (options && options.validation === 'current' && ${mode === 'onCurrent'}) {
+      throw new Error('refused by the current-format validation axis')
+    }
+    if (options && options.recovery === 'strict' && ${mode === 'onStrictRecovery'}) {
+      throw new Error('refused by strict recovery at seq 2')
+    }`,
+      )
+  }
+
+  it('reports plain ok when only the current-VALIDATION axis would refuse', async () => {
+    const root = tempDir('rsl-ok-axis-validation-')
+    writeGeneration(root, 'example-ns', 'session-ok', 'session.jsonl.zstd', V0_HEADER, [{ ...PLAIN_ROW, seq: 0 }])
+    const catalogPath = writeFakeCatalog(undefined, axisCatalogBody('onCurrent'))
+    const sink = captureIO()
+
+    expect(await execute(optionsFor({ root, catalogPath, json: true }), sink.io, bareEnv())).toBe(0)
+    const document = JSON.parse(sink.out()) as RunResult
+
+    // Same recovery policy as the loader: no rows are dropped, so the session is NOT
+    // truncated and must not be tokenised `ok-truncated`.
+    expect(document.logs[0]).toMatchObject({ status: 'ok', strictRefusal: null })
+    expect(document.summary.okTruncated).toBe(0)
+  })
+
+  it('reports ok-truncated when the same policy with STRICT recovery refuses', async () => {
+    const root = tempDir('rsl-ok-axis-recovery-')
+    writeGeneration(root, 'example-ns', 'session-ok', 'session.jsonl.zstd', V0_HEADER, [{ ...PLAIN_ROW, seq: 0 }])
+    const catalogPath = writeFakeCatalog(undefined, axisCatalogBody('onStrictRecovery'))
+    const sink = captureIO()
+
+    expect(await execute(optionsFor({ root, catalogPath, json: true }), sink.io, bareEnv())).toBe(0)
+    const document = JSON.parse(sink.out()) as RunResult
+
+    expect(document.logs[0]?.strictRefusal).toContain('refused by strict recovery at seq 2')
+    expect(document.summary.okTruncated).toBe(1)
+    expect(document.logs[0]?.detail).toContain('opens with the rows after that refusal silently dropped')
   })
 })
 
