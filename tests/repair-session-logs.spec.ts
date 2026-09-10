@@ -2051,7 +2051,11 @@ export const sessionFormatCatalog = {`,
     const catalogPath = writeFakeCatalog(undefined, appendOnEncodeCatalogBody(log.path))
     const sink = captureIO()
 
-    const code = await execute(optionsFor({ root, catalogPath, apply: true, json: true }), sink.io, bareEnv())
+    const code = await execute(
+      optionsFor({ root, catalogPath, apply: true, backup: true, json: true }),
+      sink.io,
+      bareEnv(),
+    )
     const document = JSON.parse(sink.out()) as RunResult
 
     // The created successor was unlinked again, so "nothing was published" is true
@@ -2060,6 +2064,8 @@ export const sessionFormatCatalog = {`,
     expect(document.logs[0]).toMatchObject({ status: 'unrepairable', failed: true, published: null })
     expect(document.logs[0]?.stalePublicationPath).toBeNull()
     expect(document.logs[0]?.detail).toContain('nothing was published')
+    // No successor survives, so the directory claim holds.
+    expect(document.logs[0]?.detail).toContain('so the session directory is as it was')
     expect(listing(log.dir)).toEqual(['session.jsonl.zstd'])
   })
 
@@ -2075,7 +2081,11 @@ export const sessionFormatCatalog = {`,
     // source is found changed — the file is NOT this run's to delete.
     const catalogPath = writeFakeCatalog(undefined, appendOnEncodeCatalogBody(log.path))
     const sink = captureIO()
-    const code = await execute(optionsFor({ root, catalogPath, apply: true, json: true }), sink.io, bareEnv())
+    const code = await execute(
+      optionsFor({ root, catalogPath, apply: true, backup: true, json: true }),
+      sink.io,
+      bareEnv(),
+    )
     const document = JSON.parse(sink.out()) as RunResult
 
     expect(code).toBe(1)
@@ -2089,6 +2099,13 @@ export const sessionFormatCatalog = {`,
     expect(document.logs[0]?.stalePublicationPath).toBe(successor)
     expect(document.logs[0]?.detail).toContain('a successor WAS published from a snapshot that is now stale')
     expect(document.logs[0]?.detail).toContain(successor)
+    // QA's fifth arm: this detail names a file the user must delete, so it must NOT
+    // also claim the directory is unchanged. (The created-successor-unlink-failed arm
+    // shares this condition — a non-null stale path — and cannot be induced
+    // deterministically without failing the .bak removal in the same directory, so the
+    // gate is pinned here, on the drivable arm that sets it.)
+    expect(document.logs[0]?.detail).not.toContain('as it was')
+    expect(document.logs[0]?.detail).toContain('the .bak copy this run created was removed again')
     expect(existsSync(successor)).toBe(true)
     expect(sha256(successor)).toBe(publishedDigest)
     expect(listing(log.dir)).toEqual(['session.jsonl.zstd', 'session.v3.jsonl.zstd'])

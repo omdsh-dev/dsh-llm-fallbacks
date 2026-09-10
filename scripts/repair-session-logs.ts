@@ -848,23 +848,27 @@ async function writeBackup(logPath: string): Promise<{ path: string; created: bo
 /**
  * Undo the `.bak` copy THIS run created after its publication failed.
  *
- * A failed run must leave the session directory as it found it, which is what its
- * detail says ("nothing was published"). A backup that already existed before the
- * run is NOT this run's to delete and is left alone.
+ * A backup that already existed before the run is NOT this run's to delete and is
+ * left alone.
  *
  * @param backup the copy this run made (or `null` when `--backup` was off).
+ * @param successorNamedForDeletion whether the failure is ALSO naming a successor
+ *   that is still on disk (the accepted-then-stale outcome, and a created successor
+ *   whose own unlink failed). The directory is not "as it was" in that case — a file
+ *   is there and the detail says to delete it — so the clause is only claimed when
+ *   no successor survives (QA's fifth-arm finding).
  * @returns a clause for the failure detail, or `''` when there is nothing to say.
  */
 async function discardCreatedBackup(
   backup: { path: string; created: boolean } | null,
+  successorNamedForDeletion: boolean,
 ): Promise<string> {
   if (backup === null || !backup.created) return ''
   try {
     await rm(backup.path, { force: true })
-    // "as it was" holds on every path that reaches here: a successor that
-    // pre-existed was accepted (never written by this run), and one this run created
-    // is unlinked by the publisher before this point.
-    return '; the .bak copy this run created was removed again, so the session directory is as it was'
+    return successorNamedForDeletion
+      ? '; the .bak copy this run created was removed again'
+      : '; the .bak copy this run created was removed again, so the session directory is as it was'
   } catch (error) {
     return `; WARNING the .bak copy this run created at ${backup.path} could NOT be removed (${messageOf(error)})`
   }
@@ -1284,9 +1288,10 @@ async function analyzeLog(candidate: LogGeneration, context: InspectContext): Pr
     // A publication that HAPPENED and then found its snapshot stale must never be
     // reported as "nothing was published": name the file and how to roll it back.
     const stalePath = context.stalePublicationPath(error)
-    // Whatever the failure was, the copy THIS run made must not outlive it: the
-    // session directory has to be as the run found it for that claim to hold.
-    const backupNote = await discardCreatedBackup(backup)
+    // Whatever the failure was, the copy THIS run made must not outlive it. The
+    // "as it was" clause is gated on the stale path: when a successor is being named
+    // for deletion, a file this run is pointing at is still there.
+    const backupNote = await discardCreatedBackup(backup, stalePath !== null)
     return {
       ...base,
       class: refusal,
