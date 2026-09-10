@@ -1,6 +1,6 @@
 /**
  * Time-slot rows for `fallbacks` (plan fallbacks-timeslots Task 1, pins
- * P4–P6): frozen preset windows, the official-V4 all-day conformance
+ * P4–P6): frozen preset windows, the official all-day conformance
  * guard, and the pure `resolveEffectiveChain` / `resolveSlotState`
  * resolver.
  *
@@ -17,9 +17,21 @@
 
 import type { FallbacksConfig } from './config.ts'
 
-/** Official V4 models — the ONLY legal all-day selectors (length 1, XOR). */
-export const OFFICIAL_V4_FLASH = 'deepseek-official/deepseek-v4-flash'
-export const OFFICIAL_V4_PRO = 'deepseek-official/deepseek-v4-pro'
+/** Official all-day selectors — the ONLY legal tails (length 1, XOR):
+ * Flash (the current official default, selectable) and Pro (displayed but
+ * disabled — its model is not yet served by the 0.1.5-rc.1 catalog). The
+ * retired V4 ids (`deepseek-v4-flash` / `deepseek-v4-pro`) are no longer
+ * legal tails. */
+export const OFFICIAL_FLASH = 'deepseek-official/deepseek-flash'
+export const OFFICIAL_PRO = 'deepseek-official/deepseek-pro'
+
+/** The two official all-day tail ids (XOR — exactly one legal tail). */
+export const OFFICIAL_ALL_DAY_IDS = [OFFICIAL_FLASH, OFFICIAL_PRO] as const
+
+/** Whether `id` is one of the two official all-day tail ids. */
+export function isOfficialAllDayId(id: string): boolean {
+  return id === OFFICIAL_FLASH || id === OFFICIAL_PRO
+}
 
 /** The four frozen preset ids (exact strings, spec lock). */
 export const PRESET_IDS = ['liang-peak', 'liang-valley', 'glm-peak', 'glm-valley'] as const
@@ -222,17 +234,18 @@ function labelOf(row: SlotRowConfig): string {
 
 /**
  * All-day conformance (P6): the all-day chain is conforming when its LAST
- * entry (the tail — the card's 默认模型 panel) is exactly one official V4
- * model — Flash XOR Pro. Leading entries (the card's 默认降级链 block) are
- * the ordered walk before that last-resort fallback. An empty chain or a
- * chain whose tail is not an official V4 model keeps slot rows inert and
- * refuses the virtual-row override/delegate; the v0.2.2 failure walk over
- * the raw chain stays verbatim.
+ * entry (the tail — the card's 默认模型 panel) is exactly one official
+ * model — Flash or Pro (XOR). Leading entries (the card's 默认降级链 block)
+ * are the ordered walk before that last-resort fallback. An empty chain or
+ * a chain whose tail is not an official model (including the retired V4
+ * ids) keeps slot rows inert and refuses the virtual-row
+ * override/delegate; the v0.2.2 failure walk over the raw chain stays
+ * verbatim.
  */
 export function isAllDayConforming(chain: readonly string[]): boolean {
   if (chain.length < 1) return false
   const tail = chain[chain.length - 1]
-  return tail === OFFICIAL_V4_FLASH || tail === OFFICIAL_V4_PRO
+  return isOfficialAllDayId(tail)
 }
 
 /**

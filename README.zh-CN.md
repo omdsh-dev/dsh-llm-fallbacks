@@ -7,7 +7,7 @@
 ![node](https://img.shields.io/badge/node-%3E%3D22-339933.svg)
 ![pnpm](https://img.shields.io/badge/pnpm-%3E%3D10-f69220.svg)
 ![dsh tui](https://img.shields.io/badge/dsh%20tui-compatible-4B32C3.svg)
-![dsh](https://img.shields.io/badge/DSH-0.1.2--rc.1-4B32C3.svg)
+![dsh](https://img.shields.io/badge/DSH-0.1.5--rc.1-4B32C3.svg)
 [![dshfind](https://dshfind.com/api/badge/omdsh-dev/dsh-llm-fallbacks?lang=zh)](https://dshfind.com/zh/plugins/omdsh-dev/dsh-llm-fallbacks?ref=badge)
 
 dsh（DeepSeek Harness）的自动模型降级插件：当 root agent 或 subagent 的模型请求持续失败（重试耗尽、权限、配额超限、限流 429）时，按角色/模型 fallback 链自动切换 provider/model，当前 step/turn 在目标模型上继续完成——任务不因模型问题中断。
@@ -31,7 +31,7 @@ dsh（DeepSeek Harness）的自动模型降级插件：当 root agent 或 subage
 
 GLM 峰与 GLM 谷仅在已配置 `zai-coding-cn` 时出现在设置卡选择器中。
 
-每个 root 请求时刻，第一条窗口包含当前时刻（按 `fallbacks.tz`，默认 Asia/Shanghai）的额外行生效；无行命中 → 全时段 `rootChain`——其链尾（默认模型）必须是恰好一个官方 V4 模型：`deepseek-official/deepseek-v4-flash` 或 `deepseek-official/deepseek-v4-pro`（二选一）。分时切换是路由种子而非失败决策：在下一个 root 请求生效、不消耗冷却、不计入 `maxSwitchesPerStep`，日志记为**分时切换**；失败降级保持**降级切换**。完整语义 → [分时槽预设（分时切换）](#分时槽预设分时切换) 与 [docs/configuration.md](docs/configuration.md)。
+每个 root 请求时刻，第一条窗口包含当前时刻（按 `fallbacks.tz`，默认 Asia/Shanghai）的额外行生效；无行命中 → 全时段 `rootChain`——其链尾（默认模型）必须是恰好一个官方模型：`deepseek-official/deepseek-flash` 或 `deepseek-official/deepseek-pro`（二选一）。分时切换是路由种子而非失败决策：在下一个 root 请求生效、不消耗冷却、不计入 `maxSwitchesPerStep`，日志记为**分时切换**；失败降级保持**降级切换**。完整语义 → [分时槽预设（分时切换）](#分时槽预设分时切换) 与 [docs/configuration.md](docs/configuration.md)。
 
 ## 快速开始
 
@@ -46,17 +46,16 @@ dsh plugin --profile dsh-tui add dsh-llm-fallbacks  # dsh-tui 终端 profile
 
 ### 修复旧会话（0.2.2 之前的版本）
 
-0.2.2 之前的版本会把 `fallbacks/switch` 事件写入会话持久化日志，而新版 dsh 拒绝加载这类会话（issue #52——apply() 时的注册因插件与宿主解析到不同模块实例而无效）。如果升级后已有会话打不开，clone 本仓库并修复日志（先停 dsh）：
+0.2.2 之前的版本会把 `fallbacks/switch` 事件写入会话持久化日志，而新版 dsh 拒绝加载这类会话（issue #52——apply() 时的注册因插件与宿主解析到不同模块实例而无效）。如果升级后已有会话打不开，clone 本仓库并运行检测器：
 
 ```sh
 git clone https://github.com/omdsh-dev/dsh-llm-fallbacks.git
 cd dsh-llm-fallbacks
 pnpm install
-pnpm repair:fallbacks-switch-logs -- --dry-run            # 预览哪些会话会被改动
-pnpm repair:fallbacks-switch-logs -- --apply --backup     # 给旧事件打 ignorable 标记
+pnpm repair:fallbacks-switch-logs -- --dry-run
 ```
 
-脚本默认扫描 `~/.dsh/sessions`（可用 `--root <dir>` 覆盖），把遗留 `fallbacks/switch` 事件标记为 `ignorable: true`，宿主读路径即可重新接受该会话；每个被修复的日志保留一份 `<file>.bak`。`--apply` 必须搭配 `--backup`，且须在 dsh 停止时运行。从 0.2.2 起插件不再写 durable 切换事件，新会话无需修复。
+脚本默认扫描 `~/.dsh/sessions`（可用 `--root <dir>` 覆盖）。**它无法修复这些日志**：已发布的 session-format 迁移链（v0→v1）即使事件带 `ignorable: true` 也拒绝未知事件类型，因此「修复后」的日志仍会被拒绝加载。脚本因此 fail-closed——只报告哪些会话含 `fallbacks/switch` 事件，绝不写入或备份任何文件，发现即非零退出（遗留的 `--apply` / `--backup` 参数按 no-op 接受）。持久修复应在上游迁移边界完成。从 0.2.2 起插件不再写 durable 切换事件，新会话无需处理。
 
 ### 配置界面
 
@@ -77,9 +76,9 @@ pnpm repair:fallbacks-switch-logs -- --apply --backup     # 给旧事件打 igno
 ```yaml
 fallbacks:
   enabled: true            # 功能开关——默认关闭（否则插件完全 no-op）
-  rootChain:               # 全时段链：前面的条目 = 降级路径，最后一项 = 默认模型（官方 V4）
+  rootChain:               # 全时段链：前面的条目 = 降级路径，最后一项 = 默认模型（官方模型）
     - anthropic/claude-3-5-sonnet          # 先走
-    - deepseek-official/deepseek-v4-flash  # 最后一档（Flash 或 Pro）
+    - deepseek-official/deepseek-flash  # 最后一档（Flash 或 Pro）
   timeSlots:               # 可选：按墙钟窗口轮换生效 root 链
     - kind: preset         # 冻结的 UTC+8 窗口；仅链可编辑
       preset: liang-peak   # 周一至周五 09:00–12:00 与 14:00–18:00
@@ -109,7 +108,7 @@ fallbacks:
 
 **2. 配置全时段 `rootChain`。** 前面的条目是降级链，请求失败时先走；**最后**一项是默认模型。
 
-> **链尾合规**：最后一项必须是恰好一个官方 V4 模型——`deepseek-official/deepseek-v4-flash` 或 `deepseek-official/deepseek-v4-pro`（二选一）。设置卡与 gateway 在保存时拒绝其它尾巴；遗留的非合规尾巴启动时告警并继续按 fallback-only 走原链，但无法原样保存。
+> **链尾合规**：最后一项必须是恰好一个官方模型——`deepseek-official/deepseek-flash` 或 `deepseek-official/deepseek-pro`（二选一）。设置卡与 gateway 在保存时拒绝其它尾巴；遗留的非合规尾巴启动时告警并继续按 fallback-only 走原链，但无法原样保存。已退役的 `deepseek-v4-flash` / `deepseek-v4-pro` 不再是合法链尾——已保存的 V4 尾巴现在会告警、进入惰性（分时行 + 虚拟选择器）、并在选到合法链尾前阻止保存。`deepseek-pro` 是合法选择器但其模型尚未进入目录：设置卡中显示为禁用（「暂不可用」），请求在 gateway 启用该 id 前会在 provider 处失败。插件不探测目录可用性——含 `deepseek-pro` 的链会像其它精确条目一样派发到它；覆盖解析生效链的第一个精确链头，因此 Pro 之前有可用条目的链仍路由到更早的条目。
 
 **3. 添加 `timeSlots`（可选）。** 各行按墙钟窗口轮换生效 root 链。预设行使用冻结的 UTC+8 窗口（仅链可编辑；存在预设行时 `tz` 锁定 `Asia/Shanghai`）；自定义行使用 `start`/`end`（可跨午夜）与可选的 `days` 列表。第一个窗口包含当前时刻的行生效；无行命中 → 全时段 `rootChain`。分时切换是路由种子——在下一个 root 请求生效、不消耗冷却（见 [峰谷无忧](#峰谷无忧)）。
 
@@ -135,7 +134,7 @@ fallbacks:
 - **冷却与回主**：被切离/失败的模型在冷却期内不再入选；`revertPolicy: cooldown-expiry` 冷却到期后自动回主模型。
 - **宿主子代理模型策略（dsh 0.1.2）**：当宿主 `subagent-model-selection` 策略启用时，其允许列表对每个插件发起的 subagent 路由都是硬约束——显式授权的派发路由保持为链头（跳过角色注入），继承注入的链头与失败切换目标都与生效允许列表求交集，交集为空则跳过注入/切换（warn 日志 + 只读卡片警告；绝不发送允许列表之外的请求）。策略存在但不可读时 fail-closed。策略关闭/缺省时，注入与失败切换的选择与 0.3.5 完全一致。覆盖路径上的 `reasoningEffort` 遵循上游 routeChanged 规则（同路由 → 保留；跨路由 → 除非显式指定否则丢弃）。见 [宿主子代理模型策略](#宿主子代理模型策略dsh-012)。
 - **半开恢复（可选）**：`recovery: half-open` 让恢复以证据驱动——冷却到期后路由进入 **half-open**，以一次记录探针（logged probe）放行，而不是直接恢复首选；连续失败使抑制时长按 **×2** 逐次升级、**1 小时**封顶；观察到完成即闭合回路、完全恢复首选。`revertPolicy: 'never'` 使该机制完全失效；状态为会话级内存态（重启即重置）。仅 YAML 配置——默认 `timer` 保持所有既有行为逐字节一致（见 [docs/configuration.md](docs/configuration.md#recovery-mode-recovery-key)）。
-- **行为可见**：每次切换以 info 级日志行（from/to/role/reason）记录——无静默换模型。插件**刻意不写** durable `fallbacks/switch` 会话事件（issue #52——apply() 时的事件类型注册被证伪无效，含该事件的会话在 dsh 重启后拒绝加载）。由旧版插件写入、含此类事件的会话由 `scripts/repair-fallbacks-switch-logs.ts` 修复——旧事件被标记 ignorable 后，受影响会话可重新加载。
+- **行为可见**：每次切换以 info 级日志行（from/to/role/reason）记录——无静默换模型。插件**刻意不写** durable `fallbacks/switch` 会话事件（issue #52——apply() 时的事件类型注册被证伪无效，含该事件的会话在 dsh 重启后拒绝加载）。由旧版插件写入、含此类事件的会话**无法**通过 `ignorable` 标记修复——已发布的 session-format 迁移链（v0→v1）即使事件带 `ignorable` 也拒绝未知事件类型——因此 `scripts/repair-fallbacks-switch-logs.ts` 现在 fail-closed，只报告此类日志（持久修复应在上游迁移边界完成）。
 - **安全阀**：`maxSwitchesPerStep` 限制每 step 切换次数、`alwaysModeRetryCap` 限制 always 模式重试——链循环不会放大延迟。
 - **无配置回归（no-op）**：未配置任何链时行为与未安装插件完全一致——`enabled` 默认关闭（见 [最小配置](#最小配置)）。
 
@@ -161,9 +160,9 @@ fallbacks:
 
 注意：
 
-- **选择器文案**：目录行的 `name`（composer 触发器显示）是动态的——`Auto: DeepSeek V4 Flash[Liang Peak]` / `Auto: DeepSeek V4 Flash[all-day]`（用 catalog 显示名，不是 model id）；id 仍是 `Auto`。all-day 尾巴不合规则只显示 `Auto`。重新打开选择器即可刷新。
+- **选择器文案**：目录行的 `name`（composer 触发器显示）是动态的——`Auto: DeepSeek Flash[Liang Peak]` / `Auto: DeepSeek Flash[all-day]`（用 catalog 显示名，不是 model id）；id 仍是 `Auto`。all-day 尾巴不合规则只显示 `Auto`。重新打开选择器即可刷新。
 - **仅 root**：这一行只关乎 root 代理。subagent 的角色解析与注入不变；继承了该选择的 subagent 会话仍经链头路由——虚拟行只是薄委托，绝不是第二个路由引擎。
-- **链尾合规门槛**：覆盖/委托成功要求 all-day 链**尾巴合规**——最后一项必须是恰好一个官方 V4 模型（`deepseek-official/deepseek-v4-flash` 或 `deepseek-official/deepseek-v4-pro`，即设置卡的「默认模型」面板）；前面的默认降级链先走。禁用插件后该行隐藏（slot/链编辑不会触发注册抖动）。
+- **链尾合规门槛**：覆盖/委托成功要求 all-day 链**尾巴合规**——最后一项必须是恰好一个官方模型（`deepseek-official/deepseek-flash` 或 `deepseek-official/deepseek-pro`，即设置卡的「默认模型」面板）；前面的默认降级链先走。禁用插件后该行隐藏（slot/链编辑不会触发注册抖动）。
 - **过期选择**：行消失（插件禁用）而会话仍选中 `FallbacksChain / Auto` 时，会话继续把它显示为当前模型，但 `routable: false`——从目录选一个真实模型即可继续（宿主原生目录语义）。
 - **能力跟随链头**：该行的模型元数据（上下文窗口、模态、推理）镜像当前生效链头；重试归属保持宽松默认——重试/失败记到被委托的真实链头，而非 `FallbacksChain` provider。完整语义 → [docs/configuration.md](docs/configuration.md)。
 
@@ -171,11 +170,11 @@ fallbacks:
 
 峰谷无忧在[首页专题](#峰谷无忧)中介绍，本节是完整参考。分时槽行按墙钟窗口轮换**生效 root 链**——适合按峰谷切换模型，且不会把墙钟轮换误认为故障降级。文案严格区分：时段轮换的日志与 UI 用**分时切换**；失败降级保持**降级切换**；会话内「模型已降级」提示只出现在失败路径。
 
-- **匹配顺序**：每个 root 请求时刻，第一条窗口包含当前时刻（按 `fallbacks.tz`，默认 `Asia/Shanghai` / UTC+8）的额外行生效——该行的模型链**取代**全时段链；无行命中则用全时段 `rootChain`。全时段行固定最后且**必选**：最后一项必须是恰好一个官方 V4 模型（Flash 或 Pro；前面的降级条目先走）。
+- **匹配顺序**：每个 root 请求时刻，第一条窗口包含当前时刻（按 `fallbacks.tz`，默认 `Asia/Shanghai` / UTC+8）的额外行生效——该行的模型链**取代**全时段链；无行命中则用全时段 `rootChain`。全时段行固定最后且**必选**：最后一项必须是恰好一个官方模型（Flash 或 Pro；前面的降级条目先走）。
 - **预设**（冻结，不可编辑窗口）：`liang-peak` = 周一至周五 09:00–12:00 **与** 14:00–18:00；`liang-valley` = 其它所有 UTC+8 时间；`glm-peak` = 周一至周五 14:00–18:00；`glm-valley` = 其余时间。一个预设 id 对应一行；设置卡的选择器不会重复提供已添加的预设。
 - **自定义行**：`start` / `end`（`HH:mm`，可跨午夜）+ 可选 `days`（0=周日…6=周六；缺省/空 = 每天）+ 模型。
 - **下一请求生效**：时段边界跨越绝不打断进行中的 step——新行在下一个 root 请求生效。轮换仅挂载生效：info 日志 + 设置卡/`/fallbacks` 状态行，无 durable 切换事件。
-- **设置卡**：主代理区块下分三块——**分时槽设置**（额外行：添加预设 / 添加自定义 / 删除 / 按钮或**拖拽**排序；预设行只读展示窗口摘要、仅可编辑模型链；自定义行带可编辑名称；**时区选择器**在此区块内，只要存在预设行就**锁定 Asia/Shanghai**——预设窗口是冻结的 UTC+8 常量）、**默认降级链**（all-day 链，可配置的 provider/model 选择器列表）与**默认模型**（官方 V4 Flash | Pro 二选一链头）。行可折叠为「名称 + 首个模型」。没有 `timeSlots.enabled` 总开关（添加行即开启），也没有 `rootMode` 控件。
+- **设置卡**：主代理区块下分三块——**分时槽设置**（额外行：添加预设 / 添加自定义 / 删除 / 按钮或**拖拽**排序；预设行只读展示窗口摘要、仅可编辑模型链；自定义行带可编辑名称；**时区选择器**在此区块内，只要存在预设行就**锁定 Asia/Shanghai**——预设窗口是冻结的 UTC+8 常量）、**默认降级链**（all-day 链，可配置的 provider/model 选择器列表）与**默认模型**（官方 Flash | Pro 二选一链头）。行可折叠为「名称 + 首个模型」。没有 `timeSlots.enabled` 总开关（添加行即开启），也没有 `rootMode` 控件。
 
 ## 预设角色（Preset roles）
 
@@ -202,7 +201,7 @@ fallbacks:
     - CONTEXT_WINDOW_EXCEEDED  # 请求装不下时降级
   rootChain:
     - anthropic/claude-3-5-sonnet          # 先走
-    - deepseek-official/deepseek-v4-flash  # 兜底（Flash 或 Pro）
+    - deepseek-official/deepseek-flash  # 兜底（Flash 或 Pro）
 ```
 
 **顺序——降级先于压缩。** 只要 `triggerCodes` 含 `CONTEXT_WINDOW_EXCEEDED`，本插件的 `agent/request-error` 监听就会**先于**宿主压缩插件处理该拒绝：首次超限即把会话切到 fallback 模型，上下文完全不会被压缩。若更希望先尝试压缩，就不要把该码列入 `triggerCodes`。

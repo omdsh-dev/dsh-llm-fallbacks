@@ -654,14 +654,14 @@ export function validateConfigPatch(patch: unknown): void {
       }
     }
     // All-day tail gate: `rootChain` must END with exactly one official
-    // V4 model — Flash XOR Pro (the card's 默认模型 panel); leading
-    // entries (默认降级链) are the ordered walk before that last-resort
-    // fallback. Empty / non-official tail rejected on save.
+    // model — Flash / Pro XOR (the card's 默认模型 panel); leading entries
+    // (默认降级链) are the ordered walk before that last-resort fallback.
+    // Empty / non-official tail (incl. the retired V4 ids) rejected on save.
     if (key === 'rootChain') {
       const chain = (patch as Record<string, unknown>)[key]
       if (chain !== null && chain !== undefined && (!Array.isArray(chain) || !isAllDayConforming(chain))) {
         throw new Error(
-          'dsh-llm-fallbacks: rootChain must end with exactly one official V4 model (deepseek-official/deepseek-v4-flash or deepseek-official/deepseek-v4-pro)',
+          'dsh-llm-fallbacks: rootChain must end with exactly one official model (deepseek-official/deepseek-flash or deepseek-official/deepseek-pro)',
         )
       }
     }

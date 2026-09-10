@@ -1,5 +1,5 @@
 /**
- * repair-fallbacks-switch-logs.ts — repair session logs poisoned by the old
+ * repair-fallbacks-switch-logs.ts — detect session logs poisoned by the old
  * plugin's durable `fallbacks/switch` events.
  *
  * Background: until Task 1 of `fallbacks-session-event-stop-write`, the
@@ -8,60 +8,50 @@
  * is outside its baked catalog unless the event carries `ignorable: true`.
  * `Session.append` cannot write `ignorable`, and runtime registration proved
  * ineffective (module-instance mismatch). Session logs written while the old
- * plugin was active therefore fail to load after a dsh restart. This script
- * marks those events `ignorable: true` so the read path accepts them again.
+ * plugin was active therefore fail to load after a dsh restart.
+ *
+ * FAIL-CLOSED (measured against the published 0.1.5-rc.1 packages): the
+ * released session-format migration chain refuses unknown event types even
+ * with `ignorable: true` — the v0→v1 stage's `assertReleasedEventPayload`
+ * throws `format v0 contains unknown historical event type
+ * "fallbacks/switch" ... migration refuses unknown historical events even
+ * when ignorable` before any later edge runs (v1→v2 refuses unknown types
+ * the same way). A log whose `fallbacks/switch` events are marked
+ * `ignorable` therefore still fails to load, so this script NEVER writes a
+ * "repaired" file and never reports a repair: it detects such logs, reports
+ * them, and exits non-zero. The durable fix belongs upstream at the
+ * migration edges, not in this script.
  *
  * Session log format (`~/.dsh/sessions/<namespace>/<session-id>/session.jsonl.zstd`):
  *   - concatenated-zstd-frame container: **first frame MUST decode to
- *     exactly one header line** (rc.7 `assertZstdHeaderFrame`:
- *     `indexOf(10) === length-1`). Subsequent frames hold events.
+ *     exactly one header line** (0.1.5-rc.1 `assertZstdHeaderFrame`:
+ *     `indexOf(10) === length-1` — the framing invariant is unchanged
+ *     since rc.7). Subsequent frames hold events.
  *   - `node:zlib.zstdDecompress` only decodes the FIRST frame, so this
  *     script shells out to the `zstd` CLI (`zstd -d -c` decodes every
- *     concatenated frame). Re-encoding MUST emit frame-1 = header only
- *     + a following frame for the rest — a single-frame rewrite of the
- *     whole log fails host boot (`first frame is not exactly one header line`).
- *
- * IMPORTANT: stop dsh before running with `--apply`. The script replaces a
- * session log via read → transform → atomic rename; a live dsh that appends
- * a new zstd frame between the read and the rename would have that frame
- * lost (read-modify-write race). Report / `--dry-run` runs are safe any
- * time — they never write files.
+ *     concatenated frame).
  *
  * Usage (from the repo root, via tsx — the package.json
  * `repair:fallbacks-switch-logs` script):
  *   pnpm repair:fallbacks-switch-logs -- --dry-run
- *   pnpm repair:fallbacks-switch-logs -- --apply --backup
- *   pnpm repair:fallbacks-switch-logs -- --root /tmp/repair-fixture --dry-run
+ *   pnpm repair:fallbacks-switch-logs -- --root /tmp/repair-fixture
  *
  * Flags:
  *   --root <dir>   session root to walk (default: ~/.dsh/sessions)
- *   --dry-run      report only — never write files
- *   --backup       required with --apply: copy the original to <file>.bak
- *                  before replacing (apply is refused without it)
- *   --apply        actually replace repaired files; requires --backup and a
- *                  stopped dsh; without it (or with --dry-run) the run only
- *                  reports would-change
+ *   --dry-run      report only (the only mode — no write is ever performed)
+ *   --backup       accepted for backward compatibility (no write is ever
+ *                  performed)
+ *   --apply        accepted for backward compatibility (no write is ever
+ *                  performed)
  *
- * Safe by construction: a file is only replaced after its re-encoded form
- * passes `zstd -t`, has a one-line first frame, and carries the original
- * file's permission bits; a file that fails to decompress or re-encode is
- * reported and skipped (never corrupted); the replace is an atomic rename
- * of a temp file in the same directory. Report/dry-run mode performs no
- * filesystem writes at all.
+ * Safe by construction: the script never writes files. A log that fails to
+ * decompress is reported and skipped; a log containing `fallbacks/switch`
+ * events is reported as unrepairable and counts as an error (exit non-zero).
  */
 import { execFileSync } from 'node:child_process'
-import {
-  chmodSync,
-  copyFileSync,
-  existsSync,
-  readdirSync,
-  renameSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from 'node:fs'
+import { existsSync, readdirSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { basename, dirname, join } from 'node:path'
+import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 /** Decoded plaintext cap for one session log (512 MB; logs can be large). */
@@ -83,13 +73,17 @@ export interface MarkFallbacksSwitchIgnorableResult {
  * - every other line (non-switch events, malformed JSON, empty lines, switch
  *   events that already carry `ignorable`) passes through byte-identical;
  * - switch events are re-serialized with `ignorable` appended (insertion
- *   order — the read path only reads `event.ignorable`, so field position is
- *   irrelevant); `seq`/`time`/`data` are preserved verbatim;
+ *   order — the released read path only reads `event.ignorable`, so field
+ *   position is irrelevant); `seq`/`time`/`data` are preserved verbatim;
  * - `changed` counts only lines that were modified.
  *
  * Matching is on the parsed `type` field, never on the raw string — the
  * substring `fallbacks/switch` legitimately appears inside user/message data
  * and must not be treated as an event.
+ *
+ * NOTE: this transform is retained as the pure boundary the regression tests
+ * pin, but its output is REFUSED by the released session-format chain (see
+ * the module docblock) — the CLI never writes it.
  */
 export function markFallbacksSwitchIgnorable(lines: string[]): MarkFallbacksSwitchIgnorableResult {
   const out = new Array<string>(lines.length)
@@ -130,26 +124,54 @@ export function markFallbacksSwitchIgnorable(lines: string[]): MarkFallbacksSwit
   return { lines: out, changed }
 }
 
+/**
+ * Count every parsed `fallbacks/switch` row in a log, regardless of whether
+ * it already carries an `ignorable` field or what its value is. The released
+ * session-format chain refuses the unknown event type even when `ignorable`
+ * is present, so ANY such row makes the log unrepairable — this is the
+ * fail-closed detection, separate from the pure transform's `changed` count
+ * (which only counts rows the transform would modify).
+ *
+ * Detection is valid-JSON-only: an unparseable line (e.g. a truncated row)
+ * is skipped, so a log whose switch row is itself malformed classifies as
+ * `unchanged` — the raw-substring alternative is deliberately rejected
+ * because `fallbacks/switch` legitimately appears inside user data.
+ */
+export function countFallbacksSwitchRows(lines: string[]): number {
+  let count = 0
+  for (const line of lines) {
+    if (line === '') continue
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(line)
+    } catch {
+      continue
+    }
+    if (parsed === null || typeof parsed !== 'object') continue
+    if ((parsed as Record<string, unknown>).type === SWITCH_TYPE) count++
+  }
+  return count
+}
+
 /* ------------------------------------------------------------------ */
 /* CLI                                                                */
 /* ------------------------------------------------------------------ */
 
 interface CliOptions {
   root: string
-  dryRun: boolean
-  backup: boolean
-  apply: boolean
 }
 
 function usage(): string {
   return `usage: tsx scripts/repair-fallbacks-switch-logs.ts [--root DIR] [--dry-run] [--backup] [--apply]
 
   --root DIR    session root to walk (default: ~/.dsh/sessions)
-  --dry-run     report only — never write files
-  --backup      required with --apply: copy the original to <file>.bak before
-                replacing
-  --apply       actually replace repaired files (requires --backup; stop dsh
-                before applying)`
+  --dry-run     report only (the only mode — no write is ever performed)
+  --backup      accepted for backward compatibility (no write is ever performed)
+  --apply       accepted for backward compatibility (no write is ever performed)
+
+The released session-format chain (v0→v1) refuses unknown event types even
+when marked ignorable, so this script fails closed: it only reports logs
+that contain fallbacks/switch events and never writes a "repaired" file.`
 }
 
 function expandHome(p: string): string {
@@ -159,9 +181,6 @@ function expandHome(p: string): string {
 
 export function parseArgs(argv: string[]): CliOptions {
   let root = join(homedir(), '.dsh', 'sessions')
-  let dryRun = false
-  let backup = false
-  let apply = false
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]
     // pnpm run <script> -- <args> forwards the separator `--`; skip it.
@@ -173,24 +192,16 @@ export function parseArgs(argv: string[]): CliOptions {
         root = expandHome(argv[i])
         break
       case '--dry-run':
-        dryRun = true
-        break
       case '--backup':
-        backup = true
-        break
       case '--apply':
-        apply = true
+        // Legacy mutation-era flags: accepted as no-ops — the tool never
+        // writes, so no flag controls a write or a precondition.
         break
       default:
         throw new Error(`${usage()}\n\nunknown argument: ${arg}`)
     }
   }
-  if (apply && !backup) {
-    throw new Error(
-      `${usage()}\n\n--apply requires --backup: real modification must keep a .bak copy of every replaced session log (run with --dry-run first to review)`,
-    )
-  }
-  return { root, dryRun, backup, apply }
+  return { root }
 }
 
 /** Resolve the zstd CLI binary; throw a clear error when it is missing. */
@@ -231,37 +242,16 @@ function findSessionLogs(root: string): string[] {
 
 type FileOutcome =
   | { action: 'unchanged'; changed: 0 }
-  | { action: 'would-change'; changed: number }
-  | { action: 'changed'; changed: number }
+  | { action: 'refused'; changed: number; error: string }
   | { action: 'error'; changed: number; error: string }
 
 /**
- * Encode repaired plaintext as concatenated zstd frames that rc.7 will
- * accept: frame 1 = header line + `\n` only; frame 2 = remaining lines.
+ * Decompress one log and classify it: `unchanged` when it carries no
+ * `fallbacks/switch` rows, `refused` when it does (the released chain
+ * rejects the unknown event type even when `ignorable` is present — see the
+ * module docblock), or `error` when it cannot be decompressed. Never writes.
  */
-export function encodeRepairedSessionLog(zstd: string, lines: string[]): Buffer {
-  const header = lines[0] ?? ''
-  const headerPlain = header.endsWith('\n') ? header : `${header}\n`
-  const zstdOut = { input: headerPlain, maxBuffer: MAX_BUFFER }
-  const frame1 = execFileSync(zstd, ['-c'], zstdOut)
-  const rest = lines.slice(1)
-  if (rest.length === 0 || (rest.length === 1 && rest[0] === '')) return frame1
-  const restPlain = rest.join('\n')
-  const frame2 = execFileSync(zstd, ['-c'], {
-    input: restPlain.endsWith('\n') ? restPlain : `${restPlain}\n`,
-    maxBuffer: MAX_BUFFER,
-  })
-  return Buffer.concat([frame1, frame2])
-}
-
-/**
- * Decompress all frames of one log, transform it, and (only when actually
- * applying) atomically replace it with a two-frame re-encode (header frame
- * + events frame) that passed `zstd -t` and carries the original file's
- * permission bits. Report/dry-run returns would-change WITHOUT touching the
- * filesystem.
- */
-export function processFile(zstd: string, file: string, opts: CliOptions): FileOutcome {
+export function processFile(zstd: string, file: string, _opts: CliOptions): FileOutcome {
   let plain: string
   try {
     plain = execFileSync(zstd, ['-d', '-c', file], { encoding: 'utf8', maxBuffer: MAX_BUFFER })
@@ -273,36 +263,20 @@ export function processFile(zstd: string, file: string, opts: CliOptions): FileO
     }
   }
 
-  const { lines, changed } = markFallbacksSwitchIgnorable(plain.split('\n'))
-  if (changed === 0) return { action: 'unchanged', changed: 0 }
+  const switchRows = countFallbacksSwitchRows(plain.split('\n'))
+  if (switchRows === 0) return { action: 'unchanged', changed: 0 }
 
-  // Report / dry-run: nothing to write — return would-change right after the
-  // transform (parseArgs refuses `--apply` without `--backup`, so any run
-  // reaching here without `write` is a report-only invocation).
-  const write = opts.apply && !opts.dryRun
-  if (!write) return { action: 'would-change', changed }
-
-  // Apply: temp files live next to the target so the final rename is atomic
-  // (same filesystem) and the walker never mistakes them for session logs.
-  const dir = dirname(file)
-  const tmpZstd = join(dir, `.${basename(file)}.${process.pid}.zstd.tmp`)
-  const mode = statSync(file).mode & 0o7777
-  try {
-    writeFileSync(tmpZstd, encodeRepairedSessionLog(zstd, lines))
-    execFileSync(zstd, ['-t', tmpZstd], { stdio: 'ignore' })
-    copyFileSync(file, `${file}.bak`)
-    chmodSync(tmpZstd, mode)
-    renameSync(tmpZstd, file)
-  } catch (err) {
-    return {
-      action: 'error',
-      changed,
-      error: `re-encode/validate failed: ${err instanceof Error ? err.message : String(err)}`,
-    }
-  } finally {
-    rmSync(tmpZstd, { force: true })
+  // Fail closed (session format v3 — measured against the published
+  // 0.1.5-rc.1 packages): the released migration chain refuses unknown
+  // event types even with `ignorable: true` (the v0→v1 stage throws before
+  // any later edge runs), so a "repaired" log would still be rejected on
+  // load. Never report it as a repair and never write it.
+  return {
+    action: 'refused',
+    changed: switchRows,
+    error:
+      'fallbacks/switch events cannot be repaired by an ignorable flag: the released session-format v0→v1 migration refuses unknown event types even when ignorable (session format v3)',
   }
-  return { action: 'changed', changed }
 }
 
 export function main(): void {
@@ -319,11 +293,10 @@ export function main(): void {
     return
   }
 
-  const mode = opts.dryRun ? 'dry-run' : opts.apply ? 'apply' : 'report'
   console.log(`root: ${opts.root}`)
-  console.log(`mode: ${mode}${opts.backup ? ' (backup .bak before replace)' : ''}`)
   console.log(`zstd: ${zstd}`)
   console.log(`files: ${files.length}`)
+  console.log('mode: report only — no write is ever performed (the released session-format chain refuses ignorable-marked unknown events)')
 
   let totalFiles = 0
   let totalEvents = 0
@@ -336,15 +309,11 @@ export function main(): void {
         skipped++
         console.log(`  unchanged    ${file}`)
         break
-      case 'would-change':
+      case 'refused':
         totalFiles++
         totalEvents += outcome.changed
-        console.log(`  would-change ${outcome.changed}  ${file}`)
-        break
-      case 'changed':
-        totalFiles++
-        totalEvents += outcome.changed
-        console.log(`  changed      ${outcome.changed}  ${file}`)
+        errors++
+        console.error(`  refused      ${file}: ${outcome.error}`)
         break
       case 'error':
         errors++
@@ -354,8 +323,7 @@ export function main(): void {
   }
 
   console.log(
-    `\nsummary: ${totalFiles} file(s), ${totalEvents} fallbacks/switch event(s) ` +
-      `${mode === 'dry-run' || mode === 'report' ? 'to be marked' : 'marked'}, ` +
+    `\nsummary: ${totalFiles} file(s) refused (${totalEvents} fallbacks/switch event(s) cannot be repaired by an ignorable flag), ` +
       `${skipped} unchanged skipped, ${errors} error(s)`,
   )
   if (errors) process.exitCode = 1

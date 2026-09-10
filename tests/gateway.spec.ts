@@ -47,7 +47,7 @@ import { TypertRegistry } from '@deepseek-ai/dsh-typert-registry'
 import { apply } from '../src/index.ts'
 import { Config } from '../src/schema.ts'
 import { defaultFallbacksConfig, type FallbacksConfig } from '../src/config.ts'
-import { OFFICIAL_V4_FLASH, OFFICIAL_V4_PRO } from '../src/time-slots.ts'
+import { OFFICIAL_FLASH, OFFICIAL_PRO } from '../src/time-slots.ts'
 import {
   FALLBACKS_SETTINGS_NAMESPACE,
   FallbacksConfigGateway,
@@ -600,21 +600,26 @@ describe('timeSlots + all-day set guards (plan fallbacks-timeslots Task 3)', () 
 
   it('accepts a conforming all-day chain (Flash or Pro, length 1)', async () => {
     const { gateway } = await mountGateway()
-    const flash = await gateway.set({ rootChain: [OFFICIAL_V4_FLASH] })
-    expect(flash.config.rootChain).toEqual([OFFICIAL_V4_FLASH])
-    const pro = await gateway.set({ rootChain: [OFFICIAL_V4_PRO] })
-    expect(pro.config.rootChain).toEqual([OFFICIAL_V4_PRO])
+    const flash = await gateway.set({ rootChain: [OFFICIAL_FLASH] })
+    expect(flash.config.rootChain).toEqual([OFFICIAL_FLASH])
+    const pro = await gateway.set({ rootChain: [OFFICIAL_PRO] })
+    expect(pro.config.rootChain).toEqual([OFFICIAL_PRO])
   })
 
-  it('rejects a non-conforming all-day chain on save (legacy multi-model AND empty — P6)', async () => {
+  it('rejects a non-conforming all-day chain on save (legacy multi-model, empty, and the retired V4 ids — P6)', async () => {
     const { gateway } = await mountGateway()
     await expect(gateway.set({ rootChain: ['openai/gpt-4o', 'anthropic/claude-3-5-sonnet'] })).rejects
-      .toThrow(/rootChain must end with exactly one official V4 model/)
+      .toThrow(/rootChain must end with exactly one official model/)
     await expect(gateway.set({ rootChain: ['openai/gpt-4o'] })).rejects
-      .toThrow(/rootChain must end with exactly one official V4 model/)
+      .toThrow(/rootChain must end with exactly one official model/)
+    // The retired V4 ids are no longer legal tails.
+    await expect(gateway.set({ rootChain: ['deepseek-official/deepseek-v4-flash'] })).rejects
+      .toThrow(/rootChain must end with exactly one official model/)
+    await expect(gateway.set({ rootChain: ['deepseek-official/deepseek-v4-pro'] })).rejects
+      .toThrow(/rootChain must end with exactly one official model/)
     // The empty default is the "no all-day" state — also rejected on save:
     // everything saved through the gateway is tail-conforming.
-    await expect(gateway.set({ rootChain: [] })).rejects.toThrow(/rootChain must end with exactly one official V4 model/)
+    await expect(gateway.set({ rootChain: [] })).rejects.toThrow(/rootChain must end with exactly one official model/)
     // Nothing was persisted: the composed rootChain stays the entry default.
     expect(gateway.get().config.rootChain).toEqual([])
   })
@@ -656,8 +661,8 @@ describe('timeSlots + all-day set guards (plan fallbacks-timeslots Task 3)', () 
     const { gateway } = await mountGateway()
     const patch = {
       timeSlots: [
-        { kind: 'preset', preset: 'liang-peak', chain: [OFFICIAL_V4_FLASH] },
-        { kind: 'preset', preset: 'liang-peak', chain: [OFFICIAL_V4_PRO] },
+        { kind: 'preset', preset: 'liang-peak', chain: [OFFICIAL_FLASH] },
+        { kind: 'preset', preset: 'liang-peak', chain: [OFFICIAL_PRO] },
       ],
     }
     await expect(gateway.set(patch as never)).rejects.toThrow(/duplicates preset "liang-peak"/)
@@ -1054,13 +1059,13 @@ describe('typertGateway endpoint claims + payload contract', () => {
 
     const setResult = await connection.handler!(
       'fallbacks/set',
-      { args: { patch: { enabled: true, rootChain: [OFFICIAL_V4_FLASH] } } },
+      { args: { patch: { enabled: true, rootChain: [OFFICIAL_FLASH] } } },
       signal,
     )
     expect(setResult.ok).toBe(true)
     if (setResult.ok) {
       expect(setResult.value).toMatchObject({
-        config: { enabled: true, rootChain: [OFFICIAL_V4_FLASH], cooldownMs: 120_000 },
+        config: { enabled: true, rootChain: [OFFICIAL_FLASH], cooldownMs: 120_000 },
       })
     }
 
@@ -1068,7 +1073,7 @@ describe('typertGateway endpoint claims + payload contract', () => {
     const gotAgain = await connection.handler!('fallbacks/get', { args: {} }, signal)
     expect(gotAgain).toMatchObject({
       ok: true,
-      value: { config: { enabled: true, rootChain: [OFFICIAL_V4_FLASH] } },
+      value: { config: { enabled: true, rootChain: [OFFICIAL_FLASH] } },
     })
 
     // reset clears the user layer back to the composition base.
@@ -1169,17 +1174,17 @@ describe('composed plugin (apply wires the gateway)', () => {
       const result = await ctx.typertGateway.invoke({
         namespace: 'fallbacks',
         method: 'set',
-        args: { patch: { enabled: true, rootChain: [OFFICIAL_V4_FLASH] } },
+        args: { patch: { enabled: true, rootChain: [OFFICIAL_FLASH] } },
       })
       expect(invokeConfig(result).enabled).toBe(true)
-      expect(invokeConfig(result).rootChain).toEqual([OFFICIAL_V4_FLASH])
+      expect(invokeConfig(result).rootChain).toEqual([OFFICIAL_FLASH])
     })
 
     const after = await ctx.typertGateway.invoke({ namespace: 'fallbacks', method: 'get', args: {} })
-    expect(invokeConfig(after)).toEqual({ ...entry, enabled: true, rootChain: [OFFICIAL_V4_FLASH] })
+    expect(invokeConfig(after)).toEqual({ ...entry, enabled: true, rootChain: [OFFICIAL_FLASH] })
     // describe shows the user layer written through the gateway.
     const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)!
-    expect(descriptor.user).toEqual({ enabled: true, rootChain: [OFFICIAL_V4_FLASH] })
+    expect(descriptor.user).toEqual({ enabled: true, rootChain: [OFFICIAL_FLASH] })
 
     // reset through the gateway returns the composition base (entry).
     const reset = await ctx.typertGateway.invoke({ namespace: 'fallbacks', method: 'reset', args: {} })

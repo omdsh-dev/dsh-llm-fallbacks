@@ -2,13 +2,15 @@
  * Vitest configuration.
  *
  * Type-level access flows through the REAL `@deepseek-ai/*` packages (the
- * `peerDependencies`; this dev tree links them to the local 0.1.2-rc.1
- * sources). The linked packages are tsc-built into `lib/types/` only — the
- * tsdown bundle step that would produce the exports-mapped `lib/index.js`
- * entries has not been run — so the test graph's VALUE imports (client and
- * host half) cannot resolve through the packages' exports maps. The config
- * below points those specifiers at the real implementations in the linked
- * tree:
+ * `peerDependencies`, resolved from the npm registry at 0.1.5-rc.1 on this
+ * branch — registry mode, see docs/install.md). The local-link alternative
+ * (a sibling dsh checkout linked into `node_modules`) is documented below:
+ * linked packages are tsc-built into `lib/types/` only — the tsdown bundle
+ * step that would produce the exports-mapped `lib/index.js` entries has not
+ * been run — so in linked mode the test graph's VALUE imports (client and
+ * host half) cannot resolve through the packages' exports maps, and the
+ * config below points those specifiers at the real implementations in the
+ * linked tree:
  * `resolve.alias` rewrites the specifier and `server.deps.inline` keeps
  * vitest from handing it to Node's loader (which would reject the subpath
  * through the exports map). Dev/test tooling ONLY: product imports keep the
@@ -49,20 +51,22 @@ import { defaultExclude, defineConfig } from 'vitest/config'
 // worktree when vitest is invoked there) is the honest anchor.
 const here = process.cwd()
 // Mode probe (qc3 F-002): the config serves TWO install modes — LINKED,
-// this dev tree's node_modules pointing at the local 0.1.2 sources, and
-// REGISTRY (docs/install.md, once 0.1.2 publishes), where the peers come
-// from npm and carry only the exports-mapped `lib/index.js`. The compiled
-// store entry is the anchor: when it is absent, every `linked()` resolve
-// below would throw at config load and hard-fail the whole suite — so the
-// entire linked block (aliases, inline doubles, attribution transform) is
-// skipped and `@deepseek-ai/*` specifiers resolve through the registry.
+// this dev tree's node_modules pointing at the local 0.1.5-rc.1 sources,
+// and REGISTRY (docs/install.md — the current mode on this branch), where
+// the peers come from npm and carry only the exports-mapped `lib/index.js`.
+// The compiled store entry is the anchor: when it is absent, every
+// `linked()` resolve below would throw at config load and hard-fail the
+// whole suite — so the entire linked block (aliases, inline doubles,
+// attribution transform) is skipped and `@deepseek-ai/*` specifiers resolve
+// through the registry.
 const linkedMode = existsSync(
   resolve(here, 'node_modules/@deepseek-ai/dsh-client-store/lib/types/index.js'),
 )
 // A linked peer's compiled implementation: `<pkg>/lib/types/index.js` — the
-// tsc emit the 0.1.2 tree ships instead of the exports-mapped `lib/index.js`.
-// realpathSync walks the node_modules symlink out to the upstream tree so the
-// resolved id no longer sits under this checkout's node_modules.
+// tsc emit a linked 0.1.5-rc.1 tree ships instead of the exports-mapped
+// `lib/index.js`. realpathSync walks the node_modules symlink out to the
+// upstream tree so the resolved id no longer sits under this checkout's
+// node_modules.
 const linked = (pkgPath: string): string =>
   realpathSync(resolve(here, 'node_modules', pkgPath, 'lib', 'types', 'index.js'))
 // TS-source variant — for packages whose runtime graph needs files the tsc

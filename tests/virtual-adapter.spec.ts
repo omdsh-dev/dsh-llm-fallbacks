@@ -28,7 +28,7 @@ import {
 import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import { apply } from '../src/index.ts'
 import { defaultFallbacksConfig, type FallbacksConfig } from '../src/config.ts'
-import { OFFICIAL_V4_FLASH } from '../src/time-slots.ts'
+import { OFFICIAL_FLASH } from '../src/time-slots.ts'
 import {
   EMPTY_EFFECTIVE_CHAIN_CODE,
   FALLBACKS_CHAIN_MODEL,
@@ -43,7 +43,7 @@ import { MemorySettings } from './support/memory-settings.ts'
 import { cfg } from './support/harness.ts'
 
 const HEAD_PROVIDER = 'deepseek-official'
-const HEAD_MODEL = 'deepseek-v4-flash'
+const HEAD_MODEL = 'deepseek-flash'
 
 /** Minimal durable image ref for pricing calls (shape only — the opaque id is never dereferenced). */
 const IMAGE_REF: ImageAttachmentRef = {
@@ -77,7 +77,7 @@ class StubHeadAdapter extends LlmAdapter {
   }
 
   override listModels() {
-    return Promise.resolve([{ provider: HEAD_PROVIDER, id: HEAD_MODEL, name: 'DeepSeek V4 Flash' }])
+    return Promise.resolve([{ provider: HEAD_PROVIDER, id: HEAD_MODEL, name: 'DeepSeek Flash' }])
   }
 
   override resolveModel(provider: string, model: string) {
@@ -127,7 +127,7 @@ afterEach(async () => {
 
 describe('registration lifecycle (P2)', () => {
   it('registers the virtual route whenever enabled (conformance-independent)', async () => {
-    apply(ctx, cfg({ rootChain: [OFFICIAL_V4_FLASH] }))
+    apply(ctx, cfg({ rootChain: [OFFICIAL_FLASH] }))
     await vi.waitFor(() => expect(listed()).toBe(true))
     expect(ctx.llm.listProviders().find((provider) => provider.id === FALLBACKS_PROVIDER)).toEqual({
       id: FALLBACKS_PROVIDER,
@@ -136,7 +136,7 @@ describe('registration lifecycle (P2)', () => {
   })
 
   it('hides the row when the plugin is disabled', () => {
-    apply(ctx, cfg({ enabled: false, rootChain: [OFFICIAL_V4_FLASH] }))
+    apply(ctx, cfg({ enabled: false, rootChain: [OFFICIAL_FLASH] }))
     expect(listed()).toBe(false)
   })
 
@@ -153,22 +153,22 @@ describe('registration lifecycle (P2)', () => {
   it('is a clean no-op without an llm service', async () => {
     const bare = new Context()
     try {
-      expect(() => apply(bare, cfg({ rootChain: [OFFICIAL_V4_FLASH] }))).not.toThrow()
+      expect(() => apply(bare, cfg({ rootChain: [OFFICIAL_FLASH] }))).not.toThrow()
     } finally {
       await bare.fiber.dispose()
     }
   })
 
   it('dedupes a duplicate registration (DUPLICATE_ADAPTER caught, first fiber owns the route)', async () => {
-    apply(ctx, cfg({ rootChain: [OFFICIAL_V4_FLASH] }))
+    apply(ctx, cfg({ rootChain: [OFFICIAL_FLASH] }))
     await vi.waitFor(() => expect(listed()).toBe(true))
-    expect(() => apply(ctx, cfg({ rootChain: [OFFICIAL_V4_FLASH] }))).not.toThrow()
+    expect(() => apply(ctx, cfg({ rootChain: [OFFICIAL_FLASH] }))).not.toThrow()
     expect(ctx.llm.listProviders().filter((provider) => provider.id === FALLBACKS_PROVIDER)).toHaveLength(1)
     expect(listed()).toBe(true)
   })
 
   it('disabling unregisters the row and re-enabling re-registers it', async () => {
-    apply(ctx, cfg({ rootChain: [OFFICIAL_V4_FLASH] }))
+    apply(ctx, cfg({ rootChain: [OFFICIAL_FLASH] }))
     await vi.waitFor(() => expect(listed()).toBe(true))
 
     await ctx.settings.update(FALLBACKS_SETTINGS_NAMESPACE, { enabled: false })
@@ -179,7 +179,7 @@ describe('registration lifecycle (P2)', () => {
   })
 
   it('all-day conformance loss keeps the row registered (enabled-only gate)', async () => {
-    apply(ctx, cfg({ rootChain: [OFFICIAL_V4_FLASH] }))
+    apply(ctx, cfg({ rootChain: [OFFICIAL_FLASH] }))
     await vi.waitFor(() => expect(listed()).toBe(true))
 
     await ctx.settings.update(FALLBACKS_SETTINGS_NAMESPACE, { rootChain: ['other/gpt-4o', 'other/gpt-5'] })
@@ -187,13 +187,13 @@ describe('registration lifecycle (P2)', () => {
   })
 
   it('slot-row edits never churn registration', async () => {
-    apply(ctx, cfg({ rootChain: [OFFICIAL_V4_FLASH] }))
+    apply(ctx, cfg({ rootChain: [OFFICIAL_FLASH] }))
     await vi.waitFor(() => expect(listed()).toBe(true))
     const updated: number[] = []
     ctx.events.on('llm/adapters-updated', () => updated.push(updated.length))
 
     await ctx.settings.update(FALLBACKS_SETTINGS_NAMESPACE, {
-      timeSlots: [{ kind: 'custom', start: '09:00', end: '10:00', chain: [OFFICIAL_V4_FLASH] }],
+      timeSlots: [{ kind: 'custom', start: '09:00', end: '10:00', chain: [OFFICIAL_FLASH] }],
     })
     // The condition deliberately ignores timeSlots — no register/unregister churn.
     expect(updated).toHaveLength(0)
@@ -203,24 +203,24 @@ describe('registration lifecycle (P2)', () => {
 
 describe('adapter contract (P1/P3)', () => {
   it('advertises exactly the one virtual catalog row', async () => {
-    apply(ctx, cfg({ rootChain: [OFFICIAL_V4_FLASH] }))
+    apply(ctx, cfg({ rootChain: [OFFICIAL_FLASH] }))
     await vi.waitFor(() => expect(listed()).toBe(true))
     expect(await ctx.llm.listModels(FALLBACKS_PROVIDER)).toEqual([
       {
         provider: FALLBACKS_PROVIDER,
         id: FALLBACKS_CHAIN_MODEL,
         // All-day winner (no extra slots) — host picker trigger is this name.
-        name: `${FALLBACKS_CHAIN_MODEL}: DeepSeek V4 Flash[all-day]`,
+        name: `${FALLBACKS_CHAIN_MODEL}: DeepSeek Flash[all-day]`,
       },
     ])
   })
   it('pickerDisplayName annotates the matching slot + head display name', () => {
     const now = new Date('2026-08-18T02:00:00Z')
     const name = pickerDisplayName(cfg({
-      rootChain: [OFFICIAL_V4_FLASH],
-      timeSlots: [{ kind: 'preset', preset: 'liang-peak', days: [], chain: [OFFICIAL_V4_FLASH] }],
-    }), now, 'DeepSeek V4 Flash')
-    expect(name).toBe(`${FALLBACKS_CHAIN_MODEL}: DeepSeek V4 Flash[Liang Peak]`)
+      rootChain: [OFFICIAL_FLASH],
+      timeSlots: [{ kind: 'preset', preset: 'liang-peak', days: [], chain: [OFFICIAL_FLASH] }],
+    }), now, 'DeepSeek Flash')
+    expect(name).toBe(`${FALLBACKS_CHAIN_MODEL}: DeepSeek Flash[Liang Peak]`)
   })
 
   it('pickerDisplayName stays bare Auto when the all-day chain is non-conforming', () => {
@@ -235,7 +235,7 @@ describe('adapter contract (P1/P3)', () => {
       inputModalities: ['text'],
       reasoning: { efforts: [{ id: 'high', name: 'High' }], defaultEffort: 'high' },
     }
-    apply(ctx, cfg({ rootChain: [OFFICIAL_V4_FLASH] }))
+    apply(ctx, cfg({ rootChain: [OFFICIAL_FLASH] }))
     await vi.waitFor(() => expect(listed()).toBe(true))
 
     const info = await ctx.llm.resolveModelInfo(FALLBACKS_PROVIDER, FALLBACKS_CHAIN_MODEL)
@@ -257,7 +257,7 @@ describe('adapter contract (P1/P3)', () => {
     const bare = new Context()
     try {
       new LlmRuntime(bare)
-      apply(bare, cfg({ rootChain: [OFFICIAL_V4_FLASH] }))
+      apply(bare, cfg({ rootChain: [OFFICIAL_FLASH] }))
       await vi.waitFor(() => expect(bare.llm.listProviders().some((provider) => provider.id === FALLBACKS_PROVIDER)).toBe(true))
       expect(await bare.llm.resolveModelInfo(FALLBACKS_PROVIDER, FALLBACKS_CHAIN_MODEL)).toEqual({
         provider: FALLBACKS_PROVIDER,
@@ -270,7 +270,7 @@ describe('adapter contract (P1/P3)', () => {
   })
 
   it('stream() delegates to the effective head through the host runtime', async () => {
-    apply(ctx, cfg({ rootChain: [OFFICIAL_V4_FLASH] }))
+    apply(ctx, cfg({ rootChain: [OFFICIAL_FLASH] }))
     await vi.waitFor(() => expect(listed()).toBe(true))
 
     const chunks = await collect(
@@ -300,7 +300,7 @@ describe('adapter contract (P1/P3)', () => {
     apply(
       ctx,
       cfg({
-        rootChain: [OFFICIAL_V4_FLASH],
+        rootChain: [OFFICIAL_FLASH],
         timeSlots: [{ kind: 'custom', start: '00:00', end: '23:59', chain: ['other/*', 'anthropic/claude-sonnet-4'] }],
       }),
     )
@@ -333,7 +333,7 @@ describe('adapter contract (P1/P3)', () => {
     const config: FallbacksConfig = {
       ...defaultFallbacksConfig,
       enabled: true,
-      rootChain: [OFFICIAL_V4_FLASH],
+      rootChain: [OFFICIAL_FLASH],
       presets: 'none',
     }
     installFallbacksAdapter(ctx, () => config)
@@ -355,7 +355,7 @@ describe('adapter contract (P1/P3)', () => {
     apply(
       ctx,
       cfg({
-        rootChain: [OFFICIAL_V4_FLASH],
+        rootChain: [OFFICIAL_FLASH],
         timeSlots: [{
           kind: 'custom', start: '00:00', end: '23:59',
           chain: [`${FALLBACKS_PROVIDER}/${FALLBACKS_CHAIN_MODEL}`],
@@ -405,7 +405,7 @@ describe('adapter contract (P1/P3)', () => {
     apply(
       ctx,
       cfg({
-        rootChain: [OFFICIAL_V4_FLASH],
+        rootChain: [OFFICIAL_FLASH],
         timeSlots: [{ kind: 'custom', start: '00:00', end: '23:59', chain: [`${HEAD_PROVIDER}/*`] }],
       }),
     )
@@ -428,7 +428,7 @@ describe('adapter contract (P1/P3)', () => {
 describe('imageRequestPricing (0.1.2 adoption)', () => {
   it('delegates to the SAME effective head stream() dispatches (route-accurate)', async () => {
     stub.pricing = stubPricing()
-    apply(ctx, cfg({ rootChain: [OFFICIAL_V4_FLASH] }))
+    apply(ctx, cfg({ rootChain: [OFFICIAL_FLASH] }))
     await vi.waitFor(() => expect(listed()).toBe(true))
 
     const pricing = ctx.llm.imageRequestPricing(FALLBACKS_PROVIDER, FALLBACKS_CHAIN_MODEL)
@@ -448,7 +448,7 @@ describe('imageRequestPricing (0.1.2 adoption)', () => {
     const bare = new Context()
     try {
       new LlmRuntime(bare)
-      apply(bare, cfg({ rootChain: [OFFICIAL_V4_FLASH] }))
+      apply(bare, cfg({ rootChain: [OFFICIAL_FLASH] }))
       await vi.waitFor(() =>
         expect(bare.llm.listProviders().some((provider) => provider.id === FALLBACKS_PROVIDER)).toBe(true))
       expect(bare.llm.imageRequestPricing(FALLBACKS_PROVIDER, FALLBACKS_CHAIN_MODEL)).toBeUndefined()
@@ -464,7 +464,7 @@ describe('imageRequestPricing (0.1.2 adoption)', () => {
     const config: FallbacksConfig = {
       ...defaultFallbacksConfig,
       enabled: true,
-      rootChain: [OFFICIAL_V4_FLASH],
+      rootChain: [OFFICIAL_FLASH],
       presets: 'none',
     }
     const adapter = new FallbacksChainAdapter(() => config, () => undefined)
@@ -472,7 +472,7 @@ describe('imageRequestPricing (0.1.2 adoption)', () => {
   })
 
   it('degrades to undefined when the head adapter pricing throws', async () => {
-    apply(ctx, cfg({ rootChain: [OFFICIAL_V4_FLASH] }))
+    apply(ctx, cfg({ rootChain: [OFFICIAL_FLASH] }))
     await vi.waitFor(() => expect(listed()).toBe(true))
     vi.spyOn(stub, 'imageRequestPricing').mockImplementation(() => {
       throw new Error('head pricing exploded')

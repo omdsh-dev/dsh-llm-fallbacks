@@ -156,8 +156,8 @@ describe('llm-fallbacks named cordis service', () => {
       ...defaultFallbacksConfig,
       enabled: true,
       // Conforming all-day head (P6): rootChain must start with one official
-      // V4 model — a legacy non-official-head chain would now earn a warn.
-      rootChain: ['deepseek-official/deepseek-v4-flash'],
+      // Conforming all-day head (P6): rootChain must end with one official model.
+      rootChain: ['deepseek-official/deepseek-flash'],
       roles: {
         list: [{ id: 'coder', persona: '', chain: ['anthropic/claude-3-5-sonnet'] }],
         rules: [{ origin: 'root', role: 'coder' }],

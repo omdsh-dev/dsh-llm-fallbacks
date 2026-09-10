@@ -1341,7 +1341,7 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     ) {
       if (!isAllDayConforming(config.rootChain)) {
         logger.warn(
-          'llm-fallbacks: FallbacksChain/Auto selected but the all-day rootChain is not conforming (exactly one official V4 model) — no primary override',
+          'llm-fallbacks: FallbacksChain/Auto selected but the all-day rootChain is not conforming (exactly one official model: deepseek-official/deepseek-flash or deepseek-official/deepseek-pro) — no primary override',
         )
       } else {
         const effective = resolveEffectiveChain(config, new Date(), config.tz ?? 'Asia/Shanghai')

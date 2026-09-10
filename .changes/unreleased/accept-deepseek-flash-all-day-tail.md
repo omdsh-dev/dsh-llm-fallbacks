@@ -1,0 +1,4 @@
+---
+category: Changed
+---
+- Retarget the all-day `rootChain` tail set to the renamed official line: exactly one of `deepseek-official/deepseek-flash` or `deepseek-official/deepseek-pro` (XOR). The retired `deepseek-v4-flash` / `deepseek-v4-pro` ids are no longer legal tails — a saved V4 tail now warns at startup, keeps slot rows and the virtual picker inert, and blocks save until a legal tail is picked. `deepseek-pro` is a legal selector whose model is not yet served by the catalog: the settings card shows it disabled ("not yet available"), and requests to it fail at the provider until the gateway enables the id. The plugin does not probe catalog availability — a chain containing `deepseek-pro` dispatches to it like any other exact entry, and the override resolves the first exact head of the effective chain, so a chain with a working entry before Pro still routes to that earlier entry.

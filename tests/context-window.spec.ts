@@ -19,7 +19,7 @@
  *   window keeps the candidate, and the catalog is probed only for this
  *   trigger. Windows are read from the advertised catalog row when it carries
  *   one, else from `resolveModelInfo(provider, model)`'s
- *   `context.contextWindow` (where dsh 0.1.2-rc.1 puts it).
+ *   `context.contextWindow` (where dsh 0.1.5-rc.1 puts it).
  *
  * Drives the real plugin `apply()` against the shared harness fake
  * agent/session (`tests/support/harness.ts`), like `tests/runtime.spec.ts`.
@@ -170,7 +170,7 @@ describe('context-window candidate filter — skip what cannot fit either', () =
     ])
   })
 
-  it('reads the window from resolveModelInfo when the catalog row does not carry one (dsh 0.1.2-rc.1)', async () => {
+  it('reads the window from resolveModelInfo when the catalog row does not carry one (dsh 0.1.5-rc.1)', async () => {
     const windows: Record<string, number> = { 'mock/gpt-4o': 8_192, 'small/tiny': 4_096, 'big/wide': 200_000 }
     ctx.provide('llm', {
       listModels: async (provider: string) => ({
