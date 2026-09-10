@@ -27,11 +27,13 @@ import { Context } from '@deepseek-ai/cordis'
 import { apply } from '../src/index.ts'
 import {
   installSubagentSeam,
+  personaForRole,
   resolveDeclaredRoleFromAssignment,
   subagentSeamOf,
   type SubagentStartRequestView,
   type SubagentSeamRecord,
 } from '../src/subagents-seam.ts'
+import type { FallbacksRole } from '../src/config.ts'
 import { MemorySettings } from './support/memory-settings.ts'
 import { cfg, makeAgent } from './support/harness.ts'
 
@@ -42,6 +44,19 @@ const ROLE_IDS = new Map([
   ['scout', 'scout'],
   ['padded', ' padded '],
 ])
+
+/**
+ * Declared roles for the Task 2 persona matrix (`roles.list`): `coder` carries
+ * a chain and a PADDED persona (trimming is pinned), `scout` is CHAINLESS
+ * (`chain: []` — the plan's chain-independence case), `reviewer` declares only
+ * whitespace (no persona), and ` padded ` pins the DECLARED RAW id lookup.
+ */
+const ROLES: FallbacksRole[] = [
+  { id: 'coder', persona: '  Coder persona  ', chain: ['openai/gpt-4o'] },
+  { id: 'scout', persona: 'Scout persona', chain: [] },
+  { id: 'reviewer', persona: '   ' },
+  { id: ' padded ', persona: 'Padded persona' },
+]
 
 /**
  * An Assignment carrying `**Execute as**: <id>` plus a body after the first
@@ -120,6 +135,23 @@ describe('resolveDeclaredRoleFromAssignment — pure canonicalization', () => {
   })
 })
 
+describe('personaForRole — pure, chain-independent persona lookup', () => {
+  it('returns the TRIMMED persona of the DECLARED RAW id (never the trimmed key)', () => {
+    expect(personaForRole(ROLES, 'coder')).toBe('Coder persona')
+    // ` padded ` is the DECLARED RAW id the seam resolved — the lookup matches
+    // role.id exactly, so a padded declaration still finds its persona.
+    expect(personaForRole(ROLES, ' padded ')).toBe('Padded persona')
+    expect(personaForRole(ROLES, 'scout')).toBe('Scout persona')
+  })
+
+  it('returns undefined for a blank persona, an absent persona key, or an unknown id', () => {
+    expect(personaForRole(ROLES, 'reviewer')).toBeUndefined()
+    expect(personaForRole([{ id: 'bare' } as unknown as FallbacksRole], 'bare')).toBeUndefined()
+    expect(personaForRole(ROLES, 'nobody')).toBeUndefined()
+    expect(personaForRole([], 'coder')).toBeUndefined()
+  })
+})
+
 /** One captured delegation call on the fake runtime. */
 interface FakeSubagents {
   service: Record<string, unknown>
@@ -130,14 +162,19 @@ interface FakeSubagents {
 /**
  * Fake `subagents` runtime: records every delegated call and resolves the
  * given result. `tag` gives the raw service a distinguishable identity for the
- * wrapper-identity assertion.
+ * wrapper-identity assertion. `provider` is what `getProvider()` answers — the
+ * Task 2 persona-capability gate read (`undefined` = no provider registered).
  */
-function fakeSubagents(startResult: unknown, continuableResult?: unknown): FakeSubagents {
+function fakeSubagents(
+  startResult: unknown,
+  continuableResult?: unknown,
+  provider?: Record<string, unknown>,
+): FakeSubagents {
   const starts: FakeSubagents['starts'] = []
   const continuableStarts: FakeSubagents['continuableStarts'] = []
   const service: Record<string, unknown> = {
     tag: 'raw-subagents',
-    getProvider: () => undefined,
+    getProvider: () => provider,
     start: (name: string, request: SubagentStartRequestView) => {
       starts.push({ name, request })
       return Promise.resolve(startResult)
@@ -407,6 +444,256 @@ describe('subagent seam — behavioural (public call path)', () => {
     expect(String(debug.mock.calls[0]![0])).toContain('no role resolved')
     expect(seam.records.size).toBe(0)
   })
+
+  // --- Task 2: chain-independent native persona delivery ---------------------
+
+  it('merges the declared CHAINLESS role persona into the native start request', async () => {
+    ctx = new Context()
+    const fake = fakeSubagents({ id: 'child-persona' }, undefined, { capabilities: { persona: true } })
+    ctx.provide('subagents', fake.service)
+    installSubagentSeam(ctx, { roleIds: () => ROLE_IDS, roles: () => ROLES })
+
+    const { value } = await injectSubagents(ctx)
+    // Interception precondition: every claim below is about what the SERVICE
+    // received, which the raw service would also satisfy in the negative
+    // direction — pin that the injected read is the wrapper.
+    expect(value).not.toBe(fake.service)
+    const request: SubagentStartRequestView = { prompt: [{ type: 'text', text: assignment('scout') }] }
+    await (value.start as (name: string, request: SubagentStartRequestView) => Promise<unknown>)('spawn', request)
+
+    // `scout` declares `chain: []`; its persona still arrives — TRIMMED — on the
+    // native `persona` slot, and the caller's request object is never mutated.
+    const delivered = fake.starts[0]!.request
+    expect(delivered.persona).toBe('Scout persona')
+    expect(delivered).not.toBe(request)
+    expect(delivered.prompt).toBe(request.prompt)
+    expect(request.persona).toBeUndefined()
+  })
+
+  it('delivers the persona identically for a chainless and a chained role (chain independence)', async () => {
+    ctx = new Context()
+    const fake = fakeSubagents({ id: 'child-chain' }, undefined, { capabilities: { persona: true } })
+    ctx.provide('subagents', fake.service)
+    // The chained role's `chain` is an accessor that THROWS: persona resolution
+    // reads the ROLE only, so any `chain` / routing read would degrade here
+    // instead of delivering. That is the chain-independence pin.
+    const chainedRole: FallbacksRole = { id: 'chained', persona: 'Shared persona' }
+    Object.defineProperty(chainedRole, 'chain', {
+      enumerable: true,
+      get() {
+        throw new Error('the persona path must never read the role chain')
+      },
+    })
+    const roles: FallbacksRole[] = [{ id: 'scout', persona: 'Shared persona', chain: [] }, chainedRole]
+    installSubagentSeam(ctx, {
+      roleIds: () => new Map([['scout', 'scout'], ['chained', 'chained']]),
+      roles: () => roles,
+    })
+
+    const { value } = await injectSubagents(ctx)
+    const start = value.start as (name: string, request: SubagentStartRequestView) => Promise<unknown>
+    await start('spawn', { prompt: [{ type: 'text', text: assignment('scout') }] })
+    await start('spawn', { prompt: [{ type: 'text', text: assignment('chained') }] })
+
+    expect(fake.starts.map((call) => call.request.persona)).toEqual(['Shared persona', 'Shared persona'])
+  })
+
+  it('leaves a caller-set request.persona untouched (explicit caller intent wins)', async () => {
+    ctx = new Context()
+    const fake = fakeSubagents({ id: 'child-explicit' }, undefined, { capabilities: { persona: true } })
+    ctx.provide('subagents', fake.service)
+    installSubagentSeam(ctx, { roleIds: () => ROLE_IDS, roles: () => ROLES })
+
+    const { value } = await injectSubagents(ctx)
+    const start = value.start as (name: string, request: SubagentStartRequestView) => Promise<unknown>
+    const request: SubagentStartRequestView = {
+      prompt: [{ type: 'text', text: assignment('scout') }],
+      persona: 'caller persona',
+    }
+    await start('spawn', request)
+
+    // The role persona fills only an ABSENT slot: the caller's own persona and
+    // the caller's own request object reach the service untouched.
+    expect(fake.starts[0]!.request).toBe(request)
+    expect(fake.starts[0]!.request.persona).toBe('caller persona')
+
+    // An empty-string persona is still caller intent (the plan's rule: fill an
+    // ABSENT slot only) — never overwritten by the role persona either.
+    const emptyPersona: SubagentStartRequestView = {
+      prompt: [{ type: 'text', text: assignment('scout') }],
+      persona: '',
+    }
+    await start('spawn', emptyPersona)
+    expect(fake.starts[1]!.request).toBe(emptyPersona)
+    expect(fake.starts[1]!.request.persona).toBe('')
+
+    // Positive control (discrimination): the SAME role with an ABSENT slot does
+    // get the role persona through this wrapper — so "untouched" above is the
+    // explicit value winning, not a merge that never happens. This assertion
+    // fails when interception or the merge breaks.
+    await start('spawn', { prompt: [{ type: 'text', text: assignment('scout') }] })
+    expect(fake.starts[2]!.request.persona).toBe('Scout persona')
+  })
+
+  it('skips the persona with ONE contained debug when the provider lacks the capability', async () => {
+    ctx = new Context()
+    const debug = vi.fn()
+    const fake = fakeSubagents({ id: 'child-nocap' }, undefined, { capabilities: { persona: false } })
+    ctx.provide('subagents', fake.service)
+    installSubagentSeam(ctx, { roleIds: () => ROLE_IDS, roles: () => ROLES, debug })
+
+    const { value } = await injectSubagents(ctx)
+    expect(value).not.toBe(fake.service)
+    const request: SubagentStartRequestView = { prompt: [{ type: 'text', text: assignment('scout') }] }
+    await (value.start as (name: string, request: SubagentStartRequestView) => Promise<unknown>)('spawn', request)
+
+    // Capability miss = skip: the native start receives the ORIGINAL request
+    // object (byte-identical to the un-seamed path), never a persona the
+    // runtime would reject with UNSUPPORTED_CAPABILITY.
+    expect(fake.starts[0]!.request).toBe(request)
+    expect(request.persona).toBeUndefined()
+    expect(debug).toHaveBeenCalledTimes(1)
+    expect(String(debug.mock.calls[0]![0])).toContain('lacks the persona capability')
+  })
+
+  it('skips the persona with ONE contained debug when the runtime has no provider lookup', async () => {
+    ctx = new Context()
+    const debug = vi.fn()
+    const fake = fakeSubagents({ id: 'child-nolookup' })
+    // A reshaped runtime: `start`-capable but without `getProvider`, so the
+    // persona capability cannot be verified.
+    delete (fake.service as { getProvider?: unknown }).getProvider
+    ctx.provide('subagents', fake.service)
+    installSubagentSeam(ctx, { roleIds: () => ROLE_IDS, roles: () => ROLES, debug })
+
+    const { value } = await injectSubagents(ctx)
+    expect(value).not.toBe(fake.service)
+    const request: SubagentStartRequestView = { prompt: [{ type: 'text', text: assignment('scout') }] }
+    await (value.start as (name: string, request: SubagentStartRequestView) => Promise<unknown>)('spawn', request)
+
+    expect(fake.starts[0]!.request).toBe(request)
+    expect(request.persona).toBeUndefined()
+    expect(debug).toHaveBeenCalledTimes(1)
+    expect(String(debug.mock.calls[0]![0])).toContain('exposes no provider lookup')
+  })
+
+  it('does not merge when the role declares no persona (blank after trim)', async () => {
+    ctx = new Context()
+    const fake = fakeSubagents({ id: 'child-blank' }, undefined, { capabilities: { persona: true } })
+    ctx.provide('subagents', fake.service)
+    installSubagentSeam(ctx, { roleIds: () => ROLE_IDS, roles: () => ROLES })
+
+    const { value } = await injectSubagents(ctx)
+    const request: SubagentStartRequestView = { prompt: [{ type: 'text', text: assignment('reviewer') }] }
+    await (value.start as (name: string, request: SubagentStartRequestView) => Promise<unknown>)('spawn', request)
+
+    // No persona declared (`reviewer` is whitespace-only) → the SAME request
+    // object reaches the service.
+    expect(fake.starts[0]!.request).toBe(request)
+    expect(request.persona).toBeUndefined()
+
+    // Positive control (discrimination): a role that DOES declare a persona is
+    // merged through this same wrapper — so the identity above means "nothing to
+    // deliver", not "the wrapper never ran".
+    await (value.start as (name: string, request: SubagentStartRequestView) => Promise<unknown>)('spawn', {
+      prompt: [{ type: 'text', text: assignment('scout') }],
+    })
+    expect(fake.starts[1]!.request.persona).toBe('Scout persona')
+  })
+
+  it('does not merge for an unresolved role', async () => {
+    ctx = new Context()
+    const debug = vi.fn()
+    const fake = fakeSubagents({ id: 'child-norole-persona' }, undefined, { capabilities: { persona: true } })
+    ctx.provide('subagents', fake.service)
+    installSubagentSeam(ctx, { roleIds: () => ROLE_IDS, roles: () => ROLES, debug })
+
+    const { value } = await injectSubagents(ctx)
+    const request: SubagentStartRequestView = { prompt: [{ type: 'text', text: assignment('nobody') }] }
+    await (value.start as (name: string, request: SubagentStartRequestView) => Promise<unknown>)('spawn', request)
+
+    // An undeclared role never reaches the persona path: the original request
+    // object arrives, and the only debug line is the M-5 no-role no-op.
+    expect(fake.starts[0]!.request).toBe(request)
+    expect(debug).toHaveBeenCalledTimes(1)
+    expect(String(debug.mock.calls[0]![0])).toContain('no role resolved')
+  })
+
+  it('startContinuable: no role in the request and no record for that child ⇒ no-op', async () => {
+    ctx = new Context()
+    const fake = fakeSubagents({ id: 'unused' }, { childId: 'child-fresh' }, { capabilities: { persona: true } })
+    ctx.provide('subagents', fake.service)
+    installSubagentSeam(ctx, { roleIds: () => ROLE_IDS, roles: () => ROLES })
+
+    const { value } = await injectSubagents(ctx)
+    expect(value).not.toBe(fake.service)
+    const spec = { provider: 'spawn', label: 'fresh', childId: 'child-fresh', request: { prompt: [] } }
+    await (value.startContinuable as (spec: unknown) => Promise<unknown>)(spec)
+
+    // Neither an Assignment header nor a record for that child id: the caller's
+    // spec object reaches the service unchanged (same identity).
+    expect(fake.continuableStarts[0]).toBe(spec)
+  })
+
+  it('merges the persona into a continuable start reached through the record fallback', async () => {
+    ctx = new Context()
+    // The provider's ONE-SHOT persona flag is FALSE while `prepareContinuable`
+    // exists: the continuable surface is gated by the NATIVE continuable
+    // capability, because the manager applies `request.persona` unconditionally.
+    const fake = fakeSubagents({ id: 'unused' }, { childId: 'child-resume' }, {
+      capabilities: { persona: false },
+      prepareContinuable: () => undefined,
+    })
+    ctx.provide('subagents', fake.service)
+    const seam = installSubagentSeam(ctx, { roleIds: () => ROLE_IDS, roles: () => ROLES })
+    seam.records.set('child-resume', { role: 'scout', at: 1, firstNoticePending: false })
+
+    const { value } = await injectSubagents(ctx)
+    const spec = { provider: 'spawn', label: 'resume', childId: 'child-resume', request: { prompt: [] } }
+    await (value.startContinuable as (spec: unknown) => Promise<unknown>)(spec)
+
+    const delivered = fake.continuableStarts[0] as { request: SubagentStartRequestView }
+    expect(delivered).not.toBe(spec)
+    expect(delivered.request.persona).toBe('Scout persona')
+    expect(spec.request.persona).toBeUndefined()
+  })
+
+  it('reads the persona source per start, so a live roles edit applies without a re-install', async () => {
+    ctx = new Context()
+    const fake = fakeSubagents({ id: 'child-live' }, undefined, { capabilities: { persona: true } })
+    ctx.provide('subagents', fake.service)
+    let roles: FallbacksRole[] = [{ id: 'scout', persona: 'First persona', chain: [] }]
+    installSubagentSeam(ctx, { roleIds: () => ROLE_IDS, roles: () => roles })
+
+    const { value } = await injectSubagents(ctx)
+    const start = value.start as (name: string, request: SubagentStartRequestView) => Promise<unknown>
+    await start('spawn', { prompt: [{ type: 'text', text: assignment('scout') }] })
+    // A settings edit (a later fiber's persona change) must apply to the NEXT
+    // dispatch without a re-install: the source is read PER START.
+    roles = [{ id: 'scout', persona: 'Second persona', chain: [] }]
+    await start('spawn', { prompt: [{ type: 'text', text: assignment('scout') }] })
+
+    expect(fake.starts.map((call) => call.request.persona)).toEqual(['First persona', 'Second persona'])
+  })
+
+  it('skips the continuable persona when the provider has no continuable support', async () => {
+    ctx = new Context()
+    const debug = vi.fn()
+    const fake = fakeSubagents({ id: 'unused' }, { childId: 'child-nocont' }, { capabilities: { persona: true } })
+    ctx.provide('subagents', fake.service)
+    const seam = installSubagentSeam(ctx, { roleIds: () => ROLE_IDS, roles: () => ROLES, debug })
+    seam.records.set('child-nocont', { role: 'scout', at: 1, firstNoticePending: false })
+
+    const { value } = await injectSubagents(ctx)
+    const spec = { provider: 'spawn', label: 'resume', childId: 'child-nocont', request: { prompt: [] } }
+    await (value.startContinuable as (spec: unknown) => Promise<unknown>)(spec)
+
+    // No `prepareContinuable` → the persona is skipped, the caller's spec object
+    // is passed through unchanged, and the skip is ONE contained debug line.
+    expect(fake.continuableStarts[0]).toBe(spec)
+    expect(debug).toHaveBeenCalledTimes(1)
+    expect(String(debug.mock.calls[0]![0])).toContain('does not support continuable children')
+  })
 })
 
 describe('subagent seam — wrapper identity + install topology', () => {
@@ -488,5 +775,24 @@ describe('subagent seam — per-apply lifetime through apply()', () => {
     // still holds the FIRST seam (no nested wrapper, no second debug line).
     expect(() => apply(ctx, config())).not.toThrow()
     expect(subagentSeamOf(ctx)).toBe(first)
+  })
+
+  it('wires the persona source at that ONE install point (apply() + live roles.list)', async () => {
+    const fake = fakeSubagents({ id: 'child-apply' }, undefined, { capabilities: { persona: true } })
+    ctx.provide('subagents', fake.service)
+    // The FIRST fiber's install point is the only live seam (dedupe above), so
+    // this is exactly where the persona source has to be wired: `index.ts`
+    // passes `roles: () => source().roles.list` next to `roleIds`/`debug`.
+    apply(ctx, cfg({ roles: { list: [{ id: 'coder', persona: 'Applied persona', chain: [] }], rules: [] } }))
+
+    const { value } = await injectSubagents(ctx)
+    expect(value).not.toBe(fake.service)
+    await (value.start as (name: string, request: SubagentStartRequestView) => Promise<unknown>)('spawn', {
+      prompt: [{ type: 'text', text: assignment('coder') }],
+    })
+
+    // Dropping the `roles` option from the install call (or capturing the roles
+    // list at install time) fails here.
+    expect(fake.starts[0]!.request.persona).toBe('Applied persona')
   })
 })

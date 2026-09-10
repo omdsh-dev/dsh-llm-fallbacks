@@ -28,6 +28,26 @@
  * correlated instead through the parent-owned `subagent/catalog` session event
  * `{ childId, label }` joined on the delegating parent + request label.
  *
+ * Persona delivery (plan Task 2): the SAME single resolution point merges the
+ * declared role's `roles.list[].persona` (trimmed, non-empty) into the
+ * request's NATIVE `persona` slot — the slot the runtime composes as the
+ * scoped `deployment:persona-prefix` system-prompt section on the child. The
+ * source is the RESOLVED ROLE only, so delivery is chain-independent: a
+ * `chain: []` role gets its persona exactly like a chained one (no routing
+ * state is read). Both native start surfaces are covered, with the gate each
+ * one's fail-loud contract needs (measured on the installed
+ * `@deepseek-ai/dsh-subagent` `0.1.5-rc.1`): the one-shot `start` REJECTS a
+ * request carrying `persona` for a provider whose
+ * `getProvider(name).capabilities.persona` is not `true` (`lib/index.js:3202-3227`,
+ * `assertCapabilities`), so the merge pre-checks that flag; the continuable
+ * surface is composed by the continuation manager, which applies
+ * `request.persona` unconditionally (`lib/index.js:1703-1705`) and is gated by
+ * the provider's `prepareContinuable` presence instead (`lib/index.js:3179-3183`).
+ * A gate miss skips the persona with ONE contained debug log — never a failed
+ * start. An explicit caller `persona` WINS (the slot is filled only when it is
+ * absent), and every skip path returns the caller's OWN request object, so the
+ * native call stays byte-identical.
+ *
  * Degrade-never-crash: an absent/reshaped service, an unexpected result
  * shape, or any throwing bookkeeping degrades to the native path with at most
  * ONE contained debug log — a dispatch is never affected.
@@ -36,7 +56,7 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
-import { INHERIT_ROLE_ID } from './config.ts'
+import { INHERIT_ROLE_ID, type FallbacksRole } from './config.ts'
 
 /**
  * The cordis service-read waterfall event the seam registers on. Referenced
@@ -91,13 +111,16 @@ export interface SubagentPromptBlockView {
 /**
  * Structural view of the one-shot start request (consumed fields only): the
  * `prompt` is the role-extraction source, `label` + `parent` are the
- * catalog-correlation join key. The wrapper forwards the request object
- * itself, so every other field reaches the service unchanged.
+ * catalog-correlation join key, and `persona` is the NATIVE per-child persona
+ * slot the role persona is merged into (plan Global Constraints: an explicit
+ * caller value wins). The wrapper forwards the request object itself, so every
+ * other field reaches the service unchanged.
  */
 export interface SubagentStartRequestView {
   readonly prompt?: readonly SubagentPromptBlockView[]
   readonly label?: string
   readonly parent?: { readonly session?: { readonly id?: string } }
+  readonly persona?: string
 }
 
 /**
@@ -113,13 +136,32 @@ export interface ContinuableStartSpecView {
 }
 
 /**
+ * Structural view of ONE registered provider's consumed surface
+ * (`@deepseek-ai/dsh-subagent` `SubagentProvider`): `capabilities.persona` is
+ * the ONE-SHOT capability flag `SubagentRuntime.assertCapabilities` enforces
+ * (a request carrying a persona for a provider without it is REJECTED), while
+ * `prepareContinuable` is the NATIVE continuable gate — method presence IS the
+ * continuable capability (upstream: `SubagentCapabilities` describes the
+ * ONE-SHOT path only).
+ */
+interface SubagentProviderView {
+  readonly capabilities?: { readonly persona?: boolean }
+  readonly prepareContinuable?: unknown
+}
+
+/**
  * Structural view of the `subagents` runtime the wrapper delegates to
  * (consumed surface only; start results are opaque and forwarded untouched).
  */
 interface SubagentsServiceView {
   start(name: string, request: SubagentStartRequestView): unknown
   startContinuable?(spec: ContinuableStartSpecView): unknown
+  /** Provider lookup — the persona-capability gate read (absent on a reshaped runtime). */
+  getProvider?(name: string): SubagentProviderView | undefined
 }
+
+/** One start surface the persona merge runs on (the gate differs per surface). */
+type PersonaSurface = 'one-shot' | 'continuable'
 
 /** Options for {@link installSubagentSeam}. */
 export interface SubagentSeamOptions {
@@ -128,6 +170,12 @@ export interface SubagentSeamOptions {
    * so a settings change is observed without a re-install.
    */
   roleIds: () => ReadonlyMap<string, string>
+  /**
+   * Live declared roles (`roles.list`) — the persona source, read per start so
+   * a settings/persona edit is observed without a re-install. Absent ⇒ the
+   * seam only records roles (no persona delivery).
+   */
+  roles?: () => readonly FallbacksRole[]
   /** Contained debug sink (at most one line per contained degrade). */
   debug?: (message: string) => void
 }
@@ -241,6 +289,28 @@ function promptTextOf(blocks: readonly SubagentPromptBlockView[] | undefined): s
     .filter((block) => block?.type === 'text')
     .map((block) => block.text ?? '')
     .join('\n')
+}
+
+/**
+ * PURE, chain-independent persona lookup (plan Task 2 / Global Constraints):
+ * the DECLARED `persona` of `roleId`, trimmed, and only when it is still
+ * non-empty after the trim — a blank persona is NO persona. `roleId` is the
+ * DECLARED RAW id the seam already resolved, so this is an exact id match, not
+ * a second canonicalization pass.
+ *
+ * Only `id` and `persona` are read: no `chain`, no `rootChain`, no routing
+ * state — a `chain: []` role's persona resolves exactly like a chained one's.
+ *
+ * @param roles - the live declared roles (`roles.list`).
+ * @param roleId - the DECLARED RAW role id resolved at the seam.
+ */
+export function personaForRole(roles: readonly FallbacksRole[], roleId: string): string | undefined {
+  for (const role of roles) {
+    if (role.id !== roleId) continue
+    const persona = role.persona?.trim() ?? ''
+    return persona === '' ? undefined : persona
+  }
+  return undefined
 }
 
 /**
@@ -435,6 +505,102 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
     onValue(result)
   }
 
+  /**
+   * The persona-capability gate verdict for one surface (plan Global
+   * Constraints: merge ONLY when the target provider advertises the persona
+   * capability). `'unknown'` (no provider registered) stays SILENT: the native
+   * start fails loud its own way (`NO_PROVIDER`) and the seam must not shadow
+   * that contract. `'unavailable'` (a reshaped runtime without `getProvider`)
+   * cannot verify the capability, so the persona is skipped.
+   */
+  const personaGate = (
+    service: SubagentsServiceView,
+    providerName: string,
+    surface: PersonaSurface,
+  ): 'ok' | 'unknown' | 'unavailable' | 'unsupported' => {
+    if (typeof service.getProvider !== 'function') return 'unavailable'
+    const provider = service.getProvider(providerName)
+    if (provider === undefined) return 'unknown'
+    // One-shot: the flag the runtime's `assertCapabilities` enforces (a persona
+    // request for a provider without it is REJECTED, never ignored).
+    if (surface === 'one-shot') return provider.capabilities?.persona === true ? 'ok' : 'unsupported'
+    // Continuable: the manager composes the child itself and applies
+    // `request.persona` unconditionally — method presence IS the gate.
+    return typeof provider.prepareContinuable === 'function' ? 'ok' : 'unsupported'
+  }
+
+  /**
+   * Merge the declared role persona into the request's NATIVE `persona` slot,
+   * or return `request` ITSELF (same object) on every skip path — a skip leaves
+   * the native call byte-identical. Order (plan Global Constraints):
+   *
+   * 1. an explicit caller `persona` WINS (`tool-subagent` `Config.persona`, or
+   *    `@mstar-harness/dsh`'s own merge): the slot is filled only when absent —
+   *    silent, caller intent is not a skip.
+   * 2. no persona source wired → nothing to deliver (silent).
+   * 3. the role declares no persona (or a blank one) → nothing to deliver
+   *    (silent).
+   * 4. provider unknown → silent (the native start fails loud its own way).
+   * 5. gate miss (capability absent / unverifiable) → ONE contained debug log,
+   *    request unchanged — merging what the runtime would reject is never
+   *    acceptable.
+   * 6. hit → a shallow copy carrying the persona (the caller's object is never
+   *    mutated) + ONE debug log naming the role, the provider, and the surface.
+   */
+  const withRolePersona = (
+    service: SubagentsServiceView,
+    providerName: string,
+    request: SubagentStartRequestView,
+    role: string,
+    surface: PersonaSurface,
+  ): SubagentStartRequestView => {
+    if (request.persona !== undefined) return request
+    const readRoles = options.roles
+    if (readRoles === undefined) return request
+    const persona = personaForRole(readRoles(), role)
+    if (persona === undefined) return request
+    const gate = personaGate(service, providerName, surface)
+    if (gate === 'unknown') return request
+    if (gate === 'unavailable') {
+      debug(
+        `llm-fallbacks: role persona for '${role}' skipped — the '${SUBAGENT_SEAM_SERVICE}' runtime exposes no provider lookup, so the persona capability cannot be verified (the start proceeds unchanged)`,
+      )
+      return request
+    }
+    if (gate === 'unsupported') {
+      debug(
+        surface === 'one-shot'
+          ? `llm-fallbacks: subagent provider '${providerName}' lacks the persona capability — role persona for '${role}' skipped (the start proceeds unchanged)`
+          : `llm-fallbacks: subagent provider '${providerName}' does not support continuable children — role persona for '${role}' skipped (the native continuable start fails loud its own way)`,
+      )
+      return request
+    }
+    debug(
+      `llm-fallbacks: role persona delivered via the native subagent persona channel for role '${role}' (${surface} start on provider '${providerName}')`,
+    )
+    return { ...request, persona }
+  }
+
+  /**
+   * Contained wrapper around {@link withRolePersona}: a throwing live persona
+   * source / provider read degrades to the CALLER's request object — the merge
+   * aborts, the start is never affected.
+   */
+  const mergePersonaAtSeam = (
+    service: SubagentsServiceView,
+    providerName: string,
+    request: SubagentStartRequestView,
+    role: string,
+    surface: PersonaSurface,
+  ): SubagentStartRequestView => {
+    try {
+      return withRolePersona(service, providerName, request, role, surface)
+    } catch (error) {
+      reportDegrade(error)
+      return request
+    }
+  }
+
   /** Wrap one `subagents` read value; non-services and absent values pass through. */
   const wrapService = (value: unknown): unknown => {
     if (typeof value !== 'object' || value === null) {
@@ -459,6 +625,12 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
       const role = resolveRoleAtSeam(request)
       // No declared role → the native path, byte-identical (same request object).
       if (role === undefined) return service.start(name, request)
+      // Task 2 merge point: the ONE place the resolved role is available before
+      // the request reaches the service (`role` above + `name` here is
+      // everything the persona decision needs — no second resolution). A skip
+      // returns the caller's OWN request object; a hit a shallow copy carrying
+      // the persona.
+      const effectiveRequest = mergePersonaAtSeam(service, name, request, role, 'one-shot')
       let pendingKey: string | undefined
       try {
         pendingKey = beginCorrelation(request, role)
@@ -467,10 +639,7 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
       }
       let result: unknown
       try {
-        // Task 2 merge point: the ONE place the resolved role is available
-        // before the request reaches the service (`role` above + `name` here
-        // is everything the persona decision needs — no second resolution).
-        result = service.start(name, request)
+        result = service.start(name, effectiveRequest)
       } catch (error) {
         endCorrelation(pendingKey)
         throw error
@@ -499,7 +668,18 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
           // caller already reserved, else no-op.
           ?? (typeof spec?.childId === 'string' ? records.get(spec.childId)?.role : undefined)
         if (role === undefined) return startContinuable.call(service, spec)
-        const result: unknown = startContinuable.call(service, spec)
+        // Task 2: the continuable surface merges into `spec.request` — the SAME
+        // native persona slot (`ContinuableStartSpec.request` is a
+        // `SubagentStartRequest`) — gated by the NATIVE continuable capability.
+        // A skip leaves the caller's spec object untouched (same identity).
+        let effectiveSpec = spec
+        try {
+          const mergedRequest = withRolePersona(service, spec.provider, spec.request, role, 'continuable')
+          if (mergedRequest !== spec.request) effectiveSpec = { ...spec, request: mergedRequest }
+        } catch (error) {
+          reportDegrade(error)
+        }
+        const result: unknown = startContinuable.call(service, effectiveSpec)
         observeStartResult(
           result,
           (childSessionId) => recordChild(childSessionId, role, Date.now()),

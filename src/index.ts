@@ -863,10 +863,12 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   // per-child record by the CHILD SESSION ID the wrapped start returns. The
   // wrapper is additive: with no declared role the native request object and
   // result pass through untouched, and any seam failure degrades to the native
-  // path with one debug log. Task 2 merges the role persona at the wrapper's
-  // single resolution point; Task 3 emits the once-per-child notice row from
-  // `subagentSeam.records`. Cleaned on agent/disposed + plugin dispose below
-  // (mirrors `subagentRoleRecordMap`).
+  // path with one debug log. Task 2 (below) merges the resolved role's
+  // declared persona into the request's NATIVE persona slot at that same
+  // single resolution point — chain-independent (the role alone decides) and
+  // gated by the provider's measured persona capability; Task 3 emits the
+  // once-per-child notice row from `subagentSeam.records`. Cleaned on
+  // agent/disposed + plugin dispose below (mirrors `subagentRoleRecordMap`).
   // Multi-fiber dedupe (fix M-3): the seam's `internal/get` wrapper is
   // ROOT-scoped, so a later fiber applying over a shared context root must not
   // install a second listener set (nested wrappers + duplicated contained
@@ -879,6 +881,13 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
       // Live binding read: the settings onChange below re-derives `roleIds` in
       // place, so the seam sees role edits without a re-install.
       roleIds: () => roleIds,
+      // Task 2: the persona source — the same live settings read (`source()`,
+      // reassigned by `setSource` above and by the settings onChange, which the
+      // fail-loud single settings registration keeps on THIS fiber) that the
+      // runtime itself uses, so a `roles.list[].persona` edit applies to the
+      // NEXT dispatch without a re-install. `source()` is read per start, never
+      // captured at install.
+      roles: () => source().roles.list,
       debug: (message) => logger.debug(message),
     })
   } catch (error) {
