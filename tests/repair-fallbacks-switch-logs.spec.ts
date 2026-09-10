@@ -1,12 +1,14 @@
 /**
  * Tests for scripts/repair-fallbacks-switch-logs.ts:
- *   - unit tests for the pure transform `markFallbacksSwitchIgnorable`;
- *   - unit tests for the CLI arg parsing (`parseArgs`), incl. the
- *     `--apply`-requires-`--backup` refusal;
- *   - fixture-based tests for `processFile` (gated on a system `zstd`
- *     binary): a log containing `fallbacks/switch` events is REFUSED
- *     (never written, never reported as a repair) and a log without them
- *     is unchanged.
+ *   - unit tests for the pure transform `markFallbacksSwitchIgnorable` and
+ *     the fail-closed classifier `countFallbacksSwitchRows`;
+ *   - unit tests for the CLI arg parsing (`parseArgs`): `--root` plus the
+ *     legacy `--dry-run` / `--backup` / `--apply` flags accepted as no-ops;
+ *   - fixture-based tests for `processFile` and the real CLI (gated on a
+ *     system `zstd` binary): a log containing `fallbacks/switch` events is
+ *     REFUSED (never written, never reported as a repair, exit 1), a
+ *     corrupt log is an error (exit 1), and a log without them is unchanged
+ *     (exit 0).
  *
  * The transform marks session logs poisoned by the old plugin's durable
  * `fallbacks/switch` events (no `ignorable` marker), but the released

@@ -117,7 +117,7 @@ order 100）、会话转录切换行（`conversationEvents` + `conversation.chat
 
 ### 设置页只读状态块真实化（R1 关闭，spec §2.5 D-5/D-6）
 
-- **读取面**：`connection.api.sessions.history({ sessionId, maxMessages })` 原始事件面（HistoryEntry.event 可含历史 fallbacks/switch——停写后新切换不再产生该事件，旧事件经修复脚本标记 ignorable 后可读）——**不用** ctx.sessionHistory（公开快照只含投影会话对话，无原始自定义事件）；当前会话 `ctx.sessions.list` current（注意 host/client Context merge 冲突——`ctx.get('sessions') as unknown as ISessions`，且 client fiber 的 `sessions` 注入应可选降级）；单页 50、seq 倒序取 N=5、会话切换重载、错误隔离不碰 settings 状态。
+- **读取面**：`connection.api.sessions.history({ sessionId, maxMessages })` 原始事件面（HistoryEntry.event 可含历史 fallbacks/switch——停写后新切换不再产生该事件，旧事件**无法**通过 `ignorable` 标记修复（已发布的 session-format 迁移链拒绝未知事件类型），`scripts/repair-fallbacks-switch-logs.ts` 只检测并报告、绝不写入）——**不用** ctx.sessionHistory（公开快照只含投影会话对话，无原始自定义事件）；当前会话 `ctx.sessions.list` current（注意 host/client Context merge 冲突——`ctx.get('sessions') as unknown as ISessions`，且 client fiber 的 `sessions` 注入应可选降级）；单页 50、seq 倒序取 N=5、会话切换重载、错误隔离不碰 settings 状态。
 - **展示值推导**（非实时路由探测，恒附注）：未启用 / `rootChain` 未配置 → 空态；有最近切换 → 最新 `to`；无切换 → `rootChain` 首项（无角色链语境时，spec §7.4）。
 
 ### 纯挂载交付纪律（iter-20260811-fallbacks-mount-only，原 patch 交付纪律已删除）
@@ -134,7 +134,7 @@ order 100）、会话转录切换行（`conversationEvents` + `conversation.chat
 插件暴露程序化消费面，供其它插件（如 mstar-harness loader-probe + 决策点注入）探测与调用：
 
 - **库 API**：`src/index.ts` 统一 re-export 运行时函数（`resolveRole`/`resolveChain`/`selectCandidates`/`annotateCandidates`/`hasWildcardEntry`/`createCandidateFilter`/`resolveCandidate`/`resolveChainViews`/`parseSelector`/`validateFallbacksConfig`/`detectLegacyKeys`）+ 值（`INHERIT_ROLE_ID`/`ROLE_ID_PATTERN`/`defaultFallbacksConfig`/`SelectorError`）+ 类型——消费方 `import { resolveRole } from 'dsh-llm-fallbacks'`；导出面由 `tests/export-surface.spec.ts`（`LIBRARY_EXPORT_KEYS` SSOT + expectTypeOf dev-time pins）机械钉住。
-- **具名 service `'llm-fallbacks'`**：`ctx.get('llm-fallbacks') !== undefined` 即响应式能力探测（cordis 生命周期自动就绪/撤销）。6-key 纯函数面：`{ name, version, resolveRole, resolveChain, validateFallbacksConfig, detectLegacyKeys }`——**不暴露运行态**（store/事件）；运行态请走 info 日志（fallbacks/switch durable 事件已停写——issue #52；旧日志由修复脚本标记 ignorable 恢复加载）。多 fiber dedupe guard（镜像 gateway/typert 模式）+ `createRequire` 运行时读 version。注册细节 → `.mstar/knowledge/best-practices/dsh-cordis-plugin-authoring.md`。
+- **具名 service `'llm-fallbacks'`**：`ctx.get('llm-fallbacks') !== undefined` 即响应式能力探测（cordis 生命周期自动就绪/撤销）。6-key 纯函数面：`{ name, version, resolveRole, resolveChain, validateFallbacksConfig, detectLegacyKeys }`——**不暴露运行态**（store/事件）；运行态请走 info 日志（fallbacks/switch durable 事件已停写——issue #52；旧日志**无法**通过 `ignorable` 标记修复（已发布的 session-format 迁移链拒绝未知事件类型），`scripts/repair-fallbacks-switch-logs.ts` 只检测并报告、绝不写入）。多 fiber dedupe guard（镜像 gateway/typert 模式）+ `createRequire` 运行时读 version。注册细节 → `.mstar/knowledge/best-practices/dsh-cordis-plugin-authoring.md`。
 - **契约边界**：本包契约成立 ≠ 隔壁仓库已接上；消费文档 `docs/consumer-api.md` 是契约 SSOT。
 
 ### Role-seeds 能力：companion 自配置角色（iter-20260815-fallbacks-role-seeds）
