@@ -1,0 +1,898 @@
+/**
+ * In-session role notice row (plan role-based-subagent-adoption Task 3).
+ *
+ * Coverage is behavioural and public-path, mirroring `subagents-seam.spec.ts`:
+ * a `subagents` service is provided, the seam is installed exactly as `apply()`
+ * installs it, a consumer CALLS `ctx.subagents.start(...)`, and the child's own
+ * `agent/pre-step` waterfall is driven the way the loop drives it
+ * (`agent-loop/src/agent.ts:241-257`). Records are created by the production
+ * path — never seeded — except where a case must isolate one marker, and every
+ * such case carries an in-test positive control (the Task 1 I-1 / M-1 lesson:
+ * a negative that also holds with the behaviour broken proves nothing).
+ *
+ * The last describe block is the contract guard: the emitted source kind must be
+ * a member of the FROZEN released kind set the V2→V3 edge classifies.
+ */
+
+import { readFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
+import { resolve } from 'node:path'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { Context } from '@deepseek-ai/cordis'
+import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
+import { createUserMessage, type UserMessage } from '@deepseek-ai/dsh-llm'
+import { apply } from '../src/index.ts'
+import { installSubagentSeam, subagentSeamOf, type SubagentSeamRecord, type SubagentStartRequestView } from '../src/subagents-seam.ts'
+import { buildRoleNotice, installRoleNotice, markNoticeEmitted, NOTICE_EMITTED_LIMIT, ROLE_NOTICE_PLUGIN, ROLE_NOTICE_SOURCE_KIND, type RoleNoticeBuilder } from '../src/role-notice.ts'
+import type { FallbacksRole } from '../src/config.ts'
+import { MemorySettings } from './support/memory-settings.ts'
+import { cfg, makeAgent } from './support/harness.ts'
+
+/** Declared taxonomy: `coder` and `scout` declare a persona, `reviewer` only whitespace. */
+const ROLES: FallbacksRole[] = [
+  { id: 'coder', persona: 'Coder persona', chain: [] },
+  { id: 'scout', persona: 'Scout persona', chain: ['openai/gpt-4o'] },
+  { id: 'reviewer', persona: '   ' },
+]
+
+const ROLE_IDS = new Map([
+  ['coder', 'coder'],
+  ['scout', 'scout'],
+  ['reviewer', 'reviewer'],
+])
+
+/** An Assignment carrying the header field `**Execute as**: <id>` (the seam's role source). */
+function assignment(executeAs: string): string {
+  return ['## Assignment', '', `- **Execute as**: ${executeAs}`, '', '## Task 1 — something', ''].join('\n')
+}
+
+/** One claimed inbox message (what the loop hands the pre-step waterfall). */
+function claimedMessage(text = 'do the assigned task'): UserMessage {
+  return createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } })
+}
+
+/** The admitted messages of an `enter` decision; throws for a `reject` (never expected here). */
+function admittedMessages(decision: PreStepDecision): UserMessage[] {
+  if (decision.kind !== 'enter') throw new Error(`expected an enter decision, got '${decision.kind}'`)
+  return decision.messages
+}
+
+/** The one text block of a produced message (the notice's model-visible content). */
+function textOf(message: UserMessage): string {
+  const block = message.content[0] as { type: string; text: string }
+  return block.text
+}
+
+interface FakeSubagents {
+  service: Record<string, unknown>
+  starts: Array<{ name: string; request: SubagentStartRequestView }>
+}
+
+/**
+ * Fake `subagents` runtime: records every delegated call and answers
+ * `getProvider(name)` from `providers` — the Task 2 capability gate read, so a
+ * single test can exercise a capability-carrying and a capability-less provider
+ * by dispatching under different provider names.
+ */
+function fakeSubagents(
+  startResult: unknown,
+  providers: Record<string, Record<string, unknown>> = {},
+): FakeSubagents {
+  const starts: FakeSubagents['starts'] = []
+  const resolveResult = typeof startResult === 'function'
+    ? (startResult as (request: SubagentStartRequestView) => unknown)
+    : () => startResult
+  const service: Record<string, unknown> = {
+    tag: 'raw-subagents',
+    getProvider: (name: string) => providers[name],
+    start: (name: string, request: SubagentStartRequestView) => {
+      starts.push({ name, request })
+      return Promise.resolve(resolveResult(request))
+    },
+  }
+  return { service, starts }
+}
+
+/** Every child result is keyed by the request label, so a test reads the child id back off its own dispatch. */
+const childIdFromLabel = (request: SubagentStartRequestView): unknown => ({ id: request.label! })
+
+/** Wait one macrotask so a cordis plugin child's `apply` has run. */
+function nextTick(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0))
+}
+
+/**
+ * Read `ctx.subagents` the way the host does — from a CONSUMER fiber that
+ * injects the service (a same-fiber read is short-circuited by cordis and would
+ * bypass the wrapper). Each call registers its own named consumer, so a test can
+ * read the wrapper's `start` and `startContinuable` independently.
+ */
+async function seamConsumer(ctx: Context, name: string): Promise<Record<string, unknown>> {
+  let captured: Context | undefined
+  ctx.plugin({
+    name,
+    inject: ['subagents'],
+    apply(consumerCtx: Context) {
+      captured = consumerCtx
+    },
+  })
+  await nextTick()
+  if (captured === undefined) throw new Error('consumer fiber did not apply')
+  return (captured as unknown as { subagents: Record<string, unknown> }).subagents
+}
+
+/** The wrapper's `start` (the dispatch path the notice record is keyed from). */
+async function seamStart(
+  ctx: Context,
+): Promise<(name: string, request: SubagentStartRequestView) => Promise<unknown>> {
+  const value = await seamConsumer(ctx, 'role-notice-consumer-start')
+  return (name, request) => (value.start as (n: string, r: SubagentStartRequestView) => Promise<unknown>)(name, request)
+}
+
+/** The wrapper's `startContinuable` (the resume path that REWRITES a child's record). */
+async function seamContinuable(
+  ctx: Context,
+): Promise<(spec: Record<string, unknown>) => Promise<unknown>> {
+  const value = await seamConsumer(ctx, 'role-notice-consumer-continuable')
+  return (spec) => (value.startContinuable as (s: Record<string, unknown>) => Promise<unknown>)(spec)
+}
+
+/**
+ * Drive one `agent/pre-step` waterfall exactly like the loop's `preStep`
+ * (`agent-loop/src/agent.ts:241-257`): the default callback returns the claimed
+ * messages (the real default additionally appends the assembled
+ * system-prompt section, which no notice decision reads).
+ *
+ * The payload carries the DECLARED shape (`runtime-types.d.ts:313-319`:
+ * `{ agent, messages, turn, step, signal }`) — `messages` included, because the
+ * real loop passes the claimed batch (`dsh-agent-loop/lib/index.js:894-897`) and
+ * a sibling first-party listener on this event DOES read it
+ * (`dsh-agent/lib/index.js:163`). Leaving it out would exercise any future
+ * `messages` read here against `undefined`.
+ */
+function drivePreStep(
+  ctx: Context,
+  agent: Agent,
+  messages: readonly UserMessage[],
+  step = 1,
+  next?: () => Promise<PreStepDecision>,
+): Promise<PreStepDecision> {
+  return ctx.waterfall(
+    'agent/pre-step',
+    { agent, messages: [...messages], turn: 1, step, signal: new AbortController().signal },
+    next ?? (() => Promise.resolve({ kind: 'enter' as const, messages: [...messages] })),
+  )
+}
+
+/** A subagent-origin agent stand-in whose `id` matches the dispatched child session id. */
+function childAgent(id: string): Agent {
+  return makeAgent(id, { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent' }).agent
+}
+
+describe('buildRoleNotice — the sanctioned session-write shape (pure)', () => {
+  it('writes [role: <id>] with the plugin notice source', () => {
+    const notice = buildRoleNotice('coder', false)
+    expect(notice.role).toBe('user')
+    expect(notice.content).toEqual([{ type: 'text', text: '[role: coder]' }])
+    expect(notice.source.kind).toBe('plugin')
+    expect(notice.source.kind).toBe(ROLE_NOTICE_SOURCE_KIND)
+    expect((notice.source as { plugin?: string }).plugin).toBe(ROLE_NOTICE_PLUGIN)
+    expect((notice.source as { form?: string }).form).toBe('notice')
+    expect((notice.source as { summary?: string }).summary).toBe('role: coder')
+  })
+
+  it('appends the persona suffix to the text and keeps the summary', () => {
+    const skipped = buildRoleNotice('coder', true)
+    expect(skipped.content).toEqual([{ type: 'text', text: '[role: coder] (persona not applied)' }])
+    expect((skipped.source as { summary?: string }).summary).toBe('role: coder')
+
+    // Positive control: the two arms differ ONLY by the verdict — so the suffix
+    // assertion above is not satisfied by a builder that always appends it.
+    const delivered = buildRoleNotice('coder', false)
+    expect(textOf(delivered)).toBe('[role: coder]')
+    expect(textOf(delivered)).not.toContain('persona not applied')
+  })
+})
+
+describe('role notice — behavioural (public call path)', () => {
+  let ctx: Context
+
+  afterEach(async () => {
+    await ctx.fiber.dispose()
+    vi.restoreAllMocks()
+  })
+
+  it('emits exactly ONE row for a recorded child across repeated pre-steps', async () => {
+    ctx = new Context()
+    const fake = fakeSubagents(childIdFromLabel, { spawn: { capabilities: { persona: true } } })
+    ctx.provide('subagents', fake.service)
+    const seam = installSubagentSeam(ctx, { roleIds: () => ROLE_IDS, roles: () => ROLES })
+    const start = await seamStart(ctx)
+    await start('spawn', { prompt: [{ type: 'text', text: assignment('coder') }], label: 'child-one' })
+
+    // The record was keyed by the PRODUCTION path (the wrapped start's result id).
+    expect(seam.records.get('child-one')).toMatchObject({ role: 'coder', firstNoticePending: true })
+
+    const agent = childAgent('child-one')
+    const claimed = claimedMessage()
+
+    const first = admittedMessages(await drivePreStep(ctx, agent, [claimed], 1))
+    // The claimed batch is preserved and the notice is appended LAST.
+    expect(first).toHaveLength(2)
+    expect(first[0]).toBe(claimed)
+    expect(textOf(first[1]!)).toBe('[role: coder]')
+    expect(seam.records.get('child-one')!.firstNoticePending).toBe(false)
+
+    // Two LATER steps of the same child: no second row, ever.
+    for (const step of [2, 3]) {
+      const decision = admittedMessages(await drivePreStep(ctx, agent, [claimed], step))
+      expect(decision).toEqual([claimed])
+    }
+    expect(seam.noticeEmitted.has('child-one')).toBe(true)
+  })
+
+  it('keeps the once-per-child markers per agent: two children each get their own row (case i)', async () => {
+    ctx = new Context()
+    const fake = fakeSubagents(childIdFromLabel, { spawn: { capabilities: { persona: true } } })
+    ctx.provide('subagents', fake.service)
+    const seam = installSubagentSeam(ctx, { roleIds: () => ROLE_IDS, roles: () => ROLES })
+    const start = await seamStart(ctx)
+    await start('spawn', { prompt: [{ type: 'text', text: assignment('coder') }], label: 'child-a' })
+    await start('spawn', { prompt: [{ type: 'text', text: assignment('scout') }], label: 'child-b' })
+
+    const claimed = claimedMessage()
+    const firstA = admittedMessages(await drivePreStep(ctx, childAgent('child-a'), [claimed], 1))
+    const firstB = admittedMessages(await drivePreStep(ctx, childAgent('child-b'), [claimed], 1))
+    // Both children are announced: the markers are keyed per agent, so one
+    // child's row can never consume another's (a single global "already
+    // announced" flag would fail here).
+    expect(firstA).toHaveLength(2)
+    expect(textOf(firstA[1]!)).toBe('[role: coder]')
+    expect(firstB).toHaveLength(2)
+    expect(textOf(firstB[1]!)).toBe('[role: scout]')
+    expect(seam.noticeEmitted.size).toBe(2)
+
+    // …and neither is announced a second time on a later step.
+    expect(admittedMessages(await drivePreStep(ctx, childAgent('child-a'), [claimed], 2))).toEqual([claimed])
+    expect(admittedMessages(await drivePreStep(ctx, childAgent('child-b'), [claimed], 2))).toEqual([claimed])
+  })
+
+  it('emits nothing for a root agent, with the same record as positive control', async () => {
+    ctx = new Context()
+    const fake = fakeSubagents(childIdFromLabel, { spawn: { capabilities: { persona: true } } })
+    ctx.provide('subagents', fake.service)
+    installSubagentSeam(ctx, { roleIds: () => ROLE_IDS, roles: () => ROLES })
+    const start = await seamStart(ctx)
+    await start('spawn', { prompt: [{ type: 'text', text: assignment('coder') }], label: 'child-root' })
+
+    const claimed = claimedMessage()
+    // A ROOT agent (no `origin`): the record exists, and the origin gate alone
+    // is what withholds the row.
+    const root = makeAgent('child-root', { provider: 'mock', model: 'gpt-4o' }, {}).agent
+    expect(admittedMessages(await drivePreStep(ctx, root, [claimed], 1))).toEqual([claimed])
+
+    // Positive control: the SAME record, a subagent-origin agent ⇒ the row lands.
+    const decision = admittedMessages(await drivePreStep(ctx, childAgent('child-root'), [claimed], 1))
+    expect(decision).toHaveLength(2)
+    expect(textOf(decision[1]!)).toBe('[role: coder]')
+  })
+
+  it('emits nothing for an unrecorded child, with a recorded sibling as positive control', async () => {
+    ctx = new Context()
+    const fake = fakeSubagents(childIdFromLabel, { spawn: { capabilities: { persona: true } } })
+    ctx.provide('subagents', fake.service)
+    installSubagentSeam(ctx, { roleIds: () => ROLE_IDS, roles: () => ROLES })
+    const start = await seamStart(ctx)
+    await start('spawn', { prompt: [{ type: 'text', text: assignment('coder') }], label: 'child-known' })
+
+    const claimed = claimedMessage()
+    expect(admittedMessages(await drivePreStep(ctx, childAgent('child-unrecorded'), [claimed], 1))).toEqual([claimed])
+
+    // Positive control: a child this seam DID record gets its row in the same setup.
+    expect(admittedMessages(await drivePreStep(ctx, childAgent('child-known'), [claimed], 1))).toHaveLength(2)
+  })
+
+  it('never announces an inherit/unresolved dispatch, with a declared role as positive control', async () => {
+    ctx = new Context()
+    const fake = fakeSubagents(childIdFromLabel, { spawn: { capabilities: { persona: true } } })
+    ctx.provide('subagents', fake.service)
+    const seam = installSubagentSeam(ctx, { roleIds: () => ROLE_IDS, roles: () => ROLES })
+    const start = await seamStart(ctx)
+
+    // `inherit` is the reserved "no specific role" id: the seam resolves nothing,
+    // so no record is keyed (never invent a role) and there is nothing to announce.
+    await start('spawn', { prompt: [{ type: 'text', text: assignment('inherit') }], label: 'child-inherit' })
+    await start('spawn', { prompt: [{ type: 'text', text: assignment('nobody') }], label: 'child-undeclared' })
+    expect(seam.records.has('child-inherit')).toBe(false)
+    expect(seam.records.has('child-undeclared')).toBe(false)
+
+    const claimed = claimedMessage()
+    expect(admittedMessages(await drivePreStep(ctx, childAgent('child-inherit'), [claimed], 1))).toEqual([claimed])
+    expect(admittedMessages(await drivePreStep(ctx, childAgent('child-undeclared'), [claimed], 1))).toEqual([claimed])
+    expect(seam.noticeEmitted.size).toBe(0)
+
+    // Positive control: a DECLARED role dispatched through the same seam is keyed
+    // and announced — so the two negatives above mean "no record", not "no emission".
+    await start('spawn', { prompt: [{ type: 'text', text: assignment('coder') }], label: 'child-declared' })
+    expect(admittedMessages(await drivePreStep(ctx, childAgent('child-declared'), [claimed], 1))).toHaveLength(2)
+  })
+
+  it('honours the per-agent emitted marker even when the record still reads pending', async () => {
+    ctx = new Context()
+    const seam = installSubagentSeam(ctx, { roleIds: () => ROLE_IDS, roles: () => ROLES })
+    const claimed = claimedMessage()
+    const agent = childAgent('child-marker')
+    const record: SubagentSeamRecord = { role: 'coder', at: 1, firstNoticePending: true }
+    seam.records.set('child-marker', record)
+
+    // Seeded `emitted` (the in-memory half of the guarantee): the pending record
+    // alone would emit, so this case fails if the marker check is dropped.
+    seam.noticeEmitted.add('child-marker')
+    expect(admittedMessages(await drivePreStep(ctx, agent, [claimed], 1))).toEqual([claimed])
+    expect(record.firstNoticePending).toBe(true)
+
+    // Positive control: clearing ONLY the marker releases the row from the same
+    // still-pending record, so the assertion above is the marker's doing.
+    seam.noticeEmitted.delete('child-marker')
+    expect(admittedMessages(await drivePreStep(ctx, agent, [claimed], 2))).toHaveLength(2)
+    expect(record.firstNoticePending).toBe(false)
+  })
+
+  it('honours the record marker: a cleared record is never announced again', async () => {
+    ctx = new Context()
+    const seam = installSubagentSeam(ctx, { roleIds: () => ROLE_IDS, roles: () => ROLES })
+    const claimed = claimedMessage()
+    const agent = childAgent('child-cleared')
+    seam.records.set('child-cleared', { role: 'coder', at: 1, firstNoticePending: false })
+
+    // The record marker is the DURABLE half of the guarantee (Task 1 preserves it
+    // across a rewrite — see the resume case below), so a cleared record stays
+    // silent even with the in-memory marker empty. Fails if the
+    // `firstNoticePending` read is dropped and `emitted` alone carries the
+    // decision.
+    expect(admittedMessages(await drivePreStep(ctx, agent, [claimed], 1))).toEqual([claimed])
+    expect(seam.noticeEmitted.size).toBe(0)
+
+    // Positive control: the same id with the marker pending DOES announce.
+    seam.records.set('child-cleared', { role: 'coder', at: 1, firstNoticePending: true })
+    expect(admittedMessages(await drivePreStep(ctx, agent, [claimed], 2))).toHaveLength(2)
+  })
+
+  it('leaves a reject decision untouched, with an enter decision as positive control', async () => {
+    ctx = new Context()
+    const debug = vi.fn()
+    const seam = installSubagentSeam(ctx, { roleIds: () => ROLE_IDS, roles: () => ROLES, debug })
+    const claimed = claimedMessage()
+    const agent = childAgent('child-reject')
+    seam.records.set('child-reject', { role: 'coder', at: 1, firstNoticePending: true })
+
+    const rejected = await drivePreStep(ctx, agent, [claimed], 1, () => Promise.resolve({ kind: 'reject' as const }))
+    expect(rejected.kind).toBe('reject')
+    expect(seam.noticeEmitted.size).toBe(0)
+    expect(seam.records.get('child-reject')!.firstNoticePending).toBe(true)
+    // A reject carries NO `messages` field, so skipping it must be the listener's
+    // own decision rather than a contained throw: no debug line, and the marker
+    // is untouched.
+    expect(debug).not.toHaveBeenCalled()
+
+    // Positive control: the same record through an enter decision DOES announce.
+    expect(admittedMessages(await drivePreStep(ctx, agent, [claimed], 2))).toHaveLength(2)
+  })
+
+  it('never turns an empty step into a model call, with a claimed batch as positive control', async () => {
+    ctx = new Context()
+    const seam = installSubagentSeam(ctx, { roleIds: () => ROLE_IDS, roles: () => ROLES })
+    const agent = childAgent('child-empty')
+    seam.records.set('child-empty', { role: 'coder', at: 1, firstNoticePending: true })
+
+    // An empty `enter` is the loop's own "spend no model call" outcome: appending
+    // a notice would be the ONLY admitted message and would buy a request.
+    const empty = admittedMessages(await drivePreStep(ctx, agent, [], 1))
+    expect(empty).toEqual([])
+    expect(seam.noticeEmitted.size).toBe(0)
+    expect(seam.records.get('child-empty')!.firstNoticePending).toBe(true)
+
+    // Positive control: a claimed batch on the same record gets the row.
+    expect(admittedMessages(await drivePreStep(ctx, agent, [claimedMessage()], 2))).toHaveLength(2)
+  })
+
+  it('degrades with ONE contained debug when the producer throws, and keeps the child announceable', async () => {
+    ctx = new Context()
+    const debug = vi.fn()
+    const published = buildRoleNotice('coder', false)
+    let calls = 0
+    const buildNotice: RoleNoticeBuilder = () => {
+      if (calls++ === 0) throw new Error('producer boom')
+      return published
+    }
+    const records = new Map<string, SubagentSeamRecord>([
+      ['child-throws', { role: 'coder', at: 1, firstNoticePending: true }],
+    ])
+    const emitted = new Set<string>()
+    installRoleNotice(ctx, { records, emitted, buildNotice, debug })
+
+    const claimed = claimedMessage()
+    const agent = childAgent('child-throws')
+    const survived = admittedMessages(await drivePreStep(ctx, agent, [claimed], 1))
+    // The step is untouched (same claimed batch, no partial row) …
+    expect(survived).toEqual([claimed])
+    // … the once-per-child marker was NOT consumed by the throw …
+    expect(emitted.size).toBe(0)
+    expect(records.get('child-throws')!.firstNoticePending).toBe(true)
+    expect(debug).toHaveBeenCalledTimes(1)
+    expect(String(debug.mock.calls[0]![0])).toContain('contained')
+    expect(String(debug.mock.calls[0]![0])).toContain('producer boom')
+
+    // … so the child is still announced on its next step (a marker written before
+    // the build would lose the row permanently).
+    const recovered = admittedMessages(await drivePreStep(ctx, agent, [claimed], 2))
+    expect(recovered).toHaveLength(2)
+    expect(recovered[1]).toBe(published)
+  })
+
+  it('never re-announces a child whose record is rewritten by a resume', async () => {
+    ctx = new Context()
+    const fake = fakeSubagents(childIdFromLabel, { spawn: { capabilities: { persona: true } } })
+    fake.service.startContinuable = (spec: { childId?: string }) => Promise.resolve({ childId: spec.childId })
+    ctx.provide('subagents', fake.service)
+    const seam = installSubagentSeam(ctx, { roleIds: () => ROLE_IDS, roles: () => ROLES })
+    const start = await seamStart(ctx)
+    await start('spawn', { prompt: [{ type: 'text', text: assignment('coder') }], label: 'child-resume' })
+
+    const agent = childAgent('child-resume')
+    const claimed = claimedMessage()
+    expect(admittedMessages(await drivePreStep(ctx, agent, [claimed], 1))).toHaveLength(2)
+    expect(seam.records.get('child-resume')!.firstNoticePending).toBe(false)
+
+    // A resume re-records the SAME child (the request carries no Assignment
+    // header, so the seam's record fallback keys it again from `childId`). The
+    // write must PRESERVE the cleared marker — that is what makes the
+    // once-per-child guarantee outlive a re-dispatch instead of depending on
+    // the child never being written twice.
+    await (await seamContinuable(ctx))({ provider: 'spawn', childId: 'child-resume', request: { prompt: [] } })
+    expect(seam.records.get('child-resume')).toMatchObject({ role: 'coder', firstNoticePending: false })
+
+    const afterResume = admittedMessages(await drivePreStep(ctx, agent, [claimed], 2))
+    expect(afterResume).toEqual([claimed])
+  })
+
+  it('announces on the next non-empty step when the record lands after an earlier step (CF-7)', async () => {
+    ctx = new Context()
+    const seam = installSubagentSeam(ctx, { roleIds: () => ROLE_IDS, roles: () => ROLES })
+    const agent = childAgent('child-late')
+    const claimed = claimedMessage()
+
+    // Step 1 runs BEFORE any record exists: the dispatch seam writes the record
+    // when the wrapped start resolves, so a fast child can reach a step first.
+    // Nothing is announced and — the point of this case — nothing is CONSUMED:
+    // the emitter is not a one-shot first-step hook, so the row is not lost, it
+    // lands on the child's next non-empty step.
+    expect(admittedMessages(await drivePreStep(ctx, agent, [claimed], 1))).toEqual([claimed])
+    expect(seam.noticeEmitted.size).toBe(0)
+
+    // The record lands (the same shape the production write produces).
+    seam.records.set('child-late', { role: 'coder', at: Date.now(), firstNoticePending: true })
+    const second = admittedMessages(await drivePreStep(ctx, agent, [claimed], 2))
+    expect(second).toHaveLength(2)
+    expect(textOf(second[1]!)).toBe('[role: coder]')
+
+    // …and exactly once: the late announcement consumed the markers.
+    expect(admittedMessages(await drivePreStep(ctx, agent, [claimed], 3))).toEqual([claimed])
+  })
+
+  it('announces ONE row with two applied fibers, and the survivor announces after the owner disposes (CF-5)', async () => {
+    ctx = new Context()
+    ctx.plugin(MemorySettings)
+    const fake = fakeSubagents(childIdFromLabel, { spawn: { capabilities: { persona: true } } })
+    ctx.provide('subagents', fake.service)
+    const config = () => cfg({ roles: { list: [{ id: 'coder', persona: 'Coder persona', chain: [] }], rules: [] } })
+
+    // TWO APPLIED FIBERS over one root: each one registers its own notice
+    // emitter, over the ROOT-shared record map and marker.
+    let firstCtx: Context | undefined
+    let secondCtx: Context | undefined
+    const firstFiber = ctx.plugin({
+      name: 'notice-multi-first',
+      apply: (fiberCtx: Context) => {
+        firstCtx = fiberCtx
+        apply(fiberCtx, config())
+      },
+    })
+    await nextTick()
+    const secondFiber = ctx.plugin({
+      name: 'notice-multi-second',
+      apply: (fiberCtx: Context) => {
+        secondCtx = fiberCtx
+        apply(fiberCtx, config())
+      },
+    })
+    await nextTick()
+
+    const first = subagentSeamOf(firstCtx!)
+    const second = subagentSeamOf(secondCtx!)
+    expect(first!.records).toBe(second!.records)
+    expect(first!.noticeEmitted).toBe(second!.noticeEmitted)
+
+    const start = await seamStart(ctx)
+    await start('spawn', { prompt: [{ type: 'text', text: assignment('coder') }], label: 'child-two-fibers' })
+
+    // Two emitters over ONE shared marker ⇒ exactly one row (a per-fiber marker
+    // would append the notice twice).
+    const claimed = claimedMessage()
+    const decision = admittedMessages(await drivePreStep(ctx, childAgent('child-two-fibers'), [claimed], 1))
+    expect(decision).toHaveLength(2)
+    expect(textOf(decision[1]!)).toBe('[role: coder]')
+    expect(second!.noticeEmitted.size).toBe(1)
+
+    // The wrapper OWNER disposes while the other fiber stays applied. The
+    // survivor's own emitter must still announce — that registration is what the
+    // old all-inclusive dedupe dropped, leaving the role surface dead on a
+    // still-applied fiber.
+    await firstFiber.dispose()
+    second!.records.set('child-survivor', { role: 'scout', at: Date.now(), firstNoticePending: true })
+    const survivor = admittedMessages(await drivePreStep(ctx, childAgent('child-survivor'), [claimed], 1))
+    expect(survivor).toHaveLength(2)
+    expect(textOf(survivor[1]!)).toBe('[role: scout]')
+
+    await secondFiber.dispose()
+  })
+
+  it('runs outermost, so its row is the LAST admitted message (prepend shape)', async () => {
+    ctx = new Context()
+    const sibling = createUserMessage({
+      content: [{ type: 'text', text: '[sibling pre-step listener]' }],
+      source: { kind: 'user' },
+    })
+    let siblingPayload: { messages?: UserMessage[] } | undefined
+    // Registered BEFORE the seam. Only a `prepend: true` registration puts the
+    // notice OUTSIDE this listener (the loop's final decision), so the order
+    // below pins the documented waterfall position rather than an incidental
+    // insertion order.
+    ctx.on('agent/pre-step', async (payload, next) => {
+      siblingPayload = payload as { messages?: UserMessage[] }
+      const decision = await next()
+      if (decision.kind === 'reject') return decision
+      return { ...decision, messages: [...decision.messages, sibling] }
+    })
+    const seam = installSubagentSeam(ctx, { roleIds: () => ROLE_IDS, roles: () => ROLES })
+    seam.records.set('child-order', { role: 'coder', at: 1, firstNoticePending: true })
+
+    const claimed = claimedMessage()
+    const decision = admittedMessages(await drivePreStep(ctx, childAgent('child-order'), [claimed], 1))
+    expect(decision).toHaveLength(3)
+    expect(decision[1]).toBe(sibling)
+    expect(textOf(decision[2]!)).toBe('[role: coder]')
+    // The waterfall payload carries the loop's DECLARED `messages` batch
+    // (`runtime-types.d.ts:313-319`; the real loop passes the claimed batch), so
+    // a future listener that reads it is exercised against real data here rather
+    // than against `undefined` (Task 3 review Minor 2).
+    expect(siblingPayload?.messages).toEqual([claimed])
+  })
+
+  it('appends (persona not applied) only when a DECLARED persona was skipped', async () => {
+    ctx = new Context()
+    const fake = fakeSubagents(childIdFromLabel, {
+      capable: { capabilities: { persona: true } },
+      nocap: { capabilities: { persona: false } },
+    })
+    ctx.provide('subagents', fake.service)
+    installSubagentSeam(ctx, { roleIds: () => ROLE_IDS, roles: () => ROLES, debug: vi.fn() })
+    const start = await seamStart(ctx)
+    const claimed = claimedMessage()
+
+    // (1) Declared persona, capability present → delivered → no suffix.
+    await start('capable', { prompt: [{ type: 'text', text: assignment('coder') }], label: 'child-delivered' })
+    const delivered = admittedMessages(await drivePreStep(ctx, childAgent('child-delivered'), [claimed], 1))
+    expect(textOf(delivered[1]!)).toBe('[role: coder]')
+
+    // (2) Declared persona, capability absent → the merge skipped it → suffix.
+    await start('nocap', { prompt: [{ type: 'text', text: assignment('coder') }], label: 'child-skipped' })
+    const skipped = admittedMessages(await drivePreStep(ctx, childAgent('child-skipped'), [claimed], 1))
+    expect(textOf(skipped[1]!)).toBe('[role: coder] (persona not applied)')
+
+    // (3) Positive control for "only when the role DECLARES one": the SAME
+    // capability-less provider, a role whose persona is blank after trim.
+    await start('nocap', { prompt: [{ type: 'text', text: assignment('reviewer') }], label: 'child-nopersona' })
+    const bare = admittedMessages(await drivePreStep(ctx, childAgent('child-nopersona'), [claimed], 1))
+    expect(textOf(bare[1]!)).toBe('[role: reviewer]')
+
+    // (4) Explicit caller intent wins the slot: the persona IS applied, just not
+    // by this plugin's merge, so the row must not claim it was skipped.
+    await start('nocap', {
+      prompt: [{ type: 'text', text: assignment('scout') }],
+      persona: 'Caller persona',
+      label: 'child-caller',
+    })
+    const caller = admittedMessages(await drivePreStep(ctx, childAgent('child-caller'), [claimed], 1))
+    expect(textOf(caller[1]!)).toBe('[role: scout]')
+  })
+
+  it('reports an UNREGISTERED provider as a skip with ONE surface-naming debug line (case l arm)', async () => {
+    ctx = new Context()
+    const debug = vi.fn()
+    // `spawn` is NOT in the provider table: `personaGate` returns `unknown`. The
+    // request stays untouched (the native start fails loud `NO_PROVIDER` its own
+    // way), but the declared persona IS undelivered — a skip reason like any
+    // other, so the plan Errata's "one debug line per skip reason naming the
+    // surface" applies (Task 4 review C-4).
+    const fake = fakeSubagents(childIdFromLabel, { nocap: { capabilities: { persona: false } } })
+    ctx.provide('subagents', fake.service)
+    installSubagentSeam(ctx, { roleIds: () => ROLE_IDS, roles: () => ROLES, debug })
+    const start = await seamStart(ctx)
+    const claimed = claimedMessage()
+
+    await start('spawn', { prompt: [{ type: 'text', text: assignment('coder') }], label: 'child-unknown' })
+    const unknown = admittedMessages(await drivePreStep(ctx, childAgent('child-unknown'), [claimed], 1))
+    // The suffix is the row's signal; the debug line is the operator's.
+    expect(textOf(unknown[1]!)).toBe('[role: coder] (persona not applied)')
+    expect(debug).toHaveBeenCalledTimes(1)
+    expect(String(debug.mock.calls[0]![0])).toContain("no subagent provider 'spawn' is registered")
+    expect(String(debug.mock.calls[0]![0])).toContain('one-shot')
+
+    // Positive control for the DISCRIMINATION: the SAME merge through a
+    // REGISTERED but capability-less provider produces the same suffix with its
+    // OWN line — so the line above names the unknown verdict and not a persona
+    // path that never ran.
+    await start('nocap', { prompt: [{ type: 'text', text: assignment('coder') }], label: 'child-unknown-cap' })
+    const capped = admittedMessages(await drivePreStep(ctx, childAgent('child-unknown-cap'), [claimed], 1))
+    expect(textOf(capped[1]!)).toBe('[role: coder] (persona not applied)')
+    expect(debug).toHaveBeenCalledTimes(2)
+    expect(String(debug.mock.calls[1]![0])).toContain('lacks the persona capability')
+  })
+
+  it('keeps a declared-persona skip reported when a later resume recomputes it (case h + sticky verdict)', async () => {
+    ctx = new Context()
+    const fake = fakeSubagents(childIdFromLabel, { nocap: { capabilities: { persona: false } } })
+    const continuableSpecs: Array<Record<string, unknown>> = []
+    fake.service.startContinuable = (spec: Record<string, unknown>) => {
+      continuableSpecs.push(spec)
+      return Promise.resolve({ childId: spec.childId })
+    }
+    ctx.provide('subagents', fake.service)
+    const seam = installSubagentSeam(ctx, { roleIds: () => ROLE_IDS, roles: () => ROLES, debug: vi.fn() })
+    const start = await seamStart(ctx)
+
+    // Dispatch: the role declares a persona, the provider cannot carry it.
+    await start('nocap', { prompt: [{ type: 'text', text: assignment('coder') }], label: 'child-sticky' })
+    expect(seam.records.get('child-sticky')?.personaNotApplied).toBe(true)
+
+    // A resume BEFORE the child's first non-empty pre-step re-keys the record
+    // from the fallback (the request carries no Assignment header) and recomputes
+    // the verdict — here to `false`, because the resume carries the CALLER's own
+    // persona. The role's DECLARED persona is still undelivered on the dispatch
+    // the notice reports, so the rewrite must not un-report it.
+    await (await seamContinuable(ctx))({
+      provider: 'nocap',
+      childId: 'child-sticky',
+      request: { prompt: [], persona: 'Caller persona' },
+    })
+    expect(seam.records.get('child-sticky')).toMatchObject({ role: 'coder', personaNotApplied: true })
+
+    const decision = admittedMessages(await drivePreStep(ctx, childAgent('child-sticky'), [claimedMessage()], 1))
+    expect(textOf(decision[1]!)).toBe('[role: coder] (persona not applied)')
+    // Positive control: the resume really ran and really kept the caller's own
+    // persona (forwarded untouched) — so the verdict above is the sticky record,
+    // not a resume that never happened.
+    expect(continuableSpecs[0]).toMatchObject({ request: { persona: 'Caller persona' } })
+  })
+})
+
+describe('role notice — per-apply lifetime through apply()', () => {
+  let ctx: Context
+
+  afterEach(async () => {
+    await ctx.fiber.dispose()
+  })
+
+  it('emits the row through the real apply() composition', async () => {
+    ctx = new Context()
+    ctx.plugin(MemorySettings)
+    const fake = fakeSubagents(childIdFromLabel, { spawn: { capabilities: { persona: true } } })
+    ctx.provide('subagents', fake.service)
+    apply(ctx, cfg({ roles: { list: [{ id: 'coder', persona: 'Coder persona', chain: [] }], rules: [] } }))
+
+    const start = await seamStart(ctx)
+    await start('spawn', { prompt: [{ type: 'text', text: assignment('coder') }], label: 'child-apply' })
+
+    const claimed = claimedMessage()
+    const decision = admittedMessages(await drivePreStep(ctx, childAgent('child-apply'), [claimed], 1))
+    // Dropping the `installRoleNotice(...)` registration from the seam install
+    // (or the seam's `roles` wiring) fails here.
+    expect(decision).toHaveLength(2)
+    expect(textOf(decision[1]!)).toBe('[role: coder]')
+  })
+
+  it('keeps the emitted marker across agent/disposed; clears it only on plugin dispose (CF-6)', async () => {
+    ctx = new Context()
+    ctx.plugin(MemorySettings)
+    apply(ctx, cfg({ roles: { list: [{ id: 'coder', persona: '', chain: [] }], rules: [] } }))
+    const seam = subagentSeamOf(ctx)
+    expect(seam).toBeDefined()
+    const { agent } = makeAgent('child-cleaned', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent' })
+
+    // SESSION-stable: `Agent.id` IS the child session id and a continuable
+    // child's durable session OUTLIVES the activation, so a disposal must NOT
+    // drop the marker — dropping it was what let a re-activation resume append a
+    // SECOND `[role: x]` row to the same session log.
+    seam!.noticeEmitted.add('child-cleaned')
+    ctx.emit('agent/disposed', { agent })
+    expect(seam!.noticeEmitted.has('child-cleaned')).toBe(true)
+
+    // The plugin's own dispose is the one place the whole marker map is cleared
+    // (no residual state).
+    await ctx.fiber.dispose()
+    expect(seam!.noticeEmitted.size).toBe(0)
+  })
+
+  it('never announces a re-activated child session twice (CF-6, session-stable marker)', async () => {
+    ctx = new Context()
+    ctx.plugin(MemorySettings)
+    const fake = fakeSubagents(childIdFromLabel, { spawn: { capabilities: { persona: true } } })
+    ctx.provide('subagents', fake.service)
+    apply(ctx, cfg({ roles: { list: [{ id: 'coder', persona: 'Coder persona', chain: [] }], rules: [] } }))
+    const start = await seamStart(ctx)
+
+    // First activation: the child is dispatched and announced exactly once.
+    await start('spawn', { prompt: [{ type: 'text', text: assignment('coder') }], label: 'child-reactivated' })
+    const claimed = claimedMessage()
+    expect(admittedMessages(await drivePreStep(ctx, childAgent('child-reactivated'), [claimed], 1))).toHaveLength(2)
+
+    // The activation ends. Per-agent cleanup drops the RECORD (exactly as the
+    // other per-agent maps do) while the session-stable marker survives.
+    const { agent } = makeAgent('child-reactivated', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent' })
+    ctx.emit('agent/disposed', { agent })
+    expect(subagentSeamOf(ctx)!.records.has('child-reactivated')).toBe(false)
+    expect(subagentSeamOf(ctx)!.noticeEmitted.has('child-reactivated')).toBe(true)
+
+    // Re-activation re-dispatches the SAME child session id with a declared role:
+    // the record is written fresh (`firstNoticePending: true`), which is exactly
+    // the state that used to produce a second durable row.
+    await start('spawn', { prompt: [{ type: 'text', text: assignment('coder') }], label: 'child-reactivated' })
+    expect(subagentSeamOf(ctx)!.records.get('child-reactivated')!.firstNoticePending).toBe(true)
+    expect(admittedMessages(await drivePreStep(ctx, childAgent('child-reactivated'), [claimed], 1))).toEqual([claimed])
+    // Positive control lives in the first activation above: the same emitter, on
+    // the same seam, DID append the row before the marker was set.
+  })
+})
+
+describe('role notice — the bounded, session-stable marker (CF-6)', () => {
+  it('evicts the oldest session once the bound is reached, keeping the newest', () => {
+    const emitted = new Set<string>()
+    for (let index = 0; index <= NOTICE_EMITTED_LIMIT; index += 1) markNoticeEmitted(emitted, `child-${index}`)
+    expect(emitted.size).toBe(NOTICE_EMITTED_LIMIT)
+    expect(emitted.has('child-0')).toBe(false)
+    expect(emitted.has(`child-${NOTICE_EMITTED_LIMIT}`)).toBe(true)
+  })
+
+  it('bounds the marker the EMITTER writes, so the set cannot grow without limit', async () => {
+    const emitted = new Set<string>()
+    for (let index = 0; index < NOTICE_EMITTED_LIMIT; index += 1) emitted.add(`child-${index}`)
+    const records = new Map<string, SubagentSeamRecord>([
+      ['child-overflow', { role: 'coder', at: 1, firstNoticePending: true }],
+    ])
+    const noticeCtx = new Context()
+    try {
+      installRoleNotice(noticeCtx, { records, emitted })
+      const decision = admittedMessages(await drivePreStep(noticeCtx, childAgent('child-overflow'), [claimedMessage()], 1))
+      // The row landed AND the marker stayed bounded: the emitter routes through
+      // the bounded helper, so "session-stable" cannot become unbounded growth.
+      expect(decision).toHaveLength(2)
+      expect(textOf(decision[1]!)).toBe('[role: coder]')
+      expect(emitted.size).toBe(NOTICE_EMITTED_LIMIT)
+      expect(emitted.has('child-0')).toBe(false)
+      expect(emitted.has('child-overflow')).toBe(true)
+    } finally {
+      await noticeCtx.fiber.dispose()
+    }
+  })
+})
+
+/**
+ * The frozen released V2→V3 source-kind set — CHECKED-IN MIRROR.
+ *
+ * Provenance: `@deepseek-ai/dsh-session-format-v2-to-v3@0.1.5-rc.1`
+ * `lib/index.js:14-30` (`const SOURCE_KINDS = new Set([...])`; checkout
+ * `packages/session/session-format-v2-to-v3/src/payload.ts:10`), the boundary
+ * that throws `cannot safely transform unclassified message source` (`:125`) for
+ * anything outside it. The package does NOT export the set, so the guard below
+ * derives it from the installed lib's source when that lib resolves in this
+ * tree and falls back to this mirror otherwise — and cross-checks the two when
+ * both are available, so neither can drift silently.
+ */
+const MIRROR_RELEASED_SOURCE_KINDS: ReadonlySet<string> = new Set([
+  'user',
+  'plugin',
+  'model',
+  'tool',
+  'agent-instructions',
+  'session-reference',
+  'team-message',
+  'goal',
+  'skill-invocation',
+  'skill-catalog',
+  'coordinator',
+  'subagent-report',
+  'subagent-settled',
+  'webhook',
+  'agent-message',
+])
+
+/**
+ * The RELEASED size of that set (plan `## Global Constraints`: "one of the
+ * frozen 15 SOURCE_KINDS"). Pinned literally so the guard cannot be tautological
+ * in the mode where the package does not resolve (`derived === undefined` ⇒ the
+ * mirror IS the subject, and comparing the mirror with itself proves nothing):
+ * a mirror that gained or lost a kind fails here, and a future frozen edge with
+ * a different count fails on the `derived` branch too.
+ */
+const RELEASED_SOURCE_KIND_COUNT = 15
+
+/** The package whose V2→V3 edge hard-codes the load-safe source-kind set. */
+const FROZEN_EDGE_PACKAGE = '@deepseek-ai/dsh-session-format-v2-to-v3'
+
+/**
+ * Derive the frozen set from the INSTALLED frozen edge, or `undefined` when the
+ * package is absent from this tree (the expected case in registry mode: the
+ * plugin's peers are only the packages it imports) or its bundle shape changed.
+ * Anchored on `process.cwd()` — the worktree vitest runs in — exactly like
+ * `vitest.config.ts` (a bundled `import.meta.url` can point into a dependency
+ * tree's temp dir).
+ */
+function deriveReleasedSourceKinds(): ReadonlySet<string> | undefined {
+  try {
+    const require = createRequire(resolve(process.cwd(), 'package.json'))
+    const entry = require.resolve(FROZEN_EDGE_PACKAGE)
+    const match = /SOURCE_KINDS\s*=\s*new Set\(\[([\s\S]*?)\]\)/.exec(readFileSync(entry, 'utf8'))
+    if (match === null || match[1] === undefined) return undefined
+    const kinds = [...match[1].matchAll(/["']([^"']+)["']/g)].map((quoted) => quoted[1]!)
+    return kinds.length === 0 ? undefined : new Set(kinds)
+  } catch {
+    return undefined
+  }
+}
+
+describe('role notice — frozen released source-kind contract guard', () => {
+  it('emits a source kind the frozen released V2→V3 edge classifies', async () => {
+    const derived = deriveReleasedSourceKinds()
+    const kinds = derived ?? MIRROR_RELEASED_SOURCE_KINDS
+    // The count is pinned to the RELEASED set (15 kinds). This is the check that
+    // is live in the mode that actually runs here (`derived === undefined` ⇒
+    // `kinds` IS the mirror, so comparing the two would be a tautology — Task 3
+    // review Minor 1): an empty mirror, an "everything" mirror, or a mirror that
+    // grew an extra kind while keeping `plugin` all fail HERE.
+    expect(kinds.size).toBe(RELEASED_SOURCE_KIND_COUNT)
+    expect(MIRROR_RELEASED_SOURCE_KINDS.size).toBe(RELEASED_SOURCE_KIND_COUNT)
+    // When the frozen edge DOES resolve in this tree, it must agree with the
+    // mirror name for name — neither copy can drift silently.
+    if (derived !== undefined) expect([...derived].sort()).toEqual([...MIRROR_RELEASED_SOURCE_KINDS].sort())
+
+    // Read the emitted kind off the row the PRODUCTION path actually admits (a
+    // recorded child's first non-empty pre-step), not off a direct builder call:
+    // the emitter must not publish a different message than the builder.
+    const ctx = new Context()
+    try {
+      const fake = fakeSubagents(childIdFromLabel, { spawn: { capabilities: { persona: true } } })
+      ctx.provide('subagents', fake.service)
+      installSubagentSeam(ctx, { roleIds: () => ROLE_IDS, roles: () => ROLES })
+      const start = await seamStart(ctx)
+      await start('spawn', { prompt: [{ type: 'text', text: assignment('coder') }], label: 'child-guard' })
+      const decision = admittedMessages(await drivePreStep(ctx, childAgent('child-guard'), [claimedMessage()], 1))
+      expect(decision).toHaveLength(2)
+
+      const emitted = decision[1]!
+      expect(kinds.has(emitted.source.kind)).toBe(true)
+      expect(emitted.source.kind).toBe(ROLE_NOTICE_SOURCE_KIND)
+      // The pure builder agrees with the emitted row (the literal is exported so
+      // this cannot be satisfied by two different constants).
+      expect(buildRoleNotice('coder', false).source.kind).toBe(emitted.source.kind)
+    } finally {
+      await ctx.fiber.dispose()
+    }
+
+    // Positive control for the membership: a BESPOKE kind — the failure class
+    // this guard exists for — is NOT a member, so "member" above is the frozen
+    // set's verdict and not a predicate that accepts any string.
+    expect(kinds.has('llm-fallbacks-role')).toBe(false)
+    expect(kinds.has('')).toBe(false)
+  })
+})

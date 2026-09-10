@@ -49,6 +49,7 @@ import { firstExactCandidate, resolveRoleAtDispatch } from './role-resolution.ts
 import { detectAuthorizedRoute, type AuthorizedRouteSession } from './authorized-route.ts'
 import { firstAllowedCandidate, resolvedRoutes } from './route-allowlist.ts'
 import { effectivePolicy, readSessionPolicyEvent, type PolicySettings } from './subagent-policy.ts'
+import { installSubagentSeam, type SubagentSeam } from './subagents-seam.ts'
 import { FallbackStateStore, type AgentFallbackState, type BlockedSwitchAttempt, type EffectiveChainHead, type PendingSwitch, type SwitchScope } from './state.ts'
 import { escalatedCooldownMs } from './recovery.ts'
 import { overrideConfigWithRouteRule, type LlmReasoningEffort } from './override.ts'
@@ -334,38 +335,6 @@ const chainHeadStores = new WeakMap<Context, ReadonlyMap<string, EffectiveChainH
  */
 export function chainHeads(ctx: Context): ReadonlyMap<string, EffectiveChainHead> | undefined {
   return chainHeadStores.get(ctx)
-}
-
-/**
- * One dispatch-resolved subagent role record (plan subagent-role-badge T1):
- * the role `resolveRoleAtDispatch` resolved at the subagent's first request
- * and the route the subagent will actually run after the inject decision
- * (the override target when it applies, else the host seed).
- */
-type SubagentRoleRecord = {
-  role: string
-  model: { provider: string; model: string }
-  at: number
-}
-
-/**
- * Per-apply dispatch-resolved subagent role records, keyed by context. Weak
- * so entries die with the context; the plugin's own dispose effect clears
- * the map contents (mirrors `chainHeadStores`).
- * @internal
- */
-const subagentRoleRecordStores = new WeakMap<Context, ReadonlyMap<string, SubagentRoleRecord>>()
-
-/**
- * @internal Test seam (mirrors `chainHeads`): the per-agent dispatch-resolved
- * role records written by the role-inject block (plan subagent-role-badge T1)
- * for the plugin applied to `ctx`. Not part of the plugin's public surface;
- * lets tests read the badge record without reaching into the closure (the
- * gateway readback closes over the per-apply map directly). `undefined` when
- * no plugin is applied.
- */
-export function subagentRoleRecords(ctx: Context): ReadonlyMap<string, SubagentRoleRecord> | undefined {
-  return subagentRoleRecordStores.get(ctx)
 }
 
 /** Latest map value by `at` (the Subagents card shows the current one). */
@@ -903,18 +872,50 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   chainHeadStores.set(ctx, chainHeadMap)
   const blockedAttemptMap = new Map<string, BlockedSwitchAttempt>()
   blockedAttemptStores.set(ctx, blockedAttemptMap)
-  // Plan subagent-role-badge T1: dispatch-resolved subagent role records —
-  // `{ role, model, at }` per subagent session, written by the role-inject
-  // block for EVERY resolved non-`inherit` role, in BOTH policy paths, with
-  // `model` = the route the subagent actually runs (override target when it
-  // applies, else the host seed). Separate from `chainHeadMap`: that map
-  // records only under an ENABLED host policy (Subagents card), while the
-  // badge record must exist policy-off too. Repeated dispatches into the
-  // same session overwrite (last-wins = the current role). Grown here so the
-  // gateway snapshot (T2) can close over it; cleaned on agent/disposed +
-  // plugin dispose (mirrors `slotWinners`). In-memory only.
-  const subagentRoleRecordMap = new Map<string, SubagentRoleRecord>()
-  subagentRoleRecordStores.set(ctx, subagentRoleRecordMap)
+  // Plan role-based-subagent-adoption Task 1: the dispatch-seam role record —
+  // ONE cordis `internal/get` wrapper over `subagents` resolving the Assignment
+  // `**Execute as**: <id>` role at `start`/`startContinuable` and keying a
+  // per-child record by the CHILD SESSION ID the wrapped start returns. The
+  // wrapper is additive: with no declared role the native request object and
+  // result pass through untouched, and any seam failure degrades to the native
+  // path with one debug log. Task 2 (below) merges the resolved role's
+  // declared persona into the request's NATIVE persona slot at that same
+  // single resolution point — chain-independent (the role alone decides) and
+  // gated by the provider's measured persona capability; Task 3 emits the
+  // once-per-child notice row from `subagentSeam.records` (its `noticeEmitted`
+  // marker survives `agent/disposed` — CF-6 — and is cleared by the plugin
+  // dispose effect), and Task 3b registers the host session projection unit that
+  // folds that row back out of the child's log for the header badge. The record
+  // map is cleaned on agent/disposed + plugin dispose below.
+  // Multi-fiber dedupe (fix M-3, reshaped by the CF-5 fix round): ONLY the
+  // seam's `internal/get` wrapper is ROOT-scoped and single-owner, so a later
+  // fiber applying over a shared context root must not install a second
+  // listener set (nested wrappers + duplicated contained debug lines). Mirror
+  // the service / gateway / typert guards below — but structurally, not by
+  // matching a thrown message: the install always returns a seam and reports
+  // ownership in `ownsWrapper` (false = this fiber shares the root's record map
+  // and registers only its own notice emitter + projection unit). The notice
+  // emitter and the projection unit are registered PER APPLIED FIBER by the
+  // install, so a disposing owner fiber no longer takes the role surfaces down
+  // with it.
+  const subagentSeam: SubagentSeam = installSubagentSeam(ctx, {
+    // Live binding read: the settings onChange below re-derives `roleIds` in
+    // place, so the seam sees role edits without a re-install.
+    roleIds: () => roleIds,
+    // Task 2: the persona source — the same live settings read (`source()`,
+    // reassigned by `setSource` above and by the settings onChange, which the
+    // fail-loud single settings registration keeps on THIS fiber) that the
+    // runtime itself uses, so a `roles.list[].persona` edit applies to the
+    // NEXT dispatch without a re-install. `source()` is read per start, never
+    // captured at install.
+    roles: () => source().roles.list,
+    debug: (message) => logger.debug(message),
+  })
+  if (!subagentSeam.ownsWrapper) {
+    ctx.logger('llm-fallbacks').debug(
+      'subagent role seam wrapper already installed on this context root — this fiber registers the notice emitter and the projection unit only (multi-fiber dedupe)',
+    )
+  }
 
   try {
     // T3 (plan fallbacks-role-seeds): the gateway receives the SAME per-apply
@@ -941,11 +942,6 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
           return { policy: { state: 'unprovable' as const } }
         }
       },
-      // Plan subagent-role-badge T2: the badge readback closes over the SAME
-      // T1 map the inject block writes (no second record source). A plain
-      // Map read — infallible in practice; a throw degrades to `{}` in the
-      // gateway (`subagentRoles` fail-closed).
-      () => subagentRoleRecordMap,
     )
   } catch (error) {
     if (!(error instanceof Error) || !error.message.includes('has been registered')) throw error
@@ -1474,23 +1470,6 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
                   to = { provider: head.provider, model: head.model }
                 }
               }
-              // Plan subagent-role-badge T1: record the resolved role with the
-              // route the subagent will actually run — the override target when
-              // one was resolved (a `to` deep-equal to the seed routes
-              // identically; the override gate below applies the same way),
-              // else the host seed copy (always in scope here). `to ?? seed-copy`
-              // is the single expression of that rule (QC fix wave: the record
-              // must not re-state the override condition — drift there would
-              // desync the hover route from the applied override).
-              // Written for EVERY resolved non-`inherit` role in BOTH policy
-              // paths; `inherit` and the two role-never-resolved branches above
-              // (`'unprovable'`, authorized route) stay unrecorded — nothing
-              // for the badge to show there.
-              subagentRoleRecordMap.set(agent.id, {
-                role,
-                model: to ?? { provider: seed.provider, model: seed.model },
-                at: Date.now(),
-              })
               if (to !== undefined && !(to.provider === seed.provider && to.model === seed.model)) {
                 // issue #52: no durable `fallbacks/switch` role-inject event is
                 // written (same reason as commit() — the registration seam was
@@ -1578,7 +1557,14 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     slotWinners.delete(agent.id)
     blockedAttemptMap.delete(agent.id)
     chainHeadMap.delete(agent.id)
-    subagentRoleRecordMap.delete(agent.id)
+    subagentSeam.records.delete(agent.id)
+    // CF-6: `noticeEmitted` is deliberately NOT cleared here. `Agent.id` IS the
+    // child session id, and a continuable child's durable session OUTLIVES the
+    // activation — clearing the marker on disposal let a re-activation resume
+    // append a SECOND `[role: x]` row to the same session, contradicting the
+    // documented "exactly one notice row per child session". The marker is
+    // bounded (`NOTICE_EMITTED_LIMIT`) and cleared by the plugin dispose effect
+    // below.
     lastKnownPolicySettings.delete(agent.id)
   })
 
@@ -1624,7 +1610,9 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     slotWinners.clear()
     blockedAttemptMap.clear()
     chainHeadMap.clear()
-    subagentRoleRecordMap.clear()
+    subagentSeam.records.clear()
+    subagentSeam.noticeEmitted.clear()
+    subagentSeam.dispose()
     lastKnownPolicySettings.clear()
   }, 'llm-fallbacks: clear per-agent state')
 
