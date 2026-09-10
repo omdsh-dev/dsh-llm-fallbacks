@@ -151,7 +151,8 @@ describe('dispatch-time role injection', () => {
     expect(config).toEqual({ provider: FALLBACKS_PROVIDER, model: FALLBACKS_CHAIN_MODEL })
   })
 
-  it('does not inject when the chain head equals the current model', async () => {    const { agent } = makeAgent('t4-same', { provider: 'anthropic', model: 'claude-sonnet-4' }, { origin: 'subagent', agentPreset: 'coder' })
+  it('does not inject when the chain head equals the current model', async () => {
+    const { agent } = makeAgent('t4-same', { provider: 'anthropic', model: 'claude-sonnet-4' }, { origin: 'subagent', agentPreset: 'coder' })
     apply(ctx, cfg({ roles: coderRoles() }))
 
     const config = await dispatchRequest(ctx, agent, { provider: 'anthropic', model: 'claude-sonnet-4' })
