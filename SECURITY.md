@@ -51,8 +51,8 @@ session logs that contain authorization headers.
   gateway channel;
 - the web settings card and the dsh-tui `/settings` fallbacks section;
 - role seeds and role resolution;
-- the repair script (`scripts/repair-fallbacks-switch-logs.ts`, run as
-  `pnpm repair:fallbacks-switch-logs`).
+- the session-log triage/repair tool (`scripts/repair-session-logs.ts`, run as
+  `pnpm repair:session-logs`; read-only report by default).
 
 **Out of scope**:
 

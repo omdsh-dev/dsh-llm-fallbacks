@@ -9,8 +9,9 @@
  * decision the loop is about to enter (`decision.messages`), which the loop
  * then commits durably on the step's first attempt
  * (`agent-loop/src/agent.ts:373-378` — `if (firstAttempt) for (const message of
- * decision.messages) this.session.append('user/message', …)`). The listener is
- * registered with `{ prepend: true }` (the `modelSwitchNotice` precedent in
+ * decision.messages)` the loop commits each message to the session log as a
+ * `'user/message'`). The listener is registered with `{ prepend: true }` (the
+ * `modelSwitchNotice` precedent in
  * `core/agent/src/model-selection.ts:108-125`), so it is the OUTERMOST layer:
  * `await next()` yields the FINAL decision every other listener shaped. The
  * contract is EXACTLY ONE row, not its position: a plugin that registers its

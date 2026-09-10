@@ -33,7 +33,7 @@ fallbacks-aux-seams D1+D2 门禁 POSITIVE 并落地）：`conversationEvents` �
 
 ## Context
 
-fallbacks/switch 事件**曾**持久化（`SessionEventMap` merge + session.append）；2026-08-17 起插件**停写** durable 事件（issue #52——apply() 启动注册因模块实例不共享被证伪，含该事件的会话在 dsh 重启后拒绝加载；旧日志**无法**通过 `ignorable` 标记修复（已发布的 session-format 迁移链拒绝未知事件类型），`scripts/repair-fallbacks-switch-logs.ts` 只检测并报告、绝不写入），但**不是**
+fallbacks/switch 事件**曾**持久化（`SessionEventMap` merge + session.append）；2026-08-17 起插件**停写** durable 事件（issue #52——apply() 启动注册因模块实例不共享被证伪，含该事件的会话在 dsh 重启后拒绝加载；旧日志**无法**通过 `ignorable` 标记修复（已发布的 session-format 迁移链拒绝未知事件类型），`pnpm repair:session-logs` 默认只检测并报告、绝不写入，只有显式 opt-in 的有损 `--drop-legacy-events` 会删除这些行并重新编号幸存事件），但**不是**
 SurfaceEventType（user/message | assistant/message | tool/result）——不进 surface 投影，
 会话转录默认完全不渲染。20260811 dsh 的兜底定义（`unknown-surface`）只 match surface
 事件，插件事件落在「曾持久化但会话内不可见」的空白（停写后仅历史事件涉及）。本模式回答：如何让这类事件在转录中
