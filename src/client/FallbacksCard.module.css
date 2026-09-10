@@ -233,7 +233,16 @@
 
 /* The form body (the enabled-gated group) is one fieldset without a legend:
    the enabled toggle above it is the group's question (the advisor
-   fieldset). `disabled` propagates to every control inside. */
+   fieldset). `disabled` propagates to every control inside.
+
+   `min-width: 0` is the width clamp (plan seeds-source-and-persona-width):
+   a fieldset keeps a content-based minimum (the UA default
+   `min-inline-size: min-content`), and the nowrap `.personaBrief` makes
+   that minimum the FULL persona string — it propagates fieldset → card →
+   host panel, widening the whole settings panel so the brief's ellipsis
+   never engages. Measured in real Chromium (720px panel ⇒ 2039px
+   scrollWidth without the clamp, 720px with it, brief ellipsizing): this
+   rule is the single inflation point — no other ancestor needs the clamp. */
 .fieldset {
   margin: 0;
   padding: 0;
@@ -241,6 +250,7 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
+  min-width: 0;
 }
 
 /* Field grouping: label + hint + controls. `min-width: 0` keeps long option

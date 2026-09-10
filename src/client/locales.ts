@@ -152,12 +152,15 @@ export const zh = {
   'roles.personaPlaceholder': '例如：你是资深代码审查员',
   // Seeded-row read-only UX (plan role-card-seeded-ux): the persona brief's
   // expand/collapse a11y labels and the empty-persona fallback. The source
-  // badge renders set names and the generic `external` verbatim — only
-  // `bundled` and the operator's own rows carry locale entries.
+  // badge localizes the three reserved labels (`bundled` / `external` /
+  // the operator's own rows — `external` is the shared unnamed-producer
+  // label, plan seeds-source-and-persona-width); only registered set
+  // names render verbatim.
   'roles.persona.expand': '展开人格提示',
   'roles.persona.collapse': '收起人格提示',
   'roles.persona.empty': '（未设置）',
   'roles.seedSource.bundled': '内置',
+  'roles.seedSource.external': '外部',
   'roles.seedSource.user': '用户',
   'roles.seedChainOptional': '角色 "{id}" 为 seed 角色：链可留空，保存不会被拦截',
   'roles.fallback': '链拼接策略',
@@ -401,12 +404,15 @@ export const en = {
   'roles.personaPlaceholder': 'e.g. you are a senior code reviewer',
   // Seeded-row read-only UX (plan role-card-seeded-ux): the persona brief's
   // expand/collapse a11y labels and the empty-persona fallback. The source
-  // badge renders set names and the generic `external` verbatim — only
-  // `bundled` and the operator's own rows carry locale entries.
+  // badge localizes the three reserved labels (`bundled` / `external` /
+  // the operator's own rows — `external` is the shared unnamed-producer
+  // label, plan seeds-source-and-persona-width); only registered set
+  // names render verbatim.
   'roles.persona.expand': 'Expand persona',
   'roles.persona.collapse': 'Collapse persona',
   'roles.persona.empty': '(not set)',
   'roles.seedSource.bundled': 'bundled',
+  'roles.seedSource.external': 'external',
   'roles.seedSource.user': 'User',
   'roles.seedChainOptional': 'Role "{id}" is a seed role: the chain may stay empty',
   'roles.fallback': 'Chain append',
