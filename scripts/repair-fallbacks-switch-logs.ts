@@ -124,6 +124,30 @@ export function markFallbacksSwitchIgnorable(lines: string[]): MarkFallbacksSwit
   return { lines: out, changed }
 }
 
+/**
+ * Count every parsed `fallbacks/switch` row in a log, regardless of whether
+ * it already carries an `ignorable` field or what its value is. The released
+ * session-format chain refuses the unknown event type even when `ignorable`
+ * is present, so ANY such row makes the log unrepairable — this is the
+ * fail-closed detection, separate from the pure transform's `changed` count
+ * (which only counts rows the transform would modify).
+ */
+export function countFallbacksSwitchRows(lines: string[]): number {
+  let count = 0
+  for (const line of lines) {
+    if (line === '') continue
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(line)
+    } catch {
+      continue
+    }
+    if (parsed === null || typeof parsed !== 'object') continue
+    if ((parsed as Record<string, unknown>).type === SWITCH_TYPE) count++
+  }
+  return count
+}
+
 /* ------------------------------------------------------------------ */
 /* CLI                                                                */
 /* ------------------------------------------------------------------ */
@@ -254,9 +278,9 @@ export function encodeRepairedSessionLog(zstd: string, lines: string[]): Buffer 
 
 /**
  * Decompress one log and classify it: `unchanged` when it carries no
- * `fallbacks/switch` events to mark, `refused` when it does (the released
- * chain rejects the marked output — see the module docblock), or `error`
- * when it cannot be decompressed. Never writes.
+ * `fallbacks/switch` rows, `refused` when it does (the released chain
+ * rejects the unknown event type even when `ignorable` is present — see the
+ * module docblock), or `error` when it cannot be decompressed. Never writes.
  */
 export function processFile(zstd: string, file: string, _opts: CliOptions): FileOutcome {
   let plain: string
@@ -270,8 +294,8 @@ export function processFile(zstd: string, file: string, _opts: CliOptions): File
     }
   }
 
-  const { changed } = markFallbacksSwitchIgnorable(plain.split('\n'))
-  if (changed === 0) return { action: 'unchanged', changed: 0 }
+  const switchRows = countFallbacksSwitchRows(plain.split('\n'))
+  if (switchRows === 0) return { action: 'unchanged', changed: 0 }
 
   // Fail closed (session format v3 — measured against the published
   // 0.1.5-rc.1 packages): the released migration chain refuses unknown
@@ -280,7 +304,7 @@ export function processFile(zstd: string, file: string, _opts: CliOptions): File
   // load. Never report it as a repair and never write it.
   return {
     action: 'refused',
-    changed,
+    changed: switchRows,
     error:
       'fallbacks/switch events cannot be repaired by an ignorable flag: the released session-format v0→v1 migration refuses unknown event types even when ignorable (session format v3)',
   }

@@ -20,7 +20,7 @@
  *     byte-identical;
  *   - `changed` counts only lines that were modified.
  */
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import {
   chmodSync,
   existsSync,
@@ -29,11 +29,14 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  writeFileSync,
 } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import {
+  countFallbacksSwitchRows,
   markFallbacksSwitchIgnorable,
   parseArgs,
   processFile,
@@ -46,6 +49,9 @@ const SWITCH_NO_IGNORABLE =
 
 const SWITCH_NO_IGNORABLE_2 =
   '{"type":"fallbacks/switch","seq":148239,"time":1786953585310,"data":{"turn":6,"step":4,"from":{"provider":"opencode-go","model":"deepseek-v4-flash"},"to":{"provider":"ark-plan","model":"deepseek-v4-flash"},"role":"inherit","reason":"trigger-code"}}'
+
+const SWITCH_ALREADY_IGNORABLE =
+  '{"type":"fallbacks/switch","seq":114513,"time":1786949105470,"ignorable":true,"data":{"turn":4,"step":30,"from":{"provider":"ark-plan","model":"deepseek-v4-flash"},"to":{"provider":"opencode-go","model":"deepseek-v4-flash"},"role":"inherit","reason":"trigger-code"}}'
 
 describe('markFallbacksSwitchIgnorable', () => {
   it('skips the session header line untouched', () => {
@@ -133,6 +139,19 @@ describe('markFallbacksSwitchIgnorable', () => {
     expect(lines[5]).toBe('{"type":"fallbacks/switch","seq":9,"time":8,"ignorable":true,"data":{}}')
     expect(JSON.parse(lines[2]).ignorable).toBe(true)
     expect(JSON.parse(lines[3]).ignorable).toBe(true)
+  })
+})
+
+describe('countFallbacksSwitchRows', () => {
+  it('counts every parsed fallbacks/switch row, marked or not', () => {
+    expect(countFallbacksSwitchRows([HEADER, SWITCH_NO_IGNORABLE, SWITCH_ALREADY_IGNORABLE])).toBe(2)
+    expect(countFallbacksSwitchRows([SWITCH_NO_IGNORABLE])).toBe(1)
+    expect(countFallbacksSwitchRows([SWITCH_ALREADY_IGNORABLE])).toBe(1)
+  })
+
+  it('ignores non-switch rows, malformed JSON, and empty lines', () => {
+    const other = '{"type":"user/message","seq":0,"time":1,"data":{"text":"fallbacks/switch string noise"}}'
+    expect(countFallbacksSwitchRows([HEADER, other, '{"type":"fallbacks/switch","seq":5,oops', ''])).toBe(0)
   })
 })
 
@@ -266,6 +285,145 @@ describe.skipIf(zstdBin === null)('processFile (fixture; skipped without system 
       const outcome = processFile(ZSTD, sessionFile, { root, dryRun: true, backup: false, apply: false })
       expect(outcome.action).toBe('unchanged')
       expect(outcome.changed).toBe(0)
+      expect(readFileSync(sessionFile)).toEqual(original)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('an already-ignorable switch row is still refused (the released chain refuses the unknown type regardless of the flag)', () => {
+    const root = mkdtempSync(join(tmpdir(), 'repair-switch-logs-'))
+    const dir = join(root, 'default', 'session-8505afff')
+    mkdirSync(dir, { recursive: true })
+    const sessionFile = join(dir, 'session.jsonl.zstd')
+    const plain = [HEADER, SWITCH_ALREADY_IGNORABLE].join('\n') + '\n'
+    execFileSync(ZSTD, ['-f', '-o', sessionFile], { input: plain, stdio: ['pipe', 'ignore', 'ignore'] })
+    const original = readFileSync(sessionFile)
+    try {
+      const outcome = processFile(ZSTD, sessionFile, { root, dryRun: true, backup: false, apply: false })
+      expect(outcome.action).toBe('refused')
+      expect(outcome.changed).toBe(1)
+      expect(outcome.error).toContain('cannot be repaired by an ignorable flag')
+      expect(existsSync(`${sessionFile}.bak`)).toBe(false)
+      expect(readFileSync(sessionFile)).toEqual(original)
+      const leftovers = readdirSync(dirname(sessionFile)).filter((name) => name.endsWith('.tmp'))
+      expect(leftovers).toEqual([])
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('a corrupt (non-zstd) file is reported as error and left untouched', () => {
+    const root = mkdtempSync(join(tmpdir(), 'repair-switch-logs-'))
+    const dir = join(root, 'default', 'session-8505afff')
+    mkdirSync(dir, { recursive: true })
+    const sessionFile = join(dir, 'session.jsonl.zstd')
+    const garbage = Buffer.from('this is not zstd data at all')
+    writeFileSync(sessionFile, garbage)
+    try {
+      const outcome = processFile(ZSTD, sessionFile, { root, dryRun: true, backup: false, apply: false })
+      expect(outcome.action).toBe('error')
+      expect(outcome.changed).toBe(0)
+      expect(outcome.error).toContain('zstd -d -c failed')
+      expect(existsSync(`${sessionFile}.bak`)).toBe(false)
+      expect(readFileSync(sessionFile)).toEqual(garbage)
+      const leftovers = readdirSync(dirname(sessionFile)).filter((name) => name.endsWith('.tmp'))
+      expect(leftovers).toEqual([])
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe.skipIf(zstdBin === null)('CLI (child-process; skipped without system zstd)', () => {
+  const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const TSX_BIN = join(REPO_ROOT, 'node_modules', '.bin', 'tsx')
+  const SCRIPT = join(REPO_ROOT, 'scripts', 'repair-fallbacks-switch-logs.ts')
+
+  /** Run the real CLI against a fixture root; returns status + combined output. */
+  function runCli(root: string): { status: number; output: string } {
+    const result = spawnSync(TSX_BIN, [SCRIPT, '--root', root, '--dry-run'], {
+      encoding: 'utf8',
+      cwd: REPO_ROOT,
+    })
+    return { status: result.status ?? -1, output: `${result.stdout}\n${result.stderr}` }
+  }
+
+  /** Build a fixture with the given plaintext lines as a zstd log. */
+  function makeLog(root: string, lines: string[]): { sessionFile: string; original: Buffer } {
+    const dir = join(root, 'default', 'session-8505afff')
+    mkdirSync(dir, { recursive: true })
+    const sessionFile = join(dir, 'session.jsonl.zstd')
+    const plain = lines.join('\n') + '\n'
+    execFileSync('zstd', ['-f', '-o', sessionFile], { input: plain, stdio: ['pipe', 'ignore', 'ignore'] })
+    return { sessionFile, original: readFileSync(sessionFile) }
+  }
+
+  it('refuses an unmarked switch log: refusal text, exit 1, no writes', () => {
+    const root = mkdtempSync(join(tmpdir(), 'repair-switch-cli-'))
+    try {
+      const { sessionFile, original } = makeLog(root, [HEADER, SWITCH_NO_IGNORABLE, SWITCH_NO_IGNORABLE_2])
+      const { status, output } = runCli(root)
+      expect(status).toBe(1)
+      expect(output).toContain('refused')
+      expect(output).toContain('cannot be repaired by an ignorable flag')
+      expect(existsSync(`${sessionFile}.bak`)).toBe(false)
+      expect(readFileSync(sessionFile)).toEqual(original)
+      const leftovers = readdirSync(dirname(sessionFile)).filter((name) => name.endsWith('.tmp'))
+      expect(leftovers).toEqual([])
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('refuses an already-marked switch log: refusal text, exit 1, no writes', () => {
+    const root = mkdtempSync(join(tmpdir(), 'repair-switch-cli-'))
+    try {
+      const { sessionFile, original } = makeLog(root, [HEADER, SWITCH_ALREADY_IGNORABLE])
+      const { status, output } = runCli(root)
+      expect(status).toBe(1)
+      expect(output).toContain('refused')
+      expect(output).toContain('cannot be repaired by an ignorable flag')
+      expect(existsSync(`${sessionFile}.bak`)).toBe(false)
+      expect(readFileSync(sessionFile)).toEqual(original)
+      const leftovers = readdirSync(dirname(sessionFile)).filter((name) => name.endsWith('.tmp'))
+      expect(leftovers).toEqual([])
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('reports a corrupt log as error: exit 1, no writes', () => {
+    const root = mkdtempSync(join(tmpdir(), 'repair-switch-cli-'))
+    try {
+      const dir = join(root, 'default', 'session-8505afff')
+      mkdirSync(dir, { recursive: true })
+      const sessionFile = join(dir, 'session.jsonl.zstd')
+      const garbage = Buffer.from('this is not zstd data at all')
+      writeFileSync(sessionFile, garbage)
+      const { status, output } = runCli(root)
+      expect(status).toBe(1)
+      expect(output).toContain('error')
+      expect(output).toContain('zstd -d -c failed')
+      expect(existsSync(`${sessionFile}.bak`)).toBe(false)
+      expect(readFileSync(sessionFile)).toEqual(garbage)
+      const leftovers = readdirSync(dirname(sessionFile)).filter((name) => name.endsWith('.tmp'))
+      expect(leftovers).toEqual([])
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('exits 0 and writes nothing for a log without switch events', () => {
+    const root = mkdtempSync(join(tmpdir(), 'repair-switch-cli-'))
+    try {
+      const { sessionFile, original } = makeLog(root, [HEADER, '{"type":"user/message","seq":0,"time":1,"data":{"text":"hi"}}'])
+      const { status, output } = runCli(root)
+      expect(status).toBe(0)
+      expect(output).toContain('unchanged')
+      expect(output).toContain('0 file(s) refused')
+      expect(output).not.toContain('  refused')
+      expect(existsSync(`${sessionFile}.bak`)).toBe(false)
       expect(readFileSync(sessionFile)).toEqual(original)
     } finally {
       rmSync(root, { recursive: true, force: true })
