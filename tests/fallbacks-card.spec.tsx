@@ -475,11 +475,6 @@ function pickAllDayFlash(): void {
   fireEvent.click(flashRadio())
 }
 
-/** Pick the official V4 Pro radio in the all-day chooser (Task 3). */
-function pickAllDayPro(): void {
-  fireEvent.click(proRadio())
-}
-
 /**
  * A minimal fake of the client slots service + context for the registration
  * ledger test: `inject(name, generator)` runs the generator and records every
@@ -1073,6 +1068,10 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     // nonconforming notice shows. Pro is a legal tail but not yet in the
     // catalog — its radio is always disabled; Flash is the selectable one.
     expect(screen.getByText(en['defaultModel.label'])).toBeTruthy()
+    const modelGroup = screen.getByText(en['defaultModel.label']).closest('[role="group"]') as HTMLElement
+    // Panel-scoped count: exactly two all-day radios (a third official
+    // option would fail this), independent of any radio elsewhere in the card.
+    expect(within(modelGroup).getAllByRole('radio')).toHaveLength(2)
     const flash = flashRadio()
     const pro = proRadio()
     expect(flash.type).toBe('radio')
@@ -1081,7 +1080,6 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     expect(pro.checked).toBe(false)
     expect(flash.disabled).toBe(false)
     expect(pro.disabled).toBe(true)
-    const modelGroup = screen.getByText(en['defaultModel.label']).closest('[role="group"]') as HTMLElement
     expect(within(modelGroup).queryByText(en['allDay.nonconforming'])).toBeNull()
   })
 
@@ -1115,11 +1113,12 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     view.rerender(<FallbacksCard {...props} />)
     // The V4 id is no longer a legal tail → the 默认模型 panel reads back
     // unselected and the nonconforming notice shows (save stays blocked).
+    const modelGroup = screen.getByText(en['defaultModel.label']).closest('[role="group"]') as HTMLElement
+    expect(within(modelGroup).getAllByRole('radio')).toHaveLength(2)
     const flash = flashRadio()
     const pro = proRadio()
     expect(flash.checked).toBe(false)
     expect(pro.checked).toBe(false)
-    const modelGroup = screen.getByText(en['defaultModel.label']).closest('[role="group"]') as HTMLElement
     expect(within(modelGroup).getByText(en['allDay.nonconforming'])).toBeTruthy()
   })
 
@@ -1133,12 +1132,13 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     // nonconforming notice shows.
     const chainGroup = screen.getByText(en['rootChain.label']).closest('[role="group"]') as HTMLElement
     expect(within(chainGroup).queryByLabelText(en['roles.rule.provider'])).toBeNull()
+    const modelGroup = screen.getByText(en['defaultModel.label']).closest('[role="group"]') as HTMLElement
+    expect(within(modelGroup).getAllByRole('radio')).toHaveLength(2)
     const flash = flashRadio()
     const pro = proRadio()
     expect(flash.checked).toBe(false)
     expect(pro.checked).toBe(true)
     expect(pro.disabled).toBe(true)
-    const modelGroup = screen.getByText(en['defaultModel.label']).closest('[role="group"]') as HTMLElement
     expect(within(modelGroup).queryByText(en['allDay.nonconforming'])).toBeNull()
   })
 
