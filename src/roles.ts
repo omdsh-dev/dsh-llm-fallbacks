@@ -108,11 +108,19 @@ export function resolveRole(
   // silently stop matching. Accept either pair: the recorded one (unchanged
   // semantics) OR the route the request was served by. `servedRoute` is
   // `undefined` for every real route, so non-virtual callers are identical.
-  const matches = (expected: string, recorded: string | undefined, served: string | undefined): boolean =>
-    expected === recorded || (served !== undefined && expected === served)
+  //
+  // QC1 M-4 (same plan): the widening is **pair-wise**, not field-wise. A rule
+  // must match one WHOLE pair — the recorded one or the served one — because
+  // matching each field against either pair would let
+  // `{ provider: 'FallbacksChain', model: <head model> }` match a combination
+  // neither route ever carried, and rule matching is first-match-wins, so that
+  // phantom match could shadow a later head-keyed rule. A rule that constrains
+  // only one field is unaffected (it has no second field to cross with).
+  const recordedRoute = { provider: agent.options?.provider, model: agent.options?.model }
   for (const rule of rules) {
-    if (rule.provider && !matches(rule.provider, agent.options?.provider, servedRoute?.provider)) continue
-    if (rule.model && !matches(rule.model, agent.options?.model, servedRoute?.model)) continue
+    const matchesPair = (pair: { provider: string | undefined; model: string | undefined }): boolean =>
+      (!rule.provider || rule.provider === pair.provider) && (!rule.model || rule.model === pair.model)
+    if (!matchesPair(recordedRoute) && !(servedRoute !== undefined && matchesPair(servedRoute))) continue
     const target = rule.role.trim()
     if (target === INHERIT_ROLE_ID) return INHERIT_ROLE_ID
     const declared = roleIds.get(target)

@@ -90,6 +90,57 @@ describe('resolveRole', () => {
     ).toBe('virtual-row')
   })
 
+  it('never matches a MIXED pair: the provider from the recorded route with the model from the served one (QC1 M-4)', () => {
+    // Field-wise matching accepts `provider` from one pair and `model` from the
+    // other, so this rule would match a combination that neither route ever
+    // carried — and because rule matching is first-match-wins, that phantom
+    // match can shadow a later head-keyed rule.
+    const rules: FallbacksRoleRule[] = [
+      { provider: 'FallbacksChain', model: 'deepseek-flash', role: 'mixed-pair' },
+    ]
+    const roleIds = new Map([['mixed-pair', 'mixed-pair']])
+    const agent: AgentLike = {
+      options: { provider: 'FallbacksChain', model: 'Auto' },
+      session: { header: { origin: 'subagent' } },
+    }
+    expect(
+      resolveRole(agent, rules, roleIds, undefined, {
+        provider: 'deepseek-official',
+        model: 'deepseek-flash',
+      }),
+    ).toBe('inherit')
+  })
+
+  it('matches a whole SERVED pair and a whole recorded pair (the widening is pair-wise, not field-wise)', () => {
+    const roleIds = new Map([
+      ['served-head', 'served-head'],
+      ['recorded-row', 'recorded-row'],
+    ])
+    const agent: AgentLike = {
+      options: { provider: 'FallbacksChain', model: 'Auto' },
+      session: { header: { origin: 'subagent' } },
+    }
+    const served = { provider: 'deepseek-official', model: 'deepseek-flash' }
+    expect(
+      resolveRole(
+        agent,
+        [{ provider: 'deepseek-official', model: 'deepseek-flash', role: 'served-head' }],
+        roleIds,
+        undefined,
+        served,
+      ),
+    ).toBe('served-head')
+    expect(
+      resolveRole(
+        agent,
+        [{ provider: 'FallbacksChain', model: 'Auto', role: 'recorded-row' }],
+        roleIds,
+        undefined,
+        served,
+      ),
+    ).toBe('recorded-row')
+  })
+
   it('treats a missing origin as root — root requests never match rules', () => {
     // PR #62 feedback: rules are subagent-only — even an `origin: root`
     // rule cannot match a root agent (the field is ignored entirely).
