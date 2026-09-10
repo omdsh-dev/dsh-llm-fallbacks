@@ -2,11 +2,12 @@
  * Time-slot resolver unit tests (plan fallbacks-timeslots Task 1, pins
  * P4–P6): first-match ordering, custom overnight windows, frozen preset
  * windows (liang-peak = ONE row covering both clocks; glm-peak Mon–Fri;
- * valleys derive from their peaks), all-day-last, the official V4
- * Flash-XOR-Pro all-day guard, preset-row immutability, duplicate-preset
- * rejection, warn-once malformed-row skipping, and the never-throws
- * contract. The resolver warns through `console.warn` (its 3-argument
- * contract has no logger parameter); every warn message is asserted.
+ * valleys derive from their peaks), all-day-last, the official V4 Flash /
+ * V4 Pro / V41 Flash all-day guard, preset-row immutability,
+ * duplicate-preset rejection, warn-once malformed-row skipping, and the
+ * never-throws contract. The resolver warns through `console.warn` (its
+ * 3-argument contract has no logger parameter); every warn message is
+ * asserted.
  */
 
 import { afterEach, describe, expect, it, vi, type MockInstance } from 'vitest'
@@ -19,6 +20,7 @@ import {
 import {
   OFFICIAL_V4_FLASH,
   OFFICIAL_V4_PRO,
+  OFFICIAL_FLASH,
   isAllDayConforming,
   resolveEffectiveChain,
   resolveSlotState,
@@ -156,20 +158,23 @@ describe('resolveEffectiveChain — all-day last', () => {
   })
 })
 
-describe('isAllDayConforming — official V4 Flash XOR Pro tail', () => {
-  it('accepts an official V4 tail, with or without leading fallback entries', () => {
+describe('isAllDayConforming — official V4 Flash / V4 Pro / V41 Flash tail', () => {
+  it('accepts an official tail, with or without leading fallback entries', () => {
     expect(isAllDayConforming([OFFICIAL_V4_FLASH])).toBe(true)
     expect(isAllDayConforming([OFFICIAL_V4_PRO])).toBe(true)
+    expect(isAllDayConforming([OFFICIAL_FLASH])).toBe(true)
     expect(isAllDayConforming(['openai/gpt-4o', OFFICIAL_V4_FLASH])).toBe(true)
+    expect(isAllDayConforming(['openai/gpt-4o', OFFICIAL_FLASH])).toBe(true)
     expect(isAllDayConforming(['openai/gpt-4o', OFFICIAL_V4_FLASH, OFFICIAL_V4_PRO])).toBe(true)
   })
 
-  it('rejects empty chains and chains whose last entry is not an official V4 model', () => {
+  it('rejects empty chains and chains whose last entry is not an official model', () => {
     expect(isAllDayConforming([])).toBe(false)
     expect(isAllDayConforming(['openai/gpt-4o'])).toBe(false)
     expect(isAllDayConforming(['openai/gpt-4o', 'anthropic/claude-3-5-sonnet'])).toBe(false)
     expect(isAllDayConforming(['deepseek-official/deepseek-v4-ultra'])).toBe(false)
     expect(isAllDayConforming([OFFICIAL_V4_FLASH, 'openai/gpt-4o'])).toBe(false)
+    expect(isAllDayConforming([OFFICIAL_FLASH, 'openai/gpt-4o'])).toBe(false)
   })
 })
 
@@ -326,6 +331,18 @@ describe('resolveSlotState — winner + label for the status strip (P5)', () => 
     const cfg = slotConfig({ timeSlots: [row] })
     expect(resolveSlotState(cfg, at('15:00'), 'Asia/Shanghai')).toEqual({ winner: row, label: 'GLM Peak' })
   })
+
+  it('keeps slot rows inert when the all-day tail is not an official model (P6)', () => {
+    const row = custom('09:00', '12:00', ['openai/gpt-4o'])
+    const cfg = slotConfig({ rootChain: ['openai/gpt-4o'], timeSlots: [row] })
+    expect(resolveSlotState(cfg, at('10:00'), 'Asia/Shanghai')).toEqual({ winner: 'all-day', label: 'all-day' })
+  })
+
+  it('treats the V41 Flash tail as conforming: a matching slot row wins', () => {
+    const row = custom('09:00', '12:00', ['openai/gpt-4o'])
+    const cfg = slotConfig({ rootChain: [OFFICIAL_FLASH], timeSlots: [row] })
+    expect(resolveSlotState(cfg, at('10:00'), 'Asia/Shanghai')).toEqual({ winner: row, label: 'custom 09:00-12:00' })
+  })
 })
 
 describe('resolveEffectiveChain — tz interpreted with Intl rules', () => {
@@ -402,7 +419,7 @@ describe('validateFallbacksConfig — time-slot guards (P4/P6)', () => {
     }, logger)
     const messages = messagesOf({ warn: logger.warn })
     expect(messages).toHaveLength(1)
-    expect(messages[0]).toContain('rootChain must end with exactly one official V4 model')
+    expect(messages[0]).toContain('rootChain must end with exactly one official model')
   })
 
   it('does not warn for a conforming all-day chain or the empty default', () => {

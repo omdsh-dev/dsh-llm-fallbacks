@@ -31,7 +31,7 @@ Four frozen UTC+8 presets (windows are code constants; preset rows lock `tz` to 
 
 GLM Peak and GLM Valley are offered in the card picker only when `zai-coding-cn` is configured.
 
-The first extra row whose window contains the current moment (in `fallbacks.tz`, default Asia/Shanghai) wins; no match → the all-day `rootChain`, whose tail (Default model) must be exactly one official V4 model — `deepseek-official/deepseek-v4-flash` XOR `deepseek-official/deepseek-v4-pro`. Slot rotation is a routing seed, not a failure decision: it applies on the next root request, consumes no cooldown, and is logged as a time-slot switch — failure walks keep fallback switch. Full semantics → [Time-slot presets](#time-slot-presets) and [docs/configuration.md](docs/configuration.md).
+The first extra row whose window contains the current moment (in `fallbacks.tz`, default Asia/Shanghai) wins; no match → the all-day `rootChain`, whose tail (Default model) must be exactly one official model — `deepseek-official/deepseek-v4-flash`, `deepseek-official/deepseek-v4-pro`, or `deepseek-official/deepseek-flash` (XOR). Slot rotation is a routing seed, not a failure decision: it applies on the next root request, consumes no cooldown, and is logged as a time-slot switch — failure walks keep fallback switch. Full semantics → [Time-slot presets](#time-slot-presets) and [docs/configuration.md](docs/configuration.md).
 
 ## Quick start
 
@@ -77,9 +77,9 @@ Add a `fallbacks:` section to the shared settings document (`$DSH_HOME/settings.
 ```yaml
 fallbacks:
   enabled: true            # feature switch — defaults to off (plugin is a no-op otherwise)
-  rootChain:               # all-day chain: leading entries = fallback walk, last = Default model (official V4)
+  rootChain:               # all-day chain: leading entries = fallback walk, last = Default model (official)
     - anthropic/claude-3-5-sonnet          # walked first
-    - deepseek-official/deepseek-v4-flash  # last resort (Flash or Pro)
+    - deepseek-official/deepseek-v4-flash  # last resort (V4 Flash / V4 Pro / V41 Flash)
   timeSlots:               # optional: rotate the effective root chain by wall-clock windows
     - kind: preset         # frozen UTC+8 window; only the chain is editable
       preset: liang-peak   # Monday–Friday 09:00–12:00 and 14:00–18:00
@@ -109,7 +109,7 @@ Build the section up in four steps:
 
 **2. Set the all-day `rootChain`.** Leading entries are the fallback chain, walked first when a request fails; the **last** entry is the Default model.
 
-> **Conformance**: the last entry must be exactly one official V4 model — `deepseek-official/deepseek-v4-flash` XOR `deepseek-official/deepseek-v4-pro`. The settings card and gateway reject any other tail on save; a legacy non-official tail warns at startup and keeps working as a fallback-only walk, but cannot be saved as-is.
+> **Conformance**: the last entry must be exactly one official model — `deepseek-official/deepseek-v4-flash`, `deepseek-official/deepseek-v4-pro`, or `deepseek-official/deepseek-flash` (XOR). The settings card and gateway reject any other tail on save; a legacy non-official tail warns at startup and keeps working as a fallback-only walk, but cannot be saved as-is.
 
 **3. Add `timeSlots` (optional).** Rows rotate the effective root chain by wall-clock windows. Preset rows use frozen UTC+8 windows (only their chain is editable; while a preset row exists, `tz` locks to `Asia/Shanghai`); custom rows take `start`/`end` (may wrap midnight) and an optional `days` list. The first row whose window contains the current moment wins; no match → the all-day `rootChain`. Rotation is a routing seed — it applies on the next root request and consumes no cooldown (see [Time slots](#time-slots)).
 
@@ -163,7 +163,7 @@ Notes:
 
 - **Picker label**: the row's catalog `name` (what the composer trigger shows) is live — `Auto: DeepSeek V4 Flash[Liang Peak]` / `Auto: DeepSeek V4 Flash[all-day]` (catalog display name, not the model id); the id stays `Auto`. Bare `Auto` if the all-day tail is not conforming. Refresh by reopening the picker.
 - **Root only**: the row is about the root agent. Subagent role resolution and injection are unchanged; a subagent session that inherits the selection still routes through the chain head — the virtual row is a thin delegate, never a second routing engine.
-- **Conformance gate on the tail**: a successful override/delegate requires the all-day chain to be **tail-conforming** — its last entry must be exactly one official V4 model (`deepseek-official/deepseek-v4-flash` or `deepseek-official/deepseek-v4-pro`, the card's Default model panel); leading entries (Default fallback chain) are walked first. Disabling the plugin hides the row again (slot-row/chain edits never churn registration).
+- **Conformance gate on the tail**: a successful override/delegate requires the all-day chain to be **tail-conforming** — its last entry must be exactly one official model (`deepseek-official/deepseek-v4-flash`, `deepseek-official/deepseek-v4-pro`, or `deepseek-official/deepseek-flash`, the card's Default model panel); leading entries (Default fallback chain) are walked first. Disabling the plugin hides the row again (slot-row/chain edits never churn registration).
 - **Stale selection**: if the row disappears (plugin disabled) while `FallbacksChain / Auto` is selected, the session keeps showing it as the current model with `routable: false` — pick a real model from the catalog to continue (host-native catalog semantics).
 - **Capabilities follow the head**: the row's model metadata (context window, modalities, reasoning) mirrors the current effective head; retry attribution follows the permissive default — retries/failures are accounted to the real head pair, not to the `FallbacksChain` provider. Full semantics → [docs/configuration.md](docs/configuration.md).
 
@@ -171,11 +171,11 @@ Notes:
 
 Time slots are introduced in the [featured overview](#time-slots) above; this section is the reference. Time-slot rows rotate the **effective root chain** by wall-clock windows — useful for peak/valley pricing without confusing wall-clock rotation with failure fallback. The copy split is strict: slot rotation logs and UI say **time-slot switch**; the failure walk keeps **fallback switch**; the conversation notice Model downgraded stays on the failure path only.
 
-- **Match order**: at every root request, the first extra row whose window contains the current moment (in `fallbacks.tz`, default `Asia/Shanghai` / UTC+8) wins — that row's chain **replaces** the all-day chain. No row matches → the all-day `rootChain` is used. The all-day row is always last and **required**: its last entry must be exactly one official V4 model (Flash XOR Pro; leading Default fallback chain entries are walked first).
+- **Match order**: at every root request, the first extra row whose window contains the current moment (in `fallbacks.tz`, default `Asia/Shanghai` / UTC+8) wins — that row's chain **replaces** the all-day chain. No row matches → the all-day `rootChain` is used. The all-day row is always last and **required**: its last entry must be exactly one official model (V4 Flash / V4 Pro / V41 Flash XOR; leading Default fallback chain entries are walked first).
 - **Presets** (frozen, not user-editable): `liang-peak` = Monday–Friday 09:00–12:00 **and** 14:00–18:00; `liang-valley` = every other UTC+8 time; `glm-peak` = Monday–Friday 14:00–18:00; `glm-valley` = every other time. One preset id = one row; the card picker never offers a duplicate.
 - **Custom rows**: `start` / `end` (`HH:mm`, may wrap midnight) + optional `days` (0=Sunday…6=Saturday; omitted/empty = every day) + models.
 - **Next-request apply**: a slot boundary crossing never preempts an in-flight step — the new row takes effect on the next root request. Rotation is mount-only: info log + card/`/fallbacks` status line, no durable switch event.
-- **Settings card**: the Main agent section groups Time slots (extra rows — add preset / add custom / remove / reorder by buttons or **drag**; preset rows show a read-only window summary and edit models only; custom rows carry an editable name; the **timezone picker** lives here and **locks to Asia/Shanghai while any preset row exists**, since preset windows are frozen UTC+8 constants), Default fallback chain (walked first when no slot matches) and Default model (the official V4 Flash | Pro last-resort fallback). Rows are collapsible to name + first model. There is no `timeSlots.enabled` master switch (adding a row is the opt-in) and no `rootMode` control.
+- **Settings card**: the Main agent section groups Time slots (extra rows — add preset / add custom / remove / reorder by buttons or **drag**; preset rows show a read-only window summary and edit models only; custom rows carry an editable name; the **timezone picker** lives here and **locks to Asia/Shanghai while any preset row exists**, since preset windows are frozen UTC+8 constants), Default fallback chain (walked first when no slot matches) and Default model (the official V4 Flash | V4 Pro | V41 Flash last-resort fallback). Rows are collapsible to name + first model. There is no `timeSlots.enabled` master switch (adding a row is the opt-in) and no `rootMode` control.
 
 ## Preset roles
 
@@ -202,7 +202,7 @@ fallbacks:
     - CONTEXT_WINDOW_EXCEEDED  # fail over when the request does not fit
   rootChain:
     - anthropic/claude-3-5-sonnet          # walked first
-    - deepseek-official/deepseek-v4-flash  # last resort (Flash or Pro)
+    - deepseek-official/deepseek-v4-flash  # last resort (V4 Flash / V4 Pro / V41 Flash)
 ```
 
 **Ordering — the fallback runs before compaction.** With `CONTEXT_WINDOW_EXCEEDED` in `triggerCodes`, this plugin's `agent/request-error` listener handles the rejection **before** the harness's compaction plugin gets to compact: the conversation moves to the fallback model on the first overflow, and the context is never compacted. Leave the code out of `triggerCodes` if you would rather have compaction tried first.

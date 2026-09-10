@@ -50,7 +50,7 @@ import type { SeedsWireStatus } from '../src/seeds.ts'
 import { presetRoles } from '../src/presets.ts'
 import { apply } from '../src/client/index.ts'
 import { defaultFallbacksConfig } from '../src/config.ts'
-import { OFFICIAL_V4_FLASH, OFFICIAL_V4_PRO } from '../src/time-slots.ts'
+import { OFFICIAL_V4_FLASH, OFFICIAL_V4_PRO, OFFICIAL_FLASH } from '../src/time-slots.ts'
 import { en, zh } from '../src/client/locales.ts'
 import type { FallbacksSwitchEventData } from '../src/events.ts'
 
@@ -468,6 +468,11 @@ function flashRadio(): HTMLInputElement {
 /** The all-day chooser's Pro radio, by its full accessible label. */
 function proRadio(): HTMLInputElement {
   return screen.getByLabelText(new RegExp(`^${esc(en['allDay.pro'])}$`)) as HTMLInputElement
+}
+
+/** The all-day chooser's V41 Flash radio, by its full accessible label. */
+function v41FlashRadio(): HTMLInputElement {
+  return screen.getByLabelText(new RegExp(`^${esc(en['allDay.v41Flash'])}$`)) as HTMLInputElement
 }
 
 /** Pick the official V4 Flash radio in the all-day chooser (Task 3). */
@@ -1053,14 +1058,14 @@ describe('FallbacksCard chrome (upstream PluginCard contract)', () => {
 })
 
 describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-model T3)', () => {
-  it('renders the default-chain selector list + the separate default-model Flash | Pro panel', async () => {
+  it('renders the default-chain selector list + the separate default-model Flash | Pro | V41 Flash panel', async () => {
     const { view, props } = await mountCard({ config: TWO_BLOCK_CONFIG })
     toggleCard()
     view.rerender(<FallbacksCard {...props} />)
     // PR #62 feedback round: 默认降级链 is a configurable selector list
     // (add-selector affordance present, no radios inside); the official
-    // Flash | Pro radios live in the separate 默认模型 panel. The
-    // chain-key text input of the old model is gone.
+    // Flash | Pro | V41 Flash radios live in the separate 默认模型 panel.
+    // The chain-key text input of the old model is gone.
     expect(screen.getByText(en['rootChain.label'])).toBeTruthy()
     expect(screen.queryByLabelText('Key')).toBeNull()
     const chainGroup = screen.getByText(en['rootChain.label']).closest('[role="group"]') as HTMLElement
@@ -1068,16 +1073,19 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     // TWO_BLOCK_CONFIG's conforming head is consumed by the 默认模型 panel →
     // the chain editor starts with no trailing selectors.
     expect(within(chainGroup).queryByLabelText(en['roles.rule.provider'])).toBeNull()
-    // Exactly the two official radios in the default-model panel; the
+    // Exactly the three official radios in the default-model panel; the
     // accepted conforming head is pre-selected (Flash) and no
     // nonconforming notice shows.
     expect(screen.getByText(en['defaultModel.label'])).toBeTruthy()
     const flash = flashRadio()
     const pro = proRadio()
+    const v41Flash = v41FlashRadio()
     expect(flash.type).toBe('radio')
     expect(pro.type).toBe('radio')
+    expect(v41Flash.type).toBe('radio')
     expect(flash.checked).toBe(true)
     expect(pro.checked).toBe(false)
+    expect(v41Flash.checked).toBe(false)
     const modelGroup = screen.getByText(en['defaultModel.label']).closest('[role="group"]') as HTMLElement
     expect(within(modelGroup).queryByText(en['allDay.nonconforming'])).toBeNull()
   })
@@ -1092,11 +1100,13 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     expect(within(chainGroup).getByLabelText(en['roles.rule.provider'])).toBeTruthy()
     const flash = flashRadio()
     const pro = proRadio()
-    // The legacy head is not one of the two official ids → nothing is
+    const v41Flash = v41FlashRadio()
+    // The legacy head is not one of the three official ids → nothing is
     // selected in the default-model panel (the draft rides the accepted
     // value until a pick) and the notice shows in THAT panel.
     expect(flash.checked).toBe(false)
     expect(pro.checked).toBe(false)
+    expect(v41Flash.checked).toBe(false)
     const modelGroup = screen.getByText(en['defaultModel.label']).closest('[role="group"]') as HTMLElement
     expect(within(modelGroup).getByText(en['allDay.nonconforming'])).toBeTruthy()
     // Picking Flash selects it; the nonconforming notice clears.
@@ -1104,6 +1114,25 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     view.rerender(<FallbacksCard {...props} />)
     expect(flash.checked).toBe(true)
     expect(screen.queryByText(en['allDay.nonconforming'])).toBeNull()
+  })
+
+  it('reads back a V41 Flash all-day tail as the selected default model (dsh 0.1.5-rc.1 default)', async () => {
+    const { view, props } = await mountCard({ config: { ...TWO_BLOCK_CONFIG, rootChain: [OFFICIAL_FLASH] } })
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    // The V41 Flash tail is consumed by the 默认模型 panel → the chain
+    // editor starts with no trailing selectors and the V41 Flash radio is
+    // pre-selected; no nonconforming notice shows.
+    const chainGroup = screen.getByText(en['rootChain.label']).closest('[role="group"]') as HTMLElement
+    expect(within(chainGroup).queryByLabelText(en['roles.rule.provider'])).toBeNull()
+    const flash = flashRadio()
+    const pro = proRadio()
+    const v41Flash = v41FlashRadio()
+    expect(flash.checked).toBe(false)
+    expect(pro.checked).toBe(false)
+    expect(v41Flash.checked).toBe(true)
+    const modelGroup = screen.getByText(en['defaultModel.label']).closest('[role="group"]') as HTMLElement
+    expect(within(modelGroup).queryByText(en['allDay.nonconforming'])).toBeNull()
   })
 
   it('renders the chain/role sections before the advanced options and offers no provider wildcard in any chain editor', async () => {

@@ -133,12 +133,14 @@ export const zh = {
   'timeSlots.day.sat': '六',
   'timeSlots.selector.add': '添加选择器',
   // All-day head (plan fallbacks-timeslots Task 3; PR #62 feedback round):
-  // the 默认模型 panel is the official V4 Flash XOR Pro head of the
-  // default fallback chain — separate from the 默认降级链 selector list.
-  'allDay.hint': '全天链的最后一档兜底：官方 V4 Flash 或 V4 Pro 二选一',
+  // the 默认模型 panel is the official V4 Flash / V4 Pro / V41 Flash XOR
+  // head of the default fallback chain — separate from the 默认降级链
+  // selector list.
+  'allDay.hint': '全天链的最后一档兜底：官方 V4 Flash、V4 Pro 或 V41 Flash 三选一',
   'allDay.flash': '官方 V4 Flash（deepseek-official/deepseek-v4-flash）',
   'allDay.pro': '官方 V4 Pro（deepseek-official/deepseek-v4-pro）',
-  'allDay.nonconforming': '当前默认模型不合法：请选择官方 V4 Flash 或 V4 Pro 后保存',
+  'allDay.v41Flash': '官方 V41 Flash（deepseek-official/deepseek-flash）',
+  'allDay.nonconforming': '当前默认模型不合法：请选择官方 V4 Flash、V4 Pro 或 V41 Flash 后保存',
   'roles.list.label': '角色实体',
   'roles.list.hint': '先声明角色，规则才能引用',
   'roles.list.tooltip': '角色 id 须匹配 /^[a-z0-9-]{1,32}$/ 且唯一；"inherit" 为保留字，不能用作角色 id。',
@@ -190,7 +192,7 @@ export const zh = {
   'validation.ruleRoleUndeclared': '规则引用了未声明的角色 "{role}"',
   'validation.ruleRoleRequired': '规则未选择角色：请选择目标角色，或删除该行',
   'validation.roleChainRequired': '角色 "{id}" 未配置模型：请至少添加一条链选择器（模型配置）',
-  'validation.allDayRequired': '默认模型必须二选一：官方 V4 Flash 或 V4 Pro',
+  'validation.allDayRequired': '默认模型必须三选一：官方 V4 Flash、V4 Pro 或 V41 Flash',
   'validation.slotChainRequired': '分时槽未配置模型：请至少添加一条链选择器',
   'validation.slotWindow': '分时槽开始/结束时间须为 HH:mm 格式',
   'validation.slotDays': '星期取值须为 0–6 的整数',
@@ -378,12 +380,14 @@ export const en = {
   'timeSlots.day.sat': 'Sat',
   'timeSlots.selector.add': 'Add selector',
   // All-day head (plan fallbacks-timeslots Task 3; PR #62 feedback round):
-  // the default-model panel is the official V4 Flash XOR Pro head of the
-  // default fallback chain — separate from the default-chain selector list.
-  'allDay.hint': 'Last-resort fallback of the all-day chain: official V4 Flash or Pro (pick exactly one)',
+  // the default-model panel is the official V4 Flash / V4 Pro / V41 Flash
+  // XOR head of the default fallback chain — separate from the
+  // default-chain selector list.
+  'allDay.hint': 'Last-resort fallback of the all-day chain: official V4 Flash, V4 Pro, or V41 Flash (pick exactly one)',
   'allDay.flash': 'Official V4 Flash (deepseek-official/deepseek-v4-flash)',
   'allDay.pro': 'Official V4 Pro (deepseek-official/deepseek-v4-pro)',
-  'allDay.nonconforming': 'The current default model is not valid: pick official V4 Flash or Pro before saving',
+  'allDay.v41Flash': 'Official V41 Flash (deepseek-official/deepseek-flash)',
+  'allDay.nonconforming': 'The current default model is not valid: pick official V4 Flash, V4 Pro, or V41 Flash before saving',
   'roles.list.label': 'Declared roles',
   'roles.list.hint': 'Declare roles before rules can reference them',
   'roles.list.tooltip': 'Role ids must match /^[a-z0-9-]{1,32}$/ and be unique; "inherit" is reserved and cannot be used as a role id.',
@@ -435,7 +439,7 @@ export const en = {
   'validation.ruleRoleUndeclared': 'Rule references undeclared role "{role}"',
   'validation.ruleRoleRequired': 'Rule has no role selected: pick a target role, or remove the row',
   'validation.roleChainRequired': 'Role "{id}" has no model config: add at least one chain entry',
-  'validation.allDayRequired': 'The default model must be exactly one official V4 model (V4 Flash or V4 Pro)',
+  'validation.allDayRequired': 'The default model must be exactly one official model (V4 Flash, V4 Pro, or V41 Flash)',
   'validation.slotChainRequired': 'Time-slot row has no models: add at least one chain entry',
   'validation.slotWindow': 'Time-slot start/end must use HH:mm format',
   'validation.slotDays': 'Days must be integers 0–6',

@@ -1,6 +1,6 @@
 /**
  * Time-slot rows for `fallbacks` (plan fallbacks-timeslots Task 1, pins
- * P4–P6): frozen preset windows, the official-V4 all-day conformance
+ * P4–P6): frozen preset windows, the official all-day conformance
  * guard, and the pure `resolveEffectiveChain` / `resolveSlotState`
  * resolver.
  *
@@ -17,9 +17,11 @@
 
 import type { FallbacksConfig } from './config.ts'
 
-/** Official V4 models — the ONLY legal all-day selectors (length 1, XOR). */
+/** Official all-day selectors — the ONLY legal tails (length 1, XOR):
+ * V4 Flash, V4 Pro, and the dsh 0.1.5-rc.1 platform default V41 Flash. */
 export const OFFICIAL_V4_FLASH = 'deepseek-official/deepseek-v4-flash'
 export const OFFICIAL_V4_PRO = 'deepseek-official/deepseek-v4-pro'
+export const OFFICIAL_FLASH = 'deepseek-official/deepseek-flash'
 
 /** The four frozen preset ids (exact strings, spec lock). */
 export const PRESET_IDS = ['liang-peak', 'liang-valley', 'glm-peak', 'glm-valley'] as const
@@ -222,17 +224,17 @@ function labelOf(row: SlotRowConfig): string {
 
 /**
  * All-day conformance (P6): the all-day chain is conforming when its LAST
- * entry (the tail — the card's 默认模型 panel) is exactly one official V4
- * model — Flash XOR Pro. Leading entries (the card's 默认降级链 block) are
- * the ordered walk before that last-resort fallback. An empty chain or a
- * chain whose tail is not an official V4 model keeps slot rows inert and
- * refuses the virtual-row override/delegate; the v0.2.2 failure walk over
- * the raw chain stays verbatim.
+ * entry (the tail — the card's 默认模型 panel) is exactly one official
+ * model — V4 Flash, V4 Pro, or V41 Flash (XOR). Leading entries (the
+ * card's 默认降级链 block) are the ordered walk before that last-resort
+ * fallback. An empty chain or a chain whose tail is not an official model
+ * keeps slot rows inert and refuses the virtual-row override/delegate; the
+ * v0.2.2 failure walk over the raw chain stays verbatim.
  */
 export function isAllDayConforming(chain: readonly string[]): boolean {
   if (chain.length < 1) return false
   const tail = chain[chain.length - 1]
-  return tail === OFFICIAL_V4_FLASH || tail === OFFICIAL_V4_PRO
+  return tail === OFFICIAL_V4_FLASH || tail === OFFICIAL_V4_PRO || tail === OFFICIAL_FLASH
 }
 
 /**

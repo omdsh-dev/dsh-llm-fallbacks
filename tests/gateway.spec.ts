@@ -47,7 +47,7 @@ import { TypertRegistry } from '@deepseek-ai/dsh-typert-registry'
 import { apply } from '../src/index.ts'
 import { Config } from '../src/schema.ts'
 import { defaultFallbacksConfig, type FallbacksConfig } from '../src/config.ts'
-import { OFFICIAL_V4_FLASH, OFFICIAL_V4_PRO } from '../src/time-slots.ts'
+import { OFFICIAL_V4_FLASH, OFFICIAL_V4_PRO, OFFICIAL_FLASH } from '../src/time-slots.ts'
 import {
   FALLBACKS_SETTINGS_NAMESPACE,
   FallbacksConfigGateway,
@@ -598,23 +598,25 @@ describe('timeSlots + all-day set guards (plan fallbacks-timeslots Task 3)', () 
     return { gateway, ctx }
   }
 
-  it('accepts a conforming all-day chain (Flash or Pro, length 1)', async () => {
+  it('accepts a conforming all-day chain (Flash, Pro, or V41 Flash, length 1)', async () => {
     const { gateway } = await mountGateway()
     const flash = await gateway.set({ rootChain: [OFFICIAL_V4_FLASH] })
     expect(flash.config.rootChain).toEqual([OFFICIAL_V4_FLASH])
     const pro = await gateway.set({ rootChain: [OFFICIAL_V4_PRO] })
     expect(pro.config.rootChain).toEqual([OFFICIAL_V4_PRO])
+    const v41Flash = await gateway.set({ rootChain: [OFFICIAL_FLASH] })
+    expect(v41Flash.config.rootChain).toEqual([OFFICIAL_FLASH])
   })
 
   it('rejects a non-conforming all-day chain on save (legacy multi-model AND empty — P6)', async () => {
     const { gateway } = await mountGateway()
     await expect(gateway.set({ rootChain: ['openai/gpt-4o', 'anthropic/claude-3-5-sonnet'] })).rejects
-      .toThrow(/rootChain must end with exactly one official V4 model/)
+      .toThrow(/rootChain must end with exactly one official model/)
     await expect(gateway.set({ rootChain: ['openai/gpt-4o'] })).rejects
-      .toThrow(/rootChain must end with exactly one official V4 model/)
+      .toThrow(/rootChain must end with exactly one official model/)
     // The empty default is the "no all-day" state — also rejected on save:
     // everything saved through the gateway is tail-conforming.
-    await expect(gateway.set({ rootChain: [] })).rejects.toThrow(/rootChain must end with exactly one official V4 model/)
+    await expect(gateway.set({ rootChain: [] })).rejects.toThrow(/rootChain must end with exactly one official model/)
     // Nothing was persisted: the composed rootChain stays the entry default.
     expect(gateway.get().config.rootChain).toEqual([])
   })
