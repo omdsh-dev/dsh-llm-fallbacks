@@ -262,6 +262,10 @@ describe('subagent seam — behavioural (public call path)', () => {
     const seam = installSubagentSeam(ctx, { roleIds: () => ROLE_IDS })
 
     const { value } = await injectSubagents(ctx)
+    // Interception precondition (review M-1): every assertion below is a
+    // NEGATIVE (nothing changed / nothing recorded), which the raw service also
+    // satisfies — so pin the interception itself first.
+    expect(value).not.toBe(fake.service)
     const request = { prompt: [{ type: 'text', text: 'no assignment header here' }] }
     await (value.start as (name: string, request: unknown) => Promise<unknown>)('spawn', request)
 
@@ -285,10 +289,14 @@ describe('subagent seam — behavioural (public call path)', () => {
 
     // The resume reused the record (role re-recorded, last-wins) and kept the
     // cleared notice marker, so Task 3 cannot emit a second notice row.
+    // DISCRIMINATING (review I-1): the wrapper REWRITES the record with a fresh
+    // `at`, so the seed's `1` cannot survive — this assertion fails when
+    // interception is broken, which the role/marker/`any(Number)` assertions
+    // above cannot detect (they all hold against the raw service).
     const resumed = seam.records.get('child-resumed')
     expect(resumed?.role).toBe('reviewer')
     expect(resumed?.firstNoticePending).toBe(false)
-    expect(resumed?.at).toEqual(expect.any(Number))
+    expect(resumed?.at).toBeGreaterThan(1)
     expect(fake.continuableStarts).toHaveLength(1)
   })
 
@@ -329,11 +337,74 @@ describe('subagent seam — behavioural (public call path)', () => {
     const seam = installSubagentSeam(ctx, { roleIds: () => ROLE_IDS })
 
     const { value } = await injectSubagents(ctx)
+    // Interception precondition (review M-1): "no record" is a NEGATIVE and
+    // holds for the raw service too — pin the interception first.
+    expect(value).not.toBe(service)
     expect(() => (value.start as (name: string, request: SubagentStartRequestView) => unknown)('spawn', {
       prompt: [{ type: 'text', text: assignment('coder') }],
       label: 'task',
       parent: parentAgent('parent-session'),
     })).toThrow('native start refused')
+    expect(seam.records.size).toBe(0)
+  })
+
+  it('a rejected start ends the catalog correlation claim (review M-2)', async () => {
+    ctx = new Context()
+    const debug = vi.fn()
+    const service = {
+      start: () => Promise.reject(new Error('native start rejected')),
+    }
+    ctx.provide('subagents', service)
+    const seam = installSubagentSeam(ctx, { roleIds: () => ROLE_IDS, debug })
+
+    const { value } = await injectSubagents(ctx)
+    await expect(
+      (value.start as (name: string, request: SubagentStartRequestView) => Promise<unknown>)('spawn', {
+        prompt: [{ type: 'text', text: assignment('coder') }],
+        label: 'task',
+        parent: parentAgent('parent-session'),
+      }),
+    ).rejects.toThrow('native start rejected')
+
+    // The claim was dropped: a catalog event for the same (parent session,
+    // label) must NOT key a record for a child that never started. A native
+    // rejection is not a seam degrade — no contained debug line either.
+    ctx.emit('session/event', { id: 'parent-session' }, {
+      type: 'subagent/catalog',
+      seq: 1,
+      time: Date.now(),
+      data: {
+        version: 0,
+        childId: 'child-after-reject',
+        childCreatedAt: Date.now(),
+        mode: 'one-shot',
+        label: 'task',
+      },
+    })
+    expect(seam.records.size).toBe(0)
+    expect(debug).not.toHaveBeenCalled()
+  })
+
+  it('emits exactly ONE contained debug log when the prompt declares no resolvable role (review M-5)', async () => {
+    ctx = new Context()
+    const debug = vi.fn()
+    ctx.provide('subagents', fakeSubagents({ id: 'child-norole' }).service)
+    const seam = installSubagentSeam(ctx, { roleIds: () => ROLE_IDS, debug })
+
+    const { value } = await injectSubagents(ctx)
+    const start = value.start as (name: string, request: SubagentStartRequestView) => Promise<unknown>
+    // No prompt text at all (e.g. a continuable resume): nothing to report.
+    await start('spawn', { prompt: [] })
+    expect(debug).not.toHaveBeenCalled()
+    // A prompt IS present but declares no resolvable role — an absent field,
+    // then an undeclared id (and a `#`-led prompt behaves the same: the header
+    // region is empty at engine parity). The live no-op becomes observable, and
+    // the latch keeps it to ONE line per apply.
+    await start('spawn', { prompt: [{ type: 'text', text: 'no assignment header here' }] })
+    await start('spawn', { prompt: [{ type: 'text', text: assignment('nobody') }] })
+    await start('spawn', { prompt: [{ type: 'text', text: '# Title\n\n**Execute as**: coder' }] })
+    expect(debug).toHaveBeenCalledTimes(1)
+    expect(String(debug.mock.calls[0]![0])).toContain('no role resolved')
     expect(seam.records.size).toBe(0)
   })
 })
@@ -404,5 +475,18 @@ describe('subagent seam — per-apply lifetime through apply()', () => {
     seam!.records.set('child-disposed', record)
     await ctx.fiber.dispose()
     expect(seam!.records.size).toBe(0)
+  })
+
+  it('a second apply over the same context root installs no nested seam (multi-fiber dedupe, review M-3)', async () => {
+    const config = () => cfg({ roles: { list: [{ id: 'coder', persona: '', chain: [] }], rules: [] } })
+    apply(ctx, config())
+    const first = subagentSeamOf(ctx)
+    expect(first).toBeDefined()
+
+    // A later fiber over the shared root is refused by the seam and degraded by
+    // the guard: the first fiber keeps the only listener set, so the store
+    // still holds the FIRST seam (no nested wrapper, no second debug line).
+    expect(() => apply(ctx, config())).not.toThrow()
+    expect(subagentSeamOf(ctx)).toBe(first)
   })
 })

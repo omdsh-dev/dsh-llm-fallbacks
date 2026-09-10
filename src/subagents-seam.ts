@@ -285,6 +285,18 @@ function errorMessage(error: unknown): string {
 const subagentSeamStores = new WeakMap<Context, SubagentSeam>()
 
 /**
+ * Context ROOTS that already carry an installed seam. The `internal/get`
+ * service-read waterfall is root-scoped and global, so a multi-fiber
+ * composition (this plugin applied once per fiber over one root) must not
+ * install a second listener set: that would only nest wrappers and multiply
+ * the contained debug lines ("ONE per apply"). The first installer owns the
+ * seam; {@link installSubagentSeam} refuses a duplicate and `src/index.ts`
+ * turns that refusal into a fiber-local no-op seam (the service / gateway /
+ * typert dedupe pattern).
+ */
+const subagentSeamRoots = new WeakSet<Context>()
+
+/**
  * @internal Test seam (mirrors `subagentRoleRecords`): the seam installed on
  * `ctx`, if any. Not part of the plugin's public surface — lets tests read and
  * seed the per-child record map without reaching into the installation
@@ -298,17 +310,28 @@ export function subagentSeamOf(ctx: Context): SubagentSeam | undefined {
  * Install the dispatch seam on `ctx`: wrap every `subagents` service read and
  * resolve + record the dispatch role per start.
  *
+ * Throws when `ctx`'s ROOT already carries a seam (multi-fiber apply): the
+ * caller's dedupe guard degrades instead of nesting a second listener set. The
+ * root claim is released by {@link SubagentSeam.dispose}, so a later apply over
+ * the same root can install again.
+ *
  * Returns the seam (the record map Task 3 reads, plus an idempotent
  * `dispose`). The `internal/get` listener is owned by this module; callers
  * that rely on the fiber teardown alone may ignore `dispose`.
  */
 export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions): SubagentSeam {
+  const root = ctx.root
+  if (subagentSeamRoots.has(root)) {
+    throw new Error(`the '${SUBAGENT_SEAM_SERVICE}' role seam is already installed on this context root`)
+  }
   const records = new Map<string, SubagentSeamRecord>()
   const pending = new Map<string, PendingCorrelation>()
   const wrappers = new WeakMap<object, object>()
   const disposers: Array<() => void> = []
   /** One debug per apply for a service read that is absent/not start-capable. */
   let unreadableServiceLogged = false
+  /** One debug per apply for a dispatch prompt that declares no resolvable role. */
+  let noRoleLogged = false
 
   const debug = (message: string): void => {
     try {
@@ -355,7 +378,19 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
     try {
       const prompt = promptTextOf(request?.prompt)
       if (prompt.trim() === '') return undefined
-      return resolveDeclaredRoleFromAssignment(prompt, options.roleIds())
+      const role = resolveDeclaredRoleFromAssignment(prompt, options.roleIds())
+      // Plan Global Constraints: ABSENT or UNDECLARED ⇒ no-op with at most ONE
+      // debug log. Latched per apply so the no-op is distinguishable from "the
+      // seam never intercepted" (the QA live check) without flooding on every
+      // role-less dispatch. The `#[ \t]` header boundary above stays at engine
+      // parity — a `#`-led prompt is exactly this no-role outcome.
+      if (role === undefined && !noRoleLogged) {
+        noRoleLogged = true
+        debug(
+          `llm-fallbacks: subagent role seam — no role resolved from the Assignment prompt (absent or undeclared '**Execute as**: <id>'); the dispatch is unchanged`,
+        )
+      }
+      return role
     } catch (error) {
       reportDegrade(error)
       return undefined
@@ -365,12 +400,15 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
   /**
    * Observe one start result WITHOUT altering it: a thenable is watched
    * (rejection is a no-result path, never an unhandled rejection); a plain
-   * value is inspected directly.
+   * value is inspected directly. `onNoChildId` (resolved, but the result
+   * carries no session id) and `onRejected` (the start failed) are DISTINCT:
+   * only the former may keep a catalog-correlation claim open.
    */
   const observeStartResult = (
     result: unknown,
     onChildId: (childSessionId: string) => void,
     onNoChildId: () => void,
+    onRejected: () => void,
   ): void => {
     const onValue = (value: unknown): void => {
       try {
@@ -386,7 +424,7 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
         onValue,
         () => {
           try {
-            onNoChildId()
+            onRejected()
           } catch (error) {
             reportDegrade(error)
           }
@@ -446,6 +484,9 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
         // No session id in the result (a job id is not one): keep the claim and
         // let the parent-owned `subagent/catalog` event supply the child id.
         () => {},
+        // A rejected start created no child: drop the claim so it cannot be
+        // consumed later by a same-label sibling's catalog event.
+        () => endCorrelation(pendingKey),
       )
       return result
     }
@@ -459,7 +500,12 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
           ?? (typeof spec?.childId === 'string' ? records.get(spec.childId)?.role : undefined)
         if (role === undefined) return startContinuable.call(service, spec)
         const result: unknown = startContinuable.call(service, spec)
-        observeStartResult(result, (childSessionId) => recordChild(childSessionId, role, Date.now()), () => {})
+        observeStartResult(
+          result,
+          (childSessionId) => recordChild(childSessionId, role, Date.now()),
+          () => {},
+          () => {},
+        )
         return result
       }
     }
@@ -482,7 +528,11 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
   // Background correlation fallback: the parent-owned catalog event carries
   // the child session id a `jobId`-only result never does. Join on the
   // delegating parent session + the request label (the catalog `label` IS the
-  // delegation `description`).
+  // delegation `description`). The join key is NOT unique: two children of one
+  // parent dispatched concurrently under the SAME label share it, and the
+  // first catalog event consumes whichever role was claimed last — so this
+  // fallback can key a sibling's role in that corner (bounded: reachable only
+  // when a `jobId`-only result reaches the seam; recorded as a residual).
   disposers.push(ctx.on('session/event', (session, event) => {
     try {
       if ((event.type as string) !== SUBAGENT_CATALOG_EVENT) return
@@ -504,9 +554,12 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
   const seam: SubagentSeam = {
     records,
     dispose: () => {
+      // Release the root claim so a later apply (fiber reload) can install.
+      subagentSeamRoots.delete(root)
       for (const dispose of disposers.splice(0)) dispose()
     },
   }
+  subagentSeamRoots.add(root)
   subagentSeamStores.set(ctx, seam)
   return seam
 }

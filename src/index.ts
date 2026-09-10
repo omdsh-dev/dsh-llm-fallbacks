@@ -47,7 +47,7 @@ import { firstExactCandidate, resolveRoleAtDispatch } from './role-resolution.ts
 import { detectAuthorizedRoute, type AuthorizedRouteSession } from './authorized-route.ts'
 import { firstAllowedCandidate, resolvedRoutes } from './route-allowlist.ts'
 import { effectivePolicy, readSessionPolicyEvent, type PolicySettings } from './subagent-policy.ts'
-import { installSubagentSeam } from './subagents-seam.ts'
+import { installSubagentSeam, type SubagentSeam } from './subagents-seam.ts'
 import { FallbackStateStore, type AgentFallbackState, type BlockedSwitchAttempt, type EffectiveChainHead, type PendingSwitch, type SwitchScope } from './state.ts'
 import { escalatedCooldownMs } from './recovery.ts'
 import { overrideConfigWithRouteRule, type LlmReasoningEffort } from './override.ts'
@@ -867,12 +867,25 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   // single resolution point; Task 3 emits the once-per-child notice row from
   // `subagentSeam.records`. Cleaned on agent/disposed + plugin dispose below
   // (mirrors `subagentRoleRecordMap`).
-  const subagentSeam = installSubagentSeam(ctx, {
-    // Live binding read: the settings onChange below re-derives `roleIds` in
-    // place, so the seam sees role edits without a re-install.
-    roleIds: () => roleIds,
-    debug: (message) => logger.debug(message),
-  })
+  // Multi-fiber dedupe (fix M-3): the seam's `internal/get` wrapper is
+  // ROOT-scoped, so a later fiber applying over a shared context root must not
+  // install a second listener set (nested wrappers + duplicated contained
+  // debug lines). Mirror the service / gateway / typert guards below: the
+  // FIRST fiber owns the seam, later fibers get a fiber-local no-op seam and
+  // one dedupe debug line.
+  let subagentSeam: SubagentSeam
+  try {
+    subagentSeam = installSubagentSeam(ctx, {
+      // Live binding read: the settings onChange below re-derives `roleIds` in
+      // place, so the seam sees role edits without a re-install.
+      roleIds: () => roleIds,
+      debug: (message) => logger.debug(message),
+    })
+  } catch (error) {
+    if (!(error instanceof Error) || !error.message.includes('already installed')) throw error
+    ctx.logger('llm-fallbacks').debug('subagent role seam already installed — no seam on this fiber (multi-fiber dedupe)')
+    subagentSeam = { records: new Map(), dispose: () => {} }
+  }
 
   try {
     // T3 (plan fallbacks-role-seeds): the gateway receives the SAME per-apply
