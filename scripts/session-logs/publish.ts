@@ -296,8 +296,16 @@ function sizeToNumber(buffer: Buffer, offset: number, width: number): number | n
  * Canonical successor filename for one generation (SSOT:
  * `generationLogFilename` in `@deepseek-ai/dsh-session-persistence-jsonl`):
  * version 0 keeps the suffix-only name, later generations carry `v<N>`.
+ *
+ * Exported because this is the ONE implementation of the rule: the CLI's
+ * report-mode existing-successor probe resolves the same name through this
+ * function, which it receives from `runRepair`'s dynamic import of this module
+ * (a static import would defeat the `node:zlib` zstd runtime probe that must run
+ * first). `publishSuccessor` derives its target from the RESTORED header's
+ * version, the CLI's probe from the resolved catalog's declared
+ * `currentVersion` — see the probe's comment in `repair-session-logs.ts`.
  */
-function successorFilename(version: number): string {
+export function successorFilename(version: number): string {
   return version === 0 ? 'session.jsonl.zstd' : `session.v${version}.jsonl.zstd`
 }
 

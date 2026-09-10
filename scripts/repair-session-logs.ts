@@ -556,17 +556,6 @@ export function decodeRows(frames: readonly string[]): ParsedRow[] {
   return rows
 }
 
-/**
- * Canonical successor filename for one generation.
- *
- * Mirrors the released `generationLogFilename` (and `publish.ts`'s private
- * `successorFilename`, which is not exported): version 0 keeps the suffix-only
- * name, later generations carry `v<N>`.
- */
-export function successorFilename(generation: number): string {
-  return generation === 0 ? 'session.jsonl.zstd' : `session.v${generation}.jsonl.zstd`
-}
-
 /* ------------------------------------------------------------------ */
 /* per-log work                                                        */
 /* ------------------------------------------------------------------ */
@@ -800,6 +789,13 @@ interface InspectContext {
   rules: readonly LogRule[]
   dropLegacyEvents: boolean
   catalog: CatalogHandle | null
+  /**
+   * Canonical successor filename for one generation: the publisher's exported
+   * rule, taken from the same module instance that publishes (this module is
+   * imported dynamically, AFTER the `node:zlib` zstd runtime probe, so the CLI
+   * cannot import this statically). One implementation — no local copy here.
+   */
+  successorFilename(version: number): string
   decodeZstdFrames(bytes: Buffer): string[]
   publishSuccessor: (
     logPath: string,
@@ -1194,8 +1190,18 @@ async function analyzeLog(candidate: LogGeneration, context: InspectContext): Pr
   // is still reported `repairable` from the rule registry alone), and `--apply`
   // was already refused as fatal by the caller — which is why the null case is
   // checked here rather than assumed away.
+  //
+  // The name comes from the publisher's own exported rule (no local copy). Note
+  // the two INPUTS differ: this probe uses the resolved catalog's declared
+  // `currentVersion`, while `publishSuccessor` derives its target from the version
+  // the RESTORED header settles on. They agree for every catalog whose restore
+  // settles at the version it declares (the released one does — its successor is
+  // read back and pinned to that version before publication); a catalog that
+  // declared one version and settled at another would leave this probe looking for
+  // a name the publication never used, so report mode alone could call such a log
+  // unpublished while `--apply` accepts the existing successor as byte-identical.
   const catalog = context.catalog
-  const expected = catalog === null ? null : successorFilename(catalog.catalog.currentVersion)
+  const expected = catalog === null ? null : context.successorFilename(catalog.catalog.currentVersion)
   const successorPath = expected === null ? null : join(candidate.sessionDir, expected)
   const existingSuccessor =
     successorPath !== null && (await fileExists(successorPath)) ? successorPath : null
@@ -1440,6 +1446,7 @@ export async function runRepair(
     rules,
     dropLegacyEvents: options.dropLegacyEvents,
     catalog,
+    successorFilename: publishing.successorFilename,
     decodeZstdFrames: publishing.decodeZstdFrames,
     publishSuccessor: publishing.publishSuccessor,
     stalePublicationPath: (error) =>

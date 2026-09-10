@@ -42,6 +42,7 @@ import {
   encodeZstdFrames,
   publishSuccessor,
   settleStalePublication,
+  successorFilename,
 } from '../scripts/session-logs/publish.ts'
 
 /* ------------------------------------------------------------------ */
@@ -505,6 +506,23 @@ describe('generation framing', () => {
   it('refuses a torn container', () => {
     const container = encodeZstdFrames(HEADER_RECORD, EVENT_RECORDS)
     expect(() => decodeZstdFrames(container.subarray(0, container.length - 8))).toThrow(/torn/)
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/* successorFilename — the naming SSOT (catalog-free)                  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The rule lived as a private copy in `repair-session-logs.ts` until R-001; it is
+ * pinned here, in the module that owns it and that the CLI now consumes. The CLI
+ * spec pins the cross-module agreement (the report probe resolves this same name
+ * for the same generation).
+ */
+describe('successorFilename', () => {
+  it('keeps the suffix-only name for version 0 and tags later generations', () => {
+    expect(successorFilename(0)).toBe('session.jsonl.zstd')
+    expect(successorFilename(3)).toBe('session.v3.jsonl.zstd')
   })
 })
 

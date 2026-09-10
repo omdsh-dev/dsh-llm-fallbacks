@@ -50,7 +50,6 @@ import {
   main,
   parseArgs,
   runRepair,
-  successorFilename,
   usage,
   zstdRuntimeProblem,
   type CliIO,
@@ -59,7 +58,7 @@ import {
 } from '../scripts/repair-session-logs.ts'
 import { resolveCatalog, type CatalogHandle } from '../scripts/session-logs/catalog.ts'
 import { REFUSAL_CLASSES } from '../scripts/session-logs/rules.ts'
-import { decodeZstdFrames, encodeZstdFrames } from '../scripts/session-logs/publish.ts'
+import { decodeZstdFrames, encodeZstdFrames, successorFilename } from '../scripts/session-logs/publish.ts'
 
 /* ------------------------------------------------------------------ */
 /* fixture helpers                                                     */
@@ -435,10 +434,38 @@ describe('canonicalGeneration', () => {
   })
 })
 
-describe('successorFilename', () => {
-  it('keeps the suffix-only name for version 0 and tags later generations', () => {
-    expect(successorFilename(0)).toBe('session.jsonl.zstd')
-    expect(successorFilename(3)).toBe('session.v3.jsonl.zstd')
+/* ------------------------------------------------------------------ */
+/* successor naming — ONE rule, pinned across the CLI/publisher border  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The CLI owns no naming rule any more: `runRepair` injects the publisher's own
+ * exported `successorFilename` (the publisher module is imported dynamically, so
+ * the CLI cannot import it statically), and `publishSuccessor` names its target
+ * with that same function. These pins resolve the name on BOTH sides of the
+ * boundary for the same generation — the report-mode probe finds, and names, the
+ * file `--apply` wrote — so a re-introduced private copy that drifts can no
+ * longer pass silently. The literal on-disk name is asserted separately.
+ */
+describe('successor naming agreement (CLI ↔ publisher)', () => {
+  it('resolves in report mode exactly the name --apply wrote on disk', async () => {
+    const root = tempDir('rsl-name-agreement-')
+    const catalogPath = writeFakeCatalog()
+    const log = writeGeneration(root, 'example-ns', 'session-descriptor', 'session.jsonl.zstd', V0_HEADER, [DESCRIPTOR_V2])
+
+    const applySink = captureIO()
+    expect(await execute(optionsFor({ root, catalogPath, apply: true }), applySink.io, bareEnv())).toBe(0)
+    // The produced name, literally: the publisher's rule must not move.
+    expect(applySink.out()).toContain('published session.v3.jsonl.zstd')
+    expect(listing(log.dir)).toEqual(['session.jsonl.zstd', 'session.v3.jsonl.zstd'])
+
+    // The probe resolves its name from the catalog's `currentVersion`; it only
+    // finds (and proves) that file when the CLI's resolved name IS the publisher's
+    // name for the same generation. A private CLI copy that drifted would report
+    // "run with --apply" / `alreadyPublished: false` here instead.
+    const outcome = outcomeFor(await runRepair(optionsFor({ root, catalogPath }), bareEnv()), 'session-descriptor')
+    expect(outcome.alreadyPublished).toBe(true)
+    expect(outcome.detail).toContain(`the successor ${successorFilename(3)} is already published and loadable`)
   })
 })
 
