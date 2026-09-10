@@ -104,7 +104,7 @@
   changed. The bundled self-declare records `bundled` provenance internally —
   consumers can never label their own declares as `bundled` (reserved name).
 - **Upgrade semantics (R2, no destructive write)**: previously persisted
-  designer/librarian rows survive every subsequent declare untouched
+  designer/librarian rows survive subsequent bundled declares untouched
   (`materialize` leaves ids omitted from the batch alone) and read back as
   `source: 'user'` unless another live producer still declares them. No settings-schema migration, no auto-delete, no
   spurious warns on the upgrade path (the post-restart conservative branch
