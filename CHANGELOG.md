@@ -6,6 +6,30 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-10
+
+### Fixed
+
+- With `FallbacksChain` / `Auto` selected, the host's model-change notice is no longer re-armed on every step: the root request is now served and recorded as the virtual pair (the `agent/request` rewrite to the chain head is removed) and the virtual adapter's delegate dispatches the effective head, so the durable `request/header` matches the session selection and the notice appears once on a genuine model change instead of continuously.
+- `llm-deepseek.retryPolicy` — including `mode: 'always'` — now applies on the virtual route: the adapter reports the effective head's policy instead of the permissive default (the host captures that policy once at registration, so a later policy edit or a slot-driven head-provider rotation takes effect only after re-registration).
+- `alwaysModeRetryCap` now trips on the virtual route; it was unreachable there because the removed rewrite always returned the chain head before the cap check.
+- Half-open recovery works on the virtual route: a served completion now closes the head's circuit (the success observer had keyed on the virtual pair while failures keyed on the served head, so the circuit could never close and its suppression kept escalating despite successful requests).
+- Subagent role rules keep matching on the virtual route: a rule keyed on the real chain head still resolves for a delegated child whose recorded route is the virtual row (dispatch-time rule matching now accepts either **whole** pair — the recorded one or the served one — so a rule that crosses the two, e.g. the virtual provider with the head's model, no longer matches).
+- Localize the fixed external source badge while preserving registered set names verbatim, including their case.
+- Keep seed declarations isolated per producer so the plugin's bundled presets retain their bundled source and seeded state when a companion re-declares them, instead of appearing as external roles.
+- Keep seeded persona text inside the settings card: it ellipsizes when collapsed and wraps when expanded, without widening the settings panel.
+- Replaying a pi-ai-backed head on the `FallbacksChain` / `Auto` route no longer drops that adapter's replay envelope for history **recorded on the virtual route**: that history is re-stamped to the provider/model its own envelope names, so thinking/thought signatures and redacted reasoning blocks survive instead of degrading to a provider-neutral transcript.
+- History recorded on a **real** provider route still loses its replay envelope in a virtual-route session — the request route is the virtual pair, so the runtime's ownership pass strips it before the delegate runs — and that half cannot be closed from the plugin.
+
+### Changed
+
+- `pnpm repair:session-logs` replaces the retired session-log detector: it is a read-only report by default — classifying every pre-V3 session log and printing per-class counts — and publishes a repaired successor generation only with `--apply` (the old `--dry-run` flag no longer exists, since report mode is the default).
+- Session logs blocked by legacy `fallbacks/switch` rows can be recovered with the opt-in lossy `--drop-legacy-events` mode (which requires `--backup` together with `--apply`): it removes those switch-audit rows, renumbers the surviving events, reports the dropped and renumbered event counts, and fails closed with nothing written when a surviving reference names a dropped seq.
+- The report distinguishes the two loader policies: a session that opens with rows silently dropped under the host loader's lenient policy is now reported `ok-truncated` (with a `strictRefusal` reason in `--json` and an `ok-truncated` summary count) instead of a clean `ok`.
+- Discovery never fails open: unreadable directories are reported with their errno, symlinked and irregular entries are reported rather than followed, and a stranded `session.repair.*.jsonl.zstd.tmp` is reported as stale staging. Each of these is printed in both report modes, suppresses the "no session log …" line and makes the run exit 1, while an unreadable `--root` is fatal (exit 2).
+- `--apply` refuses to publish a revision it did not decode: the digest of the bytes that were read is checked before anything is staged, and the report says whether a successor was `created` or an identical pre-existing one was `accepted`. A successor left behind by a stale snapshot is named for rollback instead of being reported as "nothing was published".
+- The released catalog is pinned to a release: a catalog below the required format version is refused (exit 2), the report names the catalog package version, and the catalog owned by the running `dsh` is preferred.
+
 ## [0.4.4] - 2026-09-10
 
 ### Changed
