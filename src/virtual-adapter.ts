@@ -165,6 +165,76 @@ async function resolveHeadDisplayName(llm: LlmRuntime | undefined, head: Effecti
   return head.model
 }
 
+/** One history message of a delegated request. */
+type DelegatedMessage = GenerateOptions['messages'][number]
+
+/**
+ * The `provider/model` an adapter-private replay envelope names for itself, when
+ * it names them in a readable shape.
+ *
+ * `ReplayEnvelope.response` is an untyped, adapter-private payload
+ * (`@deepseek-ai/dsh-llm` `types.d.ts`), so this probe is deliberately
+ * structural and total: anything it cannot read yields `undefined` and the
+ * caller leaves the message untouched — never guessed, never thrown. A pair
+ * naming the virtual route itself is refused, because re-stamping onto
+ * `FallbacksChain` would be a self-route.
+ */
+function envelopeProvenance(replayState: unknown): EffectiveHead | undefined {
+  if (typeof replayState !== 'object' || replayState === null) return undefined
+  const response: unknown = (replayState as { response?: unknown }).response
+  if (typeof response !== 'object' || response === null) return undefined
+  const { provider, model } = response as { provider?: unknown; model?: unknown }
+  if (typeof provider !== 'string' || provider === '' || provider === FALLBACKS_PROVIDER) return undefined
+  if (typeof model !== 'string' || model === '') return undefined
+  return { provider, model }
+}
+
+/**
+ * Restore the provenance of history messages the durable record attributes to
+ * the virtual route (R-004).
+ *
+ * The loop stamps every durable assistant message with the route of the REQUEST
+ * that produced it — `FallbacksChain/Auto` here — while the replay envelope
+ * inside it was produced by the head adapter that actually answered
+ * (`@deepseek-ai/dsh-agent-loop` builds the durable source from
+ * `request.provider`). The runtime's ownership gate exposes an envelope to a
+ * target adapter only while that adapter instance owns the message's recorded
+ * provider (`LlmRuntime.forAdapter`), so the delegate's second pass —
+ * `llm.stream({ … provider: head })` — hands the head a message whose envelope
+ * has been dropped, and pi-ai-backed thinking signatures silently degrade on the
+ * root virtual route.
+ *
+ * Re-stamping the pair the envelope itself names puts the message back under the
+ * adapter that produced it, so the gate keeps it. Reading the pair from the
+ * envelope — never from the effective head — also keeps a rotation faithful: an
+ * envelope produced by a previous head is not handed to another provider's
+ * adapter. Only `source` changes; the durable record the loop writes is
+ * untouched. Two readers see the delegated `source`: the runtime's ownership gate
+ * (`forAdapter`), and — for a pi-ai-backed head — that adapter's own replay
+ * validator, which throws `INVALID_REPLAY_STATE` unless
+ * `response.provider`/`response.model` equal the message source. Re-stamping to
+ * the pair the envelope names is therefore what makes the envelope *acceptable*,
+ * not merely retained; re-stamping to the effective head instead would feed the
+ * validator a mismatched pair on any rotation.
+ *
+ * @param messages - the delegated request's history, exactly as received.
+ * @returns `messages` itself when nothing qualifies, so the untouched path
+ *   allocates nothing and behaves precisely as before.
+ */
+function restoreEnvelopeProvenance(messages: DelegatedMessage[]): DelegatedMessage[] {
+  let changed = false
+  const restored = messages.map((message): DelegatedMessage => {
+    const source = message.source
+    if (message.role !== 'assistant' || source.kind !== 'model') return message
+    if (source.provider !== FALLBACKS_PROVIDER || source.model !== FALLBACKS_CHAIN_MODEL) return message
+    const provenance = envelopeProvenance(source.replayState)
+    if (provenance === undefined) return message
+    changed = true
+    return { ...message, source: { ...source, ...provenance } }
+  })
+  return changed ? restored : messages
+}
+
 /**
  * The virtual adapter (P1/P3). `stream()` is a thin head-delegate, never a
  * second routing engine: no chain walk, cooldown, caps, revert bookkeeping,
@@ -322,7 +392,13 @@ export class FallbacksChainAdapter extends LlmAdapter {
         LLM_UNAVAILABLE_CODE,
       )
     }
-    return llm.stream({ ...options, provider: head.provider, model: head.model })
+    return llm.stream({
+      ...options,
+      provider: head.provider,
+      model: head.model,
+      // R-004: the head must still receive its own replay envelope.
+      messages: restoreEnvelopeProvenance(options.messages),
+    })
   }
 }
 

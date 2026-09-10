@@ -21,6 +21,7 @@ import { Context } from '@deepseek-ai/cordis'
 import {
   LlmAdapter,
   LlmRuntime,
+  createAssistantMessage,
   type GenerateOptions,
   type LlmImageRequestPricing,
   type LlmResolvedModelInfo,
@@ -638,5 +639,121 @@ describe('providerRetryPolicy (route-accurate retry attribution)', () => {
     }
     const adapter = new FallbacksChainAdapter(() => config, () => undefined)
     expect(adapter.providerRetryPolicy(FALLBACKS_PROVIDER)).toBeUndefined()
+  })
+})
+
+describe('delegated history provenance (R-004)', () => {
+  /**
+   * The agent loop stamps every durable assistant message with the route of the
+   * REQUEST that produced it (`FallbacksChain/Auto` on this path) while the
+   * replay envelope inside it came from the head adapter that actually answered.
+   * `LlmRuntime.forAdapter` keeps an envelope only when the TARGET adapter owns
+   * the message's recorded provider, so on the delegate's inner pass the head is
+   * handed a message with no `replayState` — pi-ai-backed thinking signatures are
+   * silently dropped.
+   *
+   * Two arms: a recognised envelope (whose own provenance names the head) must
+   * still reach the head, and an envelope this plugin cannot read must be left
+   * exactly as it is.
+   */
+  /**
+   * A replay envelope in the shape the host's pi-ai adapter validates
+   * (`@deepseek-ai/dsh-llm-pi-ai` `readReplayState`: `response.kind === 'pi-ai'`,
+   * `version === 2`, non-empty `api`/`provider`/`model`, a known `stopReason`,
+   * and a `blocks` array). Verified against the installed 0.1.5-rc.1 build —
+   * the plugin does not depend on pi-ai, so the fixture reproduces the contract
+   * structurally instead of importing it.
+   */
+  const HEAD_ENVELOPE = {
+    response: {
+      kind: 'pi-ai',
+      version: 2,
+      api: 'anthropic-messages',
+      provider: HEAD_PROVIDER,
+      model: HEAD_MODEL,
+      stopReason: 'stop',
+    },
+    blocks: [{ type: 'text', textSignature: 'sig-1' }],
+  }
+
+  /** One durable assistant message, as the loop records it on `provider`/`model`. */
+  function assistantOn(provider: string, model: string, replayState?: unknown) {
+    return createAssistantMessage({
+      content: [{ type: 'text', text: 'earlier turn' }],
+      source: { provider, model, ...(replayState === undefined ? {} : { replayState }) },
+    })
+  }
+
+  /** A durable assistant message as the loop records it on the virtual route. */
+  function virtualRouteHistory(replayState?: unknown) {
+    return assistantOn(FALLBACKS_PROVIDER, FALLBACKS_CHAIN_MODEL, replayState)
+  }
+
+  /** Delegate one request with `messages`; return the history the head adapter saw. */
+  async function delegatedHistory(messages: ReturnType<typeof assistantOn>[]) {
+    apply(ctx, cfg({ rootChain: [OFFICIAL_FLASH] }))
+    await vi.waitFor(() => expect(listed()).toBe(true))
+    await collect(
+      ctx.llm.stream({ provider: FALLBACKS_PROVIDER, model: FALLBACKS_CHAIN_MODEL, messages }),
+    )
+    expect(stub.calls).toHaveLength(1)
+    return stub.calls[0]!.options.messages
+  }
+
+  it('hands the head its own envelope for a history message recorded on the virtual route', async () => {
+    const [delegated] = await delegatedHistory([virtualRouteHistory(HEAD_ENVELOPE)])
+    // Discriminating: pre-fix the recorded pair is the virtual one, so the
+    // runtime's ownership gate strips the envelope before the head sees it.
+    expect(delegated).toMatchObject({
+      role: 'assistant',
+      source: {
+        kind: 'model',
+        provider: HEAD_PROVIDER,
+        model: HEAD_MODEL,
+        replayState: HEAD_ENVELOPE,
+      },
+    })
+  })
+
+  it('restores the virtual route and still withholds a real-route envelope (boundary pin)', async () => {
+    // Both halves of what this fix does and does not cover.
+    //
+    // Restored: a message the loop recorded on the VIRTUAL route keeps its
+    // envelope and reaches the head under the pair the envelope names — which is
+    // also what pi-ai's replay validator demands (`response.provider`/`model`
+    // must equal the message source, else it throws `INVALID_REPLAY_STATE`
+    // instead of replaying the thinking blocks).
+    //
+    // Not covered (pre-existing): a message recorded on a REAL route loses its
+    // envelope one gate earlier — on the OUTER pass the target adapter is this
+    // virtual adapter, which does not own that historical provider, so
+    // `forAdapter` strips it before `stream()` ever receives the history. No
+    // plugin code can recover it on that path (the durable envelope is simply
+    // not in the delegated options). Same cross-route boundary as R-004, on the
+    // other side of the delegate — documented here, not fixed here.
+    const [realRoute, virtualRoute] = await delegatedHistory([
+      assistantOn(HEAD_PROVIDER, HEAD_MODEL, HEAD_ENVELOPE),
+      virtualRouteHistory(HEAD_ENVELOPE),
+    ])
+    expect((realRoute?.source as { replayState?: unknown }).replayState).toBeUndefined()
+    expect(virtualRoute?.source).toMatchObject({
+      kind: 'model',
+      provider: HEAD_PROVIDER,
+      model: HEAD_MODEL,
+      replayState: HEAD_ENVELOPE,
+    })
+  })
+
+  it('leaves an unreadable envelope untouched instead of inventing a provenance', async () => {
+    // Regression guard, NOT a discriminator: this passes before and after the
+    // fix. The probe cannot name a provider for an unrecognised shape, so the
+    // message keeps the virtual pair and the runtime's ownership gate strips the
+    // envelope exactly as it does today — the conservative half of the contract.
+    const unreadable = { someAdapterPrivateShape: 'unrecognised' }
+    const [delegated] = await delegatedHistory([virtualRouteHistory(unreadable)])
+    expect(delegated).toMatchObject({
+      source: { kind: 'model', provider: FALLBACKS_PROVIDER, model: FALLBACKS_CHAIN_MODEL },
+    })
+    expect((delegated?.source as { replayState?: unknown }).replayState).toBeUndefined()
   })
 })
