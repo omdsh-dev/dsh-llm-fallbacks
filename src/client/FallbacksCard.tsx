@@ -131,7 +131,7 @@ import css from './FallbacksCard.module.css'
 // live in `locales.ts` (keys parallel to OFFICIAL_ALL_DAY_IDS below).
 const ALL_DAY_LABEL_KEYS = ['allDay.flash', 'allDay.pro'] as const
 /** Optional caveat suffix per option (parallel to OFFICIAL_ALL_DAY_IDS):
- * Pro is a settable selector whose model is not yet in the catalog. */
+ * Pro's radio is always disabled — its model is not yet in the catalog. */
 const ALL_DAY_CAVEAT_KEYS = [undefined, 'allDay.proCaveat'] as const
 const SLOT_PRESET_IDS = ['liang-peak', 'liang-valley', 'glm-peak', 'glm-valley'] as const
 /** Custom-row day toggle order (index = weekday, 0=Sunday); display copy lives in the dictionaries. */
