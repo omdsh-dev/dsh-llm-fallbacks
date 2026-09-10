@@ -227,7 +227,7 @@ dsh 0.1.2 为 subagent 增加了宿主侧的子模型选择：`subagent-model-se
 
 策略**关闭或缺省**时，注入与失败切换的**选择**与 0.3.5 一致（无允许列表过滤、无授权路由跳过）。
 
-**Effort 规则（与策略无关）**：所有覆盖路径（角色注入、失败切换、always 上限切换、分时/选择器覆盖）上的 `reasoningEffort` 遵循上游 0.1.2 的 `routeChanged` 规则——provider+model 路由不变则保留种子 effort；路由变化且未显式指定 effort 则丢弃（显式指定的 effort 永远保留）。陈旧的 effort 绝不会被带入另一个 provider。
+**Effort 规则（与策略无关）**：所有覆盖路径（角色注入、失败切换、always 上限切换）上的 `reasoningEffort` 遵循上游 0.1.2 的 `routeChanged` 规则——provider+model 路由不变则保留种子 effort；路由变化且未显式指定 effort 则丢弃（显式指定的 effort 永远保留）。陈旧的 effort 绝不会被带入另一个 provider。
 
 完整语义 → [docs/configuration.md](docs/configuration.md#host-subagent-model-selection-dsh-012)。
 

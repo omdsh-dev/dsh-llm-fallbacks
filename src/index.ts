@@ -768,8 +768,8 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   // Task 1, P2; PR #62 feedback): ONE conditional `ctx.inject(['llm'])`
   // child — the picker row registers whenever `enabled` (conformance of
   // the all-day chain is NOT part of registration: a legacy multi-model or
-  // empty rootChain still earns the row; the override below and the
-  // adapter's delegate still refuse a non-conforming all-day), and hides
+  // empty rootChain still earns the row; the adapter's delegate still
+  // refuses a non-conforming all-day), and hides
   // on disable. The returned reconcile thunk is wired into the settings
   // onChange below: transition-reconcile over COMMITTED composed
   // snapshots only (card drafts are client-side until gateway save), so
@@ -1324,8 +1324,9 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     // NOT a failure decision: info log only, exempt from cooldown and
     // `maxSwitchesPerStep`, no pending switch, no durable event. Never
     // force-switches an in-flight step — the rotation is observed here and
-    // applies through the SAME resolver to the failure walk (decide) and the
-    // FallbacksChain primary override below. Skipped entirely when no extra
+    // applies through the SAME resolver to the failure walk (decide) and to
+    // the head the virtual delegate serves (`effectiveHeadOf`). Skipped
+    // entirely when no extra
     // slot rows exist (the winner would always be 'all-day'). P6 (qc1
     // F-001): gated on a conforming all-day like every other slot surface —
     // a legacy multi-model chain keeps the rows inert HERE too (the

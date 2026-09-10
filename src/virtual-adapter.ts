@@ -14,7 +14,7 @@
  * reconcile thunk, wired by `apply()`) plus child activation. The row is
  * visible whenever the plugin is enabled — a non-conforming all-day chain
  * does NOT hide it (PR #62 feedback); conformance still gates a
- * successful override/delegate (`effectiveHeadOf` below refuses a
+ * successful delegate (`effectiveHeadOf` below refuses a
  * non-conforming all-day). The condition deliberately ignores `timeSlots`
  * and conformance, so slot-row edits and chain edits never churn
  * registration.
@@ -348,8 +348,8 @@ export function installFallbacksAdapter(ctx: Context, readConfig: () => Fallback
     const config = readConfig()
     // PR #62 feedback: the row is visible whenever the plugin is enabled —
     // conformance of the all-day chain is NOT part of registration (a
-    // legacy/empty chain still earns the row; the override/delegate paths
-    // refuse it via `effectiveHeadOf`).
+    // legacy/empty chain still earns the row; the delegate refuses it via
+    // `effectiveHeadOf`).
     const shouldRegister = config.enabled
     if (shouldRegister && !registered) {
       if (llm === undefined) return

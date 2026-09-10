@@ -239,7 +239,7 @@ function labelOf(row: SlotRowConfig): string {
  * are the ordered walk before that last-resort fallback. An empty chain or
  * a chain whose tail is not an official model (including the retired V4
  * ids) keeps slot rows inert and refuses the virtual-row
- * override/delegate; the v0.2.2 failure walk over the raw chain stays
+ * delegate; the v0.2.2 failure walk over the raw chain stays
  * verbatim.
  */
 export function isAllDayConforming(chain: readonly string[]): boolean {
