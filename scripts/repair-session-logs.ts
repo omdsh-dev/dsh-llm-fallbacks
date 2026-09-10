@@ -751,6 +751,10 @@ async function inspectLog(candidate: LogGeneration, context: InspectContext): Pr
     context.catalog === null ? structural.class : classifyWithCatalog(structuredClone(rows), context.catalog)
 
   if (refusal === 'ok') {
+    // `legacyEventCount` keeps its `base` 0 here, and that is the same statement the
+    // other branches make: a log the oracle reads without refusal cannot carry a
+    // parsed `fallbacks/switch` row (the frozen edge refuses that type outright), so
+    // 0 means "none", not "not measured".
     return { ...base, class: 'ok', status: 'ok', detail: 'no refusal', findings: structural.findings }
   }
 

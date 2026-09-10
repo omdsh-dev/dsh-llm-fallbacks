@@ -693,6 +693,80 @@ describe('dropLegacyEventsRule (opt-in, lossy)', () => {
     expect(envelopeOf(assistant)['surfaceOp']).toEqual({ op: 'replace', start: 1, end: 3 })
   })
 
+  it('REFUSES a reference that would not name an earlier event after the remap', () => {
+    // The brief's post-remap assertion, pinned where it is reachable: the source row
+    // cites a position that is NOT earlier (here a forward seq). The dropped-seq gate
+    // passes, so this refusal is the remap boundary's own check — without it the rule
+    // would accept references that are only caught later, by the strict restore.
+    const forward = denseLog([
+      message(0),
+      switchAt(1),
+      physicalRow({
+        type: 'assistant/message',
+        seq: 2,
+        time: 1,
+        sourceEventSeqs: [7],
+        surfaceOp: 'append',
+        data: { turn: 1, step: 1, message: { id: 'm' } },
+      }),
+    ])
+    const forwardResult = dropLegacyEventsRule.normalize(forward)
+    if (!('refused' in forwardResult)) throw new Error('expected a refusal')
+    expect(forwardResult.refused).toContain('reference integrity:')
+    expect(forwardResult.refused).toContain('sourceEventSeqs.0 names 7, which is not an earlier surviving event')
+    expect(forwardResult.refused).toContain('remapped to 6, before 1 required')
+    expect(lossyRefusalReason(forwardResult.refused)).toBe('reference-integrity')
+
+    // A row citing its OWN position is not earlier either (`sourceEventSeqs` must be
+    // strictly earlier than the row's own seq).
+    const selfReference = denseLog([
+      message(0),
+      switchAt(1),
+      physicalRow({
+        type: 'assistant/message',
+        seq: 2,
+        time: 1,
+        sourceEventSeqs: [2],
+        surfaceOp: 'append',
+        data: { turn: 1, step: 1, message: { id: 'm' } },
+      }),
+    ])
+    const selfResult = dropLegacyEventsRule.normalize(selfReference)
+    if (!('refused' in selfResult)) throw new Error('expected a refusal')
+    expect(selfResult.refused).toContain('sourceEventSeqs.0 names 2, which is not an earlier surviving event')
+    expect(selfResult.refused).toContain('remapped to 1, before 1 required')
+  })
+
+  it('keeps every remapped reference EARLIER than its own row (the property the boundary asserts)', () => {
+    const rows = denseLog([
+      message(0),
+      switchAt(1),
+      message(2),
+      physicalRow({
+        type: 'command/done',
+        seq: 3,
+        time: 1,
+        data: { commandId: 'c', kind: 'success', sourceEventSeq: 2 },
+      }),
+      physicalRow({
+        type: 'session/title',
+        seq: 4,
+        time: 1,
+        data: { title: 't', messageSeqs: [2], source: { kind: 'user' } },
+      }),
+    ])
+    const result = dropLegacyEventsRule.normalize(rows)
+    if ('refused' in result) throw new Error(`unexpected refusal: ${result.refused}`)
+    const done = result.rows[3] as ParsedRow
+    const title = result.rows[4] as ParsedRow
+    expect((done.data as Record<string, unknown>)['sourceEventSeq']).toBe(1)
+    expect((title.data as Record<string, unknown>)['messageSeqs']).toEqual([1])
+    expect((done.data as Record<string, unknown>)['sourceEventSeq'] as number).toBeLessThan(done.seq)
+    expect(
+      ((title.data as Record<string, unknown>)['messageSeqs'] as number[]).every((seq) => seq < title.seq),
+    ).toBe(true)
+  })
+
   it('is a no-op with no findings on a log without legacy rows', () => {
     const rows = denseLog([message(0), mentionsSwitch(1)])
     const result = dropLegacyEventsRule.normalize(rows)

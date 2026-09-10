@@ -723,12 +723,22 @@ function headerSeedCut(rows: readonly ParsedRow[]): number {
  *   - `data.messageSeqs` — `session/title` / `session/title-llm-request`
  *     (`payload-validation.ts` `seqArray`, `relationships.ts` `assertTitleSources`).
  *
- * Deliberately NOT references, exactly as the released remappers document
- * (`session-format-v2-to-v3/src/references.ts`: "Delivery watermarks and
- * session-reference captures identify their original generation. Workflow seq,
- * stream block indices, turn/step, and numeric tool JSON are not Session seqs"):
- *   - `data.throughSeq` (`session-log-deepseek/delivery-accepted`) — a delivery
- *     watermark naming its own generation;
+ * Deliberately NOT references:
+ *   - `data.throughSeq` (`session-log-deepseek/delivery-accepted`) — a cursor over
+ *     THIS log's own delivered stream: `session-log-deepseek/src/index.ts:119-148`
+ *     folds it as an accepted-sequence watermark and `:168` emits the last seq of
+ *     this snapshot, and the shipped invariant is exactly "must identify an earlier
+ *     event" (`session-log-deepseek/src/invariant.ts:34-44`). It is left opaque
+ *     because the released remappers do not shift it
+ *     (`session-format-v2-to-v3/src/references.ts:31-50` — the same switch that
+ *     renumbers the seven members above — and its V1→V2 twin
+ *     `session-format-v1-to-v2/src/migration.ts:566-661`), the released V2→V3
+ *     migration only *inspects* the delivery marker (`migration.ts:64-67,86-91`),
+ *     and an invalid value is refused by `earlierSeq`
+ *     (`payload-validation.ts:179`) → the pre-write strict restore fails the whole
+ *     file closed (reason `other`). Known residual, deliberately not code-guarded:
+ *     a drop *preceding* a still-valid `throughSeq` leaves it naming a different,
+ *     later event (0 occurrences in the measured corpus).
  *   - `data.seq` (`tool-workflow/*`) — a workflow-local counter;
  *   - `data.start` (`agent/inbox/spliced`) — an inbox position, only counted
  *     (`payload-validation.ts` `countValue`), never used as an event index.
@@ -901,8 +911,9 @@ export function lossyRefusalReason(refusal: string): LossyRefusalReason {
  *   - no dropped event may precede the header's seed cut, which would move the
  *     first own event into the inherited region.
  * Then every written member is proven to be exactly one audited remap step
- * (see {@link rowDifferences}), and every reference is proven to still name an
- * EARLIER event.
+ * (see {@link rowDifferences}), and every written reference is re-proven at the
+ * remap boundary: it names no dropped seq, and its new coordinate is still an
+ * EARLIER surviving event (`after < newSeq`).
  *
  * Exported because this is the load-bearing half of the opt-in lossy rule: the
  * CLI re-derives it over the drop rule's own output before any write.
@@ -992,6 +1003,7 @@ export function renumberSurvivingEvents(
     }
   }
 
+  const droppedSeqs = new Set(dropped)
   const rows: ParsedRow[] = [header]
   let renumberedEventCount = 0
   for (const { source, survivor, oldSeq, newSeq, events: extent } of kept) {
@@ -1007,6 +1019,20 @@ export function renumberSurvivingEvents(
     for (const reference of seqReferences(survivor)) {
       for (const { path, value } of reference.positions) {
         const after = value - droppedBefore(dropped, value)
+        // The post-remap assertion, at the remap boundary and in the only
+        // coordinate space where each half means something:
+        //   - the OLD value must not be a dropped seq (`droppedSeqs`; the gate above
+        //     already proves it for every span, this re-proves it per written member);
+        //   - the NEW value must still name an EARLIER surviving event (`after < newSeq`).
+        // `after` is a NEW position, so testing it against the dropped OLD positions
+        // would be a category error: a surviving event legitimately moves down onto a
+        // dropped event's old index.
+        if (droppedSeqs.has(value) || after >= newSeq) {
+          return {
+            refused: `${REFERENCE_INTEGRITY_REFUSAL_PREFIX}${survivor.type} ${oldSeq} ${pathLabel(path)} names ${value}, `
+              + `which is not an earlier surviving event (remapped to ${after}, before ${newSeq} required)`,
+          }
+        }
         if (after === value) continue
         next = writePath(next, path, after) as ParsedRow
         written.push({ path, before: value, after })
@@ -1037,7 +1063,6 @@ export function renumberSurvivingEvents(
   }
   return { rows, renumberedEventCount }
 }
-
 
 /* ------------------------------------------------------------------ */
 /* registry                                                           */

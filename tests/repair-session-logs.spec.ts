@@ -1115,7 +1115,8 @@ describe('--drop-legacy-events', () => {
     expect(listing(log.dir)).toEqual(['session.jsonl.zstd'])
   })
 
-  it('keeps the lossy counts unambiguous on the pre-write refusal path (I1)', async () => {    const root = tempDir('rsl-lossy-counts-refused-')
+  it('keeps the lossy counts unambiguous on the pre-write refusal path (I1)', async () => {
+    const root = tempDir('rsl-lossy-counts-refused-')
     const catalogPath = writeFakeCatalog()
     const log = writeGeneration(root, 'example-ns', 'session-refused-counts', 'session.jsonl.zstd', V0_HEADER, [
       { ...FALLBACKS_SWITCH, seq: 0 },
