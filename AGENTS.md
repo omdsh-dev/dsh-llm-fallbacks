@@ -35,7 +35,7 @@ into dsh as a **pure mount** — see [Code constraints](#code-constraints).
 - `pnpm release:validate -- v<version>` — version/tag consistency check.
 - Local workflow lint (not in CI): `actionlint .github/workflows/*.yml`
   (ci + release-prep + release).
-- CI (`.github/workflows/ci.yml`): `pnpm test` + `pnpm build` on
+- CI (`.github/workflows/ci.yml`): `pnpm test` + `pnpm typecheck` + `pnpm build` on
   PR / push to main / manual.
 
 ## Changelog fragments (`.changes/`)
