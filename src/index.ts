@@ -19,10 +19,12 @@
  *   (provider/model override; the inherited `reasoningEffort` follows the
  *   upstream routeChanged rule — dropped on a route change unless explicitly
  *   named, preserved on a same-route override; spec D3); a
- *   root-origin `FallbacksChain/Auto` seed then overrides to the
- *   effective chain's first exact head (select-is-primary, plan
- *   fallbacks-virtual-chain Task 2); then the always-mode cap check (count
- *   `llm/retry` events for the current turn/step/provider; ≥
+ *   root-origin `FallbacksChain/Auto` seed is served UNCHANGED (plan
+ *   model-change-notice-loop Task 1 — the route the loop serves and records
+ *   must equal the session selection, otherwise the host `model-selection`
+ *   notice is re-armed on every step; the virtual adapter's `stream()`
+ *   delegate is what reaches the chain head); then the always-mode cap check
+ *   (count `llm/retry` events for the current turn/step/provider; ≥
  *   `alwaysModeRetryCap` → same decision path, reason `always-cap` —
  *   ADR-2).
  * - Per-agent state (`FallbackStateStore`): `agent/disposed` removes it,
@@ -84,12 +86,7 @@ import {
 import { presetRoles } from './presets.ts'
 import { installTuiClient } from './tui.ts'
 import { installTuiSettingsSection } from './tui-settings.ts'
-import {
-  FALLBACKS_CHAIN_MODEL,
-  FALLBACKS_PROVIDER,
-  firstDispatchableExactHead,
-  installFallbacksAdapter,
-} from './virtual-adapter.ts'
+import { installFallbacksAdapter } from './virtual-adapter.ts'
 
 /** The plugin row id mounted by the profile bundle patch. */
 export const name = 'llm-fallbacks'
@@ -1315,50 +1312,6 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
         )
       }
       slotWinners.set(agent.id, { key, label: slot.label })
-    }
-    // Select-is-primary (plan fallbacks-virtual-chain Task 2, P3; PR #62
-    // feedback): a ROOT-origin seed of the virtual `FallbacksChain/Auto`
-    // row means "use the chain as the root primary" — override the seed to
-    // the effective chain's FIRST DISPATCHABLE EXACT head (the shared
-    // `firstDispatchableExactHead` the virtual adapter's delegate paths
-    // also use — ONE skip/walk rule for override and delegate; the chain
-    // comes from `resolveEffectiveChain`, the single source — no
-    // rootChain[0] fallback branch here). Detection lives AFTER
-    // pending-switch application: a failure decision already progressed
-    // past the head and wins. Root-origin only (mirror the role-inject
-    // gate — a subagent seed that still carries the virtual pair is NOT
-    // overridden here; P1's thin stream() delegate handles those), plugin
-    // `enabled`, a CONFORMING all-day rootChain (the row is visible for a
-    // legacy/empty chain but the override refuses it — conformance still
-    // required for a successful primary, PR #62 feedback), and the
-    // effective chain must yield a dispatchable head — an empty /
-    // wildcard-only / self-route chain warns once and skips.
-    if (
-      config.enabled
-      && seed.provider === FALLBACKS_PROVIDER
-      && seed.model === FALLBACKS_CHAIN_MODEL
-      && agent.session?.header?.origin !== 'subagent'
-    ) {
-      if (!isAllDayConforming(config.rootChain)) {
-        logger.warn(
-          'llm-fallbacks: FallbacksChain/Auto selected but the all-day rootChain is not conforming (exactly one official model: deepseek-official/deepseek-flash or deepseek-official/deepseek-pro) — no primary override',
-        )
-      } else {
-        const effective = resolveEffectiveChain(config, new Date(), config.tz ?? 'Asia/Shanghai')
-        const head = firstDispatchableExactHead(effective)
-        if (head === undefined) {
-          logger.warn(
-            'llm-fallbacks: FallbacksChain/Auto selected but the effective chain has no exact head (empty, wildcard-only, or self-route) — no primary override',
-          )
-        } else {
-          logger.info(
-            'llm-fallbacks: FallbacksChain/Auto selection overrides to the effective head %s/%s',
-            head.provider,
-            head.model,
-          )
-          return overrideConfig(seed, head)
-        }
-      }
     }
     // Dispatch-time role injection (plan fallbacks-role-automatch Task 4;
     // dsh-012-subagent-routing T2): a subagent-origin agent's FIRST request

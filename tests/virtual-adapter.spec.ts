@@ -40,7 +40,7 @@ import {
 } from '../src/virtual-adapter.ts'
 import { FALLBACKS_SETTINGS_NAMESPACE } from '../src/gateway.ts'
 import { MemorySettings } from './support/memory-settings.ts'
-import { cfg } from './support/harness.ts'
+import { cfg, dispatchRequest, makeAgent } from './support/harness.ts'
 
 const HEAD_PROVIDER = 'deepseek-official'
 const HEAD_MODEL = 'deepseek-flash'
@@ -289,12 +289,12 @@ describe('adapter contract (P1/P3)', () => {
     expect(stub.calls[0]).toMatchObject({ provider: HEAD_PROVIDER, model: HEAD_MODEL })
   })
 
-  it('resolveModel and stream() use the same exact head as the root request override (wildcard-first chain)', async () => {
-    // The same wildcard-first slot chain the select-is-primary override test
-    // uses (tests/index-request.spec.ts, "picks the FIRST exact head,
-    // skipping earlier wildcard entries"): the leading `other/*` is never a
+  it('resolveModel and stream() use the same exact head as the root route delegate (wildcard-first chain)', async () => {
+    // The same wildcard-first slot chain tests/index-request.spec.ts drives
+    // through the root request path ("serves the seed unchanged for a
+    // wildcard-first chain"): the leading `other/*` is never a
     // dispatch target, so BOTH delegate paths must land on
-    // `anthropic/claude-sonnet-4` — the head the root override resolves to.
+    // `anthropic/claude-sonnet-4` — the head the virtual route delegates to.
     const anthropicStub = new StubHeadAdapter({ name: 'Claude Sonnet 4' })
     ctx.llm.registerAdapter(['anthropic'], anthropicStub)
     apply(
@@ -326,6 +326,47 @@ describe('adapter contract (P1/P3)', () => {
     expect(anthropicStub.calls).toHaveLength(1)
     expect(anthropicStub.calls[0]).toMatchObject({ provider: 'anthropic', model: 'claude-sonnet-4' })
     // The all-day head was never dispatched either.
+    expect(stub.calls).toHaveLength(0)
+  })
+
+  it('serves the root request as the virtual pair and delegates that exact route to the head', async () => {
+    // Plan model-change-notice-loop Task 1: the root `agent/request` no longer
+    // rewrites a `FallbacksChain/Auto` seed, so the route the loop serves (and
+    // records) IS the virtual pair — this delegate is the only thing that
+    // turns it into a real model request. A wildcard-first slot chain keeps
+    // the two routes distinguishable: the served route must stay virtual while
+    // the delegated pair is the slot head.
+    const anthropicStub = new StubHeadAdapter({ name: 'Claude Sonnet 4' })
+    ctx.llm.registerAdapter(['anthropic'], anthropicStub)
+    apply(
+      ctx,
+      cfg({
+        rootChain: [OFFICIAL_FLASH],
+        timeSlots: [{ kind: 'custom', start: '00:00', end: '23:59', chain: ['other/*', 'anthropic/claude-sonnet-4'] }],
+      }),
+    )
+    await vi.waitFor(() => expect(listed()).toBe(true))
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-08-18T04:00:00Z'))
+
+    const { agent } = makeAgent('root-route-delegate', { provider: 'mock', model: 'gpt-4o' }, { origin: 'root' })
+    const served = await dispatchRequest(ctx, agent, {
+      provider: FALLBACKS_PROVIDER,
+      model: FALLBACKS_CHAIN_MODEL,
+    })
+    // The served route is byte-identical to the seed, and it is what the
+    // session records (the host's notice listener reads this value).
+    expect(served).toEqual({ provider: FALLBACKS_PROVIDER, model: FALLBACKS_CHAIN_MODEL })
+    expect(agent.session.requestHeader()?.config).toEqual(served)
+
+    // Streaming the SERVED config is the root path's only way to a real model.
+    const chunks = await collect(ctx.llm.stream({ ...served, messages: [] }))
+    expect(chunks).toEqual([
+      { type: 'text-delta', index: 0, text: 'hello from head' },
+      { type: 'finish', reason: { kind: 'stop' } },
+    ])
+    expect(anthropicStub.calls).toHaveLength(1)
+    expect(anthropicStub.calls[0]).toMatchObject({ provider: 'anthropic', model: 'claude-sonnet-4' })
     expect(stub.calls).toHaveLength(0)
   })
 
