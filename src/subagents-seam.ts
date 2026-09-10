@@ -114,6 +114,15 @@ export interface SubagentSeamRecord {
    * delivered, the caller set one (explicit intent wins), the role declares
    * none, or no persona source is wired. Task 3 appends
    * ` (persona not applied)` on `true` only.
+   *
+   * STICKY (Task 3 review Minor 4): a record rewrite (a `startContinuable`
+   * resume re-keys the child) can only ADD this verdict, never clear it. A
+   * resume recomputes the merge outcome on its own surface — and that surface
+   * legitimately returns `false` when it delivers the CALLER's persona or when
+   * its own merge degrades — but neither retroactively installs the role's
+   * DECLARED persona on the dispatch that already reported it missing. The
+   * child's one notice row is a claim about that dispatch, so the first `true`
+   * survives; a later `false` is simply not recorded.
    */
   personaNotApplied?: boolean
 }
@@ -469,8 +478,10 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
       at,
       firstNoticePending: existing?.firstNoticePending ?? true,
       // Absent (never `false`) when there is nothing to report, so the field
-      // reads as "a declared persona was skipped" and nothing else.
-      ...(personaNotApplied ? { personaNotApplied: true } : {}),
+      // reads as "a declared persona was skipped" and nothing else. Sticky:
+      // once a rewrite reported the declared persona undelivered, a later
+      // surface's `false` cannot clear it (see `SubagentSeamRecord`).
+      ...(personaNotApplied || existing?.personaNotApplied === true ? { personaNotApplied: true } : {}),
     })
   }
 
@@ -624,15 +635,15 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
     if (gate === 'unknown') return { request, personaNotApplied: true }
     if (gate === 'unavailable') {
       debug(
-        `llm-fallbacks: role persona for '${role}' skipped — the '${SUBAGENT_SEAM_SERVICE}' runtime exposes no provider lookup, so the persona capability cannot be verified (the start proceeds unchanged)`,
+        `llm-fallbacks: role persona for '${role}' skipped on the ${surface} start — the '${SUBAGENT_SEAM_SERVICE}' runtime exposes no provider lookup, so the persona capability cannot be verified (the start proceeds unchanged)`,
       )
       return { request, personaNotApplied: true }
     }
     if (gate === 'unsupported') {
       debug(
         surface === 'one-shot'
-          ? `llm-fallbacks: subagent provider '${providerName}' lacks the persona capability — role persona for '${role}' skipped (the start proceeds unchanged)`
-          : `llm-fallbacks: subagent provider '${providerName}' does not support continuable children — role persona for '${role}' skipped (the native continuable start fails loud its own way)`,
+          ? `llm-fallbacks: subagent provider '${providerName}' lacks the persona capability on the ${surface} start — role persona for '${role}' skipped (the start proceeds unchanged)`
+          : `llm-fallbacks: subagent provider '${providerName}' does not support continuable children on the ${surface} surface — role persona for '${role}' skipped (the native continuable start fails loud its own way)`,
       )
       return { request, personaNotApplied: true }
     }
@@ -732,20 +743,15 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
         // Task 2: the continuable surface merges into `spec.request` — the SAME
         // native persona slot (`ContinuableStartSpec.request` is a
         // `SubagentStartRequest`) — gated by the NATIVE continuable capability.
-        // A skip leaves the caller's spec object untouched (same identity).
-        let effectiveSpec = spec
-        let personaNotApplied = false
-        try {
-          const outcome = withRolePersona(service, spec.provider, spec.request, role, 'continuable')
-          if (outcome.request !== spec.request) effectiveSpec = { ...spec, request: outcome.request }
-          personaNotApplied = outcome.personaNotApplied
-        } catch (error) {
-          reportDegrade(error)
-        }
+        // A skip leaves the caller's spec object untouched (same identity). The
+        // containment is `mergePersonaAtSeam`'s, which both surfaces share, so a
+        // throwing live persona source cannot escape on this path either.
+        const outcome = mergePersonaAtSeam(service, spec.provider, spec.request, role, 'continuable')
+        const effectiveSpec = outcome.request === spec.request ? spec : { ...spec, request: outcome.request }
         const result: unknown = startContinuable.call(service, effectiveSpec)
         observeStartResult(
           result,
-          (childSessionId) => recordChild(childSessionId, role, Date.now(), personaNotApplied),
+          (childSessionId) => recordChild(childSessionId, role, Date.now(), outcome.personaNotApplied),
           () => {},
           () => {},
         )

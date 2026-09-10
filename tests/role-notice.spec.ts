@@ -142,6 +142,13 @@ async function seamContinuable(
  * (`agent-loop/src/agent.ts:241-257`): the default callback returns the claimed
  * messages (the real default additionally appends the assembled
  * system-prompt section, which no notice decision reads).
+ *
+ * The payload carries the DECLARED shape (`runtime-types.d.ts:313-319`:
+ * `{ agent, messages, turn, step, signal }`) — `messages` included, because the
+ * real loop passes the claimed batch (`dsh-agent-loop/lib/index.js:894-897`) and
+ * a sibling first-party listener on this event DOES read it
+ * (`dsh-agent/lib/index.js:163`). Leaving it out would exercise any future
+ * `messages` read here against `undefined`.
  */
 function drivePreStep(
   ctx: Context,
@@ -152,7 +159,7 @@ function drivePreStep(
 ): Promise<PreStepDecision> {
   return ctx.waterfall(
     'agent/pre-step',
-    { agent, turn: 1, step, signal: new AbortController().signal },
+    { agent, messages: [...messages], turn: 1, step, signal: new AbortController().signal },
     next ?? (() => Promise.resolve({ kind: 'enter' as const, messages: [...messages] })),
   )
 }
@@ -222,6 +229,32 @@ describe('role notice — behavioural (public call path)', () => {
       expect(decision).toEqual([claimed])
     }
     expect(seam.noticeEmitted.has('child-one')).toBe(true)
+  })
+
+  it('keeps the once-per-child markers per agent: two children each get their own row (case i)', async () => {
+    ctx = new Context()
+    const fake = fakeSubagents(childIdFromLabel, { spawn: { capabilities: { persona: true } } })
+    ctx.provide('subagents', fake.service)
+    const seam = installSubagentSeam(ctx, { roleIds: () => ROLE_IDS, roles: () => ROLES })
+    const start = await seamStart(ctx)
+    await start('spawn', { prompt: [{ type: 'text', text: assignment('coder') }], label: 'child-a' })
+    await start('spawn', { prompt: [{ type: 'text', text: assignment('scout') }], label: 'child-b' })
+
+    const claimed = claimedMessage()
+    const firstA = admittedMessages(await drivePreStep(ctx, childAgent('child-a'), [claimed], 1))
+    const firstB = admittedMessages(await drivePreStep(ctx, childAgent('child-b'), [claimed], 1))
+    // Both children are announced: the markers are keyed per agent, so one
+    // child's row can never consume another's (a single global "already
+    // announced" flag would fail here).
+    expect(firstA).toHaveLength(2)
+    expect(textOf(firstA[1]!)).toBe('[role: coder]')
+    expect(firstB).toHaveLength(2)
+    expect(textOf(firstB[1]!)).toBe('[role: scout]')
+    expect(seam.noticeEmitted.size).toBe(2)
+
+    // …and neither is announced a second time on a later step.
+    expect(admittedMessages(await drivePreStep(ctx, childAgent('child-a'), [claimed], 2))).toEqual([claimed])
+    expect(admittedMessages(await drivePreStep(ctx, childAgent('child-b'), [claimed], 2))).toEqual([claimed])
   })
 
   it('emits nothing for a root agent, with the same record as positive control', async () => {
@@ -429,11 +462,13 @@ describe('role notice — behavioural (public call path)', () => {
       content: [{ type: 'text', text: '[sibling pre-step listener]' }],
       source: { kind: 'user' },
     })
+    let siblingPayload: { messages?: UserMessage[] } | undefined
     // Registered BEFORE the seam. Only a `prepend: true` registration puts the
     // notice OUTSIDE this listener (the loop's final decision), so the order
     // below pins the documented waterfall position rather than an incidental
     // insertion order.
-    ctx.on('agent/pre-step', async (_payload, next) => {
+    ctx.on('agent/pre-step', async (payload, next) => {
+      siblingPayload = payload as { messages?: UserMessage[] }
       const decision = await next()
       if (decision.kind === 'reject') return decision
       return { ...decision, messages: [...decision.messages, sibling] }
@@ -441,10 +476,16 @@ describe('role notice — behavioural (public call path)', () => {
     const seam = installSubagentSeam(ctx, { roleIds: () => ROLE_IDS, roles: () => ROLES })
     seam.records.set('child-order', { role: 'coder', at: 1, firstNoticePending: true })
 
-    const decision = admittedMessages(await drivePreStep(ctx, childAgent('child-order'), [claimedMessage()], 1))
+    const claimed = claimedMessage()
+    const decision = admittedMessages(await drivePreStep(ctx, childAgent('child-order'), [claimed], 1))
     expect(decision).toHaveLength(3)
     expect(decision[1]).toBe(sibling)
     expect(textOf(decision[2]!)).toBe('[role: coder]')
+    // The waterfall payload carries the loop's DECLARED `messages` batch
+    // (`runtime-types.d.ts:313-319`; the real loop passes the claimed batch), so
+    // a future listener that reads it is exercised against real data here rather
+    // than against `undefined` (Task 3 review Minor 2).
+    expect(siblingPayload?.messages).toEqual([claimed])
   })
 
   it('appends (persona not applied) only when a DECLARED persona was skipped', async () => {
@@ -483,6 +524,72 @@ describe('role notice — behavioural (public call path)', () => {
     })
     const caller = admittedMessages(await drivePreStep(ctx, childAgent('child-caller'), [claimed], 1))
     expect(textOf(caller[1]!)).toBe('[role: scout]')
+  })
+
+  it('reports an UNREGISTERED provider as a skip without a debug line (case l arm)', async () => {
+    ctx = new Context()
+    const debug = vi.fn()
+    // `spawn` is NOT in the provider table: `personaGate` returns `unknown`, and
+    // that verdict stays SILENT (the native start fails loud `NO_PROVIDER` its own
+    // way — the seam must not shadow that contract).
+    const fake = fakeSubagents(childIdFromLabel, { nocap: { capabilities: { persona: false } } })
+    ctx.provide('subagents', fake.service)
+    installSubagentSeam(ctx, { roleIds: () => ROLE_IDS, roles: () => ROLES, debug })
+    const start = await seamStart(ctx)
+    const claimed = claimedMessage()
+
+    await start('spawn', { prompt: [{ type: 'text', text: assignment('coder') }], label: 'child-unknown' })
+    const unknown = admittedMessages(await drivePreStep(ctx, childAgent('child-unknown'), [claimed], 1))
+    // The suffix is the ONLY signal this verdict produces — and it proves the
+    // merge ran and reported the undelivered declared persona.
+    expect(textOf(unknown[1]!)).toBe('[role: coder] (persona not applied)')
+    expect(debug).not.toHaveBeenCalled()
+
+    // Positive control for the silence: the SAME merge through a REGISTERED but
+    // capability-less provider produces the same suffix AND one contained line,
+    // so "no debug" above is the unknown verdict's documented silence rather
+    // than a persona path that never ran.
+    await start('nocap', { prompt: [{ type: 'text', text: assignment('coder') }], label: 'child-unknown-cap' })
+    const capped = admittedMessages(await drivePreStep(ctx, childAgent('child-unknown-cap'), [claimed], 1))
+    expect(textOf(capped[1]!)).toBe('[role: coder] (persona not applied)')
+    expect(debug).toHaveBeenCalledTimes(1)
+    expect(String(debug.mock.calls[0]![0])).toContain('lacks the persona capability')
+  })
+
+  it('keeps a declared-persona skip reported when a later resume recomputes it (case h + sticky verdict)', async () => {
+    ctx = new Context()
+    const fake = fakeSubagents(childIdFromLabel, { nocap: { capabilities: { persona: false } } })
+    const continuableSpecs: Array<Record<string, unknown>> = []
+    fake.service.startContinuable = (spec: Record<string, unknown>) => {
+      continuableSpecs.push(spec)
+      return Promise.resolve({ childId: spec.childId })
+    }
+    ctx.provide('subagents', fake.service)
+    const seam = installSubagentSeam(ctx, { roleIds: () => ROLE_IDS, roles: () => ROLES, debug: vi.fn() })
+    const start = await seamStart(ctx)
+
+    // Dispatch: the role declares a persona, the provider cannot carry it.
+    await start('nocap', { prompt: [{ type: 'text', text: assignment('coder') }], label: 'child-sticky' })
+    expect(seam.records.get('child-sticky')?.personaNotApplied).toBe(true)
+
+    // A resume BEFORE the child's first non-empty pre-step re-keys the record
+    // from the fallback (the request carries no Assignment header) and recomputes
+    // the verdict — here to `false`, because the resume carries the CALLER's own
+    // persona. The role's DECLARED persona is still undelivered on the dispatch
+    // the notice reports, so the rewrite must not un-report it.
+    await (await seamContinuable(ctx))({
+      provider: 'nocap',
+      childId: 'child-sticky',
+      request: { prompt: [], persona: 'Caller persona' },
+    })
+    expect(seam.records.get('child-sticky')).toMatchObject({ role: 'coder', personaNotApplied: true })
+
+    const decision = admittedMessages(await drivePreStep(ctx, childAgent('child-sticky'), [claimedMessage()], 1))
+    expect(textOf(decision[1]!)).toBe('[role: coder] (persona not applied)')
+    // Positive control: the resume really ran and really kept the caller's own
+    // persona (forwarded untouched) — so the verdict above is the sticky record,
+    // not a resume that never happened.
+    expect(continuableSpecs[0]).toMatchObject({ request: { persona: 'Caller persona' } })
   })
 })
 
@@ -560,6 +667,16 @@ const MIRROR_RELEASED_SOURCE_KINDS: ReadonlySet<string> = new Set([
   'agent-message',
 ])
 
+/**
+ * The RELEASED size of that set (plan `## Global Constraints`: "one of the
+ * frozen 15 SOURCE_KINDS"). Pinned literally so the guard cannot be tautological
+ * in the mode where the package does not resolve (`derived === undefined` ⇒ the
+ * mirror IS the subject, and comparing the mirror with itself proves nothing):
+ * a mirror that gained or lost a kind fails here, and a future frozen edge with
+ * a different count fails on the `derived` branch too.
+ */
+const RELEASED_SOURCE_KIND_COUNT = 15
+
 /** The package whose V2→V3 edge hard-codes the load-safe source-kind set. */
 const FROZEN_EDGE_PACKAGE = '@deepseek-ai/dsh-session-format-v2-to-v3'
 
@@ -585,21 +702,42 @@ function deriveReleasedSourceKinds(): ReadonlySet<string> | undefined {
 }
 
 describe('role notice — frozen released source-kind contract guard', () => {
-  it('emits a source kind the frozen released V2→V3 edge classifies', () => {
+  it('emits a source kind the frozen released V2→V3 edge classifies', async () => {
     const derived = deriveReleasedSourceKinds()
     const kinds = derived ?? MIRROR_RELEASED_SOURCE_KINDS
-    // The set must never be empty and must never be "everything": both would
-    // make the membership assertion below vacuous.
-    expect(kinds.size).toBe(MIRROR_RELEASED_SOURCE_KINDS.size)
+    // The count is pinned to the RELEASED set (15 kinds). This is the check that
+    // is live in the mode that actually runs here (`derived === undefined` ⇒
+    // `kinds` IS the mirror, so comparing the two would be a tautology — Task 3
+    // review Minor 1): an empty mirror, an "everything" mirror, or a mirror that
+    // grew an extra kind while keeping `plugin` all fail HERE.
+    expect(kinds.size).toBe(RELEASED_SOURCE_KIND_COUNT)
+    expect(MIRROR_RELEASED_SOURCE_KINDS.size).toBe(RELEASED_SOURCE_KIND_COUNT)
+    // When the frozen edge DOES resolve in this tree, it must agree with the
+    // mirror name for name — neither copy can drift silently.
     if (derived !== undefined) expect([...derived].sort()).toEqual([...MIRROR_RELEASED_SOURCE_KINDS].sort())
 
-    // The emitted source kind — read off the REAL message the emitter produces,
-    // not off the constant — is a member of the frozen set. `plugin` is the
-    // sanctioned kind for a plugin-authored `notice` (dsh's own `model-selection`
-    // and `plan-mode` producers use it).
-    const notice = buildRoleNotice('coder', false)
-    expect(kinds.has(notice.source.kind)).toBe(true)
-    expect(notice.source.kind).toBe(ROLE_NOTICE_SOURCE_KIND)
+    // Read the emitted kind off the row the PRODUCTION path actually admits (a
+    // recorded child's first non-empty pre-step), not off a direct builder call:
+    // the emitter must not publish a different message than the builder.
+    const ctx = new Context()
+    try {
+      const fake = fakeSubagents(childIdFromLabel, { spawn: { capabilities: { persona: true } } })
+      ctx.provide('subagents', fake.service)
+      installSubagentSeam(ctx, { roleIds: () => ROLE_IDS, roles: () => ROLES })
+      const start = await seamStart(ctx)
+      await start('spawn', { prompt: [{ type: 'text', text: assignment('coder') }], label: 'child-guard' })
+      const decision = admittedMessages(await drivePreStep(ctx, childAgent('child-guard'), [claimedMessage()], 1))
+      expect(decision).toHaveLength(2)
+
+      const emitted = decision[1]!
+      expect(kinds.has(emitted.source.kind)).toBe(true)
+      expect(emitted.source.kind).toBe(ROLE_NOTICE_SOURCE_KIND)
+      // The pure builder agrees with the emitted row (the literal is exported so
+      // this cannot be satisfied by two different constants).
+      expect(buildRoleNotice('coder', false).source.kind).toBe(emitted.source.kind)
+    } finally {
+      await ctx.fiber.dispose()
+    }
 
     // Positive control for the membership: a BESPOKE kind — the failure class
     // this guard exists for — is NOT a member, so "member" above is the frozen

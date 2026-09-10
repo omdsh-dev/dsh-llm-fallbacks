@@ -25,11 +25,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { apply } from '../src/index.ts'
+import { FALLBACKS_SETTINGS_NAMESPACE } from '../src/gateway.ts'
 import {
   installSubagentSeam,
   personaForRole,
   resolveDeclaredRoleFromAssignment,
   subagentSeamOf,
+  type SubagentSeam,
+  type SubagentSeamOptions,
   type SubagentStartRequestView,
   type SubagentSeamRecord,
 } from '../src/subagents-seam.ts'
@@ -214,6 +217,37 @@ async function injectSubagents(ctx: Context): Promise<{ value: Record<string, un
 /** A minimal parent-agent stand-in for the request's `parent.session.id` join. */
 function parentAgent(id: string): SubagentStartRequestView['parent'] {
   return { session: { id } }
+}
+
+/**
+ * Dispatch ONE start through a FRESH context with the given seam options and
+ * return what the underlying service received, the returned result, the seam,
+ * and the contained debug sink. Task 4 uses it where a case needs an in-test
+ * POSITIVE CONTROL under DIFFERENT install options: the seam is root-scoped and
+ * refuses a second install, so the control cannot reuse the case's context.
+ */
+async function dispatchWithOptions(
+  options: Omit<SubagentSeamOptions, 'debug'>,
+  request: SubagentStartRequestView,
+  provider?: Record<string, unknown>,
+): Promise<{
+  received: SubagentStartRequestView
+  result: unknown
+  seam: SubagentSeam
+  debug: ReturnType<typeof vi.fn>
+}> {
+  const ctx = new Context()
+  const debug = vi.fn()
+  const fake = fakeSubagents({ id: 'child-option-probe' }, undefined, provider)
+  ctx.provide('subagents', fake.service)
+  const seam = installSubagentSeam(ctx, { ...options, debug })
+  const { value } = await injectSubagents(ctx)
+  const result = await (value.start as (name: string, request: SubagentStartRequestView) => Promise<unknown>)(
+    'spawn',
+    request,
+  )
+  await ctx.fiber.dispose()
+  return { received: fake.starts[0]!.request, result, seam, debug }
 }
 
 describe('subagent seam — behavioural (public call path)', () => {
@@ -553,7 +587,10 @@ describe('subagent seam — behavioural (public call path)', () => {
     expect(fake.starts[0]!.request).toBe(request)
     expect(request.persona).toBeUndefined()
     expect(debug).toHaveBeenCalledTimes(1)
+    // The skip line must NAME the surface it skipped (plan Errata): an operator
+    // reading the log has to tell a one-shot capability miss from any other one.
     expect(String(debug.mock.calls[0]![0])).toContain('lacks the persona capability')
+    expect(String(debug.mock.calls[0]![0])).toContain('one-shot')
   })
 
   it('skips the persona with ONE contained debug when the runtime has no provider lookup', async () => {
@@ -575,6 +612,7 @@ describe('subagent seam — behavioural (public call path)', () => {
     expect(request.persona).toBeUndefined()
     expect(debug).toHaveBeenCalledTimes(1)
     expect(String(debug.mock.calls[0]![0])).toContain('exposes no provider lookup')
+    expect(String(debug.mock.calls[0]![0])).toContain('one-shot')
   })
 
   it('does not merge when the role declares no persona (blank after trim)', async () => {
@@ -617,6 +655,27 @@ describe('subagent seam — behavioural (public call path)', () => {
     expect(fake.starts[0]!.request).toBe(request)
     expect(debug).toHaveBeenCalledTimes(1)
     expect(String(debug.mock.calls[0]![0])).toContain('no role resolved')
+  })
+
+  it('canonicalizes a padded, @-prefixed declaration end to end (case g)', async () => {
+    ctx = new Context()
+    const fake = fakeSubagents({ id: 'child-padded' }, undefined, { capabilities: { persona: true } })
+    ctx.provide('subagents', fake.service)
+    const seam = installSubagentSeam(ctx, { roleIds: () => ROLE_IDS, roles: () => ROLES })
+
+    const { value } = await injectSubagents(ctx)
+    expect(value).not.toBe(fake.service)
+    await (value.start as (name: string, request: SubagentStartRequestView) => Promise<unknown>)('spawn', {
+      prompt: [{ type: 'text', text: assignment('  @PADDED  ') }],
+    })
+
+    // Both consumers of the resolution see the DECLARED RAW id (` padded `, the
+    // settings entry as written): the record's role and — because `personaForRole`
+    // matches `role.id` exactly — the delivered persona. A canonicalization that
+    // returned the trimmed lookup key (`padded`) would find no persona (it would
+    // still key the record, so the persona assertion is the discriminating half).
+    expect(seam.records.get('child-padded')?.role).toBe(' padded ')
+    expect(fake.starts[0]!.request.persona).toBe('Padded persona')
   })
 
   it('startContinuable: no role in the request and no record for that child ⇒ no-op', async () => {
@@ -693,6 +752,153 @@ describe('subagent seam — behavioural (public call path)', () => {
     expect(fake.continuableStarts[0]).toBe(spec)
     expect(debug).toHaveBeenCalledTimes(1)
     expect(String(debug.mock.calls[0]![0])).toContain('does not support continuable children')
+  })
+
+  // --- Task 4 case (l): a degraded seam leaves the native path intact --------
+
+  it('records the role but merges nothing when no persona source is wired (case l)', async () => {
+    const request: SubagentStartRequestView = { prompt: [{ type: 'text', text: assignment('scout') }] }
+    // The `roles` option is the persona source; absent, the declaration cannot
+    // even be read — the caller's OWN object is forwarded and nothing is logged.
+    const withoutSource = await dispatchWithOptions(
+      { roleIds: () => ROLE_IDS },
+      request,
+      { capabilities: { persona: true } },
+    )
+    expect(withoutSource.received).toBe(request)
+    expect(withoutSource.received.persona).toBeUndefined()
+    expect(withoutSource.debug).not.toHaveBeenCalled()
+    // …while the ROLE is still resolved and recorded: an absent persona source
+    // is not a dead seam (the notice row still names the role).
+    expect(withoutSource.seam.records.get('child-option-probe')?.role).toBe('scout')
+
+    // Positive control: the SAME request shape through the SAME install call
+    // with the source wired merges the persona — so the identity above is the
+    // absent source's doing, not a merge that never runs.
+    const withSource = await dispatchWithOptions(
+      { roleIds: () => ROLE_IDS, roles: () => ROLES },
+      request,
+      { capabilities: { persona: true } },
+    )
+    expect(withSource.received.persona).toBe('Scout persona')
+  })
+
+  it('degrades with ONE contained debug when the live persona source throws (case l)', async () => {
+    ctx = new Context()
+    const debug = vi.fn()
+    const fake = fakeSubagents({ id: 'child-source-boom' }, undefined, { capabilities: { persona: true } })
+    ctx.provide('subagents', fake.service)
+    let healthy = false
+    const seam = installSubagentSeam(ctx, {
+      roleIds: () => ROLE_IDS,
+      roles: () => {
+        if (!healthy) throw new Error('settings boom')
+        return ROLES
+      },
+      debug,
+    })
+
+    const { value } = await injectSubagents(ctx)
+    expect(value).not.toBe(fake.service)
+    const request: SubagentStartRequestView = { prompt: [{ type: 'text', text: assignment('scout') }] }
+    const result = await (value.start as (name: string, request: SubagentStartRequestView) => Promise<unknown>)(
+      'spawn',
+      request,
+    )
+
+    // The merge aborted before touching the request: the native call ran with
+    // the caller's own object, its result reached the caller, and the role was
+    // still recorded — ONE contained line names the throw.
+    expect(fake.starts[0]!.request).toBe(request)
+    expect(result).toEqual({ id: 'child-source-boom' })
+    expect(debug).toHaveBeenCalledTimes(1)
+    expect(String(debug.mock.calls[0]![0])).toContain('settings boom')
+    expect(seam.records.get('child-source-boom')?.role).toBe('scout')
+    // The aborted merge reports NO persona verdict (it does not invent one).
+    expect(seam.records.get('child-source-boom')?.personaNotApplied).toBeUndefined()
+
+    // Positive control: the source heals and the SAME install delivers, so the
+    // degrade above is the throw and not a persona path that never runs.
+    healthy = true
+    await (value.start as (name: string, request: SubagentStartRequestView) => Promise<unknown>)('spawn', {
+      prompt: [{ type: 'text', text: assignment('scout') }],
+    })
+    expect(fake.starts[1]!.request.persona).toBe('Scout persona')
+  })
+
+  it('degrades with ONE contained debug when the provider lookup throws (case l)', async () => {
+    ctx = new Context()
+    const debug = vi.fn()
+    const fake = fakeSubagents({ id: 'child-provider-boom' }, undefined, { capabilities: { persona: true } })
+    let healthy = false
+    ;(fake.service as { getProvider: unknown }).getProvider = () => {
+      if (!healthy) throw new Error('provider boom')
+      return { capabilities: { persona: true } }
+    }
+    ctx.provide('subagents', fake.service)
+    installSubagentSeam(ctx, { roleIds: () => ROLE_IDS, roles: () => ROLES, debug })
+
+    const { value } = await injectSubagents(ctx)
+    expect(value).not.toBe(fake.service)
+    const start = value.start as (name: string, request: SubagentStartRequestView) => Promise<unknown>
+    const request: SubagentStartRequestView = { prompt: [{ type: 'text', text: assignment('scout') }] }
+    await start('spawn', request)
+
+    expect(fake.starts[0]!.request).toBe(request)
+    expect(debug).toHaveBeenCalledTimes(1)
+    expect(String(debug.mock.calls[0]![0])).toContain('provider boom')
+
+    // Positive control: the lookup heals → the same dispatch point merges.
+    healthy = true
+    await start('spawn', { prompt: [{ type: 'text', text: assignment('scout') }] })
+    expect(fake.starts[1]!.request.persona).toBe('Scout persona')
+  })
+
+  it('contains a throwing persona source on the continuable surface too (case l)', async () => {
+    ctx = new Context()
+    const debug = vi.fn()
+    // `prepareContinuable` present ⇒ the continuable gate would pass, so the only
+    // thing that can stop the merge here is the throwing source.
+    const fake = fakeSubagents({ id: 'unused' }, { childId: 'child-cont-boom' }, {
+      prepareContinuable: () => undefined,
+    })
+    ctx.provide('subagents', fake.service)
+    let healthy = false
+    installSubagentSeam(ctx, {
+      roleIds: () => ROLE_IDS,
+      roles: () => {
+        if (!healthy) throw new Error('settings boom')
+        return ROLES
+      },
+      debug,
+    })
+
+    const { value } = await injectSubagents(ctx)
+    const startContinuable = value.startContinuable as (spec: unknown) => Promise<unknown>
+    const spec = {
+      provider: 'spawn',
+      childId: 'child-cont-boom',
+      request: { prompt: [{ type: 'text', text: assignment('scout') }] },
+    }
+    await startContinuable(spec)
+
+    // The shared containment (`mergePersonaAtSeam`) is what this surface now
+    // routes through: the caller's spec object reaches the service untouched and
+    // the throw is ONE contained line, never a failed resume.
+    expect(fake.continuableStarts[0]).toBe(spec)
+    expect(debug).toHaveBeenCalledTimes(1)
+    expect(String(debug.mock.calls[0]![0])).toContain('settings boom')
+
+    // Positive control: a healthy source on the SAME install merges into a copy.
+    healthy = true
+    await startContinuable({
+      provider: 'spawn',
+      childId: 'child-cont-ok',
+      request: { prompt: [{ type: 'text', text: assignment('scout') }] },
+    })
+    const delivered = fake.continuableStarts[1] as { request: SubagentStartRequestView }
+    expect(delivered).not.toBe(spec)
+    expect(delivered.request.persona).toBe('Scout persona')
   })
 })
 
@@ -794,5 +1000,27 @@ describe('subagent seam — per-apply lifetime through apply()', () => {
     // Dropping the `roles` option from the install call (or capturing the roles
     // list at install time) fails here.
     expect(fake.starts[0]!.request.persona).toBe('Applied persona')
+  })
+
+  it('reads the swapped live source on a LATER start after a real settings onChange', async () => {
+    const fake = fakeSubagents({ id: 'child-live-settings' }, undefined, { capabilities: { persona: true } })
+    ctx.provide('subagents', fake.service)
+    apply(ctx, cfg({ roles: { list: [{ id: 'coder', persona: 'Before persona', chain: [] }], rules: [] } }))
+
+    const { value } = await injectSubagents(ctx)
+    const start = value.start as (name: string, request: SubagentStartRequestView) => Promise<unknown>
+    await start('spawn', { prompt: [{ type: 'text', text: assignment('coder') }] })
+
+    // A REAL settings write: `scope.watch` → the install hooks' `onChange`
+    // re-derives the plugin state and `setSource` swaps the `source()` thunk —
+    // the ONE the seam's `roles: () => source().roles.list` reads PER START
+    // (src/index.ts, the "cross-fiber" comment this test pins). The seam is not
+    // re-installed here: the second start must observe the swap by itself.
+    await ctx.settings.update(FALLBACKS_SETTINGS_NAMESPACE, {
+      roles: { list: [{ id: 'coder', persona: 'After persona', chain: [] }], rules: [] },
+    })
+    await start('spawn', { prompt: [{ type: 'text', text: assignment('coder') }] })
+
+    expect(fake.starts.map((call) => call.request.persona)).toEqual(['Before persona', 'After persona'])
   })
 })

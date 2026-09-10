@@ -12,8 +12,12 @@
  * decision.messages) this.session.append('user/message', …)`). The listener is
  * registered with `{ prepend: true }` (the `modelSwitchNotice` precedent in
  * `core/agent/src/model-selection.ts:108-125`), so it is the OUTERMOST layer:
- * `await next()` yields the FINAL decision every other listener shaped, and the
- * notice is the last row before the loop consumes it.
+ * `await next()` yields the FINAL decision every other listener shaped. The
+ * contract is EXACTLY ONE row, not its position: a plugin that registers its
+ * own `{ prepend: true }` `agent/pre-step` listener AFTER this one sits outside
+ * it and may append after the notice, and the loop commits the decision's
+ * messages in order — so the row is appended to whatever the inner listeners
+ * shaped, not guaranteed to be the last one.
  *
  * NOT `agent.inject()`: that queue is documented as lossy — "It may miss a
  * request whose pre-step already claimed its batch. Cancellation or disposal
