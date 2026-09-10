@@ -80,8 +80,9 @@
  * discovery is done, every per-log line prints the moment that log has been
  * triaged (and, under `--apply`, published), and only the by-class table and the
  * summary line wait for the end of the walk — so a run that dies mid-walk (a
- * crash, an OOM, a Ctrl-C, a closed stdout) keeps every line it already
- * reported. `--json` is unchanged: ONE document built from the finished run.
+ * crash, an OOM, a Ctrl-C, a closed stdout) keeps the lines it has already written
+ * out (stream bytes not yet flushed can still be lost with the process). `--json`
+ * is unchanged: ONE document built from the finished run.
  * `--quiet` is unchanged too (see its own contract below). A consumer that stops
  * reading — a closed stdout/stderr, the ordinary `| head -n 5` — is not a store
  * event: the first EPIPE stops writes to that stream, the run still finishes (an
@@ -541,10 +542,12 @@ async function readableDirectoryProblem(dir: string): Promise<string | null> {
  * silently truncated).
  *
  * Frames are consumed one at a time from ANY iterable (the publisher's decoder is
- * a generator), so a session's whole plaintext is never materialized — neither as
- * one joined string nor as the split array of every line. A line split across two
- * frames is reassembled exactly like concatenating the frames first would, so the
- * framing stays irrelevant to the row stream.
+ * a generator), so the frames are never joined into one string and no array of every
+ * line is built. Each frame's own plaintext is materialized whole, and the event
+ * batch is ONE frame — so that frame is the session's whole event plaintext (see the
+ * frame ceiling in `session-logs/publish.ts`). A line split across two frames is
+ * reassembled exactly like concatenating the frames first would, so the framing
+ * stays irrelevant to the row stream.
  *
  * @param frames decoded frame plaintexts, in file order.
  */
@@ -832,9 +835,9 @@ interface InspectContext {
   successorFilename(version: number): string
   /**
    * The publisher's frame decoder, one frame's plaintext at a time (`decodeRows`
-   * consumes it lazily, so a log's whole plaintext is never materialized). Typed as
-   * an iterable — not `string[]` — on purpose: the array form would defeat exactly
-   * that.
+   * consumes it lazily, so no two frames are materialized at once). Typed as an
+   * iterable — not `string[]` — on purpose: the array form would hold every frame,
+   * the whole event batch included, simultaneously.
    */
   decodeFrameTexts(bytes: Buffer): Iterable<string>
   publishSuccessor: (
@@ -1423,8 +1426,9 @@ function policyRules(dropLegacyEvents: boolean): readonly LogRule[] {
  * The live progress seam of one walk: the text report uses it to print each log's
  * line while the run is still working, instead of buffering the whole report until
  * the walk ends. A run that dies mid-walk (a crash, an OOM, a Ctrl-C, a closed
- * stdout) therefore keeps every line it already reported. `--json` — and every
- * library caller — passes no sink and sees the buffered behaviour.
+ * stdout) therefore loses at most the output its stream had not written out yet.
+ * `--json` — and every library caller — passes no sink and sees the buffered
+ * behaviour.
  */
 export interface RunProgress {
   /**
@@ -1537,8 +1541,8 @@ export async function runRepair(
   for (const candidate of discovery.generations) {
     const log = await inspectLog(candidate, context)
     logs.push(log)
-    // Report THIS log now (its publication, if any, is complete): everything a
-    // later crash, OOM or Ctrl-C would otherwise take down with it is already out.
+    // Report THIS log now (its publication, if any, is complete): a later crash,
+    // OOM or Ctrl-C can only take down output this run had not written out yet.
     progress?.onLog(log)
   }
 
@@ -1772,7 +1776,7 @@ function logLine(log: LogOutcome, mode: RunMode): string {
  * The text report's tail, printed once the walk is over: the empty-root line, the
  * by-class table (unless `--quiet`) and the summary line. The per-log lines are
  * NOT printed here — a text run emitted each of them during the walk (see
- * {@link textProgress}), which is what makes an interrupted run keep them.
+ * {@link textProgress}), which is what lets an interrupted run keep them.
  *
  * The empty-root line only prints when there is no per-log line at all (no
  * candidate, no skipped entry, no stale staging file), so keeping it in the tail
@@ -1805,8 +1809,8 @@ function reportTail(result: RunResult, io: CliIO, quiet: boolean): void {
 
 /**
  * The text report's live sink: the head prints at discovery and each per-log line
- * prints as that log finishes, so an interrupted run keeps everything it already
- * reported (R-004). `--quiet` still prints no per-log line (its documented
+ * prints as that log finishes, so an interrupted run keeps what it has already
+ * written out (R-004). `--quiet` still prints no per-log line (its documented
  * contract: only the per-log lines and the by-class table are suppressed), and it
  * still prints the head and the summary.
  */

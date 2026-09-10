@@ -154,10 +154,14 @@ function recordLine(record: Record<string, unknown>, subject: string): string {
  * frame holds EXACTLY the header line, the second (when the log has events)
  * holds the event batch.
  *
- * The event batch is folded one line at a time into a byte chunk list, so the
- * session's whole event plaintext never exists at once — neither as a JSON string
- * per event (all alive until the batch is joined) nor as the joined batch string.
- * The bytes are the same ones a `join('')` + encode would produce.
+ * The event batch is folded one line at a time into a byte chunk list: each
+ * event's JSON string is dropped as soon as its chunk exists, so those strings
+ * never accumulate. The chunk list is then concatenated ONCE for the compressor,
+ * so the batch's whole plaintext DOES exist at that moment — as that single
+ * contiguous buffer, which is the batch's peak (the per-record chunks it was built
+ * from are still referenced by the list while it lives). What the fold avoids is a
+ * SECOND copy of the batch, not every copy: no `join('')` string is built beside
+ * the chunks. The bytes are the same ones a `join('')` + encode would produce.
  *
  * @param headerRecord released current header record.
  * @param eventRecords released current event records, in log order.
@@ -181,7 +185,9 @@ export function encodeZstdFrames(
 /**
  * Decode every frame of one concatenated container, in file order, ONE FRAME AT A
  * TIME: the consumer receives frame N's plaintext and decides when to ask for frame
- * N+1, so a session's whole plaintext is never materialized at once. The frame
+ * N+1, so this generator holds ONE frame's plaintext at a time and never two. That
+ * bounds the FRAME, not the session: the event batch is a single frame, so it IS the
+ * session's whole event plaintext (see {@link MAX_FRAME_PLAINTEXT_BYTES}). The frame
  * STRUCTURE (the scanner) is still walked before the first frame's plaintext is
  * produced, so a torn or corrupt container is refused up front.
  *
