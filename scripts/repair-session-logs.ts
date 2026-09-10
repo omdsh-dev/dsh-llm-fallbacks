@@ -29,20 +29,29 @@
  * tool can perform, it needs the explicit opt-in, and `--apply` with it REQUIRES
  * `--backup` (the original generation is the only copy of the dropped rows once
  * a successor is published). A row of any other unknown event type is never
- * dropped: such a log stays unrepairable. The run reports the dropped-event count
- * per log (`droppedEventCount` in `--json`) and warns loudly on stderr; the
- * post-drop restore and the published read-back are still the proof of success.
+ * dropped: such a log stays unrepairable. The run reports the legacy-row
+ * population of the source log, the dropped-event and renumbered-event counts per
+ * log (`legacyEventCount` / `droppedEventCount` / `renumberedEventCount` in
+ * `--json`) and warns loudly on stderr; the post-drop restore and the published
+ * read-back are still the proof of success.
  *
- * WHAT THE DROP CAN AND CANNOT FIX: the same V0→V1 edge requires every event's
- * `seq` to equal its running event count, so removing a row is loadable only when
- * the removed rows are the LAST events of the generation — a legacy row in the
- * middle leaves the survivors with a gap (`expected N, got N+1`) and the
- * pre-write proof refuses the log, writing nothing. That is the measured shape of
- * every legacy-blocked log in this repository's own namespace (25/25 sit
- * mid-sequence), so the flag is currently an opt-in that fails closed rather than
- * a repair for them; closing that gap needs a seq-renumbering mechanism this tool
- * deliberately does not have (it would rewrite survivors that `sourceEventSeqs`
- * rows reference).
+ * WHY THE SURVIVORS ARE RENUMBERED: the same V0→V1 edge requires every event's
+ * `seq` to equal its running event count (packed Assistant runs are checked by
+ * `seq0` and advance the count by their payload length), so removing a row is
+ * loadable only when the removed rows are the LAST events of the generation.
+ * A legacy row in the middle leaves the survivors with a gap, so the opt-in mode
+ * renumbers every surviving event to its position in the surviving event stream
+ * and shifts each surviving Session-seq reference (`seq`, packed `seq0`,
+ * `sourceEventSeqs`, `surfaceOp`, and the payload references the released
+ * remappers audit) by the same monotone shift. Content is otherwise byte-identical.
+ *
+ * REFERENCE INTEGRITY IS A HARD GATE: when a surviving row's reference names a
+ * dropped seq (a delivery-independent reference to one of the removed events),
+ * renumbering it would silently point it at a different event. The gate therefore
+ * refuses the whole file, writes nothing, and reports the offending row + field —
+ * a correct fail-closed outcome, never a renumbering failure. The same gate
+ * refuses a file whose source rows are not densely numbered, and one whose drop
+ * would renumber across the header's seed cut.
  *
  * DISCOVERY: `<root>/<namespace>/<session>/` — exactly two directory levels —
  * and inside each session directory the newest CANONICAL generation whose
@@ -89,8 +98,16 @@ import { pathToFileURL } from 'node:url'
 import { classifyRows } from './session-logs/classify.ts'
 import { CATALOG_ENV_VAR, classifyWithCatalog, resolveCatalog, restoreRows } from './session-logs/catalog.ts'
 import type { CatalogHandle, CatalogResolvedBy } from './session-logs/catalog.ts'
-import { BUILT_IN_RULES, dropLegacyEventsRule, droppedEventCount, fallbacksSwitchRule } from './session-logs/rules.ts'
-import type { Finding, LogRule, ParsedRow, RefusalClass } from './session-logs/rules.ts'
+import {
+  BUILT_IN_RULES,
+  dropLegacyEventsRule,
+  droppedEventCount,
+  fallbacksSwitchRule,
+  legacyDropSplit,
+  lossyRefusalReason,
+  renumberSurvivingEvents,
+} from './session-logs/rules.ts'
+import type { Finding, LogRule, LossyRefusalReason, ParsedRow, RefusalClass } from './session-logs/rules.ts'
 
 /** Program name used in every diagnostic line. */
 const PROGRAM = 'repair-session-logs'
@@ -437,11 +454,36 @@ export interface LogOutcome {
   /** Structural findings collected over the rows (may be empty). */
   findings: Finding[]
   /**
-   * Legacy `fallbacks/switch` events this run removes (in apply mode, from the
-   * published successor) or would remove (report mode). Always `0` unless
-   * `--drop-legacy-events` is on — the default path is strictly non-lossy.
+   * The parsed legacy `fallbacks/switch` rows of the SOURCE log — the drop's
+   * candidate population, reported whether or not the flag is on and whether or
+   * not the drop was accepted (`dropLegacyEventsRule.detect(rows).length`, never
+   * derived from {@link droppedEventCount}). `0` therefore means "this log
+   * carries no legacy row at all"; a non-zero population with
+   * `droppedEventCount === 0` means the drop was refused or not requested.
+   * Stays `0` for a log that could not be decoded: its population is unknown.
+   */
+  legacyEventCount: number
+  /**
+   * Legacy rows removed from the successor this run published (in apply mode) or
+   * would publish (in report mode). Always `0` when nothing is published for this
+   * log — the default path is strictly non-lossy and a refused drop publishes
+   * nothing — so it is NOT the log's legacy-row population.
    */
   droppedEventCount: number
+  /**
+   * Surviving events whose `seq` the renumber of the same successor changed (a
+   * packed Assistant run counts its payload length). `0` unless a drop was
+   * accepted.
+   */
+  renumberedEventCount: number
+  /**
+   * Why the opt-in lossy recovery did not apply to this log, when it did not:
+   * `reference-integrity` (a surviving row names a dropped seq — the fail-closed
+   * gate), `seed-cut` (the renumber would cross the header's seed cut), `other`
+   * (the drop or the renumber could not be proven). `null` when the gate did not
+   * stop this log.
+   */
+  lossyRefusal: LossyRefusalReason | null
   /** Whether `--class` let this run repair this log. */
   selected: boolean
   /** Basename of the successor generation this run published, else `null`. */
@@ -567,15 +609,22 @@ async function writeBackup(logPath: string): Promise<string> {
 }
 
 /** The lossy evidence one log's detail line carries, or `''` in the non-lossy path. */
-function lossyNote(count: number, applied: boolean): string {
-  if (count === 0) return ''
+function lossyNote(dropped: number, renumbered: number, applied: boolean): string {
+  if (dropped === 0) return ''
+  const events = `${dropped} legacy fallbacks/switch event(s)`
+  const renumber = renumbered === 0 ? '' : ` and renumbered ${renumbered} surviving event(s)`
   return applied
-    ? `; LOSSY: ${count} legacy fallbacks/switch event(s) removed from the published successor`
-    : `; LOSSY: ${count} legacy fallbacks/switch event(s) would be removed by --apply`
+    ? `; LOSSY: removed ${events}${renumber} from the published successor`
+    : `; LOSSY: ${events} would be removed${renumber ? ` and ${renumbered} surviving event(s) renumbered` : ''} by --apply`
 }
 
+/** The lossy mode's own pre-write verdict for one log. */
+type LossyVerdict =
+  | { ok: true; renumberedEventCount: number }
+  | { ok: false; refused: string; reason: LossyRefusalReason }
+
 /**
- * The lossy drop's own PRE-WRITE proof: nothing is trusted, least of all the
+ * The lossy mode's own PRE-WRITE proof: nothing is trusted, least of all the
  * count the chain reported.
  *
  *   (a) the reported count must be the number of PARSED legacy rows in the source
@@ -583,40 +632,80 @@ function lossyNote(count: number, applied: boolean): string {
  *       may survive it. Byte-identity of every survivor is proven by the drop
  *       rule itself, over the same unmodified input (the drop rule runs first in
  *       a lossy chain) — see `legacyDropRefusal`;
- *   (b) the repaired rows must restore through the released catalog under the
+ *   (b) the renumber must be reproducible over the drop's OWN survivors (`legacyDropSplit`,
+ *       the one place the drop policy lives), re-deriving the gate (`reference integrity`,
+ *       seed cut, dense numbering) and the renumbered count reported for this log;
+ *   (c) the repaired rows must restore through the released catalog under the
  *       publisher's own STRICT policy, so a differently-unknown or unparseable
  *       row cannot hide behind the drop.
  *
- * @returns the reason the drop must not be written, or `null` when it is proven.
+ * @returns the verdict: the renumbered-event count, or the reason plus its
+ *   category (which is what lets a refusal be counted by reason).
  */
 function lossyDropRefusal(
   rows: readonly ParsedRow[],
   repaired: readonly ParsedRow[],
   reported: number,
   catalog: CatalogHandle | null,
-): string | null {
+): LossyVerdict {
   const removable = dropLegacyEventsRule.detect(rows).length
   if (reported !== removable) {
-    return `the reported dropped count ${reported} is not the ${removable} parsed legacy fallbacks/switch row(s) of the source log`
+    return {
+      ok: false,
+      reason: 'other',
+      refused: `the reported dropped count ${reported} is not the ${removable} parsed legacy fallbacks/switch row(s) of the source log`,
+    }
   }
   const delta = rows.length - repaired.length
   if (delta !== removable) {
-    return `the repair removed ${delta} row(s), while the source log carries ${removable} parsed legacy fallbacks/switch row(s)`
+    return {
+      ok: false,
+      reason: 'other',
+      refused: `the repair removed ${delta} row(s), while the source log carries ${removable} parsed legacy fallbacks/switch row(s)`,
+    }
   }
   if (dropLegacyEventsRule.detect(repaired).length !== 0) {
-    return 'a parsed legacy fallbacks/switch row survived the drop'
+    return { ok: false, reason: 'other', refused: 'a parsed legacy fallbacks/switch row survived the drop' }
+  }
+  // Independent reproduction of the renumber over the drop's own survivors —
+  // `legacyDropSplit` is the one place the drop's row policy lives, so this is
+  // the same drop the chain applied, re-derived from the source rows. Recomputing
+  // the gate and the remap here is what makes the reported renumbered count (and
+  // any refusal reason) a property of the rows, not of the report. The later
+  // rules legitimately rewrite rows, so only the drop's own row count is compared.
+  const { survivors } = legacyDropSplit(rows)
+  if (survivors.length !== repaired.length) {
+    return {
+      ok: false,
+      reason: 'other',
+      refused: `the drop keeps ${survivors.length} row(s), while the repair chain normalized ${repaired.length}`,
+    }
+  }
+  const renumber = renumberSurvivingEvents(rows, survivors)
+  if ('refused' in renumber) {
+    return { ok: false, reason: lossyRefusalReason(renumber.refused), refused: renumber.refused }
   }
   if (catalog === null) {
-    return 'no released catalog resolved, so the post-drop restore cannot be proven — pass --catalog '
-      + `(or set ${CATALOG_ENV_VAR}); nothing was written`
+    return {
+      ok: false,
+      reason: 'other',
+      refused: 'no released catalog resolved, so the post-drop restore cannot be proven — pass --catalog '
+        + `(or set ${CATALOG_ENV_VAR}); nothing was written`,
+    }
   }
   try {
-    restoreRows(catalog.catalog, repaired, { recovery: 'strict', validation: 'transformed' })
+    // A defensive copy: the released restore normalizes a packed Assistant run's
+    // stream IN PLACE, and `repaired` is what the publisher is about to write.
+    restoreRows(catalog.catalog, structuredClone(repaired), { recovery: 'strict', validation: 'transformed' })
   } catch (error) {
-    return 'the repaired rows do not restore through the released catalog '
-      + `(${messageOf(error)}), so a differently-unknown or unparseable row would remain; nothing was written`
+    return {
+      ok: false,
+      reason: 'other',
+      refused: 'the repaired rows do not restore through the released catalog '
+        + `(${messageOf(error)}), so a differently-unknown or unparseable row would remain; nothing was written`,
+    }
   }
-  return null
+  return { ok: true, renumberedEventCount: renumber.renumberedEventCount }
 }
 
 /** Classify one log, prove its repair, and publish it when `--apply` asks. */
@@ -629,7 +718,10 @@ async function inspectLog(candidate: LogGeneration, context: InspectContext): Pr
     alreadyPublished: false,
     failed: false,
     findings: [] as Finding[],
+    legacyEventCount: 0,
     droppedEventCount: 0,
+    renumberedEventCount: 0,
+    lossyRefusal: null as LossyRefusalReason | null,
   }
 
   let rows: ParsedRow[]
@@ -644,11 +736,19 @@ async function inspectLog(candidate: LogGeneration, context: InspectContext): Pr
     }
   }
 
+  // The drop's candidate population, independent of the flag, of the verdict and
+  // of the chain: `0` here means the log carries no legacy row at all (I1).
+  const legacy = dropLegacyEventsRule.detect(rows).length
+
   // Structural pass over the FULL policy rule set is the report's evidence even
   // when the oracle (the released chain) is the authority on the class.
   const structural = classifyRows(rows, context.reportRules)
+  // The oracle restore MUTATES the rows it validates (a packed Assistant run's
+  // stream is normalized in place, `publish.ts` step 3), and these are the rows
+  // the repair chain then renumbers and the publisher writes. It therefore gets a
+  // defensive copy — the same one the publisher takes of its own input.
   const refusal =
-    context.catalog === null ? structural.class : classifyWithCatalog(rows, context.catalog)
+    context.catalog === null ? structural.class : classifyWithCatalog(structuredClone(rows), context.catalog)
 
   if (refusal === 'ok') {
     return { ...base, class: 'ok', status: 'ok', detail: 'no refusal', findings: structural.findings }
@@ -658,7 +758,7 @@ async function inspectLog(candidate: LogGeneration, context: InspectContext): Pr
   // only for a log that actually carries a legacy row to remove: a log refused for
   // any OTHER unknown event type keeps the fail-closed verdict, because no
   // registered rule removes that row (and nothing may ever drop it).
-  const droppable = context.dropLegacyEvents ? dropLegacyEventsRule.detect(rows).length : 0
+  const droppable = context.dropLegacyEvents ? legacy : 0
   const repairableClass =
     REPAIRABLE_CLASSES.has(refusal) || (refusal === 'unknown-event-type' && droppable > 0)
 
@@ -667,6 +767,7 @@ async function inspectLog(candidate: LogGeneration, context: InspectContext): Pr
       ...base,
       class: refusal,
       status: 'unrepairable',
+      legacyEventCount: legacy,
       detail: `${refusal}: no registered normalize step can make this log load`,
       findings: structural.findings,
     }
@@ -674,10 +775,15 @@ async function inspectLog(candidate: LogGeneration, context: InspectContext): Pr
 
   const proof = runProof(rows, context.rules)
   if ('refused' in proof) {
+    const reason = lossyRefusalReason(proof.refused)
     return {
       ...base,
       class: refusal,
       status: 'unrepairable',
+      legacyEventCount: legacy,
+      // Only the lossy rule's own refusal is a lossy verdict; another rule's
+      // refusal is not this mode's doing (`runProof` prefixes the rule id).
+      lossyRefusal: proof.refused.startsWith(`${dropLegacyEventsRule.id}: `) ? reason : null,
       detail: `${refusal}: the repair proof refused — ${proof.refused}`,
       findings: structural.findings,
     }
@@ -692,16 +798,23 @@ async function inspectLog(candidate: LogGeneration, context: InspectContext): Pr
   // would leave another unknown event type (or an unparseable row) behind is
   // reported unrepairable instead of being repaired on hope; in apply mode nothing
   // is written — not even the --backup copy — before it passes.
-  const lossyRefusal = dropped === 0 ? null : lossyDropRefusal(rows, proof.rows, dropped, context.catalog)
-  if (lossyRefusal !== null) {
+  const verdict = dropped === 0 ? null : lossyDropRefusal(rows, proof.rows, dropped, context.catalog)
+  if (verdict !== null && !verdict.ok) {
     return {
       ...base,
       class: refusal,
       status: 'unrepairable',
-      detail: `${refusal}: the lossy drop was refused before any write — ${lossyRefusal}`,
+      legacyEventCount: legacy,
+      lossyRefusal: verdict.reason,
+      // `droppedEventCount` stays 0: nothing was published, so nothing readable
+      // lost an event. The candidate population and the refusal reason above are
+      // what make that 0 unambiguous.
+      detail: `${refusal}: the lossy drop was refused before any write — ${verdict.refused} `
+        + `(${legacy} legacy fallbacks/switch row(s) in the source log, nothing written)`,
       findings: structural.findings,
     }
   }
+  const renumbered = verdict === null ? 0 : verdict.renumberedEventCount
 
   // The catalog is guaranteed here: a repairable class can only come from the
   // rule registry when no oracle resolved, and the publisher needs the oracle
@@ -734,12 +847,14 @@ async function inspectLog(candidate: LogGeneration, context: InspectContext): Pr
       status: 'repairable',
       selected,
       alreadyPublished,
+      legacyEventCount: legacy,
       droppedEventCount: dropped,
+      renumberedEventCount: renumbered,
       detail: `${
         alreadyPublished
           ? `repairable; the successor ${String(expected)} is already published and loadable${successorNote}`
           : `repairable; run with --apply to publish the successor generation${successorNote}`
-      }${lossyNote(dropped, false)}`,
+      }${lossyNote(dropped, renumbered, false)}`,
       findings: structural.findings,
     }
   }
@@ -751,6 +866,7 @@ async function inspectLog(candidate: LogGeneration, context: InspectContext): Pr
       status: 'repairable',
       selected: false,
       alreadyPublished: false,
+      legacyEventCount: legacy,
       detail: `repairable, but --class ${String(context.classFilter)} excludes this class from this run`,
       findings: structural.findings,
     }
@@ -765,6 +881,7 @@ async function inspectLog(candidate: LogGeneration, context: InspectContext): Pr
         class: refusal,
         status: 'unrepairable',
         failed: true,
+        legacyEventCount: legacy,
         detail: `backup failed, nothing was published: ${messageOf(error)}`,
         findings: structural.findings,
       }
@@ -781,12 +898,14 @@ async function inspectLog(candidate: LogGeneration, context: InspectContext): Pr
       selected: true,
       published,
       alreadyPublished: existingSuccessor !== null,
+      legacyEventCount: legacy,
       droppedEventCount: dropped,
+      renumberedEventCount: renumbered,
       detail: `${
         existingSuccessor !== null
           ? `already published ${published} (verified byte-identical)`
           : `published ${published}; read back through the catalog with validation: 'current'`
-      }${lossyNote(dropped, true)}`,
+      }${lossyNote(dropped, renumbered, true)}`,
       findings: structural.findings,
     }
   } catch (error) {
@@ -795,6 +914,7 @@ async function inspectLog(candidate: LogGeneration, context: InspectContext): Pr
       class: refusal,
       status: 'unrepairable',
       failed: true,
+      legacyEventCount: legacy,
       detail: `repair failed, nothing was published: ${messageOf(error)}`,
       findings: structural.findings,
     }
@@ -999,9 +1119,10 @@ function token(log: LogOutcome, mode: RunMode): string {
   if (log.status === 'ok') return 'ok'
   if (log.status === 'unrepairable') return 'unrepairable'
   if (log.droppedEventCount === 0) return log.class
+  const renumber = log.renumberedEventCount === 0 ? '' : `, ${log.renumberedEventCount} renumbered`
   return mode === 'apply'
-    ? `repaired-lossy (${log.droppedEventCount} events dropped)`
-    : `lossy-repairable (${log.droppedEventCount} events to drop)`
+    ? `repaired-lossy (${log.droppedEventCount} events dropped${renumber})`
+    : `lossy-repairable (${log.droppedEventCount} events to drop${renumber})`
 }
 
 /** The loud `--apply` precondition line (never suppressed, not even by --quiet). */
@@ -1026,6 +1147,9 @@ export function lossyApplyNotice(): string {
     '!! session. The original generation is never modified and --backup keeps a byte copy of it,',
     '!! so the successor is the only readable generation that lacks them. An unknown event type of',
     '!! any OTHER name is never dropped: such a log stays unrepairable and nothing is written for it.',
+    '!! The surviving events of a successor are RENUMBERED: each one receives the seq of its position',
+    '!! in the surviving event stream (and every Session-seq reference it carries is shifted with it).',
+    '!! Their content is otherwise unchanged, byte for byte.',
   ].join('\n')
 }
 
@@ -1037,6 +1161,7 @@ export function lossyResultNotice(result: RunResult): string | null {
   const logs = result.logs.filter((log) => log.droppedEventCount > 0)
   if (logs.length === 0) return null
   const dropped = logs.reduce((total, log) => total + log.droppedEventCount, 0)
+  const renumbered = logs.reduce((total, log) => total + log.renumberedEventCount, 0)
   const effect = result.mode === 'apply'
     ? 'those audit rows are gone from the published successor(s); the original generations and their '
       + '--backup copies keep the bytes'
@@ -1044,7 +1169,8 @@ export function lossyResultNotice(result: RunResult): string | null {
   return [
     `!! LOSSY: ${result.mode === 'apply' ? 'dropped' : 'would drop'} ${dropped} legacy fallbacks/switch `
     + `event(s) in ${logs.length} log(s) —`,
-    `!! ${effect}.`,
+    `!! ${effect}. ${renumbered} surviving event(s) ${result.mode === 'apply' ? 'received' : 'would receive'} `
+    + 'a new seq (content otherwise unchanged).',
   ].join('\n')
 }
 
@@ -1167,11 +1293,20 @@ original generation is never modified and never truncated.
                  nothing and only counts what would be dropped; with --apply this flag
                  REQUIRES --backup (exit 2 without it). An unknown event type of any
                  other name is never dropped.
-                 LIMIT (measured): the same edge requires each event's seq to equal its
-                 running event count, so a removed row leaves a seq gap unless it is the
-                 LAST event of the generation. A mid-sequence legacy row therefore makes
-                 the run refuse the log and write nothing (the shape of every
-                 legacy-blocked log in this repo's own store).
+                 RENUMBERING: the same edge requires each event's seq to equal its
+                 running event count, so the surviving events are renumbered to their
+                 position in the surviving event stream and every surviving Session-seq
+                 reference (sourceEventSeqs, surfaceOp, and the payload references the
+                 released remappers audit) is shifted with them. Content is otherwise
+                 unchanged, byte for byte. A log whose surviving rows reference a
+                 DROPPED seq, whose rows are not densely numbered, or whose drop would
+                 renumber across the header's seed cut is refused with nothing written.
+                 COUNTS (--json, per log): legacyEventCount is the parsed legacy row
+                 population of the SOURCE log (0 means the log carries no legacy row);
+                 droppedEventCount counts rows removed from the successor this run
+                 published or would publish (0 when nothing is published, including a
+                 refused drop); renumberedEventCount counts surviving events given a new
+                 seq in that successor (a packed Assistant run counts its payload length).
   --json         emit one machine-readable JSON document instead of the text report.
   --quiet        suppress the per-log lines and the by-class table (the header and the
                  summary line still print; warnings and errors are never suppressed).

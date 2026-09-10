@@ -30,6 +30,9 @@ import {
   droppedEventCount,
   fallbacksSwitchRule,
   legacyDropRefusal,
+  legacyDropSplit,
+  lossyRefusalReason,
+  renumberSurvivingEvents,
   sourceKindRule,
   subagentDescriptorVersionRule,
   type LogRule,
@@ -533,17 +536,50 @@ describe('dropLegacyEventsRule (opt-in, lossy)', () => {
   /** A second legacy row, so a count of 1 cannot pass by accident. */
   const SWITCH_ROW_2: ParsedRow = { ...SWITCH_ROW, seq: 114514 }
   /** A row that merely MENTIONS the legacy type name in its payload. */
-  const MENTIONS_SWITCH: ParsedRow = {
-    type: 'user/message',
-    seq: 12,
-    time: 1786949105471,
-    data: {
-      role: 'user',
-      id: 'message-12',
-      content: [{ type: 'text', text: 'the legacy "fallbacks/switch" event was removed' }],
-      source: { kind: 'user' },
-    },
+  function mentionsSwitch(seq: number): ParsedRow {
+    return {
+      type: 'user/message',
+      seq,
+      time: 1786949105471,
+      data: {
+        role: 'user',
+        id: `message-${seq}`,
+        content: [{ type: 'text', text: 'the legacy "fallbacks/switch" event was removed' }],
+        source: { kind: 'user' },
+      },
+    }
   }
+  /**
+   * A DENSE log: the released codec requires every event's `seq` to equal its
+   * position in the event stream (`codec.ts` `seq !== eventCount`), and the
+   * renumber refuses a source log that is not densely numbered — so a fixture
+   * whose outcome is recovery must declare dense seqs.
+   */
+  function denseLog(events: readonly ParsedRow[]): ParsedRow[] {
+    return [HEADER, ...events.map((row, index) => ({ ...row, seq: index }))]
+  }
+  /** The legacy `fallbacks/switch` row at one dense position. */
+  function switchAt(seq: number): ParsedRow {
+    return { ...SWITCH_ROW, seq }
+  }
+  /** A `user/message` event at one dense position. */
+  function message(seq: number, extra: Record<string, unknown> = {}): ParsedRow {
+    return { ...userMessage(seq, { kind: 'user' }), ...extra }
+  }
+  /**
+   * One PHYSICALLY read row: `ParsedRow` is the logical view, so the envelope
+   * members the released codec also reads (`sourceEventSeqs`, `surfaceOp`) are
+   * carried by the record itself, exactly as the reader hands them over.
+   */
+  function physicalRow(row: Record<string, unknown>): ParsedRow {
+    return row as unknown as ParsedRow
+  }
+  /** The physical envelope of one fixture row (`ParsedRow`'s logical view hides it). */
+  function envelopeOf(row: ParsedRow): Record<string, unknown> {
+    return row as unknown as Record<string, unknown>
+  }
+  /** A log without any legacy row, and the mentions-only row used by the tamper pins. */
+  const MENTIONS_SWITCH: ParsedRow = mentionsSwitch(12)
   const KEPT: ParsedRow[] = [HEADER, userMessage(1, { kind: 'user' }), MENTIONS_SWITCH]
 
   it('detects every parsed legacy row, one finding per row, and nothing else', () => {
@@ -555,30 +591,215 @@ describe('dropLegacyEventsRule (opt-in, lossy)', () => {
     expect(dropLegacyEventsRule.detect(KEPT)).toEqual([])
   })
 
-  it('drops exactly the parsed legacy rows, keeps every other row byte-identical and in order', () => {
-    const rows = [HEADER, SWITCH_ROW, ...KEPT.slice(1), SWITCH_ROW_2]
+  it('drops exactly the parsed legacy rows and renumbers the survivors to their surviving positions', () => {
+    const rows = denseLog([message(0), switchAt(1), mentionsSwitch(2), switchAt(3), message(4)])
     const result = dropLegacyEventsRule.normalize(rows)
     if ('refused' in result) throw new Error(`unexpected refusal: ${result.refused}`)
 
-    // Survivors are the same objects in the same order, byte-for-byte.
-    expect(result.rows).toEqual([HEADER, ...KEPT.slice(1)])
-    expect(result.rows.map((row) => JSON.stringify(row))).toEqual([HEADER, ...KEPT.slice(1)].map((row) => JSON.stringify(row)))
+    // Survivors are the same rows in the same order, with new event coordinates.
+    expect(result.rows.slice(1).map((row) => row.seq)).toEqual([0, 1, 2])
+    expect(result.rows.map((row) => row.type)).toEqual(['session', 'user/message', 'user/message', 'user/message'])
+    // A survivor BEFORE the first drop keeps its identity (no write happened).
+    expect(result.rows[1]).toBe(rows[1])
+    // The others differ in `seq` and nothing else.
+    expect(result.rows[2]).toEqual({ ...rows[3], seq: 1 })
+    expect(result.rows[3]).toEqual({ ...rows[5], seq: 2 })
     // The count IS the finding count, and the delta IS the count.
     expect(droppedEventCount(result.findings)).toBe(2)
     expect(rows.length - result.rows.length).toBe(droppedEventCount(result.findings))
+    // The renumbered-event count is the number of survivors whose coordinate moved,
+    // re-derived from the DROP's survivors (never from the renumbered output).
+    const renumber = renumberSurvivingEvents(rows, legacyDropSplit(rows).survivors)
+    if ('refused' in renumber) throw new Error(`unexpected refusal: ${renumber.refused}`)
+    expect(renumber.rows).toEqual(result.rows)
+    expect(renumber.renumberedEventCount).toBe(2)
+  })
+
+  it('shifts every audited Session-seq reference with the survivors (and leaves the opaque ones alone)', () => {
+    const rows = denseLog([
+      { type: 'command/run', seq: 0, time: 1, data: { commandId: 'c1', name: 'x', source: { kind: 'user' } } },
+      switchAt(1),
+      message(2),
+      { type: 'command/done', seq: 3, time: 1, data: { commandId: 'c1', kind: 'success', sourceEventSeq: 2 } },
+      { type: 'session/title', seq: 4, time: 1, data: { title: 't', messageSeqs: [2], source: { kind: 'user' } } },
+      {
+        type: 'compaction/prune',
+        seq: 5,
+        time: 1,
+        data: { shadowedRange: { start: 2, end: 2 }, shadowedSeqs: [2], shadowedTokenCount: 0 },
+      },
+      physicalRow({
+        type: 'assistant/message',
+        seq: 6,
+        time: 1,
+        sourceEventSeqs: [2],
+        surfaceOp: { op: 'replace', start: 2, end: 2 },
+        data: { turn: 1, step: 1, message: { id: 'm' } },
+      }),
+      // A delivery watermark names its ORIGINAL generation: the released remappers
+      // leave it opaque, so it is neither shifted nor a gate hit.
+      {
+        type: 'session-log-deepseek/delivery-accepted',
+        seq: 7,
+        time: 1,
+        data: { sessionId: 's', throughSeq: 1 },
+      },
+    ])
+    const result = dropLegacyEventsRule.normalize(rows)
+    if ('refused' in result) throw new Error(`unexpected refusal: ${result.refused}`)
+
+    const [header, run, firstName, done, title, prune, assistant, delivery] = result.rows as ParsedRow[]
+    expect(header?.type).toBe('session')
+    expect(run?.seq).toBe(0)
+    expect(firstName?.seq).toBe(1)
+    // Every reference pointed at the event that moved from 2 to 1.
+    expect(done?.seq).toBe(2)
+    expect((done?.data as Record<string, unknown>)['sourceEventSeq']).toBe(1)
+    expect(title?.seq).toBe(3)
+    expect((title?.data as Record<string, unknown>)['messageSeqs']).toEqual([1])
+    expect(prune?.seq).toBe(4)
+    expect((prune?.data as Record<string, unknown>)['shadowedRange']).toEqual({ start: 1, end: 1 })
+    expect((prune?.data as Record<string, unknown>)['shadowedSeqs']).toEqual([1])
+    expect(assistant?.seq).toBe(5)
+    expect(envelopeOf(assistant as ParsedRow)['sourceEventSeqs']).toEqual([1])
+    expect(envelopeOf(assistant as ParsedRow)['surfaceOp']).toEqual({ op: 'replace', start: 1, end: 1 })
+    // Opaque watermark: unchanged, and the row only moved.
+    expect(delivery?.seq).toBe(6)
+    expect((delivery?.data as Record<string, unknown>)['throughSeq']).toBe(1)
+  })
+
+  it('re-encodes a sourceEventSeqs [start, end] range with both endpoints shifted', () => {
+    const rows = denseLog([
+      message(0),
+      switchAt(1),
+      message(2),
+      message(3),
+      message(4),
+      physicalRow({
+        type: 'assistant/message',
+        seq: 5,
+        time: 1,
+        sourceEventSeqs: [[2, 4]],
+        surfaceOp: { op: 'replace', start: 2, end: 4 },
+        data: { turn: 1, step: 1, message: { id: 'm' } },
+      }),
+    ])
+    const result = dropLegacyEventsRule.normalize(rows)
+    if ('refused' in result) throw new Error(`unexpected refusal: ${result.refused}`)
+    const assistant = result.rows[5] as ParsedRow
+    expect(assistant.seq).toBe(4)
+    // The range stays a range (shape preserved) with both endpoints shifted by one.
+    expect(envelopeOf(assistant)['sourceEventSeqs']).toEqual([[1, 3]])
+    expect(envelopeOf(assistant)['surfaceOp']).toEqual({ op: 'replace', start: 1, end: 3 })
   })
 
   it('is a no-op with no findings on a log without legacy rows', () => {
-    const result = dropLegacyEventsRule.normalize(KEPT)
+    const rows = denseLog([message(0), mentionsSwitch(1)])
+    const result = dropLegacyEventsRule.normalize(rows)
     if ('refused' in result) throw new Error(`unexpected refusal: ${result.refused}`)
-    expect(result).toEqual({ rows: KEPT, findings: [] })
+    expect(result).toEqual({ rows, findings: [] })
   })
 
   it('decides per PARSED row, never by substring: a payload mentioning the type survives', () => {
-    const result = dropLegacyEventsRule.normalize([HEADER, MENTIONS_SWITCH])
+    const rows = denseLog([message(0), mentionsSwitch(1)])
+    const result = dropLegacyEventsRule.normalize(rows)
     if ('refused' in result) throw new Error(`unexpected refusal: ${result.refused}`)
     expect(result.findings).toEqual([])
-    expect(result.rows).toEqual([HEADER, MENTIONS_SWITCH])
+    expect(result.rows).toEqual(rows)
+  })
+
+  it('REFUSES the whole file when a surviving reference names a dropped seq', () => {
+    const scalar = denseLog([
+      message(0),
+      switchAt(1),
+      physicalRow({
+        type: 'assistant/message',
+        seq: 2,
+        time: 1,
+        sourceEventSeqs: [1],
+        surfaceOp: 'append',
+        data: { turn: 1, step: 1, message: { id: 'm' } },
+      }),
+    ])
+    const scalarResult = dropLegacyEventsRule.normalize(scalar)
+    if (!('refused' in scalarResult)) throw new Error('expected a refusal')
+    expect(scalarResult.refused).toContain('reference integrity:')
+    expect(scalarResult.refused).toContain('sourceEventSeqs.0 names the dropped fallbacks/switch seq 1')
+    expect(lossyRefusalReason(scalarResult.refused)).toBe('reference-integrity')
+
+    // A [start, end] RANGE that only COVERS the dropped seq is refused too: the
+    // endpoints are not the whole reference.
+    const ranged = denseLog([
+      message(0),
+      switchAt(1),
+      message(2),
+      physicalRow({
+        type: 'assistant/message',
+        seq: 3,
+        time: 1,
+        sourceEventSeqs: [[1, 2]],
+        surfaceOp: 'append',
+        data: { turn: 1, step: 1, message: { id: 'm' } },
+      }),
+    ])
+    const rangedResult = dropLegacyEventsRule.normalize(ranged)
+    if (!('refused' in rangedResult)) throw new Error('expected a refusal')
+    expect(rangedResult.refused).toContain('sourceEventSeqs.0 names the dropped fallbacks/switch seq 1')
+    expect(lossyRefusalReason(rangedResult.refused)).toBe('reference-integrity')
+
+    // A payload reference is gated as well (`command/done.sourceEventSeq`).
+    const payload = denseLog([
+      message(0),
+      switchAt(1),
+      { type: 'command/done', seq: 2, time: 1, data: { commandId: 'c', kind: 'success', sourceEventSeq: 1 } },
+    ])
+    const payloadResult = dropLegacyEventsRule.normalize(payload)
+    if (!('refused' in payloadResult)) throw new Error('expected a refusal')
+    expect(payloadResult.refused).toContain('data.sourceEventSeq names the dropped fallbacks/switch seq 1')
+  })
+
+  it('REFUSES a source log that is not densely numbered, instead of renumbering a corrupt file', () => {
+    const rows = [HEADER, message(0), mentionsSwitch(7)]
+    const result = dropLegacyEventsRule.normalize(rows)
+    if (!('refused' in result)) throw new Error('expected a refusal')
+    expect(result.refused).toContain('declares seq 7 at event position 1, so the survivors are not densely numbered')
+    expect(lossyRefusalReason(result.refused)).toBe('other')
+  })
+
+  it('REFUSES a drop that would renumber across the header seed cut', () => {
+    const header: ParsedRow = { type: 'session', seq: 0, seedLength: 2 } as ParsedRow
+    const rows = [header, switchAt(0), message(1), message(2)]
+    const result = dropLegacyEventsRule.normalize(rows)
+    if (!('refused' in result)) throw new Error('expected a refusal')
+    expect(result.refused).toContain('the renumber crosses the header seed cut:')
+    expect(result.refused).toContain("precedes the header's seedLength 2")
+    expect(lossyRefusalReason(result.refused)).toBe('seed-cut')
+  })
+
+  it('moves a packed Assistant run by its own event extent, not by one', () => {
+    const packed = {
+      type: 'text-chunks',
+      seq0: 2,
+      time0: 1786949105472,
+      data: { turn: 1, step: 1, index: 0, dt: [7], texts: ['a', 'b', 'c'] },
+    } as unknown as ParsedRow
+    const rows = [HEADER, message(0), switchAt(1), packed]
+    const result = dropLegacyEventsRule.normalize(rows)
+    if ('refused' in result) throw new Error(`unexpected refusal: ${result.refused}`)
+    expect(result.rows[2]).toEqual({ ...packed, seq0: 1 })
+    // The renumber is re-derived from the DROP's survivors, never from its output.
+    const renumber = renumberSurvivingEvents(rows, legacyDropSplit(rows).survivors)
+    if ('refused' in renumber) throw new Error(`unexpected refusal: ${renumber.refused}`)
+    expect(renumber.rows).toEqual(result.rows)
+    // Three events moved with the run's first seq, not one row.
+    expect(renumber.renumberedEventCount).toBe(3)
+  })
+
+  it('refuses a packed run whose payload is not the string array the released codec requires', () => {
+    const packed = { type: 'text-chunks', seq0: 2, time0: 1, data: { turn: 1, step: 1, index: 0, dt: [], texts: [] } } as unknown as ParsedRow
+    const result = renumberSurvivingEvents([HEADER, message(0), switchAt(1), packed], [HEADER, message(0), packed])
+    if (!('refused' in result)) throw new Error('expected a refusal')
+    expect(result.refused).toContain('packed Assistant run whose payload is not the string array')
   })
 
   it('refuses the whole drop when a survivor would change or a foreign row would be removed', () => {
@@ -599,12 +820,24 @@ describe('dropLegacyEventsRule (opt-in, lossy)', () => {
     expect(legacyDropRefusal([HEADER, SWITCH_ROW], [HEADER])).toBeNull()
   })
 
+  it('refuses a renumber whose header or survivor pairing does not line up', () => {
+    const rows = [HEADER, switchAt(0)]
+    expect(renumberSurvivingEvents(rows, [{ ...HEADER, type: 'other' }])).toEqual({
+      refused: 'the renumber would change or remove the session header row',
+    })
+    expect(renumberSurvivingEvents(rows, [HEADER])).toEqual({ rows: [HEADER], renumberedEventCount: 0 })
+    expect(renumberSurvivingEvents([HEADER], [HEADER, MENTIONS_SWITCH])).toEqual({
+      refused: 'only 0 of the 1 survivor event(s) match the input rows in order',
+    })
+    expect(renumberSurvivingEvents([], [])).toEqual({ refused: 'the log carries no header row' })
+  })
+
   it('never mutates the input rows', () => {
-    const rows = deepFreeze([HEADER, SWITCH_ROW, MENTIONS_SWITCH])
+    const rows = deepFreeze(denseLog([message(0), switchAt(1), mentionsSwitch(2)]))
     expect(() => dropLegacyEventsRule.detect(rows)).not.toThrow()
     const result = dropLegacyEventsRule.normalize(rows)
     if ('refused' in result) throw new Error(`unexpected refusal: ${result.refused}`)
-    expect(JSON.stringify(rows)).toBe(JSON.stringify([HEADER, SWITCH_ROW, MENTIONS_SWITCH]))
+    expect(JSON.stringify(rows)).toBe(JSON.stringify(denseLog([message(0), switchAt(1), mentionsSwitch(2)])))
   })
 
   it('is NOT a member of the default registry (which stays strictly non-lossy)', () => {

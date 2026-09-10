@@ -36,7 +36,11 @@
  *     registry — the only in-repo recovery is the LOSSY `drop-legacy-events`
  *     rule below, which an explicit opt-in must add to a run.
  *   - `drop-legacy-events` (OPT-IN, lossy, deliberately NOT in `BUILT_IN_RULES`):
- *     removes exactly the `fallbacks/switch` rows and counts every removed one.
+ *     removes exactly the `fallbacks/switch` rows, renumbers the survivors (the
+ *     released V0→V1 codec requires `seq === eventCount` for every row, so a
+ *     removed mid-sequence row leaves every later row with a stale `seq`), and
+ *     refuses the whole file when that renumber would change what a surviving
+ *     row's Session-seq reference points at.
  *
  * Purity: no rule mutates its input. `detect` only reads; `normalize` always
  * returns a NEW row array, and copies a row (plus every container on the path of
@@ -563,21 +567,44 @@ export function legacyDropRefusal(
 }
 
 /**
+ * Split one log into the drop's candidate rows and the survivors it keeps —
+ * `rows` minus every parsed legacy row, in order, with the survivor rows
+ * themselves untouched.
+ *
+ * This is the ONLY place the drop's row policy is written down: `normalize` and
+ * any caller that wants to re-derive the renumber (the CLI's pre-write proof does)
+ * both go through it, so neither can disagree about which rows are removable.
+ *
+ * @param rows parsed log rows (header first).
+ * @returns the survivors (byte-identical source rows) and the dropped row count.
+ */
+export function legacyDropSplit(rows: readonly ParsedRow[]): { survivors: ParsedRow[]; dropped: number } {
+  const survivors = rows.filter((row) => !isRemovableLegacyEvent(row))
+  return { survivors, dropped: rows.length - survivors.length }
+}
+
+/**
  * Remove every `fallbacks/switch` row and nothing else, in row order; one
  * finding per removed row, so `findings.length` IS the dropped-event count (see
  * {@link droppedEventCount}).
  *
  * All-or-nothing: when {@link legacyDropRefusal} cannot prove the survivors
  * byte-identical to their source rows the rule refuses, and the caller writes
- * nothing.
+ * nothing. The drop itself is not enough to make such a log load — the released
+ * V0→V1 codec requires `seq === eventCount` for every row — so the drop is
+ * followed by {@link renumberSurvivingEvents}, which renumbers the survivors,
+ * refuses to change what any surviving Session-seq reference points at, and
+ * proves every written byte is one of its audited remap steps.
  */
 function normalizeDroppedLegacyEvents(
   rows: readonly ParsedRow[],
 ): { rows: ParsedRow[]; findings: Finding[] } | { refused: string } {
-  const survivors = rows.filter((row) => !isRemovableLegacyEvent(row))
+  const { survivors } = legacyDropSplit(rows)
   const refusal = legacyDropRefusal(rows, survivors)
   if (refusal !== null) return { refused: refusal }
-  return { rows: survivors, findings: detectDroppableLegacyEvents(rows) }
+  const renumbered = renumberSurvivingEvents(rows, survivors)
+  if ('refused' in renumbered) return { refused: renumbered.refused }
+  return { rows: renumbered.rows, findings: detectDroppableLegacyEvents(rows) }
 }
 
 /**
@@ -587,6 +614,430 @@ function normalizeDroppedLegacyEvents(
 export function droppedEventCount(findings: readonly Finding[]): number {
   return findings.filter((finding) => finding.ruleId === DROP_LEGACY_EVENTS_RULE_ID).length
 }
+
+/* ------------------------------------------------------------------ */
+/* the Session-seq reference surface (the renumber's field list)      */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Row-relative JSON path of one audited seq member. The `SourcePath` alias is
+ * the same structural type; naming it here keeps the intent readable.
+ */
+type SeqPath = SourcePath
+
+/**
+ * Packed Assistant runs of the released v0 physical layout.
+ *
+ * SSOT: `PACKED_TAGS` in `session-format-v0-to-v1/src/codec.ts`. A packed row
+ * carries `seq0` (the FIRST event seq of the run) and no `seq` at all; the number
+ * of events it occupies IS its payload length (`data.texts` for `text-chunks` /
+ * `reasoning-chunks`, `data.args` for `tool-call-chunks`), and the codec advances
+ * its running count by exactly that (`codec.ts` `eventCount += run.eventCount`).
+ */
+const PACKED_RUN_TYPES: ReadonlySet<string> = new Set(['text-chunks', 'reasoning-chunks', 'tool-call-chunks'])
+
+/**
+ * One audited Session-seq reference inside one row.
+ *
+ * `positions` is what the renumber REWRITES; `spans` is every old seq the
+ * reference NAMES (a `[start, end]` range covers its whole interior, not just its
+ * endpoints), which is what the integrity gate tests against the dropped seqs.
+ */
+interface SeqReference {
+  /** Diagnostic label, e.g. `sourceEventSeqs.3` or `data.messageSeqs.0`. */
+  label: string
+  /** The writable members of this reference (a range has two). */
+  positions: readonly { path: SeqPath; value: number }[]
+  /** Inclusive old-seq spans this reference names. */
+  spans: readonly { start: number; end: number }[]
+}
+
+/** The physical envelope member one row carries (`ParsedRow` is the logical view). */
+function envelopeValue(row: ParsedRow, member: string): unknown {
+  return (row as unknown as Record<string, unknown>)[member]
+}
+
+/** Whether one row is a packed Assistant run rather than one single-event row. */
+function isPackedRun(row: ParsedRow): boolean {
+  return PACKED_RUN_TYPES.has(row.type)
+}
+
+/** Events one row occupies, or `null` when a packed run's payload is malformed. */
+function rowEventCount(row: ParsedRow): number | null {
+  if (!isPackedRun(row)) return 1
+  const data = row.data
+  if (!isRecord(data)) return null
+  const payload = data[row.type === 'tool-call-chunks' ? 'args' : 'texts']
+  // The released codec requires a NON-EMPTY string array; anything else is a row
+  // it refuses outright, so this rule models no extent for it.
+  return Array.isArray(payload) && payload.length > 0 ? payload.length : null
+}
+
+/** The event position one row DECLARES (`seq`, or `seq0` for a packed run). */
+function declaredEventSeq(row: ParsedRow): unknown {
+  return isPackedRun(row) ? envelopeValue(row, 'seq0') : row.seq
+}
+
+/** The physical record of one row, mirroring `rowRecord` in `catalog.ts`. */
+function rowPayload(row: ParsedRow): unknown {
+  const data = row.data
+  if (row.type === 'session' && isRecord(data) && typeof data['version'] === 'number' && typeof data['id'] === 'string') {
+    return data
+  }
+  return row
+}
+
+/**
+ * The header's seed cut: the number of leading events the released V0 header
+ * declares as inherited (`seedLength`, `codec.ts` `decodePhysicalHeader`).
+ * Events below it belong to the inherited lifecycle, so renumbering across it
+ * would silently re-classify the first own event as inherited.
+ */
+function headerSeedCut(rows: readonly ParsedRow[]): number {
+  const header = rows[0]
+  if (header === undefined) return 0
+  const payload = rowPayload(header)
+  if (!isRecord(payload)) return 0
+  const seedLength = payload['seedLength']
+  return typeof seedLength === 'number' ? seedLength : 0
+}
+
+/**
+ * Every Session-seq reference the released reader resolves inside one row.
+ *
+ * The field list is the union of the two released remappers and the validators
+ * that reject what they miss:
+ *   - `row.seq` / `row.seq0` — the row's own coordinate (see the renumber below);
+ *   - `row.sourceEventSeqs` — absolute seqs, `[start, end]` ranges allowed
+ *     (`codec.ts` `decodeSeqRanges`), each `< row.seq` and unique
+ *     (`validation.ts` `assertReleasedSurfaceMetadata`), must cover the shadowed
+ *     surface span (`relationships.ts` `applySurface`);
+ *   - `row.surfaceOp.start` / `.end` (a `{ op: 'replace', … }` marker) — same
+ *     family, `< row.seq` (`validation.ts`), must be on the current surface
+ *     (`relationships.ts`) and index the message-id map by seq (`migration.ts`);
+ *   - `data.sourceEventSeq` — `command/done`, an event index
+ *     (`payload-validation.ts` `earlierSeq`, `relationships.ts`);
+ *   - `data.shadowedRange.start` / `.end` and `data.shadowedSeqs` —
+ *     `compaction/prune` / `compaction/summary` (`payload-validation.ts`
+ *     `shadowedValue`, `relationships.ts` `assertCurrentSurfaceSpan`);
+ *   - `data.messageSeqs` — `session/title` / `session/title-llm-request`
+ *     (`payload-validation.ts` `seqArray`, `relationships.ts` `assertTitleSources`).
+ *
+ * Deliberately NOT references, exactly as the released remappers document
+ * (`session-format-v2-to-v3/src/references.ts`: "Delivery watermarks and
+ * session-reference captures identify their original generation. Workflow seq,
+ * stream block indices, turn/step, and numeric tool JSON are not Session seqs"):
+ *   - `data.throughSeq` (`session-log-deepseek/delivery-accepted`) — a delivery
+ *     watermark naming its own generation;
+ *   - `data.seq` (`tool-workflow/*`) — a workflow-local counter;
+ *   - `data.start` (`agent/inbox/spliced`) — an inbox position, only counted
+ *     (`payload-validation.ts` `countValue`), never used as an event index.
+ * A member that is present but not a safe integer is skipped: the released codec
+ * refuses such a row outright, and this rule must not "repair" a reference it
+ * cannot read.
+ */
+function seqReferences(row: ParsedRow): SeqReference[] {
+  const references: SeqReference[] = []
+  const addScalar = (path: SeqPath, value: unknown): void => {
+    if (typeof value !== 'number' || !Number.isSafeInteger(value)) return
+    references.push({ label: pathLabel(path), positions: [{ path, value }], spans: [{ start: value, end: value }] })
+  }
+  const sourceEventSeqs = envelopeValue(row, 'sourceEventSeqs')
+  if (Array.isArray(sourceEventSeqs)) {
+    sourceEventSeqs.forEach((entry, index) => {
+      const path: SeqPath = ['sourceEventSeqs', index]
+      const endpoints = Array.isArray(entry) && entry.length === 2 ? entry : null
+      if (endpoints === null) {
+        addScalar(path, entry)
+        return
+      }
+      const [start, end] = endpoints as [unknown, unknown]
+      if (typeof start !== 'number' || typeof end !== 'number'
+        || !Number.isSafeInteger(start) || !Number.isSafeInteger(end) || end < start) {
+        return
+      }
+      references.push({
+        label: pathLabel(path),
+        positions: [{ path: [...path, 0], value: start }, { path: [...path, 1], value: end }],
+        spans: [{ start, end }],
+      })
+    })
+  }
+  const operation = envelopeValue(row, 'surfaceOp')
+  if (isRecord(operation) && operation['op'] === 'replace') {
+    addScalar(['surfaceOp', 'start'], operation['start'])
+    addScalar(['surfaceOp', 'end'], operation['end'])
+  }
+  const data = row.data
+  if (!isRecord(data)) return references
+  switch (row.type) {
+    case 'command/done':
+      addScalar(['data', 'sourceEventSeq'], data['sourceEventSeq'])
+      break
+    case 'compaction/prune':
+    case 'compaction/summary': {
+      const range = data['shadowedRange']
+      if (isRecord(range)) {
+        addScalar(['data', 'shadowedRange', 'start'], range['start'])
+        addScalar(['data', 'shadowedRange', 'end'], range['end'])
+      }
+      const shadowedSeqs = data['shadowedSeqs']
+      if (Array.isArray(shadowedSeqs)) {
+        shadowedSeqs.forEach((value, index) => addScalar(['data', 'shadowedSeqs', index], value))
+      }
+      break
+    }
+    case 'session/title':
+    case 'session/title-llm-request': {
+      const messageSeqs = data['messageSeqs']
+      if (Array.isArray(messageSeqs)) {
+        messageSeqs.forEach((value, index) => addScalar(['data', 'messageSeqs', index], value))
+      }
+      break
+    }
+    default:
+      break
+  }
+  return references
+}
+
+/** One leaf difference between a source row and its renumbered survivor. */
+interface RowDifference {
+  path: SeqPath
+  before: unknown
+  after: unknown
+}
+
+/**
+ * Every leaf difference between two JSON trees, in path order.
+ *
+ * This is the renumber's byte-identity proof: the renumber writes through
+ * {@link writePath} copies, so anything it changed that it did not plan shows up
+ * here as an unaudited difference, and any planned write that did not land shows
+ * up as a missing one.
+ */
+function rowDifferences(before: unknown, after: unknown, path: SeqPath = []): RowDifference[] {
+  if (before === after) return []
+  if (Array.isArray(before) && Array.isArray(after)) {
+    if (before.length !== after.length) return [{ path, before: before.length, after: after.length }]
+    return before.flatMap((member, index) => rowDifferences(member, after[index], [...path, index]))
+  }
+  if (isRecord(before) && isRecord(after)) {
+    const keys = new Set([...Object.keys(before), ...Object.keys(after)])
+    return [...keys].flatMap((key) => rowDifferences(before[key], after[key], [...path, key]))
+  }
+  return [{ path, before, after }]
+}
+
+/** Key of one written/observed member, unique per path (paths may contain `.`). */
+function writeKey(path: SeqPath): string {
+  return path.map((step) => String(step)).join('\u0000')
+}
+
+/** One audited write the renumber performed. */
+interface RenumberWrite {
+  path: SeqPath
+  before: number
+  after: number
+}
+
+/** Whether one observed difference IS one audited write. */
+function isWritten(write: RenumberWrite, difference: RowDifference): boolean {
+  return writeKey(write.path) === writeKey(difference.path)
+    && write.before === difference.before
+    && write.after === difference.after
+}
+
+/** How many dropped events precede `seq` — the monotone shift of that seq. */
+function droppedBefore(dropped: readonly number[], seq: number): number {
+  let low = 0
+  let high = dropped.length
+  while (low < high) {
+    const middle = (low + high) >>> 1
+    if ((dropped[middle] as number) < seq) low = middle + 1
+    else high = middle
+  }
+  return low
+}
+
+/** Prefix of the refusal that means "a survivor names a dropped seq". */
+const REFERENCE_INTEGRITY_REFUSAL_PREFIX = 'reference integrity: '
+
+/** Prefix of the refusal that means "the renumber would cross the seed cut". */
+const SEED_CUT_REFUSAL_PREFIX = 'the renumber crosses the header seed cut: '
+
+/** Why the opt-in lossy recovery refused one log (see `lossyRefusalReason`). */
+export type LossyRefusalReason = 'reference-integrity' | 'seed-cut' | 'other'
+
+/**
+ * The category of one lossy refusal, from the rule's own refusal text. The two
+ * prefixes are built from the constants above, so this classifies what
+ * {@link renumberSurvivingEvents} raises by construction — never by guessing.
+ */
+export function lossyRefusalReason(refusal: string): LossyRefusalReason {
+  if (refusal.includes(REFERENCE_INTEGRITY_REFUSAL_PREFIX)) return 'reference-integrity'
+  if (refusal.includes(SEED_CUT_REFUSAL_PREFIX)) return 'seed-cut'
+  return 'other'
+}
+
+/**
+ * Renumber the survivors of a proven drop so the released V0→V1 edge accepts
+ * them again, or refuse the whole file.
+ *
+ * WHY: the codec requires `seq === eventCount` for every row, and a packed run's
+ * `firstSeq` to equal the event count reached so far, so removing any row that is
+ * not at the tail leaves every later row with a stale coordinate. Each surviving
+ * event's coordinate becomes its 0-based position in the SURVIVING event stream
+ * (a packed run keeps its extent and moves its `seq0`), and every audited
+ * reference is shifted monotonically by the number of dropped events before it.
+ *
+ * The gate runs over the whole file first and is fail closed:
+ *   - every source row (kept or dropped) must declare exactly the event position
+ *     it occupies, or the survivors are not densely numbered and no remap is
+ *     provable;
+ *   - no surviving reference may name a dropped seq (or cover one inside a
+ *     `[start, end]` range) — that reference would silently point at a different
+ *     event after the renumber;
+ *   - no dropped event may precede the header's seed cut, which would move the
+ *     first own event into the inherited region.
+ * Then every written member is proven to be exactly one audited remap step
+ * (see {@link rowDifferences}), and every reference is proven to still name an
+ * EARLIER event.
+ *
+ * Exported because this is the load-bearing half of the opt-in lossy rule: the
+ * CLI re-derives it over the drop rule's own output before any write.
+ *
+ * @param input the unmodified log rows (header first), exactly as parsed.
+ * @param survivors the drop's output: `input` minus the removable legacy rows.
+ * @returns the renumbered rows and how many surviving events moved, or the reason
+ *   the file must not be written.
+ */
+export function renumberSurvivingEvents(
+  input: readonly ParsedRow[],
+  survivors: readonly ParsedRow[],
+): { rows: ParsedRow[]; renumberedEventCount: number } | { refused: string } {
+  const [header, ...events] = input
+  const [survivorHeader, ...survivorEvents] = survivors
+  if (header === undefined) return { refused: 'the log carries no header row' }
+  if (survivorHeader === undefined || JSON.stringify(survivorHeader) !== JSON.stringify(header)) {
+    return { refused: 'the renumber would change or remove the session header row' }
+  }
+
+  interface Kept {
+    source: ParsedRow
+    survivor: ParsedRow
+    oldSeq: number
+    newSeq: number
+    events: number
+  }
+  const kept: Kept[] = []
+  const dropped: number[] = []
+  let position = 0
+  let newPosition = 0
+  let cursor = 0
+  for (const [offset, row] of events.entries()) {
+    const events_ = rowEventCount(row)
+    if (events_ === null) {
+      return {
+        refused: `${row.type} ${describe(envelopeValue(row, 'seq0'))} is a packed Assistant run whose payload is not the string array the released codec requires`,
+      }
+    }
+    const declared = declaredEventSeq(row)
+    if (declared !== position) {
+      return {
+        refused: `row ${offset + 2} (${row.type}) declares seq ${describe(declared)} at event position ${position}, so the survivors are not densely numbered`,
+      }
+    }
+    const survivor = survivorEvents[cursor]
+    if (survivor !== undefined && JSON.stringify(survivor) === JSON.stringify(row)) {
+      kept.push({ source: row, survivor, oldSeq: position, newSeq: newPosition, events: events_ })
+      cursor += 1
+      newPosition += events_
+    } else if (isRemovableLegacyEvent(row)) {
+      if (events_ !== 1) {
+        return { refused: `the removable ${FALLBACKS_SWITCH_TYPE} row ${position} spans ${events_} events` }
+      }
+      dropped.push(position)
+    } else {
+      return {
+        refused: `row ${offset + 2} (${row.type}) is neither kept byte-identically nor a removable ${FALLBACKS_SWITCH_TYPE} row, so the renumber cannot be proven`,
+      }
+    }
+    position += events_
+  }
+  if (cursor !== survivorEvents.length) {
+    return { refused: `only ${cursor} of the ${survivorEvents.length} survivor event(s) match the input rows in order` }
+  }
+
+  for (const { source, oldSeq } of kept) {
+    for (const reference of seqReferences(source)) {
+      for (const span of reference.spans) {
+        for (const droppedSeq of dropped) {
+          if (droppedSeq >= span.start && droppedSeq <= span.end) {
+            return {
+              refused: `${REFERENCE_INTEGRITY_REFUSAL_PREFIX}${source.type} ${oldSeq} ${reference.label} names the dropped ${FALLBACKS_SWITCH_TYPE} seq ${droppedSeq}`,
+            }
+          }
+        }
+      }
+    }
+  }
+
+  const seedCut = headerSeedCut(input)
+  const belowCut = dropped.find((seq) => seq < seedCut)
+  if (belowCut !== undefined) {
+    return {
+      refused: `${SEED_CUT_REFUSAL_PREFIX}the dropped ${FALLBACKS_SWITCH_TYPE} seq ${belowCut} precedes the header's seedLength ${seedCut}, `
+        + 'so renumbering outside it would move the first own event into the inherited region',
+    }
+  }
+
+  const rows: ParsedRow[] = [header]
+  let renumberedEventCount = 0
+  for (const { source, survivor, oldSeq, newSeq, events: extent } of kept) {
+    let next = survivor
+    const written: RenumberWrite[] = []
+    if (newSeq !== oldSeq) {
+      const path: SeqPath = [isPackedRun(survivor) ? 'seq0' : 'seq']
+      const before = declaredEventSeq(survivor)
+      next = writePath(next, path, newSeq) as ParsedRow
+      written.push({ path, before: before as number, after: newSeq })
+      renumberedEventCount += extent
+    }
+    for (const reference of seqReferences(survivor)) {
+      for (const { path, value } of reference.positions) {
+        const after = value - droppedBefore(dropped, value)
+        if (after === value) continue
+        next = writePath(next, path, after) as ParsedRow
+        written.push({ path, before: value, after })
+      }
+    }
+    // Two-sided proof, keyed by path: a row can carry hundreds of thousands of
+    // reference members, so neither side may scan the other linearly.
+    const differences = rowDifferences(source, next)
+    const writesByPath = new Map(written.map((write) => [writeKey(write.path), write]))
+    const unaudited = differences.find((difference) => {
+      const write = writesByPath.get(writeKey(difference.path))
+      return write === undefined || !isWritten(write, difference)
+    })
+    if (unaudited !== undefined) {
+      return {
+        refused: `the renumber changed ${pathLabel(unaudited.path)} (${describe(unaudited.before)} → ${describe(unaudited.after)}) outside its audited remap fields`,
+      }
+    }
+    const differencesByPath = new Map(differences.map((difference) => [writeKey(difference.path), difference]))
+    const missing = written.find((write) => {
+      const difference = differencesByPath.get(writeKey(write.path))
+      return difference === undefined || !isWritten(write, difference)
+    })
+    if (missing !== undefined) {
+      return { refused: `the renumber did not apply its own ${pathLabel(missing.path)} step` }
+    }
+    rows.push(next)
+  }
+  return { rows, renumberedEventCount }
+}
+
 
 /* ------------------------------------------------------------------ */
 /* registry                                                           */
@@ -619,18 +1070,22 @@ export const fallbacksSwitchRule: LogRule = {
 
 /**
  * The OPT-IN lossy recovery for the legacy `fallbacks/switch` rows: `normalize`
- * removes exactly those rows and reports one finding per removed row.
+ * removes exactly those rows, renumbers the survivors so the released V0→V1 edge
+ * accepts them again, and reports one finding per removed row (so
+ * {@link droppedEventCount} stays the drop count; the renumbered-event count is
+ * {@link renumberSurvivingEvents}'s, not a finding).
  *
  * DELIBERATELY NOT a member of {@link BUILT_IN_RULES}: the default registry stays
  * strictly non-lossy, so this rule can only enter a run through the CLI's
  * explicit `--drop-legacy-events`. Scope is exact and self-proven — only a row
  * whose PARSED `type` is `fallbacks/switch` is removed, every survivor is
- * re-serialized and matched against its source row before the rule returns, and a
+ * re-serialized and matched against its source row before the rule returns, a
  * row of any other unknown event type is left in place (which leaves such a log
- * unrepairable rather than silently lossy). It therefore runs FIRST in a lossy
- * chain, so its input is the unmodified log. Replacing the detector it stands
- * beside (`fallbacks-switch`) is the caller's decision: both policies cover the
- * same rows, and the detector refuses what this rule removes.
+ * unrepairable rather than silently lossy), and the renumber refuses the file
+ * outright when a surviving reference names a dropped seq. It therefore runs
+ * FIRST in a lossy chain, so its input is the unmodified log. Replacing the
+ * detector it stands beside (`fallbacks-switch`) is the caller's decision: both
+ * policies cover the same rows, and the detector refuses what this rule removes.
  */
 export const dropLegacyEventsRule: LogRule = {
   id: DROP_LEGACY_EVENTS_RULE_ID,
