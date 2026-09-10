@@ -52,7 +52,8 @@ const OUT_FILE = 'index.js'
  * `web/src/platform.ts:8-16` — the old runtime `./client` exemption became
  * the `@deepseek-ai/dsh-client-store` platform module, so the store VALUE
  * import stays external and resolves from the host loader table) + the
- * plugin's PRELOADED_CLIENT_EXTERNALS (empty). The table need not list
+ * host's PRELOADED_CLIENT_EXTERNALS (empty in `packages/client/web/src/platform.ts`).
+ * The table need not list
  * every platform module — it lists what this plugin's client half resolves
  * from the frozen loader table; the rc.1 addition
  * `@deepseek-ai/dsh-client-ui-dockkit` is not imported by this plugin.

@@ -4,13 +4,14 @@
  *   - unit tests for the CLI arg parsing (`parseArgs`), incl. the
  *     `--apply`-requires-`--backup` refusal;
  *   - fixture-based tests for `processFile` (gated on a system `zstd`
- *     binary): dry-run/report never touch the filesystem, apply keeps a
- *     `.bak`, preserves the original file mode and leaves no tmp files.
+ *     binary): a log containing `fallbacks/switch` events is REFUSED
+ *     (never written, never reported as a repair) and a log without them
+ *     is unchanged.
  *
- * The transform repairs session logs poisoned by the old plugin's durable
- * `fallbacks/switch` events (no `ignorable` marker), so the host read path
- * (`KNOWN_SESSION_EVENT_TYPES.has(t) || event.ignorable === true`) accepts
- * them again after a dsh restart. Contract:
+ * The transform marks session logs poisoned by the old plugin's durable
+ * `fallbacks/switch` events (no `ignorable` marker), but the released
+ * session-format chain (v0→v1) refuses unknown event types even with
+ * `ignorable: true` — so the script fails closed and never writes. Contract:
  *   - `type === 'session'` header lines are skipped untouched;
  *   - `type === 'fallbacks/switch'` events without an `ignorable` field get
  *     `ignorable: true`;
@@ -20,7 +21,6 @@
  *   - `changed` counts only lines that were modified.
  */
 import { execFileSync } from 'node:child_process'
-import { zstdDecompressSync } from 'node:zlib'
 import {
   chmodSync,
   existsSync,
@@ -29,7 +29,6 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
-  statSync,
 } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -211,7 +210,7 @@ describe.skipIf(zstdBin === null)('processFile (fixture; skipped without system 
     return { root, sessionFile, original: readFileSync(sessionFile) }
   }
 
-  it('report/dry-run: returns would-change and never touches the filesystem', () => {
+  it('report/dry-run: returns refused and never touches the filesystem', () => {
     const { root, sessionFile, original } = makeFixture()
     try {
       for (const opts of [
@@ -219,8 +218,9 @@ describe.skipIf(zstdBin === null)('processFile (fixture; skipped without system 
         { root, dryRun: false, backup: false, apply: false },
       ]) {
         const outcome = processFile(ZSTD, sessionFile, opts)
-        expect(outcome.action).toBe('would-change')
+        expect(outcome.action).toBe('refused')
         expect(outcome.changed).toBe(2)
+        expect(outcome.error).toContain('cannot be repaired by an ignorable flag')
       }
       // no scratch tmp files next to the log, and the log is byte-identical
       const leftovers = readdirSync(dirname(sessionFile)).filter((name) => name.endsWith('.tmp'))
@@ -231,7 +231,7 @@ describe.skipIf(zstdBin === null)('processFile (fixture; skipped without system 
     }
   })
 
-  it('apply: keeps a .bak, preserves the original mode, no tmp leftovers', () => {
+  it('apply: refuses and never writes (no .bak, no replacement)', () => {
     const { root, sessionFile, original } = makeFixture()
     try {
       const outcome = processFile(ZSTD, sessionFile, {
@@ -240,31 +240,33 @@ describe.skipIf(zstdBin === null)('processFile (fixture; skipped without system 
         backup: true,
         apply: true,
       })
-      expect(outcome.action).toBe('changed')
+      expect(outcome.action).toBe('refused')
       expect(outcome.changed).toBe(2)
+      expect(outcome.error).toContain('cannot be repaired by an ignorable flag')
 
-      // backup copy carries the pre-repair bytes
-      expect(existsSync(`${sessionFile}.bak`)).toBe(true)
-      expect(readFileSync(`${sessionFile}.bak`)).toEqual(original)
-
-      // replacement keeps the original 0600 permission bits (fixture default)
-      expect(statSync(sessionFile).mode & 0o7777).toBe(0o600)
-
-      execFileSync(ZSTD, ['-t', sessionFile], { stdio: 'ignore' })
-      // rc.7 assertZstdHeaderFrame: first frame is exactly one header line.
-      const firstFrame = zstdDecompressSync(readFileSync(sessionFile))
-      expect(firstFrame.indexOf(10)).toBe(firstFrame.length - 1)
-      expect(JSON.parse(firstFrame.toString('utf8').trim()).type).toBe('session')
-      const repaired = execFileSync(ZSTD, ['-d', '-c', sessionFile], { encoding: 'utf8' })
-      const switches = repaired
-        .split('\n')
-        .filter(Boolean)
-        .filter((line) => JSON.parse(line).type === 'fallbacks/switch')
-      expect(switches).toHaveLength(2)
-      for (const line of switches) expect(JSON.parse(line).ignorable).toBe(true)
-
+      // nothing was written: no backup, no replacement, no tmp leftovers
+      expect(existsSync(`${sessionFile}.bak`)).toBe(false)
+      expect(readFileSync(sessionFile)).toEqual(original)
       const leftovers = readdirSync(dirname(sessionFile)).filter((name) => name.endsWith('.tmp'))
       expect(leftovers).toEqual([])
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('a log without fallbacks/switch events is unchanged', () => {
+    const root = mkdtempSync(join(tmpdir(), 'repair-switch-logs-'))
+    const dir = join(root, 'default', 'session-8505afff')
+    mkdirSync(dir, { recursive: true })
+    const sessionFile = join(dir, 'session.jsonl.zstd')
+    const plain = [HEADER, '{"type":"user/message","seq":0,"time":1,"data":{"text":"hi"}}'].join('\n') + '\n'
+    execFileSync(ZSTD, ['-f', '-o', sessionFile], { input: plain, stdio: ['pipe', 'ignore', 'ignore'] })
+    const original = readFileSync(sessionFile)
+    try {
+      const outcome = processFile(ZSTD, sessionFile, { root, dryRun: true, backup: false, apply: false })
+      expect(outcome.action).toBe('unchanged')
+      expect(outcome.changed).toBe(0)
+      expect(readFileSync(sessionFile)).toEqual(original)
     } finally {
       rmSync(root, { recursive: true, force: true })
     }

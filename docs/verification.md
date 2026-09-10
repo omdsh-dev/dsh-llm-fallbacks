@@ -199,7 +199,8 @@ Then restart the dsh web session so the host half and the client half load.
 4. **Status-block entry (AC-2/AC-7)**: the plugin-config card's status block shows **only** the recent-switch line
    (from/to/role/reason, newest first), read from the current session's raw event surface — the plugin writes no durable
    `fallbacks/switch` events (issue #52 stop-write), so the line reflects only events already in the session history
-   (e.g. legacy events marked ignorable by `scripts/repair-fallbacks-switch-logs.ts`); new switches are **not** visible
+   (e.g. legacy `fallbacks/switch` events — the repair script cannot make such sessions loadable, see the README
+   Features note); new switches are **not** visible
    here, neither in-process nor after a restart (they are recorded in the info logs instead). The former "current
    effective model" line (D-6) and the selectionNote line were removed from the card (compass AC-2 — the read-only
    status block keeps the recent switch only). The summary refreshes via push on `settings/document-updated` (fallbacks
@@ -269,6 +270,6 @@ Then restart the dsh web session so the host half and the client half load.
 |---|---|---|
 | web settings GUI interaction (card appears, edit & save, conflict reload) | the sandbox cannot operate a real web session | user §2 / §4 (client-half logic already covered by T5's 155 tests) |
 | real model calls and failure injection (AUTH/QUOTA/RATE_LIMIT triggers, switch continuation) | the sandbox has no real model credentials or running session | user §3 / §4 (decision logic already covered by T3/T4 integration tests) |
-| cross-process observation (info logs, no durable `fallbacks/switch` events landing in a real session) | the sandbox cannot run a real dsh session — issue #52's reload gap is closed by the stop-write decision (the no-write pins in `tests/session-event-registration*.spec.ts` cover the commit + role-inject paths) and the repair transform is covered by `tests/repair-fallbacks-switch-logs.spec.ts`; a real repair run stays a user-side step (see the script's `--dry-run`/`--backup`/`--apply` usage) | user §3/§4 + `scripts/repair-fallbacks-switch-logs.ts` |
+| cross-process observation (info logs, no durable `fallbacks/switch` events landing in a real session) | the sandbox cannot run a real dsh session — issue #52's reload gap is closed by the stop-write decision (the no-write pins in `tests/session-event-registration*.spec.ts` cover the commit + role-inject paths) and the repair script's fail-closed refusal is covered by `tests/repair-fallbacks-switch-logs.spec.ts` (the released session-format chain refuses ignorable-marked unknown events, so no repair write is possible) | user §3/§4 + `scripts/repair-fallbacks-switch-logs.ts` |
 | `/fallbacks` command input/output in a real session | the sandbox cannot run a real dsh session and command registry | user §4.3 step 5 (command logic already covered by command.spec.ts) |
 | real routing override under an active model-selection (documented degradation) | the sandbox has no real web session and model selection | user §4.3 (combination order already covered by T4 integration tests) |
