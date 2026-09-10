@@ -29,8 +29,12 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
-import type { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
+import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import type { ReasoningEffortId, UserMessage } from '@deepseek-ai/dsh-llm'
 import { apply, stateStore } from '../src/index.ts'
+import { FALLBACKS_CHAIN_MODEL, FALLBACKS_PROVIDER } from '../src/virtual-adapter.ts'
+import { OFFICIAL_FLASH } from '../src/time-slots.ts'
 import { MemorySettings } from './support/memory-settings.ts'
 import {
   appendLlmRetry,
@@ -402,5 +406,111 @@ describe('composition order with model-selection (T3 review ⚠️3)', () => {
     const config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
     expect(config).toEqual({ provider: 'other', model: 'gpt-4o' })
     expect(switchEvents(agent)).toHaveLength(0)
+  })
+})
+
+/**
+ * Plan model-change-notice-loop Task 4: the host's `agent/pre-step` notice
+ * listener (evidence E21). The harness double used to install only
+ * `agent/request`, so nothing in the suite ever ran the listener that appends
+ * the durable `[model changed: …]` notice — the suite stayed green while a live
+ * session injected one on every admitted step.
+ *
+ * Post-T1 a root-origin `FallbacksChain/Auto` seed is served unchanged, so the
+ * route the loop logs IS the selected pair and the host's
+ * `sameRoute(selection.assembled, requestHeader().config)` comparison holds:
+ * zero notices on a steady session. A genuine selection change still produces
+ * exactly one, and it retires once the logged route follows the selection.
+ */
+describe('model-selection notice on the virtual route (Task 4)', () => {
+  /** The virtual picker row, exact strings (spec lock). */
+  const virtualPair = { provider: FALLBACKS_PROVIDER, model: FALLBACKS_CHAIN_MODEL }
+
+  /**
+   * Drive one `agent/pre-step` the way the loop does: the offered inbox batch
+   * goes in and the default decision admits exactly those messages
+   * (`{ kind: 'enter', messages }`), so anything else in `decision.messages`
+   * was appended by a listener.
+   */
+  function dispatchPreStep(agent: Agent, step: number): Promise<PreStepDecision> {
+    const messages: UserMessage[] = [
+      createUserMessage({ content: [{ type: 'text', text: 'continue' }], source: { kind: 'user' } }),
+    ]
+    return ctx.waterfall('agent/pre-step', {
+      agent,
+      messages,
+      turn: 1,
+      step,
+      signal: new AbortController().signal,
+    }, () => Promise.resolve({ kind: 'enter', messages }))
+  }
+
+  /** The messages one decision would commit (`[]` for a reject). */
+  function admitted(decision: PreStepDecision): UserMessage[] {
+    return decision.kind === 'enter' ? [...decision.messages] : []
+  }
+
+  /** The notices the host listener appended — source-tagged, so a plain message can never count. */
+  function notices(decision: PreStepDecision): UserMessage[] {
+    return admitted(decision).filter(
+      (message) => message.source.kind === 'plugin' && message.source.plugin === 'model-selection',
+    )
+  }
+
+  /** The default web-profile composition: the plugin registers at bundle load, model-selection after it. */
+  function compose(agentId: string, selection: ModelSelectionRef): Agent {
+    const { agent } = makeAgent(agentId, { provider: 'mock', model: 'gpt-4o' }, { origin: 'root' })
+    apply(ctx, cfg({ rootChain: [OFFICIAL_FLASH] }))
+    installModelSelectionStub(ctx, selection)
+    return agent
+  }
+
+  it('records the virtual pair as the request route, so the selection can match it', async () => {
+    const agent = compose('t4-route', { current: virtualPair, assembled: virtualPair })
+
+    expect(await dispatchRequest(ctx, agent, virtualPair)).toEqual(virtualPair)
+    expect(agent.session.requestHeader()?.config).toMatchObject(virtualPair)
+  })
+
+  it('appends no notice while the selection keeps matching the logged route (the loop case)', async () => {
+    const agent = compose('t4-steady', { current: virtualPair, assembled: virtualPair })
+    await dispatchRequest(ctx, agent, virtualPair)
+
+    // Two further admitted steps on an unchanged selection. Pre-fix each step
+    // carried a fresh notice (the live measurement: 10 notices / 10 steps).
+    const second = await dispatchPreStep(agent, 2)
+    const third = await dispatchPreStep(agent, 3)
+    expect(notices(second)).toEqual([])
+    expect(notices(third)).toEqual([])
+    // The decision is exactly the inbox batch — nothing was appended at all.
+    expect(admitted(second)).toHaveLength(1)
+  })
+
+  it('appends exactly one notice for a genuine selection change, then retires', async () => {
+    const selection: ModelSelectionRef = { current: virtualPair, assembled: virtualPair }
+    const agent = compose('t4-change', selection)
+    await dispatchRequest(ctx, agent, virtualPair)
+
+    // The user picks a real model: the step's assembly snapshots it.
+    const flashed = { provider: 'deepseek-official', model: 'deepseek-flash' }
+    selection.current = flashed
+    selection.assembled = flashed
+    const changed = await dispatchPreStep(agent, 2)
+
+    const appended = notices(changed)
+    expect(appended).toHaveLength(1)
+    // Exactly the chip the user reported: source `model-selection`, summary `from → to`.
+    expect(appended[0]?.source).toMatchObject({
+      kind: 'plugin',
+      plugin: 'model-selection',
+      form: 'notice',
+      summary: 'FallbacksChain/Auto → deepseek-official/deepseek-flash',
+    })
+    expect(appended[0]?.content.some((block) => block.type === 'text' && block.text.includes('[model changed:'))).toBe(true)
+
+    // The next request is served on the new selection and logged as such, so
+    // the notice does not repeat — the divergence the loop was made of is gone.
+    expect(await dispatchRequest(ctx, agent, flashed)).toEqual(flashed)
+    expect(notices(await dispatchPreStep(agent, 3))).toEqual([])
   })
 })

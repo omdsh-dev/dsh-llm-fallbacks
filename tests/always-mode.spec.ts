@@ -15,7 +15,7 @@
  * count toward the cap.
  */
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import type { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import { apply, stateStore } from '../src/index.ts'
@@ -44,6 +44,7 @@ beforeEach(() => {
 })
 
 afterEach(async () => {
+  vi.useRealTimers()
   await ctx.fiber.dispose()
 })
 
@@ -209,5 +210,87 @@ describe('always-mode cap anchored at the served head (root virtual route)', () 
     expect(state?.cooldown.peek(selectorKey(FALLBACKS_PROVIDER, FALLBACKS_CHAIN_MODEL))).toBeUndefined()
     expect(state?.stepFailures.failed.has('anthropic/claude-sonnet-4')).toBe(true)
     expect(state?.stepFailures.failed.has(selectorKey(FALLBACKS_PROVIDER, FALLBACKS_CHAIN_MODEL))).toBe(false)
+  })
+})
+
+/**
+ * Plan model-change-notice-loop Task 4 (PM-added items). The T2 case above
+ * proves WHERE a cap-tripped walk starts; these two close the two remaining
+ * gaps that only exist on the root VIRTUAL route:
+ *
+ * - **E24 reachability (boundary)**: the cap counts `llm/retry` events by
+ *   `seed.provider`. Pre-T1 the seed was rewritten to the head, so the cap
+ *   counted the virtual pair while llm-retry recorded the head — the count
+ *   could never reach the cap. Post-T1 the served route IS the virtual pair, so
+ *   the count key and the recorded key coincide; pinned here at the boundary
+ *   (below the cap: no switch; at the cap: switch).
+ * - **half-open probe anchoring**: with no surviving candidate the cap path
+ *   hands `failHalfOpenProbe` the ANCHORED route. Keyed on the picker pair it
+ *   would look up a half-open episode for `FallbacksChain/Auto` — never the
+ *   route that actually failed — and go silently inert (rule 5b never fires).
+ */
+describe('always-mode cap and half-open probe on the virtual route (Task 4)', () => {
+  /** The virtual picker row as a request seed (exact strings, spec lock). */
+  const virtualSeed = { provider: FALLBACKS_PROVIDER, model: FALLBACKS_CHAIN_MODEL }
+
+  it('trips the cap on the virtual route: the served pair is the count key', async () => {
+    const { agent } = makeAgent('cap-virtual-trip', { provider: 'mock', model: 'gpt-4o' }, { origin: 'root' })
+    // A conforming all-day chain (the official row LAST — `isAllDayConforming`
+    // reads the tail) whose first dispatchable exact head is a real route with
+    // one candidate behind it, so a cap switch has somewhere to go.
+    apply(ctx, cfg({ rootChain: ['openai/gpt-4o', OFFICIAL_FLASH], alwaysModeRetryCap: 3 }))
+
+    // Served unchanged, so llm-retry accounts its always retries to the SAME
+    // key the cap counts (the post-T1 premise).
+    expect(await dispatchRequest(ctx, agent, virtualSeed)).toEqual(virtualSeed)
+    for (let retry = 1; retry <= 2; retry += 1) {
+      appendLlmRetry(agent, { turn: 1, step: 1, provider: FALLBACKS_PROVIDER, mode: 'always', retry })
+    }
+    // Below the cap: still served on the virtual route, unchanged.
+    expect(await dispatchRequest(ctx, agent, virtualSeed)).toEqual(virtualSeed)
+
+    appendLlmRetry(agent, { turn: 1, step: 1, provider: FALLBACKS_PROVIDER, mode: 'always', retry: 3 })
+    // The cap-th always retry trips it: the walk starts at the SERVED head
+    // (openai/gpt-4o) and moves past it.
+    expect(await dispatchRequest(ctx, agent, virtualSeed)).toEqual({ provider: 'deepseek-official', model: 'deepseek-flash' })
+  })
+
+  it('re-suppresses the SERVED HEAD when a cap-tripped virtual-route walk has no target (half-open probe)', async () => {
+    const { agent } = makeAgent('cap-virtual-half-open', { provider: 'mock', model: 'gpt-4o' }, { origin: 'root' })
+    // A conforming all-day with NO candidate past the head: the cap-trip
+    // decision is null, the single path that reaches the half-open probe writer.
+    apply(ctx, cfg({
+      rootChain: [OFFICIAL_FLASH],
+      recovery: 'half-open',
+      cooldownMs: 300_000,
+      alwaysModeRetryCap: 3,
+    }))
+    vi.useFakeTimers()
+    const t0 = Date.now()
+
+    // Seed the live episode the P2 way: one prior suppression (n = 1) and then a
+    // lapsed cooldown the read path leaves half-open (rule 1 → rule 3), so a
+    // probe failure must escalate to n = 2.
+    const store = stateStore(ctx)!
+    const state = store.get(agent.id)
+    expect(state.recovery.recordFailure(OFFICIAL_FLASH)).toBe(1)
+    state.recovery.markHalfOpen(OFFICIAL_FLASH, t0)
+    expect(state.recovery.isHalfOpen(OFFICIAL_FLASH)).toBe(true)
+
+    expect(await dispatchRequest(ctx, agent, virtualSeed)).toEqual(virtualSeed)
+    for (let retry = 1; retry <= 3; retry += 1) {
+      appendLlmRetry(agent, { turn: 1, step: 1, provider: FALLBACKS_PROVIDER, mode: 'always', retry })
+    }
+    // Cap tripped, no candidate survives the walk → the probe writer runs on
+    // the anchored route.
+    expect(await dispatchRequest(ctx, agent, virtualSeed)).toEqual(virtualSeed)
+
+    // Rule 5b lands on the SERVED HEAD: re-suppressed escalated (n = 2).
+    expect(state.cooldown.peek(OFFICIAL_FLASH)).toBe(t0 + 600_000)
+    expect(state.recovery.isHalfOpen(OFFICIAL_FLASH)).toBe(false)
+    // The picker pair is not a route that failed: nothing is keyed on it.
+    const pickerKey = selectorKey(FALLBACKS_PROVIDER, FALLBACKS_CHAIN_MODEL)
+    expect(state.cooldown.peek(pickerKey)).toBeUndefined()
+    expect(state.recovery.isHalfOpen(pickerKey)).toBe(false)
   })
 })
