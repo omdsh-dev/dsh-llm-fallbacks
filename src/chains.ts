@@ -27,7 +27,11 @@
  * direct-call default.
  *
  * Cooldown / failed-set / same-as-current filtering is caller-side;
- * {@link createCandidateFilter} provides the ready-made predicate.
+ * {@link createCandidateFilter} provides the ready-made predicate. A
+ * `CONTEXT_WINDOW_EXCEEDED` walk adds one more caller-side dimension to the
+ * same predicate — candidates whose disclosed context window is not larger
+ * than the failing model's cannot fit the request either
+ * ({@link fitsContextWindow}; unknown windows keep the candidate).
  *
  * @module dsh-llm-fallbacks/chains
  */
@@ -247,19 +251,53 @@ export interface CandidateFilterOptions {
   failed: Pick<StepFailureSet, 'has'>
   /** Optional existence probe: candidates the target provider lacks are skipped. */
   modelExists?: (provider: string, model: string) => boolean
+  /**
+   * The failing model's context window, when known — set only for a
+   * `CONTEXT_WINDOW_EXCEEDED` walk. Candidates whose own known window is not
+   * LARGER than this cannot fit the request either and are skipped.
+   */
+  minContextWindow?: number
+  /** Context-window lookup for a candidate route; `undefined` = not disclosed. */
+  contextWindowOf?: (provider: string, model: string) => number | undefined
+}
+
+/**
+ * The context-window exclusion, shared by {@link createCandidateFilter} and
+ * {@link annotateCandidates} so the switch log can never disagree with the
+ * filter that produced it.
+ *
+ * A candidate is excluded ONLY when both windows are known and the
+ * candidate's is not larger than the failing model's — the request that just
+ * overflowed cannot fit there either. Unknown on either side (no
+ * context-window walk, an undisclosed catalog, a wildcard with no model id)
+ * KEEPS the candidate: capacity metadata is advisory, and a provider that
+ * discloses nothing must never empty the chain.
+ */
+function fitsContextWindow(
+  candidate: Selector,
+  minContextWindow?: number,
+  contextWindowOf?: (provider: string, model: string) => number | undefined,
+): boolean {
+  if (minContextWindow === undefined || contextWindowOf === undefined) return true
+  if (candidate.model === undefined) return true
+  const candidateWindow = contextWindowOf(candidate.provider, candidate.model)
+  return candidateWindow === undefined || candidateWindow > minContextWindow
 }
 
 /**
  * The caller-side candidate filter (Task 3): a candidate is usable when it
  * differs from the current model, is not cooldown-suppressed, has not failed
- * in this step, and (when `modelExists` is given) exists on its provider.
+ * in this step, can fit the request that overflowed (context-window walks
+ * only — see {@link fitsContextWindow}), and (when `modelExists` is given)
+ * exists on its provider.
  */
 export function createCandidateFilter(options: CandidateFilterOptions): (candidate: Selector) => boolean {
-  const { current, cooldown, failed, modelExists } = options
+  const { current, cooldown, failed, modelExists, minContextWindow, contextWindowOf } = options
   return (candidate) => {
     if (candidate.provider === current.provider && candidate.model === current.model) return false
     if (cooldown.isSuppressed(selectorKey(candidate.provider, candidate.model))) return false
     if (failed.has(selectorKey(candidate.provider, candidate.model))) return false
+    if (!fitsContextWindow(candidate, minContextWindow, contextWindowOf)) return false
     if (modelExists && candidate.model !== undefined && !modelExists(candidate.provider, candidate.model)) {
       return false
     }
@@ -267,8 +305,13 @@ export function createCandidateFilter(options: CandidateFilterOptions): (candida
   }
 }
 
-/** Why one considered candidate was excluded from the selection (spec §2 行为可见性). */
-export type CandidateSkipReason = 'same-as-current' | 'cooldown' | 'step-failed' | 'missing-id'
+/**
+ * Why one considered candidate was excluded from the selection (spec §2
+ * 行为可见性). `context-window` is the `CONTEXT_WINDOW_EXCEEDED` walk's
+ * exclusion: the candidate's disclosed window is not larger than the failing
+ * model's, so the request that just overflowed cannot fit there either.
+ */
+export type CandidateSkipReason = 'same-as-current' | 'cooldown' | 'step-failed' | 'context-window' | 'missing-id'
 
 /** One entry of the ordered, per-candidate annotation (T3 review Minor 1). */
 export interface AnnotatedCandidate {
@@ -295,9 +338,9 @@ export interface AnnotatedCandidate {
 export function annotateCandidates(
   candidates: readonly Selector[],
   surviving: readonly Selector[],
-  options: Pick<CandidateFilterOptions, 'current' | 'cooldown' | 'failed'>,
+  options: Pick<CandidateFilterOptions, 'current' | 'cooldown' | 'failed' | 'minContextWindow' | 'contextWindowOf'>,
 ): AnnotatedCandidate[] {
-  const { current, cooldown, failed } = options
+  const { current, cooldown, failed, minContextWindow, contextWindowOf } = options
   const usable = new Set(surviving.map((candidate) => selectorKey(candidate.provider, candidate.model)))
   return candidates.map((candidate) => {
     if (candidate.provider === current.provider && candidate.model === current.model) {
@@ -307,6 +350,7 @@ export function annotateCandidates(
     if (usable.has(key)) return { candidate }
     if (cooldown.isSuppressed(key)) return { candidate, skip: 'cooldown' }
     if (failed.has(key)) return { candidate, skip: 'step-failed' }
+    if (!fitsContextWindow(candidate, minContextWindow, contextWindowOf)) return { candidate, skip: 'context-window' }
     return { candidate, skip: 'missing-id' }
   })
 }
