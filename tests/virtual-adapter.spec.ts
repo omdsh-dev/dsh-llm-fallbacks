@@ -7,6 +7,7 @@
  * head-delegate through the host LLM runtime, gated on a conforming
  * all-day; `resolveModel` proxies the current effective head with a
  * permissive fallback; `imageRequestPricing` delegates to the SAME head,
+ * never throwing; `providerRetryPolicy` mirrors the head's captured policy,
  * never throwing).
  *
  * Runs against the REAL `LlmRuntime` (`@deepseek-ai/dsh-llm`) with a stub
@@ -20,9 +21,11 @@ import { Context } from '@deepseek-ai/cordis'
 import {
   LlmAdapter,
   LlmRuntime,
+  createAssistantMessage,
   type GenerateOptions,
   type LlmImageRequestPricing,
   type LlmResolvedModelInfo,
+  type ResolvedRetryPolicy,
   type StreamChunk,
 } from '@deepseek-ai/dsh-llm'
 import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
@@ -40,7 +43,7 @@ import {
 } from '../src/virtual-adapter.ts'
 import { FALLBACKS_SETTINGS_NAMESPACE } from '../src/gateway.ts'
 import { MemorySettings } from './support/memory-settings.ts'
-import { cfg } from './support/harness.ts'
+import { alwaysPolicy, cfg, dispatchRequest, makeAgent } from './support/harness.ts'
 
 const HEAD_PROVIDER = 'deepseek-official'
 const HEAD_MODEL = 'deepseek-flash'
@@ -67,6 +70,8 @@ class StubHeadAdapter extends LlmAdapter {
   readonly pricingCalls: Array<{ provider: string; model: string }> = []
   /** Route pricing served for the head pair; `undefined` declares none (the base default). */
   pricing: LlmImageRequestPricing | undefined
+  /** Route retry policy declared for the head; `undefined` declares none (the base default). */
+  policy: ResolvedRetryPolicy | undefined
 
   constructor(public info: Partial<LlmResolvedModelInfo> = {}) {
     super()
@@ -89,6 +94,10 @@ class StubHeadAdapter extends LlmAdapter {
     return this.pricing
   }
 
+  override providerRetryPolicy(): ResolvedRetryPolicy | undefined {
+    return this.policy
+  }
+
   override async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
     this.calls.push({ provider: options.provider, model: options.model, options })
     yield { type: 'text-delta', index: 0, text: 'hello from head' }
@@ -105,7 +114,12 @@ async function collect(stream: AsyncIterable<StreamChunk>): Promise<StreamChunk[
 
 /** Whether the virtual route is currently registered on the real runtime. */
 function listed(): boolean {
-  return ctx.llm.listProviders().some((provider) => provider.id === FALLBACKS_PROVIDER)
+  return listedOn(ctx)
+}
+
+/** {@link listed} for a locally constructed runtime (fixture-free arms). */
+function listedOn(target: Context): boolean {
+  return target.llm.listProviders().some((provider) => provider.id === FALLBACKS_PROVIDER)
 }
 
 let ctx: Context
@@ -289,12 +303,12 @@ describe('adapter contract (P1/P3)', () => {
     expect(stub.calls[0]).toMatchObject({ provider: HEAD_PROVIDER, model: HEAD_MODEL })
   })
 
-  it('resolveModel and stream() use the same exact head as the root request override (wildcard-first chain)', async () => {
-    // The same wildcard-first slot chain the select-is-primary override test
-    // uses (tests/index-request.spec.ts, "picks the FIRST exact head,
-    // skipping earlier wildcard entries"): the leading `other/*` is never a
+  it('resolveModel and stream() use the same exact head as the root route delegate (wildcard-first chain)', async () => {
+    // The same wildcard-first slot chain tests/index-request.spec.ts drives
+    // through the root request path ("serves the seed unchanged for a
+    // wildcard-first chain"): the leading `other/*` is never a
     // dispatch target, so BOTH delegate paths must land on
-    // `anthropic/claude-sonnet-4` — the head the root override resolves to.
+    // `anthropic/claude-sonnet-4` — the head the virtual route delegates to.
     const anthropicStub = new StubHeadAdapter({ name: 'Claude Sonnet 4' })
     ctx.llm.registerAdapter(['anthropic'], anthropicStub)
     apply(
@@ -326,6 +340,47 @@ describe('adapter contract (P1/P3)', () => {
     expect(anthropicStub.calls).toHaveLength(1)
     expect(anthropicStub.calls[0]).toMatchObject({ provider: 'anthropic', model: 'claude-sonnet-4' })
     // The all-day head was never dispatched either.
+    expect(stub.calls).toHaveLength(0)
+  })
+
+  it('serves the root request as the virtual pair and delegates that exact route to the head', async () => {
+    // Plan model-change-notice-loop Task 1: the root `agent/request` no longer
+    // rewrites a `FallbacksChain/Auto` seed, so the route the loop serves (and
+    // records) IS the virtual pair — this delegate is the only thing that
+    // turns it into a real model request. A wildcard-first slot chain keeps
+    // the two routes distinguishable: the served route must stay virtual while
+    // the delegated pair is the slot head.
+    const anthropicStub = new StubHeadAdapter({ name: 'Claude Sonnet 4' })
+    ctx.llm.registerAdapter(['anthropic'], anthropicStub)
+    apply(
+      ctx,
+      cfg({
+        rootChain: [OFFICIAL_FLASH],
+        timeSlots: [{ kind: 'custom', start: '00:00', end: '23:59', chain: ['other/*', 'anthropic/claude-sonnet-4'] }],
+      }),
+    )
+    await vi.waitFor(() => expect(listed()).toBe(true))
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-08-18T04:00:00Z'))
+
+    const { agent } = makeAgent('root-route-delegate', { provider: 'mock', model: 'gpt-4o' }, { origin: 'root' })
+    const served = await dispatchRequest(ctx, agent, {
+      provider: FALLBACKS_PROVIDER,
+      model: FALLBACKS_CHAIN_MODEL,
+    })
+    // The served route is byte-identical to the seed, and it is what the
+    // session records (the host's notice listener reads this value).
+    expect(served).toEqual({ provider: FALLBACKS_PROVIDER, model: FALLBACKS_CHAIN_MODEL })
+    expect(agent.session.requestHeader()?.config).toEqual(served)
+
+    // Streaming the SERVED config is the root path's only way to a real model.
+    const chunks = await collect(ctx.llm.stream({ ...served, messages: [] }))
+    expect(chunks).toEqual([
+      { type: 'text-delta', index: 0, text: 'hello from head' },
+      { type: 'finish', reason: { kind: 'stop' } },
+    ])
+    expect(anthropicStub.calls).toHaveLength(1)
+    expect(anthropicStub.calls[0]).toMatchObject({ provider: 'anthropic', model: 'claude-sonnet-4' })
     expect(stub.calls).toHaveLength(0)
   })
 
@@ -486,5 +541,224 @@ describe('imageRequestPricing (0.1.2 adoption)', () => {
     apply(ctx, cfg({ rootChain: [] }))
     await vi.waitFor(() => expect(listed()).toBe(true))
     expect(ctx.llm.imageRequestPricing(FALLBACKS_PROVIDER, FALLBACKS_CHAIN_MODEL)).toBeUndefined()
+  })
+})
+
+/**
+ * Retry attribution (`dsh-llm` `prepareRoutes`): the host captures
+ * `adapter.providerRetryPolicy(provider) ?? resolveRetryPolicy(void 0, …)`
+ * ONCE, when a route is registered — so a virtual route declaring no policy
+ * of its own silently hands `FallbacksChain` the permissive normal default
+ * and drops the `retryPolicy` the user configured on the head actually served
+ * by the delegate. The proxy answers with the SAME captured object the head's
+ * own route returns; an unresolvable head answers `undefined` (the host
+ * default) rather than a fabricated policy — and never throws, because that
+ * throw happens INSIDE `registerAdapter` and would take the whole virtual
+ * route down.
+ */
+describe('providerRetryPolicy (route-accurate retry attribution)', () => {
+  /** Unmistakable head policy: `always` + a backoff the host default never has. */
+  const HEAD_POLICY: ResolvedRetryPolicy = alwaysPolicy({ initialDelayMs: 1234, maxDelayMs: 4321 })
+
+  it('reports the effective head policy, not the permissive default', async () => {
+    const local = new Context()
+    try {
+      new LlmRuntime(local)
+      const headStub = new StubHeadAdapter()
+      // Declared BEFORE the registration below — the host captures it there.
+      headStub.policy = HEAD_POLICY
+      local.llm.registerAdapter([HEAD_PROVIDER], headStub)
+      apply(local, cfg({ rootChain: [OFFICIAL_FLASH] }))
+      await vi.waitFor(() => expect(listedOn(local)).toBe(true))
+
+      const virtual = local.llm.providerRetryPolicy(FALLBACKS_PROVIDER)
+      // The head route's own captured object came back — identity, not a copy.
+      expect(virtual).toBe(local.llm.providerRetryPolicy(HEAD_PROVIDER))
+      expect(virtual).toMatchObject({ mode: 'always', initialDelayMs: 1234, maxDelayMs: 4321 })
+    } finally {
+      await local.fiber.dispose()
+    }
+  })
+
+  it('reports the runtime default for a non-conforming chain (conformance-gated, not policy-gated)', async () => {
+    // Non-conformance lives in the chain TAIL (`isAllDayConforming` reads only
+    // the last entry), while the FIRST entry is a REGISTERED official head.
+    // That combination is what makes the conformance gate observable: drop the
+    // gate and head resolution walks the raw chain to that registered head —
+    // whose captured policy IS `always` — so the proxy would echo `always`
+    // here instead of the host default, and this arm would fail. The head
+    // route's own `always` answer in the same runtime (asserted below) is the
+    // control: the proxy is gated on a conforming chain, not a blanket echo of
+    // every policy the runtime happens to hold.
+    const local = new Context()
+    try {
+      new LlmRuntime(local)
+      const headStub = new StubHeadAdapter()
+      headStub.policy = HEAD_POLICY
+      local.llm.registerAdapter([HEAD_PROVIDER], headStub)
+      apply(local, cfg({ rootChain: [OFFICIAL_FLASH, 'other/gpt-4o'] }))
+      await vi.waitFor(() => expect(listedOn(local)).toBe(true))
+
+      expect(local.llm.providerRetryPolicy(HEAD_PROVIDER)).toMatchObject({ mode: 'always' })
+      expect(local.llm.providerRetryPolicy(FALLBACKS_PROVIDER)).toMatchObject({
+        mode: 'normal',
+        maxRetries: 5,
+        initialDelayMs: 500,
+        maxDelayMs: 10_000,
+        jitterRatio: 0.1,
+      })
+    } finally {
+      await local.fiber.dispose()
+    }
+  })
+
+  it('absorbs an unregistered head provider instead of failing registration', async () => {
+    // The chain resolves to a conforming head but no adapter owns that route,
+    // so the runtime's own lookup throws `NO_ADAPTER` — inside the plugin's
+    // `registerAdapter` call. Absorbing it is what keeps the row selectable.
+    const bare = new Context()
+    try {
+      new LlmRuntime(bare)
+      apply(bare, cfg({ rootChain: [OFFICIAL_FLASH] }))
+      await vi.waitFor(() => expect(listedOn(bare)).toBe(true))
+      expect(bare.llm.providerRetryPolicy(FALLBACKS_PROVIDER)).toMatchObject({ mode: 'normal', maxRetries: 5 })
+    } finally {
+      await bare.fiber.dispose()
+    }
+  })
+
+  it('answers undefined when the llm runtime is gone (mid-teardown guard)', () => {
+    // Direct construction: the registration lifecycle cannot reach a
+    // registered route whose `llm` vanished, so the guard is unit-tested on
+    // the class directly (mirrors the pricing guard above).
+    const config: FallbacksConfig = {
+      ...defaultFallbacksConfig,
+      enabled: true,
+      rootChain: [OFFICIAL_FLASH],
+      presets: 'none',
+    }
+    const adapter = new FallbacksChainAdapter(() => config, () => undefined)
+    expect(adapter.providerRetryPolicy(FALLBACKS_PROVIDER)).toBeUndefined()
+  })
+})
+
+describe('delegated history provenance (R-004)', () => {
+  /**
+   * The agent loop stamps every durable assistant message with the route of the
+   * REQUEST that produced it (`FallbacksChain/Auto` on this path) while the
+   * replay envelope inside it came from the head adapter that actually answered.
+   * `LlmRuntime.forAdapter` keeps an envelope only when the TARGET adapter owns
+   * the message's recorded provider, so on the delegate's inner pass the head is
+   * handed a message with no `replayState` — pi-ai-backed thinking signatures are
+   * silently dropped.
+   *
+   * Two arms: a recognised envelope (whose own provenance names the head) must
+   * still reach the head, and an envelope this plugin cannot read must be left
+   * exactly as it is.
+   */
+  /**
+   * A replay envelope in the shape the host's pi-ai adapter validates
+   * (`@deepseek-ai/dsh-llm-pi-ai` `readReplayState`: `response.kind === 'pi-ai'`,
+   * `version === 2`, non-empty `api`/`provider`/`model`, a known `stopReason`,
+   * and a `blocks` array). Verified against the installed 0.1.5-rc.1 build —
+   * the plugin does not depend on pi-ai, so the fixture reproduces the contract
+   * structurally instead of importing it.
+   */
+  const HEAD_ENVELOPE = {
+    response: {
+      kind: 'pi-ai',
+      version: 2,
+      api: 'anthropic-messages',
+      provider: HEAD_PROVIDER,
+      model: HEAD_MODEL,
+      stopReason: 'stop',
+    },
+    blocks: [{ type: 'text', textSignature: 'sig-1' }],
+  }
+
+  /** One durable assistant message, as the loop records it on `provider`/`model`. */
+  function assistantOn(provider: string, model: string, replayState?: unknown) {
+    return createAssistantMessage({
+      content: [{ type: 'text', text: 'earlier turn' }],
+      source: { provider, model, ...(replayState === undefined ? {} : { replayState }) },
+    })
+  }
+
+  /** A durable assistant message as the loop records it on the virtual route. */
+  function virtualRouteHistory(replayState?: unknown) {
+    return assistantOn(FALLBACKS_PROVIDER, FALLBACKS_CHAIN_MODEL, replayState)
+  }
+
+  /** Delegate one request with `messages`; return the history the head adapter saw. */
+  async function delegatedHistory(messages: ReturnType<typeof assistantOn>[]) {
+    apply(ctx, cfg({ rootChain: [OFFICIAL_FLASH] }))
+    await vi.waitFor(() => expect(listed()).toBe(true))
+    await collect(
+      ctx.llm.stream({ provider: FALLBACKS_PROVIDER, model: FALLBACKS_CHAIN_MODEL, messages }),
+    )
+    expect(stub.calls).toHaveLength(1)
+    return stub.calls[0]!.options.messages
+  }
+
+  it('hands the head its own envelope for a history message recorded on the virtual route', async () => {
+    const [delegated] = await delegatedHistory([virtualRouteHistory(HEAD_ENVELOPE)])
+    // Discriminating: pre-fix the recorded pair is the virtual one, so the
+    // runtime's ownership gate strips the envelope before the head sees it.
+    expect(delegated).toMatchObject({
+      role: 'assistant',
+      source: {
+        kind: 'model',
+        provider: HEAD_PROVIDER,
+        model: HEAD_MODEL,
+        replayState: HEAD_ENVELOPE,
+      },
+    })
+  })
+
+  it('restores the virtual route and still withholds a real-route envelope (boundary pin)', async () => {
+    // Both halves of what this fix does and does not cover.
+    //
+    // Restored: a message the loop recorded on the VIRTUAL route keeps its
+    // envelope and reaches the head under the pair the envelope names — which is
+    // also what pi-ai's replay validator demands (`response.provider`/`model`
+    // must equal the message source, else it throws `INVALID_REPLAY_STATE`
+    // instead of replaying the thinking blocks).
+    //
+    // Not covered (introduced by the change that removed the root rewrite — only
+    // the cross-adapter-instance rotation subset predates it): a message
+    // recorded on a REAL route loses its envelope one gate earlier — on the
+    // OUTER pass the target adapter is this virtual adapter, which does not own
+    // that historical provider, so `forAdapter` strips it before `stream()` ever
+    // receives the history. Before that change the root request carried the head
+    // pair, so the outer pass aimed at the head adapter and kept this history;
+    // it now always aims at the virtual adapter, so every real-route envelope in
+    // a virtual-route session is dropped. No plugin code can recover it on that
+    // path (the durable envelope is simply not in the delegated options). Same
+    // cross-route boundary as R-004, on the other side of the delegate —
+    // documented in docs/configuration.md under the accepted gaps, not fixed here.
+    const [realRoute, virtualRoute] = await delegatedHistory([
+      assistantOn(HEAD_PROVIDER, HEAD_MODEL, HEAD_ENVELOPE),
+      virtualRouteHistory(HEAD_ENVELOPE),
+    ])
+    expect((realRoute?.source as { replayState?: unknown }).replayState).toBeUndefined()
+    expect(virtualRoute?.source).toMatchObject({
+      kind: 'model',
+      provider: HEAD_PROVIDER,
+      model: HEAD_MODEL,
+      replayState: HEAD_ENVELOPE,
+    })
+  })
+
+  it('leaves an unreadable envelope untouched instead of inventing a provenance', async () => {
+    // Regression guard, NOT a discriminator: this passes before and after the
+    // fix. The probe cannot name a provider for an unrecognised shape, so the
+    // message keeps the virtual pair and the runtime's ownership gate strips the
+    // envelope exactly as it does today — the conservative half of the contract.
+    const unreadable = { someAdapterPrivateShape: 'unrecognised' }
+    const [delegated] = await delegatedHistory([virtualRouteHistory(unreadable)])
+    expect(delegated).toMatchObject({
+      source: { kind: 'model', provider: FALLBACKS_PROVIDER, model: FALLBACKS_CHAIN_MODEL },
+    })
+    expect((delegated?.source as { replayState?: unknown }).replayState).toBeUndefined()
   })
 })

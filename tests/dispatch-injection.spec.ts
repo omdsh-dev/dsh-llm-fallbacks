@@ -30,6 +30,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { StreamChunk } from '@deepseek-ai/dsh-llm'
 import { detectAuthorizedRoute } from '../src/authorized-route.ts'
 import { apply, chainHeads, stateStore } from '../src/index.ts'
+import { FALLBACKS_CHAIN_MODEL, FALLBACKS_PROVIDER } from '../src/virtual-adapter.ts'
 import { MemorySettings } from './support/memory-settings.ts'
 import { cfg, dispatchRequest, dispatchRequestError, makeAgent, switchEvents } from './support/harness.ts'
 
@@ -101,6 +102,53 @@ describe('dispatch-time role injection', () => {
     const config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
     expect(config).toEqual({ provider: 'anthropic', model: 'claude-sonnet-4' })
     expect(switchEvents(agent)).toHaveLength(0)
+  })
+
+  // QC1 I-1 (plan model-change-notice-loop, Done criterion 2 / Decision 5): a
+  // delegated child's recorded pair is the delegating parent's durable
+  // `request/header` route — on a `FallbacksChain/Auto` parent that is the
+  // virtual row, while the child is served by the chain head. These two cases
+  // are the missing pin: a head-keyed rule still resolves (and injects) its
+  // role's chain head, and a rule-free virtual child still inherits.
+  it('resolves a rule keyed on the SERVED HEAD for a child that inherited the virtual row (QC1 I-1)', async () => {
+    const { agent } = makeAgent(
+      't4-virtual-rule',
+      { provider: FALLBACKS_PROVIDER, model: FALLBACKS_CHAIN_MODEL },
+      { origin: 'subagent' },
+    )
+    apply(ctx, cfg({
+      rootChain: ['deepseek-official/deepseek-flash'],
+      roles: {
+        list: [{ id: 'coder', persona: '', chain: ['anthropic/claude-sonnet-4'] }],
+        rules: [{ provider: 'deepseek-official', model: 'deepseek-flash', role: 'coder' }],
+      },
+    }))
+
+    const config = await dispatchRequest(ctx, agent, {
+      provider: FALLBACKS_PROVIDER,
+      model: FALLBACKS_CHAIN_MODEL,
+    })
+    expect(config).toEqual({ provider: 'anthropic', model: 'claude-sonnet-4' })
+  })
+
+  it('keeps a rule-free virtual child on inheritance (the host seed stands, no inject)', async () => {
+    const { agent } = makeAgent(
+      't4-virtual-inherit',
+      { provider: FALLBACKS_PROVIDER, model: FALLBACKS_CHAIN_MODEL },
+      { origin: 'subagent' },
+    )
+    apply(ctx, cfg({ rootChain: ['deepseek-official/deepseek-flash'] }))
+
+    const config = await dispatchRequest(ctx, agent, {
+      provider: FALLBACKS_PROVIDER,
+      model: FALLBACKS_CHAIN_MODEL,
+    })
+    // `inherit` is the documented no-override outcome (the inject gate is
+    // `role !== INHERIT_ROLE_ID`): the child keeps the route it inherited from
+    // the parent — here the virtual row — and the delegate serves it. The pin
+    // that matters is that the anchor did NOT turn a rule-free child into a
+    // rule match.
+    expect(config).toEqual({ provider: FALLBACKS_PROVIDER, model: FALLBACKS_CHAIN_MODEL })
   })
 
   it('does not inject when the chain head equals the current model', async () => {

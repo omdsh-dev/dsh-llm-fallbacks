@@ -28,6 +28,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { apply, stateStore } from '../src/index.ts'
+import { FALLBACKS_CHAIN_MODEL, FALLBACKS_PROVIDER } from '../src/virtual-adapter.ts'
+import { OFFICIAL_FLASH } from '../src/time-slots.ts'
 import { MemorySettings } from './support/memory-settings.ts'
 import { cfg, dispatchRequest, dispatchRequestError, makeAgent } from './support/harness.ts'
 
@@ -228,5 +230,45 @@ describe('context-window candidate filter — skip what cannot fit either', () =
     // decision, over the failing provider plus every candidate provider.
     expect(await dispatchRequestError(ctx, agent, { turn: 2, step: 1, failure: overflow })).toEqual({ kind: 'retry' })
     expect(listModels.mock.calls.flat()).toEqual(['mock', 'other'])
+  })
+
+  /**
+   * Virtual-route case (plan model-change-notice-loop Task 2): the failing
+   * ROUTE is the head the adapter delegated to, so the window the candidates
+   * are compared against is the HEAD's — not the virtual row's. Anchored, the
+   * head's 4096 rejects the equally small sibling and the walk reaches the
+   * 200 000 row; left on the virtual pair the comparison degenerates to
+   * "unknown" and the walk stops at the first chain entry.
+   */
+  it('compares against the SERVED head window when the route is the virtual row', async () => {
+    ctx.provide('llm', {
+      listModels: async (provider: string) => ({
+        small: [{ id: 'tiny', contextWindow: 4_096 }],
+        mid: [{ id: 'narrow', contextWindow: 4_096 }],
+        big: [{ id: 'wide', contextWindow: 200_000 }],
+      }[provider] ?? []),
+    })
+    const logs = captureLogs()
+    const { agent } = makeAgent('cw-virtual', {
+      provider: FALLBACKS_PROVIDER,
+      model: FALLBACKS_CHAIN_MODEL,
+    })
+    // Conforming all-day tail (the delegate gate) with a real head first: the
+    // request stays on `FallbacksChain/Auto` and the adapter serves it with
+    // `small/tiny`.
+    apply(ctx, cfg({
+      triggerCodes,
+      rootChain: ['small/tiny', 'mid/narrow', 'big/wide', OFFICIAL_FLASH],
+    }))
+
+    expect(await dispatchRequestError(ctx, agent, {
+      provider: FALLBACKS_PROVIDER,
+      failure: overflow,
+    })).toEqual({ kind: 'retry' })
+
+    const state = stateStore(ctx)?.peek(agent.id)
+    expect(state?.pendingSwitch?.from).toEqual({ provider: 'small', model: 'tiny' })
+    expect(state?.pendingSwitch?.to).toEqual({ provider: 'big', model: 'wide' })
+    expect(switchLogCandidates(logs, 0)).toContain('mid/narrow (skipped: context-window)')
   })
 })

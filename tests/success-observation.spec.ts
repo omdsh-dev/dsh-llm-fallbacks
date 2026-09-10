@@ -19,8 +19,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { createAssistantMessage, type AssistantMessage } from '@deepseek-ai/dsh-llm'
 import { apply, stateStore } from '../src/index.ts'
+import { FALLBACKS_CHAIN_MODEL, FALLBACKS_PROVIDER } from '../src/virtual-adapter.ts'
 import { MemorySettings } from './support/memory-settings.ts'
 import { cfg, emitAssistantMessage, makeAgent } from './support/harness.ts'
+
+/** The single official head a conforming all-day chain resolves to in these cases. */
+const HEAD_KEY = 'deepseek-official/deepseek-flash'
 
 let ctx: Context
 
@@ -223,5 +227,43 @@ describe('P3 success observation — session/event listener (plan fallbacks-half
 
     // The listener must not grow the store (peek, never create).
     expect(stateStore(ctx)?.peek(agent.id)).toBeUndefined()
+  })
+
+  // QC2 I-1 (plan model-change-notice-loop): the failure side of the circuit is
+  // anchored at the SERVED HEAD (`anchorServedRoute`), but the durable
+  // `assistant/message` source records the REQUEST route — the virtual pair on a
+  // `FallbacksChain/Auto` session. Reading that source raw makes
+  // `observeSuccess` a guaranteed no-op on the virtual route, so the head's
+  // episode never closes and its escalations grow unbounded despite served
+  // successes. Both sides must resolve through the same anchor.
+  it('closes the SERVED HEAD circuit on a virtual-route completion (QC2 I-1 — anchor parity)', () => {
+    const { agent } = makeAgent('p3-virtual-close', {
+      provider: FALLBACKS_PROVIDER,
+      model: FALLBACKS_CHAIN_MODEL,
+    })
+    apply(ctx, cfg({ recovery: 'half-open', rootChain: [HEAD_KEY] }))
+    seedHalfOpen(agent.id, HEAD_KEY, 1_000, 2_000)
+
+    emitAssistantMessage(ctx, agent, { provider: FALLBACKS_PROVIDER, model: FALLBACKS_CHAIN_MODEL })
+
+    const state = stateStore(ctx)!.peek(agent.id)!
+    expect(state.recovery.isHalfOpen(HEAD_KEY)).toBe(false)
+    expect(state.recovery.halfOpenEntries()).toEqual([])
+  })
+
+  it('does not map an unrelated real route onto the head (over-anchoring guard)', () => {
+    const { agent } = makeAgent('p3-real-route-close', {
+      provider: FALLBACKS_PROVIDER,
+      model: FALLBACKS_CHAIN_MODEL,
+    })
+    apply(ctx, cfg({ recovery: 'half-open', rootChain: [HEAD_KEY] }))
+    seedHalfOpen(agent.id, HEAD_KEY, 1_000, 2_000)
+
+    // A completion attributed to a real route is NOT the head's success: the
+    // anchor returns real routes unchanged, so the head's episode stays open.
+    emitAssistantMessage(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
+
+    const state = stateStore(ctx)!.peek(agent.id)!
+    expect(state.recovery.isHalfOpen(HEAD_KEY)).toBe(true)
   })
 })
