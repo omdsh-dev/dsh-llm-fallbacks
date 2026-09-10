@@ -516,6 +516,31 @@ function anchorServedRoute(config: FallbacksConfig, route: FailingModel, now: Da
 }
 
 /**
+ * The route an agent's request was actually SERVED by, when that differs from
+ * the pair recorded on the agent — i.e. a `FallbacksChain/Auto` session whose
+ * recorded pair is the virtual row, anchored to the effective head through the
+ * same rule the delegate uses ({@link anchorServedRoute}).
+ *
+ * Returns `undefined` when the recorded pair IS the served pair, so every real
+ * route keeps byte-identical downstream behavior. Callers that compare a route
+ * against the recorded `agent.options` pair (dispatch-time role rules) accept
+ * either, so a rule keyed on the real chain head keeps matching a subagent
+ * whose recorded route is the virtual pair (plan `model-change-notice-loop`
+ * QC1 I-1 — `parentAgentOptionsForDelegation` stamps the child's options from
+ * the delegating parent's durable `request/header`).
+ */
+function servedRouteFor(
+  agent: { options?: { provider?: string; model?: string } },
+  config: FallbacksConfig,
+): FailingModel | undefined {
+  const provider = agent.options?.provider
+  const model = agent.options?.model
+  if (provider === undefined || model === undefined) return undefined
+  const anchored = anchorServedRoute(config, { provider, model }, new Date())
+  return anchored.provider === provider && anchored.model === model ? undefined : anchored
+}
+
+/**
  * The model the failed/current request was routed to — anchored at the served
  * head when the route is the virtual pair ({@link anchorServedRoute}). The
  * context-window comparison reads this same pair, so the failing route's window
@@ -1007,7 +1032,7 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
       states.syncStep(state, turn, step)
       if (state.stepFailures.switchCount >= config.maxSwitchesPerStep) return null
     }
-    const role = resolveRole(agent, config.roles.rules, roleIds, logger.warn)
+    const role = resolveRole(agent, config.roles.rules, roleIds, logger.warn, servedRouteFor(agent, config))
     // P7 (plan fallbacks-timeslots Task 2): slot rotation applies to
     // ROOT-origin agents only, in BOTH primary and fallback-only modes —
     // the effective chain (first matching extra row, else the all-day
@@ -1419,6 +1444,7 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
               automatchEnabled: config.roleAutoMatch ?? true,
               automatch: (agent) => pickRoleByLlm(ctx, config.roles, agent, { warn: logger.warn }),
               warn: logger.warn,
+              servedRoute: servedRouteFor(agent, config),
             })
             if (role !== INHERIT_ROLE_ID) {
               const { all, wildcard } = resolveChainViews(
@@ -1568,13 +1594,28 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   // creates (F-004). Read-only: the listener never appends (mount-only).
   ctx.on('session/event', (session, event) => {
     if (event.type !== 'assistant/message') return
-    if ((source().recovery ?? 'timer') !== 'half-open') return
+    const config = source()
+    if ((config.recovery ?? 'timer') !== 'half-open') return
     if (event.data.interrupted === true) return
     const message = event.data.message
     if (message.source.kind !== 'model') return
     const state = states.peek(session.id)
     if (state === undefined) return
-    states.observeSuccess(state, selectorKey(message.source.provider, message.source.model))
+    // QC2 I-1 (plan model-change-notice-loop): the failure side of the circuit
+    // is keyed on the SERVED HEAD — `decide`/`commit` receive
+    // `anchorServedRoute(...)` — while the durable `assistant/message` source
+    // records the REQUEST route. On a `FallbacksChain/Auto` session that is the
+    // virtual pair, so reading the source raw makes this observer a guaranteed
+    // no-op there: the head's episode never closes and its suppression keeps
+    // escalating (×2 up to the 1 h cap) despite served successes. Resolve the
+    // observed route through the SAME anchor so both sides of rule 6 agree; a
+    // real route comes back unchanged, so non-virtual sessions are identical.
+    const observed = anchorServedRoute(
+      config,
+      { provider: message.source.provider, model: message.source.model },
+      new Date(),
+    )
+    states.observeSuccess(state, selectorKey(observed.provider, observed.model))
   })
 
   ctx.effect(() => () => {
@@ -1601,7 +1642,7 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   const fallbacksCommandController: FallbacksCommandController = {
     getSnapshot(agent): FallbacksCommandSnapshot {
       const config = source()
-      const role = resolveRole(agent, config.roles.rules, roleIds, logger.warn)
+      const role = resolveRole(agent, config.roles.rules, roleIds, logger.warn, servedRouteFor(agent, config))
       const state = states.peek(agent.id)
       // P4 (plan fallbacks-half-open-recovery Task 4): under half-open mode
       // the expired cooldown entries transition AT the diagnostic read (so

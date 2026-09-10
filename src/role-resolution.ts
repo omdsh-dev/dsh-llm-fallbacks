@@ -54,6 +54,14 @@ export interface ResolveRoleAtDispatchOptions {
   automatch?: (agent: AgentLike) => Promise<string | null>
   /** Warning sink — the decision path injects the plugin logger. */
   warn: (message: string) => void
+  /**
+   * The route the agent's request was actually SERVED by, when that differs
+   * from the pair recorded on the agent (the virtual `FallbacksChain/Auto`
+   * row). Rule matching accepts either, so a rule keyed on the real chain head
+   * keeps matching a child whose recorded route is the virtual pair (QC1 I-1).
+   * `undefined` for every real route.
+   */
+  servedRoute?: { provider: string; model: string }
 }
 
 /**
@@ -83,7 +91,7 @@ export async function resolveRoleAtDispatch(
   }
 
   // Stage 2 — rules (existing resolveRole passthrough, unchanged).
-  const role = resolveRole(agent, rules, roleIds, opts.warn)
+  const role = resolveRole(agent, rules, roleIds, opts.warn, opts.servedRoute)
   if (role !== INHERIT_ROLE_ID) return role
 
   // Stage 3 — auto-match hook, only when stage 2 → 'inherit' AND enabled.

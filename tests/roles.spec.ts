@@ -50,6 +50,46 @@ describe('resolveRole', () => {
     expect(resolveRole(agent, RULES, ROLE_IDS)).toBe('openai-any')
   })
 
+  // QC1 I-1 (plan model-change-notice-loop): a delegated child's recorded pair
+  // is the parent's durable `request/header` route. On a `FallbacksChain/Auto`
+  // parent that is the virtual row, while the child was SERVED by the chain
+  // head — so a rule keyed on the head must keep matching. The anchor is passed
+  // in (undefined for every real route), so these two cases pin both halves.
+  it('matches a rule keyed on the SERVED HEAD when the recorded pair is the virtual row (QC1 I-1)', () => {
+    const rules: FallbacksRoleRule[] = [
+      { provider: 'deepseek-official', model: 'deepseek-flash', role: 'head-only' },
+    ]
+    const roleIds = new Map([['head-only', 'head-only']])
+    const agent: AgentLike = {
+      options: { provider: 'FallbacksChain', model: 'Auto' },
+      session: { header: { origin: 'subagent' } },
+    }
+    // Pre-fix behavior: the recorded pair is the virtual row, so the rule
+    // silently stops matching.
+    expect(resolveRole(agent, rules, roleIds)).toBe('inherit')
+    expect(
+      resolveRole(agent, rules, roleIds, undefined, {
+        provider: 'deepseek-official',
+        model: 'deepseek-flash',
+      }),
+    ).toBe('head-only')
+  })
+
+  it('still matches a rule naming the recorded virtual pair (the anchor is additive)', () => {
+    const rules: FallbacksRoleRule[] = [{ provider: 'FallbacksChain', role: 'virtual-row' }]
+    const roleIds = new Map([['virtual-row', 'virtual-row']])
+    const agent: AgentLike = {
+      options: { provider: 'FallbacksChain', model: 'Auto' },
+      session: { header: { origin: 'subagent' } },
+    }
+    expect(
+      resolveRole(agent, rules, roleIds, undefined, {
+        provider: 'deepseek-official',
+        model: 'deepseek-flash',
+      }),
+    ).toBe('virtual-row')
+  })
+
   it('treats a missing origin as root — root requests never match rules', () => {
     // PR #62 feedback: rules are subagent-only — even an `origin: root`
     // rule cannot match a root agent (the field is ignored entirely).

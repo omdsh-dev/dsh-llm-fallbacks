@@ -92,6 +92,7 @@ export function resolveRole(
   rules: FallbacksRoleRule[],
   roleIds: ReadonlyMap<string, string>,
   warn: (message: string) => void = console.warn,
+  servedRoute?: { provider: string; model: string },
 ): string {
   const origin = agent.session?.header?.origin ?? 'root'
   // PR #62 feedback: rules are subagent-only. Root requests never match
@@ -100,9 +101,18 @@ export function resolveRole(
   // rule does not make root match, and a persisted `origin: subagent`
   // constraint does not restrict a subagent.
   if (origin !== 'subagent') return INHERIT_ROLE_ID
+  // QC1 I-1 (plan model-change-notice-loop): a child's recorded pair is the
+  // delegating parent's durable `request/header` route, which on a
+  // `FallbacksChain/Auto` parent is the virtual pair — while the child was
+  // actually served by the chain head. A rule keyed on the real head would
+  // silently stop matching. Accept either pair: the recorded one (unchanged
+  // semantics) OR the route the request was served by. `servedRoute` is
+  // `undefined` for every real route, so non-virtual callers are identical.
+  const matches = (expected: string, recorded: string | undefined, served: string | undefined): boolean =>
+    expected === recorded || (served !== undefined && expected === served)
   for (const rule of rules) {
-    if (rule.provider && rule.provider !== agent.options?.provider) continue
-    if (rule.model && rule.model !== agent.options?.model) continue
+    if (rule.provider && !matches(rule.provider, agent.options?.provider, servedRoute?.provider)) continue
+    if (rule.model && !matches(rule.model, agent.options?.model, servedRoute?.model)) continue
     const target = rule.role.trim()
     if (target === INHERIT_ROLE_ID) return INHERIT_ROLE_ID
     const declared = roleIds.get(target)
