@@ -13,8 +13,9 @@
  *
  * Session log format (`~/.dsh/sessions/<namespace>/<session-id>/session.jsonl.zstd`):
  *   - concatenated-zstd-frame container: **first frame MUST decode to
- *     exactly one header line** (rc.7 `assertZstdHeaderFrame`:
- *     `indexOf(10) === length-1`). Subsequent frames hold events.
+ *     exactly one header line** (0.1.5-rc.1 `assertZstdHeaderFrame`:
+ *     `indexOf(10) === length-1` — the framing invariant is unchanged
+ *     since rc.7). Subsequent frames hold events.
  *   - `node:zlib.zstdDecompress` only decodes the FIRST frame, so this
  *     script shells out to the `zstd` CLI (`zstd -d -c` decodes every
  *     concatenated frame). Re-encoding MUST emit frame-1 = header only
@@ -236,8 +237,8 @@ type FileOutcome =
   | { action: 'error'; changed: number; error: string }
 
 /**
- * Encode repaired plaintext as concatenated zstd frames that rc.7 will
- * accept: frame 1 = header line + `\n` only; frame 2 = remaining lines.
+ * Encode repaired plaintext as concatenated zstd frames that 0.1.5-rc.1
+ * will accept: frame 1 = header line + `\n` only; frame 2 = remaining lines.
  */
 export function encodeRepairedSessionLog(zstd: string, lines: string[]): Buffer {
   const header = lines[0] ?? ''

@@ -302,8 +302,8 @@ const VALID_CUSTOM_SLOT = {
  * head (a multi-model chain from the pre-Task-3 era): the 默认模型 panel
  * reads back with no selection + the nonconforming notice, the chain
  * entries ride the 默认降级链 editor, and save validation blocks the value
- * until the user picks Flash or Pro (plan fallbacks-timeslots Task 3 — no
- * migration wizard).
+ * until the user picks one of the three official models (V4 Flash / V4 Pro
+ * / V41 Flash — plan fallbacks-timeslots Task 3, no migration wizard).
  */
 const LEGACY_ALL_DAY_CONFIG: typeof defaultFallbacksConfig = {
   ...TWO_BLOCK_CONFIG,
@@ -1214,8 +1214,9 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     // a legacy `provider/*` rootChain reads back INTO the 默认降级链 editor
     // (wildcard entry + conversion hint) while the 默认模型 panel shows no
     // selection + the notice. The save stays blocked
-    // (validation.allDayRequired) until the user picks Flash or Pro; the
-    // pick composes rootChain = [...chain entries, default model].
+    // (validation.allDayRequired) until the user picks one of the three
+    // official models (V4 Flash / V4 Pro / V41 Flash); the pick composes
+    // rootChain = [...chain entries, default model].
     const config: typeof defaultFallbacksConfig = {
       ...defaultFallbacksConfig,
       enabled: true,

@@ -21,7 +21,7 @@ This document records the installation / runtime-contract verification already c
 
 Result: **23 files / 475 tests all green** (`pnpm test`, vitest run); `pnpm build` (`tsc -p tsconfig.build.json` emits JS first (standard decorator downgrade `__esDecorate`) → tsdown host bundle →
 `pnpm run build-client` → `tsc` declarations → `node scripts/verify-dist.mjs` artifact-parsing guard) all green — `tsc` is
-driven by the real host type surface (registry peer `@deepseek-ai/*@0.1.2-alpha.2`, no in-repo type shims). The no-op regression
+driven by the real host type surface (registry peer `@deepseek-ai/*@0.1.5-rc.1`, no in-repo type shims). The no-op regression
 invariants (empty chains / no match / chain exhausted / safety-valve cap exceeded → pass through without producing
 `fallbacks/switch` events) are persistently asserted by T3/T4 tests.
 
@@ -60,12 +60,14 @@ order section of [docs/install.md](docs/install.md); the real web profile's laye
 - **Real-type contract**: the type layer does not use hand-written `peer-stubs/` — the real
   `@deepseek-ai/*@0.1.5-rc.1` packages drive `tsc` and the integration tests (`tests/support/harness.ts` +
   llm-retry-stub + model-selection-stub): in registry mode `autoInstallPeers` resolves them from npm (user-level
-  `~/.npmrc` auth, no local link farm); until 0.1.2 publishes, development links a sibling dsh checkout into
-  `node_modules`. Runtime seams run the real implementations: `installSettingsSection` mounts the real
+  `~/.npmrc` auth, no local link farm); the local-link alternative (a sibling dsh checkout linked into
+  `node_modules`) remains available for pre-publish lines (see docs/install.md). Runtime seams run the real
+  implementations: `installSettingsSection` mounts the real
   `@deepseek-ai/dsh-settings` (in-memory provider `tests/support/memory-settings.ts`, inheriting the real
   `SettingsProvider` base class), and the client store VALUE import runs the real `@deepseek-ai/dsh-client-store`
-  snapshot-store engine through its vitest alias — the linked tree is tsc-built into `lib/types/` only, so the test
-  graph's VALUE imports resolve via `vitest.config.ts` aliases instead of the packages' exports maps.
+  snapshot-store engine — resolved from the published package in registry mode, or through the vitest alias in
+  the local-link alternative (a linked tree is tsc-built into `lib/types/` only, so its VALUE imports resolve
+  via `vitest.config.ts` aliases instead of the packages' exports maps).
   The plugin makes **zero local modifications** to the dsh source tree — installation = bundle row insert
   (`bundle/cordis.patch.yml`) + client inject (`dsh.client.inject`) + its own gateway channel; dsh upgrades never
   require re-patching (pure-mount semantics).

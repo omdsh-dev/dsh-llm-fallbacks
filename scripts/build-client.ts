@@ -48,11 +48,14 @@ const OUT_FILE = 'index.js'
 
 /**
  * Frozen loader module table (dsh mechanism-guide): the plan-documented
- * composition = PLATFORM_MODULES (8 entries in 0.1.2, `web/src/platform.ts:8-15`
- * — the old runtime `./client` exemption became the
- * `@deepseek-ai/dsh-client-store` platform module, so the store VALUE import
- * stays external and resolves from the host loader table) + the
- * PRELOADED_CLIENT_EXTERNALS (empty in 0.1.2, `web/src/platform.ts:16-17`).
+ * composition = PLATFORM_MODULES (9 entries in 0.1.5-rc.1,
+ * `web/src/platform.ts:8-16` — the old runtime `./client` exemption became
+ * the `@deepseek-ai/dsh-client-store` platform module, so the store VALUE
+ * import stays external and resolves from the host loader table) + the
+ * plugin's PRELOADED_CLIENT_EXTERNALS (empty). The table need not list
+ * every platform module — it lists what this plugin's client half resolves
+ * from the frozen loader table; the rc.1 addition
+ * `@deepseek-ai/dsh-client-ui-dockkit` is not imported by this plugin.
  * rc.8 dropped `dsh-client-web-react` (deleted
  * package — the uSES bridge is vendored in `src/client/use-snapshot.ts`),
  * `dsh-client-ui-attachment` and `dsh-client-schema-form` from the platform

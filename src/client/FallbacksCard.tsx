@@ -189,9 +189,9 @@ function allDayModelOf(chain: readonly string[]): string {
 }
 
 /**
- * The 默认降级链 editor row: the leading entries BEFORE the official-V4
- * tail, or the whole chain while the tail is not official (the draft
- * rides the accepted value until a 默认模型 pick).
+ * The 默认降级链 editor row: the leading entries BEFORE the official tail
+ * (V4 Flash / V4 Pro / V41 Flash), or the whole chain while the tail is
+ * not official (the draft rides the accepted value until a 默认模型 pick).
  */
 function allDayChainRowOf(chain: readonly string[], catalog: CatalogLookup | undefined): RootChainRow {
   const tail = allDayModelOf(chain)
