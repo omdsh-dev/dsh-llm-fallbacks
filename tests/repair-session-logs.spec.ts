@@ -101,6 +101,11 @@ function bareEnv(home = tempDir('rsl-empty-home-')): NodeJS.ProcessEnv {
   return { PATH: '', HOME: home }
 }
 
+/** The index of the first report line containing `needle`, for ORDER pins. */
+function lineAt(out: string, needle: string): number {
+  return out.split('\n').findIndex((line) => line.includes(needle))
+}
+
 /** Parsed options with every default, plus overrides. */
 function optionsFor(overrides: Partial<CliOptions> = {}): CliOptions {
   return {
@@ -640,6 +645,19 @@ describe('runRepair — report mode without a catalog', () => {
     expect(out).toMatch(/^ {2}ok {2,}/m)
     expect(out).toContain('class                        logs')
     expect(out).toContain('summary: 4 log(s) | ok 1 (ok-truncated 0) | repairable 2 | unrepairable 1')
+    // R-004 ORDER (deliberate strengthening, not a relaxation): the header comes
+    // first, then every per-log line as that log is inspected, and only the
+    // by-class table and the summary follow. The per-log lines are now printed
+    // DURING the walk, so this is the pin that keeps them where they were.
+    expect(lineAt(out, 'report only (no write)')).toBe(0)
+    expect(lineAt(out, 'root: ')).toBe(1)
+    expect(lineAt(out, 'catalog: none resolved')).toBe(2)
+    expect(lineAt(out, '(v0):')).toBeGreaterThan(lineAt(out, 'catalog: none resolved'))
+    // "one line per log": exactly one, not the streamed line plus a second copy
+    // from the tail (which is what a naive split of the old report produced).
+    expect(out.split('\n').filter((line) => line.includes('(v0):'))).toHaveLength(4)
+    expect(lineAt(out, 'class                        logs')).toBeGreaterThan(lineAt(out, '(v0):'))
+    expect(lineAt(out, 'summary: 4 log(s)')).toBeGreaterThan(lineAt(out, 'class                        logs'))
     expect(sink.err()).toBe('')
     expect(listing(join(root, 'example-ns', 'session-descriptor'))).toEqual(['session.jsonl.zstd'])
   })
@@ -656,6 +674,12 @@ describe('runRepair — report mode without a catalog', () => {
     expect(document.logs).toHaveLength(4)
     expect(document.summary.byClass['subagent-descriptor-version']).toBe(1)
     expect(document.exitCode).toBe(1)
+    // R-004: --json installs NO progress sink — stdout is exactly one document,
+    // with no text header and no streamed per-log line in front of it (the parse
+    // above would fail on either, and these name the regression directly).
+    expect(sink.out().startsWith('{')).toBe(true)
+    expect(sink.out()).not.toContain('report only (no write)')
+    expect(sink.out()).not.toContain('root: ')
   })
 
   it('exits 0 when nothing is refused', async () => {
@@ -675,6 +699,12 @@ describe('runRepair — report mode without a catalog', () => {
 
     expect(code).toBe(0)
     expect(sink.out()).toContain('no session log with a canonical generation below v3 under this root')
+    // R-004 ORDER: a streaming run learns `logs.length` only at the end of the walk,
+    // so the empty-root line is printed with the tail — and it can only be reached
+    // when there is no per-log line at all. It still precedes the table and summary.
+    expect(lineAt(sink.out(), 'no session log')).toBeGreaterThan(0)
+    expect(lineAt(sink.out(), 'no session log')).toBeLessThan(lineAt(sink.out(), 'class                        logs'))
+    expect(lineAt(sink.out(), 'no session log')).toBeLessThan(lineAt(sink.out(), 'summary: 0 log(s)'))
   })
 
   it('reports an undecodable generation as unrepairable decompress-failed, never truncated', async () => {
@@ -987,6 +1017,89 @@ describe('apply', () => {
     expect(listing(descriptor.dir)).toEqual(['session.jsonl.zstd'])
 
     await expect(runRepair(optionsFor({ root, apply: true }), bareEnv())).rejects.toBeInstanceOf(FatalError)
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/* R-004 — the text report is emitted during the walk                  */
+/* ------------------------------------------------------------------ */
+
+describe('R-004 — text mode reports each log during the walk', () => {
+  /**
+   * Three repairable logs in ONE namespace: discovery sorts by path, so the walk
+   * order is `session-a`, `session-b`, `session-c`, and under `--apply` each log's
+   * publication is complete before its own report line is emitted.
+   */
+  function writeOrderedTree(): string {
+    const root = tempDir('rsl-stream-')
+    for (const session of ['session-a', 'session-b', 'session-c']) {
+      writeGeneration(root, 'example-ns', session, 'session.jsonl.zstd', V0_HEADER, [DESCRIPTOR_V2])
+    }
+    return root
+  }
+
+  it('keeps the lines it already reported when the run dies mid-walk', async () => {
+    const root = writeOrderedTree()
+    const catalogPath = writeFakeCatalog()
+    // A sink that dies on the SECOND per-log line: the deterministic stand-in for
+    // the crash/OOM/Ctrl-C/closed-stdout this residual is about (a real death lands
+    // on whatever write is in flight). It records the line first, so what it holds
+    // afterwards is exactly what had reached the terminal.
+    const written: string[] = []
+    let perLogLines = 0
+    const sink: CliIO = {
+      out: (text) => {
+        written.push(text)
+        // The header lines start at column 0; every per-log line is indented.
+        if (text.startsWith('  ') && ++perLogLines === 2) throw new Error('simulated death while printing')
+      },
+      err: () => {},
+    }
+
+    await expect(execute(optionsFor({ root, catalogPath, apply: true }), sink, bareEnv()))
+      .rejects.toThrow('simulated death while printing')
+
+    // What was reported before the death survives: the header, then session-a's line
+    // and session-b's line — and no summary, because the walk never finished.
+    expect(perLogLines).toBe(2)
+    expect(written.join('\n')).toContain('apply (publishes successor generations; originals are never modified)')
+    expect(written.join('\n')).toContain('example-ns/session-a/session.jsonl.zstd (v0):')
+    expect(written.join('\n')).toContain('example-ns/session-b/session.jsonl.zstd (v0):')
+    expect(written.join('\n')).not.toContain('summary:')
+
+    // The death really landed INSIDE the walk: session-c was never inspected, so it
+    // has no successor. This is the assertion the retired buffered behaviour cannot
+    // satisfy — it walked (and published) all three logs before printing one line.
+    expect(listing(join(root, 'example-ns', 'session-c'))).toEqual(['session.jsonl.zstd'])
+    // A reported line means its log was finished: both carry their successor.
+    expect(listing(join(root, 'example-ns', 'session-a')))
+      .toEqual(['session.jsonl.zstd', 'session.v3.jsonl.zstd'])
+    expect(listing(join(root, 'example-ns', 'session-b')))
+      .toEqual(['session.jsonl.zstd', 'session.v3.jsonl.zstd'])
+  })
+
+  it('hands the header to the sink first, then one log at a time in walk order', async () => {
+    const root = writeOrderedTree()
+    const events: string[] = []
+
+    const result = await runRepair(optionsFor({ root }), bareEnv(), {
+      onDiscovery: (discovery, catalog) => {
+        events.push(`discovery:${discovery.generations.length}:resolved=${catalog.resolved}`)
+      },
+      onLog: (log) => events.push(`log:${basename(dirname(log.path))}`),
+    })
+
+    // The header is complete (and emitted) before the first log is inspected, and
+    // every log follows exactly once, in walk order.
+    expect(events).toEqual([
+      'discovery:3:resolved=false',
+      'log:session-a',
+      'log:session-b',
+      'log:session-c',
+    ])
+    // The sink and the returned document describe the same run.
+    expect(result.logs).toHaveLength(3)
+    expect(result.catalog).toEqual({ resolved: false })
   })
 })
 
@@ -1609,9 +1722,16 @@ describe('main — fatal arguments and help', () => {
     expect(code).toBe(0)
     expect(sink.err()).toContain('--apply PRECONDITION')
     expect(sink.err()).toContain('while NO dsh instance is writing the sessions')
-    // --quiet drops the per-log lines and the by-class table, not the summary.
+    // --quiet's documented contract (README flag table + `usage()`): it suppresses
+    // the per-log lines and the by-class table, while "the header and the summary
+    // line still print". R-004 deliberately re-pins that surviving content: the
+    // header now prints at discovery instead of at the end, which is the same lines
+    // in the same order — and it is all a quiet run has to keep on a crash.
     expect(sink.out()).not.toContain('class                        logs')
     expect(sink.out()).not.toContain('session-ok/session.jsonl.zstd')
+    expect(sink.out()).toContain('apply (publishes successor generations; originals are never modified)')
+    expect(sink.out()).toContain(`root: ${root}`)
+    expect(lineAt(sink.out(), 'root: ')).toBeLessThan(lineAt(sink.out(), 'summary: 1 log(s)'))
     expect(sink.out()).toContain('summary: 1 log(s)')
   })
 })
