@@ -239,7 +239,7 @@ function labelOf(row: SlotRowConfig): string {
  * are the ordered walk before that last-resort fallback. An empty chain or
  * a chain whose tail is not an official model (including the retired V4
  * ids) keeps slot rows inert and refuses the virtual-row
- * override/delegate; the v0.2.2 failure walk over the raw chain stays
+ * delegate; the v0.2.2 failure walk over the raw chain stays
  * verbatim.
  */
 export function isAllDayConforming(chain: readonly string[]): boolean {
@@ -258,7 +258,8 @@ export function isAllDayConforming(chain: readonly string[]): boolean {
  * P6 (qc1 F-001): without a conforming all-day the slot rows are inert, so
  * this IS the raw `rootChain` — the gate lives in {@link resolveSlotState},
  * the single source every slot surface (this, the 分时切换 log, the
- * `/fallbacks` strip, select-is-primary, the virtual adapter delegate) reads.
+ * `/fallbacks` strip, the virtual adapter delegate, its served-route anchor)
+ * reads.
  */
 export function resolveEffectiveChain(config: FallbacksConfig, now: Date, tz: string): string[] {
   const state = resolveSlotState(config, now, tz)

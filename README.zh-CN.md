@@ -108,7 +108,7 @@ fallbacks:
 
 **2. 配置全时段 `rootChain`。** 前面的条目是降级链，请求失败时先走；**最后**一项是默认模型。
 
-> **链尾合规**：最后一项必须是恰好一个官方模型——`deepseek-official/deepseek-flash` 或 `deepseek-official/deepseek-pro`（二选一）。设置卡与 gateway 在保存时拒绝其它尾巴；遗留的非合规尾巴启动时告警并继续按 fallback-only 走原链，但无法原样保存。已退役的 `deepseek-v4-flash` / `deepseek-v4-pro` 不再是合法链尾——已保存的 V4 尾巴现在会告警、进入惰性（分时行 + 虚拟选择器）、并在选到合法链尾前阻止保存。`deepseek-pro` 是合法选择器但其模型尚未进入目录：设置卡中显示为禁用（「暂不可用」），请求在 gateway 启用该 id 前会在 provider 处失败。插件不探测目录可用性——含 `deepseek-pro` 的链会像其它精确条目一样派发到它；覆盖解析生效链的第一个精确链头，因此 Pro 之前有可用条目的链仍路由到更早的条目。
+> **链尾合规**：最后一项必须是恰好一个官方模型——`deepseek-official/deepseek-flash` 或 `deepseek-official/deepseek-pro`（二选一）。设置卡与 gateway 在保存时拒绝其它尾巴；遗留的非合规尾巴启动时告警并继续按 fallback-only 走原链，但无法原样保存。已退役的 `deepseek-v4-flash` / `deepseek-v4-pro` 不再是合法链尾——已保存的 V4 尾巴现在会告警、进入惰性（分时行 + 虚拟选择器）、并在选到合法链尾前阻止保存。`deepseek-pro` 是合法选择器但其模型尚未进入目录：设置卡中显示为禁用（「暂不可用」），请求在 gateway 启用该 id 前会在 provider 处失败。插件不探测目录可用性——含 `deepseek-pro` 的链会像其它精确条目一样派发到它；在虚拟路由上由 `stream()` 委派服务生效链的第一个可派发精确链头，因此 Pro 之前有可用条目的链仍路由到更早的条目。
 
 **3. 添加 `timeSlots`（可选）。** 各行按墙钟窗口轮换生效 root 链。预设行使用冻结的 UTC+8 窗口（仅链可编辑；存在预设行时 `tz` 锁定 `Asia/Shanghai`）；自定义行使用 `start`/`end`（可跨午夜）与可选的 `days` 列表。第一个窗口包含当前时刻的行生效；无行命中 → 全时段 `rootChain`。分时切换是路由种子——在下一个 root 请求生效、不消耗冷却（见 [峰谷无忧](#峰谷无忧)）。
 
@@ -126,9 +126,9 @@ fallbacks:
 
 - **root / subagent 自动降级**：任意 agent 在模型故障下按链切换到下一个可用 provider/model，无需手动换模型。
 - **两块制配置**：`rootChain` 管 root 代理；声明式角色实体（`roles.list`）供 `roles.rules` 引用（或内置 `inherit`）。
-- **选择器里把链当主模型**：`enabled` 开启时，宿主模型选择器（web 与 TUI 一致）出现虚拟 `FallbacksChain` / `Auto` 行——选中它即以配置的链作为 root 主模型（需要 all-day 链头合规才能成功覆盖）；选真实模型则保持 fallback-only（见 [模型选择器中的 FallbacksChain](#模型选择器中的-fallbackschain)）。
+- **选择器里把链当主模型**：`enabled` 开启时，宿主模型选择器（web 与 TUI 一致）出现虚拟 `FallbacksChain` / `Auto` 行——选中它即以配置的链作为 root 主模型（需要 all-day 链头合规才能成功委托）；选真实模型则保持 fallback-only（见 [模型选择器中的 FallbacksChain](#模型选择器中的-fallbackschain)）。
 - **峰谷无忧（分时切换）**：可选的 `fallbacks.timeSlots` 行按墙钟窗口（配置级 `tz` 时区，默认 `Asia/Shanghai`）轮换 root 生效链——四个冻结的 UTC+8 预设（`liang-peak` / `liang-valley` / `glm-peak` / `glm-valley`，窗口为代码常量、仅模型链可编辑），或自定义 `start`/`end`/`days` 窗口。第一条命中的行生效；全时段行固定最后。时段切换在**下一个** root 请求生效，日志记为**分时切换**——路由种子而非失败决策：不消耗冷却、不计入 `maxSwitchesPerStep`。失败降级保留**降级切换**文案（见 [分时槽预设（分时切换）](#分时槽预设分时切换)）。
-- **派发时角色解析**：在 subagent 的首次请求上，其角色按三个阶段解析——显式（`agentPreset` 匹配已声明角色 id）→ 确定性规则（不变）→ LLM 自动匹配（从已声明角色体系中选择，`fallbacks.roleAutoMatch` 默认 `true`）。解析出的角色的链头模型注入首次请求，并以显式 `role → model` 日志行记录（不写 durable `fallbacks/switch` 事件——issue #52 停写）；设 `roleAutoMatch: false` 仅关闭 LLM 自动匹配阶段（显式 `agentPreset` 阶段仍生效——无显式角色时即复现原有仅规则行为）。设置卡总是渲染「启用角色自动匹配」开关（默认 `true`）以切换之——即使是从未声明过该键的旧配置，schema 默认值同样生效。
+- **派发时角色解析**：在 subagent 的首次请求上，其角色按三个阶段解析——显式（`agentPreset` 匹配已声明角色 id）→ 确定性规则（匹配记录 pair 或实际服务的链头——见 [模型选择器中的 FallbacksChain](#模型选择器中的-fallbackschain)）→ LLM 自动匹配（从已声明角色体系中选择，`fallbacks.roleAutoMatch` 默认 `true`）。解析出的角色的链头模型注入首次请求，并以显式 `role → model` 日志行记录（不写 durable `fallbacks/switch` 事件——issue #52 停写）；设 `roleAutoMatch: false` 仅关闭 LLM 自动匹配阶段（显式 `agentPreset` 阶段仍生效——无显式角色时即复现原有仅规则行为）。设置卡总是渲染「启用角色自动匹配」开关（默认 `true`）以切换之——即使是从未声明过该键的旧配置，schema 默认值同样生效。
 - **子代理角色徽标**：当 subagent 的派发解析出非 `inherit` 角色（策略开或关）时，其会话在 Web 会话头部的标题旁显示一个紧凑的角色徽标——悬停显示 `role → provider/model`（覆盖/注入后的实际生效路由）。`inherit`/未解析角色的会话不显示徽标；记录仅存于进程内（宿主重启即清空——`role → model` info 日志仍是持久记录）。
 - **上下文窗口感知降级**：`triggerCodes` 接受任意 dsh 失败码，包括 `CONTEXT_WINDOW_EXCEEDED`——请求超出当前模型上下文时，降级到上下文窗口**更大**的候选（装不下的候选被跳过）；由于路由本身健康，该切换是请求级的：不冷却、不浪费半开探针（见 [降级触发码](#降级触发码triggercodes)）。
 - **冷却与回主**：被切离/失败的模型在冷却期内不再入选；`revertPolicy: cooldown-expiry` 冷却到期后自动回主模型。
@@ -152,19 +152,19 @@ fallbacks:
 
 ## 模型选择器中的 FallbacksChain
 
-当 `enabled: true` 时，插件注册一个虚拟 provider **FallbacksChain**，目录中只有一行：**Auto**。web profile 与 dsh-tui 都能看到这一行：两者共享同一个 adapter catalog，无需设置页接线或宿主补丁（它与 `/settings` 的 fallbacks 区块相互独立——区块编辑的是配置，不是选择器目录）。该行只要插件启用就可见——遗留多模型或空的 all-day 链**不会**隐藏它（只是覆盖不会生效）。
+当 `enabled: true` 时，插件注册一个虚拟 provider **FallbacksChain**，目录中只有一行：**Auto**。web profile 与 dsh-tui 都能看到这一行：两者共享同一个 adapter catalog，无需设置页接线或宿主补丁（它与 `/settings` 的 fallbacks 区块相互独立——区块编辑的是配置，不是选择器目录）。该行只要插件启用就可见——遗留多模型或空的 all-day 链**不会**隐藏它（只是委托会拒绝服务）。
 
-选择 **FallbacksChain / Auto** = 把配置的链作为 root **主模型**：root 请求路由到请求时刻生效链的第一个精确 `provider/model`，失败后由降级引擎从该链头照常沿链切换。选择任何真实目录模型则保持 v0.2.2 的 fallback-only 行为——会话模型为主，链只在它失败后介入。
+选择 **FallbacksChain / Auto** = 把配置的链作为 root **主模型**：请求保留在虚拟对上，由 adapter 的薄委托在请求时刻派发到生效链的第一个精确 `provider/model`，失败后由降级引擎从该链头照常沿链切换。之所以让选择原样下发（而不是把路由改写成链头），也正是为了不让宿主的模型变更提示被反复触发：落盘的路由与会话选择一致，因此该提示只在**选择真的发生变化**时出现一次，而不再每一步重新注入。选择任何真实目录模型则保持 v0.2.2 的 fallback-only 行为——会话模型为主，链只在它失败后介入。
 
 **没有 `rootMode` 开关**——没有配置键、YAML 字段、设置开关或 gateway 标志。模式就是会话的 `{provider, model}` 选择本身：`FallbacksChain` = 链为主模型；任意真实模型 = fallback-only。
 
 注意：
 
 - **选择器文案**：目录行的 `name`（composer 触发器显示）是动态的——`Auto: DeepSeek Flash[Liang Peak]` / `Auto: DeepSeek Flash[all-day]`（用 catalog 显示名，不是 model id）；id 仍是 `Auto`。all-day 尾巴不合规则只显示 `Auto`。重新打开选择器即可刷新。
-- **仅 root**：这一行只关乎 root 代理。subagent 的角色解析与注入不变；继承了该选择的 subagent 会话仍经链头路由——虚拟行只是薄委托，绝不是第二个路由引擎。
-- **链尾合规门槛**：覆盖/委托成功要求 all-day 链**尾巴合规**——最后一项必须是恰好一个官方模型（`deepseek-official/deepseek-flash` 或 `deepseek-official/deepseek-pro`，即设置卡的「默认模型」面板）；前面的默认降级链先走。禁用插件后该行隐藏（slot/链编辑不会触发注册抖动）。
+- **全来源同一个薄委托**：root 代理与继承了该选择的 subagent 会话由同一个 `stream()` 薄委托服务——subagent 的角色解析与注入语义不变，只有一处刻意的放宽：派发时规则匹配接受**记录 pair 或实际服务的链头**（此前匹配的超集，因此以真实链头为键的规则仍能命中），虚拟行绝不是第二个路由引擎。继承了该选择的 subagent 仍经链头路由。
+- **链尾合规门槛**：委托成功要求 all-day 链**尾巴合规**——最后一项必须是恰好一个官方模型（`deepseek-official/deepseek-flash` 或 `deepseek-official/deepseek-pro`，即设置卡的「默认模型」面板）；前面的默认降级链先走。禁用插件后该行隐藏（slot/链编辑不会触发注册抖动）。
 - **过期选择**：行消失（插件禁用）而会话仍选中 `FallbacksChain / Auto` 时，会话继续把它显示为当前模型，但 `routable: false`——从目录选一个真实模型即可继续（宿主原生目录语义）。
-- **能力跟随链头**：该行的模型元数据（上下文窗口、模态、推理）镜像当前生效链头；重试归属保持宽松默认——重试/失败记到被委托的真实链头，而非 `FallbacksChain` provider。完整语义 → [docs/configuration.md](docs/configuration.md)。
+- **能力与重试策略跟随链头**：该行的模型元数据（上下文窗口、模态、推理）镜像当前生效链头，`providerRetryPolicy` 返回**该链头的**策略——因此用户配置的 `llm-deepseek.retryPolicy` 在这条路由上同样生效，不再退回宽松默认。宿主在注册时一次性捕获该策略，因此之后修改策略、或分时槽导致链头 provider 轮换，都只有在插件重新注册后才会反映。重试事件按虚拟 provider 记账——即运行时实际看到的路由。完整语义 → [docs/configuration.md](docs/configuration.md)。
 
 ## 分时槽预设（分时切换）
 
@@ -227,7 +227,7 @@ dsh 0.1.2 为 subagent 增加了宿主侧的子模型选择：`subagent-model-se
 
 策略**关闭或缺省**时，注入与失败切换的**选择**与 0.3.5 一致（无允许列表过滤、无授权路由跳过）。
 
-**Effort 规则（与策略无关）**：所有覆盖路径（角色注入、失败切换、always 上限切换、分时/选择器覆盖）上的 `reasoningEffort` 遵循上游 0.1.2 的 `routeChanged` 规则——provider+model 路由不变则保留种子 effort；路由变化且未显式指定 effort 则丢弃（显式指定的 effort 永远保留）。陈旧的 effort 绝不会被带入另一个 provider。
+**Effort 规则（与策略无关）**：所有覆盖路径（角色注入、失败切换、always 上限切换）上的 `reasoningEffort` 遵循上游 0.1.2 的 `routeChanged` 规则——provider+model 路由不变则保留种子 effort；路由变化且未显式指定 effort 则丢弃（显式指定的 effort 永远保留）。陈旧的 effort 绝不会被带入另一个 provider。
 
 完整语义 → [docs/configuration.md](docs/configuration.md#host-subagent-model-selection-dsh-012)。
 

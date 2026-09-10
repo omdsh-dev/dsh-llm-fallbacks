@@ -14,7 +14,7 @@
  * reconcile thunk, wired by `apply()`) plus child activation. The row is
  * visible whenever the plugin is enabled — a non-conforming all-day chain
  * does NOT hide it (PR #62 feedback); conformance still gates a
- * successful override/delegate (`effectiveHeadOf` below refuses a
+ * successful delegate (`effectiveHeadOf` below refuses a
  * non-conforming all-day). The condition deliberately ignores `timeSlots`
  * and conformance, so slot-row edits and chain edits never churn
  * registration.
@@ -26,7 +26,9 @@
  * `agent/request-error`, where the existing engine walks from there).
  * `resolveModel` proxies the current effective head's metadata when
  * resolvable (modalities/context-window/reasoning follow the head) with a
- * permissive default otherwise — never throws.
+ * permissive default otherwise — never throws. `providerRetryPolicy` and
+ * `imageRequestPricing` mirror the same head for the host-captured retry
+ * policy and the token meter — also never throwing.
  *
  * @module dsh-llm-fallbacks/virtual-adapter
  */
@@ -40,6 +42,7 @@ import {
   type LlmModelInfo,
   type LlmResolvedModelInfo,
   type LlmRuntime,
+  type ResolvedRetryPolicy,
   type StreamChunk,
 } from '@deepseek-ai/dsh-llm'
 import type { FallbacksConfig } from './config.ts'
@@ -78,9 +81,10 @@ export interface EffectiveHead {
 
 /**
  * The FIRST DISPATCHABLE exact head of a chain — the single definition of
- * "effective head" (F-001) shared by the root select-is-primary override
- * (`src/index.ts`) and the virtual adapter's delegate paths. Walks the SAME
- * chain `resolveEffectiveChain` produces, skipping entries that can never
+ * "effective head" (F-001) shared by the virtual adapter's delegate paths and
+ * the routing engine's served-route anchor (`anchorServedRoute` in
+ * `src/index.ts`). Walks the SAME chain `resolveEffectiveChain` produces,
+ * skipping entries that can never
  * be dispatched: malformed selectors (config-warning path), `provider/*`
  * `provider/*` wildcards (no real pair), and self-routes back to
  * `FallbacksChain/*` (the P1 recursion guard). `undefined` when the chain
@@ -117,7 +121,7 @@ export function firstDispatchableExactHead(chain: readonly string[]): EffectiveH
  * falls back to the permissive default and `stream()` throws
  * {@link UNDISPATCHABLE_HEAD_CODE}.
  */
-function effectiveHeadOf(config: FallbacksConfig, now: Date): EffectiveHead | undefined {
+export function effectiveHeadOf(config: FallbacksConfig, now: Date): EffectiveHead | undefined {
   if (!isAllDayConforming(config.rootChain)) return undefined
   const chain = resolveEffectiveChain(config, now, config.tz ?? 'Asia/Shanghai')
   return firstDispatchableExactHead(chain)
@@ -159,6 +163,76 @@ async function resolveHeadDisplayName(llm: LlmRuntime | undefined, head: Effecti
     // Unresolvable — caller keeps the id.
   }
   return head.model
+}
+
+/** One history message of a delegated request. */
+type DelegatedMessage = GenerateOptions['messages'][number]
+
+/**
+ * The `provider/model` an adapter-private replay envelope names for itself, when
+ * it names them in a readable shape.
+ *
+ * `ReplayEnvelope.response` is an untyped, adapter-private payload
+ * (`@deepseek-ai/dsh-llm` `types.d.ts`), so this probe is deliberately
+ * structural and total: anything it cannot read yields `undefined` and the
+ * caller leaves the message untouched — never guessed, never thrown. A pair
+ * naming the virtual route itself is refused, because re-stamping onto
+ * `FallbacksChain` would be a self-route.
+ */
+function envelopeProvenance(replayState: unknown): EffectiveHead | undefined {
+  if (typeof replayState !== 'object' || replayState === null) return undefined
+  const response: unknown = (replayState as { response?: unknown }).response
+  if (typeof response !== 'object' || response === null) return undefined
+  const { provider, model } = response as { provider?: unknown; model?: unknown }
+  if (typeof provider !== 'string' || provider === '' || provider === FALLBACKS_PROVIDER) return undefined
+  if (typeof model !== 'string' || model === '') return undefined
+  return { provider, model }
+}
+
+/**
+ * Restore the provenance of history messages the durable record attributes to
+ * the virtual route (R-004).
+ *
+ * The loop stamps every durable assistant message with the route of the REQUEST
+ * that produced it — `FallbacksChain/Auto` here — while the replay envelope
+ * inside it was produced by the head adapter that actually answered
+ * (`@deepseek-ai/dsh-agent-loop` builds the durable source from
+ * `request.provider`). The runtime's ownership gate exposes an envelope to a
+ * target adapter only while that adapter instance owns the message's recorded
+ * provider (`LlmRuntime.forAdapter`), so the delegate's second pass —
+ * `llm.stream({ … provider: head })` — hands the head a message whose envelope
+ * has been dropped, and pi-ai-backed thinking signatures silently degrade on the
+ * root virtual route.
+ *
+ * Re-stamping the pair the envelope itself names puts the message back under the
+ * adapter that produced it, so the gate keeps it. Reading the pair from the
+ * envelope — never from the effective head — also keeps a rotation faithful: an
+ * envelope produced by a previous head is not handed to another provider's
+ * adapter. Only `source` changes; the durable record the loop writes is
+ * untouched. Two readers see the delegated `source`: the runtime's ownership gate
+ * (`forAdapter`), and — for a pi-ai-backed head — that adapter's own replay
+ * validator, which throws `INVALID_REPLAY_STATE` unless
+ * `response.provider`/`response.model` equal the message source. Re-stamping to
+ * the pair the envelope names is therefore what makes the envelope *acceptable*,
+ * not merely retained; re-stamping to the effective head instead would feed the
+ * validator a mismatched pair on any rotation.
+ *
+ * @param messages - the delegated request's history, exactly as received.
+ * @returns `messages` itself when nothing qualifies, so the untouched path
+ *   allocates nothing and behaves precisely as before.
+ */
+function restoreEnvelopeProvenance(messages: DelegatedMessage[]): DelegatedMessage[] {
+  let changed = false
+  const restored = messages.map((message): DelegatedMessage => {
+    const source = message.source
+    if (message.role !== 'assistant' || source.kind !== 'model') return message
+    if (source.provider !== FALLBACKS_PROVIDER || source.model !== FALLBACKS_CHAIN_MODEL) return message
+    const provenance = envelopeProvenance(source.replayState)
+    if (provenance === undefined) return message
+    changed = true
+    return { ...message, source: { ...source, ...provenance } }
+  })
+  return changed ? restored : messages
 }
 
 /**
@@ -229,6 +303,36 @@ export class FallbacksChainAdapter extends LlmAdapter {
   }
 
   /**
+   * Route-accurate retry attribution: the virtual row declares no policy of
+   * its own — the virtual `provider` argument is intentionally ignored. The
+   * host captures `adapter.providerRetryPolicy(provider) ??
+   * resolveRetryPolicy(void 0, …)` ONCE, when a route is registered, so
+   * answering here with the SAME policy the concrete head route declared
+   * (e.g. a user's `llm-deepseek.retryPolicy`, including `mode: 'always'`)
+   * keeps retries behaving exactly as they do on the head `stream()`
+   * dispatches. Never throws: an unresolvable head, a vanished `llm`, or an
+   * unregistered head provider degrades to `undefined` — the host's own
+   * default. That last arm matters: the runtime's lookup THROWS `NO_ADAPTER`
+   * for an unknown provider, and this call happens inside the plugin's
+   * `registerAdapter`, so an escaping throw would take the whole virtual
+   * route down instead of just degrading its policy.
+   */
+  override providerRetryPolicy(_provider: string): ResolvedRetryPolicy | undefined {
+    try {
+      const head = effectiveHeadOf(this.readConfig(), new Date())
+      // Defensive recursion guard (mirroring imageRequestPricing):
+      // `effectiveHeadOf` already refuses self-routes, so a
+      // `FallbacksChain/*` head is impossible — assert it anyway so a future
+      // resolution change can never re-enter the virtual adapter's own
+      // registration.
+      if (head === undefined || head.provider === FALLBACKS_PROVIDER) return undefined
+      return this.getLlm()?.providerRetryPolicy(head.provider)
+    } catch {
+      return undefined // unknown provider route → the host's own default
+    }
+  }
+
+  /**
    * Route-accurate image pricing (0.1.2 adoption): the virtual row has no
    * pricing of its own — the virtual `provider`/`model` arguments are
    * intentionally ignored. Resolves the SAME effective head `stream()`
@@ -288,7 +392,13 @@ export class FallbacksChainAdapter extends LlmAdapter {
         LLM_UNAVAILABLE_CODE,
       )
     }
-    return llm.stream({ ...options, provider: head.provider, model: head.model })
+    return llm.stream({
+      ...options,
+      provider: head.provider,
+      model: head.model,
+      // R-004: the head must still receive its own replay envelope.
+      messages: restoreEnvelopeProvenance(options.messages),
+    })
   }
 }
 
@@ -314,8 +424,8 @@ export function installFallbacksAdapter(ctx: Context, readConfig: () => Fallback
     const config = readConfig()
     // PR #62 feedback: the row is visible whenever the plugin is enabled —
     // conformance of the all-day chain is NOT part of registration (a
-    // legacy/empty chain still earns the row; the override/delegate paths
-    // refuse it via `effectiveHeadOf`).
+    // legacy/empty chain still earns the row; the delegate refuses it via
+    // `effectiveHeadOf`).
     const shouldRegister = config.enabled
     if (shouldRegister && !registered) {
       if (llm === undefined) return

@@ -19,10 +19,12 @@
  *   (provider/model override; the inherited `reasoningEffort` follows the
  *   upstream routeChanged rule — dropped on a route change unless explicitly
  *   named, preserved on a same-route override; spec D3); a
- *   root-origin `FallbacksChain/Auto` seed then overrides to the
- *   effective chain's first exact head (select-is-primary, plan
- *   fallbacks-virtual-chain Task 2); then the always-mode cap check (count
- *   `llm/retry` events for the current turn/step/provider; ≥
+ *   root-origin `FallbacksChain/Auto` seed is served UNCHANGED (plan
+ *   model-change-notice-loop Task 1 — the route the loop serves and records
+ *   must equal the session selection, otherwise the host `model-selection`
+ *   notice is re-armed on every step; the virtual adapter's `stream()`
+ *   delegate is what reaches the chain head); then the always-mode cap check
+ *   (count `llm/retry` events for the current turn/step/provider; ≥
  *   `alwaysModeRetryCap` → same decision path, reason `always-cap` —
  *   ADR-2).
  * - Per-agent state (`FallbackStateStore`): `agent/disposed` removes it,
@@ -85,9 +87,9 @@ import { presetRoles } from './presets.ts'
 import { installTuiClient } from './tui.ts'
 import { installTuiSettingsSection } from './tui-settings.ts'
 import {
+  effectiveHeadOf,
   FALLBACKS_CHAIN_MODEL,
   FALLBACKS_PROVIDER,
-  firstDispatchableExactHead,
   installFallbacksAdapter,
 } from './virtual-adapter.ts'
 
@@ -488,10 +490,67 @@ export function countRetryEvents(session: Session, turn: number, step: number, p
   return count
 }
 
-/** The model the failed/current request was routed to. */
-function currentModel(agent: Agent, provider: string): FailingModel {
+/**
+ * Anchor a request route at the exact head the virtual picker row is served by
+ * (plan model-change-notice-loop Task 2).
+ *
+ * A root-origin `FallbacksChain/Auto` seed is served UNCHANGED, so the loop
+ * records the virtual pair while `FallbacksChainAdapter.stream()` really
+ * dispatches the effective chain's first dispatchable exact head. Every
+ * decision that compares the failing route against the chain must therefore
+ * compare against THAT head: left on the virtual pair, the walk treats the head
+ * that just failed as a fresh candidate (switching straight back into the
+ * failure) and the route-scoped bookkeeping (cooldown / step-failed) lands on
+ * the picker key instead of the failing route.
+ *
+ * The chain and the walk rule are the adapter's own (`effectiveHeadOf`:
+ * `isAllDayConforming` + `resolveEffectiveChain` + `firstDispatchableExactHead`),
+ * so the anchor names exactly the route the delegate dispatched. A real route —
+ * and a non-conforming all-day chain, where the adapter refuses to delegate at
+ * all — is returned unchanged.
+ */
+function anchorServedRoute(config: FallbacksConfig, route: FailingModel, now: Date): FailingModel {
+  if (route.provider !== FALLBACKS_PROVIDER || route.model !== FALLBACKS_CHAIN_MODEL) return route
+  const head = effectiveHeadOf(config, now)
+  return head === undefined ? route : { provider: head.provider, model: head.model }
+}
+
+/**
+ * The route an agent's request was actually SERVED by, when that differs from
+ * the pair recorded on the agent — i.e. a `FallbacksChain/Auto` session whose
+ * recorded pair is the virtual row, anchored to the effective head through the
+ * same rule the delegate uses ({@link anchorServedRoute}).
+ *
+ * Returns `undefined` when the recorded pair IS the served pair, so every real
+ * route keeps byte-identical downstream behavior. Callers that compare a route
+ * against the recorded `agent.options` pair (dispatch-time role rules) accept
+ * either, so a rule keyed on the real chain head keeps matching a subagent
+ * whose recorded route is the virtual pair (plan `model-change-notice-loop`
+ * QC1 I-1 — `parentAgentOptionsForDelegation` stamps the child's options from
+ * the delegating parent's durable `request/header`).
+ */
+function servedRouteFor(
+  agent: { options?: { provider?: string; model?: string } },
+  config: FallbacksConfig,
+): FailingModel | undefined {
+  const provider = agent.options?.provider
+  const model = agent.options?.model
+  if (provider === undefined || model === undefined) return undefined
+  const anchored = anchorServedRoute(config, { provider, model }, new Date())
+  return anchored.provider === provider && anchored.model === model ? undefined : anchored
+}
+
+/**
+ * The model the failed/current request was routed to — anchored at the served
+ * head when the route is the virtual pair ({@link anchorServedRoute}). The
+ * context-window comparison reads this same pair, so the failing route's window
+ * is the HEAD's window (the one the provider actually rejected), never the
+ * picker row's proxy.
+ */
+function currentModel(agent: Agent, provider: string, config: FallbacksConfig, now: Date): FailingModel {
   const header = agent.session.requestHeader()
-  return { provider, model: header?.config.model ?? agent.options.model ?? '' }
+  const route = { provider, model: header?.config.model ?? agent.options.model ?? '' }
+  return anchorServedRoute(config, route, now)
 }
 
 /**
@@ -734,8 +793,8 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   // Task 1, P2; PR #62 feedback): ONE conditional `ctx.inject(['llm'])`
   // child — the picker row registers whenever `enabled` (conformance of
   // the all-day chain is NOT part of registration: a legacy multi-model or
-  // empty rootChain still earns the row; the override below and the
-  // adapter's delegate still refuse a non-conforming all-day), and hides
+  // empty rootChain still earns the row; the adapter's delegate still
+  // refuses a non-conforming all-day), and hides
   // on disable. The returned reconcile thunk is wired into the settings
   // onChange below: transition-reconcile over COMMITTED composed
   // snapshots only (card drafts are client-side until gateway save), so
@@ -973,7 +1032,7 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
       states.syncStep(state, turn, step)
       if (state.stepFailures.switchCount >= config.maxSwitchesPerStep) return null
     }
-    const role = resolveRole(agent, config.roles.rules, roleIds, logger.warn)
+    const role = resolveRole(agent, config.roles.rules, roleIds, logger.warn, servedRouteFor(agent, config))
     // P7 (plan fallbacks-timeslots Task 2): slot rotation applies to
     // ROOT-origin agents only, in BOTH primary and fallback-only modes —
     // the effective chain (first matching extra row, else the all-day
@@ -1225,7 +1284,7 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     // failures must pass through here too — the cap lives at agent/request
     // (ADR-2). Only trigger codes enter the decision path.
     if (!config.enabled || !config.triggerCodes.includes(failure.code)) return next()
-    const current = currentModel(agent, provider)
+    const current = currentModel(agent, provider, config, new Date())
     if (!current.model) return next()
     // F-005: the decision path is defensive — an unexpected throw (e.g. a
     // future refactor) must not replace the original failure semantics
@@ -1290,8 +1349,9 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     // NOT a failure decision: info log only, exempt from cooldown and
     // `maxSwitchesPerStep`, no pending switch, no durable event. Never
     // force-switches an in-flight step — the rotation is observed here and
-    // applies through the SAME resolver to the failure walk (decide) and the
-    // FallbacksChain primary override below. Skipped entirely when no extra
+    // applies through the SAME resolver to the failure walk (decide) and to
+    // the head the virtual delegate serves (`effectiveHeadOf`). Skipped
+    // entirely when no extra
     // slot rows exist (the winner would always be 'all-day'). P6 (qc1
     // F-001): gated on a conforming all-day like every other slot surface —
     // a legacy multi-model chain keeps the rows inert HERE too (the
@@ -1315,50 +1375,6 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
         )
       }
       slotWinners.set(agent.id, { key, label: slot.label })
-    }
-    // Select-is-primary (plan fallbacks-virtual-chain Task 2, P3; PR #62
-    // feedback): a ROOT-origin seed of the virtual `FallbacksChain/Auto`
-    // row means "use the chain as the root primary" — override the seed to
-    // the effective chain's FIRST DISPATCHABLE EXACT head (the shared
-    // `firstDispatchableExactHead` the virtual adapter's delegate paths
-    // also use — ONE skip/walk rule for override and delegate; the chain
-    // comes from `resolveEffectiveChain`, the single source — no
-    // rootChain[0] fallback branch here). Detection lives AFTER
-    // pending-switch application: a failure decision already progressed
-    // past the head and wins. Root-origin only (mirror the role-inject
-    // gate — a subagent seed that still carries the virtual pair is NOT
-    // overridden here; P1's thin stream() delegate handles those), plugin
-    // `enabled`, a CONFORMING all-day rootChain (the row is visible for a
-    // legacy/empty chain but the override refuses it — conformance still
-    // required for a successful primary, PR #62 feedback), and the
-    // effective chain must yield a dispatchable head — an empty /
-    // wildcard-only / self-route chain warns once and skips.
-    if (
-      config.enabled
-      && seed.provider === FALLBACKS_PROVIDER
-      && seed.model === FALLBACKS_CHAIN_MODEL
-      && agent.session?.header?.origin !== 'subagent'
-    ) {
-      if (!isAllDayConforming(config.rootChain)) {
-        logger.warn(
-          'llm-fallbacks: FallbacksChain/Auto selected but the all-day rootChain is not conforming (exactly one official model: deepseek-official/deepseek-flash or deepseek-official/deepseek-pro) — no primary override',
-        )
-      } else {
-        const effective = resolveEffectiveChain(config, new Date(), config.tz ?? 'Asia/Shanghai')
-        const head = firstDispatchableExactHead(effective)
-        if (head === undefined) {
-          logger.warn(
-            'llm-fallbacks: FallbacksChain/Auto selected but the effective chain has no exact head (empty, wildcard-only, or self-route) — no primary override',
-          )
-        } else {
-          logger.info(
-            'llm-fallbacks: FallbacksChain/Auto selection overrides to the effective head %s/%s',
-            head.provider,
-            head.model,
-          )
-          return overrideConfig(seed, head)
-        }
-      }
     }
     // Dispatch-time role injection (plan fallbacks-role-automatch Task 4;
     // dsh-012-subagent-routing T2): a subagent-origin agent's FIRST request
@@ -1428,6 +1444,7 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
               automatchEnabled: config.roleAutoMatch ?? true,
               automatch: (agent) => pickRoleByLlm(ctx, config.roles, agent, { warn: logger.warn }),
               warn: logger.warn,
+              servedRoute: servedRouteFor(agent, config),
             })
             if (role !== INHERIT_ROLE_ID) {
               const { all, wildcard } = resolveChainViews(
@@ -1517,11 +1534,20 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
       // grown when the decision actually commits (F-004: a null decision —
       // e.g. all candidates filtered — leaves no entry behind).
       const decisionState = states.peek(agent.id)
+      // Same anchor as the trigger-code caller (T2): on a root-origin virtual
+      // route the loop hands this listener the picker pair while the delegate
+      // dispatched the effective chain's head, so the walk must START there —
+      // anchored on the picker pair it would commit `FallbacksChain/Auto →
+      // <head>` ("switching" back into the route the cap just kept retrying)
+      // and key the cooldown / step-failed bookkeeping on the picker key
+      // (plan Decision 3). Resolved ONCE and shared with the half-open probe
+      // below, so a slot boundary inside this branch cannot name two heads.
+      const capRoute = anchorServedRoute(config, { provider: seed.provider, model: seed.model }, new Date())
       const pending = await decide(
         agent,
         turn,
         step,
-        { provider: seed.provider, model: seed.model },
+        capRoute,
         'always-cap',
         decisionState,
       )
@@ -1534,7 +1560,7 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
           return overrideConfig(seed, appliedCap.to)
         }
       } else {
-        failHalfOpenProbe(agent.id, { provider: seed.provider, model: seed.model })
+        failHalfOpenProbe(agent.id, capRoute)
       }
     }
     return seed
@@ -1568,13 +1594,28 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   // creates (F-004). Read-only: the listener never appends (mount-only).
   ctx.on('session/event', (session, event) => {
     if (event.type !== 'assistant/message') return
-    if ((source().recovery ?? 'timer') !== 'half-open') return
+    const config = source()
+    if ((config.recovery ?? 'timer') !== 'half-open') return
     if (event.data.interrupted === true) return
     const message = event.data.message
     if (message.source.kind !== 'model') return
     const state = states.peek(session.id)
     if (state === undefined) return
-    states.observeSuccess(state, selectorKey(message.source.provider, message.source.model))
+    // QC2 I-1 (plan model-change-notice-loop): the failure side of the circuit
+    // is keyed on the SERVED HEAD — `decide`/`commit` receive
+    // `anchorServedRoute(...)` — while the durable `assistant/message` source
+    // records the REQUEST route. On a `FallbacksChain/Auto` session that is the
+    // virtual pair, so reading the source raw makes this observer a guaranteed
+    // no-op there: the head's episode never closes and its suppression keeps
+    // escalating (×2 up to the 1 h cap) despite served successes. Resolve the
+    // observed route through the SAME anchor so both sides of rule 6 agree; a
+    // real route comes back unchanged, so non-virtual sessions are identical.
+    const observed = anchorServedRoute(
+      config,
+      { provider: message.source.provider, model: message.source.model },
+      new Date(),
+    )
+    states.observeSuccess(state, selectorKey(observed.provider, observed.model))
   })
 
   ctx.effect(() => () => {
@@ -1601,7 +1642,7 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   const fallbacksCommandController: FallbacksCommandController = {
     getSnapshot(agent): FallbacksCommandSnapshot {
       const config = source()
-      const role = resolveRole(agent, config.roles.rules, roleIds, logger.warn)
+      const role = resolveRole(agent, config.roles.rules, roleIds, logger.warn, servedRouteFor(agent, config))
       const state = states.peek(agent.id)
       // P4 (plan fallbacks-half-open-recovery Task 4): under half-open mode
       // the expired cooldown entries transition AT the diagnostic read (so
