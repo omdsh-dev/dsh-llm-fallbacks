@@ -65,7 +65,7 @@ Since iter-20260813 the configuration follows a **two-block model** — you only
 
 - **Writing them in YAML does not change this round's fallback behavior** — there is no runtime consumer this round;
 - **The UI does not show them this round** — the Fallbacks card does not render these two fields;
-- **next iteration: consumed by the plugin's subagent tool** — landing as persona injection and tool filtering (the planned `fallbacks-explicit-role-tool`).
+- **Persona injection has since shipped — but from `persona`, not from these two fields**: a declared role's `persona` is installed on the child at the subagent dispatch seam, independent of routing, so a role with an empty `chain` gets its persona exactly like a chained one (see [README.md](../README.md) → Role persona on the child (chain-independent)). `prompt` and `permissions` themselves still have no runtime consumer, so the tool filtering they were reserved for (`permissions.allow` / `deny`) remains the planned `fallbacks-explicit-role-tool`.
 
 ## Preset roles (`presets` key)
 
