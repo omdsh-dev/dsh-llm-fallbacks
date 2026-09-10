@@ -31,6 +31,10 @@ import { describe, expect, it } from 'vitest'
 import { classifyRows } from '../scripts/session-logs/classify.ts'
 import {
   BUILT_IN_RULES,
+  DESCRIPTOR_V3_KEYS_BY_MODE,
+  REFUSAL_CLASSES,
+  REFUSAL_CLASS_MEMBERS,
+  RELEASED_PLUGIN_FORMS,
   RELEASED_SOURCE_KINDS,
   dropLegacyEventsRule,
   droppedEventCount,
@@ -539,6 +543,36 @@ describe('fallbacksSwitchRule', () => {
   })
 })
 
+/**
+ * A DENSE log: the released codec requires every event's `seq` to equal its
+ * position in the event stream (`codec.ts` `seq !== eventCount`), and the
+ * renumber refuses a source log that is not densely numbered — so a fixture
+ * whose outcome is recovery must declare dense seqs.
+ */
+function denseLog(events: readonly ParsedRow[]): ParsedRow[] {
+  return [HEADER, ...events.map((row, index) => ({ ...row, seq: index }))]
+}
+/** The legacy `fallbacks/switch` row at one dense position. */
+function switchAt(seq: number): ParsedRow {
+  return { ...SWITCH_ROW, seq }
+}
+/** A `user/message` event at one dense position. */
+function message(seq: number, extra: Record<string, unknown> = {}): ParsedRow {
+  return { ...userMessage(seq, { kind: 'user' }), ...extra }
+}
+/**
+ * One PHYSICALLY read row: `ParsedRow` is the logical view, so the envelope
+ * members the released codec also reads (`sourceEventSeqs`, `surfaceOp`) are
+ * carried by the record itself, exactly as the reader hands them over.
+ */
+function physicalRow(row: Record<string, unknown>): ParsedRow {
+  return row as unknown as ParsedRow
+}
+/** The physical envelope of one fixture row (`ParsedRow`'s logical view hides it). */
+function envelopeOf(row: ParsedRow): Record<string, unknown> {
+  return row as unknown as Record<string, unknown>
+}
+
 describe('dropLegacyEventsRule (opt-in, lossy)', () => {
   /** A second legacy row, so a count of 1 cannot pass by accident. */
   const SWITCH_ROW_2: ParsedRow = { ...SWITCH_ROW, seq: 114514 }
@@ -555,35 +589,6 @@ describe('dropLegacyEventsRule (opt-in, lossy)', () => {
         source: { kind: 'user' },
       },
     }
-  }
-  /**
-   * A DENSE log: the released codec requires every event's `seq` to equal its
-   * position in the event stream (`codec.ts` `seq !== eventCount`), and the
-   * renumber refuses a source log that is not densely numbered — so a fixture
-   * whose outcome is recovery must declare dense seqs.
-   */
-  function denseLog(events: readonly ParsedRow[]): ParsedRow[] {
-    return [HEADER, ...events.map((row, index) => ({ ...row, seq: index }))]
-  }
-  /** The legacy `fallbacks/switch` row at one dense position. */
-  function switchAt(seq: number): ParsedRow {
-    return { ...SWITCH_ROW, seq }
-  }
-  /** A `user/message` event at one dense position. */
-  function message(seq: number, extra: Record<string, unknown> = {}): ParsedRow {
-    return { ...userMessage(seq, { kind: 'user' }), ...extra }
-  }
-  /**
-   * One PHYSICALLY read row: `ParsedRow` is the logical view, so the envelope
-   * members the released codec also reads (`sourceEventSeqs`, `surfaceOp`) are
-   * carried by the record itself, exactly as the reader hands them over.
-   */
-  function physicalRow(row: Record<string, unknown>): ParsedRow {
-    return row as unknown as ParsedRow
-  }
-  /** The physical envelope of one fixture row (`ParsedRow`'s logical view hides it). */
-  function envelopeOf(row: ParsedRow): Record<string, unknown> {
-    return row as unknown as Record<string, unknown>
   }
   /** A log without any legacy row, and the mentions-only row used by the tamper pins. */
   const MENTIONS_SWITCH: ParsedRow = mentionsSwitch(12)
@@ -991,5 +996,122 @@ describe('RELEASED_SOURCE_KINDS (the released message-source vocabulary)', () =>
     for (const value of [undefined, null, 42, '', 'fallbacks/switch', 'mstar-role', 'user ', 'Plugin']) {
       expect(isReleasedSourceKind(value), JSON.stringify(value)).toBe(false)
     }
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/* QC fix wave pins (C-4, S-2, S-9)                                    */
+/* ------------------------------------------------------------------ */
+
+describe('refusal vocabulary and repairability (C-4)', () => {
+  it('keeps the ordered vocabulary exactly the compile-checked member set', () => {
+    // `REFUSAL_CLASS_MEMBERS` is a `Record<RefusalClass, true>`, so a new class
+    // fails to COMPILE there; this pin makes the ORDERED array fail loudly too —
+    // otherwise a class missing from it seeds `byClass` with `NaN` and drops its row
+    // from the report table (the drift the CLI used to risk with its own literal).
+    expect([...REFUSAL_CLASSES].sort()).toEqual(Object.keys(REFUSAL_CLASS_MEMBERS).sort())
+    expect(REFUSAL_CLASSES).toHaveLength(Object.keys(REFUSAL_CLASS_MEMBERS).length)
+    expect(new Set(REFUSAL_CLASSES).size).toBe(REFUSAL_CLASSES.length)
+  })
+
+  it('answers repairability per rule, and only for a log the lossy rule can drop from', () => {
+    const legacyLog = denseLog([message(0), switchAt(1)])
+    const cleanLog = denseLog([message(0), message(1)])
+    // The registry is the SSOT for "which classes can be repaired": a detector says
+    // no, the rewriting rules say yes.
+    expect(BUILT_IN_RULES.map((rule) => [rule.id, rule.repairable(legacyLog)])).toEqual([
+      ['source-kind', true],
+      ['subagent-descriptor-version', true],
+      ['fallbacks-switch', false],
+    ])
+    // The opt-in rule covers `unknown-event-type` ONLY for a log carrying a row it
+    // may remove (a differently-unknown event type stays unrepairable).
+    expect(dropLegacyEventsRule.repairable(legacyLog)).toBe(true)
+    expect(dropLegacyEventsRule.repairable(cleanLog)).toBe(false)
+  })
+})
+
+describe('released constant tables in rules.ts (S-2)', () => {
+  it('pins the released plugin forms by exact set equality', () => {
+    // SSOT: `ContextFormed` in `packages/llm/llm/src/message.ts`, enforced by
+    // `pluginSourceValue`. A GROWN released set only makes the rule stricter (a log
+    // it could repair is refused), so the drift is silent without this pin.
+    expect([...RELEASED_PLUGIN_FORMS].sort()).toEqual(
+      ['catalog', 'instructions', 'notice', 'recall', 'relay', 'snapshot'],
+    )
+  })
+
+  it('pins the version-3 descriptor key set per mode by exact equality', () => {
+    // SSOT: `packages/subagent/subagent/src/descriptor.ts` (`DESCRIPTOR_BASE_KEYS`
+    // plus `CONTINUABLE_DESCRIPTOR_KEYS`). This table decides whether a version
+    // bump is shape-preserving, so an un-reviewed member would silently widen or
+    // narrow what the rule repairs.
+    expect(DESCRIPTOR_V3_KEYS_BY_MODE).toEqual({
+      'one-shot': ['version', 'mode', 'provider', 'label'],
+      continuable: [
+        'version',
+        'mode',
+        'provider',
+        'label',
+        'agentProvider',
+        'agentModel',
+        'agentReasoningEffort',
+        'persona',
+        'toolFilter',
+      ],
+    })
+  })
+})
+
+describe('reference-integrity gate over many dropped rows (S-9)', () => {
+  it('still refuses a span interior with a binary-searched drop set, and remaps the rest', () => {
+    // Five dropped rows spread across the log: the gate's span test is the
+    // binary-searched count comparison, and the surviving references must still
+    // shift by the number of drops before them.
+    const rows = denseLog([
+      message(0),
+      switchAt(1),
+      message(2),
+      switchAt(3),
+      message(4),
+      switchAt(5),
+      message(6),
+      switchAt(7),
+      message(8),
+      switchAt(9),
+      physicalRow({
+        type: 'assistant/message',
+        seq: 10,
+        time: 1,
+        sourceEventSeqs: [8],
+        surfaceOp: 'append',
+        data: { turn: 1, step: 1, message: { id: 'm' } },
+      }),
+    ])
+    const result = dropLegacyEventsRule.normalize(rows)
+    if ('refused' in result) throw new Error(`unexpected refusal: ${result.refused}`)
+    expect(droppedEventCount(result.findings)).toBe(5)
+    const assistant = result.rows[result.rows.length - 1] as ParsedRow
+    // Old seq 8 → new 4 (four drops precede it), and still earlier than the row (5).
+    expect(assistant.seq).toBe(5)
+    expect(envelopeOf(assistant)['sourceEventSeqs']).toEqual([4])
+
+    // A range covering one of those dropped seqs is refused through the same test.
+    const covered = denseLog([
+      message(0),
+      switchAt(1),
+      message(2),
+      physicalRow({
+        type: 'assistant/message',
+        seq: 3,
+        time: 1,
+        sourceEventSeqs: [[0, 2]],
+        surfaceOp: 'append',
+        data: { turn: 1, step: 1, message: { id: 'm' } },
+      }),
+    ])
+    const coveredResult = dropLegacyEventsRule.normalize(covered)
+    if (!('refused' in coveredResult)) throw new Error('expected a refusal')
+    expect(coveredResult.refused).toContain('sourceEventSeqs.0 names the dropped fallbacks/switch seq 1')
   })
 })

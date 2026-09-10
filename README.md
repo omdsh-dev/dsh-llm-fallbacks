@@ -141,8 +141,8 @@ pnpm repair:session-logs -- --apply                  # publish a repaired succes
 |---|---|
 | `--root DIR` | session root to walk (default: `$DSH_HOME` or `~/.dsh`, then `/sessions`) |
 | `--apply` | run the rules' proofs and publish a current-generation successor beside each repaired original (requires a resolved released catalog) |
-| `--class NAME` | restrict what `--apply` repairs to one refusal class; the report and the exit code still cover every log under `--root`, so it can never hide a refusal |
-| `--catalog PATH` | explicit released catalog path (package directory, a directory holding it, or its module entry file) |
+| `--class NAME` | restrict what `--apply` repairs to one refusal class; the listing, the class table and the exit code still cover every log, and the repairable verdict is always computed over the **full** policy, so it can never hide a refusal or promise a repair this invocation cannot perform |
+| `--catalog PATH` | explicit released catalog path (package directory, a directory holding it, or its module entry file). The resolved module is **executed**, not parsed — the same privilege as running this tool — and must declare a current format version ≥ 3; a below-version catalog, or a file candidate owned by a different package, is refused (exit 2) rather than trusted to verify its own output |
 | `--backup` | copy the original generation to `<name>.bak` before publishing |
 | `--drop-legacy-events` | opt-in **lossy** recovery for legacy `fallbacks/switch` rows (see below) |
 | `--json` | machine-readable report instead of the text report |
@@ -155,7 +155,13 @@ The original generation is never modified and never truncated; rollback is delet
 
 **Runtime floor: Node ≥ 22.15.** Reading and writing need `node:zlib` zstd, which that release added (`engines.node` allows `>= 22`); an older runtime fails closed with an actionable message instead of a module-link stack trace.
 
-**Exit codes**: `0` = nothing refused, or every refusal repaired; `1` = the run completed with at least one log still refused/unrepairable (or a repair failed); `2` = fatal (bad arguments, missing `--root`, `--apply` without a resolved catalog, `--apply --drop-legacy-events` without `--backup`, or a runtime without `node:zlib` zstd).
+**Two policies, and `ok-truncated`.** A log's class and its `ok` come from the **host loader's** policy — the one that decides whether the GUI opens the session — but that policy can swallow a refusal and drop every row after it. Every `ok` log is therefore cross-checked with the strict, current-format policy: when that refuses, the log is reported **`ok-truncated`** (a `strictRefusal` reason in `--json`, an `ok-truncated` count in the summary) because the session opens **without** the dropped rows. Such sessions still exit `0` — they do load.
+
+**Discovery never fails open.** A namespace/session directory that cannot be read, a canonical generation that is a symlink or not a regular file, and a leftover `session.repair.*.jsonl.zstd.tmp` are **reported** (a `skipped`/`staleStagingFiles` entry in the text report and in `--json`), suppress the "no session log …" line, and make the run exit `1`. Symlinks are reported, never followed: a repair writes beside the generation it repairs, which must stay inside `--root`. An unreadable `--root` is fatal (exit `2`) — never an empty report.
+
+**`--apply` refuses a revision it did not decode.** The digest of the bytes this run read is compared with the file before anything is staged, so a concurrent append is refused before the first write. If the source moves *after* a publication this run created, that successor is removed again; if it moves after accepting a pre-existing identical successor, the failure names that file and says to delete it — never "nothing was published".
+
+**Exit codes**: `0` = every log loads (a session that opens with rows dropped under the strict policy is `ok-truncated` and still exits `0`); `1` = at least one log is still refused/unrepairable, a repair failed, a log was left unpublished (including one `--class` excluded), or an input could not be inspected (a `skipped` path); `2` = fatal (bad arguments, a missing or unreadable `--root`, `--apply` without a resolved catalog, a catalog below format v3, `--apply --drop-legacy-events` without `--backup`, or a runtime without `node:zlib` zstd).
 
 ### Lossy recovery for `fallbacks/switch` (opt-in)
 

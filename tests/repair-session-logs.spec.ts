@@ -26,12 +26,14 @@
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -40,6 +42,7 @@ import { fileURLToPath } from 'node:url'
 import { afterAll, describe, expect, it } from 'vitest'
 import {
   FatalError,
+  analysisFailureOutcome,
   canonicalGeneration,
   decodeRows,
   execute,
@@ -55,6 +58,7 @@ import {
   type RunResult,
 } from '../scripts/repair-session-logs.ts'
 import { resolveCatalog, type CatalogHandle } from '../scripts/session-logs/catalog.ts'
+import { REFUSAL_CLASSES } from '../scripts/session-logs/rules.ts'
 import { decodeZstdFrames, encodeZstdFrames } from '../scripts/session-logs/publish.ts'
 
 /* ------------------------------------------------------------------ */
@@ -487,13 +491,15 @@ describe('findGenerations', () => {
     writeGeneration(root, 'ns', 'b', 'session.v3.jsonl.zstd', V0_HEADER, [PLAIN_ROW])
     writeGeneration(root, 'ns', 'c', 'session.v1.jsonl.zstd', V0_HEADER, [PLAIN_ROW])
 
-    const found = await findGenerations(root)
+    const { generations: found, skipped, rootFailure } = await findGenerations(root)
 
     expect(found.map((entry) => `${basename(dirname(entry.path))}/${basename(entry.path)}`)).toEqual([
       'a/session.v2.jsonl.zstd',
       'c/session.v1.jsonl.zstd',
     ])
     expect(found.map((entry) => entry.generation)).toEqual([2, 1])
+    expect(skipped).toEqual([])
+    expect(rootFailure).toBeNull()
   })
 
   it('ignores noncanonical names and anything deeper than <namespace>/<session>', async () => {
@@ -507,17 +513,20 @@ describe('findGenerations', () => {
     mkdirSync(deeper, { recursive: true })
     writeFileSync(join(deeper, 'session.jsonl.zstd'), encodeZstdFrames(V0_HEADER, [PLAIN_ROW]))
 
-    const found = await findGenerations(root)
+    const { generations: found, staleStagingFiles } = await findGenerations(root)
 
     expect(found).toHaveLength(1)
     expect(basename(found[0]?.path ?? '')).toBe('session.jsonl.zstd')
+    // The staged-publication residue is REPORTED (never deleted here), while the
+    // noncanonical `.tmp` of another shape stays a non-candidate with no notice.
+    expect(staleStagingFiles.map((path) => basename(path))).toEqual(['session.repair.deadbeef.jsonl.zstd.tmp'])
   })
 
   it('returns nothing for an empty root or a root with only current generations', async () => {
     const root = tempDir('rsl-find-empty-')
-    expect(await findGenerations(root)).toEqual([])
+    expect((await findGenerations(root)).generations).toEqual([])
     writeGeneration(root, 'ns', 'a', 'session.v3.jsonl.zstd', V0_HEADER, [PLAIN_ROW])
-    expect(await findGenerations(root)).toEqual([])
+    expect((await findGenerations(root)).generations).toEqual([])
   })
 })
 
@@ -587,7 +596,7 @@ describe('runRepair — report mode without a catalog', () => {
     expect(out).toMatch(/^ {2}unrepairable {2,}.*session-switch.*: unknown-event-type/m)
     expect(out).toMatch(/^ {2}ok {2,}/m)
     expect(out).toContain('class                        logs')
-    expect(out).toContain('summary: 4 log(s) | ok 1 | repairable 2 | unrepairable 1')
+    expect(out).toContain('summary: 4 log(s) | ok 1 (ok-truncated 0) | repairable 2 | unrepairable 1')
     expect(sink.err()).toBe('')
     expect(listing(join(root, 'example-ns', 'session-descriptor'))).toEqual(['session.jsonl.zstd'])
   })
@@ -614,7 +623,7 @@ describe('runRepair — report mode without a catalog', () => {
     const code = await execute(optionsFor({ root }), sink.io, bareEnv())
 
     expect(code).toBe(0)
-    expect(sink.out()).toContain('summary: 1 log(s) | ok 1 | repairable 0 | unrepairable 0')
+    expect(sink.out()).toContain('summary: 1 log(s) | ok 1 (ok-truncated 0) | repairable 0 | unrepairable 0')
   })
 
   it('reports the empty root instead of pretending to have repaired something', async () => {
@@ -1265,7 +1274,11 @@ describe('--drop-legacy-events', () => {
     const second = captureIO()
     expect(await execute(options, second.io, bareEnv())).toBe(0)
 
-    expect(second.out()).toContain('already published session.v3.jsonl.zstd (verified byte-identical)')
+    // The publication path reports whether it CREATED the target or ACCEPTED an
+    // already-identical one (C-2), so a re-run cannot read as a new publication.
+    expect(second.out()).toContain(
+      'already published session.v3.jsonl.zstd (verified byte-identical; accepted, not written by this run)',
+    )
     expect(sha256(join(dir, 'session.v3.jsonl.zstd'))).toBe(publishedDigest)
     expect(sha256(path)).toBe(sha256(`${path}.bak`))
     expect(listing(dir)).toEqual(['session.jsonl.zstd', 'session.jsonl.zstd.bak', 'session.v3.jsonl.zstd'])
@@ -1449,7 +1462,9 @@ describe('--drop-legacy-events', () => {
       'session-lossy',
       'session.jsonl.zstd',
       V0_HEADER,
-      [FALLBACKS_SWITCH],
+      // Dense seq: the lossy renumber refuses a source log that is not densely
+      // numbered, and this fixture must reach the `--class` decision instead.
+      [{ ...FALLBACKS_SWITCH, seq: 0 }],
     )
     const digest = sha256(log.path)
     const sink = captureIO()
@@ -1781,5 +1796,294 @@ describe.skipIf(realCatalog === null)('CLI against the real released catalog', (
     expect(readBack.events.map((event) => (event as { seq: number }).seq)).toEqual(
       readBack.events.map((_event, index) => index),
     )
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/* QC fix wave (C-1, C-2, C-3, C-4, C-6, S-10, S-11)                   */
+/* ------------------------------------------------------------------ */
+
+/** The current user id, or `null` where the platform does not expose one. */
+const UID = process.getuid?.() ?? null
+
+describe('discovery never fails open (C-1)', () => {
+  it('reports symlinked and irregular entries as skipped instead of dropping them', async () => {
+    const root = tempDir('rsl-skip-shapes-')
+    const healthy = writeGeneration(root, 'good-ns', 'session-ok', 'session.jsonl.zstd', V0_HEADER, [PLAIN_ROW])
+    // A symlinked namespace, session and generation, plus a DIRECTORY named like a
+    // generation: none may disappear from the report without a word.
+    const linkedTarget = join(root, 'linked-target')
+    mkdirSync(linkedTarget, { recursive: true })
+    symlinkSync(linkedTarget, join(root, 'linked-ns'))
+    symlinkSync(healthy.dir, join(root, 'good-ns', 'session-linked'))
+    mkdirSync(join(root, 'good-ns', 'session-linked-generation'), { recursive: true })
+    symlinkSync(healthy.path, join(root, 'good-ns', 'session-linked-generation', 'session.jsonl.zstd'))
+    mkdirSync(join(root, 'good-ns', 'session-dir-generation', 'session.jsonl.zstd'), { recursive: true })
+    // Residue of an interrupted publication: reported, never deleted here.
+    const staleName = 'session.repair.deadbeef.jsonl.zstd.tmp'
+    writeFileSync(join(healthy.dir, staleName), 'staged bytes')
+    const sink = captureIO()
+
+    const code = await execute(optionsFor({ root, json: true }), sink.io, bareEnv())
+    const document = JSON.parse(sink.out()) as RunResult
+
+    expect(code).toBe(1)
+    expect(document.summary.skipped).toBe(4)
+    const relative = document.skipped.map((entry) => entry.path.slice(root.length + 1)).sort()
+    expect(relative).toEqual([
+      'good-ns/session-dir-generation/session.jsonl.zstd',
+      'good-ns/session-linked',
+      'good-ns/session-linked-generation/session.jsonl.zstd',
+      'linked-ns',
+    ])
+    const reasonOf = new Map(document.skipped.map((entry) => [entry.path.slice(root.length + 1), entry.reason]))
+    expect(reasonOf.get('linked-ns')).toContain('symlink')
+    expect(reasonOf.get('good-ns/session-linked')).toContain('symlink')
+    expect(reasonOf.get('good-ns/session-linked-generation/session.jsonl.zstd')).toContain('symlink')
+    expect(reasonOf.get('good-ns/session-dir-generation/session.jsonl.zstd')).toContain('not a regular file')
+    // The healthy log is still triaged, and a skip suppresses the "no session log"
+    // line that would otherwise describe an empty root.
+    expect(document.logs).toHaveLength(1)
+    expect(document.staleStagingFiles.map((path) => basename(path))).toEqual([staleName])
+
+    const text = captureIO()
+    expect(await execute(optionsFor({ root }), text.io, bareEnv())).toBe(1)
+    expect(text.out()).toContain('skipped')
+    expect(text.out()).toContain('linked-ns')
+    expect(text.out()).toContain('stale staging')
+    expect(text.out()).toContain('skipped 4')
+  })
+
+  it.skipIf(UID === 0)('reports an unreadable namespace with its errno and exits 1', async () => {
+    const root = tempDir('rsl-skip-eacces-')
+    writeGeneration(root, 'good-ns', 'session-ok', 'session.jsonl.zstd', V0_HEADER, [PLAIN_ROW])
+    const blocked = join(root, 'blocked-ns')
+    mkdirSync(blocked)
+    chmodSync(blocked, 0o000)
+    try {
+      const sink = captureIO()
+      const code = await execute(optionsFor({ root, json: true }), sink.io, bareEnv())
+      const document = JSON.parse(sink.out()) as RunResult
+
+      expect(code).toBe(1)
+      expect(document.summary.skipped).toBe(1)
+      expect(document.skipped[0]?.path).toBe(blocked)
+      expect(document.skipped[0]?.reason).toContain('EACCES')
+      expect(document.logs).toHaveLength(1)
+    } finally {
+      chmodSync(blocked, 0o755)
+    }
+  })
+
+  it.skipIf(UID === 0)('makes an unreadable --root fatal (exit 2) instead of an empty report', async () => {
+    const root = tempDir('rsl-root-eacces-')
+    chmodSync(root, 0o000)
+    try {
+      const sink = captureIO()
+      const code = await execute(optionsFor({ root }), sink.io, bareEnv())
+
+      expect(code).toBe(2)
+      expect(sink.err()).toContain('--root cannot be read')
+      expect(sink.err()).toContain('EACCES')
+      expect(sink.out()).toBe('')
+    } finally {
+      chmodSync(root, 0o755)
+    }
+  })
+})
+
+describe('publication revision pin (C-2)', () => {
+  /**
+   * The fake catalog, but appending one row to the log the FIRST time it validates
+   * it: a live writer appending between this run's decode read and its publication
+   * read, which is the window the digest hand-off closes.
+   */
+  function concurrentAppendCatalogBody(target: string): string {
+    return FAKE_CATALOG_BODY
+      .replace(
+        'export const sessionFormatCatalog = {',
+        `import { appendFileSync } from 'node:fs'\nexport const sessionFormatCatalog = {`,
+      )
+      .replace(
+        '    const events = []',
+        `    const events = []
+    let appended = false`,
+      )
+      .replace(
+        '      decodeRow(row) {',
+        `      decodeRow(row) {
+        if (!appended) {
+          appended = true
+          appendFileSync(${JSON.stringify(target)}, '{"type":"turn/end","seq":1,"time":2,"data":{"turn":1,"reason":{"kind":"completed"}}}\\n')
+        }`,
+      )
+  }
+
+  it('refuses to publish a revision it did not decode, and writes nothing', async () => {
+    const root = tempDir('rsl-stale-revision-')
+    const log = writeGeneration(root, 'example-ns', 'session-concurrent', 'session.jsonl.zstd', V0_HEADER, [
+      { ...PLAIN_ROW, seq: 0 },
+      { ...DESCRIPTOR_V2, seq: 1 },
+    ])
+    const catalogPath = writeFakeCatalog(undefined, concurrentAppendCatalogBody(log.path))
+    const sink = captureIO()
+
+    const code = await execute(
+      optionsFor({ root, catalogPath, apply: true, json: true }),
+      sink.io,
+      bareEnv(),
+    )
+    const document = JSON.parse(sink.out()) as RunResult
+
+    // The append happened while the run was reading: the successor must not be
+    // built from the stale revision, and nothing may be staged for it.
+    expect(code).toBe(1)
+    expect(document.logs[0]).toMatchObject({ status: 'unrepairable', failed: true, published: null })
+    expect(document.logs[0]?.detail).toContain('the source generation changed since it was read')
+    expect(listing(log.dir)).toEqual(['session.jsonl.zstd'])
+  })
+
+  it('keeps the "nothing was published" wording only when nothing was published', async () => {
+    const candidate = { path: '/tmp/example/session.jsonl.zstd', generation: 0, sessionDir: '/tmp/example' }
+    const outcome = analysisFailureOutcome(candidate, new Error('boom'))
+    expect(outcome).toMatchObject({ status: 'unrepairable', failed: true, published: null })
+    expect(outcome.detail).toContain('analysis failed, nothing was written for this log: boom')
+  })
+})
+
+describe('catalog release pin (C-3)', () => {
+  it('refuses a catalog below the required format version with a fatal (exit 2)', async () => {
+    const root = tempDir('rsl-catalog-floor-')
+    writeGeneration(root, 'example-ns', 'session-x', 'session.jsonl.zstd', V0_HEADER, [{ ...PLAIN_ROW, seq: 0 }])
+    const catalogPath = writeFakeCatalog(undefined, FAKE_CATALOG_BODY.replace('currentVersion: 3', 'currentVersion: 2'))
+    const sink = captureIO()
+
+    const code = await execute(optionsFor({ root, catalogPath }), sink.io, bareEnv())
+
+    expect(code).toBe(2)
+    expect(sink.err()).toContain('declares currentVersion 2')
+    expect(sink.err()).toContain('requires at least 3')
+    expect(sink.out()).toBe('')
+
+    await expect(runRepair(optionsFor({ root, catalogPath }), bareEnv())).rejects.toBeInstanceOf(FatalError)
+  })
+
+  it('names the trusted catalog release in the text report and in --json', async () => {
+    const root = tempDir('rsl-catalog-version-')
+    writeGeneration(root, 'example-ns', 'session-ok', 'session.jsonl.zstd', V0_HEADER, [{ ...PLAIN_ROW, seq: 0 }])
+    const catalogPath = writeFakeCatalog()
+
+    const text = captureIO()
+    expect(await execute(optionsFor({ root, catalogPath }), text.io, bareEnv())).toBe(0)
+    expect(text.out()).toContain('(v3, package 0.1.5-rc.1, resolved by option)')
+
+    const sink = captureIO()
+    await execute(optionsFor({ root, catalogPath, json: true }), sink.io, bareEnv())
+    const document = JSON.parse(sink.out()) as RunResult
+    expect(document.catalog).toMatchObject({ resolved: true, packageVersion: '0.1.5-rc.1', currentVersion: 3 })
+  })
+
+  it('keeps the by-class table exhaustive over the vocabulary (C-4 drift pin)', async () => {
+    const root = tempDir('rsl-byclass-drift-')
+    writeGeneration(root, 'example-ns', 'session-ok', 'session.jsonl.zstd', V0_HEADER, [{ ...PLAIN_ROW, seq: 0 }])
+    const catalogPath = writeFakeCatalog()
+    const sink = captureIO()
+
+    await execute(optionsFor({ root, catalogPath, json: true }), sink.io, bareEnv())
+    const document = JSON.parse(sink.out()) as RunResult
+
+    // A class missing from the ordered vocabulary would seed `NaN` here and drop its
+    // row from the table; the keys and the total keep that from being silent.
+    expect(Object.keys(document.summary.byClass).sort()).toEqual([...REFUSAL_CLASSES].sort())
+    expect(Object.values(document.summary.byClass).every((count) => Number.isFinite(count))).toBe(true)
+    expect(Object.values(document.summary.byClass).reduce((sum, count) => sum + count, 0)).toBe(document.summary.total)
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/* QC fix wave against the REAL released catalog (C-5, C-6)            */
+/* ------------------------------------------------------------------ */
+
+/** A v0 log whose FIRST refusal is a foreign `source.kind`. */
+const REAL_SOURCE_KIND_FIRST_EVENTS: readonly Record<string, unknown>[] = [
+  { ...SOURCE_KIND, seq: 0 },
+  { type: 'turn/start', seq: 1, time: 1786865067774, data: { turn: 1 } },
+  { type: 'turn/end', seq: 2, time: 1786865237514, data: { turn: 1, reason: { kind: 'completed' } } },
+]
+
+/** A v0 log whose FIRST refusal is the legacy `fallbacks/switch` row. */
+const REAL_LEGACY_FIRST_EVENTS: readonly Record<string, unknown>[] = [
+  legacySwitch(0),
+  { type: 'sandbox/mode', seq: 1, time: 1786864997350, data: { mode: 'workspace-write' } },
+  { type: 'turn/start', seq: 2, time: 1786865067774, data: { turn: 1 } },
+  { type: 'turn/end', seq: 3, time: 1786865237514, data: { turn: 1, reason: { kind: 'completed' } } },
+]
+
+/**
+ * A v0 log the host loader's policy reads WITHOUT refusal while the strict,
+ * current-format policy refuses it: the trailing row has a seq gap, and the
+ * recoverable policy only rethrows a swallowed issue when a later `turn/end`
+ * surfaces it — there is none, so those rows are silently dropped.
+ */
+const REAL_OK_TRUNCATED_EVENTS: readonly Record<string, unknown>[] = [
+  { type: 'sandbox/mode', seq: 0, time: 1786864997350, data: { mode: 'workspace-write' } },
+  { type: 'turn/start', seq: 1, time: 1786865067774, data: { turn: 1 } },
+  { type: 'turn/end', seq: 2, time: 1786865237514, data: { turn: 1, reason: { kind: 'completed' } } },
+  { type: 'sandbox/mode', seq: 9, time: 1786865237600, data: { mode: 'workspace-write' } },
+]
+
+describe.skipIf(realCatalog === null)('QC fixtures against the real released catalog', () => {
+  it('maps a foreign source-kind-first refusal to `source-kind` (C-5)', async () => {
+    const oracle = realCatalog as CatalogHandle
+    const root = tempDir('rsl-real-source-first-')
+    const session = 'session-44444444-4444-4444-8444-444444444444'
+    writeGeneration(root, '--example-namespace--', session, 'session.jsonl.zstd', V0_HEADER, REAL_SOURCE_KIND_FIRST_EVENTS)
+
+    const report = await runRepair(optionsFor({ root, catalogPath: oracle.modulePath }), process.env)
+
+    expect(outcomeFor(report, session)).toMatchObject({ class: 'source-kind', status: 'repairable' })
+  })
+
+  it('maps a legacy-first refusal to `unknown-event-type` (C-5)', async () => {
+    const oracle = realCatalog as CatalogHandle
+    const root = tempDir('rsl-real-legacy-first-')
+    const session = 'session-55555555-5555-4555-8555-555555555555'
+    writeGeneration(root, '--example-namespace--', session, 'session.jsonl.zstd', V0_HEADER, REAL_LEGACY_FIRST_EVENTS)
+
+    const report = await runRepair(optionsFor({ root, catalogPath: oracle.modulePath }), process.env)
+
+    expect(outcomeFor(report, session)).toMatchObject({ class: 'unknown-event-type', status: 'unrepairable' })
+  })
+
+  it('reports `ok-truncated`, not a clean `ok`, when only the lenient policy accepts (C-6)', async () => {
+    const oracle = realCatalog as CatalogHandle
+    const root = tempDir('rsl-real-ok-truncated-')
+    const session = 'session-66666666-6666-4666-8666-666666666666'
+    const log = writeGeneration(root, '--example-namespace--', session, 'session.jsonl.zstd', V0_HEADER, REAL_OK_TRUNCATED_EVENTS)
+
+    const report = await runRepair(optionsFor({ root, catalogPath: oracle.modulePath }), process.env)
+    const outcome = outcomeFor(report, session)
+    expect(outcome).toMatchObject({ class: 'ok', status: 'ok' })
+    expect(outcome.strictRefusal).toContain('seq gap')
+    expect(report.summary).toMatchObject({ ok: 1, okTruncated: 1 })
+
+    const sink = captureIO()
+    const code = await execute(optionsFor({ root, catalogPath: oracle.modulePath, json: true }), sink.io, process.env)
+    const document = JSON.parse(sink.out()) as RunResult
+    const printed = document.logs[0]
+
+    // The session DOES load (exit 0), but the report may not claim it loads intact.
+    expect(code).toBe(0)
+    expect(document.summary).toMatchObject({ ok: 1, okTruncated: 1 })
+    expect(printed?.strictRefusal).toContain('seq gap')
+    expect(printed?.detail).toContain('opens with the rows after that refusal silently dropped')
+
+    const text = captureIO()
+    await execute(optionsFor({ root, catalogPath: oracle.modulePath }), text.io, process.env)
+    expect(text.out()).toContain('ok-truncated')
+    expect(text.out()).toContain('(ok-truncated 1)')
+    expect(text.out()).not.toContain('  ok ')
+    // Nothing was written for a log that needs no repair.
+    expect(listing(log.dir)).toEqual(['session.jsonl.zstd'])
   })
 })

@@ -15,11 +15,30 @@
  * closed and writes nothing):
  *   1. explicit `catalogPath` (the CLI's `--catalog <path>`);
  *   2. `$DSH_SESSION_FORMAT_CATALOG`;
- *   3. the `dsh` binary on `PATH` (its `node_modules`);
+ *   3. the catalog the `dsh` binary on `PATH` itself resolves (its own
+ *      `createRequire` resolution first, then the nearest ancestor
+ *      `node_modules` that carries it);
  *   4. `~/.npm/_npx/ *\/node_modules` (the npx cache `dsh` runs from).
  * An explicitly configured catalog that does not resolve is NOT silently
  * replaced by a different release: `resolveCatalog` returns `null` instead of
  * falling through to step 3/4.
+ *
+ * TRUST BOUNDARY: every step *imports* the resolved module — a catalog is
+ * EXECUTED code, not a data file, and the same privilege the user already grants
+ * by running this tool as `tsx`. A directory candidate is accepted only when its
+ * `package.json` names the catalog package; a **file** candidate is accepted when
+ * no owning `package.json` is found (a bare module, e.g. a test fixture) or when
+ * the nearest owning one names the catalog package, and is rejected when it
+ * belongs to a different package. That check is a guard rail, not a sandbox:
+ * `--catalog` and the environment variable still execute what they name.
+ *
+ * RELEASE PIN: a resolved catalog is only trusted when its own
+ * `currentVersion` is at least {@link REQUIRED_CATALOG_VERSION} — the caller
+ * asserts it with {@link catalogVersionRefusal} — because this tool encodes a
+ * successor with that module and then reads it back with the SAME module, so
+ * "it accepts its own output" is not evidence about the release the GUI runs.
+ * The handle also carries the catalog's own package version so a report can name
+ * the build it trusted.
  *
  * A candidate path may be the catalog package directory, a directory that
  * contains it (`node_modules/...`), or the module entry file itself.
@@ -46,6 +65,16 @@ const CATALOG_PACKAGE_DIR = 'dsh-session-format-catalog'
 
 /** Environment override honoured as resolution step 2. */
 export const CATALOG_ENV_VAR = 'DSH_SESSION_FORMAT_CATALOG'
+
+/**
+ * The oldest released catalog this tool accepts as its oracle: the format
+ * generation it repairs TO (`CURRENT_VERSION_FLOOR`, the pre-V3 scope). A catalog
+ * below it cannot read a successor this tool would write, so `--apply` must
+ * refuse rather than verify its own output against a build the GUI does not run.
+ * One constant for both the selection scope and the oracle floor: they are the
+ * same number and must not drift.
+ */
+export const REQUIRED_CATALOG_VERSION = 3
 
 /** Recovery policy of one catalog restore (released `SessionFormatRecovery`). */
 export type RestoreRecovery = 'strict' | 'recoverable'
@@ -94,8 +123,32 @@ export interface CatalogHandle {
   readonly modulePath: string
   /** Resolution step that produced this handle. */
   readonly resolvedBy: CatalogResolvedBy
+  /**
+   * The catalog package's OWN `version` from its `package.json`, or `null` when
+   * no owning manifest could be read. Diagnostic: the report names the build it
+   * trusted, not just the path.
+   */
+  readonly packageVersion: string | null
   /** The released catalog module's `sessionFormatCatalog` export. */
   readonly catalog: ReleasedCatalog
+}
+
+/**
+ * Why a resolved catalog may not be used as this run's oracle, or `null` when it
+ * may. The caller turns a non-`null` reason into a fatal (exit 2) refusal: a
+ * below-floor catalog would encode a successor this tool's own read-back cannot
+ * vouch for, and the GUI would not run it either.
+ */
+export function catalogVersionRefusal(handle: CatalogHandle): string | null {
+  const version = handle.catalog.currentVersion
+  if (typeof version === 'number' && Number.isSafeInteger(version) && version >= REQUIRED_CATALOG_VERSION) {
+    return null
+  }
+  return `the resolved released catalog at ${handle.modulePath}`
+    + `${handle.packageVersion === null ? '' : ` (package version ${handle.packageVersion})`}`
+    + ` declares currentVersion ${JSON.stringify(version)}, but this tool requires at least `
+    + `${REQUIRED_CATALOG_VERSION}: it would publish a successor that build cannot read. `
+    + 'Point --catalog (or DSH_SESSION_FORMAT_CATALOG) at the catalog of the release the GUI runs.'
 }
 
 /** Inputs for {@link resolveCatalog}. */
@@ -144,10 +197,44 @@ async function loadCatalog(
   try {
     const loaded = (await import(pathToFileURL(modulePath).href)) as { sessionFormatCatalog?: unknown }
     if (!isReleasedCatalog(loaded.sessionFormatCatalog)) return null
-    return { modulePath, resolvedBy, catalog: loaded.sessionFormatCatalog }
+    return {
+      modulePath,
+      resolvedBy,
+      packageVersion: catalogPackageVersion(modulePath),
+      catalog: loaded.sessionFormatCatalog,
+    }
   } catch {
     return null
   }
+}
+
+/**
+ * The owning catalog package's own `version`, walking up from a module entry to
+ * the nearest `package.json` that names the catalog package; `null` when none is
+ * found or it carries no string `version`.
+ */
+function catalogPackageVersion(modulePath: string): string | null {
+  const owner = owningPackageDirectory(modulePath)
+  if (owner === null) return null
+  const manifest = readManifest(owner)
+  const version = manifest === null ? undefined : manifest['version']
+  return typeof version === 'string' && version.length > 0 ? version : null
+}
+
+/**
+ * The nearest ancestor directory of `modulePath` whose `package.json` names the
+ * catalog package, or `null`. Bounded: a module entry sits at most a few levels
+ * below its package root.
+ */
+function owningPackageDirectory(modulePath: string): string | null {
+  let dir = dirname(modulePath)
+  for (let depth = 0; depth < 8; depth += 1) {
+    if (isCatalogPackage(dir)) return dir
+    const parent = dirname(dir)
+    if (parent === dir) break
+    dir = parent
+  }
+  return null
 }
 
 /** Whether a candidate path exposes the released catalog members this tool relies on. */
@@ -178,11 +265,16 @@ function homeDirectory(env: NodeJS.ProcessEnv): string {
 /**
  * Normalize a candidate (package dir, a dir containing it, or a module file)
  * to the catalog module entry file that can be imported.
+ *
+ * A FILE candidate is accepted when no owning `package.json` names a different
+ * package: a bare module (a fixture, a hand-written shim) has no owner and is
+ * taken at face value, while a module that provably belongs to another package is
+ * refused — the documented trust boundary of an executed, not parsed, input.
  */
 function resolveCatalogEntry(candidate: string, env: NodeJS.ProcessEnv): string | null {
   const path = resolveCandidate(candidate, env)
   if (!existsSync(path)) return null
-  if (statSync(path).isFile()) return path
+  if (statSync(path).isFile()) return fileCandidate(path)
   if (isCatalogPackage(path)) return packageEntry(path)
   for (const nested of [
     join(path, CATALOG_PACKAGE),
@@ -192,6 +284,22 @@ function resolveCatalogEntry(candidate: string, env: NodeJS.ProcessEnv): string 
     if (isCatalogPackage(nested)) return packageEntry(nested)
   }
   return null
+}
+
+/** One explicit FILE candidate: refuse it when it belongs to another package. */
+function fileCandidate(path: string): string | null {
+  let dir = dirname(path)
+  for (let depth = 0; depth < 8; depth += 1) {
+    const manifest = readManifest(dir)
+    if (manifest !== null) {
+      // The nearest owning manifest decides: the catalog package, or nothing.
+      return manifest['name'] === CATALOG_PACKAGE ? path : null
+    }
+    const parent = dirname(dir)
+    if (parent === dir) break
+    dir = parent
+  }
+  return path
 }
 
 /** Whether a directory's own `package.json` names the released catalog package. */
@@ -230,11 +338,25 @@ function packageEntry(packageDir: string): string | null {
   return existsSync(entryPath) ? entryPath : null
 }
 
-/** Step 3: the `dsh` binary on `PATH` and the `node_modules` tree that owns it. */
+/**
+ * Step 3: the catalog the `dsh` binary on `PATH` itself resolves.
+ *
+ * The binary's OWN `createRequire` resolution comes first, because that is the
+ * resolution the running dsh package performs (it follows the package's real
+ * dependency layout, including pnpm's global layout where the binary sits outside
+ * the tree that owns its dependencies) — a nearer ancestor `node_modules` that
+ * merely *contains* a catalog is not necessarily the one the user's dsh runs, so
+ * it is only a fallback.
+ */
 function resolveFromDshBinary(env: NodeJS.ProcessEnv): string | null {
   const found = findOnPath('dsh', env)
   if (found === null) return null
   const binary = realpath(found)
+  try {
+    return createRequire(binary).resolve(CATALOG_PACKAGE)
+  } catch {
+    // Fall through to the ancestor walk below.
+  }
   let dir = dirname(binary)
   for (;;) {
     const nested = join(dir, 'node_modules', CATALOG_PACKAGE)
@@ -243,13 +365,7 @@ function resolveFromDshBinary(env: NodeJS.ProcessEnv): string | null {
     if (parent === dir) break
     dir = parent
   }
-  // A global install may keep the binary outside the tree that owns its
-  // dependencies (pnpm's global layout); resolve as if requiring from it.
-  try {
-    return createRequire(binary).resolve(CATALOG_PACKAGE)
-  } catch {
-    return null
-  }
+  return null
 }
 
 /** Absolute path of one executable name on the environment's `PATH`, or `null`. */
@@ -375,7 +491,26 @@ function errorChainText(error: unknown): string {
   return parts.join('\n')
 }
 
-/** The class of one refusal thrown by the released catalog restore. */
+/**
+ * The class of one refusal thrown by the released catalog restore.
+ *
+ * The mapping is over the released build's OWN prose, so every entry cites the
+ * raise site that produces it (pinned checkout; the installed `0.1.5-rc.1`
+ * build's line is given for the same statement). A released reword therefore
+ * degrades these logs to `other-refusal` (unrepairable, nothing written) until
+ * this table is updated — which is exactly what the two real-catalog fixtures in
+ * `tests/repair-session-logs.spec.ts` (`describe.skipIf(realCatalog === null)`,
+ * foreign-`source.kind`-first and legacy-first) exist to catch:
+ *   - `cannot safely transform unclassified message source` —
+ *     `session-format-v2-to-v3/src/payload.ts:113` (`assertSource`; installed
+ *     `dsh-session-format-v2-to-v3/lib/index.js:125`);
+ *   - `uses unsupported descriptor version` —
+ *     `session-format-v0-to-v1/src/validation.ts:202`
+ *     (`assertReleasedEventPayload`; installed `…-v0-to-v1/lib/index.js:1586`);
+ *   - `unknown historical event type` —
+ *     `session-format-v0-to-v1/src/validation.ts:120` and `:194` (installed
+ *     `…-v0-to-v1/lib/index.js:1530`, `:1582`).
+ */
 function refusalClass(error: unknown): RefusalClass {
   const text = errorChainText(error)
   if (text.includes('unclassified message source')) return 'source-kind'

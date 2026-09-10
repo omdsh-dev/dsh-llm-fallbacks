@@ -58,6 +58,36 @@ export type RefusalClass =
   | 'other-refusal'
   | 'decompress-failed'
 
+/**
+ * Every {@link RefusalClass} member, as a COMPILE-CHECKED record: a new class
+ * added to the union without a member here fails to compile, so the vocabulary
+ * cannot grow silently.
+ */
+export const REFUSAL_CLASS_MEMBERS: Readonly<Record<RefusalClass, true>> = {
+  ok: true,
+  'source-kind': true,
+  'subagent-descriptor-version': true,
+  'unknown-event-type': true,
+  'other-refusal': true,
+  'decompress-failed': true,
+}
+
+/**
+ * The refusal vocabulary in REPORT order — the single source of truth for the
+ * `--class` values, the report's per-class table and the usage text. Kept
+ * member-for-member with {@link REFUSAL_CLASS_MEMBERS} by that record's type and
+ * by an equality pin in the suite, so the next class fails loudly in both places
+ * instead of yielding a `NaN` report row.
+ */
+export const REFUSAL_CLASSES: readonly RefusalClass[] = [
+  'ok',
+  'source-kind',
+  'subagent-descriptor-version',
+  'unknown-event-type',
+  'other-refusal',
+  'decompress-failed',
+]
+
 /** One decoded JSONL row of a session log (the physical envelope only). */
 export interface ParsedRow {
   type: string
@@ -87,12 +117,20 @@ export interface Finding {
  * `normalize` is all-or-nothing per rule: when any finding of that rule cannot
  * be repaired it returns `{ refused }` and the caller must discard the rows it
  * would otherwise have produced.
+ *
+ * `repairable` is the report's own predicate for "this rule can make a log of its
+ * class load AT ALL": a detector that never rewrites anything answers `false`, and
+ * a rule whose repair scope depends on the rows (the opt-in lossy rule repairs a
+ * log only when it actually carries a removable row) answers per call. The CLI
+ * derives its repairable-class set from this member rather than from a literal, so
+ * adding a rule is enough to make its class repairable.
  */
 export interface LogRule {
   id: string
   class: RefusalClass
   detect(rows: readonly ParsedRow[]): Finding[]
   normalize(rows: readonly ParsedRow[]): { rows: ParsedRow[]; findings: Finding[] } | { refused: string }
+  repairable(rows: readonly ParsedRow[]): boolean
 }
 
 /* ------------------------------------------------------------------ */
@@ -170,7 +208,7 @@ export function isReleasedSourceKind(value: unknown): value is string {
  * Forms the released `plugin` arm admits (SSOT: `ContextFormed` in
  * `packages/llm/llm/src/message.ts`, enforced by `pluginSourceValue`).
  */
-const RELEASED_PLUGIN_FORMS: ReadonlySet<string> = new Set([
+export const RELEASED_PLUGIN_FORMS: ReadonlySet<string> = new Set([
   'instructions',
   'catalog',
   'snapshot',
@@ -380,7 +418,7 @@ type DescriptorMode = 'one-shot' | 'continuable'
  *   - `2|one-shot|{label, mode, provider, version}`
  *   - `2|continuable|{agentModel, agentProvider, label, mode, provider, version}`
  */
-const DESCRIPTOR_V3_KEYS_BY_MODE: Readonly<Record<DescriptorMode, readonly string[]>> = {
+export const DESCRIPTOR_V3_KEYS_BY_MODE: Readonly<Record<DescriptorMode, readonly string[]>> = {
   'one-shot': ['version', 'mode', 'provider', 'label'],
   continuable: [
     'version',
@@ -1005,11 +1043,13 @@ export function renumberSurvivingEvents(
   for (const { source, oldSeq } of kept) {
     for (const reference of seqReferences(source)) {
       for (const span of reference.spans) {
-        for (const droppedSeq of dropped) {
-          if (droppedSeq >= span.start && droppedSeq <= span.end) {
-            return {
-              refused: `${REFERENCE_INTEGRITY_REFUSAL_PREFIX}${source.type} ${oldSeq} ${reference.label} names the dropped ${FALLBACKS_SWITCH_TYPE} seq ${droppedSeq}`,
-            }
+        // Binary search over the ASCENDING dropped positions: a span holds a
+        // dropped seq exactly when the count below its end exceeds the count
+        // below its start. Linear in the reference surface, not in the drop count.
+        if (droppedBefore(dropped, span.end + 1) !== droppedBefore(dropped, span.start)) {
+          const hit = dropped[droppedBefore(dropped, span.start)] as number
+          return {
+            refused: `${REFERENCE_INTEGRITY_REFUSAL_PREFIX}${source.type} ${oldSeq} ${reference.label} names the dropped ${FALLBACKS_SWITCH_TYPE} seq ${hit}`,
           }
         }
       }
@@ -1086,6 +1126,22 @@ export function renumberSurvivingEvents(
     }
     rows.push(next)
   }
+
+  // Output-side invariant, independent of the input-side walk above: the rows this
+  // function RETURNS must satisfy the released edge's own `seq === eventCount` rule
+  // (packed runs included), so a shared bug in the input walk cannot produce a
+  // successor that merely looks renumbered.
+  let densePosition = 0
+  for (const row of rows.slice(1)) {
+    const extent = rowEventCount(row)
+    const declared = declaredEventSeq(row)
+    if (extent === null || declared !== densePosition) {
+      return {
+        refused: `the renumber produced ${row.type} at event position ${densePosition} declaring ${describe(declared)}; the released edge requires dense seqs`,
+      }
+    }
+    densePosition += extent
+  }
   return { rows, renumberedEventCount }
 }
 
@@ -1098,6 +1154,8 @@ export const sourceKindRule: LogRule = {
   class: 'source-kind',
   detect: detectSourceKinds,
   normalize: normalizeSourceKinds,
+  // A foreign message source is always rewritable into the released plugin arm.
+  repairable: () => true,
 }
 
 export const subagentDescriptorVersionRule: LogRule = {
@@ -1105,6 +1163,9 @@ export const subagentDescriptorVersionRule: LogRule = {
   class: 'subagent-descriptor-version',
   detect: detectDescriptorVersions,
   normalize: normalizeDescriptorVersions,
+  // An earlier descriptor version is bumped only when its payload proves admissible,
+  // but the class itself is repairable: it always rewrites or refuses, never drops.
+  repairable: () => true,
 }
 
 export const fallbacksSwitchRule: LogRule = {
@@ -1116,6 +1177,9 @@ export const fallbacksSwitchRule: LogRule = {
     if (findings.length > 0) return { refused: FALLBACKS_SWITCH_REFUSAL }
     return { rows: [...rows], findings: [] }
   },
+  // A detector, never a repair: this rule exists so the class is REPORTED when the
+  // lossy opt-in is absent.
+  repairable: () => false,
 }
 
 /**
@@ -1142,6 +1206,10 @@ export const dropLegacyEventsRule: LogRule = {
   class: 'unknown-event-type',
   detect: detectDroppableLegacyEvents,
   normalize: normalizeDroppedLegacyEvents,
+  // Repairable only for a log that actually carries a row this rule may remove: a
+  // differently-unknown event type stays unrepairable even under the opt-in, which
+  // is what the CLI's class gate used to special-case.
+  repairable: (rows) => rows.some(isRemovableLegacyEvent),
 }
 
 /**

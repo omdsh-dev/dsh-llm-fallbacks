@@ -32,7 +32,10 @@
  *
  * FAIL-CLOSED PUBLICATION ORDER (`publishSuccessor`):
  *   1. refuse without a resolved catalog (no oracle -> no write);
- *   2. read the original and record its sha256 (never written to);
+ *   2. read the original and refuse when it no longer matches the digest of the
+ *      revision the CALLER decoded its rows from — compared BEFORE anything is
+ *      staged, so a concurrent append can never be published as a verified
+ *      successor;
  *   3. take a defensive copy of the caller's rows — they alias `form` /
  *      `summary` / `sections` objects owned by the caller, and the released
  *      restore is documented as validating an artifact it may mutate in place;
@@ -44,9 +47,19 @@
  *      back through the same catalog with `validation: 'current'` (STRONGER than
  *      the host's own header restore, which runs `{ recovery: 'strict',
  *      validation: 'transformed' }`), then publish it exclusively with `link` so
- *      an existing successor is never overwritten with different bytes;
- *   6. remove the temporary and re-verify the original's sha256.
- * A failure at any step writes nothing canonical and removes the temporary.
+ *      an existing successor is never overwritten with different bytes; the
+ *      result records whether this call CREATED the target or ACCEPTED an
+ *      already-identical one;
+ *   6. remove the temporary and re-verify the original's digest. When the source
+ *      moved after a publication this call CREATED, the successor is unlinked
+ *      again (the store is left as found) and the failure says so. When it moved
+ *      after ACCEPTING a pre-existing identical successor, that file is left
+ *      alone, the failure names it, and it is raised as
+ *      {@link PublishedFromStaleSourceError} so no caller can report "nothing was
+ *      published".
+ * A failure before step 5 writes nothing canonical; the temporary is removed on
+ * every error path this process handles (a SIGKILL or a failing `rm` can still
+ * strand it, which is why discovery reports such names).
  */
 import { createHash, randomBytes } from 'node:crypto'
 import { link, readFile, rm, writeFile } from 'node:fs/promises'
@@ -62,13 +75,54 @@ const ZSTD_MAGIC = 0xFD2FB528
 /** The released writer's checksummed frame options (`ZSTD_c_checksumFlag`). */
 const ZSTD_CHECKSUM_OPTIONS = { params: { [constants.ZSTD_c_checksumFlag]: 1 } }
 
+/** What one successful publication did with the canonical target. */
+export type PublicationOutcome = 'created' | 'accepted'
+
 /** Result of one successful publication. */
 export interface PublishedSuccessor {
   /** Generation the successor carries (the restored artifact header version). */
   generation: number
   /** Always `true`: the successor was read back through the catalog. */
   verified: true
+  /** Canonical path of the published successor (actionable for rollback). */
+  targetPath: string
+  /** `created` when this call linked the target, `accepted` when identical bytes were already there. */
+  outcome: PublicationOutcome
 }
+
+/**
+ * A publication that HAPPENED but whose source generation moved afterwards: the
+ * successor is on disk (and the host will prefer it) while the rows it was built
+ * from are a stale snapshot. Raised instead of a plain error so no caller can
+ * report "nothing was published" and so the message can name the file to delete.
+ */
+export class PublishedFromStaleSourceError extends Error {
+  constructor(
+    message: string,
+    /** Canonical successor left on disk; deleting it rolls the publication back. */
+    readonly successorPath: string,
+    /** Whether this call created it or accepted an identical pre-existing one. */
+    readonly outcome: PublicationOutcome,
+  ) {
+    super(message)
+    this.name = 'PublishedFromStaleSourceError'
+  }
+}
+
+/**
+ * The largest plaintext this decoder will materialize for ONE Zstandard frame.
+ *
+ * The frame scanner already reads the declared content size, so a frame whose
+ * declaration exceeds this ceiling is refused WITHOUT decompressing it, and the
+ * decoder is capped at the declared size (or at this ceiling when the frame
+ * declares none) so a lying frame cannot expand past what it promised. The value
+ * is a documented ceiling, not a target: the largest decoded frame measured on
+ * this machine's store is 13.9 MB over 815 pre-V3 logs / 1 346 650 frames, so the
+ * ceiling carries ~38x headroom, and a session whose single event frame
+ * legitimately exceeded it would be refused as `decompress-failed` with a coded
+ * exit instead of exhausting memory.
+ */
+export const MAX_FRAME_PLAINTEXT_BYTES = 512 * 1024 * 1024
 
 /** One structurally complete Zstandard frame inside a concatenated container. */
 interface ZstdFrameRange {
@@ -76,6 +130,8 @@ interface ZstdFrameRange {
   start: number
   /** Exclusive frame end. */
   end: number
+  /** Content size the frame header declares, or `null` when it declares none. */
+  declaredBytes: number | null
 }
 
 /* ------------------------------------------------------------------ */
@@ -113,16 +169,40 @@ export function encodeZstdFrames(
 /**
  * Decode every frame of one concatenated container, in file order.
  *
+ * Bounded: the scanner reports each frame's DECLARED content size, a declaration
+ * above {@link MAX_FRAME_PLAINTEXT_BYTES} is refused before any decompression, and
+ * the decompressor itself is capped so a frame that lies about its size cannot
+ * expand past its own promise. A refusal here is a `decompress-failed` log (a
+ * coded exit), never an out-of-memory crash.
+ *
  * @param bytes container bytes (an original log or a published generation).
  * @returns the plaintext of each frame.
  */
 export function decodeZstdFrames(bytes: Buffer): string[] {
-  return scanZstdFrames(bytes).map(({ start, end }, index) => {
+  return scanZstdFrames(bytes).map(({ start, end, declaredBytes }, index) => {
+    if (declaredBytes !== null && declaredBytes > MAX_FRAME_PLAINTEXT_BYTES) {
+      throw new Error(
+        `refusing to decompress Zstandard frame ${index} at byte ${start}: it declares ${declaredBytes} bytes of `
+        + `plaintext, above this tool's ${MAX_FRAME_PLAINTEXT_BYTES}-byte frame ceiling`,
+      )
+    }
+    let plaintext: Buffer
     try {
-      return zstdDecompressSync(bytes.subarray(start, end)).toString('utf8')
+      plaintext = zstdDecompressSync(bytes.subarray(start, end), {
+        // A frame may legitimately declare zero bytes (an empty batch), and
+        // `maxOutputLength` must be at least 1.
+        maxOutputLength: Math.max(declaredBytes ?? MAX_FRAME_PLAINTEXT_BYTES, 1),
+      })
     } catch (error) {
       throw new Error(`corrupt Zstandard session log: frame ${index} at byte ${start} failed to decode`, { cause: error })
     }
+    if (declaredBytes !== null && plaintext.length !== declaredBytes) {
+      throw new Error(
+        `corrupt Zstandard session log: frame ${index} at byte ${start} declares ${declaredBytes} bytes but decoded `
+        + `${plaintext.length}`,
+      )
+    }
+    return plaintext.toString('utf8')
   })
 }
 
@@ -160,8 +240,18 @@ function scanZstdFrames(buffer: Buffer): ZstdFrameRange[] {
     const dictionaryFlag = descriptor & 0x03
     const dictionaryBytes = dictionaryFlag === 3 ? 4 : dictionaryFlag
     const contentSizeBytes = contentSizeFlag === 0 ? (singleSegment ? 1 : 0) : 1 << contentSizeFlag
+    const contentSizeOffset = offset + (singleSegment ? 0 : 1) + dictionaryBytes
     offset += (singleSegment ? 0 : 1) + dictionaryBytes + contentSizeBytes
     if (offset > buffer.length) throw new Error(`torn Zstandard session log: truncated frame header at byte ${start}`)
+    // The declared content size is what bounds this frame's expansion; reading it
+    // here (rather than discarding it) is what lets a lying frame be refused.
+    // Spec quirk: a 2-byte field encodes `Frame_Content_Size - 256`.
+    const declaredValue = contentSizeBytes === 0
+      ? null
+      : sizeToNumber(buffer, contentSizeOffset, contentSizeBytes)
+    const declaredBytes = declaredValue === null
+      ? null
+      : contentSizeBytes === 2 ? declaredValue + 256 : declaredValue
     for (;;) {
       if (buffer.length - offset < 3) throw new Error(`torn Zstandard session log: truncated frame at byte ${start}`)
       const blockHeader = buffer.readUIntLE(offset, 3)
@@ -183,9 +273,19 @@ function scanZstdFrames(buffer: Buffer): ZstdFrameRange[] {
       if (buffer.length - offset < 4) throw new Error(`torn Zstandard session log: truncated frame at byte ${start}`)
       offset += 4
     }
-    frames.push({ start, end: offset })
+    frames.push({ start, end: offset, declaredBytes })
   }
   return frames
+}
+
+/**
+ * Read one frame header's content-size field (little-endian, 1/2/4/8 bytes) as a
+ * number, or `null` when it is not representable as one.
+ */
+function sizeToNumber(buffer: Buffer, offset: number, width: number): number | null {
+  let value = 0
+  for (let index = 0; index < width; index += 1) value += buffer.readUInt8(offset + index) * 2 ** (8 * index)
+  return Number.isSafeInteger(value) && value >= 0 ? value : null
 }
 
 /**
@@ -226,16 +326,27 @@ export function assertCatalog(catalog: CatalogHandle | null | undefined): Catalo
  * @param logPath the ORIGINAL log file (never modified; only read).
  * @param normalizedRows the log's rows after the rule registry normalized them.
  * @param catalog resolved released catalog, or `null` — an absent oracle refuses.
- * @returns the published generation and its verification.
+ * @param sourceDigest sha256 of the bytes the CALLER decoded `normalizedRows`
+ *   from. Compared with the file before anything is staged, so a revision the
+ *   rows were not built from can never be published as verified.
+ * @returns the published generation, its verification, its path and whether this
+ *   call created the target or accepted an identical pre-existing one.
  */
 export async function publishSuccessor(
   logPath: string,
   normalizedRows: readonly ParsedRow[],
   catalog: CatalogHandle | null,
+  sourceDigest: string,
 ): Promise<PublishedSuccessor> {
   const handle = assertCatalog(catalog)
   const originalBytes = await readFile(logPath)
   const originalDigest = sha256(originalBytes)
+  if (originalDigest !== sourceDigest) {
+    throw new Error(
+      `the source generation changed since it was read: ${logPath} is now ${originalDigest} but the rows to publish `
+      + `came from ${sourceDigest}. Nothing was written; re-run so the successor is built from the current revision.`,
+    )
+  }
 
   // Defensive copy: the caller's rows alias `form` / `summary` / `sections`
   // objects, and the released restore may normalize the artifact in place.
@@ -253,15 +364,18 @@ export async function publishSuccessor(
   )
 
   const temporaryPath = join(dirname(logPath), `session.repair.${randomBytes(6).toString('hex')}.jsonl.zstd.tmp`)
+  let outcome: PublicationOutcome
   try {
-    // Inside the guarded region: a failure MID-write (ENOSPC, quota, a killed
-    // process) leaves a truncated temporary behind, and the cleanup below is what
-    // guarantees no `.tmp` is ever stranded.
+    // Inside the guarded region: a failure MID-write (ENOSPC, quota) leaves a
+    // truncated temporary behind, and the cleanup below is what removes it. The
+    // cleanup covers every error path THIS PROCESS handles; a SIGKILL or a failing
+    // `rm` can still strand the temporary, which is why discovery reports such
+    // names instead of ignoring them.
     await writeFile(temporaryPath, bytes, { flag: 'wx', mode: 0o600 })
     // Read the staged generation back with the host's current-generation policy
     // BEFORE it becomes visible under its canonical name.
     verifyGeneration(handle.catalog, await readFile(temporaryPath), generation)
-    await publishExclusive(temporaryPath, targetPath, sha256(bytes))
+    outcome = await publishExclusive(temporaryPath, targetPath, sha256(bytes))
   } catch (error) {
     try {
       await rm(temporaryPath, { force: true })
@@ -282,9 +396,44 @@ export async function publishSuccessor(
   }
 
   if (sha256(await readFile(logPath)) !== originalDigest) {
-    throw new Error(`the source generation changed during publication: ${logPath}`)
+    await settleStalePublication(logPath, targetPath, outcome)
   }
-  return { generation, verified: true }
+  return { generation, verified: true, targetPath, outcome }
+}
+
+/**
+ * Settle a publication whose source generation moved AFTER it landed.
+ *
+ * The publication HAPPENED, so reporting "nothing was published" would be a lie,
+ * and leaving a successor this call CREATED would leave the store changed after a
+ * failed run. A created target is therefore removed again (the store is as it
+ * was) while an ACCEPTED pre-existing one is never touched; either way the failure
+ * names the path so rollback is actionable, and only the stale-accepted case is a
+ * {@link PublishedFromStaleSourceError} (the case a caller must not describe as
+ * "nothing was published").
+ *
+ * Always throws. Exported because this is the decision table the fix round added,
+ * and it is reachable in production only by an actual race.
+ */
+export async function settleStalePublication(
+  logPath: string,
+  targetPath: string,
+  outcome: PublicationOutcome,
+): Promise<never> {
+  if (outcome === 'created') {
+    await rm(targetPath, { force: true })
+    throw new Error(
+      `the source generation changed during publication: ${logPath}. The successor this call created `
+      + `(${targetPath}) was removed; nothing was published.`,
+    )
+  }
+  throw new PublishedFromStaleSourceError(
+    `the source generation changed during publication: ${logPath}. The successor ${targetPath} was already `
+    + 'published by an earlier run and now holds a stale snapshot of this session; it was left in place because '
+    + 'this run did not create it — delete it to roll the publication back.',
+    targetPath,
+    outcome,
+  )
 }
 
 /**
@@ -331,11 +480,18 @@ function verifyGeneration(
  * Publish the staged bytes exclusively: `link` never replaces an existing
  * successor, and an existing target is accepted only when it already carries
  * exactly these bytes (a re-run of the same repair).
+ *
+ * @returns `created` when this call linked the target, `accepted` when identical
+ *   bytes were already published.
  */
-async function publishExclusive(temporaryPath: string, targetPath: string, digest: string): Promise<void> {
+async function publishExclusive(
+  temporaryPath: string,
+  targetPath: string,
+  digest: string,
+): Promise<PublicationOutcome> {
   try {
     await link(temporaryPath, targetPath)
-    return
+    return 'created'
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
   }
@@ -345,6 +501,7 @@ async function publishExclusive(temporaryPath: string, targetPath: string, diges
       `refusing to replace the existing successor generation ${targetPath}: it holds different bytes`,
     )
   }
+  return 'accepted'
 }
 
 /** Hex sha256 of one byte buffer. */

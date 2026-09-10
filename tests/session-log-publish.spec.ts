@@ -24,6 +24,8 @@ import { classifyRows } from '../scripts/session-logs/classify.ts'
 import { BUILT_IN_RULES, type ParsedRow } from '../scripts/session-logs/rules.ts'
 import {
   CATALOG_ENV_VAR,
+  REQUIRED_CATALOG_VERSION,
+  catalogVersionRefusal,
   classifyWithCatalog,
   resolveCatalog,
   restoreRows,
@@ -32,7 +34,15 @@ import {
   type ReleasedCatalog,
   type RestoreOptions,
 } from '../scripts/session-logs/catalog.ts'
-import { assertCatalog, decodeZstdFrames, encodeZstdFrames, publishSuccessor } from '../scripts/session-logs/publish.ts'
+import {
+  MAX_FRAME_PLAINTEXT_BYTES,
+  PublishedFromStaleSourceError,
+  assertCatalog,
+  decodeZstdFrames,
+  encodeZstdFrames,
+  publishSuccessor,
+  settleStalePublication,
+} from '../scripts/session-logs/publish.ts'
 
 /* ------------------------------------------------------------------ */
 /* fixture helpers                                                     */
@@ -363,7 +373,7 @@ function refusingCatalog(
 
 /** Wrap one raw catalog in a handle, as `resolveCatalog` would. */
 function handleOf(catalog: ReleasedCatalog): CatalogHandle {
-  return { modulePath: '/fake/catalog/lib/index.js', resolvedBy: 'option', catalog }
+  return { modulePath: '/fake/catalog/lib/index.js', resolvedBy: 'option', packageVersion: '0.1.5-rc.1', catalog }
 }
 
 const HEADER_ROW: FixtureRow = {
@@ -514,7 +524,7 @@ describe('publishSuccessor failure modes', () => {
     const { dir, logPath } = writeFixtureLog()
     const before = sha256(logPath)
 
-    await expect(publishSuccessor(logPath, [HEADER_ROW, EVENT_ROW], null)).rejects.toThrow(
+    await expect(publishSuccessor(logPath, [HEADER_ROW, EVENT_ROW], null, sha256(logPath))).rejects.toThrow(
       /no released session-format catalog resolved/,
     )
 
@@ -532,7 +542,7 @@ describe('publishSuccessor failure modes', () => {
     const catalog = refusingCatalog(new Error('unreachable'))
 
     await expect(
-      publishSuccessor(join(dir, 'session.jsonl.zstd'), [HEADER_ROW, EVENT_ROW], handleOf(catalog)),
+      publishSuccessor(join(dir, 'session.jsonl.zstd'), [HEADER_ROW, EVENT_ROW], handleOf(catalog), 'irrelevant'),
     ).rejects.toThrow(/ENOENT/)
 
     expect(readdirSync(dir)).toEqual([])
@@ -565,7 +575,7 @@ describe('publishSuccessor failure modes', () => {
       encodeCurrentEvent: (event) => ({ ...(event as Record<string, unknown>) }),
     }
 
-    await expect(publishSuccessor(logPath, rows, handleOf(catalog))).rejects.toThrow(
+    await expect(publishSuccessor(logPath, rows, handleOf(catalog), before)).rejects.toThrow(
       /refuses the transformed artifact/,
     )
 
@@ -667,9 +677,14 @@ releaseOnly('publishSuccessor (released catalog)', () => {
     expect(classifyWithCatalog(normalized, oracle)).toBe('ok')
 
     const snapshot = structuredClone(normalized)
-    const result = await publishSuccessor(logPath, normalized, oracle)
+    const result = await publishSuccessor(logPath, normalized, oracle, originalDigest)
 
-    expect(result).toEqual({ generation: 3, verified: true })
+    expect(result).toEqual({
+      generation: 3,
+      verified: true,
+      targetPath: join(dir, 'session.v3.jsonl.zstd'),
+      outcome: 'created',
+    })
     const targetPath = join(dir, 'session.v3.jsonl.zstd')
     expect(existsSync(targetPath)).toBe(true)
     // AC-2: never modify the original.
@@ -726,15 +741,141 @@ releaseOnly('publishSuccessor (released catalog)', () => {
       normalized = outcome.rows
     }
 
-    await publishSuccessor(logPath, normalized, oracle)
+    await publishSuccessor(logPath, normalized, oracle, sha256(logPath))
     const targetPath = join(dir, 'session.v3.jsonl.zstd')
     const publishedDigest = sha256(targetPath)
 
-    await expect(publishSuccessor(logPath, normalized, oracle)).resolves.toEqual({
+    await expect(publishSuccessor(logPath, normalized, oracle, sha256(logPath))).resolves.toEqual({
       generation: 3,
       verified: true,
+      targetPath,
+      outcome: 'accepted',
     })
     expect(sha256(targetPath)).toBe(publishedDigest)
     expect(readdirSync(dir).filter((name) => name.endsWith('.tmp'))).toEqual([])
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/* QC fix wave (C-2, C-3, S-6, S-7)                                    */
+/* ------------------------------------------------------------------ */
+
+describe('publication revision pin (C-2)', () => {
+  it('refuses a revision other than the one the rows were decoded from, before any write', async () => {
+    const { dir, logPath } = writeFixtureLog()
+    const before = sha256(logPath)
+    const catalog = refusingCatalog(new Error('unreachable: the digest check runs first'))
+
+    await expect(
+      publishSuccessor(logPath, [HEADER_ROW, EVENT_ROW], handleOf(catalog), 'a-different-digest'),
+    ).rejects.toThrow(/the source generation changed since it was read/)
+
+    // Nothing was staged, and the original is untouched.
+    expect(readdirSync(dir)).toEqual(['session.jsonl.zstd'])
+    expect(sha256(logPath)).toBe(before)
+  })
+
+  it('unlinks a successor it CREATED when the source moved after publication', async () => {
+    const dir = tempDir('slr-stale-created-')
+    const logPath = join(dir, 'session.jsonl.zstd')
+    const targetPath = join(dir, 'session.v3.jsonl.zstd')
+    writeFileSync(logPath, 'source bytes')
+    writeFileSync(targetPath, 'published bytes')
+
+    await expect(settleStalePublication(logPath, targetPath, 'created')).rejects.toThrow(
+      /The successor this call created .* was removed; nothing was published/,
+    )
+    expect(existsSync(targetPath)).toBe(false)
+  })
+
+  it('keeps an ACCEPTED pre-existing successor and names it for rollback', async () => {
+    const dir = tempDir('slr-stale-accepted-')
+    const logPath = join(dir, 'session.jsonl.zstd')
+    const targetPath = join(dir, 'session.v3.jsonl.zstd')
+    writeFileSync(logPath, 'source bytes')
+    writeFileSync(targetPath, 'published bytes')
+
+    const failure = await settleStalePublication(logPath, targetPath, 'accepted').catch((error: unknown) => error)
+
+    // The file is NOT this run's to delete, and the failure must say so rather than
+    // claim nothing was published.
+    expect(existsSync(targetPath)).toBe(true)
+    expect(failure).toBeInstanceOf(PublishedFromStaleSourceError)
+    expect((failure as PublishedFromStaleSourceError).successorPath).toBe(targetPath)
+    expect((failure as Error).message).toContain('delete it to roll the publication back')
+  })
+})
+
+describe('catalog release pin (C-3)', () => {
+  it('accepts a catalog at or above the required version and refuses one below it', () => {
+    const handle = (currentVersion: number): CatalogHandle => ({
+      modulePath: '/fake/catalog/lib/index.js',
+      resolvedBy: 'option',
+      packageVersion: '0.1.4',
+      catalog: { ...refusingCatalog(new Error('unused')), currentVersion },
+    })
+
+    expect(catalogVersionRefusal(handle(REQUIRED_CATALOG_VERSION))).toBeNull()
+    expect(catalogVersionRefusal(handle(REQUIRED_CATALOG_VERSION + 1))).toBeNull()
+    const refusal = catalogVersionRefusal(handle(REQUIRED_CATALOG_VERSION - 1))
+    expect(refusal).toContain('declares currentVersion 2')
+    expect(refusal).toContain('requires at least 3')
+    expect(refusal).toContain('package version 0.1.4')
+  })
+})
+
+describe('decompression bound (S-6)', () => {
+  /** One hand-built frame header declaring `declared` bytes and holding one raw block. */
+  function frameDeclaring(declared: number): Buffer {
+    const header = Buffer.alloc(4 + 1 + 1 + 4)
+    header.writeUInt32LE(0xfd2fb528, 0)
+    // FCS_Flag = 2 (four content-size bytes), no single-segment flag, no checksum.
+    header.writeUInt8(0b1000_0000, 4)
+    header.writeUInt8(0, 5) // window descriptor
+    header.writeUInt32LE(declared, 6)
+    const block = Buffer.alloc(3 + 1)
+    // last block (1) | block type 2 (compressed) | size 1
+    block.writeUIntLE(1 | (2 << 1) | (1 << 3), 0, 3)
+    block.writeUInt8(0, 3)
+    return Buffer.concat([header, block])
+  }
+
+  it('refuses a frame whose declared plaintext exceeds the ceiling, without decompressing it', () => {
+    const declared = MAX_FRAME_PLAINTEXT_BYTES + 1
+    expect(() => decodeZstdFrames(frameDeclaring(declared))).toThrow(
+      new RegExp(`declares ${declared} bytes of plaintext, above this tool's ${MAX_FRAME_PLAINTEXT_BYTES}-byte frame ceiling`),
+    )
+  })
+
+  it('still decodes a frame that declares a size within the ceiling', () => {
+    // A real, small frame: the declared-size path must not disturb the normal one.
+    const frames = decodeZstdFrames(encodeZstdFrames({ type: 'session', version: 3 }, [{ type: 'x', seq: 0 }]))
+    expect(frames).toHaveLength(2)
+    expect(JSON.parse(frames[0] as string)).toMatchObject({ type: 'session' })
+  })
+})
+
+describe('explicit catalog file candidates (S-7)', () => {
+  it('refuses a module that belongs to a different package', async () => {
+    const root = tempDir('slr-catalog-foreign-')
+    const foreign = join(root, 'node_modules', 'some-other-package')
+    mkdirSync(foreign, { recursive: true })
+    writeFileSync(join(foreign, 'package.json'), JSON.stringify({ name: 'some-other-package', version: '1.0.0' }))
+    const entry = join(foreign, 'index.js')
+    writeFileSync(entry, FAKE_CATALOG_BODY)
+
+    // The candidate is EXECUTED if accepted, so a module provably owned by another
+    // package is not taken at face value.
+    expect(await resolveCatalog({ catalogPath: entry, env: { HOME: root } })).toBeNull()
+  })
+
+  it('accepts a bare module with no owning package.json', async () => {
+    const root = tempDir('slr-catalog-bare-')
+    const entry = join(root, 'bare-catalog.mjs')
+    writeFileSync(entry, FAKE_CATALOG_BODY)
+    const resolved = await resolveCatalog({ catalogPath: entry, env: { HOME: root } })
+
+    expect(resolved?.modulePath).toBe(entry)
+    expect(resolved?.packageVersion).toBeNull()
   })
 })

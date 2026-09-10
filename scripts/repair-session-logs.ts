@@ -66,10 +66,31 @@
  * the oracle before calling it loadable, and `--apply` never replaces one
  * holding different bytes (the publisher refuses).
  *
+ * DISCOVERY IS NOT ALLOWED TO FAIL OPEN: a namespace/session directory the walk
+ * cannot read, and a canonical generation that is a symlink or not a regular
+ * file, are collected with their errno into `skipped` (text report AND `--json`),
+ * folded into the non-zero exit code, and they suppress the "no session log …"
+ * line, which otherwise describes an empty root. An unreadable ROOT is fatal
+ * (exit 2) rather than an empty report — it is the one input whose failure hides
+ * every log at once. Symlinked entries are reported, never followed: writes must
+ * stay inside `--root`. A stale `session.repair.*.jsonl.zstd.tmp` (the residue of
+ * an interrupted run) is reported too, and never deleted by this tool.
+ *
  * `--class NAME` restricts RULE APPLICATION to one class (default: all rules),
- * which is what `--apply` will repair. It never narrows the report or the exit
- * code: every log under `--root` is classified and a refusal always exits
- * non-zero, so the flag can never hide a refusal.
+ * which is what `--apply` will repair. It never narrows the listing, the class
+ * table or the exit code: the report's `repairable` verdict is always computed
+ * over the FULL policy, and a log the filtered chain cannot repair on its own is
+ * reported as such — so the flag can never hide a refusal, and the report never
+ * promises a repair the same invocation would fail to perform.
+ *
+ * TWO POLICIES, AND THE REPORT SAYS WHICH ONE SAID `ok`: a log's class and its
+ * `ok` come from the host loader's policy (`recovery: 'recoverable'`), which is
+ * what decides whether the GUI opens the session — but that policy can swallow a
+ * refusal and drop the rows after it. Every `ok` log is therefore cross-checked
+ * with the strict, current-format policy: when that refuses, the log is reported
+ * as `ok-truncated` (a distinct token, an `okTruncated` summary count and a
+ * `strictRefusal` reason in `--json`) because the session opens WITHOUT the rows
+ * the strict policy rejects. Its exit code stays `0`: those sessions do load.
  *
  * PRECONDITION for `--apply` (printed loudly, never enforced): run it only while
  * NO dsh instance is writing the sessions under `--root`. The publisher links
@@ -77,29 +98,48 @@
  * lease (`lease.ts:40` in `@deepseek-ai/dsh-session-persistence-jsonl`; the
  * flock addon is host-internal, so this repo cannot take it), which means a
  * still-running older dsh would keep appending to a generation the host stops
- * preferring. Rollback is `rm` of the successor generation — the original is
- * authoritative and byte-identical.
+ * preferring. The publisher compares the digest of the revision this run
+ * DECODED with the file before staging anything, so a concurrent append is
+ * refused before the first write instead of being published as a verified
+ * successor; if the source moves after a publication this run CREATED, that
+ * successor is unlinked again, and if it moves after accepting a pre-existing
+ * identical one the failure names that file and says to delete it. Rollback is
+ * `rm` of the successor generation — the original is authoritative and
+ * byte-identical.
  *
  * RUNTIME FLOOR: reading and writing need `node:zlib` zstd, added in Node 22.15
  * (`engines.node` says `>= 22`). Availability is PROBED before the zstd-
  * dependent module is imported, so an older runtime gets an actionable message
  * and exit 2 instead of a module-link stack trace (see `zstdRuntimeProblem`).
  *
- * EXIT CODES: 0 = nothing refused, or every refusal repaired; 1 = completed with
- * at least one log still refused/unrepairable (or a repair failed); 2 = fatal
- * (bad arguments, missing `--root`, `--apply` without a resolved catalog,
- * `--apply --drop-legacy-events` without `--backup`, or a runtime without zstd).
+ * EXIT CODES: 0 = every log loads (a session that opens with rows dropped under
+ * the strict policy is reported `ok-truncated` and still exits 0); 1 = at least
+ * one log is still refused/unrepairable, a repair failed, a log was left
+ * unpublished (including one `--class` excluded), or an input could not be
+ * inspected at all (`skipped`); 2 = fatal (bad arguments, missing/unreadable
+ * `--root`, `--apply` without a resolved catalog, a catalog below the required
+ * format version, `--apply --drop-legacy-events` without `--backup`, or a runtime
+ * without zstd).
  */
+import { createHash } from 'node:crypto'
 import { constants as fsConstants } from 'node:fs'
 import { copyFile, readFile, readdir, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { classifyRows } from './session-logs/classify.ts'
-import { CATALOG_ENV_VAR, classifyWithCatalog, resolveCatalog, restoreRows } from './session-logs/catalog.ts'
+import {
+  CATALOG_ENV_VAR,
+  REQUIRED_CATALOG_VERSION,
+  catalogVersionRefusal,
+  classifyWithCatalog,
+  resolveCatalog,
+  restoreRows,
+} from './session-logs/catalog.ts'
 import type { CatalogHandle, CatalogResolvedBy } from './session-logs/catalog.ts'
 import {
   BUILT_IN_RULES,
+  REFUSAL_CLASSES,
   dropLegacyEventsRule,
   droppedEventCount,
   fallbacksSwitchRule,
@@ -113,27 +153,23 @@ import type { Finding, LogRule, LossyRefusalReason, ParsedRow, RefusalClass } fr
 const PROGRAM = 'repair-session-logs'
 
 /**
- * Format version at which the released chain is current. Only generations BELOW
- * it are triaged (the pinned `currentVersion` of the released catalog is the
- * publisher's business; this floor is the "pre-V3" scope of the plan).
+ * Format version at which the released chain is current: generations BELOW it are
+ * triaged (the "pre-V3" scope of the plan) and it is also the floor the resolved
+ * catalog must satisfy to be trusted as this run's oracle — one constant, so the
+ * scope and the oracle pin cannot drift (`REQUIRED_CATALOG_VERSION`).
  */
-const CURRENT_VERSION_FLOOR = 3
+const CURRENT_VERSION_FLOOR = REQUIRED_CATALOG_VERSION
 
-/** The classes whose normalization the rule registry can prove. */
-const REPAIRABLE_CLASSES: ReadonlySet<RefusalClass> = new Set<RefusalClass>([
-  'source-kind',
-  'subagent-descriptor-version',
-])
-
-/** The full refusal vocabulary, in report order. */
-const CLASS_NAMES: readonly RefusalClass[] = [
-  'ok',
-  'source-kind',
-  'subagent-descriptor-version',
-  'unknown-event-type',
-  'other-refusal',
-  'decompress-failed',
-]
+/**
+ * What "repairable" means for one log, derived from the RUN'S OWN RULE SET rather
+ * than from a literal: the classes of the rules that can make a log of their class
+ * load at all (a detector that only reports answers `false`, and the lossy rule
+ * answers per log, which is what this tool used to special-case by hand). Adding a
+ * rule is therefore enough to make its class repairable.
+ */
+function repairableClasses(rules: readonly LogRule[], rows: readonly ParsedRow[]): ReadonlySet<RefusalClass> {
+  return new Set(rules.filter((rule) => rule.repairable(rows)).map((rule) => rule.class))
+}
 
 /** Exit codes (see the module docblock). */
 const EXIT_CLEAN = 0
@@ -205,8 +241,8 @@ function argument(argv: readonly string[], index: number, flag: string): string 
 
 /** One `--class` value, validated against the refusal vocabulary. */
 function parseClass(value: string): RefusalClass {
-  const match = CLASS_NAMES.find((name) => name === value)
-  if (match === undefined) throw new Error(`unknown --class ${value}; expected one of ${CLASS_NAMES.join(', ')}`)
+  const match = REFUSAL_CLASSES.find((name) => name === value)
+  if (match === undefined) throw new Error(`unknown --class ${value}; expected one of ${REFUSAL_CLASSES.join(', ')}`)
   return match
 }
 
@@ -327,14 +363,69 @@ export function canonicalGeneration(name: string): number | null {
   return Number.isSafeInteger(version) ? version : null
 }
 
-/** Every immediate subdirectory of one directory, sorted; `[]` when unreadable. */
-async function subdirectories(dir: string): Promise<string[]> {
+/** One input the walk could not inspect, with the reason it could not. */
+export interface SkippedEntry {
+  /** Path of the unreadable/irregular entry (or of the directory that failed). */
+  path: string
+  /** The errno (or the shape) that stopped the walk, e.g. `EACCES: …` or `symlink`. */
+  reason: string
+}
+
+/** Everything one walk of a session root found. */
+export interface DiscoveryResult {
+  /** The triage candidates, sorted by path so a report is reproducible. */
+  generations: LogGeneration[]
+  /** Entries that could not be inspected: reported, counted, and non-zero. */
+  skipped: SkippedEntry[]
+  /** Residue of an interrupted run (`session.repair.*.jsonl.zstd.tmp`); never deleted here. */
+  staleStagingFiles: string[]
+  /**
+   * Why the ROOT itself could not be read, or `null`. The caller turns this into a
+   * fatal (exit 2): an unreadable root hides every log at once, which must not read
+   * as an empty store.
+   */
+  rootFailure: string | null
+}
+
+/** One error's short reason: its errno when it has one, else its message. */
+function reasonOf(error: unknown): string {
+  const code = (error as NodeJS.ErrnoException).code
+  return typeof code === 'string' && code.length > 0 ? `${code}: ${messageOf(error)}` : messageOf(error)
+}
+
+/** Whether one name is the residue of an interrupted publication. */
+function isStaleStagingName(name: string): boolean {
+  return name.startsWith('session.repair.') && name.endsWith('.jsonl.zstd.tmp')
+}
+
+/**
+ * Every immediate subdirectory of one directory, sorted.
+ *
+ * A `readdir` failure is REPORTED (the directory's own path + errno), never
+ * swallowed into an empty list, and a symlinked directory is reported rather than
+ * followed: this tool writes beside the generation it repairs, so following a link
+ * could place a successor or a `.bak` outside `--root`.
+ */
+async function subdirectories(dir: string, skipped: SkippedEntry[]): Promise<string[]> {
+  let entries
   try {
-    const entries = await readdir(dir, { withFileTypes: true })
-    return entries.filter((entry) => entry.isDirectory()).map((entry) => join(dir, entry.name)).sort()
-  } catch {
+    entries = await readdir(dir, { withFileTypes: true })
+  } catch (error) {
+    skipped.push({ path: dir, reason: reasonOf(error) })
     return []
   }
+  const directories: string[] = []
+  for (const entry of entries) {
+    const path = join(dir, entry.name)
+    if (entry.isDirectory()) {
+      directories.push(path)
+      continue
+    }
+    if (entry.isSymbolicLink()) {
+      skipped.push({ path, reason: 'symlink (not followed: a repair would write beside its target, outside --root)' })
+    }
+  }
+  return directories.sort()
 }
 
 /**
@@ -344,42 +435,81 @@ async function subdirectories(dir: string): Promise<string[]> {
  * A generation at or above the floor is deliberately ignored *when selecting*
  * (the host already prefers it), but its presence does not hide a pre-V3
  * generation: the caller reports such a log as already published instead of
- * silently skipping the session.
+ * silently skipping the session. A canonical NAME that is a symlink or not a
+ * regular file is reported as skipped — never silently dropped — while
+ * noncanonical names (`.tmp`, `.bak`, uppercase) are not candidates at all; the
+ * staged-publication residue is collected separately so an interrupted run is
+ * visible instead of forgotten.
  */
-async function newestPreCurrentGeneration(sessionDir: string): Promise<LogGeneration | null> {
+async function newestPreCurrentGeneration(
+  sessionDir: string,
+  skipped: SkippedEntry[],
+  staleStagingFiles: string[],
+): Promise<LogGeneration | null> {
   let entries
   try {
     entries = await readdir(sessionDir, { withFileTypes: true })
-  } catch {
+  } catch (error) {
+    skipped.push({ path: sessionDir, reason: reasonOf(error) })
     return null
   }
   let best: LogGeneration | null = null
   for (const entry of entries) {
-    if (!entry.isFile()) continue
+    if (isStaleStagingName(entry.name)) staleStagingFiles.push(join(sessionDir, entry.name))
     const generation = canonicalGeneration(entry.name)
     if (generation === null || generation >= CURRENT_VERSION_FLOOR) continue
+    const path = join(sessionDir, entry.name)
+    if (!entry.isFile()) {
+      skipped.push({
+        path,
+        reason: entry.isSymbolicLink()
+          ? 'symlink (not followed: a repair would write beside its target, outside --root)'
+          : 'not a regular file',
+      })
+      continue
+    }
     if (best === null || generation > best.generation) {
-      best = { path: join(sessionDir, entry.name), generation, sessionDir }
+      best = { path, generation, sessionDir }
     }
   }
   return best
 }
 
 /**
- * Every triage candidate under one session root (see the module docblock),
- * sorted by path so a report is reproducible.
+ * Every triage candidate under one session root (see the module docblock), plus
+ * everything the walk could not inspect and the reason it could not.
  *
  * @param root session root (`<root>/<namespace>/<session>/<generation>`).
  */
-export async function findGenerations(root: string): Promise<LogGeneration[]> {
+export async function findGenerations(root: string): Promise<DiscoveryResult> {
+  const skipped: SkippedEntry[] = []
+  const staleStagingFiles: string[] = []
   const found: LogGeneration[] = []
-  for (const namespace of await subdirectories(root)) {
-    for (const session of await subdirectories(namespace)) {
-      const generation = await newestPreCurrentGeneration(session)
+  const rootFailure = await readableDirectoryProblem(root)
+  if (rootFailure !== null) return { generations: [], skipped, staleStagingFiles, rootFailure }
+  for (const namespace of await subdirectories(root, skipped)) {
+    for (const session of await subdirectories(namespace, skipped)) {
+      const generation = await newestPreCurrentGeneration(session, skipped, staleStagingFiles)
       if (generation !== null) found.push(generation)
     }
   }
-  return found.sort((left, right) => left.path.localeCompare(right.path))
+  return {
+    generations: found.sort((left, right) => left.path.localeCompare(right.path)),
+    skipped,
+    staleStagingFiles: staleStagingFiles.sort(),
+    rootFailure: null,
+  }
+}
+
+/** Why `dir` cannot be walked, or `null` when it can be read. */
+async function readableDirectoryProblem(dir: string): Promise<string | null> {
+  try {
+    await readdir(dir)
+    return null
+  } catch (error) {
+    return `--root cannot be read: ${dir} (${reasonOf(error)}). Refusing to report an empty store for a root this `
+      + 'process cannot inspect.'
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -449,6 +579,16 @@ export interface LogOutcome {
   /** First-refusal class (the catalog's truth when an oracle resolved). */
   class: RefusalClass
   status: LogStatus
+  /**
+   * Why the STRICT, current-format policy refuses this log while the host loader's
+   * lenient policy called it `ok`, or `null` when both agree.
+   *
+   * The lenient policy can swallow a refusal and drop the rows after it, so an
+   * `ok` verdict alone would claim a session opens intact when it opens with rows
+   * missing; this field is that cross-check's evidence (and `token()` prints
+   * `ok-truncated` for it).
+   */
+  strictRefusal: string | null
   /** Human-facing one-line explanation. */
   detail: string
   /** Structural findings collected over the rows (may be empty). */
@@ -498,10 +638,25 @@ export interface LogOutcome {
   failed: boolean
 }
 
-/** Aggregate counts of one run (the exit code is derived from `refused`). */
+/**
+ * Aggregate counts of one run: the exit code is derived from `refused` — which
+ * counts every log still not loadable after this run, including a repairable one
+ * this invocation left unpublished — and from `skipped` (an input the walk could
+ * not inspect at all).
+ */
 export interface RunSummary {
   total: number
+  /** Logs the host loader's policy reads without refusal. */
   ok: number
+  /**
+   * Subset of `ok` that the STRICT current policy still refuses: those sessions
+   * open with the rows after the swallowed refusal silently dropped. Counted
+   * apart so `ok` is never read as "loads intact"; their exit code stays 0 because
+   * they do load.
+   */
+  okTruncated: number
+  /** Inputs the walk could not inspect (unreadable dir, symlink, irregular file). */
+  skipped: number
   /** Logs whose proof passes (whether or not this run applied it). */
   repairable: number
   /** Successors NEWLY published by this run (a re-run counts them as already published). */
@@ -529,10 +684,25 @@ export interface RunResult {
   mode: RunMode
   classFilter: RefusalClass | null
   catalog:
-    | { resolved: true; modulePath: string; resolvedBy: CatalogResolvedBy }
+    | {
+      resolved: true
+      modulePath: string
+      resolvedBy: CatalogResolvedBy
+      /** The catalog package's own version, when its manifest was readable. */
+      packageVersion: string | null
+      /** The format version that catalog declares as current. */
+      currentVersion: number
+    }
     | { resolved: false }
   logs: LogOutcome[]
   summary: RunSummary
+  /** Every input the walk could not inspect, with its errno — never silent. */
+  skipped: SkippedEntry[]
+  /**
+   * `session.repair.*.jsonl.zstd.tmp` residue found under the root (an interrupted
+   * publication). Reported so it can be deleted; this tool never removes it.
+   */
+  staleStagingFiles: string[]
   exitCode: number
 }
 
@@ -569,6 +739,30 @@ function runProof(
   return { rows: [...current], findings }
 }
 
+/** Hex sha256 of one byte buffer. */
+function sha256(bytes: Buffer): string {
+  return createHash('sha256').update(bytes).digest('hex')
+}
+
+/**
+ * Why the STRICT, current-format policy refuses these rows, or `null` when it
+ * accepts them (or when no oracle resolved: without one there is no strict verdict
+ * to report, and the structural class already says what this run knows).
+ *
+ * The defensive copy matters: the released restore normalizes some rows in place
+ * (`publish.ts` step 3), and these rows are still the ones the run may publish.
+ */
+function strictRefusalOf(rows: readonly ParsedRow[], catalog: CatalogHandle | null): string | null {
+  if (catalog === null) return null
+  try {
+    restoreRows(catalog.catalog, structuredClone(rows), { recovery: 'strict', validation: 'current' })
+    return null
+  } catch (error) {
+    const cause = error instanceof Error ? error.cause : undefined
+    return cause === undefined ? messageOf(error) : `${messageOf(error)} (cause: ${messageOf(cause)})`
+  }
+}
+
 /** What one log inspection needs from the surrounding run. */
 interface InspectContext {
   apply: boolean
@@ -581,7 +775,7 @@ interface InspectContext {
    * `--class` selected).
    */
   reportRules: readonly LogRule[]
-  /** The rules the proof chain applies: `reportRules` narrowed by `--class`. */
+  /** The rules the WRITE decision applies: `reportRules` narrowed by `--class`. */
   rules: readonly LogRule[]
   dropLegacyEvents: boolean
   catalog: CatalogHandle | null
@@ -590,7 +784,14 @@ interface InspectContext {
     logPath: string,
     rows: readonly ParsedRow[],
     catalog: CatalogHandle | null,
-  ) => Promise<{ generation: number; verified: true }>
+    sourceDigest: string,
+  ) => Promise<{ generation: number; verified: true; targetPath: string; outcome: 'created' | 'accepted' }>
+  /**
+   * The successor path of a publication that happened from a stale snapshot, or
+   * `null` for any other error. Lets this layer avoid reporting "nothing was
+   * published" after a publication (the publisher classifies it).
+   */
+  stalePublicationPath(error: unknown): string | null
 }
 
 /** Copy the original generation aside, idempotently. */
@@ -667,12 +868,15 @@ function lossyDropRefusal(
   if (dropLegacyEventsRule.detect(repaired).length !== 0) {
     return { ok: false, reason: 'other', refused: 'a parsed legacy fallbacks/switch row survived the drop' }
   }
-  // Independent reproduction of the renumber over the drop's own survivors —
-  // `legacyDropSplit` is the one place the drop's row policy lives, so this is
-  // the same drop the chain applied, re-derived from the source rows. Recomputing
-  // the gate and the remap here is what makes the reported renumbered count (and
-  // any refusal reason) a property of the rows, not of the report. The later
-  // rules legitimately rewrite rows, so only the drop's own row count is compared.
+  // Re-derivation, NOT an independent oracle: the renumber is recomputed over the
+  // drop's own survivors through the SAME gate (`legacyDropSplit` +
+  // `renumberSurvivingEvents`), so a bug shared by both layers would agree with
+  // itself here. What it buys is that the reported count and refusal reason are
+  // properties of the ROWS rather than of the report; the genuinely independent
+  // evidence is the released strict restore below, and the rule adds an
+  // output-side dense-`seq` invariant so the two layers fail on different
+  // evidence. The later rules legitimately rewrite rows, so only the drop's own
+  // row count is compared.
   const { survivors } = legacyDropSplit(rows)
   if (survivors.length !== repaired.length) {
     return {
@@ -708,8 +912,49 @@ function lossyDropRefusal(
   return { ok: true, renumberedEventCount: renumber.renumberedEventCount }
 }
 
-/** Classify one log, prove its repair, and publish it when `--apply` asks. */
+/**
+ * Classify one log, prove its repair, and publish it when `--apply` asks.
+ *
+ * One unexpected throw anywhere in here must not void the whole corpus run, so the
+ * analysis is delegated and a throw becomes THIS log's failure (`failed: true`,
+ * which the exit code counts as refused) with the walk continuing.
+ */
 async function inspectLog(candidate: LogGeneration, context: InspectContext): Promise<LogOutcome> {
+  try {
+    return await analyzeLog(candidate, context)
+  } catch (error) {
+    return analysisFailureOutcome(candidate, error)
+  }
+}
+
+/**
+ * What one log reports when its analysis throws unexpectedly: `failed: true`
+ * (which the exit code counts as refused) with the reason, so one bad log cannot
+ * void the report for every other log in the run. Exported for the pin, since the
+ * guard's reachability is by definition an unexpected condition.
+ */
+export function analysisFailureOutcome(candidate: LogGeneration, error: unknown): LogOutcome {
+  return {
+    path: candidate.path,
+    generation: candidate.generation,
+    class: 'other-refusal',
+    status: 'unrepairable',
+    strictRefusal: null,
+    detail: `analysis failed, nothing was written for this log: ${messageOf(error)}`,
+    findings: [],
+    legacyEventCount: 0,
+    droppedEventCount: 0,
+    renumberedEventCount: 0,
+    lossyRefusal: null,
+    selected: true,
+    published: null,
+    alreadyPublished: false,
+    failed: true,
+  }
+}
+
+/** The body of {@link inspectLog}: classify, prove, and (with `--apply`) publish. */
+async function analyzeLog(candidate: LogGeneration, context: InspectContext): Promise<LogOutcome> {
   const base = {
     path: candidate.path,
     generation: candidate.generation,
@@ -722,11 +967,18 @@ async function inspectLog(candidate: LogGeneration, context: InspectContext): Pr
     droppedEventCount: 0,
     renumberedEventCount: 0,
     lossyRefusal: null as LossyRefusalReason | null,
+    strictRefusal: null as string | null,
   }
 
   let rows: ParsedRow[]
+  let sourceDigest: string
   try {
-    rows = decodeRows(context.decodeZstdFrames(await readFile(candidate.path)))
+    const sourceBytes = await readFile(candidate.path)
+    // The digest of THIS read travels to the publisher, which refuses to write a
+    // successor from any other revision (C-2): decoding and publishing must be
+    // about the same bytes.
+    sourceDigest = sha256(sourceBytes)
+    rows = decodeRows(context.decodeZstdFrames(sourceBytes))
   } catch (error) {
     return {
       ...base,
@@ -751,22 +1003,32 @@ async function inspectLog(candidate: LogGeneration, context: InspectContext): Pr
     context.catalog === null ? structural.class : classifyWithCatalog(structuredClone(rows), context.catalog)
 
   if (refusal === 'ok') {
-    // `legacyEventCount` keeps its `base` 0 here, and that is the same statement the
-    // other branches make: a log the oracle reads without refusal cannot carry a
-    // parsed `fallbacks/switch` row (the frozen edge refuses that type outright), so
-    // 0 means "none", not "not measured".
-    return { ...base, class: 'ok', status: 'ok', detail: 'no refusal', findings: structural.findings }
+    // The lenient policy is the host loader's, so it decides "the GUI opens it" —
+    // but it can swallow a refusal and silently drop the rows after it. Cross-check
+    // with the strict, current-format policy and report the difference: a log that
+    // opens with rows missing must never be printed as a clean `ok`. The legacy-row
+    // population is measured here too, because such a log can carry one.
+    const strictRefusal = strictRefusalOf(rows, context.catalog)
+    return {
+      ...base,
+      class: 'ok',
+      status: 'ok',
+      strictRefusal,
+      legacyEventCount: legacy,
+      detail: strictRefusal === null
+        ? 'no refusal'
+        : "the host loader's policy reads no refusal, but the STRICT current-format policy refuses this session, so "
+          + `it opens with the rows after that refusal silently dropped: ${strictRefusal}`,
+      findings: structural.findings,
+    }
   }
 
-  // The lossy opt-in is the ONLY way `unknown-event-type` becomes repairable, and
-  // only for a log that actually carries a legacy row to remove: a log refused for
-  // any OTHER unknown event type keeps the fail-closed verdict, because no
-  // registered rule removes that row (and nothing may ever drop it).
-  const droppable = context.dropLegacyEvents ? legacy : 0
-  const repairableClass =
-    REPAIRABLE_CLASSES.has(refusal) || (refusal === 'unknown-event-type' && droppable > 0)
-
-  if (!repairableClass) {
+  // The report's repairable verdict is a property of the log under the run's FULL
+  // policy — `--class` narrows what this invocation REPAIRS, never what the report
+  // claims — and the repairable classes come from the REGISTRY (each rule answers
+  // for its own class, and the lossy rule only for a log it can actually drop
+  // from), so adding a rule is enough to make its class repairable.
+  if (!repairableClasses(context.reportRules, rows).has(refusal)) {
     return {
       ...base,
       class: refusal,
@@ -777,9 +1039,9 @@ async function inspectLog(candidate: LogGeneration, context: InspectContext): Pr
     }
   }
 
-  const proof = runProof(rows, context.rules)
-  if ('refused' in proof) {
-    const reason = lossyRefusalReason(proof.refused)
+  const fullProof = runProof(rows, context.reportRules)
+  if ('refused' in fullProof) {
+    const reason = lossyRefusalReason(fullProof.refused)
     return {
       ...base,
       class: refusal,
@@ -787,8 +1049,26 @@ async function inspectLog(candidate: LogGeneration, context: InspectContext): Pr
       legacyEventCount: legacy,
       // Only the lossy rule's own refusal is a lossy verdict; another rule's
       // refusal is not this mode's doing (`runProof` prefixes the rule id).
-      lossyRefusal: proof.refused.startsWith(`${dropLegacyEventsRule.id}: `) ? reason : null,
-      detail: `${refusal}: the repair proof refused — ${proof.refused}`,
+      lossyRefusal: fullProof.refused.startsWith(`${dropLegacyEventsRule.id}: `) ? reason : null,
+      detail: `${refusal}: the repair proof refused — ${fullProof.refused}`,
+      findings: structural.findings,
+    }
+  }
+
+  // What THIS invocation would actually write: the same chain narrowed by `--class`.
+  // When the full policy repairs the log but the selected class's rules alone do
+  // not, the run says so and writes nothing for it — the report must not promise a
+  // repair the same invocation cannot perform.
+  const proof = context.classFilter === null ? fullProof : runProof(rows, context.rules)
+  if ('refused' in proof) {
+    return {
+      ...base,
+      class: refusal,
+      status: 'repairable',
+      selected: false,
+      legacyEventCount: legacy,
+      detail: `repairable by the full rule chain; --class ${String(context.classFilter)} alone cannot repair this `
+        + `log, so this run writes nothing for it (${proof.refused})`,
       findings: structural.findings,
     }
   }
@@ -893,33 +1173,40 @@ async function inspectLog(candidate: LogGeneration, context: InspectContext): Pr
   }
 
   try {
-    const result = await context.publishSuccessor(candidate.path, proof.rows, context.catalog)
-    const published = successorFilename(result.generation)
+    const result = await context.publishSuccessor(candidate.path, proof.rows, context.catalog, sourceDigest)
+    const published = basename(result.targetPath)
+    const created = result.outcome === 'created'
     return {
       ...base,
       class: refusal,
       status: 'repairable',
       selected: true,
       published,
-      alreadyPublished: existingSuccessor !== null,
+      alreadyPublished: !created,
       legacyEventCount: legacy,
       droppedEventCount: dropped,
       renumberedEventCount: renumbered,
       detail: `${
-        existingSuccessor !== null
-          ? `already published ${published} (verified byte-identical)`
-          : `published ${published}; read back through the catalog with validation: 'current'`
+        created
+          ? `published ${published} (created); read back through the catalog with validation: 'current'`
+          : `already published ${published} (verified byte-identical; accepted, not written by this run)`
       }${lossyNote(dropped, renumbered, true)}`,
       findings: structural.findings,
     }
   } catch (error) {
+    // A publication that HAPPENED and then found its snapshot stale must never be
+    // reported as "nothing was published": name the file and how to roll it back.
+    const stalePath = context.stalePublicationPath(error)
     return {
       ...base,
       class: refusal,
       status: 'unrepairable',
       failed: true,
       legacyEventCount: legacy,
-      detail: `repair failed, nothing was published: ${messageOf(error)}`,
+      detail: stalePath === null
+        ? `repair failed, nothing was published: ${messageOf(error)}`
+        : `a successor WAS published from a snapshot that is now stale — DELETE ${stalePath} to roll the `
+          + `publication back: ${messageOf(error)}`,
       findings: structural.findings,
     }
   }
@@ -984,8 +1271,9 @@ function policyRules(dropLegacyEvents: boolean): readonly LogRule[] {
  * Do the work: resolve the oracle, triage every candidate, and publish when
  * `--apply` asks for it.
  *
- * @throws FatalError on a missing `--root`, a runtime without `node:zlib` zstd,
- *   `--apply` without a resolved catalog, or `--apply --drop-legacy-events`
+ * @throws FatalError on a missing or unreadable `--root`, a runtime without
+ *   `node:zlib` zstd, `--apply` without a resolved catalog, a resolved catalog
+ *   below {@link REQUIRED_CATALOG_VERSION}, or `--apply --drop-legacy-events`
  *   without `--backup` (no write happens in those cases).
  */
 export async function runRepair(
@@ -1024,13 +1312,20 @@ export async function runRepair(
       throw new FatalError(messageOf(error))
     }
   }
+  // The oracle is pinned to a RELEASE, in every mode: the same module encodes the
+  // successor and reads it back, so "it accepts its own output" is only evidence
+  // when the module is the build that will read the session. A catalog below the
+  // floor is a fatal (exit 2), not a quieter classification.
+  const catalogProblem = catalog === null ? null : catalogVersionRefusal(catalog)
+  if (catalogProblem !== null) throw new FatalError(catalogProblem)
 
   const reportRules = policyRules(options.dropLegacyEvents)
   const rules =
     options.classFilter === null
       ? reportRules
       : reportRules.filter((rule) => rule.class === options.classFilter)
-  const candidates = await findGenerations(options.root)
+  const discovery = await findGenerations(options.root)
+  if (discovery.rootFailure !== null) throw new FatalError(discovery.rootFailure)
   const context: InspectContext = {
     apply: options.apply,
     backup: options.backup,
@@ -1041,12 +1336,14 @@ export async function runRepair(
     catalog,
     decodeZstdFrames: publishing.decodeZstdFrames,
     publishSuccessor: publishing.publishSuccessor,
+    stalePublicationPath: (error) =>
+      error instanceof publishing.PublishedFromStaleSourceError ? error.successorPath : null,
   }
 
   const logs: LogOutcome[] = []
-  for (const candidate of candidates) logs.push(await inspectLog(candidate, context))
+  for (const candidate of discovery.generations) logs.push(await inspectLog(candidate, context))
 
-  const summary = summarize(logs)
+  const summary = summarize(logs, discovery.skipped.length)
   return {
     root: options.root,
     mode: options.apply ? 'apply' : 'report',
@@ -1054,19 +1351,31 @@ export async function runRepair(
     catalog:
       catalog === null
         ? { resolved: false }
-        : { resolved: true, modulePath: catalog.modulePath, resolvedBy: catalog.resolvedBy },
+        : {
+          resolved: true,
+          modulePath: catalog.modulePath,
+          resolvedBy: catalog.resolvedBy,
+          packageVersion: catalog.packageVersion,
+          currentVersion: catalog.catalog.currentVersion,
+        },
     logs,
     summary,
-    exitCode: summary.refused > 0 ? EXIT_REFUSED : EXIT_CLEAN,
+    skipped: discovery.skipped,
+    staleStagingFiles: discovery.staleStagingFiles,
+    // An input this run could not inspect is not a clean run, and neither is a log
+    // still not loadable: both exit 1 (a fatal input problem exits 2 above).
+    exitCode: summary.refused > 0 || discovery.skipped.length > 0 ? EXIT_REFUSED : EXIT_CLEAN,
   }
 }
 
-/** Count one run's outcomes. */
-function summarize(logs: readonly LogOutcome[]): RunSummary {
-  const byClass = Object.fromEntries(CLASS_NAMES.map((name) => [name, 0])) as Record<RefusalClass, number>
+/** Count one run's outcomes (plus the inputs the walk could not inspect). */
+function summarize(logs: readonly LogOutcome[], skipped: number): RunSummary {
+  const byClass = Object.fromEntries(REFUSAL_CLASSES.map((name) => [name, 0])) as Record<RefusalClass, number>
   const summary: RunSummary = {
     total: logs.length,
     ok: 0,
+    okTruncated: 0,
+    skipped,
     repairable: 0,
     repaired: 0,
     alreadyPublished: 0,
@@ -1079,6 +1388,7 @@ function summarize(logs: readonly LogOutcome[]): RunSummary {
   for (const log of logs) {
     summary.byClass[log.class] += 1
     if (log.status === 'ok') summary.ok += 1
+    if (log.strictRefusal !== null) summary.okTruncated += 1
     if (log.status === 'repairable') summary.repairable += 1
     if (log.status === 'unrepairable') summary.unrepairable += 1
     if (log.published !== null && !log.alreadyPublished) summary.repaired += 1
@@ -1120,7 +1430,7 @@ export function consoleIO(): CliIO {
  * opt-in removes (or would remove) legacy events — a distinct `lossy` token.
  */
 function token(log: LogOutcome, mode: RunMode): string {
-  if (log.status === 'ok') return 'ok'
+  if (log.status === 'ok') return log.strictRefusal === null ? 'ok' : 'ok-truncated'
   if (log.status === 'unrepairable') return 'unrepairable'
   if (log.droppedEventCount === 0) return log.class
   const renumber = log.renumberedEventCount === 0 ? '' : `, ${log.renumberedEventCount} renumbered`
@@ -1188,34 +1498,50 @@ function reportText(result: RunResult, io: CliIO, quiet: boolean): void {
   io.out(`root: ${result.root}`)
   io.out(
     result.catalog.resolved
-      ? `catalog: ${result.catalog.modulePath} (resolved by ${result.catalog.resolvedBy})`
+      ? `catalog: ${result.catalog.modulePath} (v${result.catalog.currentVersion},`
+        + ` package ${result.catalog.packageVersion ?? 'version unknown'}, resolved by ${result.catalog.resolvedBy})`
       : `catalog: none resolved — classification is STRUCTURAL ONLY and --apply would refuse `
         + `(no --catalog, no ${CATALOG_ENV_VAR}, no dsh on PATH, no npx install)`,
   )
   if (result.classFilter !== null) {
-    io.out(`class filter: ${result.classFilter} (rules restricted; the report and the exit code still cover every log)`)
+    io.out(
+      `class filter: ${result.classFilter} (rule application only; the listing, the class table and the exit code `
+      + 'still cover every log, and the repairable verdict is always computed over the full policy)',
+    )
   }
 
   if (!quiet) {
-    if (result.logs.length === 0) {
+    if (result.logs.length === 0 && result.skipped.length === 0) {
       io.out(`  no session log with a canonical generation below v${CURRENT_VERSION_FLOOR} under this root`)
     }
     for (const log of result.logs) {
       io.out(`  ${token(log, result.mode).padEnd(TOKEN_WIDTH)} ${log.path} (v${log.generation}): ${log.detail}`)
     }
+    // Never silent: an input the walk could not inspect is named, with its errno.
+    for (const entry of result.skipped) {
+      io.out(`  ${'skipped'.padEnd(TOKEN_WIDTH)} ${entry.path}: ${entry.reason}`)
+    }
+    for (const path of result.staleStagingFiles) {
+      io.out(
+        `  ${'stale staging'.padEnd(TOKEN_WIDTH)} ${path}: residue of an interrupted publication; `
+        + 'this tool never removes it, delete it once no run is active',
+      )
+    }
     io.out('')
     io.out('class                        logs')
-    for (const name of CLASS_NAMES) {
+    for (const name of REFUSAL_CLASSES) {
       io.out(`${name.padEnd(TOKEN_WIDTH)} ${String(result.summary.byClass[name]).padStart(4)}`)
     }
   }
 
   const summary = result.summary
   io.out(
-    `summary: ${summary.total} log(s) | ok ${summary.ok} | repairable ${summary.repairable} `
+    `summary: ${summary.total} log(s) | ok ${summary.ok} (ok-truncated ${summary.okTruncated}) `
+    + `| repairable ${summary.repairable} `
     + `| unrepairable ${summary.unrepairable} | repaired ${summary.repaired} `
     + `| already published ${summary.alreadyPublished} | failed ${summary.failed} `
-    + `| not selected ${summary.notSelected} | refused ${summary.refused}`,
+    + `| not selected ${summary.notSelected} | refused ${summary.refused} `
+    + `| skipped ${summary.skipped} | stale staging ${result.staleStagingFiles.length}`,
   )
 }
 
@@ -1277,15 +1603,39 @@ original generation is never modified and never truncated.
                  .tmp files, .bak copies) are ignored, and a current generation already
                  present beside it is reported as an already published successor (proven
                  by a read-back) instead of being a repair target.
+                 A namespace/session directory that cannot be read, a canonical
+                 generation that is a symlink or not a regular file, and a stale
+                 session.repair.*.jsonl.zstd.tmp are REPORTED (a skipped/stale entry in
+                 the text report and in --json) and make the run exit 1; they suppress
+                 the "no session log ..." line. An unreadable ROOT is fatal (exit 2).
+                 Symlinks are reported, never followed: a repair writes beside the
+                 generation it repairs, which must stay inside --root.
   --apply        run the rules' proofs and publish a successor generation per repaired
                  log. Requires a resolved catalog. Default: read-only report.
+                 The revision this run DECODED is digest-checked against the file before
+                 anything is staged, so a concurrent append is refused before the first
+                 write; if the source moves after a publication this run CREATED, that
+                 successor is removed again, and if it moves after accepting a
+                 pre-existing identical successor the failure names that file and says
+                 to delete it (never "nothing was published").
   --class NAME   restrict RULE APPLICATION to one class (default: all rules). Names:
-                 ${CLASS_NAMES.join(' | ')}.
-                 The report and the exit code still cover every log under --root, so
-                 --class never hides a refusal; it only decides what --apply repairs.
+                 ${REFUSAL_CLASSES.join(' | ')}.
+                 The listing, the class table and the exit code still cover every log
+                 under --root, and the repairable verdict is always computed over the
+                 FULL policy, so --class never hides a refusal and never promises a
+                 repair this invocation cannot perform; it only decides what --apply
+                 repairs (a log the filtered chain alone cannot repair is reported as
+                 such and left unpublished).
   --catalog PATH explicit released catalog path (package directory, a directory holding
                  it, or its module entry file). Default resolution order:
-                 $${CATALOG_ENV_VAR}, the dsh binary on PATH, newest ~/.npm/_npx install.
+                 $${CATALOG_ENV_VAR}, the catalog the dsh binary on PATH itself
+                 resolves, then the newest ~/.npm/_npx install. The resolved module is
+                 EXECUTED, not parsed (the same privilege as running this tool), and it
+                 must declare currentVersion >= ${CURRENT_VERSION_FLOOR}: a below-floor catalog is
+                 refused with exit 2 rather than trusted to verify its own output. A file
+                 candidate whose owning package.json names a different package is
+                 refused too. The report names the module path, its format version and
+                 its package version.
   --backup       copy the original generation to <name>.bak before publishing.
   --drop-legacy-events
                  LOSSY, off by default: remove the legacy fallbacks/switch rows (the
@@ -1316,6 +1666,13 @@ original generation is never modified and never truncated.
                  summary line still print; warnings and errors are never suppressed).
   --help, -h     show this help and exit 0.
 
+POLICIES: a log's class and its "ok" come from the host loader's policy (what decides
+whether the GUI opens the session), but that policy can swallow a refusal and drop the
+rows after it. Every ok log is therefore cross-checked with the strict, current-format
+policy: when that refuses, the log is reported "ok-truncated" (with a strictRefusal
+reason in --json and an ok-truncated count in the summary) because the session opens
+WITHOUT the rows the strict policy rejects. Such logs still exit 0 — they do load.
+
 PRECONDITION for --apply: run it only while NO dsh instance is writing the sessions
 under --root. The successor is linked into the session directory without observing the
 host's flock lease (that lease is host-internal and cannot be taken from this repo), so
@@ -1323,12 +1680,16 @@ a dsh that is still appending to the old generation would be orphaned once the h
 prefers the successor. Stop dsh first. Rollback: delete the successor generation.
 
 RUNTIME: reading and writing session logs needs node:zlib zstd (Node >= 22.15, while
-engines.node allows >= 22); a runtime without it fails closed with exit 2.
+engines.node allows >= 22); a runtime without it fails closed with exit 2. A frame whose
+declared plaintext exceeds the tool's frame ceiling is refused as decompress-failed.
 
-EXIT CODES: 0 = nothing refused, or every refusal repaired; 1 = completed with at least
-one log still refused/unrepairable (or a repair failed); 2 = fatal (bad arguments,
-missing --root, --apply without a resolved catalog, --apply --drop-legacy-events without
---backup, or a runtime without node:zlib zstd).`
+EXIT CODES: 0 = every log loads (a session that opens with rows dropped under the strict
+policy is reported ok-truncated and still exits 0); 1 = at least one log is still
+refused/unrepairable, a repair failed, a log was left unpublished (including one --class
+excluded), or an input could not be inspected (a skipped path); 2 = fatal (bad arguments,
+a missing or unreadable --root, --apply without a resolved catalog, a catalog below
+format v${CURRENT_VERSION_FLOOR}, --apply --drop-legacy-events without --backup, or a runtime
+without node:zlib zstd).`
 }
 
 /**
