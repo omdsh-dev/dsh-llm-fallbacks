@@ -117,7 +117,7 @@ export function firstDispatchableExactHead(chain: readonly string[]): EffectiveH
  * falls back to the permissive default and `stream()` throws
  * {@link UNDISPATCHABLE_HEAD_CODE}.
  */
-function effectiveHeadOf(config: FallbacksConfig, now: Date): EffectiveHead | undefined {
+export function effectiveHeadOf(config: FallbacksConfig, now: Date): EffectiveHead | undefined {
   if (!isAllDayConforming(config.rootChain)) return undefined
   const chain = resolveEffectiveChain(config, now, config.tz ?? 'Asia/Shanghai')
   return firstDispatchableExactHead(chain)

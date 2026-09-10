@@ -87,9 +87,9 @@ import { presetRoles } from './presets.ts'
 import { installTuiClient } from './tui.ts'
 import { installTuiSettingsSection } from './tui-settings.ts'
 import {
+  effectiveHeadOf,
   FALLBACKS_CHAIN_MODEL,
   FALLBACKS_PROVIDER,
-  firstDispatchableExactHead,
   installFallbacksAdapter,
 } from './virtual-adapter.ts'
 
@@ -511,8 +511,7 @@ export function countRetryEvents(session: Session, turn: number, step: number, p
  */
 function anchorServedRoute(config: FallbacksConfig, route: FailingModel, now: Date): FailingModel {
   if (route.provider !== FALLBACKS_PROVIDER || route.model !== FALLBACKS_CHAIN_MODEL) return route
-  if (!isAllDayConforming(config.rootChain)) return route
-  const head = firstDispatchableExactHead(resolveEffectiveChain(config, now, config.tz ?? 'Asia/Shanghai'))
+  const head = effectiveHeadOf(config, now)
   return head === undefined ? route : { provider: head.provider, model: head.model }
 }
 
