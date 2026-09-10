@@ -44,7 +44,7 @@ driven by the real host type surface (registry peer `@deepseek-ai/*@0.1.5-rc.1`,
 invariants (empty chains / no match / chain exhausted / safety-valve cap exceeded → pass through without producing
 `fallbacks/switch` events) are persistently asserted by T3/T4 tests.
 
-Current tip reality (`pnpm test` re-run on the merged plan branch, 2026-09-10): **54 files / 1217 passed | 1 skipped** — the aggregates above are **not** the current tip.
+Current tip reality (`pnpm test` re-run on the merged plan branch, 2026-09-10): **54 files / 1228 passed | 1 skipped** — the aggregates above are **not** the current tip.
 
 ### 2. Bundle layer order (proven via scratch profile `--dump-config`)
 
