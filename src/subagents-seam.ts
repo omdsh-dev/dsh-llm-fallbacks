@@ -13,11 +13,21 @@
  * Role source (plan Global Constraints): the child request's prompt carries
  * the Assignment header field `**Execute as**: <id>` — dsh role binding is
  * prompt-only. {@link resolveDeclaredRoleFromAssignment} is the ONE pure
- * resolution point (header region only, so a body-quoted field line cannot
- * shape a resolution); it canonicalizes exactly like the existing trimmed-id
+ * resolution point; it canonicalizes exactly like the existing trimmed-id
  * map (trim, drop ONE leading `@`, case-insensitive match against the
  * declared trimmed ids) and returns the DECLARED RAW id. Undeclared, absent,
  * `inherit`, or ambiguous declarations resolve to `undefined` = no role.
+ *
+ * The resolution reads the Assignment HEADER region only, never the whole
+ * prompt (Task 1 CF-2): the region ends at the first Assignment body marker,
+ * and when the prompt carries NO marker it is bounded to the LEADING HEADER
+ * BLOCK — the first paragraph plus every following paragraph that opens with
+ * header material, ending at the prompt's first prose paragraph. So a
+ * `**Execute as**: <id>` line quoted inside a body paragraph can never shape a
+ * resolution (it is outside the region) even though mstar's canonical dispatch
+ * text carries no body marker at all. Inside the region the engine's pinned
+ * ambiguity rule stands unchanged: the DISTINCT DECLARED ids must collapse to
+ * exactly one, else the dispatch is a no-op — never a first-occurrence pick.
  *
  * Per-child record: the wrapped start's RESULT carries the child session id —
  * `start` resolves to a `SubagentRun` (`id` IS the published child session id
@@ -51,14 +61,23 @@
  * In-session notice row (plan Task 3): the SAME install point registers the
  * `agent/pre-step` emitter (`./role-notice.ts`) over the record map it owns, so
  * the role is announced once in the child's own session. Its per-agent
- * `noticeEmitted` marker is exposed here for the caller's cleanup sites
- * (`agent/disposed` + plugin dispose, exactly like the record map).
+ * `noticeEmitted` marker is exposed here for the caller's cleanup sites: the
+ * plugin dispose effect clears it, while `agent/disposed` deliberately KEEPS it
+ * (CF-6 — the marker is SESSION-stable and bounded, because a continuable
+ * child's durable session survives its activation).
  *
  * Durable role visibility (plan Task 3b): the SAME install point registers the
  * host-side session projection unit (`./role-projection.ts`) that folds that
  * notice row out of the child's own log, so the session-header badge can show
  * the role for a settled child and after a host restart — a read of the SAME
  * single write primitive, never a second one.
+ *
+ * Multi-fiber composition (CF-5): the record map and the notice marker are
+ * ROOT-shared, while only the `internal/get` wrapper (+ the catalog listener it
+ * feeds) is single-owner. Every applied fiber registers its OWN notice emitter
+ * and projection unit and reports its ownership structurally
+ * (`SubagentSeam.ownsWrapper`), so a disposing fiber cannot silently take the
+ * role surfaces down with it.
  *
  * Degrade-never-crash: an absent/reshaped service, an unexpected result
  * shape, or any throwing bookkeeping degrades to the native path with at most
@@ -100,11 +119,34 @@ const EXECUTE_AS_BOLD_LINE_RE = /^[ \t]*(?:[-*][ \t]+)?\*\*\s*Execute as\s*\*\*\
 const EXECUTE_AS_PLAIN_LINE_RE = /^[ \t]*(?:[-*][ \t]+)?Execute as\s*:\s*(.*)$/
 
 /**
+ * A line that OPENS an Assignment-header PARAGRAPH (the marker-less fallback
+ * bound, CF-2): a heading (any level), a `---` rule, a bold-led line
+ * (`**Execute as**: <id>`, `**IDENTITY** — …`), or a short `Key: value` header
+ * row (`Execute as: coder`, `Delegation: forbidden`) — mstar's field grammar
+ * allows the plain form without bold. A line that matches none of these starts
+ * PROSE, which is exactly where the header region ends.
+ */
+const ASSIGNMENT_HEADER_OPEN_RE =
+  /^(?:#{1,6}[ \t]|-{3,}[ \t]*\r?$|[ \t]*(?:[-*][ \t]+)?\*\*|[ \t]*(?:[-*][ \t]+)?\*{0,2}[A-Za-z][A-Za-z /_-]{0,29}\*{0,2}[ \t]*:[ \t]*\S)/
+
+/**
  * One dispatch-resolved per-child record (Task 3 reads it to emit exactly one
  * role notice row per child session).
  */
 export interface SubagentSeamRecord {
-  /** The DECLARED RAW role id resolved at the dispatch seam. */
+  /**
+   * The DECLARED RAW role id resolved at the dispatch seam.
+   *
+   * Authoritative-role precedence (CF-10, documented rather than resolved by
+   * re-branding): a `startContinuable` resume re-keys the child and may resolve
+   * a DIFFERENT declared role, and this field is then rewritten while the
+   * durable notice row the child's session already carries keeps the FIRST role.
+   * The projection deliberately reads the notice row, so the durable role is the
+   * child's announced identity and this record is only the LIVE dispatch hint
+   * (what the next start / the resume fallback would use). The two can therefore
+   * disagree after a re-dispatch until the child is disposed; no consumer may
+   * treat the record as the durable role.
+   */
   role: string
   /** When the record was written (epoch ms). */
   at: number
@@ -112,6 +154,9 @@ export interface SubagentSeamRecord {
    * `true` until the child's role notice row has been emitted (Task 3). A
    * later write for the SAME child session preserves an already-cleared
    * marker, so a repeat dispatch/resume cannot produce a second notice row.
+   * The root-shared `noticeEmitted` set is the SESSION-stable half of that
+   * guarantee (it survives `agent/disposed`); this field is the per-record half
+   * that a resume rewrite preserves.
    */
   firstNoticePending: boolean
   /**
@@ -216,17 +261,31 @@ export interface SubagentSeamOptions {
 export interface SubagentSeam {
   /**
    * Per-child records keyed by the child SESSION id (the wrapped start's
-   * result id). Mutable by design: Task 3 clears `firstNoticePending` after
+   * result id). ROOT-shared (CF-5): every fiber applied over the same root reads
+   * the same map. Mutable by design: Task 3 clears `firstNoticePending` after
    * emitting the notice.
    */
   readonly records: Map<string, SubagentSeamRecord>
   /**
    * Per-agent marker of children whose role notice row was already emitted
    * (mirrors the runtime's `dispatchInjected`): the in-memory half of Task 3's
-   * once-per-child guarantee, cleared with `records` on `agent/disposed` and in
-   * the plugin dispose effect.
+   * once-per-child guarantee, also ROOT-shared. SESSION-stable (CF-6): it is
+   * deliberately NOT cleared on `agent/disposed` — a continuable child's durable
+   * session survives the activation, so clearing the marker would let a
+   * re-activation resume append a second notice row to the same log. It is
+   * bounded (`NOTICE_EMITTED_LIMIT`) and cleared only in the plugin dispose
+   * effect.
    */
   readonly noticeEmitted: Set<string>
+  /**
+   * `true` when THIS install owns the root-scoped `internal/get` wrapper (plus
+   * the catalog-correlation listener it feeds) — the only part that must have a
+   * single owner. `false` on a later fiber over the same root, which still
+   * registers its OWN notice emitter and projection unit. The callers' dedupe
+   * branch reads THIS field (CF-5): a structured marker, never a thrown
+   * message.
+   */
+  readonly ownsWrapper: boolean
   /** Stop intercepting service reads (the owning fiber's teardown also does). */
   dispose(): void
 }
@@ -251,18 +310,69 @@ interface PersonaMergeOutcome {
 
 /**
  * Cap on un-correlated claims (a `jobId`-only result whose catalog event never
- * arrives). Bounded insertion-order eviction keeps the claim map small.
+ * arrives). Bounded insertion-order eviction — recency-ordered, because a
+ * re-claimed hot key is re-inserted (`beginCorrelation` deletes before it sets),
+ * so the busiest claim can never be the one evicted.
+ *
+ * @internal Exported for the bound test (mirrors `subagentSeamOf`): the value is
+ * not part of the plugin's public surface, but a test that hardcoded 64 could
+ * not tell the real bound from a stale copy.
  */
-const PENDING_CORRELATION_LIMIT = 64
+export const PENDING_CORRELATION_LIMIT = 64
 
 /**
- * Slice an Assignment's header region — the text before the first body marker
- * (see {@link ASSIGNMENT_BODY_START_RE}); returns the full text when no marker
- * is present.
+ * Slice an Assignment's header region: the text before the first body marker
+ * (see {@link ASSIGNMENT_BODY_START_RE}), or — when the prompt carries NO
+ * marker — its LEADING HEADER BLOCK (see {@link leadingHeaderBlock}).
  */
 function assignmentHeaderRegion(prompt: string): string {
   const marker = prompt.match(ASSIGNMENT_BODY_START_RE)
-  return marker !== null && marker.index !== undefined ? prompt.slice(0, marker.index) : prompt
+  return marker !== null && marker.index !== undefined
+    ? prompt.slice(0, marker.index)
+    : leadingHeaderBlock(prompt)
+}
+
+/**
+ * The prompt's leading header block (CF-2): its FIRST paragraph, plus every
+ * following paragraph that OPENS with header material
+ * ({@link ASSIGNMENT_HEADER_OPEN_RE}), ending at the first paragraph that opens
+ * with anything else — i.e. at the prompt's first PROSE paragraph. Wrapped
+ * continuation lines inside a paragraph are free: mstar's canonical dispatch
+ * text wraps the field block, and a bound that stopped at the first non-bold
+ * line would attenuate every real Assignment.
+ *
+ * Why a bound is needed at all: mstar's canonical dispatch text carries NO body
+ * marker (the `## Assignment` heading is not one), so the pre-CF-2 fallback made
+ * the WHOLE prompt the header region — a `**Execute as**: <id>` line quoted in
+ * the task body then resolved a role that was never declared in the header,
+ * installing that role's persona and writing a durable `[role: <id>]` row. The
+ * body of an Assignment is prose, so the first prose paragraph closes the
+ * region; a field line inside the header block itself is still read, and the
+ * ambiguity rule then refuses two distinct declared ids (never a
+ * first-occurrence pick).
+ *
+ * The residual this leaves (documented, not silently accepted): a body-quoted
+ * field line in a paragraph that itself opens with header material and is not
+ * preceded by any prose paragraph is still inside the region — it can only
+ * resolve when it names exactly one DECLARED id, and the engine's own
+ * `assignmentHeaderRegion` has no bound at all, so this is strictly narrower
+ * than the shipped engine behavior it mirrors.
+ */
+function leadingHeaderBlock(prompt: string): string {
+  let end = 0
+  let offset = 0
+  let atParagraphStart = true
+  for (const line of prompt.split('\n')) {
+    offset += line.length + 1
+    if (line.trim() === '') {
+      atParagraphStart = true
+      continue
+    }
+    if (atParagraphStart && !ASSIGNMENT_HEADER_OPEN_RE.test(line.replace(/\r$/, ''))) break
+    atParagraphStart = false
+    end = offset
+  }
+  return end === 0 ? '' : prompt.slice(0, end)
 }
 
 /** Every `**Execute as**: <id>` value in the header region, in line order (bold form first). */
@@ -406,14 +516,47 @@ function errorMessage(error: unknown): string {
 const subagentSeamStores = new WeakMap<Context, SubagentSeam>()
 
 /**
- * Context ROOTS that already carry an installed seam. The `internal/get`
- * service-read waterfall is root-scoped and global, so a multi-fiber
- * composition (this plugin applied once per fiber over one root) must not
- * install a second listener set: that would only nest wrappers and multiply
- * the contained debug lines ("ONE per apply"). The first installer owns the
- * seam; {@link installSubagentSeam} refuses a duplicate and `src/index.ts`
- * turns that refusal into a fiber-local no-op seam (the service / gateway /
- * typert dedupe pattern).
+ * ROOT-scoped seam state: the per-child record map and the once-per-child notice
+ * marker. The `internal/get` wrapper is root-scoped, so only the fiber that owns
+ * it WRITES these — but every applied fiber's notice emitter READS the same
+ * objects, which is what keeps a multi-fiber composition at exactly ONE notice
+ * row per child (a per-fiber copy of the marker would announce the same child
+ * once per fiber). Keyed by the context ROOT in a WeakMap, so it dies with the
+ * root; an owner fiber's disposal deliberately does NOT drop it, so a surviving
+ * fiber (and a later re-apply) keeps reading the same objects.
+ */
+interface SubagentSeamState {
+  readonly records: Map<string, SubagentSeamRecord>
+  readonly noticeEmitted: Set<string>
+}
+
+/** @internal The root's shared seam state, created on first use. */
+const subagentSeamStates = new WeakMap<Context, SubagentSeamState>()
+
+/** The root's shared state, created when the root has none yet. */
+function seamStateFor(root: Context): SubagentSeamState {
+  const existing = subagentSeamStates.get(root)
+  if (existing !== undefined) return existing
+  const created: SubagentSeamState = { records: new Map(), noticeEmitted: new Set() }
+  subagentSeamStates.set(root, created)
+  return created
+}
+
+/**
+ * Context ROOTS that already carry the seam's `internal/get` WRAPPER — the one
+ * genuinely single-owner part. The service-read waterfall is root-scoped and
+ * global, so a multi-fiber composition (this plugin applied once per fiber over
+ * one root) must not install a second listener set: that would only nest
+ * wrappers and multiply the contained debug lines ("ONE per apply").
+ *
+ * CF-5: the dedupe covers the WRAPPER (and the catalog-correlation listener it
+ * owns) ONLY. The two stateless surfaces — the `agent/pre-step` notice emitter
+ * and the host session projection unit — are registered by EVERY applied fiber,
+ * because a later fiber must keep both alive when an earlier owner fiber
+ * disposes (the composition the dedupe exists for). The winner is reported
+ * STRUCTURALLY to the caller (`SubagentSeam.ownsWrapper`), never by matching a
+ * thrown message. The claim is released by {@link SubagentSeam.dispose} when the
+ * OWNER disposes, so a later apply over the same root can own the wrapper again.
  */
 const subagentSeamRoots = new WeakSet<Context>()
 
@@ -429,29 +572,35 @@ export function subagentSeamOf(ctx: Context): SubagentSeam | undefined {
 
 /**
  * Install the dispatch seam on `ctx`: wrap every `subagents` service read and
- * resolve + record the dispatch role per start.
+ * resolve + record the dispatch role per start, and register this fiber's role
+ * surfaces (the notice emitter + the projection unit).
  *
- * Throws when `ctx`'s ROOT already carries a seam (multi-fiber apply): the
- * caller's dedupe guard degrades instead of nesting a second listener set. The
- * root claim is released by {@link SubagentSeam.dispose}, so a later apply over
- * the same root can install again.
+ * Never throws for a multi-fiber apply (CF-5): a fiber whose root already owns
+ * the `internal/get` wrapper gets a seam with `ownsWrapper: false` — it shares
+ * the root's record map / notice marker (so exactly one notice row is written
+ * per child) and still installs its OWN notice emitter and projection unit, so
+ * neither surface dies when another fiber of the same root disposes.
  *
- * Returns the seam (the record map Task 3 reads, plus an idempotent
- * `dispose`). The `internal/get` listener is owned by this module; callers
- * that rely on the fiber teardown alone may ignore `dispose`.
+ * Returns the seam (the shared record map Task 3 reads, the ownership marker,
+ * plus an idempotent `dispose` that withdraws THIS fiber's registrations). The
+ * `internal/get` listener is owned by this module; callers that rely on the
+ * fiber teardown alone may ignore `dispose`.
  */
 export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions): SubagentSeam {
   const root = ctx.root
-  if (subagentSeamRoots.has(root)) {
-    throw new Error(`the '${SUBAGENT_SEAM_SERVICE}' role seam is already installed on this context root`)
-  }
-  const records = new Map<string, SubagentSeamRecord>()
+  const state = seamStateFor(root)
+  const records = state.records
   /**
    * Task 3's per-agent once-marker (mirrors the runtime's `dispatchInjected`):
-   * the in-memory half of the once-per-child guarantee. The caller clears it on
-   * `agent/disposed` and in the plugin dispose effect, next to `records`.
+   * the in-memory half of the once-per-child guarantee, SESSION-stable (CF-6) —
+   * `src/index.ts` keeps it across `agent/disposed` (bounded by
+   * `NOTICE_EMITTED_LIMIT`) because a continuable child's durable session
+   * outlives the activation, and clears it only in the plugin dispose effect.
    */
-  const noticeEmitted = new Set<string>()
+  const noticeEmitted = state.noticeEmitted
+  /** Owner of the root-scoped `internal/get` wrapper (see `subagentSeamRoots`). */
+  const ownsWrapper = !subagentSeamRoots.has(root)
+  if (ownsWrapper) subagentSeamRoots.add(root)
   const pending = new Map<string, PendingCorrelation>()
   const wrappers = new WeakMap<object, object>()
   const disposers: Array<() => void> = []
@@ -492,7 +641,7 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
     })
   }
 
-  /** Claim the label-keyed catalog correlation for a resolved start (bounded, insertion-order eviction). */
+  /** Claim the label-keyed catalog correlation for a resolved start (bounded, recency-ordered eviction). */
   const beginCorrelation = (
     request: SubagentStartRequestView | undefined,
     role: string,
@@ -506,6 +655,10 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
       const oldest = pending.keys().next().value
       if (oldest !== undefined) pending.delete(oldest)
     }
+    // Recency, not first-insertion (CF-8): `Map.set` on an existing key keeps
+    // its original position, so without the delete a re-claimed hot key would
+    // still be the first eviction candidate while staler claims survive.
+    pending.delete(key)
     // The persona verdict is decided BEFORE the child id exists, so it rides the
     // claim: the catalog-correlated record reports it exactly like a direct one.
     pending.set(key, { role, at: Date.now(), personaNotApplied })
@@ -732,19 +885,30 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
         endCorrelation(pendingKey)
         throw error
       }
-      observeStartResult(
-        result,
-        (childSessionId) => {
-          endCorrelation(pendingKey)
-          recordChild(childSessionId, role, Date.now(), persona.personaNotApplied)
-        },
-        // No session id in the result (a job id is not one): keep the claim and
-        // let the parent-owned `subagent/catalog` event supply the child id.
-        () => {},
-        // A rejected start created no child: drop the claim so it cannot be
-        // consumed later by a same-label sibling's catalog event.
-        () => endCorrelation(pendingKey),
-      )
+      // CF-4: `observeStartResult` reads the RESULT SHAPE (`result.then`), and
+      // the native start has ALREADY run by this point — a result object whose
+      // `.then` accessor throws (or a hostile thenable) would otherwise escape
+      // `wrapper.start` as a failed dispatch for a child that exists. Contain it
+      // like every other shape surprise: drop the catalog claim, report ONE
+      // contained debug line, and still return the caller's own result.
+      try {
+        observeStartResult(
+          result,
+          (childSessionId) => {
+            endCorrelation(pendingKey)
+            recordChild(childSessionId, role, Date.now(), persona.personaNotApplied)
+          },
+          // No session id in the result (a job id is not one): keep the claim and
+          // let the parent-owned `subagent/catalog` event supply the child id.
+          () => {},
+          // A rejected start created no child: drop the claim so it cannot be
+          // consumed later by a same-label sibling's catalog event.
+          () => endCorrelation(pendingKey),
+        )
+      } catch (error) {
+        endCorrelation(pendingKey)
+        reportDegrade(error)
+      }
       return result
     }
     const startContinuable = service.startContinuable
@@ -765,12 +929,20 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
         const outcome = mergePersonaAtSeam(service, spec.provider, spec.request, role, 'continuable')
         const effectiveSpec = outcome.request === spec.request ? spec : { ...spec, request: outcome.request }
         const result: unknown = startContinuable.call(service, effectiveSpec)
-        observeStartResult(
-          result,
-          (childSessionId) => recordChild(childSessionId, role, Date.now(), outcome.personaNotApplied),
-          () => {},
-          () => {},
-        )
+        // CF-4, same containment as the one-shot site: the probe reads the
+        // result's shape after the native start ran, so a throwing `.then`
+        // accessor must degrade instead of failing a started resume. The
+        // continuable path holds no catalog claim to drop.
+        try {
+          observeStartResult(
+            result,
+            (childSessionId) => recordChild(childSessionId, role, Date.now(), outcome.personaNotApplied),
+            () => {},
+            () => {},
+          )
+        } catch (error) {
+          reportDegrade(error)
+        }
         return result
       }
     }
@@ -778,71 +950,76 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
     return wrapper
   }
 
-  disposers.push(ctx.on(SUBAGENT_SEAM_EVENT, (_readCtx, name, _error, next) => {
-    const value: unknown = next()
-    if (name !== SUBAGENT_SEAM_SERVICE) return value
-    try {
-      return wrapService(value)
-    } catch (error) {
-      // Contained: an internal wrap error degrades to the raw service.
-      reportDegrade(error)
-      return value
-    }
-  }))
+  // The ROOT-scoped part, owned by the FIRST fiber only (CF-5 dedupe): the
+  // service-read wrapper plus the catalog-correlation listener it feeds.
+  if (ownsWrapper) {
+    disposers.push(ctx.on(SUBAGENT_SEAM_EVENT, (_readCtx, name, _error, next) => {
+      const value: unknown = next()
+      if (name !== SUBAGENT_SEAM_SERVICE) return value
+      try {
+        return wrapService(value)
+      } catch (error) {
+        // Contained: an internal wrap error degrades to the raw service.
+        reportDegrade(error)
+        return value
+      }
+    }))
 
-  // Background correlation fallback: the parent-owned catalog event carries
-  // the child session id a `jobId`-only result never does. Join on the
-  // delegating parent session + the request label (the catalog `label` IS the
-  // delegation `description`). The join key is NOT unique: two children of one
-  // parent dispatched concurrently under the SAME label share it, and the
-  // first catalog event consumes whichever role was claimed last — so this
-  // fallback can key a sibling's role in that corner (bounded: reachable only
-  // when a `jobId`-only result reaches the seam; recorded as a residual).
-  disposers.push(ctx.on('session/event', (session, event) => {
-    try {
-      if ((event.type as string) !== SUBAGENT_CATALOG_EVENT) return
-      const data = (event as unknown as { data?: { childId?: unknown; label?: unknown } }).data
-      const childSessionId = data?.childId
-      const label = data?.label
-      if (typeof childSessionId !== 'string' || childSessionId === '') return
-      if (typeof label !== 'string' || label === '') return
-      const key = correlationKey(session.id, label)
-      const claim = pending.get(key)
-      if (claim === undefined) return
-      pending.delete(key)
-      recordChild(childSessionId, claim.role, claim.at, claim.personaNotApplied)
-    } catch (error) {
-      reportDegrade(error)
-    }
-  }))
+    // Background correlation fallback: the parent-owned catalog event carries
+    // the child session id a `jobId`-only result never does. Join on the
+    // delegating parent session + the request label (the catalog `label` IS the
+    // delegation `description`). The join key is NOT unique: two children of one
+    // parent dispatched concurrently under the SAME label share it, and the
+    // first catalog event consumes whichever role was claimed last — so this
+    // fallback can key a sibling's role in that corner (bounded: reachable only
+    // when a `jobId`-only result reaches the seam; recorded as a residual).
+    disposers.push(ctx.on('session/event', (session, event) => {
+      try {
+        if ((event.type as string) !== SUBAGENT_CATALOG_EVENT) return
+        const data = (event as unknown as { data?: { childId?: unknown; label?: unknown } }).data
+        const childSessionId = data?.childId
+        const label = data?.label
+        if (typeof childSessionId !== 'string' || childSessionId === '') return
+        if (typeof label !== 'string' || label === '') return
+        const key = correlationKey(session.id, label)
+        const claim = pending.get(key)
+        if (claim === undefined) return
+        pending.delete(key)
+        recordChild(childSessionId, claim.role, claim.at, claim.personaNotApplied)
+      } catch (error) {
+        reportDegrade(error)
+      }
+    }))
+  }
 
   // Task 3: the once-per-child role notice row, emitted from the child's own
-  // first `agent/pre-step` over the record map this seam owns. Registered here
-  // because this is the ONE install point (the multi-fiber dedupe above leaves
-  // only the first fiber's seam live, and only THAT seam holds records), so a
-  // registration anywhere else would add listeners that can never announce
-  // anything.
+  // first non-empty `agent/pre-step` over the root's shared record map. CF-5:
+  // registered per APPLIED FIBER (not only by the wrapper owner) — the emitter
+  // is a pure read of the shared marker + record, so a second fiber's copy is
+  // inert for a child the first already announced and stays live when another
+  // fiber of the same root disposes.
   disposers.push(installRoleNotice(ctx, { records, emitted: noticeEmitted, debug }))
 
   // Task 3b: the durable READ of that same row — one host session projection
   // unit folding the notice out of the child's own log, so the header badge
-  // works for a settled child and after a host restart. Registered at this ONE
-  // install point too (same multi-fiber dedupe: the projection is a pure log
-  // read with no per-fiber state, and the host registry counts a shared key, so
-  // a second fiber registering it would be harmless — but the seam is where the
-  // plugin's Task 3 surface is installed, and the dedupe keeps one owner).
+  // works for a settled child and after a host restart. CF-5: also registered
+  // per APPLIED FIBER: the unit is a stateless pure log read (the host registry
+  // ref-counts a shared key, so a second registration is one unit, not a
+  // conflict), and that is what keeps the badge alive when another fiber of the
+  // same root — including the wrapper owner — disposes.
   disposers.push(installRoleProjection(ctx, { debug }))
 
   const seam: SubagentSeam = {
     records,
     noticeEmitted,
+    ownsWrapper,
     dispose: () => {
-      // Release the root claim so a later apply (fiber reload) can install.
-      subagentSeamRoots.delete(root)
+      // Release the root claim so a later apply (fiber reload) can own the
+      // wrapper again; the shared state stays for any surviving fiber.
+      if (ownsWrapper) subagentSeamRoots.delete(root)
       for (const dispose of disposers.splice(0)) dispose()
     },
   }
-  subagentSeamRoots.add(root)
   subagentSeamStores.set(ctx, seam)
   return seam
 }

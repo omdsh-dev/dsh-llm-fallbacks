@@ -23,7 +23,7 @@ import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
 import { createUserMessage, type UserMessage } from '@deepseek-ai/dsh-llm'
 import { apply } from '../src/index.ts'
 import { installSubagentSeam, subagentSeamOf, type SubagentSeamRecord, type SubagentStartRequestView } from '../src/subagents-seam.ts'
-import { buildRoleNotice, installRoleNotice, ROLE_NOTICE_PLUGIN, ROLE_NOTICE_SOURCE_KIND, type RoleNoticeBuilder } from '../src/role-notice.ts'
+import { buildRoleNotice, installRoleNotice, markNoticeEmitted, NOTICE_EMITTED_LIMIT, ROLE_NOTICE_PLUGIN, ROLE_NOTICE_SOURCE_KIND, type RoleNoticeBuilder } from '../src/role-notice.ts'
 import type { FallbacksRole } from '../src/config.ts'
 import { MemorySettings } from './support/memory-settings.ts'
 import { cfg, makeAgent } from './support/harness.ts'
@@ -456,6 +456,87 @@ describe('role notice — behavioural (public call path)', () => {
     expect(afterResume).toEqual([claimed])
   })
 
+  it('announces on the next non-empty step when the record lands after an earlier step (CF-7)', async () => {
+    ctx = new Context()
+    const seam = installSubagentSeam(ctx, { roleIds: () => ROLE_IDS, roles: () => ROLES })
+    const agent = childAgent('child-late')
+    const claimed = claimedMessage()
+
+    // Step 1 runs BEFORE any record exists: the dispatch seam writes the record
+    // when the wrapped start resolves, so a fast child can reach a step first.
+    // Nothing is announced and — the point of this case — nothing is CONSUMED:
+    // the emitter is not a one-shot first-step hook, so the row is not lost, it
+    // lands on the child's next non-empty step.
+    expect(admittedMessages(await drivePreStep(ctx, agent, [claimed], 1))).toEqual([claimed])
+    expect(seam.noticeEmitted.size).toBe(0)
+
+    // The record lands (the same shape the production write produces).
+    seam.records.set('child-late', { role: 'coder', at: Date.now(), firstNoticePending: true })
+    const second = admittedMessages(await drivePreStep(ctx, agent, [claimed], 2))
+    expect(second).toHaveLength(2)
+    expect(textOf(second[1]!)).toBe('[role: coder]')
+
+    // …and exactly once: the late announcement consumed the markers.
+    expect(admittedMessages(await drivePreStep(ctx, agent, [claimed], 3))).toEqual([claimed])
+  })
+
+  it('announces ONE row with two applied fibers, and the survivor announces after the owner disposes (CF-5)', async () => {
+    ctx = new Context()
+    ctx.plugin(MemorySettings)
+    const fake = fakeSubagents(childIdFromLabel, { spawn: { capabilities: { persona: true } } })
+    ctx.provide('subagents', fake.service)
+    const config = () => cfg({ roles: { list: [{ id: 'coder', persona: 'Coder persona', chain: [] }], rules: [] } })
+
+    // TWO APPLIED FIBERS over one root: each one registers its own notice
+    // emitter, over the ROOT-shared record map and marker.
+    let firstCtx: Context | undefined
+    let secondCtx: Context | undefined
+    const firstFiber = ctx.plugin({
+      name: 'notice-multi-first',
+      apply: (fiberCtx: Context) => {
+        firstCtx = fiberCtx
+        apply(fiberCtx, config())
+      },
+    })
+    await nextTick()
+    const secondFiber = ctx.plugin({
+      name: 'notice-multi-second',
+      apply: (fiberCtx: Context) => {
+        secondCtx = fiberCtx
+        apply(fiberCtx, config())
+      },
+    })
+    await nextTick()
+
+    const first = subagentSeamOf(firstCtx!)
+    const second = subagentSeamOf(secondCtx!)
+    expect(first!.records).toBe(second!.records)
+    expect(first!.noticeEmitted).toBe(second!.noticeEmitted)
+
+    const start = await seamStart(ctx)
+    await start('spawn', { prompt: [{ type: 'text', text: assignment('coder') }], label: 'child-two-fibers' })
+
+    // Two emitters over ONE shared marker ⇒ exactly one row (a per-fiber marker
+    // would append the notice twice).
+    const claimed = claimedMessage()
+    const decision = admittedMessages(await drivePreStep(ctx, childAgent('child-two-fibers'), [claimed], 1))
+    expect(decision).toHaveLength(2)
+    expect(textOf(decision[1]!)).toBe('[role: coder]')
+    expect(second!.noticeEmitted.size).toBe(1)
+
+    // The wrapper OWNER disposes while the other fiber stays applied. The
+    // survivor's own emitter must still announce — that registration is what the
+    // old all-inclusive dedupe dropped, leaving the role surface dead on a
+    // still-applied fiber.
+    await firstFiber.dispose()
+    second!.records.set('child-survivor', { role: 'scout', at: Date.now(), firstNoticePending: true })
+    const survivor = admittedMessages(await drivePreStep(ctx, childAgent('child-survivor'), [claimed], 1))
+    expect(survivor).toHaveLength(2)
+    expect(textOf(survivor[1]!)).toBe('[role: scout]')
+
+    await secondFiber.dispose()
+  })
+
   it('runs outermost, so its row is the LAST admitted message (prepend shape)', async () => {
     ctx = new Context()
     const sibling = createUserMessage({
@@ -621,7 +702,7 @@ describe('role notice — per-apply lifetime through apply()', () => {
     expect(textOf(decision[1]!)).toBe('[role: coder]')
   })
 
-  it('clears the emitted marker on agent/disposed and on plugin dispose', async () => {
+  it('keeps the emitted marker across agent/disposed; clears it only on plugin dispose (CF-6)', async () => {
     ctx = new Context()
     ctx.plugin(MemorySettings)
     apply(ctx, cfg({ roles: { list: [{ id: 'coder', persona: '', chain: [] }], rules: [] } }))
@@ -629,14 +710,80 @@ describe('role notice — per-apply lifetime through apply()', () => {
     expect(seam).toBeDefined()
     const { agent } = makeAgent('child-cleaned', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent' })
 
-    // `agent/disposed` mirrors every other per-agent map (`Agent.id` IS the session id).
+    // SESSION-stable: `Agent.id` IS the child session id and a continuable
+    // child's durable session OUTLIVES the activation, so a disposal must NOT
+    // drop the marker — dropping it was what let a re-activation resume append a
+    // SECOND `[role: x]` row to the same session log.
     seam!.noticeEmitted.add('child-cleaned')
     ctx.emit('agent/disposed', { agent })
-    expect(seam!.noticeEmitted.has('child-cleaned')).toBe(false)
+    expect(seam!.noticeEmitted.has('child-cleaned')).toBe(true)
 
-    seam!.noticeEmitted.add('child-cleaned')
+    // The plugin's own dispose is the one place the whole marker map is cleared
+    // (no residual state).
     await ctx.fiber.dispose()
     expect(seam!.noticeEmitted.size).toBe(0)
+  })
+
+  it('never announces a re-activated child session twice (CF-6, session-stable marker)', async () => {
+    ctx = new Context()
+    ctx.plugin(MemorySettings)
+    const fake = fakeSubagents(childIdFromLabel, { spawn: { capabilities: { persona: true } } })
+    ctx.provide('subagents', fake.service)
+    apply(ctx, cfg({ roles: { list: [{ id: 'coder', persona: 'Coder persona', chain: [] }], rules: [] } }))
+    const start = await seamStart(ctx)
+
+    // First activation: the child is dispatched and announced exactly once.
+    await start('spawn', { prompt: [{ type: 'text', text: assignment('coder') }], label: 'child-reactivated' })
+    const claimed = claimedMessage()
+    expect(admittedMessages(await drivePreStep(ctx, childAgent('child-reactivated'), [claimed], 1))).toHaveLength(2)
+
+    // The activation ends. Per-agent cleanup drops the RECORD (exactly as the
+    // other per-agent maps do) while the session-stable marker survives.
+    const { agent } = makeAgent('child-reactivated', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent' })
+    ctx.emit('agent/disposed', { agent })
+    expect(subagentSeamOf(ctx)!.records.has('child-reactivated')).toBe(false)
+    expect(subagentSeamOf(ctx)!.noticeEmitted.has('child-reactivated')).toBe(true)
+
+    // Re-activation re-dispatches the SAME child session id with a declared role:
+    // the record is written fresh (`firstNoticePending: true`), which is exactly
+    // the state that used to produce a second durable row.
+    await start('spawn', { prompt: [{ type: 'text', text: assignment('coder') }], label: 'child-reactivated' })
+    expect(subagentSeamOf(ctx)!.records.get('child-reactivated')!.firstNoticePending).toBe(true)
+    expect(admittedMessages(await drivePreStep(ctx, childAgent('child-reactivated'), [claimed], 1))).toEqual([claimed])
+    // Positive control lives in the first activation above: the same emitter, on
+    // the same seam, DID append the row before the marker was set.
+  })
+})
+
+describe('role notice — the bounded, session-stable marker (CF-6)', () => {
+  it('evicts the oldest session once the bound is reached, keeping the newest', () => {
+    const emitted = new Set<string>()
+    for (let index = 0; index <= NOTICE_EMITTED_LIMIT; index += 1) markNoticeEmitted(emitted, `child-${index}`)
+    expect(emitted.size).toBe(NOTICE_EMITTED_LIMIT)
+    expect(emitted.has('child-0')).toBe(false)
+    expect(emitted.has(`child-${NOTICE_EMITTED_LIMIT}`)).toBe(true)
+  })
+
+  it('bounds the marker the EMITTER writes, so the set cannot grow without limit', async () => {
+    const emitted = new Set<string>()
+    for (let index = 0; index < NOTICE_EMITTED_LIMIT; index += 1) emitted.add(`child-${index}`)
+    const records = new Map<string, SubagentSeamRecord>([
+      ['child-overflow', { role: 'coder', at: 1, firstNoticePending: true }],
+    ])
+    const noticeCtx = new Context()
+    try {
+      installRoleNotice(noticeCtx, { records, emitted })
+      const decision = admittedMessages(await drivePreStep(noticeCtx, childAgent('child-overflow'), [claimedMessage()], 1))
+      // The row landed AND the marker stayed bounded: the emitter routes through
+      // the bounded helper, so "session-stable" cannot become unbounded growth.
+      expect(decision).toHaveLength(2)
+      expect(textOf(decision[1]!)).toBe('[role: coder]')
+      expect(emitted.size).toBe(NOTICE_EMITTED_LIMIT)
+      expect(emitted.has('child-0')).toBe(false)
+      expect(emitted.has('child-overflow')).toBe(true)
+    } finally {
+      await noticeCtx.fiber.dispose()
+    }
   })
 })
 

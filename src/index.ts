@@ -883,34 +883,38 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   // single resolution point — chain-independent (the role alone decides) and
   // gated by the provider's measured persona capability; Task 3 emits the
   // once-per-child notice row from `subagentSeam.records` (its `noticeEmitted`
-  // marker is cleaned below alongside them), and Task 3b registers the host
-  // session projection unit that folds that row back out of the child's log for
-  // the header badge. Cleaned on agent/disposed + plugin dispose below.
-  // Multi-fiber dedupe (fix M-3): the seam's `internal/get` wrapper is
-  // ROOT-scoped, so a later fiber applying over a shared context root must not
-  // install a second listener set (nested wrappers + duplicated contained
-  // debug lines). Mirror the service / gateway / typert guards below: the
-  // FIRST fiber owns the seam, later fibers get a fiber-local no-op seam and
-  // one dedupe debug line.
-  let subagentSeam: SubagentSeam
-  try {
-    subagentSeam = installSubagentSeam(ctx, {
-      // Live binding read: the settings onChange below re-derives `roleIds` in
-      // place, so the seam sees role edits without a re-install.
-      roleIds: () => roleIds,
-      // Task 2: the persona source — the same live settings read (`source()`,
-      // reassigned by `setSource` above and by the settings onChange, which the
-      // fail-loud single settings registration keeps on THIS fiber) that the
-      // runtime itself uses, so a `roles.list[].persona` edit applies to the
-      // NEXT dispatch without a re-install. `source()` is read per start, never
-      // captured at install.
-      roles: () => source().roles.list,
-      debug: (message) => logger.debug(message),
-    })
-  } catch (error) {
-    if (!(error instanceof Error) || !error.message.includes('already installed')) throw error
-    ctx.logger('llm-fallbacks').debug('subagent role seam already installed — no seam on this fiber (multi-fiber dedupe)')
-    subagentSeam = { records: new Map(), noticeEmitted: new Set(), dispose: () => {} }
+  // marker survives `agent/disposed` — CF-6 — and is cleared by the plugin
+  // dispose effect), and Task 3b registers the host session projection unit that
+  // folds that row back out of the child's log for the header badge. The record
+  // map is cleaned on agent/disposed + plugin dispose below.
+  // Multi-fiber dedupe (fix M-3, reshaped by the CF-5 fix round): ONLY the
+  // seam's `internal/get` wrapper is ROOT-scoped and single-owner, so a later
+  // fiber applying over a shared context root must not install a second
+  // listener set (nested wrappers + duplicated contained debug lines). Mirror
+  // the service / gateway / typert guards below — but structurally, not by
+  // matching a thrown message: the install always returns a seam and reports
+  // ownership in `ownsWrapper` (false = this fiber shares the root's record map
+  // and registers only its own notice emitter + projection unit). The notice
+  // emitter and the projection unit are registered PER APPLIED FIBER by the
+  // install, so a disposing owner fiber no longer takes the role surfaces down
+  // with it.
+  const subagentSeam: SubagentSeam = installSubagentSeam(ctx, {
+    // Live binding read: the settings onChange below re-derives `roleIds` in
+    // place, so the seam sees role edits without a re-install.
+    roleIds: () => roleIds,
+    // Task 2: the persona source — the same live settings read (`source()`,
+    // reassigned by `setSource` above and by the settings onChange, which the
+    // fail-loud single settings registration keeps on THIS fiber) that the
+    // runtime itself uses, so a `roles.list[].persona` edit applies to the
+    // NEXT dispatch without a re-install. `source()` is read per start, never
+    // captured at install.
+    roles: () => source().roles.list,
+    debug: (message) => logger.debug(message),
+  })
+  if (!subagentSeam.ownsWrapper) {
+    ctx.logger('llm-fallbacks').debug(
+      'subagent role seam wrapper already installed on this context root — this fiber registers the notice emitter and the projection unit only (multi-fiber dedupe)',
+    )
   }
 
   try {
@@ -1554,7 +1558,13 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     blockedAttemptMap.delete(agent.id)
     chainHeadMap.delete(agent.id)
     subagentSeam.records.delete(agent.id)
-    subagentSeam.noticeEmitted.delete(agent.id)
+    // CF-6: `noticeEmitted` is deliberately NOT cleared here. `Agent.id` IS the
+    // child session id, and a continuable child's durable session OUTLIVES the
+    // activation — clearing the marker on disposal let a re-activation resume
+    // append a SECOND `[role: x]` row to the same session, contradicting the
+    // documented "exactly one notice row per child session". The marker is
+    // bounded (`NOTICE_EMITTED_LIMIT`) and cleared by the plugin dispose effect
+    // below.
     lastKnownPolicySettings.delete(agent.id)
   })
 

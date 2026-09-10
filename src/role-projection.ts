@@ -72,15 +72,28 @@ export interface RoleProjectionUnit {
 }
 
 /**
- * The host fold state: the resolved role, or `null` while the child's log
- * carries no notice row. An OBJECT, not a bare string, because the registry's
- * publication rule is reference identity (`Object.is`) — the fold must be able
- * to prove it left the state untouched, and that proof is only meaningful for a
- * value the fold could otherwise re-allocate.
+ * The host fold state: the fork boundary the fold was initialized with, plus the
+ * resolved role once an OWN notice row has landed (`role` absent until then).
+ * An OBJECT, not a bare string, because the registry's publication rule is
+ * reference identity (`Object.is`) — the fold must be able to prove it left the
+ * state untouched, and that proof is only meaningful for a value the fold could
+ * otherwise re-allocate.
+ *
+ * `inheritedEventCount` is part of the state, not a closure constant: the
+ * registry hands `init` the exact fork-inherited prefix length and then folds
+ * the WHOLE log into `apply`, so the boundary has to survive into every `apply`
+ * call (and into a persisted checkpoint row) for the fold to skip an ancestor's
+ * events.
  */
 export interface RoleProjectionState {
-  /** The DECLARED RAW role id, verbatim (padding included). */
-  readonly role: string
+  /**
+   * The exact fork-inherited prefix length `init` was handed: events with
+   * `seq < inheritedEventCount` belong to the ANCESTOR the child was seeded
+   * from, never to the child.
+   */
+  readonly inheritedEventCount: number
+  /** The DECLARED RAW role id, verbatim (padding included); absent until then. */
+  readonly role?: string
 }
 
 /**
@@ -92,27 +105,51 @@ export interface RoleProjectionRegistryView {
   register(unit: RoleProjectionUnit): () => void
 }
 
-/** The projection state/version. Bump `stateVersion` whenever the fold changes. */
-export const ROLE_PROJECTION_STATE_VERSION = 1
+/**
+ * The projection state/version. Bump `stateVersion` whenever the fold changes —
+ * v2 added the fork boundary (`inheritedEventCount`), so a v1 checkpoint row is
+ * NOT re-usable and must be refolded from the log.
+ */
+export const ROLE_PROJECTION_STATE_VERSION = 2
 
 /**
- * Accept only the state this unit can produce: `null`, or an object carrying a
- * non-blank `role`. The parse NORMALIZES to that one field, so a persisted row
- * cannot smuggle anything else forward; anything rejected leaves the row
- * unusable and the registry refolds from the exact log (`viewCheckpoint`
- * catches; `restore` re-reads) instead of serving garbage.
+ * Accept only the state this unit can produce: `null`, or an object carrying the
+ * fork boundary (`inheritedEventCount`) plus an OPTIONAL non-blank `role`. The
+ * parse NORMALIZES to exactly those fields, so a persisted row cannot smuggle
+ * anything else forward, and a row that predates the fork boundary is REFUSED
+ * rather than served with an invented boundary of 0.
+ *
+ * Containment is the CALLER's, not this unit's, and it differs by rung
+ * (role-projection Task 3b QC CF-9 — the earlier comment here claimed a refold
+ * on every rung, which is not what the installed host does): `viewCheckpoint`
+ * parses inside a `try/catch` and simply leaves the key absent, while `restore`
+ * calls `def.stateSchema.parse(row.val)` with NO `try/catch` — so a malformed
+ * row that reaches the `restore`/`coldSnapshot` path throws there instead of
+ * degrading to "no pill". Making this schema TOTAL (`return null` for anything
+ * unrecognized) is the alternative, and it is not free: a `null` seed keeps the
+ * row `usable` and replays only the tail, so a role that landed at or below the
+ * row's watermark would be silently lost for that read. The tradeoff is
+ * registered as a residual instead of being silently resolved here.
  */
 const ROLE_STATE_SCHEMA: ProjectionValueSchema<RoleProjectionState | null> = {
   parse(value: unknown): RoleProjectionState | null {
     if (value === null) return null
     if (typeof value === 'object') {
-      const role = (value as { role?: unknown }).role
-      if (typeof role === 'string' && role.trim() !== '') return { role }
+      const { role, inheritedEventCount } = value as { role?: unknown; inheritedEventCount?: unknown }
+      if (isInheritedEventCount(inheritedEventCount)) {
+        if (role === undefined) return { inheritedEventCount }
+        if (typeof role === 'string' && role.trim() !== '') return { inheritedEventCount, role }
+      }
     }
     throw new TypeError(
-      `role projection: expected null or a non-blank role id, got ${describeValue(value)}`,
+      `role projection: expected null or a non-blank role id with its fork boundary, got ${describeValue(value)}`,
     )
   },
+}
+
+/** Exact fork-inherited prefix length, as the registry hands it to `init`. */
+function isInheritedEventCount(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
 }
 
 /**
@@ -215,30 +252,51 @@ function roleFromEvent(event: unknown): string | undefined {
 /**
  * The ONE role projection unit (plan Task 3b).
  *
- * `init` is `null` (an empty log has no role), `apply` is a last-wins fold over
- * our notice rows that returns the SAME state reference for every other event
- * (the registry's `Object.is` rule: an unchanged reference produces zero
+ * `init` records the fork boundary and nothing else (a child's own log carries
+ * no role yet), `apply` skips every event BELOW that boundary — the seeded
+ * prefix is the ANCESTOR's log, and the plan pins "child whose notice never
+ * landed: no pill, never a wrong pill" — and otherwise folds last-wins over our
+ * own notice rows, returning the SAME state reference for every event it does
+ * not use (the registry's `Object.is` rule: an unchanged reference produces zero
  * downstream work and no client publication) — including a repeated notice with
  * the same role, which is what makes the fold idempotent under a replay.
+ *
+ * The boundary carries into the state because the registry calls `apply` with
+ * the WHOLE log (including the fork prefix) on every rung: `buildCell`,
+ * `drive`'s late-registration fold and `restore` all fold from `init` forward.
+ * The host's own sibling unit in the same tree does exactly this
+ * (`@deepseek-ai/dsh-subagent` `subagentCatalogProjectionDefinition`:
+ * `init: (_header, inheritedEventCount) => ({ inheritedEventCount })` and
+ * `apply: … || event.seq < state.inheritedEventCount → return state`).
  */
 export const roleProjectionUnit: RoleProjectionUnit = {
   key: ROLE_PROJECTION_KEY,
   stateSchema: ROLE_STATE_SCHEMA,
   stateVersion: ROLE_PROJECTION_STATE_VERSION,
-  init: () => null,
+  init: (_header, inheritedEventCount) => ({ inheritedEventCount }),
   apply: (state, event) => {
+    // Total over `unknown` FIRST (the registry calls `apply` unguarded inside
+    // its own fold): a non-object row carries neither a seq nor a notice.
+    if (typeof event !== 'object' || event === null) return state
+    // A `null` state only reaches this fold from a direct caller/test (the
+    // registry always starts from `init`): with no recorded boundary nothing can
+    // be proven inherited, so the fold reads the event as before. A row without
+    // a numeric `seq` cannot be proven inherited either.
+    const inheritedEventCount = state?.inheritedEventCount ?? 0
+    const { seq } = event as { seq?: unknown }
+    if (typeof seq === 'number' && seq < inheritedEventCount) return state
     const role = roleFromEvent(event)
     // Unparseable row → unchanged state (never a wrong role, never a cleared
     // one); the same role again → the SAME object (no allocation, no phantom
     // publication, and the reference equality the registry relies on).
     if (role === undefined || role === state?.role) return state
-    return { role }
+    return { inheritedEventCount, role }
   },
   wire: {
     viewSchema: ROLE_WIRE_SCHEMA,
     // The wire value is the fact the badge renders; `Object.is` on it changes
     // exactly when the role changed.
-    view: (state) => (state === null ? null : state.role),
+    view: (state) => (state === null ? null : state.role ?? null),
   },
 }
 

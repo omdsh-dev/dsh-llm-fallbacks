@@ -28,6 +28,7 @@ import { apply } from '../src/index.ts'
 import { FALLBACKS_SETTINGS_NAMESPACE } from '../src/gateway.ts'
 import {
   installSubagentSeam,
+  PENDING_CORRELATION_LIMIT,
   personaForRole,
   resolveDeclaredRoleFromAssignment,
   subagentSeamOf,
@@ -116,6 +117,83 @@ describe('resolveDeclaredRoleFromAssignment — pure canonicalization', () => {
     expect(resolveDeclaredRoleFromAssignment('## Assignment\n**Execute as**: coder\n\n---\n\n**Execute as**: scout', ROLE_IDS)).toBe('coder')
     // A single-`#` title IS a boundary: the fields after it are outside the region.
     expect(resolveDeclaredRoleFromAssignment('# Title\n\n**Execute as**: coder', ROLE_IDS)).toBeUndefined()
+  })
+
+  it('bounds the marker-less fallback to the leading header block, so a body-quoted field never resolves (CF-2)', () => {
+    // No body marker anywhere (mstar's canonical dispatch text starts with
+    // `## Assignment`, which is NOT a boundary), and the header field is
+    // UNDECLARED: pre-CF-2 the whole prompt was the region, so the body-quoted
+    // `scout` below resolved a role the header never declared — installing that
+    // role's persona and writing a durable `[role: scout]` row.
+    const undeclaredHeaderPlusBodyQuote = [
+      '## Assignment',
+      '',
+      '**You are a leaf executor.**',
+      '',
+      '**Execute as**: generic',
+      '',
+      '## Read first',
+      '',
+      'The Assignment must carry a header field such as:',
+      '',
+      '**Execute as**: scout',
+      '',
+      'Then start reading.',
+    ].join('\n')
+    expect(resolveDeclaredRoleFromAssignment(undeclaredHeaderPlusBodyQuote, ROLE_IDS)).toBeUndefined()
+
+    // …and with NO header field at all the dispatch declares nothing, so the
+    // brief's quoted field must not become the role either (pre-CF-2: 'coder').
+    const bodyQuoteOnly = [
+      '## Assignment',
+      '',
+      '**You are a leaf executor.** Follow the brief.',
+      '',
+      '## Read first',
+      '',
+      'The brief quotes the field below verbatim:',
+      '',
+      '**Execute as**: @coder',
+    ].join('\n')
+    expect(resolveDeclaredRoleFromAssignment(bodyQuoteOnly, ROLE_IDS)).toBeUndefined()
+
+    // The realistic re-dispatch shape: the ORIGINAL Assignment quoted inside a
+    // fenced block. The fence opens a prose paragraph, so the region is closed
+    // before it and the header's own field wins.
+    const fencedQuote = [
+      '## Assignment',
+      '',
+      '**Execute as**: coder',
+      '',
+      'Re-dispatch of the brief below:',
+      '',
+      '```markdown',
+      '**Execute as**: scout',
+      '```',
+    ].join('\n')
+    expect(resolveDeclaredRoleFromAssignment(fencedQuote, ROLE_IDS)).toBe('coder')
+
+    // Positive control on the SAME bound: a field inside the leading header block
+    // still resolves on a multi-paragraph, marker-less prompt, so the
+    // `undefined`s above are the bound and not a resolver that stopped working.
+    expect(
+      resolveDeclaredRoleFromAssignment(
+        '## Assignment\n\n**You are a leaf executor.**\n\n**Execute as**: coder\n\nprose body follows.',
+        ROLE_IDS,
+      ),
+    ).toBe('coder')
+    // …including a WRAPPED header paragraph (mstar's canonical dispatch text
+    // wraps the IDENTITY block): a bound that stopped at the first non-bold
+    // continuation line would attenuate every real Assignment. (The prompt here
+    // deliberately starts with `## Assignment`: a single-`#` title is the
+    // PINNED engine-parity boundary — residual R-003 — and would empty the
+    // region before the fields.)
+    expect(
+      resolveDeclaredRoleFromAssignment(
+        '## Assignment\n\n**IDENTITY** — implementer for Task 1. Load `mstar-roles`\n→ `references/fullstack-dev-shared.md`, then `mstar-coding-behavior`.\n\n**Execute as**: @fullstack-dev\n**Delegation**: forbidden\n',
+        new Map([['fullstack-dev', 'fullstack-dev']]),
+      ),
+    ).toBe('fullstack-dev')
   })
 
   it('returns undefined for absent, empty, undeclared and inherit declarations', () => {
@@ -223,8 +301,9 @@ function parentAgent(id: string): SubagentStartRequestView['parent'] {
  * Dispatch ONE start through a FRESH context with the given seam options and
  * return what the underlying service received, the returned result, the seam,
  * and the contained debug sink. Task 4 uses it where a case needs an in-test
- * POSITIVE CONTROL under DIFFERENT install options: the seam is root-scoped and
- * refuses a second install, so the control cannot reuse the case's context.
+ * POSITIVE CONTROL under DIFFERENT install options: the seam's `internal/get`
+ * wrapper is root-scoped and single-owner (CF-5), so the control cannot reuse
+ * the case's context.
  */
 async function dispatchWithOptions(
   options: Omit<SubagentSeamOptions, 'debug'>,
@@ -324,6 +403,110 @@ describe('subagent seam — behavioural (public call path)', () => {
     })
 
     expect(seam.records.get('child-background')?.role).toBe('coder')
+  })
+
+  it('bounds the catalog-correlation claims and evicts by RECENCY, not first insertion (CF-8)', async () => {
+    ctx = new Context()
+    // Every result carries ONLY a job id, so no record is keyed and each claim
+    // stays open in the bounded map.
+    ctx.provide('subagents', fakeSubagents({ kind: 'background', jobId: 'job-x' }).service)
+    const seam = installSubagentSeam(ctx, { roleIds: () => ROLE_IDS })
+
+    const { value } = await injectSubagents(ctx)
+    const start = value.start as (name: string, request: SubagentStartRequestView) => Promise<unknown>
+    const claim = (label: string): Promise<unknown> =>
+      start('spawn', { prompt: [{ type: 'text', text: assignment('coder') }], label, parent: parentAgent('parent-bounded') })
+    const catalog = (childId: string, label: string): void => {
+      ctx.emit('session/event', { id: 'parent-bounded' }, {
+        type: 'subagent/catalog',
+        seq: 1,
+        time: Date.now(),
+        data: { version: 0, childId, childCreatedAt: Date.now(), mode: 'one-shot', label },
+      })
+    }
+
+    for (let index = 0; index < PENDING_CORRELATION_LIMIT; index += 1) await claim(`label-${index}`)
+    // Re-claim the FIRST label: it is now the NEWEST claim, so the recency policy
+    // must keep it across the eviction the next insertion forces — under the old
+    // first-insertion FIFO it was exactly the key that would be dropped.
+    await claim('label-0')
+    await claim('label-overflow')
+
+    catalog('child-hot', 'label-0')
+    catalog('child-cold', 'label-1')
+    // The bound + recency are observable in one shot: the oldest UNTOUCHED claim
+    // was evicted (its catalog event resolves no claim), the re-claimed hot key
+    // survived, and the newest claim is still there.
+    expect(seam.records.get('child-hot')?.role).toBe('coder')
+    expect(seam.records.has('child-cold')).toBe(false)
+    catalog('child-newest', 'label-overflow')
+    expect(seam.records.get('child-newest')?.role).toBe('coder')
+  })
+
+  it('contains a result whose `then` accessor throws, after the native start already ran (CF-4)', async () => {
+    ctx = new Context()
+    const debug = vi.fn()
+    const hostile: Record<string, unknown> = {}
+    Object.defineProperty(hostile, 'then', {
+      get() {
+        throw new Error('then accessor boom')
+      },
+    })
+    const fake = fakeSubagents({ id: 'child-hostile' })
+    // The native start returns the exotic object DIRECTLY (no promise wrapper), so
+    // the wrapper's shape probe is the statement that throws. It still records the
+    // delegation, so "the native call ran" is asserted rather than assumed.
+    ;(fake.service as { start: unknown }).start = (name: string, request: SubagentStartRequestView) => {
+      fake.starts.push({ name, request })
+      return hostile
+    }
+    ctx.provide('subagents', fake.service)
+    installSubagentSeam(ctx, { roleIds: () => ROLE_IDS, debug })
+
+    const { value } = await injectSubagents(ctx)
+    const start = value.start as (name: string, request: SubagentStartRequestView) => unknown
+    // NOT awaited: the wrapper is synchronous (it forwards the native result), and
+    // `await` on a value with a throwing `then` accessor would throw in the TEST
+    // rather than exercise the wrapper's containment.
+    const result = start('spawn', { prompt: [{ type: 'text', text: assignment('coder') }], label: 'hostile' })
+    // The child EXISTS (the native call ran): the dispatch must still hand the
+    // caller its own result instead of throwing the accessor's error.
+    expect(result).toBe(hostile)
+    expect(fake.starts).toHaveLength(1)
+    expect(debug).toHaveBeenCalledTimes(1)
+    expect(String(debug.mock.calls[0]![0])).toContain('then accessor boom')
+  })
+
+  it('contains a `startContinuable` result whose `then` accessor throws (CF-4, continuable site)', async () => {
+    ctx = new Context()
+    const debug = vi.fn()
+    const hostile: Record<string, unknown> = {}
+    Object.defineProperty(hostile, 'then', {
+      get() {
+        throw new Error('continuable then boom')
+      },
+    })
+    const fake = fakeSubagents({ id: 'unused' })
+    ;(fake.service as { startContinuable: unknown }).startContinuable = (spec: Record<string, unknown>) => {
+      fake.continuableStarts.push(spec)
+      return hostile
+    }
+    ctx.provide('subagents', fake.service)
+    installSubagentSeam(ctx, { roleIds: () => ROLE_IDS, debug })
+
+    const { value } = await injectSubagents(ctx)
+    const startContinuable = value.startContinuable as (spec: unknown) => unknown
+    // Not awaited — see the one-shot case above.
+    const result = startContinuable({
+      provider: 'spawn',
+      label: 'hostile-resume',
+      childId: 'child-hostile-resume',
+      request: { prompt: [{ type: 'text', text: assignment('coder') }] },
+    })
+    expect(result).toBe(hostile)
+    expect(fake.continuableStarts).toHaveLength(1)
+    expect(debug).toHaveBeenCalledTimes(1)
+    expect(String(debug.mock.calls[0]![0])).toContain('continuable then boom')
   })
 
   it('leaves the native path byte-identical when no role resolves', async () => {
@@ -1002,20 +1185,97 @@ describe('subagent seam — per-apply lifetime through apply()', () => {
     apply(ctx, config())
     const first = subagentSeamOf(ctx)
     expect(first).toBeDefined()
+    expect(first!.ownsWrapper).toBe(true)
 
-    // A later fiber over the shared root is refused by the seam and degraded by
-    // the guard: the first fiber keeps the only listener set, so the store
-    // still holds the FIRST seam (no nested wrapper, no second debug line).
+    // A later fiber over the shared root does NOT install a second listener set
+    // (no nested wrapper): it shares the root's record map and reports the
+    // ownership structurally (CF-5 — no thrown message, no no-op seam).
     expect(() => apply(ctx, config())).not.toThrow()
-    expect(subagentSeamOf(ctx)).toBe(first)
+    const second = subagentSeamOf(ctx)
+    expect(second).not.toBe(first)
+    expect(second!.ownsWrapper).toBe(false)
+    expect(second!.records).toBe(first!.records)
+    expect(second!.noticeEmitted).toBe(first!.noticeEmitted)
+  })
+
+  it('multi-fiber: the wrapper has ONE owner while every applied fiber keeps its role surfaces (CF-5)', async () => {
+    const fake = fakeSubagents({ id: 'child-multi' })
+    ctx.provide('subagents', fake.service)
+    const config = () => cfg({ roles: { list: [{ id: 'coder', persona: 'Coder persona', chain: [] }], rules: [] } })
+
+    // TWO APPLIED FIBERS over ONE root — the composition the M-3 dedupe exists
+    // for, with each fiber disposable on its own.
+    let firstCtx: Context | undefined
+    let secondCtx: Context | undefined
+    const firstFiber = ctx.plugin({
+      name: 'fallbacks-multi-first',
+      apply: (fiberCtx: Context) => {
+        firstCtx = fiberCtx
+        apply(fiberCtx, config())
+      },
+    })
+    await nextTick()
+    const secondFiber = ctx.plugin({
+      name: 'fallbacks-multi-second',
+      apply: (fiberCtx: Context) => {
+        secondCtx = fiberCtx
+        apply(fiberCtx, config())
+      },
+    })
+    await nextTick()
+
+    const first = subagentSeamOf(firstCtx!)
+    const second = subagentSeamOf(secondCtx!)
+    expect(first).toBeDefined()
+    expect(second).toBeDefined()
+    // Structural ownership, not message matching: the first fiber owns the
+    // root-scoped wrapper, the later one shares the root's state.
+    expect(first!.ownsWrapper).toBe(true)
+    expect(second!.ownsWrapper).toBe(false)
+    expect(second!.records).toBe(first!.records)
+
+    // ONE wrapper: the dispatch reaches the raw service exactly once (a nested
+    // wrapper would call it twice) and keys the SHARED record map.
+    const { value } = await injectSubagents(ctx)
+    await (value.start as (name: string, request: SubagentStartRequestView) => Promise<unknown>)('spawn', {
+      prompt: [{ type: 'text', text: assignment('coder') }],
+    })
+    expect(fake.starts).toHaveLength(1)
+    expect(first!.records.get('child-multi')?.role).toBe('coder')
+
+    // The wrapper OWNER disposes while the other fiber stays applied: the root
+    // claim is released (so a later apply can own the wrapper again) and the
+    // survivor's own notice emitter / projection registration is untouched —
+    // its survival is pinned in `role-notice.spec.ts` (emitter) and
+    // `role-projection.spec.ts` (registry key).
+    await firstFiber.dispose()
+    expect(second!.ownsWrapper).toBe(false)
+
+    let thirdCtx: Context | undefined
+    const thirdFiber = ctx.plugin({
+      name: 'fallbacks-multi-third',
+      apply: (fiberCtx: Context) => {
+        thirdCtx = fiberCtx
+        apply(fiberCtx, config())
+      },
+    })
+    await nextTick()
+    const third = subagentSeamOf(thirdCtx!)
+    expect(third!.ownsWrapper).toBe(true)
+    // …and the shared state object outlived the owner disposal (the survivor and
+    // the re-install read the SAME map).
+    expect(third!.records).toBe(first!.records)
+    await thirdFiber.dispose()
+    await secondFiber.dispose()
   })
 
   it('wires the persona source at that ONE install point (apply() + live roles.list)', async () => {
     const fake = fakeSubagents({ id: 'child-apply' }, undefined, { capabilities: { persona: true } })
     ctx.provide('subagents', fake.service)
-    // The FIRST fiber's install point is the only live seam (dedupe above), so
-    // this is exactly where the persona source has to be wired: `index.ts`
-    // passes `roles: () => source().roles.list` next to `roleIds`/`debug`.
+    // This fiber owns the wrapper (the dedupe above leaves that single-owner
+    // part to the first install), and it is exactly where the persona source has
+    // to be wired: `index.ts` passes `roles: () => source().roles.list` next to
+    // `roleIds`/`debug`.
     apply(ctx, cfg({ roles: { list: [{ id: 'coder', persona: 'Applied persona', chain: [] }], rules: [] } }))
 
     const { value } = await injectSubagents(ctx)

@@ -38,12 +38,23 @@
  * in `tests/role-notice.spec.ts` pins that membership against a checked-in
  * mirror of the set.
  *
- * Once per child: the emitter consumes the seam's per-child record marker
- * (`firstNoticePending`) AND a per-agent `emitted` set (mirroring the existing
- * `dispatchInjected` pattern), both written only AFTER the row is built — so a
- * throwing producer degrades without consuming the child's one notice. Never
- * for a root agent, never for `inherit`/unresolved (those never get a record),
- * never twice across steps or within-step retries.
+ * Once per child SESSION: the emitter consumes the seam's per-child record
+ * marker (`firstNoticePending`) AND a per-agent `emitted` set (mirroring the
+ * existing `dispatchInjected` pattern), both written only AFTER the row is built
+ * — so a throwing producer degrades without consuming the child's one notice.
+ * Never for a root agent, never for `inherit`/unresolved (those never get a
+ * record), never twice across steps or within-step retries.
+ *
+ * CF-6 — the emitted marker is SESSION-stable and bounded. `Agent.id` IS the
+ * child session id, and a continuable child's durable session outlives its
+ * activation, so the caller (`src/index.ts`) keeps this marker across
+ * `agent/disposed` and clears it only when the plugin itself is disposed; that
+ * is what makes the documented "exactly one notice row per child session" hold
+ * across a dispose + re-activate resume. Because it is never per-activation
+ * cleared it must be bounded: {@link markNoticeEmitted} evicts the oldest entry
+ * once {@link NOTICE_EMITTED_LIMIT} sessions are remembered (a child evicted
+ * that way can at worst be announced a second time, and the projection fold is
+ * last-wins, so no wrong role is ever produced).
  *
  * Degrade-never-crash: any throw in the path is contained with ONE debug line
  * and the decision is returned UNCHANGED — a step is never broken, and no
@@ -73,6 +84,30 @@ export const ROLE_NOTICE_SOURCE_KIND = 'plugin'
 
 /** Suffix appended when the role declares a persona that was NOT delivered. */
 export const ROLE_NOTICE_PERSONA_SKIPPED_SUFFIX = ' (persona not applied)'
+
+/**
+ * How many child sessions whose notice was already emitted stay remembered
+ * (CF-6). The marker is session-stable — kept across `agent/disposed` so a
+ * re-activated continuable child is not announced twice — so it needs a bound:
+ * past this many sessions the oldest entry is evicted (worst case: a later
+ * re-activation of that evicted child writes a second identical row; the
+ * projection fold is last-wins, so the pill never names a wrong role).
+ */
+export const NOTICE_EMITTED_LIMIT = 256
+
+/**
+ * Mark one child session as announced, evicting the oldest remembered session
+ * once {@link NOTICE_EMITTED_LIMIT} is reached (insertion-ordered `Set`
+ * semantics: the oldest entry is the first value). A session already marked
+ * keeps its position — its marker is only ever written once.
+ */
+export function markNoticeEmitted(emitted: Set<string>, childSessionId: string): void {
+  if (!emitted.has(childSessionId) && emitted.size >= NOTICE_EMITTED_LIMIT) {
+    const oldest = emitted.values().next().value
+    if (oldest !== undefined) emitted.delete(oldest)
+  }
+  emitted.add(childSessionId)
+}
 
 /** One notice-message producer: role id + whether the declared persona was skipped. */
 export type RoleNoticeBuilder = (role: string, personaNotApplied: boolean) => UserMessage
@@ -117,6 +152,12 @@ export interface RoleNoticeOptions {
    * runtime's `dispatchInjected`): the in-memory half of the once-per-child
    * guarantee, independent of the record's `firstNoticePending` (which a record
    * rewrite preserves deliberately) and of the loop's retry bookkeeping.
+   *
+   * SESSION-stable and bounded (CF-6): the caller keeps it across
+   * `agent/disposed` so a re-activated child is never announced twice, and
+   * {@link markNoticeEmitted} bounds it. ROOT-shared across the fibers applied
+   * over one root (CF-5), so a second fiber's emitter cannot announce a child
+   * the first already announced.
    */
   emitted: Set<string>
   /**
@@ -174,8 +215,9 @@ export function installRoleNotice(ctx: Context, options: RoleNoticeOptions): () 
         // Publish (in-memory) only after the row exists. `agent/pre-step` runs
         // once per step and the loop reuses the decision across a step's
         // retries, so the durable append stays single; these two markers are
-        // what keep a LATER step from announcing the same child again.
-        options.emitted.add(agent.id)
+        // what keep a LATER step — and, for `emitted`, a later ACTIVATION of the
+        // same child session (CF-6) — from announcing the same child again.
+        markNoticeEmitted(options.emitted, agent.id)
         record.firstNoticePending = false
         return { ...decision, messages: [...decision.messages, notice] }
       } catch (error) {

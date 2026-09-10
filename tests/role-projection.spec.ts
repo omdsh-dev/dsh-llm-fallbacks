@@ -49,12 +49,16 @@ function messageEvent(seq: number, message: UserMessage): SessionEvent {
  * Minimal Session stand-in for the registry's read path: `header`,
  * `inheritedEventCount`, `seq` (the NEXT event's number), `snapshotEvents` and
  * `eventAt` — the complete surface `buildCell` / `advanceCell` touch.
+ *
+ * `inheritedEventCount` is a PARAMETER (CF-1): the registry hands it to `init`
+ * and then folds the WHOLE log into `apply`, which is exactly how a seeded /
+ * continuable child's ancestor prefix reaches the fold.
  */
-function fakeSession(events: readonly SessionEvent[]): Session {
+function fakeSession(events: readonly SessionEvent[], inheritedEventCount = 0): Session {
   const log = [...events]
   return {
     header: { origin: 'subagent' },
-    inheritedEventCount: 0,
+    inheritedEventCount,
     get seq() {
       return log.length
     },
@@ -111,7 +115,7 @@ describe('role projection — Step 0 channel proof (registry + ctx.inject + key 
     // (iii) the value is exposed under the projection key. `stateOf` is the host
     // FOLD state; the wire block carries the role id itself, which is what the
     // client's `useProjection` seat reads.
-    expect(registry.stateOf(session, ROLE_PROJECTION_KEY)).toEqual({ role: 'coder' })
+    expect(registry.stateOf(session, ROLE_PROJECTION_KEY)).toEqual({ inheritedEventCount: 0, role: 'coder' })
     const after = registry.snapshot(session, [ROLE_PROJECTION_KEY])
     expect(after.values[ROLE_PROJECTION_KEY]).toBe('coder')
     // The wire value is produced at the cut of the last folded event — proving
@@ -190,16 +194,16 @@ describe('role projection — fold contract', () => {
 
   it('keeps the DECLARED RAW role id verbatim (padding included) and note the persona suffix', () => {
     const padded = roleProjectionUnit.apply(null, messageEvent(0, buildRoleNotice(' padded ', false)))
-    expect(padded).toEqual({ role: ' padded ' })
+    expect(padded).toEqual({ inheritedEventCount: 0, role: ' padded ' })
     // ` (persona not applied)` is part of the row, not of the role.
     expect(roleProjectionUnit.apply(null, messageEvent(0, buildRoleNotice('coder', true))))
-      .toEqual({ role: 'coder' })
+      .toEqual({ inheritedEventCount: 0, role: 'coder' })
   })
 
   it('is idempotent: any other event and a repeated notice return the SAME state reference', () => {
     const notice = messageEvent(0, buildRoleNotice('coder', false))
     const state = roleProjectionUnit.apply(null, notice)
-    expect(state).toEqual({ role: 'coder' })
+    expect(state).toEqual({ inheritedEventCount: 0, role: 'coder' })
     // The registry publishes only when `!Object.is(next, previous)`, so the fold
     // must not allocate for an event it does not use — and a replayed notice must
     // not re-derive an equal-but-fresh state either.
@@ -211,7 +215,7 @@ describe('role projection — fold contract', () => {
     // Last-wins when a LATER own notice names another role (a re-dispatch): a NEW
     // reference, which is what makes the registry republish.
     const reDispatched = roleProjectionUnit.apply(state, messageEvent(4, buildRoleNotice('reviewer', false)))
-    expect(reDispatched).toEqual({ role: 'reviewer' })
+    expect(reDispatched).toEqual({ inheritedEventCount: 0, role: 'reviewer' })
     expect(reDispatched).not.toBe(state)
   })
 
@@ -220,7 +224,7 @@ describe('role projection — fold contract', () => {
     // `session/event` pipeline (`dsh-session-projection` `lib/index.js`), so a
     // repaired/foreign row must read as "not a notice" — a throw here would fail
     // the session read (plan Global Constraints: degrade-never-crash).
-    const state = { role: 'coder' }
+    const state = { inheritedEventCount: 0, role: 'coder' }
     const noticeText = (text: string, source: unknown): unknown => ({
       type: 'user/message',
       seq: 0,
@@ -255,7 +259,7 @@ describe('role projection — fold contract', () => {
     }
     // Positive control on the same fold path: the REAL notice still folds.
     expect(roleProjectionUnit.apply(state, messageEvent(9, buildRoleNotice('reviewer', false))))
-      .toEqual({ role: 'reviewer' })
+      .toEqual({ inheritedEventCount: 0, role: 'reviewer' })
   })
 
   it('parses a role id that itself ends in the persona suffix, exactly (never trimmed)', () => {
@@ -265,9 +269,9 @@ describe('role projection — fold contract', () => {
     // the writer's appended skip suffix (Task 3b L2 review M-5).
     const id = 'audit (persona not applied)'
     expect(roleProjectionUnit.apply(null, messageEvent(0, buildRoleNotice(id, false))))
-      .toEqual({ role: id })
+      .toEqual({ inheritedEventCount: 0, role: id })
     expect(roleProjectionUnit.apply(null, messageEvent(1, buildRoleNotice(id, true))))
-      .toEqual({ role: id })
+      .toEqual({ inheritedEventCount: 0, role: id })
     // Exactness cuts both ways: a text the writer cannot produce (TWO appended
     // suffixes) is not the notice grammar, so it carries no role at all rather
     // than a half-trimmed one.
@@ -282,16 +286,64 @@ describe('role projection — fold contract', () => {
     } as unknown as SessionEvent)).toBeNull()
   })
 
+  it('never folds a fork-inherited prefix event: a seeded child carries its OWN role only (CF-1)', async () => {
+    const { registry } = withRegistry()
+    installRoleProjection(ctx)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    // The delegating parent was itself dispatched with a declared role, so its
+    // own durable log carries OUR notice row — and a seeded (continuable /
+    // forked) child's log STARTS with that ancestor prefix. The registry hands
+    // `init` the prefix length as `inheritedEventCount` and then folds the WHOLE
+    // log into `apply`, which is the whole hazard: without the boundary the
+    // ancestor's row IS a resolvable notice for the child.
+    const parentRow = messageEvent(0, buildRoleNotice('parent-role', false))
+    // The plan's pinned case list: "child whose notice never landed ⇒ no pill,
+    // never a wrong pill". Pre-CF-1 this read `'parent-role'`.
+    expect(registry.snapshot(fakeSession([parentRow], 1)).values[ROLE_PROJECTION_KEY]).toBeNull()
+
+    // Positive control on the SAME seeded session: the child's OWN row (`seq`
+    // at/after the boundary) still folds — so the `null` above is the boundary
+    // skipping the ancestor, not a fold that never publishes.
+    const childRow = messageEvent(1, buildRoleNotice('child-role', false))
+    expect(registry.snapshot(fakeSession([parentRow, childRow], 1)).values[ROLE_PROJECTION_KEY]).toBe('child-role')
+
+    // …and the boundary is exactly what does it: the same two rows with NO
+    // inherited prefix still fold last-wins to the child's role, so neither the
+    // row order nor the fold itself can explain the two results above.
+    expect(registry.snapshot(fakeSession([parentRow, childRow], 0)).values[ROLE_PROJECTION_KEY]).toBe('child-role')
+
+    // Direct fold face: an ancestor event is refused even as the LAST event, and
+    // the boundary survives in the state the registry checkpoints.
+    const state = roleProjectionUnit.init({}, 1)
+    expect(state).toEqual({ inheritedEventCount: 1 })
+    expect(roleProjectionUnit.apply(state, parentRow)).toBe(state)
+    expect(roleProjectionUnit.apply(state, childRow)).toEqual({ inheritedEventCount: 1, role: 'child-role' })
+    // A child whose own log holds nothing above the boundary stays role-less
+    // even when its checkpoint round-trips through the state schema.
+    const inheritedOnly = roleProjectionUnit.apply(roleProjectionUnit.stateSchema.parse(state)!, parentRow)
+    expect(roleProjectionUnit.wire.view(inheritedOnly)).toBeNull()
+  })
+
   it('validates the persisted state, so a corrupt checkpoint row is rejected instead of served', () => {
     expect(roleProjectionUnit.stateSchema.parse(null)).toBeNull()
-    expect(roleProjectionUnit.stateSchema.parse({ role: 'coder', extra: 1 })).toEqual({ role: 'coder' })
+    expect(roleProjectionUnit.stateSchema.parse({ inheritedEventCount: 0 })).toEqual({ inheritedEventCount: 0 })
+    expect(roleProjectionUnit.stateSchema.parse({ role: 'coder', inheritedEventCount: 3, extra: 1 }))
+      .toEqual({ inheritedEventCount: 3, role: 'coder' })
     expect(() => roleProjectionUnit.stateSchema.parse('coder')).toThrow()
-    expect(() => roleProjectionUnit.stateSchema.parse({ role: '' })).toThrow()
-    expect(() => roleProjectionUnit.stateSchema.parse({ role: 42 })).toThrow()
+    expect(() => roleProjectionUnit.stateSchema.parse({ role: '' , inheritedEventCount: 0 })).toThrow()
+    expect(() => roleProjectionUnit.stateSchema.parse({ role: 42, inheritedEventCount: 0 })).toThrow()
     expect(() => roleProjectionUnit.stateSchema.parse(undefined)).toThrow()
+    // The fork boundary is REQUIRED (v2): a row that predates it must be
+    // rejected, not served with an invented boundary of 0 (which would let an
+    // ancestor's notice row through the fold).
+    expect(() => roleProjectionUnit.stateSchema.parse({ role: 'coder' })).toThrow()
+    expect(() => roleProjectionUnit.stateSchema.parse({ role: 'coder', inheritedEventCount: -1 })).toThrow()
+    expect(() => roleProjectionUnit.stateSchema.parse({ role: 'coder', inheritedEventCount: 1.5 })).toThrow()
     // The WIRE value carries the role id itself (not the fold's object shape),
     // and passes its own guard on every client-visible read.
-    expect(roleProjectionUnit.wire.view(roleProjectionUnit.stateSchema.parse({ role: 'coder' }))).toBe('coder')
+    expect(roleProjectionUnit.wire.view(roleProjectionUnit.stateSchema.parse({ role: 'coder', inheritedEventCount: 2 }))).toBe('coder')
+    expect(roleProjectionUnit.wire.view(roleProjectionUnit.stateSchema.parse({ inheritedEventCount: 2 }))).toBeNull()
     expect(roleProjectionUnit.wire.view(null)).toBeNull()
     expect(() => roleProjectionUnit.wire.viewSchema.parse({ role: 'coder' })).toThrow()
     expect(() => roleProjectionUnit.wire.viewSchema.parse(42)).toThrow()
@@ -304,11 +356,14 @@ describe('role projection — fold contract', () => {
     expect(roleProjectionUnit.stateVersion).toBe(ROLE_PROJECTION_STATE_VERSION)
     expect(Number.isSafeInteger(roleProjectionUnit.stateVersion)).toBe(true)
     expect(roleProjectionUnit.stateVersion).toBeGreaterThanOrEqual(0)
+    // v2 (CF-1): the fold state gained the fork boundary, so every v1 persisted
+    // row must be refolded rather than parsed into the new shape.
+    expect(ROLE_PROJECTION_STATE_VERSION).toBe(2)
   })
 })
 
 describe('role projection — install shape', () => {
-  it('registers through the plugin install point and survives a second apply (shared-key dedupe)', async () => {
+  it('registers through the plugin install point and survives a second apply (per-fiber registration)', async () => {
     const { registry } = withRegistry()
     await ctx.plugin(MemorySettings)
     const session = fakeSession([messageEvent(0, buildRoleNotice('scout', false))])
@@ -317,10 +372,10 @@ describe('role projection — install shape', () => {
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(registry.snapshot(session).values[ROLE_PROJECTION_KEY]).toBe('scout')
 
-    // A later fiber over the same root: the seam is deduped, so the projection
-    // is registered by the FIRST fiber only — and even a direct second install
-    // would be counted by the registry (one unit per key+stateVersion). Neither
-    // path may throw.
+    // CF-5: the projection unit is registered PER APPLIED FIBER (the host
+    // registry ref-counts one unit per key+stateVersion), so a later fiber over
+    // the same root registers its own — the key must not flicker and no install
+    // may throw.
     expect(() => apply(ctx, cfg())).not.toThrow()
     installRoleProjection(ctx)
     await new Promise((resolve) => setTimeout(resolve, 0))
