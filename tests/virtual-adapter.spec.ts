@@ -579,20 +579,23 @@ describe('providerRetryPolicy (route-accurate retry attribution)', () => {
     }
   })
 
-  it('reports the runtime default when no head is dispatchable (head-gated, not policy-gated)', async () => {
-    // The head route DOES declare `always`, but this legacy non-conforming
-    // all-day chain resolves to no head at all — so the proxy answers
-    // `undefined` and the HOST resolves its own normal default. The head
-    // route's own `always` answer in the same runtime is what makes this arm
-    // discriminating: the proxy is gated on a dispatchable head, not a
-    // blanket echo of every policy the runtime happens to hold.
+  it('reports the runtime default for a non-conforming chain (conformance-gated, not policy-gated)', async () => {
+    // Non-conformance lives in the chain TAIL (`isAllDayConforming` reads only
+    // the last entry), while the FIRST entry is a REGISTERED official head.
+    // That combination is what makes the conformance gate observable: drop the
+    // gate and head resolution walks the raw chain to that registered head —
+    // whose captured policy IS `always` — so the proxy would echo `always`
+    // here instead of the host default, and this arm would fail. The head
+    // route's own `always` answer in the same runtime (asserted below) is the
+    // control: the proxy is gated on a conforming chain, not a blanket echo of
+    // every policy the runtime happens to hold.
     const local = new Context()
     try {
       new LlmRuntime(local)
       const headStub = new StubHeadAdapter()
       headStub.policy = HEAD_POLICY
       local.llm.registerAdapter([HEAD_PROVIDER], headStub)
-      apply(local, cfg({ rootChain: ['other/gpt-4o', 'other/gpt-5'] }))
+      apply(local, cfg({ rootChain: [OFFICIAL_FLASH, 'other/gpt-4o'] }))
       await vi.waitFor(() => expect(listedOn(local)).toBe(true))
 
       expect(local.llm.providerRetryPolicy(HEAD_PROVIDER)).toMatchObject({ mode: 'always' })
