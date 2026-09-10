@@ -6,7 +6,9 @@ This document records the installation / runtime-contract verification already c
 
 ## Verified (evidence summary for this iteration)
 
-### 1. Test matrix (unit + integration + client + host gateway + command + release/consumer tooling; 52 files / 1128 tests passed, 1 skipped)
+> **Snapshot scope**: the §1 per-row counts are snapshots from the verification round that produced them (they were not all re-derived together); the §1 aggregates are the release v0.4.4 snapshot, not the current tip.
+
+### 1. Test matrix (unit + integration + client + host gateway + command + release/consumer tooling; as of release v0.4.4 — 52 files / 1128 tests passed, 1 skipped)
 
 | Scope | Files | Count | Contract covered |
 |---|---|---|---|
@@ -23,11 +25,13 @@ This document records the installation / runtime-contract verification already c
 | session tooling + repair | `session-event-registration.spec.ts` / `session-event-registration-guard.spec.ts` / `repair-fallbacks-switch-logs.spec.ts` / `client-slot-registration.spec.ts` | 2 / 2 / 30 (+1 skipped) / 2 | issue #52 stop-write registration guards (no durable `fallbacks/switch` append); fail-closed repair-script detector (refuses unloadable logs, never writes); client slot registration ledger |
 | regression | `skeleton.spec.ts` / `host-native.spec.ts` / `peer-deps.test.ts` | 3 / 3 / 5 | bundle contract (row id, empty schema accepted, host+client apply entry points); host-native behavior baseline (real `@deepseek-ai/dsh-agent` module: trigger-code switches route to the chain target, always-cap second return point, no-op invariant); registry peer contract (`@deepseek-ai/*` as peerDependencies only, dsh-* pinned to `^0.1.5-rc.1`, autoInstallPeers, no link farm) |
 
-Result: **52 files / 1128 tests passed, 1 skipped** (`corepack pnpm@11.21.0 test`, vitest run); `pnpm build` (`tsc -p tsconfig.build.json` emits JS first (standard decorator downgrade `__esDecorate`) → tsdown host bundle →
+Result: **as of release v0.4.4 — 52 files / 1128 tests passed, 1 skipped** (`corepack pnpm@11.21.0 test`, vitest run); `pnpm build` (`tsc -p tsconfig.build.json` emits JS first (standard decorator downgrade `__esDecorate`) → tsdown host bundle →
 `pnpm run build-client` → `tsc` declarations → `node scripts/verify-dist.mjs` artifact-parsing guard) all green — `tsc` is
 driven by the real host type surface (registry peer `@deepseek-ai/*@0.1.5-rc.1`, no in-repo type shims). The no-op regression
 invariants (empty chains / no match / chain exhausted / safety-valve cap exceeded → pass through without producing
 `fallbacks/switch` events) are persistently asserted by T3/T4 tests.
+
+Current tip reality (`pnpm test` re-run for this docs round): **54 files / 1168 passed | 1 skipped** — the v0.4.4 aggregates above are **not** the current tip.
 
 ### 2. Bundle layer order (proven via scratch profile `--dump-config`)
 
