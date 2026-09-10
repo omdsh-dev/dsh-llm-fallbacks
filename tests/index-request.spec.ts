@@ -27,7 +27,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { apply } from '../src/index.ts'
 import { FALLBACKS_CHAIN_MODEL, FALLBACKS_PROVIDER } from '../src/virtual-adapter.ts'
-import { OFFICIAL_V4_FLASH } from '../src/time-slots.ts'
+import { OFFICIAL_FLASH } from '../src/time-slots.ts'
 import { MemorySettings } from './support/memory-settings.ts'
 import { cfg, dispatchRequest, dispatchRequestError, makeAgent } from './support/harness.ts'
 
@@ -60,23 +60,23 @@ function captureLogs(): Array<{ type: string; args: unknown[] }> {
 describe('select-is-primary routing (P3)', () => {
   it('overrides a root-origin FallbacksChain seed to the effective head', async () => {
     const { agent } = makeAgent('t2-root', { provider: 'mock', model: 'gpt-4o' }, { origin: 'root' })
-    apply(ctx, cfg({ rootChain: [OFFICIAL_V4_FLASH] }))
+    apply(ctx, cfg({ rootChain: [OFFICIAL_FLASH] }))
 
     const config = await dispatchRequest(ctx, agent, virtualSeed)
-    expect(config).toEqual({ provider: 'deepseek-official', model: 'deepseek-v4-flash' })
+    expect(config).toEqual({ provider: 'deepseek-official', model: 'deepseek-flash' })
   })
 
   it('does not override a real catalog selection (fallback-only semantics kept)', async () => {
     const { agent } = makeAgent('t2-real', { provider: 'mock', model: 'gpt-4o' }, { origin: 'root' })
-    apply(ctx, cfg({ rootChain: [OFFICIAL_V4_FLASH] }))
+    apply(ctx, cfg({ rootChain: [OFFICIAL_FLASH] }))
 
-    const config = await dispatchRequest(ctx, agent, { provider: 'deepseek-official', model: 'deepseek-v4-flash' })
-    expect(config).toEqual({ provider: 'deepseek-official', model: 'deepseek-v4-flash' })
+    const config = await dispatchRequest(ctx, agent, { provider: 'deepseek-official', model: 'deepseek-flash' })
+    expect(config).toEqual({ provider: 'deepseek-official', model: 'deepseek-flash' })
   })
 
   it('never overrides a subagent-origin FallbacksChain seed (P1 delegate handles it)', async () => {
     const { agent } = makeAgent('t2-sub', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent' })
-    apply(ctx, cfg({ rootChain: [OFFICIAL_V4_FLASH] }))
+    apply(ctx, cfg({ rootChain: [OFFICIAL_FLASH] }))
 
     const config = await dispatchRequest(ctx, agent, virtualSeed)
     expect(config).toEqual(virtualSeed)
@@ -84,15 +84,15 @@ describe('select-is-primary routing (P3)', () => {
 
   it('treats a missing origin header as root (overrides)', async () => {
     const { agent } = makeAgent('t2-noheader', { provider: 'mock', model: 'gpt-4o' })
-    apply(ctx, cfg({ rootChain: [OFFICIAL_V4_FLASH] }))
+    apply(ctx, cfg({ rootChain: [OFFICIAL_FLASH] }))
 
     const config = await dispatchRequest(ctx, agent, virtualSeed)
-    expect(config).toEqual({ provider: 'deepseek-official', model: 'deepseek-v4-flash' })
+    expect(config).toEqual({ provider: 'deepseek-official', model: 'deepseek-flash' })
   })
 
   it('does not override when the plugin is disabled', async () => {
     const { agent } = makeAgent('t2-off', { provider: 'mock', model: 'gpt-4o' }, { origin: 'root' })
-    apply(ctx, cfg({ enabled: false, rootChain: [OFFICIAL_V4_FLASH] }))
+    apply(ctx, cfg({ enabled: false, rootChain: [OFFICIAL_FLASH] }))
 
     const config = await dispatchRequest(ctx, agent, virtualSeed)
     expect(config).toEqual(virtualSeed)
@@ -103,7 +103,7 @@ describe('select-is-primary routing (P3)', () => {
     apply(
       ctx,
       cfg({
-        rootChain: [OFFICIAL_V4_FLASH],
+        rootChain: [OFFICIAL_FLASH],
         timeSlots: [{ kind: 'custom', start: '00:00', end: '23:59', chain: ['anthropic/claude-sonnet-4'] }],
       }),
     )
@@ -120,7 +120,7 @@ describe('select-is-primary routing (P3)', () => {
     apply(
       ctx,
       cfg({
-        rootChain: [OFFICIAL_V4_FLASH],
+        rootChain: [OFFICIAL_FLASH],
         timeSlots: [{ kind: 'custom', start: '00:00', end: '23:59', chain: ['other/*', 'anthropic/claude-sonnet-4'] }],
       }),
     )
@@ -137,7 +137,7 @@ describe('select-is-primary routing (P3)', () => {
     apply(
       ctx,
       cfg({
-        rootChain: [OFFICIAL_V4_FLASH],
+        rootChain: [OFFICIAL_FLASH],
         timeSlots: [{ kind: 'custom', start: '00:00', end: '23:59', chain: ['other/*'] }],
       }),
     )
@@ -174,7 +174,7 @@ describe('select-is-primary routing (P3)', () => {
     apply(
       ctx,
       cfg({
-        rootChain: [OFFICIAL_V4_FLASH],
+        rootChain: [OFFICIAL_FLASH],
         timeSlots: [{ kind: 'custom', start: '00:00', end: '23:59', chain: ['anthropic/claude-sonnet-4', 'openai/gpt-4o'] }],
       }),
     )

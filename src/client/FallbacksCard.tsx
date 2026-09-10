@@ -90,7 +90,7 @@ import type { SnapshotSelectorHook } from '@deepseek-ai/dsh-client-ui-slots'
 import type { FallbacksConfig, FallbacksRole, FallbackStrategy, RevertPolicy } from '../config.ts'
 import { defaultFallbacksConfig, INHERIT_ROLE_ID, ROLE_ID_PATTERN } from '../config.ts'
 import { parseSelector } from '../selectors.ts'
-import { isOfficialAllDayId, OFFICIAL_ALL_DAY_IDS, resolveSlotState } from '../time-slots.ts'
+import { isOfficialAllDayId, OFFICIAL_ALL_DAY_IDS, OFFICIAL_PRO, resolveSlotState } from '../time-slots.ts'
 import {
   FallbacksSettingsController,
   classifyModel,
@@ -129,7 +129,10 @@ import css from './FallbacksCard.module.css'
 // imports, safe to bundle) — so the legal set is declared once and the card
 // derives its validation and the 默认模型 radio list from it. Display labels
 // live in `locales.ts` (keys parallel to OFFICIAL_ALL_DAY_IDS below).
-const ALL_DAY_LABEL_KEYS = ['allDay.flash', 'allDay.pro', 'allDay.v41Flash'] as const
+const ALL_DAY_LABEL_KEYS = ['allDay.flash', 'allDay.pro'] as const
+/** Optional caveat suffix per option (parallel to OFFICIAL_ALL_DAY_IDS):
+ * Pro is a settable selector whose model is not yet in the catalog. */
+const ALL_DAY_CAVEAT_KEYS = [undefined, 'allDay.proCaveat'] as const
 const SLOT_PRESET_IDS = ['liang-peak', 'liang-valley', 'glm-peak', 'glm-valley'] as const
 /** Custom-row day toggle order (index = weekday, 0=Sunday); display copy lives in the dictionaries. */
 const SLOT_WEEKDAYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'] as const
@@ -174,10 +177,9 @@ const HHMM_RE = /^([01]\d|2[0-3]):[0-5]\d$/
 
 /**
  * The 默认模型 value for a chain: the official id when the chain TAIL
- * is that model (V4 Flash / V4 Pro / V41 Flash XOR — leading 默认降级链
- * entries allowed); `''` for an empty chain or a chain whose last entry
- * is not official (the panel reads back unselected and save validation
- * blocks the value).
+ * is that model (Flash or Pro XOR — leading 默认降级链 entries allowed);
+ * `''` for an empty chain or a chain whose last entry is not official
+ * (the panel reads back unselected and save validation blocks the value).
  */
 function allDayModelOf(chain: readonly string[]): string {
   const tail = chain.length >= 1 ? chain[chain.length - 1] : undefined
@@ -186,8 +188,8 @@ function allDayModelOf(chain: readonly string[]): string {
 
 /**
  * The 默认降级链 editor row: the leading entries BEFORE the official tail
- * (V4 Flash / V4 Pro / V41 Flash), or the whole chain while the tail is
- * not official (the draft rides the accepted value until a 默认模型 pick).
+ * (Flash or Pro), or the whole chain while the tail is not official (the
+ * draft rides the accepted value until a 默认模型 pick).
  */
 function allDayChainRowOf(chain: readonly string[], catalog: CatalogLookup | undefined): RootChainRow {
   const tail = allDayModelOf(chain)
@@ -259,11 +261,11 @@ function scalarsOf(config: FallbacksConfig): FallbacksScalars {
  * (AC-7 re-scope, PM decision 2026-08-17 Option A).
  *
  * All-day: rootChain is composed from the 默认降级链 editor's leading
- * selectors plus the 默认模型 tail (exactly one official model — V4 Flash
- * / V4 Pro / V41 Flash XOR). While no tail is selected the ACCEPTED chain
- * rides through untouched. `timeSlots` is rebuilt from the slot rows
- * every render. `tz` is a card scalar: preset rows lock it to
- * Asia/Shanghai; custom rows follow the selected timezone.
+ * selectors plus the 默认模型 tail (exactly one official model — Flash or
+ * Pro XOR). While no tail is selected the ACCEPTED chain rides through
+ * untouched. `timeSlots` is rebuilt from the slot rows every render. `tz`
+ * is a card scalar: preset rows lock it to Asia/Shanghai; custom rows
+ * follow the selected timezone.
  */
 function assembleConfig(
   scalars: FallbacksScalars,
@@ -400,11 +402,10 @@ function validateDraft(
     }
   }
   // 默认模型 tail: required, not removable. The chain must END with
-  // exactly one official model (V4 Flash / V4 Pro / V41 Flash); leading
-  // 默认降级链 entries are the ordered walk before that last-resort
-  // fallback. An empty default or a legacy chain whose last entry is not
-  // official (rides the draft untouched while the panel is unselected)
-  // blocks the save.
+  // exactly one official model (Flash or Pro); leading 默认降级链 entries
+  // are the ordered walk before that last-resort fallback. An empty
+  // default or a legacy chain whose last entry is not official (rides the
+  // draft untouched while the panel is unselected) blocks the save.
   const allDayTail = draft.rootChain.length >= 1 ? draft.rootChain[draft.rootChain.length - 1] : undefined
   if (allDayTail === undefined || !isOfficialAllDayId(allDayTail)) {
     errors.main.push(t('validation.allDayRequired'))
@@ -1877,12 +1878,14 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                 </div>
               </div>
 
-              {/* 默认模型: official V4 Flash | V4 Pro | V41 Flash 三选一 —
-               * the LAST fallback of the all-day chain (UI order = walk
-               * order). Required: an empty or legacy tail reads back
+              {/* 默认模型: official Flash | Pro 二选一 — the LAST fallback
+               * of the all-day chain (UI order = walk order). Required: an
+               * empty or legacy tail (incl. the retired V4 ids) reads back
                * unselected plus the nonconforming notice; save validation
                * blocks. Radios derive from OFFICIAL_ALL_DAY_IDS (the shared
-               * legal set in src/time-slots.ts). */}
+               * legal set in src/time-slots.ts). Pro is a legal tail but
+               * not yet available in the catalog — its radio is always
+               * disabled (a hand-set Pro tail still reads back selected). */}
               <div className={css.field} role="group" aria-labelledby="fallbacks-default-model">
                 <span className={css.fieldLabel}>
                   <span id="fallbacks-default-model">{t('defaultModel.label')}</span>
@@ -1896,10 +1899,13 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                           type="radio"
                           name="fallbacks-all-day"
                           checked={allDayModel === id}
-                          disabled={!writable}
+                          disabled={!writable || id === OFFICIAL_PRO}
                           onChange={() => { setAllDayModel(id) }}
                         />
                         {t(ALL_DAY_LABEL_KEYS[index])}
+                        {ALL_DAY_CAVEAT_KEYS[index] !== undefined && (
+                          <span className={css.hint}>{t(ALL_DAY_CAVEAT_KEYS[index])}</span>
+                        )}
                       </label>
                     ))}
                     {allDayModel === '' && (

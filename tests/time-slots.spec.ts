@@ -2,12 +2,11 @@
  * Time-slot resolver unit tests (plan fallbacks-timeslots Task 1, pins
  * P4–P6): first-match ordering, custom overnight windows, frozen preset
  * windows (liang-peak = ONE row covering both clocks; glm-peak Mon–Fri;
- * valleys derive from their peaks), all-day-last, the official V4 Flash /
- * V4 Pro / V41 Flash all-day guard, preset-row immutability,
- * duplicate-preset rejection, warn-once malformed-row skipping, and the
- * never-throws contract. The resolver warns through `console.warn` (its
- * 3-argument contract has no logger parameter); every warn message is
- * asserted.
+ * valleys derive from their peaks), all-day-last, the official Flash / Pro
+ * all-day guard, preset-row immutability, duplicate-preset rejection,
+ * warn-once malformed-row skipping, and the never-throws contract. The
+ * resolver warns through `console.warn` (its 3-argument contract has no
+ * logger parameter); every warn message is asserted.
  */
 
 import { afterEach, describe, expect, it, vi, type MockInstance } from 'vitest'
@@ -18,9 +17,8 @@ import {
   type FallbacksConfig,
 } from '../src/config.ts'
 import {
-  OFFICIAL_V4_FLASH,
-  OFFICIAL_V4_PRO,
   OFFICIAL_FLASH,
+  OFFICIAL_PRO,
   isAllDayConforming,
   resolveEffectiveChain,
   resolveSlotState,
@@ -28,7 +26,7 @@ import {
   type SlotRowConfig,
 } from '../src/time-slots.ts'
 
-const ALL_DAY = OFFICIAL_V4_FLASH
+const ALL_DAY = OFFICIAL_FLASH
 
 /** Spy on the resolver's warn channel and collect messages. */
 function spyWarn(): MockInstance {
@@ -151,30 +149,34 @@ describe('resolveEffectiveChain — valley complements derive from their peak', 
 describe('resolveEffectiveChain — all-day last', () => {
   it('falls back to rootChain when no extra row matches', () => {
     const cfg = slotConfig({
-      rootChain: [OFFICIAL_V4_PRO],
+      rootChain: [OFFICIAL_PRO],
       timeSlots: [custom('06:00', '07:00', ['openai/gpt-4o'])],
     })
-    expect(resolveEffectiveChain(cfg, at('12:00'), 'Asia/Shanghai')).toEqual([OFFICIAL_V4_PRO])
+    expect(resolveEffectiveChain(cfg, at('12:00'), 'Asia/Shanghai')).toEqual([OFFICIAL_PRO])
   })
 })
 
-describe('isAllDayConforming — official V4 Flash / V4 Pro / V41 Flash tail', () => {
+describe('isAllDayConforming — official Flash / Pro tail', () => {
   it('accepts an official tail, with or without leading fallback entries', () => {
-    expect(isAllDayConforming([OFFICIAL_V4_FLASH])).toBe(true)
-    expect(isAllDayConforming([OFFICIAL_V4_PRO])).toBe(true)
     expect(isAllDayConforming([OFFICIAL_FLASH])).toBe(true)
-    expect(isAllDayConforming(['openai/gpt-4o', OFFICIAL_V4_FLASH])).toBe(true)
+    expect(isAllDayConforming([OFFICIAL_PRO])).toBe(true)
     expect(isAllDayConforming(['openai/gpt-4o', OFFICIAL_FLASH])).toBe(true)
-    expect(isAllDayConforming(['openai/gpt-4o', OFFICIAL_V4_FLASH, OFFICIAL_V4_PRO])).toBe(true)
+    expect(isAllDayConforming(['openai/gpt-4o', OFFICIAL_PRO])).toBe(true)
+    expect(isAllDayConforming(['openai/gpt-4o', OFFICIAL_FLASH, OFFICIAL_PRO])).toBe(true)
   })
 
-  it('rejects empty chains and chains whose last entry is not an official model', () => {
+  it('rejects empty chains, non-official tails, and the retired V4 ids', () => {
     expect(isAllDayConforming([])).toBe(false)
     expect(isAllDayConforming(['openai/gpt-4o'])).toBe(false)
     expect(isAllDayConforming(['openai/gpt-4o', 'anthropic/claude-3-5-sonnet'])).toBe(false)
+    expect(isAllDayConforming(['deepseek-official/deepseek-v4-flash'])).toBe(false)
+    expect(isAllDayConforming(['deepseek-official/deepseek-v4-pro'])).toBe(false)
     expect(isAllDayConforming(['deepseek-official/deepseek-v4-ultra'])).toBe(false)
-    expect(isAllDayConforming([OFFICIAL_V4_FLASH, 'openai/gpt-4o'])).toBe(false)
+    // Tail-position rule: an official id in a non-tail position with a
+    // non-official tail is still non-conforming (XOR is about the tail).
     expect(isAllDayConforming([OFFICIAL_FLASH, 'openai/gpt-4o'])).toBe(false)
+    expect(isAllDayConforming([OFFICIAL_PRO, 'openai/gpt-4o'])).toBe(false)
+    expect(isAllDayConforming(['deepseek-official/deepseek-v4-flash', 'openai/gpt-4o'])).toBe(false)
   })
 })
 
@@ -200,16 +202,16 @@ describe('preset rows — windows are fixed code constants (P4)', () => {
 
 describe('resolveEffectiveChain — liang-peak is ONE row covering both windows', () => {
   // The stored row carries NO windows — both clocks live in PRESETS.
-  const cfg = slotConfig({ timeSlots: [presetRow('liang-peak', [OFFICIAL_V4_PRO])] })
+  const cfg = slotConfig({ timeSlots: [presetRow('liang-peak', [OFFICIAL_PRO])] })
 
   it('matches 09:00–12:00', () => {
-    expect(resolveEffectiveChain(cfg, at('09:00'), 'Asia/Shanghai')).toEqual([OFFICIAL_V4_PRO])
-    expect(resolveEffectiveChain(cfg, at('11:59'), 'Asia/Shanghai')).toEqual([OFFICIAL_V4_PRO])
+    expect(resolveEffectiveChain(cfg, at('09:00'), 'Asia/Shanghai')).toEqual([OFFICIAL_PRO])
+    expect(resolveEffectiveChain(cfg, at('11:59'), 'Asia/Shanghai')).toEqual([OFFICIAL_PRO])
   })
 
   it('matches 14:00–18:00', () => {
-    expect(resolveEffectiveChain(cfg, at('14:00'), 'Asia/Shanghai')).toEqual([OFFICIAL_V4_PRO])
-    expect(resolveEffectiveChain(cfg, at('17:59'), 'Asia/Shanghai')).toEqual([OFFICIAL_V4_PRO])
+    expect(resolveEffectiveChain(cfg, at('14:00'), 'Asia/Shanghai')).toEqual([OFFICIAL_PRO])
+    expect(resolveEffectiveChain(cfg, at('17:59'), 'Asia/Shanghai')).toEqual([OFFICIAL_PRO])
   })
 
   it('does not match the gaps (12:00–13:59) or the exclusive ends', () => {
@@ -230,7 +232,7 @@ describe('duplicate preset rows (P4 guard)', () => {
   it('the first occurrence wins; a reached duplicate is skipped with one warn', () => {
     const warn = spyWarn()
     const first = presetRow('liang-peak', ['openai/gpt-4o'])
-    const second = presetRow('liang-peak', [OFFICIAL_V4_PRO])
+    const second = presetRow('liang-peak', [OFFICIAL_PRO])
     const cfg = slotConfig({ timeSlots: [first, second] })
     // At peak time the FIRST row wins outright — the duplicate is never
     // reached, so no resolver warn (the load-time validator still warns).
@@ -316,7 +318,7 @@ describe('warn-once contract (P5: malformed rows warn once and are skipped)', ()
 
 describe('resolveSlotState — winner + label for the status strip (P5)', () => {
   it('reports the all-day row when nothing matches', () => {
-    const cfg = slotConfig({ rootChain: [OFFICIAL_V4_PRO], timeSlots: [custom('06:00', '07:00', ['openai/gpt-4o'])] })
+    const cfg = slotConfig({ rootChain: [OFFICIAL_PRO], timeSlots: [custom('06:00', '07:00', ['openai/gpt-4o'])] })
     expect(resolveSlotState(cfg, at('12:00'), 'Asia/Shanghai')).toEqual({ winner: 'all-day', label: 'all-day' })
   })
 
@@ -338,7 +340,7 @@ describe('resolveSlotState — winner + label for the status strip (P5)', () => 
     expect(resolveSlotState(cfg, at('10:00'), 'Asia/Shanghai')).toEqual({ winner: 'all-day', label: 'all-day' })
   })
 
-  it('treats the V41 Flash tail as conforming: a matching slot row wins', () => {
+  it('treats the Flash tail as conforming: a matching slot row wins', () => {
     const row = custom('09:00', '12:00', ['openai/gpt-4o'])
     const cfg = slotConfig({ rootChain: [OFFICIAL_FLASH], timeSlots: [row] })
     expect(resolveSlotState(cfg, at('10:00'), 'Asia/Shanghai')).toEqual({ winner: row, label: 'custom 09:00-12:00' })
@@ -374,12 +376,12 @@ describe('config schema — timeSlots and tz (P5)', () => {
 
   it('composes row shapes; absent array fields become empty defaults', () => {
     const resolved = Config({
-      timeSlots: [{ kind: 'preset', preset: 'liang-peak', chain: [OFFICIAL_V4_FLASH] }],
+      timeSlots: [{ kind: 'preset', preset: 'liang-peak', chain: [OFFICIAL_FLASH] }],
     } as unknown as FallbacksConfig)
     const row = resolved.timeSlots[0]
     expect(row.kind).toBe('preset')
     expect(row.preset).toBe('liang-peak')
-    expect(row.chain).toEqual([OFFICIAL_V4_FLASH])
+    expect(row.chain).toEqual([OFFICIAL_FLASH])
     // schemastery fills absent array fields with [] — the resolver reads
     // []/absent days as "all days", so a composed preset row is NOT dirty.
     expect(row.days).toEqual([])
@@ -424,7 +426,7 @@ describe('validateFallbacksConfig — time-slot guards (P4/P6)', () => {
 
   it('does not warn for a conforming all-day chain or the empty default', () => {
     const { logger } = warnLogger()
-    validateFallbacksConfig({ ...defaultFallbacksConfig, rootChain: [OFFICIAL_V4_FLASH] }, logger)
+    validateFallbacksConfig({ ...defaultFallbacksConfig, rootChain: [OFFICIAL_FLASH] }, logger)
     validateFallbacksConfig(defaultFallbacksConfig, logger)
     expect(messagesOf({ warn: logger.warn })).toEqual([])
   })
@@ -435,8 +437,8 @@ describe('validateFallbacksConfig — time-slot guards (P4/P6)', () => {
       ...defaultFallbacksConfig,
       rootChain: [ALL_DAY],
       timeSlots: [
-        { kind: 'preset', preset: 'liang-peak', chain: [OFFICIAL_V4_FLASH] },
-        { kind: 'preset', preset: 'liang-peak', chain: [OFFICIAL_V4_PRO] },
+        { kind: 'preset', preset: 'liang-peak', chain: [OFFICIAL_FLASH] },
+        { kind: 'preset', preset: 'liang-peak', chain: [OFFICIAL_PRO] },
       ],
     }, logger)
     const messages = messagesOf({ warn: logger.warn })

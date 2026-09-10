@@ -50,7 +50,7 @@ import type { SeedsWireStatus } from '../src/seeds.ts'
 import { presetRoles } from '../src/presets.ts'
 import { apply } from '../src/client/index.ts'
 import { defaultFallbacksConfig } from '../src/config.ts'
-import { OFFICIAL_V4_FLASH, OFFICIAL_V4_PRO, OFFICIAL_FLASH } from '../src/time-slots.ts'
+import { OFFICIAL_FLASH, OFFICIAL_PRO } from '../src/time-slots.ts'
 import { en, zh } from '../src/client/locales.ts'
 import type { FallbacksSwitchEventData } from '../src/events.ts'
 
@@ -276,7 +276,7 @@ function withoutRoleAutoMatch(config: typeof defaultFallbacksConfig): typeof def
 const TWO_BLOCK_CONFIG: typeof defaultFallbacksConfig = {
   ...defaultFallbacksConfig,
   enabled: true,
-  rootChain: [OFFICIAL_V4_FLASH],
+  rootChain: [OFFICIAL_FLASH],
   roles: {
     list: [
       { id: 'reviewer', persona: 'Reviews code', chain: ['anthropic/claude-3-5-sonnet'], fallback: 'inherit-root' },
@@ -294,7 +294,7 @@ const VALID_CUSTOM_SLOT = {
   start: '09:00',
   end: '10:00',
   days: [] as number[],
-  chain: [OFFICIAL_V4_FLASH],
+  chain: [OFFICIAL_FLASH],
 }
 
 /**
@@ -302,8 +302,8 @@ const VALID_CUSTOM_SLOT = {
  * head (a multi-model chain from the pre-Task-3 era): the 默认模型 panel
  * reads back with no selection + the nonconforming notice, the chain
  * entries ride the 默认降级链 editor, and save validation blocks the value
- * until the user picks one of the three official models (V4 Flash / V4 Pro
- * / V41 Flash — plan fallbacks-timeslots Task 3, no migration wizard).
+ * until the user picks one of the two official models (Flash or Pro —
+ * plan fallbacks-timeslots Task 3, no migration wizard).
  */
 const LEGACY_ALL_DAY_CONFIG: typeof defaultFallbacksConfig = {
   ...TWO_BLOCK_CONFIG,
@@ -465,17 +465,12 @@ function flashRadio(): HTMLInputElement {
   return screen.getByLabelText(new RegExp(`^${esc(en['allDay.flash'])}$`)) as HTMLInputElement
 }
 
-/** The all-day chooser's Pro radio, by its full accessible label. */
+/** The all-day chooser's Pro radio, by its full accessible label (label + caveat suffix). */
 function proRadio(): HTMLInputElement {
-  return screen.getByLabelText(new RegExp(`^${esc(en['allDay.pro'])}$`)) as HTMLInputElement
+  return screen.getByLabelText(new RegExp(`^${esc(en['allDay.pro'])}${esc(en['allDay.proCaveat'])}$`)) as HTMLInputElement
 }
 
-/** The all-day chooser's V41 Flash radio, by its full accessible label. */
-function v41FlashRadio(): HTMLInputElement {
-  return screen.getByLabelText(new RegExp(`^${esc(en['allDay.v41Flash'])}$`)) as HTMLInputElement
-}
-
-/** Pick the official V4 Flash radio in the all-day chooser (Task 3). */
+/** Pick the official Flash radio in the all-day chooser (Task 3). */
 function pickAllDayFlash(): void {
   fireEvent.click(flashRadio())
 }
@@ -793,7 +788,7 @@ describe('FallbacksCard chrome (upstream PluginCard contract)', () => {
     // write failure itself, or the error would be invisible.
     // A conforming all-day head so the disabled-state save passes
     // validation and the failure comes from the gateway wire.
-    const { view, props, controller, scripted } = await mountCard({ config: { ...ENABLED_CONFIG, rootChain: [OFFICIAL_V4_FLASH] } })
+    const { view, props, controller, scripted } = await mountCard({ config: { ...ENABLED_CONFIG, rootChain: [OFFICIAL_FLASH] } })
     toggleCard()
     view.rerender(<FallbacksCard {...props} />)
     // Flip the switch off → the form hides, the disabled-state row appears.
@@ -1058,14 +1053,14 @@ describe('FallbacksCard chrome (upstream PluginCard contract)', () => {
 })
 
 describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-model T3)', () => {
-  it('renders the default-chain selector list + the separate default-model Flash | Pro | V41 Flash panel', async () => {
+  it('renders the default-chain selector list + the separate default-model Flash | Pro panel', async () => {
     const { view, props } = await mountCard({ config: TWO_BLOCK_CONFIG })
     toggleCard()
     view.rerender(<FallbacksCard {...props} />)
     // PR #62 feedback round: 默认降级链 is a configurable selector list
     // (add-selector affordance present, no radios inside); the official
-    // Flash | Pro | V41 Flash radios live in the separate 默认模型 panel.
-    // The chain-key text input of the old model is gone.
+    // Flash | Pro radios live in the separate 默认模型 panel. The
+    // chain-key text input of the old model is gone.
     expect(screen.getByText(en['rootChain.label'])).toBeTruthy()
     expect(screen.queryByLabelText('Key')).toBeNull()
     const chainGroup = screen.getByText(en['rootChain.label']).closest('[role="group"]') as HTMLElement
@@ -1073,19 +1068,19 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     // TWO_BLOCK_CONFIG's conforming head is consumed by the 默认模型 panel →
     // the chain editor starts with no trailing selectors.
     expect(within(chainGroup).queryByLabelText(en['roles.rule.provider'])).toBeNull()
-    // Exactly the three official radios in the default-model panel; the
+    // Exactly the two official radios in the default-model panel; the
     // accepted conforming head is pre-selected (Flash) and no
-    // nonconforming notice shows.
+    // nonconforming notice shows. Pro is a legal tail but not yet in the
+    // catalog — its radio is always disabled; Flash is the selectable one.
     expect(screen.getByText(en['defaultModel.label'])).toBeTruthy()
     const flash = flashRadio()
     const pro = proRadio()
-    const v41Flash = v41FlashRadio()
     expect(flash.type).toBe('radio')
     expect(pro.type).toBe('radio')
-    expect(v41Flash.type).toBe('radio')
     expect(flash.checked).toBe(true)
     expect(pro.checked).toBe(false)
-    expect(v41Flash.checked).toBe(false)
+    expect(flash.disabled).toBe(false)
+    expect(pro.disabled).toBe(true)
     const modelGroup = screen.getByText(en['defaultModel.label']).closest('[role="group"]') as HTMLElement
     expect(within(modelGroup).queryByText(en['allDay.nonconforming'])).toBeNull()
   })
@@ -1100,13 +1095,11 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     expect(within(chainGroup).getByLabelText(en['roles.rule.provider'])).toBeTruthy()
     const flash = flashRadio()
     const pro = proRadio()
-    const v41Flash = v41FlashRadio()
-    // The legacy head is not one of the three official ids → nothing is
+    // The legacy head is not one of the two official ids → nothing is
     // selected in the default-model panel (the draft rides the accepted
     // value until a pick) and the notice shows in THAT panel.
     expect(flash.checked).toBe(false)
     expect(pro.checked).toBe(false)
-    expect(v41Flash.checked).toBe(false)
     const modelGroup = screen.getByText(en['defaultModel.label']).closest('[role="group"]') as HTMLElement
     expect(within(modelGroup).getByText(en['allDay.nonconforming'])).toBeTruthy()
     // Picking Flash selects it; the nonconforming notice clears.
@@ -1116,21 +1109,35 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     expect(screen.queryByText(en['allDay.nonconforming'])).toBeNull()
   })
 
-  it('reads back a V41 Flash all-day tail as the selected default model (dsh 0.1.5-rc.1 default)', async () => {
-    const { view, props } = await mountCard({ config: { ...TWO_BLOCK_CONFIG, rootChain: [OFFICIAL_FLASH] } })
+  it('reads back a retired V4 tail as non-conforming: unselected panel + the notice', async () => {
+    const { view, props } = await mountCard({ config: { ...TWO_BLOCK_CONFIG, rootChain: ['deepseek-official/deepseek-v4-flash'] } })
     toggleCard()
     view.rerender(<FallbacksCard {...props} />)
-    // The V41 Flash tail is consumed by the 默认模型 panel → the chain
-    // editor starts with no trailing selectors and the V41 Flash radio is
-    // pre-selected; no nonconforming notice shows.
+    // The V4 id is no longer a legal tail → the 默认模型 panel reads back
+    // unselected and the nonconforming notice shows (save stays blocked).
+    const flash = flashRadio()
+    const pro = proRadio()
+    expect(flash.checked).toBe(false)
+    expect(pro.checked).toBe(false)
+    const modelGroup = screen.getByText(en['defaultModel.label']).closest('[role="group"]') as HTMLElement
+    expect(within(modelGroup).getByText(en['allDay.nonconforming'])).toBeTruthy()
+  })
+
+  it('reads back a Pro all-day tail as the selected (disabled) default model — legal but not yet in the catalog', async () => {
+    const { view, props } = await mountCard({ config: { ...TWO_BLOCK_CONFIG, rootChain: [OFFICIAL_PRO] } })
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    // The Pro tail is consumed by the 默认模型 panel → the chain editor
+    // starts with no trailing selectors and the Pro radio is pre-selected
+    // but disabled (the id is legal, it just cannot be newly chosen); no
+    // nonconforming notice shows.
     const chainGroup = screen.getByText(en['rootChain.label']).closest('[role="group"]') as HTMLElement
     expect(within(chainGroup).queryByLabelText(en['roles.rule.provider'])).toBeNull()
     const flash = flashRadio()
     const pro = proRadio()
-    const v41Flash = v41FlashRadio()
     expect(flash.checked).toBe(false)
-    expect(pro.checked).toBe(false)
-    expect(v41Flash.checked).toBe(true)
+    expect(pro.checked).toBe(true)
+    expect(pro.disabled).toBe(true)
     const modelGroup = screen.getByText(en['defaultModel.label']).closest('[role="group"]') as HTMLElement
     expect(within(modelGroup).queryByText(en['allDay.nonconforming'])).toBeNull()
   })
@@ -1214,8 +1221,8 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     // a legacy `provider/*` rootChain reads back INTO the 默认降级链 editor
     // (wildcard entry + conversion hint) while the 默认模型 panel shows no
     // selection + the notice. The save stays blocked
-    // (validation.allDayRequired) until the user picks one of the three
-    // official models (V4 Flash / V4 Pro / V41 Flash); the pick composes
+    // (validation.allDayRequired) until the user picks one of the two
+    // official models (Flash or Pro); the pick composes
     // rootChain = [...chain entries, default model].
     const config: typeof defaultFallbacksConfig = {
       ...defaultFallbacksConfig,
@@ -1254,7 +1261,7 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     fireEvent.click(mainSave())
     await waitFor(() => {
       expect(scripted.call).toHaveBeenCalledWith('/api', 'fallbacks/set', expect.objectContaining({
-        args: { patch: expect.objectContaining({ rootChain: ['openai/*', OFFICIAL_V4_FLASH] }) },
+        args: { patch: expect.objectContaining({ rootChain: ['openai/*', OFFICIAL_FLASH] }) },
       }))
     })
   })
@@ -1379,7 +1386,7 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     const config: typeof defaultFallbacksConfig = {
       ...defaultFallbacksConfig,
       enabled: true,
-      rootChain: [OFFICIAL_V4_FLASH],
+      rootChain: [OFFICIAL_FLASH],
       roles: {
         list: [
           { id: 'reviewer', persona: 'Reviews code', chain: ['anthropic/claude-3-5-sonnet'], fallback: 'inherit-root' },
@@ -1824,7 +1831,7 @@ describe('FallbacksCard time-slot rows (plan fallbacks-timeslots Task 3)', () =>
   // A conforming enabled config with no extra rows: the card starts clean
   // and every row below is a user action. No `timeSlots.enabled` master
   // switch — adding a row IS the opt-in (spec Settings UX notes).
-  const SLOT_CONFIG: typeof defaultFallbacksConfig = { ...ENABLED_CONFIG, rootChain: [OFFICIAL_V4_FLASH] }
+  const SLOT_CONFIG: typeof defaultFallbacksConfig = { ...ENABLED_CONFIG, rootChain: [OFFICIAL_FLASH] }
 
   /** The time-slots group element (the extra-row list ABOVE the all-day row). */
   function slotsGroup(): HTMLElement {
@@ -2002,7 +2009,7 @@ describe('FallbacksCard time-slot rows (plan fallbacks-timeslots Task 3)', () =>
     const config: typeof defaultFallbacksConfig = {
       ...SLOT_CONFIG,
       timeSlots: [
-        { kind: 'preset', preset: 'glm-valley', days: [], chain: [OFFICIAL_V4_FLASH] },
+        { kind: 'preset', preset: 'glm-valley', days: [], chain: [OFFICIAL_FLASH] },
         { kind: 'custom', start: '22:00', end: '02:00', days: [5], chain: ['openai/gpt-4o'] },
       ],
     }
@@ -2857,8 +2864,8 @@ describe('FallbacksCard 主代理 layout (PR #62 feedback round)', () => {
   it('hides the timezone picker on preset-only configs; mixed configs lock it to Asia/Shanghai', async () => {
     const presetOnly: typeof defaultFallbacksConfig = {
       ...ENABLED_CONFIG,
-      rootChain: [OFFICIAL_V4_FLASH],
-      timeSlots: [{ kind: 'preset', preset: 'liang-peak', days: [], chain: [OFFICIAL_V4_FLASH] }],
+      rootChain: [OFFICIAL_FLASH],
+      timeSlots: [{ kind: 'preset', preset: 'liang-peak', days: [], chain: [OFFICIAL_FLASH] }],
     }
     const first = await mountCard({ config: presetOnly })
     toggleCard()
@@ -2870,8 +2877,8 @@ describe('FallbacksCard 主代理 layout (PR #62 feedback round)', () => {
     const mixed: typeof defaultFallbacksConfig = {
       ...presetOnly,
       timeSlots: [
-        { kind: 'preset', preset: 'liang-peak', days: [], chain: [OFFICIAL_V4_FLASH] },
-        { kind: 'custom', start: '22:00', end: '02:00', days: [], chain: [OFFICIAL_V4_FLASH] },
+        { kind: 'preset', preset: 'liang-peak', days: [], chain: [OFFICIAL_FLASH] },
+        { kind: 'custom', start: '22:00', end: '02:00', days: [], chain: [OFFICIAL_FLASH] },
       ],
     }
     const second = await mountCard({ config: mixed })
@@ -2885,7 +2892,7 @@ describe('FallbacksCard 主代理 layout (PR #62 feedback round)', () => {
 
   it('shows the host timezone as a label on custom slots and persists it on save', async () => {
     const { view, props, scripted } = await mountCard({
-      config: { ...ENABLED_CONFIG, rootChain: [OFFICIAL_V4_FLASH], timeSlots: [VALID_CUSTOM_SLOT] },
+      config: { ...ENABLED_CONFIG, rootChain: [OFFICIAL_FLASH], timeSlots: [VALID_CUSTOM_SLOT] },
     })
     toggleCard()
     view.rerender(<FallbacksCard {...props} />)

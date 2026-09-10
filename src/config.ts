@@ -247,13 +247,13 @@ export function validateFallbacksConfig(config: FallbacksConfig, logger: Fallbac
     }
   }
   // P6: `rootChain` is the all-day chain — its LAST entry (默认模型) must
-  // be exactly one official model (V4 Flash / V4 Pro / V41 Flash XOR;
-  // leading 默认降级链 entries allowed). A non-empty chain whose tail is
-  // not official earns ONE startup warn; slot rows stay inert. The empty
-  // default stays quiet.
+  // be exactly one official model (Flash / Pro XOR; leading 默认降级链
+  // entries allowed). A non-empty chain whose tail is not official (incl.
+  // the retired V4 ids) earns ONE startup warn; slot rows stay inert. The
+  // empty default stays quiet.
   if (config.rootChain.length > 0 && !isAllDayConforming(config.rootChain)) {
     logger.warn(
-      'llm-fallbacks: rootChain must end with exactly one official model (deepseek-official/deepseek-v4-flash, deepseek-official/deepseek-v4-pro, or deepseek-official/deepseek-flash) — time-slot rows and the virtual picker row stay inert until the all-day chain tail conforms',
+      'llm-fallbacks: rootChain must end with exactly one official model (deepseek-official/deepseek-flash or deepseek-official/deepseek-pro) — time-slot rows and the virtual picker row stay inert until the all-day chain tail conforms',
     )
   }
   for (const entry of config.rootChain) {

@@ -24,7 +24,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { apply, stateStore } from '../src/index.ts'
-import { OFFICIAL_V4_FLASH, type SlotRowConfig } from '../src/time-slots.ts'
+import { OFFICIAL_FLASH, type SlotRowConfig } from '../src/time-slots.ts'
 import { MemorySettings } from './support/memory-settings.ts'
 import { cfg, dispatchRequest, dispatchRequestError, makeAgent, switchEvents } from './support/harness.ts'
 
@@ -75,7 +75,7 @@ describe('root-origin failure walk seeds from the slot-effective chain (P7)', ()
   it('walks the winning slot row chain, not the all-day chain (fallback-only mode)', async () => {
     const logs = captureLogs()
     const { agent } = makeAgent('ts-root-walk', { provider: 'mock', model: 'gpt-4o' }, { origin: 'root' })
-    apply(ctx, cfg({ rootChain: [OFFICIAL_V4_FLASH], timeSlots: [allDaySlotRow] }))
+    apply(ctx, cfg({ rootChain: [OFFICIAL_FLASH], timeSlots: [allDaySlotRow] }))
     vi.useFakeTimers()
     // 2026-08-18T04:00:00Z = 12:00 Asia/Shanghai — inside the slot window.
     vi.setSystemTime(new Date('2026-08-18T04:00:00Z'))
@@ -95,13 +95,13 @@ describe('root-origin failure walk seeds from the slot-effective chain (P7)', ()
 
   it('keeps the raw rootChain walk for subagent-origin agents', async () => {
     const { agent } = makeAgent('ts-sub-walk', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent' })
-    apply(ctx, cfg({ rootChain: [OFFICIAL_V4_FLASH], timeSlots: [allDaySlotRow] }))
+    apply(ctx, cfg({ rootChain: [OFFICIAL_FLASH], timeSlots: [allDaySlotRow] }))
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-08-18T04:00:00Z'))
 
     expect(await dispatchRequestError(ctx, agent)).toEqual({ kind: 'retry' })
     expect(await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' }))
-      .toEqual({ provider: 'deepseek-official', model: 'deepseek-v4-flash' })
+      .toEqual({ provider: 'deepseek-official', model: 'deepseek-flash' })
   })
 
   it('existence-filters a wildcard that only the winning slot row reaches (probe walks the effective tail)', async () => {
@@ -116,7 +116,7 @@ describe('root-origin failure walk seeds from the slot-effective chain (P7)', ()
     })
     const { agent } = makeAgent('ts-wild', { provider: 'mock', model: 'gpt-4o' }, { origin: 'root' })
     apply(ctx, cfg({
-      rootChain: [OFFICIAL_V4_FLASH],
+      rootChain: [OFFICIAL_FLASH],
       timeSlots: [{ kind: 'custom', start: '00:00', end: '23:59', chain: ['other/*', 'openai/gpt-4o'] }],
     }))
     vi.useFakeTimers()
@@ -143,7 +143,7 @@ describe('分时切换 detection — per-root-agent last-winner marker (P7)', ()
   it('logs a time-slot switch when the winner changes vs the previous root request', async () => {
     const logs = captureLogs()
     const { agent } = makeAgent('ts-rotate', { provider: 'mock', model: 'gpt-4o' }, { origin: 'root' })
-    apply(ctx, cfg({ rootChain: [OFFICIAL_V4_FLASH], timeSlots: [morningSlotRow] }))
+    apply(ctx, cfg({ rootChain: [OFFICIAL_FLASH], timeSlots: [morningSlotRow] }))
     vi.useFakeTimers()
 
     // 08:59 Asia/Shanghai (2026-08-17T00:59:00Z) → all-day wins; baseline.
@@ -173,7 +173,7 @@ describe('分时切换 detection — per-root-agent last-winner marker (P7)', ()
   it('does not log when the winner is unchanged across requests', async () => {
     const logs = captureLogs()
     const { agent } = makeAgent('ts-stable', { provider: 'mock', model: 'gpt-4o' }, { origin: 'root' })
-    apply(ctx, cfg({ rootChain: [OFFICIAL_V4_FLASH], timeSlots: [morningSlotRow] }))
+    apply(ctx, cfg({ rootChain: [OFFICIAL_FLASH], timeSlots: [morningSlotRow] }))
     vi.useFakeTimers()
 
     vi.setSystemTime(new Date('2026-08-17T01:01:00Z'))
@@ -186,7 +186,7 @@ describe('分时切换 detection — per-root-agent last-winner marker (P7)', ()
   it('rotation is exempt: no cooldown/switch-count bookkeeping and the next failure walks the new slot', async () => {
     const logs = captureLogs()
     const { agent } = makeAgent('ts-exempt', { provider: 'mock', model: 'gpt-4o' }, { origin: 'root' })
-    apply(ctx, cfg({ rootChain: [OFFICIAL_V4_FLASH], timeSlots: [morningSlotRow] }))
+    apply(ctx, cfg({ rootChain: [OFFICIAL_FLASH], timeSlots: [morningSlotRow] }))
     vi.useFakeTimers()
 
     // Baseline at all-day, then rotate into the morning slot.
@@ -208,7 +208,7 @@ describe('分时切换 detection — per-root-agent last-winner marker (P7)', ()
   it('never logs for subagent-origin requests', async () => {
     const logs = captureLogs()
     const { agent } = makeAgent('ts-sub', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent' })
-    apply(ctx, cfg({ rootChain: [OFFICIAL_V4_FLASH], timeSlots: [morningSlotRow] }))
+    apply(ctx, cfg({ rootChain: [OFFICIAL_FLASH], timeSlots: [morningSlotRow] }))
     vi.useFakeTimers()
 
     vi.setSystemTime(new Date('2026-08-17T00:59:00Z'))
@@ -221,7 +221,7 @@ describe('分时切换 detection — per-root-agent last-winner marker (P7)', ()
   it('never logs when the plugin is disabled (slots inert)', async () => {
     const logs = captureLogs()
     const { agent } = makeAgent('ts-off', { provider: 'mock', model: 'gpt-4o' }, { origin: 'root' })
-    apply(ctx, cfg({ enabled: false, rootChain: [OFFICIAL_V4_FLASH], timeSlots: [morningSlotRow] }))
+    apply(ctx, cfg({ enabled: false, rootChain: [OFFICIAL_FLASH], timeSlots: [morningSlotRow] }))
     vi.useFakeTimers()
 
     vi.setSystemTime(new Date('2026-08-17T00:59:00Z'))
@@ -256,7 +256,7 @@ describe('分时切换 detection — per-root-agent last-winner marker (P7)', ()
     const logs = captureLogs()
     const { agent: first } = makeAgent('ts-a', { provider: 'mock', model: 'gpt-4o' }, { origin: 'root' })
     const { agent: second } = makeAgent('ts-b', { provider: 'mock', model: 'gpt-4o' }, { origin: 'root' })
-    apply(ctx, cfg({ rootChain: [OFFICIAL_V4_FLASH], timeSlots: [morningSlotRow] }))
+    apply(ctx, cfg({ rootChain: [OFFICIAL_FLASH], timeSlots: [morningSlotRow] }))
     vi.useFakeTimers()
 
     vi.setSystemTime(new Date('2026-08-17T00:59:00Z'))
@@ -273,7 +273,7 @@ describe('分时切换 detection — per-root-agent last-winner marker (P7)', ()
   it('clears the marker on agent/disposed (a re-created agent re-baselines)', async () => {
     const logs = captureLogs()
     const { agent } = makeAgent('ts-recreate', { provider: 'mock', model: 'gpt-4o' }, { origin: 'root' })
-    apply(ctx, cfg({ rootChain: [OFFICIAL_V4_FLASH], timeSlots: [morningSlotRow] }))
+    apply(ctx, cfg({ rootChain: [OFFICIAL_FLASH], timeSlots: [morningSlotRow] }))
     vi.useFakeTimers()
 
     vi.setSystemTime(new Date('2026-08-17T00:59:00Z'))

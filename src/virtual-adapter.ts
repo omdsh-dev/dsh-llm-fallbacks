@@ -110,7 +110,7 @@ export function firstDispatchableExactHead(chain: readonly string[]): EffectiveH
  * malformed selector).
  *
  * Conformance gate (PR #62 feedback): the all-day `rootChain` must be
- * conforming (exactly one official model — V4 Flash / V4 Pro / V41 Flash)
+ * conforming (exactly one official model — Flash or Pro)
  * for a successful delegate —
  * a legacy multi-model (or empty) all-day chain earns no primary
  * semantics even though the picker row is visible. `resolveModel` then

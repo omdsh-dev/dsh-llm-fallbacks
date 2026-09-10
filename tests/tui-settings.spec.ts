@@ -151,7 +151,7 @@ function fieldOf(section: TuiSettingsSection, key: string): TuiSettingsField {
 
 /** JSON-field sample values that pass `validateConfigPatch` (gateway parity). */
 const SAMPLES: Record<string, unknown> = {
-  rootChain: ['deepseek/deepseek-chat', 'deepseek-official/deepseek-v4-flash'],
+  rootChain: ['deepseek/deepseek-chat', 'deepseek-official/deepseek-flash'],
   timeSlots: [
     { kind: 'preset', preset: 'liang-peak', chain: ['deepseek/deepseek-chat'] },
     { kind: 'custom', start: '09:00', end: '12:00', days: [1, 2, 3], chain: ['deepseek/deepseek-chat'] },
@@ -358,12 +358,12 @@ describe('JSON fields — format/parse round-trips and gateway-parity rejection 
     // below exceeds the cap; the conformance-independent rejection happens
     // before any shape validation.
     const field = fieldOf(section, 'rootChain')
-    const oversized = `[${JSON.stringify('x'.repeat(JSON_FIELD_MAX_DRAFT_BYTES + 1))}, "deepseek-official/deepseek-v4-flash"]`
+    const oversized = `[${JSON.stringify('x'.repeat(JSON_FIELD_MAX_DRAFT_BYTES + 1))}, "deepseek-official/deepseek-flash"]`
     expect(oversized.length).toBeGreaterThan(JSON_FIELD_MAX_DRAFT_BYTES)
     expect(field.parse!(oversized)).toBeUndefined()
     // A draft right AT the cap boundary still parses (cap is exclusive).
-    const atCap = `[${JSON.stringify('x'.repeat(JSON_FIELD_MAX_DRAFT_BYTES - 64))}, "deepseek-official/deepseek-v4-flash"]`
-    expect(field.parse!(atCap)).toEqual({ kind: 'set', value: ['x'.repeat(JSON_FIELD_MAX_DRAFT_BYTES - 64), 'deepseek-official/deepseek-v4-flash'] })
+    const atCap = `[${JSON.stringify('x'.repeat(JSON_FIELD_MAX_DRAFT_BYTES - 64))}, "deepseek-official/deepseek-flash"]`
+    expect(field.parse!(atCap)).toEqual({ kind: 'set', value: ['x'.repeat(JSON_FIELD_MAX_DRAFT_BYTES - 64), 'deepseek-official/deepseek-flash'] })
   })
 
   it.each(JSON_FIELD_KEYS)('%s: invalid JSON → undefined (save blocked)', (key) => {
