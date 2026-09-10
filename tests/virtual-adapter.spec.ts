@@ -724,13 +724,18 @@ describe('delegated history provenance (R-004)', () => {
     // must equal the message source, else it throws `INVALID_REPLAY_STATE`
     // instead of replaying the thinking blocks).
     //
-    // Not covered (pre-existing): a message recorded on a REAL route loses its
-    // envelope one gate earlier — on the OUTER pass the target adapter is this
-    // virtual adapter, which does not own that historical provider, so
-    // `forAdapter` strips it before `stream()` ever receives the history. No
-    // plugin code can recover it on that path (the durable envelope is simply
-    // not in the delegated options). Same cross-route boundary as R-004, on the
-    // other side of the delegate — documented here, not fixed here.
+    // Not covered (introduced by the change that removed the root rewrite — only
+    // the cross-adapter-instance rotation subset predates it): a message
+    // recorded on a REAL route loses its envelope one gate earlier — on the
+    // OUTER pass the target adapter is this virtual adapter, which does not own
+    // that historical provider, so `forAdapter` strips it before `stream()` ever
+    // receives the history. Before that change the root request carried the head
+    // pair, so the outer pass aimed at the head adapter and kept this history;
+    // it now always aims at the virtual adapter, so every real-route envelope in
+    // a virtual-route session is dropped. No plugin code can recover it on that
+    // path (the durable envelope is simply not in the delegated options). Same
+    // cross-route boundary as R-004, on the other side of the delegate —
+    // documented in docs/configuration.md under the accepted gaps, not fixed here.
     const [realRoute, virtualRoute] = await delegatedHistory([
       assistantOn(HEAD_PROVIDER, HEAD_MODEL, HEAD_ENVELOPE),
       virtualRouteHistory(HEAD_ENVELOPE),
