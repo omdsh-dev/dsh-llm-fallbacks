@@ -57,6 +57,13 @@
   A row stays seeded while any live declaration covers it; only when none
   remains does it read `user`. Its persisted row and operator chain remain
   untouched (R2).
+- **Slice lifetime/growth**: slices are dropped only by an empty declare under
+  the same producer label or when the fiber/process ends; there is no other
+  pruning. For the remaining fiber/process lifetime, a producer that stops
+  declaring keeps its rows seeded and keeps winning readback/revert unless
+  superseded by the documented precedence. Producers should use a stable
+  `{ set }` label: varying labels grow the registry and the per-row
+  resolution scan.
 - **Unnamed producers share one `external` slice**: the API carries no caller
   identity. Declare with `{ set: '<name>' }` to keep an independent slice.
 - **Resolution precedence**: `bundled` wins for any id the plugin's own preset
@@ -88,10 +95,15 @@
 - The wire addition is additive; older clients ignore unknown fields. A
   missing or unknown `source` on the wire degrades gracefully (the card
   renders no badge), never a crash.
-- Provenance is metadata only: no change to materialization, attach,
-  conflict (R2 / `persona-source`), or revert semantics. Materialization
-  compares against the declaring producer's own previous defaults; revert
-  restores the currently declared default resolved by the same precedence.
+- Provenance is metadata only. At-default tracking/materialization drives row
+  writes from the id's **resolved effective default** (`prior` = the resolved
+  default before the declare; `incoming` = the resolved default after the
+  candidate commit), with an existing row tracking only when its persona
+  equals `prior` and `incoming` differs.
+  A producer that does not win the id cannot advance its persisted persona;
+  a same-persona attach is quiet, and omission from a batch leaves the row
+  untouched (R2). Revert restores the currently declared default resolved by
+  the same precedence.
   Declare keeps compute → write → commit and its zero-delta check: a failed
   settings write does not commit the new slice, and a provenance-only change
   performs zero settings writes. No provenance is persisted.

@@ -174,7 +174,7 @@ Two stores, strictly separated (spec §9.2):
 
 `seeded`, `personaOverridden`, and `source` are **derived at read time**, never stored — because nothing override-shaped or provenance-shaped is persisted, a config round-trip cannot orphan an override (AC-3), and provenance can never churn a settings write.
 
-Declare keeps its compute → write → commit order and zero-delta check: a failed settings write does not commit the new slice, and a provenance-only change performs zero settings writes. Materialization, attach, conflict, R2, and revert semantics are unchanged; materialization compares against the declaring producer's own previous defaults, and revert uses the same precedence as readback.
+Declare keeps its compute → write → commit order and zero-delta check: a failed settings write does not commit the new slice, and a provenance-only change performs zero settings writes. Revert uses the same precedence as readback. At-default tracking/materialization drives row writes from the id's **resolved effective default** (`prior` = the resolved default before the declare; `incoming` = the resolved default after the candidate commit), with an existing row tracking only when its persona equals `prior` and `incoming` differs. A producer that does not win the id cannot advance its persisted persona; a same-persona attach is quiet, and omission from a batch leaves the row untouched (R2).
 
 - An operator persona edit is an **override** (the row persona differs from the seed default); the card shows the effective persona (read-only on seeded rows).
 - Revert always restores the **currently declared** seed default resolved through the producer precedence below — when the winning producer re-declares a new persona for the same id, revert goes to that new default.
@@ -182,6 +182,7 @@ Declare keeps its compute → write → commit order and zero-delta check: a fai
 - When a producer removes a declaration, the role row and the operator's chain remain; another producer's live declaration keeps the row seeded. Only when no live declaration covers it does the row drop out of the live seed status, render as an ordinary editable row, and read source `user` (R2).
 - Seeds never write `chain` / `fallback`: an existing chain is preserved byte-for-byte, and a new seeded role keeps an empty chain for the operator to fill (R4).
 - **Honest limitation**: the registry dies with the fiber/process. Until a producer re-declares a row, it is an ordinary config row (source `user`); after re-declare, "was at default" is indistinguishable from "operator-edited", so the conservative row-untouched path applies and a differing persona is flagged `'persona-source'`. Revert always restores the current declared default; no data is ever lost or silently overwritten.
+- **Slice lifetime/growth**: slices are dropped only by an empty declare under the same producer label or when the fiber/process ends; there is no other pruning. For the remaining fiber/process lifetime, a producer that stops declaring keeps its rows seeded and keeps winning readback/revert unless superseded by the documented precedence. Producers should use a stable `{ set }` label: varying labels grow the registry and the per-row resolution scan.
 
 #### Per-row source (provenance contract)
 
