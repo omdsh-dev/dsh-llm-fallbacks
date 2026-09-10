@@ -1980,7 +1980,7 @@ describe('publication revision pin (C-2)', () => {
       )
   }
 
-  it('refuses to publish a revision it did not decode, and writes nothing', async () => {
+  it('refuses to publish a revision it did not decode, and leaves the --backup copy nowhere', async () => {
     const root = tempDir('rsl-stale-revision-')
     const log = writeGeneration(root, 'example-ns', 'session-concurrent', 'session.jsonl.zstd', V0_HEADER, [
       { ...PLAIN_ROW, seq: 0 },
@@ -1990,17 +1990,19 @@ describe('publication revision pin (C-2)', () => {
     const sink = captureIO()
 
     const code = await execute(
-      optionsFor({ root, catalogPath, apply: true, json: true }),
+      optionsFor({ root, catalogPath, apply: true, backup: true, json: true }),
       sink.io,
       bareEnv(),
     )
     const document = JSON.parse(sink.out()) as RunResult
 
     // The append happened while the run was reading: the successor must not be
-    // built from the stale revision, and nothing may be staged for it.
+    // built from the stale revision, nothing may be staged for it, and the .bak this
+    // run made must not outlive the failed publication (QA's second W-1 path).
     expect(code).toBe(1)
     expect(document.logs[0]).toMatchObject({ status: 'unrepairable', failed: true, published: null })
     expect(document.logs[0]?.detail).toContain('the source generation changed since it was read')
+    expect(document.logs[0]?.detail).toContain('the .bak copy this run created was removed again')
     expect(listing(log.dir)).toEqual(['session.jsonl.zstd'])
   })
 
@@ -2149,6 +2151,87 @@ describe('ok-truncated cross-check axis (seat 2 N-3)', () => {
     expect(document.logs[0]?.strictRefusal).toContain('refused by strict recovery at seq 2')
     expect(document.summary.okTruncated).toBe(1)
     expect(document.logs[0]?.detail).toContain('opens with the rows after that refusal silently dropped')
+  })
+})
+
+describe('--backup lifecycle on a failed publication (QA W-1)', () => {
+  /** A repairable legacy log plus a successor holding DIFFERENT bytes. */
+  function writeConflictingSuccessorTree(): { root: string; dir: string; path: string; successor: string } {
+    const root = tempDir('rsl-backup-conflict-')
+    const log = writeGeneration(root, 'example-ns', 'session-conflict', 'session.jsonl.zstd', V0_HEADER, [
+      { ...FALLBACKS_SWITCH, seq: 0 },
+    ])
+    const successor = join(log.dir, 'session.v3.jsonl.zstd')
+    writeFileSync(successor, 'a successor from an earlier, different repair\n')
+    return { root, ...log, successor }
+  }
+
+  it('removes the .bak it created when the publication is refused, so the store is as it was', async () => {
+    const { root, dir, path, successor } = writeConflictingSuccessorTree()
+    const catalogPath = writeFakeCatalog()
+    const original = sha256(path)
+    const before = sha256(successor)
+    const sink = captureIO()
+
+    const code = await execute(
+      optionsFor({ root, catalogPath, apply: true, backup: true, dropLegacyEvents: true }),
+      sink.io,
+      bareEnv(),
+    )
+
+    // The publication was refused (conflicting successor) — and the detail's "nothing
+    // was published" is true again because the copy THIS run made is gone.
+    expect(code).toBe(1)
+    expect(sink.out()).toContain('nothing was published')
+    expect(sink.out()).toContain('the .bak copy this run created was removed again')
+    expect(listing(dir)).toEqual(['session.jsonl.zstd', 'session.v3.jsonl.zstd'])
+    expect(sha256(path)).toBe(original)
+    expect(sha256(successor)).toBe(before)
+  })
+
+  it('keeps a pre-existing .bak it did not create', async () => {
+    const { root, dir, path } = writeConflictingSuccessorTree()
+    const catalogPath = writeFakeCatalog()
+    // A byte-identical copy that was already there before this run: not ours to delete.
+    writeFileSync(`${path}.bak`, readFileSync(path))
+    const existing = sha256(`${path}.bak`)
+
+    const code = await execute(
+      optionsFor({ root, catalogPath, apply: true, backup: true, dropLegacyEvents: true }),
+      captureIO().io,
+      bareEnv(),
+    )
+
+    expect(code).toBe(1)
+    expect(listing(dir)).toEqual(['session.jsonl.zstd', 'session.jsonl.zstd.bak', 'session.v3.jsonl.zstd'])
+    expect(sha256(`${path}.bak`)).toBe(existing)
+  })
+
+  it('names the file and the way out when a stale .bak with different bytes blocks the repair', async () => {
+    const { root, dir, path } = writeConflictingSuccessorTree()
+    const catalogPath = writeFakeCatalog()
+    // Residue of an earlier run whose original has since changed (a concurrent
+    // writer, a resumed session): the copy no longer matches, and the refusal must
+    // say what to do instead of leaving the user with a bare "different bytes".
+    writeFileSync(`${path}.bak`, 'an older revision\n')
+    const digest = sha256(path)
+    const sink = captureIO()
+
+    const code = await execute(
+      optionsFor({ root, catalogPath, apply: true, backup: true, dropLegacyEvents: true }),
+      sink.io,
+      bareEnv(),
+    )
+
+    expect(code).toBe(1)
+    expect(sink.out()).toContain(`a backup already exists at ${path}.bak`)
+    expect(sink.out()).toContain('holds DIFFERENT bytes than the current original')
+    expect(sink.out()).toContain('Inspect it and delete it (or move it aside) to unblock the repair')
+    expect(sink.out()).toContain('every --apply --backup run for this session fails here and publishes nothing')
+    // Fail closed: the original is untouched, the stale backup is left for the user
+    // to inspect, and nothing new was written.
+    expect(sha256(path)).toBe(digest)
+    expect(listing(dir)).toEqual(['session.jsonl.zstd', 'session.jsonl.zstd.bak', 'session.v3.jsonl.zstd'])
   })
 })
 

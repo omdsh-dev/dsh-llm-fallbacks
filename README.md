@@ -143,7 +143,7 @@ pnpm repair:session-logs -- --apply                  # publish a repaired succes
 | `--apply` | run the rules' proofs and publish a current-generation successor beside each repaired original (requires a resolved released catalog) |
 | `--class NAME` | restrict what `--apply` repairs to one refusal class; the listing, the class table and the exit code still cover every log, and the repairable verdict is always computed over the **full** policy, so it can never hide a refusal or promise a repair this invocation cannot perform |
 | `--catalog PATH` | explicit released catalog path (package directory, a directory holding it, or its module entry file). The resolved module is **executed**, not parsed — the same privilege as running this tool — and must declare a current format version ≥ 3; a below-version catalog, or a file candidate owned by a different package, is refused (exit 2) rather than trusted to verify its own output |
-| `--backup` | copy the original generation to `<name>.bak` before publishing |
+| `--backup` | copy the original generation to `<name>.bak` before publishing; a run that publishes nothing removes the copy it created again (a pre-existing one is never touched, and one holding different bytes blocks the repair until you inspect and delete it) |
 | `--drop-legacy-events` | opt-in **lossy** recovery for legacy `fallbacks/switch` rows (see below) |
 | `--json` | machine-readable report instead of the text report |
 | `--quiet` | suppress the per-log lines and the by-class table (warnings and errors are never suppressed) |

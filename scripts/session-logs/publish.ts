@@ -115,10 +115,14 @@ export class PublishedFromStaleSourceError extends Error {
  * The frame scanner already reads the declared content size, so a frame whose
  * declaration exceeds this ceiling is refused WITHOUT decompressing it, and the
  * decoder is capped at the declared size (or at this ceiling when the frame
- * declares none) so a lying frame cannot expand past what it promised. The value
- * is a documented ceiling, not a target: the largest decoded frame measured on
- * this machine's store is 13.9 MB over 815 pre-V3 logs / 1 346 650 frames, so the
- * ceiling carries ~38x headroom, and a session whose single event frame
+ * declares none) so a lying frame cannot expand past what it promised.
+ *
+ * What the ceiling actually bounds is a session's TOTAL plaintext, not one event:
+ * `encodeZstdFrames` batches every event of a generation into a SINGLE frame, so a
+ * successor's event frame grows with the whole session. Measured on this machine:
+ * 13.9 MB is the largest COMPRESSED log file (not a frame), while the largest frame
+ * the host actually decodes is 21.73 MiB — this tool's own successor for that log —
+ * so the ceiling carries ~23.6x headroom. A session whose total plaintext
  * legitimately exceeded it would be refused as `decompress-failed` with a coded
  * exit instead of exhausting memory.
  */

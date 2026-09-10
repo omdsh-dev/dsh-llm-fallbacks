@@ -126,7 +126,7 @@
  */
 import { createHash } from 'node:crypto'
 import { constants as fsConstants } from 'node:fs'
-import { copyFile, readFile, readdir, stat } from 'node:fs/promises'
+import { copyFile, readFile, readdir, rm, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -815,19 +815,59 @@ interface InspectContext {
   stalePublicationPath(error: unknown): string | null
 }
 
-/** Copy the original generation aside, idempotently. */
-async function writeBackup(logPath: string): Promise<string> {
+/**
+ * Copy the original generation aside, idempotently.
+ *
+ * @returns the backup path and whether THIS call created it (a byte-identical
+ *   copy that already existed is accepted but is not this run's to delete).
+ * @throws when a pre-existing copy holds different bytes: that copy is the only
+ *   pre-publication snapshot of some other revision, so this run cannot claim the
+ *   guarantee `--backup` exists for — and the refusal names the file and the way
+ *   out, because nothing else will.
+ */
+async function writeBackup(logPath: string): Promise<{ path: string; created: boolean }> {
   const backupPath = `${logPath}${BACKUP_SUFFIX}`
   try {
     await copyFile(logPath, backupPath, fsConstants.COPYFILE_EXCL)
+    return { path: backupPath, created: true }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
     const [original, existing] = await Promise.all([readFile(logPath), readFile(backupPath)])
     if (!original.equals(existing)) {
-      throw new Error(`a backup already exists at ${backupPath} with different bytes`)
+      throw new Error(
+        `a backup already exists at ${backupPath} and holds DIFFERENT bytes than the current original, so it is not `
+        + 'a restorable copy of the revision this run would publish. Inspect it and delete it (or move it aside) to '
+        + 'unblock the repair — until then every --apply --backup run for this session fails here and publishes '
+        + 'nothing.',
+      )
     }
+    return { path: backupPath, created: false }
   }
-  return backupPath
+}
+
+/**
+ * Undo the `.bak` copy THIS run created after its publication failed.
+ *
+ * A failed run must leave the session directory as it found it, which is what its
+ * detail says ("nothing was published"). A backup that already existed before the
+ * run is NOT this run's to delete and is left alone.
+ *
+ * @param backup the copy this run made (or `null` when `--backup` was off).
+ * @returns a clause for the failure detail, or `''` when there is nothing to say.
+ */
+async function discardCreatedBackup(
+  backup: { path: string; created: boolean } | null,
+): Promise<string> {
+  if (backup === null || !backup.created) return ''
+  try {
+    await rm(backup.path, { force: true })
+    // "as it was" holds on every path that reaches here: a successor that
+    // pre-existed was accepted (never written by this run), and one this run created
+    // is unlinked by the publisher before this point.
+    return '; the .bak copy this run created was removed again, so the session directory is as it was'
+  } catch (error) {
+    return `; WARNING the .bak copy this run created at ${backup.path} could NOT be removed (${messageOf(error)})`
+  }
 }
 
 /** The lossy evidence one log's detail line carries, or `''` in the non-lossy path. */
@@ -1202,9 +1242,10 @@ async function analyzeLog(candidate: LogGeneration, context: InspectContext): Pr
     }
   }
 
+  let backup: { path: string; created: boolean } | null = null
   if (context.backup) {
     try {
-      await writeBackup(candidate.path)
+      backup = await writeBackup(candidate.path)
     } catch (error) {
       return {
         ...base,
@@ -1243,6 +1284,9 @@ async function analyzeLog(candidate: LogGeneration, context: InspectContext): Pr
     // A publication that HAPPENED and then found its snapshot stale must never be
     // reported as "nothing was published": name the file and how to roll it back.
     const stalePath = context.stalePublicationPath(error)
+    // Whatever the failure was, the copy THIS run made must not outlive it: the
+    // session directory has to be as the run found it for that claim to hold.
+    const backupNote = await discardCreatedBackup(backup)
     return {
       ...base,
       class: refusal,
@@ -1250,10 +1294,12 @@ async function analyzeLog(candidate: LogGeneration, context: InspectContext): Pr
       failed: true,
       legacyEventCount: legacy,
       stalePublicationPath: stalePath,
-      detail: stalePath === null
-        ? `repair failed, nothing was published: ${messageOf(error)}`
-        : `a successor WAS published from a snapshot that is now stale — DELETE ${stalePath} to roll the `
-          + `publication back: ${messageOf(error)}`,
+      detail: `${
+        stalePath === null
+          ? `repair failed, nothing was published: ${messageOf(error)}`
+          : `a successor WAS published from a snapshot that is now stale — DELETE ${stalePath} to roll the `
+            + `publication back: ${messageOf(error)}`
+      }${backupNote}`,
       findings: structural.findings,
     }
   }
@@ -1701,7 +1747,12 @@ original generation is never modified and never truncated.
                  candidate whose owning package.json names a different package is
                  refused too. The report names the module path, its format version and
                  its package version.
-  --backup       copy the original generation to <name>.bak before publishing.
+  --backup       copy the original generation to <name>.bak before publishing. A run
+                 that ends up publishing nothing removes the copy IT created again,
+                 so a failed run leaves the directory as it found it; a copy that
+                 already existed is never touched, and one holding different bytes
+                 than the current original blocks the repair with a message naming
+                 it until you inspect and delete it.
   --drop-legacy-events
                  LOSSY, off by default: remove the legacy fallbacks/switch rows (the
                  provider/model switch audit trail this repo's own pre-#52 plugin wrote)
