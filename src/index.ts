@@ -867,7 +867,8 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   // declared persona into the request's NATIVE persona slot at that same
   // single resolution point — chain-independent (the role alone decides) and
   // gated by the provider's measured persona capability; Task 3 emits the
-  // once-per-child notice row from `subagentSeam.records`. Cleaned on
+  // once-per-child notice row from `subagentSeam.records` (its `noticeEmitted`
+  // marker is cleaned below alongside them). Cleaned on
   // agent/disposed + plugin dispose below (mirrors `subagentRoleRecordMap`).
   // Multi-fiber dedupe (fix M-3): the seam's `internal/get` wrapper is
   // ROOT-scoped, so a later fiber applying over a shared context root must not
@@ -893,7 +894,7 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   } catch (error) {
     if (!(error instanceof Error) || !error.message.includes('already installed')) throw error
     ctx.logger('llm-fallbacks').debug('subagent role seam already installed — no seam on this fiber (multi-fiber dedupe)')
-    subagentSeam = { records: new Map(), dispose: () => {} }
+    subagentSeam = { records: new Map(), noticeEmitted: new Set(), dispose: () => {} }
   }
 
   try {
@@ -1593,6 +1594,7 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     chainHeadMap.delete(agent.id)
     subagentRoleRecordMap.delete(agent.id)
     subagentSeam.records.delete(agent.id)
+    subagentSeam.noticeEmitted.delete(agent.id)
     lastKnownPolicySettings.delete(agent.id)
   })
 
@@ -1625,6 +1627,7 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     chainHeadMap.clear()
     subagentRoleRecordMap.clear()
     subagentSeam.records.clear()
+    subagentSeam.noticeEmitted.clear()
     subagentSeam.dispose()
     lastKnownPolicySettings.clear()
   }, 'llm-fallbacks: clear per-agent state')

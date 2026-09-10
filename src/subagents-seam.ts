@@ -48,6 +48,12 @@
  * absent), and every skip path returns the caller's OWN request object, so the
  * native call stays byte-identical.
  *
+ * In-session notice row (plan Task 3): the SAME install point registers the
+ * `agent/pre-step` emitter (`./role-notice.ts`) over the record map it owns, so
+ * the role is announced once in the child's own session. Its per-agent
+ * `noticeEmitted` marker is exposed here for the caller's cleanup sites
+ * (`agent/disposed` + plugin dispose, exactly like the record map).
+ *
  * Degrade-never-crash: an absent/reshaped service, an unexpected result
  * shape, or any throwing bookkeeping degrades to the native path with at most
  * ONE contained debug log — a dispatch is never affected.
@@ -57,6 +63,7 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import { INHERIT_ROLE_ID, type FallbacksRole } from './config.ts'
+import { installRoleNotice } from './role-notice.ts'
 
 /**
  * The cordis service-read waterfall event the seam registers on. Referenced
@@ -100,6 +107,15 @@ export interface SubagentSeamRecord {
    * marker, so a repeat dispatch/resume cannot produce a second notice row.
    */
   firstNoticePending: boolean
+  /**
+   * `true` when the role DECLARES a persona and that persona was NOT delivered
+   * (Task 2's capability gate declined it, or no provider was registered to
+   * carry it). Absent when there was nothing to report: the persona was
+   * delivered, the caller set one (explicit intent wins), the role declares
+   * none, or no persona source is wired. Task 3 appends
+   * ` (persona not applied)` on `true` only.
+   */
+  personaNotApplied?: boolean
 }
 
 /** One consumed prompt content block (`@deepseek-ai/dsh-llm` `ContentBlock` text members). */
@@ -188,6 +204,13 @@ export interface SubagentSeam {
    * emitting the notice.
    */
   readonly records: Map<string, SubagentSeamRecord>
+  /**
+   * Per-agent marker of children whose role notice row was already emitted
+   * (mirrors the runtime's `dispatchInjected`): the in-memory half of Task 3's
+   * once-per-child guarantee, cleared with `records` on `agent/disposed` and in
+   * the plugin dispose effect.
+   */
+  readonly noticeEmitted: Set<string>
   /** Stop intercepting service reads (the owning fiber's teardown also does). */
   dispose(): void
 }
@@ -196,6 +219,18 @@ export interface SubagentSeam {
 interface PendingCorrelation {
   role: string
   at: number
+  personaNotApplied: boolean
+}
+
+/**
+ * Outcome of one persona decision: the request to forward (`request` ITSELF on
+ * every skip path, so the native call stays byte-identical) plus whether a
+ * DECLARED persona was left undelivered — the one bit Task 3's notice row needs
+ * to say ` (persona not applied)`.
+ */
+interface PersonaMergeOutcome {
+  readonly request: SubagentStartRequestView
+  readonly personaNotApplied: boolean
 }
 
 /**
@@ -395,6 +430,12 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
     throw new Error(`the '${SUBAGENT_SEAM_SERVICE}' role seam is already installed on this context root`)
   }
   const records = new Map<string, SubagentSeamRecord>()
+  /**
+   * Task 3's per-agent once-marker (mirrors the runtime's `dispatchInjected`):
+   * the in-memory half of the once-per-child guarantee. The caller clears it on
+   * `agent/disposed` and in the plugin dispose effect, next to `records`.
+   */
+  const noticeEmitted = new Set<string>()
   const pending = new Map<string, PendingCorrelation>()
   const wrappers = new WeakMap<object, object>()
   const disposers: Array<() => void> = []
@@ -416,17 +457,29 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
   }
 
   /** Write one per-child record; a repeat write for the same child keeps a cleared notice marker. */
-  const recordChild = (childSessionId: string, role: string, at: number): void => {
+  const recordChild = (
+    childSessionId: string,
+    role: string,
+    at: number,
+    personaNotApplied: boolean,
+  ): void => {
     const existing = records.get(childSessionId)
     records.set(childSessionId, {
       role,
       at,
       firstNoticePending: existing?.firstNoticePending ?? true,
+      // Absent (never `false`) when there is nothing to report, so the field
+      // reads as "a declared persona was skipped" and nothing else.
+      ...(personaNotApplied ? { personaNotApplied: true } : {}),
     })
   }
 
   /** Claim the label-keyed catalog correlation for a resolved start (bounded, insertion-order eviction). */
-  const beginCorrelation = (request: SubagentStartRequestView | undefined, role: string): string | undefined => {
+  const beginCorrelation = (
+    request: SubagentStartRequestView | undefined,
+    role: string,
+    personaNotApplied: boolean,
+  ): string | undefined => {
     const parentSessionId = parentSessionIdOf(request)
     const label = typeof request?.label === 'string' ? request.label : undefined
     if (parentSessionId === undefined || label === undefined || label === '') return undefined
@@ -435,7 +488,9 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
       const oldest = pending.keys().next().value
       if (oldest !== undefined) pending.delete(oldest)
     }
-    pending.set(key, { role, at: Date.now() })
+    // The persona verdict is decided BEFORE the child id exists, so it rides the
+    // claim: the catalog-correlated record reports it exactly like a direct one.
+    pending.set(key, { role, at: Date.now(), personaNotApplied })
     return key
   }
 
@@ -536,16 +591,22 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
    *
    * 1. an explicit caller `persona` WINS (`tool-subagent` `Config.persona`, or
    *    `@mstar-harness/dsh`'s own merge): the slot is filled only when absent —
-   *    silent, caller intent is not a skip.
-   * 2. no persona source wired → nothing to deliver (silent).
+   *    silent, caller intent is not a skip (`personaNotApplied: false`: the
+   *    persona IS applied, just not by us).
+   * 2. no persona source wired → nothing to deliver, and the declaration cannot
+   *    even be read (silent, `false`).
    * 3. the role declares no persona (or a blank one) → nothing to deliver
-   *    (silent).
-   * 4. provider unknown → silent (the native start fails loud its own way).
+   *    (silent, `false`).
+   * 4. provider unknown → silent (the native start fails loud its own way), but
+   *    the declared persona really is undelivered → `true`.
    * 5. gate miss (capability absent / unverifiable) → ONE contained debug log,
    *    request unchanged — merging what the runtime would reject is never
-   *    acceptable.
+   *    acceptable → `true`.
    * 6. hit → a shallow copy carrying the persona (the caller's object is never
-   *    mutated) + ONE debug log naming the role, the provider, and the surface.
+   *    mutated) + ONE debug log naming the role, the provider, and the surface
+   *    → `false`.
+   *
+   * Task 3's notice row is the only consumer of `personaNotApplied`.
    */
   const withRolePersona = (
     service: SubagentsServiceView,
@@ -553,19 +614,19 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
     request: SubagentStartRequestView,
     role: string,
     surface: PersonaSurface,
-  ): SubagentStartRequestView => {
-    if (request.persona !== undefined) return request
+  ): PersonaMergeOutcome => {
+    if (request.persona !== undefined) return { request, personaNotApplied: false }
     const readRoles = options.roles
-    if (readRoles === undefined) return request
+    if (readRoles === undefined) return { request, personaNotApplied: false }
     const persona = personaForRole(readRoles(), role)
-    if (persona === undefined) return request
+    if (persona === undefined) return { request, personaNotApplied: false }
     const gate = personaGate(service, providerName, surface)
-    if (gate === 'unknown') return request
+    if (gate === 'unknown') return { request, personaNotApplied: true }
     if (gate === 'unavailable') {
       debug(
         `llm-fallbacks: role persona for '${role}' skipped — the '${SUBAGENT_SEAM_SERVICE}' runtime exposes no provider lookup, so the persona capability cannot be verified (the start proceeds unchanged)`,
       )
-      return request
+      return { request, personaNotApplied: true }
     }
     if (gate === 'unsupported') {
       debug(
@@ -573,18 +634,18 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
           ? `llm-fallbacks: subagent provider '${providerName}' lacks the persona capability — role persona for '${role}' skipped (the start proceeds unchanged)`
           : `llm-fallbacks: subagent provider '${providerName}' does not support continuable children — role persona for '${role}' skipped (the native continuable start fails loud its own way)`,
       )
-      return request
+      return { request, personaNotApplied: true }
     }
     debug(
       `llm-fallbacks: role persona delivered via the native subagent persona channel for role '${role}' (${surface} start on provider '${providerName}')`,
     )
-    return { ...request, persona }
+    return { request: { ...request, persona }, personaNotApplied: false }
   }
 
   /**
    * Contained wrapper around {@link withRolePersona}: a throwing live persona
-   * source / provider read degrades to the CALLER's request object — the merge
-   * aborts, the start is never affected.
+   * source / provider read degrades to the CALLER's request object with no
+   * persona verdict — the merge aborts, the start is never affected.
    */
   const mergePersonaAtSeam = (
     service: SubagentsServiceView,
@@ -592,12 +653,12 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
     request: SubagentStartRequestView,
     role: string,
     surface: PersonaSurface,
-  ): SubagentStartRequestView => {
+  ): PersonaMergeOutcome => {
     try {
       return withRolePersona(service, providerName, request, role, surface)
     } catch (error) {
       reportDegrade(error)
-      return request
+      return { request, personaNotApplied: false }
     }
   }
 
@@ -629,17 +690,17 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
       // the request reaches the service (`role` above + `name` here is
       // everything the persona decision needs — no second resolution). A skip
       // returns the caller's OWN request object; a hit a shallow copy carrying
-      // the persona.
-      const effectiveRequest = mergePersonaAtSeam(service, name, request, role, 'one-shot')
+      // the persona. The verdict rides the record Task 3 reads.
+      const persona = mergePersonaAtSeam(service, name, request, role, 'one-shot')
       let pendingKey: string | undefined
       try {
-        pendingKey = beginCorrelation(request, role)
+        pendingKey = beginCorrelation(request, role, persona.personaNotApplied)
       } catch (error) {
         reportDegrade(error)
       }
       let result: unknown
       try {
-        result = service.start(name, effectiveRequest)
+        result = service.start(name, persona.request)
       } catch (error) {
         endCorrelation(pendingKey)
         throw error
@@ -648,7 +709,7 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
         result,
         (childSessionId) => {
           endCorrelation(pendingKey)
-          recordChild(childSessionId, role, Date.now())
+          recordChild(childSessionId, role, Date.now(), persona.personaNotApplied)
         },
         // No session id in the result (a job id is not one): keep the claim and
         // let the parent-owned `subagent/catalog` event supply the child id.
@@ -673,16 +734,18 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
         // `SubagentStartRequest`) — gated by the NATIVE continuable capability.
         // A skip leaves the caller's spec object untouched (same identity).
         let effectiveSpec = spec
+        let personaNotApplied = false
         try {
-          const mergedRequest = withRolePersona(service, spec.provider, spec.request, role, 'continuable')
-          if (mergedRequest !== spec.request) effectiveSpec = { ...spec, request: mergedRequest }
+          const outcome = withRolePersona(service, spec.provider, spec.request, role, 'continuable')
+          if (outcome.request !== spec.request) effectiveSpec = { ...spec, request: outcome.request }
+          personaNotApplied = outcome.personaNotApplied
         } catch (error) {
           reportDegrade(error)
         }
         const result: unknown = startContinuable.call(service, effectiveSpec)
         observeStartResult(
           result,
-          (childSessionId) => recordChild(childSessionId, role, Date.now()),
+          (childSessionId) => recordChild(childSessionId, role, Date.now(), personaNotApplied),
           () => {},
           () => {},
         )
@@ -725,14 +788,23 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
       const claim = pending.get(key)
       if (claim === undefined) return
       pending.delete(key)
-      recordChild(childSessionId, claim.role, claim.at)
+      recordChild(childSessionId, claim.role, claim.at, claim.personaNotApplied)
     } catch (error) {
       reportDegrade(error)
     }
   }))
 
+  // Task 3: the once-per-child role notice row, emitted from the child's own
+  // first `agent/pre-step` over the record map this seam owns. Registered here
+  // because this is the ONE install point (the multi-fiber dedupe above leaves
+  // only the first fiber's seam live, and only THAT seam holds records), so a
+  // registration anywhere else would add listeners that can never announce
+  // anything.
+  disposers.push(installRoleNotice(ctx, { records, emitted: noticeEmitted, debug }))
+
   const seam: SubagentSeam = {
     records,
+    noticeEmitted,
     dispose: () => {
       // Release the root claim so a later apply (fiber reload) can install.
       subagentSeamRoots.delete(root)
