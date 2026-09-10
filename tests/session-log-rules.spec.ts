@@ -20,15 +20,22 @@
  *     event types even with `ignorable: true` — and the opt-in lossy rule is the
  *     only thing that can REMOVE them.
  *
+ * The released message-source VOCABULARY itself is pinned at the bottom of this
+ * file by exact set equality (`RELEASED_SOURCE_KINDS`, Task 1 review M2): a
+ * spurious extra kind would otherwise make the registry stop detecting the RCA's
+ * dominant driver for that value, silently.
+ *
  * Purity is asserted explicitly: normalization must never mutate its input.
  */
 import { describe, expect, it } from 'vitest'
 import { classifyRows } from '../scripts/session-logs/classify.ts'
 import {
   BUILT_IN_RULES,
+  RELEASED_SOURCE_KINDS,
   dropLegacyEventsRule,
   droppedEventCount,
   fallbacksSwitchRule,
+  isReleasedSourceKind,
   legacyDropRefusal,
   legacyDropSplit,
   lossyRefusalReason,
@@ -940,6 +947,49 @@ describe('BUILT_IN_RULES', () => {
     for (const rule of BUILT_IN_RULES) {
       expect(() => rule.detect(rows), rule.id).not.toThrow()
       expect(() => rule.normalize(rows), rule.id).not.toThrow()
+    }
+  })
+})
+
+/**
+ * Task 1 review M2: the released vocabulary is pinned by EXACT set equality, not
+ * only by its use. `isForeignKind` treats any kind outside this set as foreign,
+ * so one spurious EXTRA member would make the registry stop detecting the RCA's
+ * dominant driver (`source-kind`) for that value — silently, and only for logs
+ * that happen to carry it. The expected list is the SSOT
+ * (`packages/session/session-format-v2-to-v3/src/payload.ts` `SOURCE_KINDS`,
+ * `deepseek-harness` `dsh 0.1.5-rc.1`) spelled out in its own order.
+ */
+describe('RELEASED_SOURCE_KINDS (the released message-source vocabulary)', () => {
+  const SSOT_SOURCE_KINDS: readonly string[] = [
+    'user',
+    'plugin',
+    'model',
+    'tool',
+    'agent-instructions',
+    'session-reference',
+    'team-message',
+    'goal',
+    'skill-invocation',
+    'skill-catalog',
+    'coordinator',
+    'subagent-report',
+    'subagent-settled',
+    'webhook',
+    'agent-message',
+  ]
+
+  it('is exactly the released 15-kind set — no extra, no missing member', () => {
+    expect(RELEASED_SOURCE_KINDS.size).toBe(SSOT_SOURCE_KINDS.length)
+    expect([...RELEASED_SOURCE_KINDS].sort()).toEqual([...SSOT_SOURCE_KINDS].sort())
+  })
+
+  it('isReleasedSourceKind admits exactly those members and rejects everything else', () => {
+    for (const kind of SSOT_SOURCE_KINDS) {
+      expect(isReleasedSourceKind(kind), kind).toBe(true)
+    }
+    for (const value of [undefined, null, 42, '', 'fallbacks/switch', 'mstar-role', 'user ', 'Plugin']) {
+      expect(isReleasedSourceKind(value), JSON.stringify(value)).toBe(false)
     }
   })
 })

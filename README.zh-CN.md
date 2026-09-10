@@ -44,19 +44,6 @@ dsh plugin --profile dsh-tui add dsh-llm-fallbacks  # dsh-tui 终端 profile
 
 同一个插件、两个前端——区别只在 `--profile` 参数。钉版本：加 `@<version>`。registry 安装拉取的是**已构建产物**（`dist/`），目标机无需构建。registry / git / 本地目录变体、卸载与 `--dump-config` 验证 → [docs/install.md](docs/install.md)。
 
-### 修复旧会话（0.2.2 之前的版本）
-
-0.2.2 之前的版本会把 `fallbacks/switch` 事件写入会话持久化日志，而新版 dsh 拒绝加载这类会话（issue #52——apply() 时的注册因插件与宿主解析到不同模块实例而无效）。如果升级后已有会话打不开，clone 本仓库并运行检测器：
-
-```sh
-git clone https://github.com/omdsh-dev/dsh-llm-fallbacks.git
-cd dsh-llm-fallbacks
-pnpm install
-pnpm repair:fallbacks-switch-logs -- --dry-run
-```
-
-脚本默认扫描 `~/.dsh/sessions`（可用 `--root <dir>` 覆盖）。**它无法修复这些日志**：已发布的 session-format 迁移链（v0→v1）即使事件带 `ignorable: true` 也拒绝未知事件类型，因此「修复后」的日志仍会被拒绝加载。脚本因此 fail-closed——只报告哪些会话含 `fallbacks/switch` 事件，绝不写入或备份任何文件，发现即非零退出（遗留的 `--apply` / `--backup` 参数按 no-op 接受）。持久修复应在上游迁移边界完成。从 0.2.2 起插件不再写 durable 切换事件，新会话无需处理。
-
 ### 配置界面
 
 插件的设置存在于共享的 `fallbacks:` 命名空间中，可通过三个界面编辑：
@@ -122,6 +109,69 @@ fallbacks:
 
 保存配置并重启会话，然后键入 `/fallbacks`——只读的会话内诊断（来源、解析角色、链、最近降级切换、冷却状态）。在 dsh-tui profile 中，`/fallbacks config` 回读组合配置；见 [dsh-tui profile（终端）](#dsh-tui-profile终端)。
 
+## 修复已有会话
+
+会话日志只能经**冻结的已发布迁移链**进入 GUI。该链在第一条无法归类的记录处即抛错，因此由旧版发行版写入的 pre-V3 日志——或由任何合并过自定义 message source kind 的插件写入的日志——会让会话加载失败，而其字节不会自行改变。以下两类覆盖了几乎所有情况，且根因同类：内容超出了某条已发布格式边界的准入范围。
+
+| 类别 | 日志携带什么 | 根因 |
+|---|---|---|
+| `source-kind` | 消息的 `source.kind` 不在已发布词汇表内 | 词汇表按**格式边界冻结**：插件把自定义 kind 合并进 `MessageSourceMap` 后，V2→V3 边界会拒绝该日志（`cannot safely transform unclassified message source`）。已发布 kind 为 `user`、`plugin`、`model`、`tool`、`agent-instructions`、`session-reference`、`team-message`、`goal`、`skill-invocation`、`skill-catalog`、`coordinator`、`subagent-report`、`subagent-settled`、`webhook`、`agent-message` |
+| `subagent-descriptor-version` | `subagent/descriptor` 记录的 `version: 2` | V0→V1 边界只准入 descriptor `version: 3`，而 dsh `v0.1.0-rc.7` … `v0.1.1-rc.2` 写入的是 version 2 |
+
+第三类——遗留 `fallbacks/switch` 事件类型——**无法**通过改写修复：见 [fallbacks/switch 的有损恢复（opt-in）](#fallbacksswitch-的有损恢复opt-in)。
+
+**如果你在编写插件：绝不要新增自定义 `source.kind`。** 持久化词汇表按格式边界冻结，自定义 kind 会让携带它的每个会话在后续 dsh 发行版中都无法读取。请改用受支持的 `plugin` 分支——`{ kind: 'plugin', plugin: '<stable-id>', form: … }`——正如 dsh 自身的 `model-selection` notice 那样；稳定 id 记录了原 kind 是什么。
+
+### 用法
+
+工具随本仓库提供（clone + `pnpm install`；已发布包中不含它）。它**默认只读报告**：遍历会话根目录、把每个 pre-V3 日志归入恰好一个拒绝类别，并打印各类别计数。只有给出 `--apply` 才会写入。
+
+```sh
+git clone https://github.com/omdsh-dev/dsh-llm-fallbacks.git
+cd dsh-llm-fallbacks
+pnpm install
+pnpm repair:session-logs                             # 只读报告（默认）
+pnpm repair:session-logs -- --root ~/.dsh/sessions   # 指定会话根目录
+pnpm repair:session-logs -- --apply                  # 发布修复后的后继世代
+```
+
+`--dry-run` 已不存在：报告**就是**默认模式，`--dry-run` 会作为未知参数被拒绝（exit 2）。
+
+| 参数 | 含义 |
+|---|---|
+| `--root DIR` | 要遍历的会话根目录（默认 `$DSH_HOME` 或 `~/.dsh`，再退到 `/sessions`） |
+| `--apply` | 运行各规则的证明，并在每个被修复的原件旁发布当前世代的后继（需要先解析出已发布 catalog） |
+| `--class NAME` | 把 `--apply` 的修复范围限制为单一拒绝类别；报告与退出码仍覆盖 `--root` 下的每个日志，因此该参数绝不会隐藏拒绝 |
+| `--catalog PATH` | 显式指定已发布 catalog 路径（包目录、包含它的目录，或其模块入口文件） |
+| `--backup` | 发布前把原始世代复制为 `<name>.bak` |
+| `--drop-legacy-events` | 针对遗留 `fallbacks/switch` 行的 opt-in **有损**恢复（见下） |
+| `--json` | 输出机器可读报告以替代文本报告 |
+| `--quiet` | 抑制逐日志行与按类别表（警告与错误永不抑制） |
+
+原始世代绝不会被修改、也绝不会被截断；回滚即删除已发布的后继世代，原世代重新成为 dsh 打开的世代。
+
+**`--apply` 前置条件：仅当没有 dsh 实例正在写入 `--root` 下的会话时才可运行。** 发布器把后继世代链接进会话目录时**不观察宿主的 flock 租约**（该租约是宿主内部的，本仓库无法取得），因此仍在向旧世代追加写入的 dsh 会在宿主改用后继世代后被孤立。请先停止 dsh。
+
+**运行时下限：Node ≥ 22.15。** 读取与写入需要 `node:zlib` 的 zstd（该版本引入；`engines.node` 允许 `>= 22`）；更旧的运行时会 fail-closed 并给出可操作的提示，而不是模块链接堆栈。
+
+**退出码**：`0` = 无拒绝，或所有拒绝均已修复；`1` = 运行完成但仍有至少一个日志被拒绝/不可修复（或修复失败）；`2` = 致命错误（参数非法、缺少 `--root`、`--apply` 未解析出 catalog、`--apply --drop-legacy-events` 缺少 `--backup`，或运行时没有 `node:zlib` zstd）。
+
+### fallbacks/switch 的有损恢复（opt-in）
+
+0.2.2 之前的版本会写入 durable `fallbacks/switch` 会话事件（issue #52：apply() 时的注册无效，因为插件与宿主解析到不同模块实例）。冻结的 V0→V1 边界**即使该行带 `ignorable: true` 也**拒绝该事件类型，因此没有任何改写能让这样的行加载——删除是本仓库内唯一的恢复方式。选择 opt-in 意味着接受两个后果：
+
+1. **该会话记录的 provider/model 切换审计行会被删除。** 它们此后只存在于原始世代中（使用 `--backup` 时还有其 `.bak`）：已发布的后继世代是唯一缺少它们、却可读的世代。
+2. **幸存事件会被重新编号。** 同一边界要求每个事件的 `seq` 等于其运行中的事件计数，因此每个幸存事件都会取得它在幸存事件流中的位置所对应的 `seq`，它携带的每个 Session-seq 引用也随之一并平移。除此之外内容逐字节不变。
+
+```sh
+pnpm repair:session-logs -- --drop-legacy-events                   # 报告：统计将被删除的行
+pnpm repair:session-logs -- --drop-legacy-events --apply --backup  # 此处必须带 --backup
+```
+
+该模式**默认关闭**，报告模式不写任何文件，且 `--apply --drop-legacy-events` **必须带 `--backup`**（否则 exit 2）。以下情况 fail-closed、不写任何文件：幸存行引用了将被删除的 seq、源行的编号不稠密、或重新编号会跨越头部的种子切点。`--json` 会按日志报告 `legacyEventCount`（源日志中的遗留行数）、`droppedEventCount`、`renumberedEventCount` 以及机器可读的 `lossyRefusal` 原因；文本模式打印同样的计数作为醒目警告。其它名字的未知事件类型永不删除——这类日志保持不可修复。不加该参数时，这些会话按设计保持不可读，字节原样保留。
+
+持久修复属于上游迁移边界（让冻结的 V0→V1 边界准入它曾发行的 descriptor 版本，并让自定义 message source kind 迁移到 `plugin` 分支）。
+
 ## 能力一览
 
 - **root / subagent 自动降级**：任意 agent 在模型故障下按链切换到下一个可用 provider/model，无需手动换模型。
@@ -134,7 +184,7 @@ fallbacks:
 - **冷却与回主**：被切离/失败的模型在冷却期内不再入选；`revertPolicy: cooldown-expiry` 冷却到期后自动回主模型。
 - **宿主子代理模型策略（dsh 0.1.2）**：当宿主 `subagent-model-selection` 策略启用时，其允许列表对每个插件发起的 subagent 路由都是硬约束——显式授权的派发路由保持为链头（跳过角色注入），继承注入的链头与失败切换目标都与生效允许列表求交集，交集为空则跳过注入/切换（warn 日志 + 只读卡片警告；绝不发送允许列表之外的请求）。策略存在但不可读时 fail-closed。策略关闭/缺省时，注入与失败切换的选择与 0.3.5 完全一致。覆盖路径上的 `reasoningEffort` 遵循上游 routeChanged 规则（同路由 → 保留；跨路由 → 除非显式指定否则丢弃）。见 [宿主子代理模型策略](#宿主子代理模型策略dsh-012)。
 - **半开恢复（可选）**：`recovery: half-open` 让恢复以证据驱动——冷却到期后路由进入 **half-open**，以一次记录探针（logged probe）放行，而不是直接恢复首选；连续失败使抑制时长按 **×2** 逐次升级、**1 小时**封顶；观察到完成即闭合回路、完全恢复首选。`revertPolicy: 'never'` 使该机制完全失效；状态为会话级内存态（重启即重置）。仅 YAML 配置——默认 `timer` 保持所有既有行为逐字节一致（见 [docs/configuration.md](docs/configuration.md#recovery-mode-recovery-key)）。
-- **行为可见**：每次切换以 info 级日志行（from/to/role/reason）记录——无静默换模型。插件**刻意不写** durable `fallbacks/switch` 会话事件（issue #52——apply() 时的事件类型注册被证伪无效，含该事件的会话在 dsh 重启后拒绝加载）。由旧版插件写入、含此类事件的会话**无法**通过 `ignorable` 标记修复——已发布的 session-format 迁移链（v0→v1）即使事件带 `ignorable` 也拒绝未知事件类型——因此 `scripts/repair-fallbacks-switch-logs.ts` 现在 fail-closed，只报告此类日志（持久修复应在上游迁移边界完成）。
+- **行为可见**：每次切换以 info 级日志行（from/to/role/reason）记录——无静默换模型。插件**刻意不写** durable `fallbacks/switch` 会话事件（issue #52——apply() 时的事件类型注册被证伪无效，含该事件的会话在 dsh 重启后拒绝加载）。由旧版插件写入、含此类事件的会话**无法**通过 `ignorable` 标记修复——已发布的 session-format 迁移链（v0→v1）即使事件带 `ignorable` 也拒绝未知事件类型——因此 `pnpm repair:session-logs` 会报告此类日志（只有显式 opt-in 的有损 `--drop-legacy-events` 才会恢复它们——见 [修复已有会话](#修复已有会话)）。
 - **安全阀**：`maxSwitchesPerStep` 限制每 step 切换次数、`alwaysModeRetryCap` 限制 always 模式重试——链循环不会放大延迟。
 - **无配置回归（no-op）**：未配置任何链时行为与未安装插件完全一致——`enabled` 默认关闭（见 [最小配置](#最小配置)）。
 

@@ -131,8 +131,12 @@ function describe(value: unknown): string {
  * outside this set is refused with
  * `cannot safely transform unclassified message source`; the GUI surfaces that
  * as a failed session load.
+ *
+ * Exported so the vocabulary itself is pinned by a test (exact set equality),
+ * not just its use: one spurious EXTRA kind here would make this registry stop
+ * detecting the RCA's dominant driver (`source-kind`) for that value, silently.
  */
-const RELEASED_SOURCE_KINDS: ReadonlySet<string> = new Set([
+export const RELEASED_SOURCE_KINDS: ReadonlySet<string> = new Set([
   'user',
   'plugin',
   'model',
@@ -149,6 +153,18 @@ const RELEASED_SOURCE_KINDS: ReadonlySet<string> = new Set([
   'webhook',
   'agent-message',
 ])
+
+/**
+ * Whether one value is a member of the released message-source vocabulary
+ * ({@link RELEASED_SOURCE_KINDS}).
+ *
+ * The one predicate the write-surface guard (`tests/session-write-surface.spec.ts`)
+ * checks this repo's own `MessageSource.kind` literals against, so "released" has
+ * exactly one definition in this repository.
+ */
+export function isReleasedSourceKind(value: unknown): value is string {
+  return typeof value === 'string' && RELEASED_SOURCE_KINDS.has(value)
+}
 
 /**
  * Forms the released `plugin` arm admits (SSOT: `ContextFormed` in
@@ -237,7 +253,7 @@ function writePath(node: unknown, path: SourcePath, value: unknown): unknown {
 
 /** A source is foreign when its `kind` is absent or outside the vocabulary. */
 function isForeignKind(value: unknown): boolean {
-  return !(typeof value === 'string' && RELEASED_SOURCE_KINDS.has(value))
+  return !isReleasedSourceKind(value)
 }
 
 /**
@@ -733,7 +749,7 @@ function headerSeedCut(rows: readonly ParsedRow[]): number {
  *     (`session-format-v2-to-v3/src/references.ts:31-50` — the same switch that
  *     renumbers the seven members above — and its V1→V2 twin
  *     `session-format-v1-to-v2/src/migration.ts:566-661`), the released V2→V3
- *     migration only *inspects* the delivery marker (`migration.ts:64-67,86-91`),
+ *     migration only *inspects* the delivery marker (`migration.ts:64-67,88-91`),
  *     and an invalid value is refused by `earlierSeq`
  *     (`payload-validation.ts:179`) → the pre-write strict restore fails the whole
  *     file closed (reason `other`). Known residual, deliberately not code-guarded:
@@ -744,7 +760,13 @@ function headerSeedCut(rows: readonly ParsedRow[]): number {
  *     (`payload-validation.ts` `countValue`), never used as an event index.
  * A member that is present but not a safe integer is skipped: the released codec
  * refuses such a row outright, and this rule must not "repair" a reference it
- * cannot read.
+ * cannot read. A Session seq is non-negative by contract, but these scalars are
+ * admitted as any safe integer, so an already-invalid NEGATIVE member (`-1`) is
+ * enumerated too and the remap's boundary check is one-sided for it (it passes
+ * `after < newSeq`, is skipped because `after === value`, and is written nowhere
+ * — see {@link renumberSurvivingEvents}). Not a regression: neither this
+ * enumeration nor the remap can create one, and the CLI's strict pre-write
+ * restore refuses such a row upstream.
  */
 function seqReferences(row: ParsedRow): SeqReference[] {
   const references: SeqReference[] = []
@@ -1024,6 +1046,9 @@ export function renumberSurvivingEvents(
         //   - the OLD value must not be a dropped seq (`droppedSeqs`; the gate above
         //     already proves it for every span, this re-proves it per written member);
         //   - the NEW value must still name an EARLIER surviving event (`after < newSeq`).
+        //     Both halves are one-sided for an already-invalid NEGATIVE member: `-1`
+        //     is not a dropped seq and passes `after < newSeq`, then `after === value`
+        //     skips it, so it is written nowhere (see `seqReferences`).
         // `after` is a NEW position, so testing it against the dropped OLD positions
         // would be a category error: a surviving event legitimately moves down onto a
         // dropped event's old index.
