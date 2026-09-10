@@ -124,7 +124,7 @@ A third class — the legacy `fallbacks/switch` event type — is **not** repair
 
 ### Usage
 
-The tool ships in this repository (clone + `pnpm install`; the published package does not carry it). It is a **read-only report by default**: it walks a session root, classifies every pre-V3 log into exactly one refusal class and prints per-class counts. Nothing is written unless `--apply` is given.
+The tool is run from this repository (clone + `pnpm install`). Its sources do ship in the npm tarball, but there is no runnable entry there — no `bin` is registered and `tsx` is a dev dependency — so a registry install cannot run it. It is a **read-only report by default**: it walks a session root, classifies every pre-V3 log into exactly one refusal class and prints per-class counts. Nothing is written unless `--apply` is given.
 
 ```sh
 git clone https://github.com/omdsh-dev/dsh-llm-fallbacks.git
@@ -147,6 +147,7 @@ pnpm repair:session-logs -- --apply                  # publish a repaired succes
 | `--drop-legacy-events` | opt-in **lossy** recovery for legacy `fallbacks/switch` rows (see below) |
 | `--json` | machine-readable report instead of the text report |
 | `--quiet` | suppress the per-log lines and the by-class table (warnings and errors are never suppressed) |
+| `--help`, `-h` | print the usage text (including the `--apply` precondition) and exit 0 |
 
 The original generation is never modified and never truncated; rollback is deleting the published successor, which makes the original the generation dsh opens again.
 
@@ -168,7 +169,7 @@ pnpm repair:session-logs -- --drop-legacy-events                   # report: cou
 pnpm repair:session-logs -- --drop-legacy-events --apply --backup  # --backup is required here
 ```
 
-The mode is **off by default**, report mode writes nothing, and `--apply --drop-legacy-events` **requires `--backup`** (exit 2 without it). It fails closed, writing nothing, when a surviving row references a seq that would be dropped, when the source rows are not densely numbered, or when the renumber would cross the header's seed cut. `--json` reports `legacyEventCount` (legacy rows in the source log), `droppedEventCount`, `renumberedEventCount` and a machine-readable `lossyRefusal` reason per log; text runs print the same counts as a loud warning. A row of any *other* unknown event type is never dropped — such a log stays unrepairable. Without the flag those sessions stay unreadable by design, with their bytes preserved.
+The mode is **off by default**, report mode writes nothing, and `--apply --drop-legacy-events` **requires `--backup`** (exit 2 without it). It fails closed, writing nothing, when a surviving row references a seq that would be dropped, when the source rows are not densely numbered, or when the renumber would cross the header's seed cut. `--json` reports `legacyEventCount` (legacy rows in the source log), `droppedEventCount`, `renumberedEventCount` and a machine-readable `lossyRefusal` reason per log; text runs print the dropped/renumbered counts as a loud warning. A row of any *other* unknown event type is never dropped — such a log stays unrepairable. Without the flag those sessions stay unreadable by design, with their bytes preserved.
 
 The durable fix belongs upstream at the migration edges (the frozen V0→V1 edge admitting the descriptor versions it shipped, and custom message-source kinds moving to the `plugin` arm).
 

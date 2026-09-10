@@ -124,7 +124,7 @@ fallbacks:
 
 ### 用法
 
-工具随本仓库提供（clone + `pnpm install`；已发布包中不含它）。它**默认只读报告**：遍历会话根目录、把每个 pre-V3 日志归入恰好一个拒绝类别，并打印各类别计数。只有给出 `--apply` 才会写入。
+工具在本仓库内运行（clone + `pnpm install`）。其源码确实随 npm tarball 一起发布，但那里没有可运行的入口——没有注册 `bin`，且 `tsx` 是 devDependency——因此 registry 安装无法运行它。它**默认只读报告**：遍历会话根目录、把每个 pre-V3 日志归入恰好一个拒绝类别，并打印各类别计数。只有给出 `--apply` 才会写入。
 
 ```sh
 git clone https://github.com/omdsh-dev/dsh-llm-fallbacks.git
@@ -147,6 +147,7 @@ pnpm repair:session-logs -- --apply                  # 发布修复后的后继�
 | `--drop-legacy-events` | 针对遗留 `fallbacks/switch` 行的 opt-in **有损**恢复（见下） |
 | `--json` | 输出机器可读报告以替代文本报告 |
 | `--quiet` | 抑制逐日志行与按类别表（警告与错误永不抑制） |
+| `--help`、`-h` | 打印用法文本（含 `--apply` 前置条件）并以 exit 0 退出 |
 
 原始世代绝不会被修改、也绝不会被截断；回滚即删除已发布的后继世代，原世代重新成为 dsh 打开的世代。
 
@@ -168,7 +169,7 @@ pnpm repair:session-logs -- --drop-legacy-events                   # 报告：�
 pnpm repair:session-logs -- --drop-legacy-events --apply --backup  # 此处必须带 --backup
 ```
 
-该模式**默认关闭**，报告模式不写任何文件，且 `--apply --drop-legacy-events` **必须带 `--backup`**（否则 exit 2）。以下情况 fail-closed、不写任何文件：幸存行引用了将被删除的 seq、源行的编号不稠密、或重新编号会跨越头部的种子切点。`--json` 会按日志报告 `legacyEventCount`（源日志中的遗留行数）、`droppedEventCount`、`renumberedEventCount` 以及机器可读的 `lossyRefusal` 原因；文本模式打印同样的计数作为醒目警告。其它名字的未知事件类型永不删除——这类日志保持不可修复。不加该参数时，这些会话按设计保持不可读，字节原样保留。
+该模式**默认关闭**，报告模式不写任何文件，且 `--apply --drop-legacy-events` **必须带 `--backup`**（否则 exit 2）。以下情况 fail-closed、不写任何文件：幸存行引用了将被删除的 seq、源行的编号不稠密、或重新编号会跨越头部的种子切点。`--json` 会按日志报告 `legacyEventCount`（源日志中的遗留行数）、`droppedEventCount`、`renumberedEventCount` 以及机器可读的 `lossyRefusal` 原因；文本模式把 dropped/renumbered 计数作为醒目警告打印。其它名字的未知事件类型永不删除——这类日志保持不可修复。不加该参数时，这些会话按设计保持不可读，字节原样保留。
 
 持久修复属于上游迁移边界（让冻结的 V0→V1 边界准入它曾发行的 descriptor 版本，并让自定义 message source kind 迁移到 `plugin` 分支）。
 
