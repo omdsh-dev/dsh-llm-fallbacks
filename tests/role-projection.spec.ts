@@ -215,6 +215,73 @@ describe('role projection — fold contract', () => {
     expect(reDispatched).not.toBe(state)
   })
 
+  it('degrades on a malformed or reshaped event instead of throwing (the host folds unguarded)', () => {
+    // The registry calls `def.apply` with NO try/catch inside the host's
+    // `session/event` pipeline (`dsh-session-projection` `lib/index.js`), so a
+    // repaired/foreign row must read as "not a notice" — a throw here would fail
+    // the session read (plan Global Constraints: degrade-never-crash).
+    const state = { role: 'coder' }
+    const noticeText = (text: string, source: unknown): unknown => ({
+      type: 'user/message',
+      seq: 0,
+      time: 0,
+      data: { content: [{ type: 'text', text }], source },
+    })
+    const malformed: unknown[] = [
+      null,
+      undefined,
+      42,
+      {},
+      { type: 'user/message' },
+      { type: 'user/message', data: null },
+      { type: 'user/message', data: 'nope' },
+      { type: 'user/message', data: {} },
+      // OUR provenance but no content at all.
+      { type: 'user/message', data: { source: { kind: 'plugin', plugin: ROLE_NOTICE_PLUGIN } } },
+      // A notice text with no source (a repaired row).
+      { type: 'user/message', data: { content: [{ type: 'text', text: '[role: evil]' }] } },
+      noticeText('[role: evil]', null),
+      noticeText('[role: evil]', { kind: 'user' }),
+      noticeText('[role: evil]', { kind: 'plugin' }),
+      // OUR provenance, content of the wrong shape.
+      { type: 'user/message', data: { content: 'not an array', source: { kind: 'plugin', plugin: ROLE_NOTICE_PLUGIN } } },
+      { type: 'user/message', data: { content: [null, 42, { type: 'text' }, { type: 'text', text: 7 }], source: { kind: 'plugin', plugin: ROLE_NOTICE_PLUGIN } } },
+    ]
+    for (const event of malformed) {
+      expect(() => roleProjectionUnit.apply(state, event as SessionEvent)).not.toThrow()
+      // …and the state STANDS (the registry publishes only on `!Object.is`), so
+      // an unexpected shape can never clear or invent a role.
+      expect(roleProjectionUnit.apply(state, event as SessionEvent)).toBe(state)
+    }
+    // Positive control on the same fold path: the REAL notice still folds.
+    expect(roleProjectionUnit.apply(state, messageEvent(9, buildRoleNotice('reviewer', false))))
+      .toEqual({ role: 'reviewer' })
+  })
+
+  it('parses a role id that itself ends in the persona suffix, exactly (never trimmed)', () => {
+    // The skip suffix is part of the notice GRAMMAR (an optional group AFTER the
+    // closing bracket), never stripped off the text beforehand — so an id
+    // DECLARED as ending in the suffix literal survives whole, with and without
+    // the writer's appended skip suffix (Task 3b L2 review M-5).
+    const id = 'audit (persona not applied)'
+    expect(roleProjectionUnit.apply(null, messageEvent(0, buildRoleNotice(id, false))))
+      .toEqual({ role: id })
+    expect(roleProjectionUnit.apply(null, messageEvent(1, buildRoleNotice(id, true))))
+      .toEqual({ role: id })
+    // Exactness cuts both ways: a text the writer cannot produce (TWO appended
+    // suffixes) is not the notice grammar, so it carries no role at all rather
+    // than a half-trimmed one.
+    expect(roleProjectionUnit.apply(null, {
+      type: 'user/message',
+      seq: 2,
+      time: 0,
+      data: {
+        content: [{ type: 'text', text: '[role: scout] (persona not applied) (persona not applied)' }],
+        source: { kind: 'plugin', plugin: ROLE_NOTICE_PLUGIN },
+      },
+    } as unknown as SessionEvent)).toBeNull()
+  })
+
   it('validates the persisted state, so a corrupt checkpoint row is rejected instead of served', () => {
     expect(roleProjectionUnit.stateSchema.parse(null)).toBeNull()
     expect(roleProjectionUnit.stateSchema.parse({ role: 'coder', extra: 1 })).toEqual({ role: 'coder' })

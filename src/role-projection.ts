@@ -23,9 +23,12 @@
  * cheap.
  *
  * Mount-only + STRUCTURAL: the registry and the unit contract are consumed as
- * the local structural views below, so the plugin adds no new
- * `@deepseek-ai/dsh-session-projection` peer for a two-method contract the host
- * calls INTO us (the badge reads its seat structurally for the same reason).
+ * the local structural views below and this module value-imports no host seam,
+ * so the host calls INTO us. The declared
+ * `@deepseek-ai/dsh-session-projection` peerDependency (Task 3b L2 review M-2)
+ * serves the in-process Step-0 spec, which builds the REAL registry — being the
+ * real registry is the whole point of that proof — not a runtime import here
+ * (the badge reads its seat structurally for the same reason).
  * The runtime shape relied on — `register({ key, stateSchema, init, apply,
  * wire: { viewSchema, view }, stateVersion })` → unregister disposer — is the
  * documented `ProjectionDefinition` contract of
@@ -37,7 +40,6 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
-import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import { ROLE_NOTICE_PERSONA_SKIPPED_SUFFIX, ROLE_NOTICE_PLUGIN } from './role-notice.ts'
 import { ROLE_PROJECTION_KEY, type RoleProjectionValue } from './role-projection-key.ts'
@@ -138,12 +140,23 @@ function describeValue(value: unknown): string {
 }
 
 /**
- * The WHOLE notice text, with the Task 3 persona suffix tolerated and stripped
- * first: `[role: <id>]` or `[role: <id>] (persona not applied)`. Anchored and
- * greedy up to the LAST `]`, so a role id containing `]` still parses whole and
- * a row that merely MENTIONS `[role: x]` inside other text never matches.
+ * The WHOLE notice text: `[role: <id>]`, or the same text with Task 3's persona
+ * suffix as an OPTIONAL TRAILING group (`[role: <id>] (persona not applied)`).
+ * Anchored and greedy up to the LAST `]`, so a role id containing `]` still
+ * parses whole and a row that merely MENTIONS `[role: x]` inside other text
+ * never matches.
+ *
+ * The suffix is part of THIS grammar, never stripped off the text beforehand
+ * (Task 3b L2 review M-5): the writer always closes the bracket BEFORE appending
+ * the suffix (`buildRoleNotice`: `[role: ${role}]` + suffix), so the optional
+ * group can only consume text that follows the closing bracket — an id DECLARED
+ * as ending in the suffix literal (`[role: audit (persona not applied)]`)
+ * therefore round-trips whole, and only the writer's one appended suffix is ever
+ * treated as the skip marker.
  */
-const ROLE_NOTICE_TEXT_RE = /^\[role: ([\s\S]+)\]$/
+const ROLE_NOTICE_TEXT_RE = new RegExp(
+  `^\\[role: ([\\s\\S]+)\\](?:${ROLE_NOTICE_PERSONA_SKIPPED_SUFFIX.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})?$`,
+)
 
 /**
  * Parse the role out of one text block, or `undefined` when the block is not
@@ -152,21 +165,51 @@ const ROLE_NOTICE_TEXT_RE = /^\[role: ([\s\S]+)\]$/
  * blank capture is rejected.
  */
 function roleFromNoticeText(text: string): string | undefined {
-  const stripped = text.endsWith(ROLE_NOTICE_PERSONA_SKIPPED_SUFFIX)
-    ? text.slice(0, -ROLE_NOTICE_PERSONA_SKIPPED_SUFFIX.length)
-    : text
-  const role = stripped.match(ROLE_NOTICE_TEXT_RE)?.[1]
+  const role = ROLE_NOTICE_TEXT_RE.exec(text)?.[1]
   return role === undefined || role.trim() === '' ? undefined : role
 }
 
-/** The role carried by one notice message's content, or `undefined`. */
-function roleFromContent(content: readonly ContentBlock[]): string | undefined {
+/**
+ * The role carried by one notice message's content, or `undefined`.
+ *
+ * Total over `unknown` (Task 3b L2 review M-3): the registry folds committed
+ * events straight into `apply` with no try/catch of its own, so a malformed or
+ * repaired row (a non-array `content`, a non-object block, a non-text block)
+ * must read as "not a notice" instead of throwing inside the host's fold. Never
+ * a wrong role either way — an unexpected shape carries no role at all.
+ */
+function roleFromContent(content: unknown): string | undefined {
+  if (!Array.isArray(content)) return undefined
   for (const block of content) {
-    if (block.type !== 'text') continue
-    const role = roleFromNoticeText(block.text)
+    if (typeof block !== 'object' || block === null) continue
+    const { type, text } = block as { type?: unknown; text?: unknown }
+    if (type !== 'text' || typeof text !== 'string') continue
+    const role = roleFromNoticeText(text)
     if (role !== undefined) return role
   }
   return undefined
+}
+
+/**
+ * The role one committed event carries, or `undefined` when it is not OUR
+ * notice row. Shape-guarded for the same reason as {@link roleFromContent}: the
+ * fold runs inside the host's `session/event` pipeline, where a throw would
+ * escape the projection registry (it calls `apply` unguarded) and break the
+ * session read — the plan's degrade-never-crash constraint.
+ */
+function roleFromEvent(event: unknown): string | undefined {
+  if (typeof event !== 'object' || event === null) return undefined
+  const { type, data } = event as { type?: unknown; data?: unknown }
+  if (type !== 'user/message') return undefined
+  if (typeof data !== 'object' || data === null) return undefined
+  const { content, source } = data as { content?: unknown; source?: unknown }
+  if (typeof source !== 'object' || source === null) return undefined
+  const { kind, plugin } = source as { kind?: unknown; plugin?: unknown }
+  // Provenance gate (never a wrong role): only THIS plugin's notice rows are
+  // read — a human prompt, another plugin's notice, or a row whose text merely
+  // looks like a notice is ignored outright.
+  if (kind !== 'plugin' || plugin !== ROLE_NOTICE_PLUGIN) return undefined
+  return roleFromContent(content)
 }
 
 /**
@@ -184,13 +227,7 @@ export const roleProjectionUnit: RoleProjectionUnit = {
   stateVersion: ROLE_PROJECTION_STATE_VERSION,
   init: () => null,
   apply: (state, event) => {
-    if (event.type !== 'user/message') return state
-    const { content, source } = event.data
-    // Provenance gate (never a wrong role): only THIS plugin's notice rows are
-    // read — a human prompt, another plugin's notice, or a row whose text merely
-    // looks like a notice is ignored outright.
-    if (source.kind !== 'plugin' || source.plugin !== ROLE_NOTICE_PLUGIN) return state
-    const role = roleFromContent(content)
+    const role = roleFromEvent(event)
     // Unparseable row → unchanged state (never a wrong role, never a cleared
     // one); the same role again → the SAME object (no allocation, no phantom
     // publication, and the reference equality the registry relies on).

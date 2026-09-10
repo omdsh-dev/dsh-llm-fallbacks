@@ -16,6 +16,12 @@
  *   render NOTHING — degrade-never-crash.
  * - a version-skewed host without the session standard kit renders nothing and
  *   reads no projection at all.
+ * - the seat is a REAL hook, so the two projection reads are unconditional and
+ *   the hook count is constant across re-renders: a role that APPEARS on an
+ *   in-place re-render (the running child whose notice row just landed) and one
+ *   that disappears must both render without React's
+ *   "Rendered more hooks than during the previous render" invariant (Task 3b L2
+ *   review C-1 — the seat's React store hook is what makes this observable).
  *
  * The probe loop, the gateway round-trip and the `sessionId` plumbing are GONE
  * (Task 3b): the host pushes the value into the session's projection store, so
@@ -23,6 +29,7 @@
  * child's opening frame really carrying the key) is QA's item.
  */
 
+import { useSyncExternalStore } from 'react'
 import { cleanup, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { SubagentRoleBadge } from '../src/client/SubagentRoleBadge.tsx'
@@ -57,8 +64,7 @@ function selection(provider: string, model: string): unknown {
  * peer types, so the real seat crosses the same structural cast the component
  * reads it through) plus the locale seat.
  */
-function badgeProps(projections: Record<string, unknown>): SubagentRoleBadgeProps {
-  const useProjection = vi.fn((key: string) => projections[key])
+function propsWithSeat(useProjection: (key: string) => unknown): SubagentRoleBadgeProps {
   return {
     t,
     useProjection: useProjection as never,
@@ -67,6 +73,27 @@ function badgeProps(projections: Record<string, unknown>): SubagentRoleBadgeProp
     useInput: undefined as never,
     inputActions: undefined as never,
   }
+}
+
+/** The scripted seat: a `key → value` map lookup, no React hook involved. */
+function badgeProps(projections: Record<string, unknown>): SubagentRoleBadgeProps {
+  return propsWithSeat(vi.fn((key: string) => projections[key]))
+}
+
+/** A subscription that never fires: the transitions under test are re-renders. */
+const neverNotifies = (): (() => void) => () => {}
+
+/**
+ * The seat shape the HOST binds: `useProjection` is not a plain getter, it is
+ * `keyedObservableHook` → `observableHook` → `useSyncExternalStore` — one real
+ * React hook per call, at a fixed call position
+ * (`dsh-client-ui-renderer/lib/client.js:233-241`). The scripted seat below
+ * therefore calls a genuine React store hook, which is exactly what turns a
+ * variable seat-call count into the framework invariant instead of an invisible
+ * test artifact.
+ */
+function hookSeat(store: { values: Record<string, unknown> }): (key: string) => unknown {
+  return (key) => useSyncExternalStore(neverNotifies, () => store.values[key])
 }
 
 describe('SubagentRoleBadge — projection value', () => {
@@ -129,6 +156,59 @@ describe('SubagentRoleBadge — projection value', () => {
   it('renders a padded DECLARED role id verbatim (the projection carries the raw id)', () => {
     const { container } = render(<SubagentRoleBadge {...badgeProps({ [ROLE_PROJECTION_KEY]: ' padded ' })} />)
     expect(container.querySelector('span')?.textContent).toBe(' padded ')
+  })
+})
+
+describe('SubagentRoleBadge — hook order across re-renders (C-1)', () => {
+  it('renders the pill when the role APPEARS on an in-place re-render (absent → present)', () => {
+    // The headline live path: a running child is viewed while its log still has
+    // no notice row, then the row lands and the registry publishes — the seat
+    // starts answering a role and the component re-renders IN PLACE. The pre-fix
+    // component called the seat a SECOND time only on this render, so React 18
+    // threw "Rendered more hooks than during the previous render" instead of
+    // showing the pill.
+    const store = { values: {} as Record<string, unknown> }
+    const props = propsWithSeat(hookSeat(store))
+    const { container, rerender } = render(<SubagentRoleBadge {...props} />)
+    expect(container.firstChild).toBeNull()
+
+    store.values[ROLE_PROJECTION_KEY] = 'coder'
+    rerender(<SubagentRoleBadge {...props} />)
+
+    expect(screen.getByText('coder')).toBeTruthy()
+  })
+
+  it('drops the pill when the role DISAPPEARS on an in-place re-render (present → absent)', () => {
+    // The reverse transition is a hook-count change too (2 → 1 pre-fix): a
+    // session whose value goes away while the occupant stays mounted.
+    const store = { values: { [ROLE_PROJECTION_KEY]: 'coder' } as Record<string, unknown> }
+    const props = propsWithSeat(hookSeat(store))
+    const { container, rerender } = render(<SubagentRoleBadge {...props} />)
+    expect(screen.getByText('coder')).toBeTruthy()
+
+    store.values[ROLE_PROJECTION_KEY] = null
+    rerender(<SubagentRoleBadge {...props} />)
+
+    expect(container.firstChild).toBeNull()
+  })
+
+  it('reads BOTH seats on every render, even when the role is absent or inherit', () => {
+    // Unconditional read, in a fixed order, BEFORE any value guard — the hook
+    // count may not depend on this render's projection value.
+    const readKeys = (projections: Record<string, unknown>): string[] => {
+      const keys: string[] = []
+      const { container } = render(<SubagentRoleBadge {...propsWithSeat((key) => {
+        keys.push(key)
+        return projections[key]
+      })} />)
+      expect(container.firstChild).toBeNull()
+      cleanup()
+      return keys
+    }
+
+    expect(readKeys({})).toEqual([ROLE_PROJECTION_KEY, 'modelSelection'])
+    expect(readKeys({ [ROLE_PROJECTION_KEY]: 'inherit' })).toEqual([ROLE_PROJECTION_KEY, 'modelSelection'])
+    expect(readKeys({ [ROLE_PROJECTION_KEY]: 42 })).toEqual([ROLE_PROJECTION_KEY, 'modelSelection'])
   })
 })
 

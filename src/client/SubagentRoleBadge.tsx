@@ -23,6 +23,10 @@
  *   and no polling: a settled child's follow opening snapshot already carries
  *   the value, and a running child's change frame updates the pill. An absent
  *   key (host without the unit, or no notice row) reads as "no pill".
+ * - Hook order is render-independent (Task 3b L2 review C-1): the seat is a real
+ *   hook, so BOTH projection reads are unconditional and only their derived
+ *   values are guarded — a conditional second read would change the hook count
+ *   on the very re-render that publishes a running child's role.
  * - The hover route comes from the host's EXISTING `modelSelection` projection
  *   (`lastUsed` — the route of the LATEST recorded request), NOT from the
  *   dispatch-time route: it is a separate, richer fact, and the label says so.
@@ -90,14 +94,25 @@ export function SubagentRoleBadge(props: SubagentRoleBadgeProps): ReactNode {
   ).useProjection
   if (typeof readProjection !== 'function') return null
 
+  // BOTH seats are read UNCONDITIONALLY, in a fixed order, on every render —
+  // `useProjection` is a real hook (`keyedObservableHook` → `observableHook` →
+  // `useSyncExternalStore`, one hook per call), so a read that depends on THIS
+  // render's value would change the hook count across renders and React would
+  // throw ("Rendered more hooks than during the previous render") on exactly the
+  // path this badge exists for: a running child whose `fallbacksSubagentRole`
+  // value appears when the notice row lands. Only the DERIVED values are
+  // guarded below.
+  const rawRole = readProjection(ROLE_PROJECTION_KEY)
+  const rawModelSelection = readProjection(MODEL_SELECTION_PROJECTION_KEY)
+
   // The role id the host folded out of this session's own log; only a non-blank
   // string is a role (a foreign value, a missing key and `null` all read as
   // "no pill").
-  const role = readRoleProjectionValue(readProjection(ROLE_PROJECTION_KEY))
+  const role = readRoleProjectionValue(rawRole)
   if (role === undefined || role === INHERIT_ROLE_ID) return null
 
   // Route is a SECOND, best-effort fact: absent → the pill still shows the role.
-  const model = latestRequestRoute(readProjection(MODEL_SELECTION_PROJECTION_KEY))
+  const model = latestRequestRoute(rawModelSelection)
   return (
     <span
       className={css.badge}
