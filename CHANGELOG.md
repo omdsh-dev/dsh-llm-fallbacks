@@ -6,6 +6,32 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-09-10
+
+### Added
+
+- `triggerCodes` accepts `CONTEXT_WINDOW_EXCEEDED`: a request too big for the current model fails over to the next candidate, and because the route itself is healthy the switch is request-scoped — the from-route is recorded as failed for the step and counts against `maxSwitchesPerStep`, but is not put on cooldown and does not feed the half-open recovery counter (every other trigger code stays route-scoped, unchanged).
+- Context-window walks skip candidates whose advertised context window is not larger than the failing model's; skipped candidates are named `skipped: context-window` in the switch log, and a model that discloses no window either way is kept as a candidate.
+- `declareSeeds` accepts an optional second argument `{ set: '<name>' }` that labels the whole seed batch with a registered provenance set name; an empty, non-string, or reserved name (`bundled` / `user` / `external`) warns once and degrades to the unnamed `external` label — the seeds still apply.
+- Every seed readback and gateway `seeds` wire entry now carries a per-row `source` (`bundled`, the declared set name, `external`, or `user`), derived at read time from the live declaration registries and never persisted.
+- Rows without a live declaration — including `designer` / `librarian` rows persisted by earlier versions before the preset trim — show source `user` even though the operator never wrote them; the label means "no live declaration", not "operator-written".
+- Subagent sessions whose dispatch resolved a non-`inherit` role show a compact role badge next to the session title in the web session header; hovering shows `role → provider/model` — the effective route after any override/inject.
+- The badge covers both policy-on and policy-off dispatches; `inherit`/unresolved sessions render no badge, records live only for the host process lifetime, and the `role → model` info logs stay the durable record.
+- A session header opened before the subagent's first dispatch completes re-probes the readback briefly (~10s), so the badge appears as soon as the role record lands — no re-navigation or reload needed.
+
+### Fixed
+
+- The named `llm-fallbacks` service is now provided from inside the plugin's settings inject child — the seed write channel binds first, then the service is provided in the same callback — so service visibility implies `declareSeeds` can write. A companion declaring seeds the moment the service appears (the documented declare-on-probe pattern) no longer rejects with `settings service is unavailable` (issue #105); the first declare persists roles, with no retry needed.
+- Observable timing change: the service appears only after the settings child settles (never synchronously during `apply()`), unregisters when the settings service goes away (settings teardown or plugin dispose), returns when settings re-appear, and never appears without a settings service; a second plugin fiber applying inside the one-tick claim window degrades via its dedupe catches instead of failing.
+- The seeded persona expand chevron stays operable in a read-only view: it is no longer a native button, so the disabled form fieldset cannot grey it out and the full multi-line persona remains reachable when role rows are forced open.
+
+### Changed
+
+- The settings card renders seeded role rows as read-only reference material: no id input (the row title carries the name), the persona shows as a single-line brief with an expandable full view instead of a persona editor, and the persona revert button is gone; chain and fallback editors and the remove action are unchanged, and unseeded rows keep the full editing UI.
+- Every role row shows a source badge — `bundled` for the plugin's own presets, the declared set name (or `external` when the batch is unnamed) for companion-declared rows, and `User` otherwise; rows kept from the removed `designer` / `librarian` presets show `User` even though the operator never wrote them (the label means "no live declaration", not "operator-written").
+- A blank or missing wire `source` renders no badge — the version-skew degrade, not an error.
+- The bundled preset set shrinks from 7 to 5 roles: `designer` and `librarian` are no longer auto-declared on apply. Rows saved by earlier versions keep their persona and survive untouched, but they now show source `user` — even though the operator never wrote those rows — as ordinary editable rows.
+
 ## [0.4.2] - 2026-09-08
 
 ### Fixed
