@@ -32,11 +32,13 @@
  * Materialization (spec §9.2): append `{ id, persona }` (two keys only,
  * R4) / attach row untouched / at-default tracking / override preserved +
  * `'persona-source'` conflict / omitted id drops from the declaring
- * producer's slice while the row stays (R2). The `previous` map is the
- * DECLARING producer's own prior slice, so tracking is per producer. No
- * delta → no settings write (idempotent, AC-1). Compute → write → commit
- * registry: a failed write throws and leaves the registry unchanged
- * (retry-safe).
+ * producer's slice while the row stays (R2). Tracking is driven by the
+ * id's RESOLVED effective default — `prior` = resolved before the
+ * declare, `incoming` = resolved after the candidate slice commit — so a
+ * producer that is not the resolution winner for an id it declares never
+ * rewrites the row (F-001). No delta → no settings write (idempotent,
+ * AC-1). Compute → write → commit registry: a failed write throws and
+ * leaves the registry unchanged (retry-safe).
  *
  * @module dsh-llm-fallbacks/seeds
  */
@@ -229,8 +231,10 @@ export class FallbacksSeedManager {
    *
    * Per-id validation AS DECLARED (spec §9.3): non-string / pattern miss /
    * reserved `inherit` / duplicate-in-batch → skip + warn; valid siblings
-   * still apply (AC-5). Materializes per spec §9.2 against the DECLARING
-   * producer's own prior slice (at-default tracking is per producer),
+   * still apply (AC-5). Materializes per spec §9.2 against the id's
+   * RESOLVED effective default before/after the candidate slice commit
+   * (at-default tracking follows the resolution winner — a producer that
+   * is not the winner for an id it declares never rewrites the row),
    * writes only when the computed `{ list, rules }` differs from the
    * current composed roles (idempotent, AC-1), and commits the slice only
    * after a successful write (compute → write → commit; retry-safe). An
@@ -272,13 +276,29 @@ export class FallbacksSeedManager {
     // settings write still throws (retry-safe, KD-G5).
     const currentList = roleRows(config)
     const currentRules = roleRules(config)
-    const previous = this.registry.get(source)?.entries
-    const newList = materialize(
-      currentList,
-      personaView(entries),
-      personaView(previous ?? new Map<string, SeedRegistryEntry>()),
-      outcome.conflicts,
-    )
+    // Candidate registry: this registry with the declaring slice replaced
+    // (or deleted for an empty batch) — the state resolution would see
+    // after this declare commits. Tracking is driven by the id's RESOLVED
+    // effective default (F-001): `prior` = resolved BEFORE the declare,
+    // `incoming` = resolved AFTER the candidate commit. A producer that is
+    // not the resolution winner for an id it declares never rewrites the
+    // row, so the row persona, badge, `seedPersona`, and revert target
+    // stay mutually consistent.
+    const candidate = new Map(this.registry)
+    if (entries.size === 0) {
+      candidate.delete(source)
+    } else {
+      candidate.set(source, { seq: this.declareSeq + 1, entries })
+    }
+    const prior = new Map<string, string>()
+    const incoming = new Map<string, string>()
+    for (const id of entries.keys()) {
+      const before = this.resolveDeclared(id)?.persona
+      const after = this.resolveDeclared(id, candidate)?.persona
+      if (before !== undefined) prior.set(id, before)
+      if (after !== undefined) incoming.set(id, after)
+    }
+    const newList = materialize(currentList, incoming, prior, outcome.conflicts)
     for (const conflict of outcome.conflicts) {
       this.logger.warn(
         `llm-fallbacks: seeds: persona-source conflict for seed id ${JSON.stringify(conflict.id)} — operator row persona kept (never overwritten)`,
@@ -305,18 +325,24 @@ export class FallbacksSeedManager {
   }
 
   /**
-   * Resolve one id's live declaration across all producer slices (spec §2,
+   * Resolve one id's live declaration across producer slices (spec §2,
    * Decisions #2): the bundled preset self-declare wins for any id it
    * currently declares; otherwise the most recent non-bundled producer
    * declaring the id wins (its set name, or `external` when unnamed); no
    * live declaration ⇒ `undefined` (the row reads `user`). Single place —
-   * `effectiveRoles`, `wireStatus`, and `revert` can never disagree.
+   * `effectiveRoles`, `wireStatus`, and `revert` can never disagree. The
+   * optional `registry` argument resolves against a CANDIDATE registry
+   * (the declaring slice already replaced) — the same precedence, used by
+   * `declare` to compute the post-commit effective default for tracking.
    */
-  private resolveDeclared(id: string): { persona: string; source: SeedSource } | undefined {
-    const bundled = this.registry.get('bundled')?.entries.get(id)
+  private resolveDeclared(
+    id: string,
+    registry: ReadonlyMap<string, SeedRegistrySlice> = this.registry,
+  ): { persona: string; source: SeedSource } | undefined {
+    const bundled = registry.get('bundled')?.entries.get(id)
     if (bundled !== undefined) return { persona: bundled.persona, source: 'bundled' }
     let winner: { persona: string; source: SeedSource; seq: number } | undefined
-    for (const [label, slice] of this.registry) {
+    for (const [label, slice] of registry) {
       if (label === 'bundled') continue
       const entry = slice.entries.get(id)
       if (entry === undefined) continue
@@ -437,59 +463,54 @@ function resolveSource(
 }
 
 /**
- * The persona-only view of one producer slice — materialize's input shape
- * (spec §9.2): provenance (`set`) rides alongside in the slice but never
- * enters the row comparison, so the R2 / no-delta logic is untouched by it.
- */
-function personaView(entries: ReadonlyMap<string, SeedRegistryEntry>): Map<string, string> {
-  const personas = new Map<string, string>()
-  for (const [id, entry] of entries) personas.set(id, entry.persona)
-  return personas
-}
-
-/**
  * Materialize the row list for a declare (spec §9.2 table): existing rows
  * are copied verbatim or persona-tracked, then rows are appended for
- * declared ids with no trimmed-id match. `previous` is the DECLARING
- * producer's own prior slice — at-default tracking is per producer, so a
- * sibling producer's collision never consumes it.
+ * declared ids with no trimmed-id match. `prior` is the id's RESOLVED
+ * effective default BEFORE the declare and `incoming` the RESOLVED
+ * effective default AFTER the candidate slice commit (F-001) — a row
+ * tracks only when it sits at `prior` AND the effective default actually
+ * changed, so a producer that is not the resolution winner for an id it
+ * declares never rewrites the row. New rows append with the effective
+ * persona.
  */
 function materialize(
   rows: readonly FallbacksRole[],
-  registry: ReadonlyMap<string, string>,
-  previous: ReadonlyMap<string, string>,
+  incoming: ReadonlyMap<string, string>,
+  prior: ReadonlyMap<string, string>,
   conflicts: SeedConflict[],
 ): FallbacksRole[] {
   const next: FallbacksRole[] = []
   for (const row of rows) {
     const seedId = row.id.trim()
-    const incoming = registry.get(seedId)
-    if (incoming === undefined) {
+    const inc = incoming.get(seedId)
+    if (inc === undefined) {
       // Id omitted from the batch — row untouched (R2).
       next.push(row)
       continue
     }
-    const prior = previous.get(seedId)
-    if (prior === undefined) {
-      // Row exists, no previous default (post-restart/HMR or re-declared
-      // after a drop): conservative row-untouched — a differing persona is
-      // flagged as an operator override (spec §9.2).
-      if (row.persona !== incoming) conflicts.push({ id: seedId, kind: 'persona-source' })
+    const before = prior.get(seedId)
+    if (before === undefined) {
+      // No resolved default before the declare (post-restart/HMR or
+      // re-declared after a drop): conservative row-untouched — a differing
+      // persona is flagged as an operator override (spec §9.2).
+      if (row.persona !== inc) conflicts.push({ id: seedId, kind: 'persona-source' })
       next.push(row)
       continue
     }
-    if (row.persona === prior) {
-      // Still at the previous default → tracks companion updates (not an
-      // operator edit); the row is otherwise copied verbatim (R4).
-      next.push({ ...row, persona: incoming })
+    if (row.persona === before && inc !== before) {
+      // Row at the previous EFFECTIVE default and the effective default
+      // actually changed → tracks the winner's update (not an operator
+      // edit); the row is otherwise copied verbatim (R4).
+      next.push({ ...row, persona: inc })
       continue
     }
-    // Operator override — preserved; conflict iff it differs from the
-    // incoming default (equal → override resolved, quiet).
-    if (row.persona !== incoming) conflicts.push({ id: seedId, kind: 'persona-source' })
+    // Operator override, or no effective default change — preserved;
+    // conflict iff it differs from the incoming effective default (equal →
+    // override resolved, quiet).
+    if (row.persona !== inc) conflicts.push({ id: seedId, kind: 'persona-source' })
     next.push(row)
   }
-  for (const [id, persona] of registry) {
+  for (const [id, persona] of incoming) {
     if (!rows.some((row) => row.id.trim() === id)) next.push({ id, persona })
   }
   return next

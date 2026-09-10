@@ -969,19 +969,21 @@ describe('FallbacksSeedManager — provenance source (seed-source-provenance, sp
     expect(f.writes).toHaveLength(2) // repeated batch → zero writes
   })
 
-  it("materialize tracking is per producer: a producer's own at-default row tracks its update; a sibling collision never consumes the tracking; operator overrides survive", async () => {
+  it("materialize tracking follows the resolved winner: a producer's own at-default row tracks its update; a new winner's declare tracks the row; operator overrides survive", async () => {
     const manager = new FallbacksSeedManager({ warn: vi.fn() })
     const f = fakeIo(baseConfig())
     // A (mstar) declares coder/v1; B (external) collides with its own persona.
-    // B has no prior slice of its own, so the row is conservatively untouched
-    // (conflict) — the single-map design would have tracked B's update here.
+    // B becomes the resolution winner (most recent non-bundled), so the row —
+    // still at the previous EFFECTIVE default v1 — tracks B's update to v2
+    // (F-001 fix: tracking follows the resolved winner, not the declaring
+    // producer's own prior slice).
     await manager.declare([{ id: 'coder', persona: 'v1' }], f.io, { set: 'mstar' })
     const outcome = await manager.declare([{ id: 'coder', persona: 'v2' }], f.io)
-    expect(outcome.conflicts).toEqual([{ id: 'coder', kind: 'persona-source' }])
-    expect(f.io.read().roles.list).toEqual([{ id: 'coder', persona: 'v1' }])
+    expect(outcome.conflicts).toEqual([])
+    expect(f.io.read().roles.list).toEqual([{ id: 'coder', persona: 'v2' }])
 
-    // A re-declares v3: the row is still at A's own default (v1) → tracks A's
-    // update; B's collision did not consume the tracking.
+    // A re-declares v3: A is again the most recent non-bundled winner; the row
+    // is at the previous effective default (v2) → tracks A's update.
     await manager.declare([{ id: 'coder', persona: 'v3' }], f.io, { set: 'mstar' })
     expect(f.io.read().roles.list).toEqual([{ id: 'coder', persona: 'v3' }])
 
@@ -990,5 +992,199 @@ describe('FallbacksSeedManager — provenance source (seed-source-provenance, sp
     const outcome2 = await manager.declare([{ id: 'coder', persona: 'v4' }], f.io, { set: 'mstar' })
     expect(outcome2.conflicts).toEqual([{ id: 'coder', kind: 'persona-source' }])
     expect(f.io.read().roles.list).toEqual([{ id: 'coder', persona: 'operator' }])
+  })
+})
+
+// ── effective-default tracking (F-001 fix wave, qc1/qc2/qc3) ──
+// Pinned fix rule: materialize is driven by the id's RESOLVED effective
+// default — `prior` = the resolved default BEFORE the declare, `incoming` =
+// the resolved default AFTER the candidate slice commit (candidate = current
+// registry with this producer's slice replaced, or deleted for an empty
+// batch). A row tracks only when it sits at `prior` AND the effective default
+// actually changed; otherwise the conservative attach / operator-override /
+// `persona-source` conflict path applies unchanged. A producer that is NOT
+// the resolution winner for an id it declares never rewrites the row, so the
+// row persona, badge, `seedPersona`, and revert target stay mutually
+// consistent.
+describe('FallbacksSeedManager — effective-default tracking (F-001 fix wave)', () => {
+  it('qc1: a producer re-declaring a collided id keeps persona, source, seedPersona and revert mutually consistent (F-001 invariant)', async () => {
+    const manager = new FallbacksSeedManager({ warn: vi.fn() })
+    const f = fakeIo(baseConfig())
+    // A ({ set: 'a' }) declares coder v1; B ({ set: 'b' }) declares the same
+    // id/persona — B is newer ⇒ wins resolution.
+    await manager.declare([{ id: 'coder', persona: 'v1' }], f.io, { set: 'a' })
+    await manager.declare([{ id: 'coder', persona: 'v1' }], f.io, { set: 'b' })
+    expect(f.io.read().roles.list).toEqual([{ id: 'coder', persona: 'v1' }])
+
+    // A re-declares coder v2: A becomes the most recent non-bundled producer,
+    // so A is now the resolution winner. The row tracks to A's default and
+    // every readback channel agrees with the winner — no channel can drift
+    // (F-001: the row write is driven by the RESOLVED effective default, so
+    // persona / source / seedPersona / revert can never disagree).
+    const outcome = await manager.declare([{ id: 'coder', persona: 'v2' }], f.io, { set: 'a' })
+    expect(outcome.conflicts).toEqual([])
+    expect(f.io.read().roles.list).toEqual([{ id: 'coder', persona: 'v2' }])
+    expect(manager.effectiveRoles(f.io).roles[0]).toMatchObject({
+      persona: 'v2',
+      seeded: true,
+      source: 'a',
+      seedPersona: 'v2',
+      personaOverridden: false,
+    })
+    expect(manager.wireStatus(f.io)).toEqual([{ id: 'coder', overridden: false, source: 'a' }])
+
+    // revert at the current default is a no-write no-op restoring A's v2.
+    const writesBefore = f.writes.length
+    const revert = await manager.revert('coder', f.io)
+    expect(revert).toEqual({ reverted: true, persona: 'v2' })
+    expect(f.writes).toHaveLength(writesBefore)
+  })
+
+  it('qc1-bundled: a non-winning producer re-declaring a bundled-owned collided id leaves the row with the winner (row, badge, seedPersona, revert consistent)', async () => {
+    const manager = new FallbacksSeedManager({ warn: vi.fn() })
+    const f = fakeIo(baseConfig())
+    // A ({ set: 'a' }) declares coder v1; the bundled preset declares the
+    // same id/persona — bundled wins absolutely (Decisions #2).
+    await manager.declare([{ id: 'coder', persona: 'v1' }], f.io, { set: 'a' })
+    await manager.declare([{ id: 'coder', persona: 'v1' }], f.io, { bundled: true })
+    expect(f.io.read().roles.list).toEqual([{ id: 'coder', persona: 'v1' }])
+
+    // A re-declares coder v2 — A is NOT the resolution winner (bundled is),
+    // so the row must stay at the bundled default: no tracking, no conflict,
+    // no write.
+    const writesBefore = f.writes.length
+    const outcome = await manager.declare([{ id: 'coder', persona: 'v2' }], f.io, { set: 'a' })
+    expect(outcome.conflicts).toEqual([])
+    expect(f.io.read().roles.list).toEqual([{ id: 'coder', persona: 'v1' }])
+    expect(f.writes).toHaveLength(writesBefore)
+    expect(manager.effectiveRoles(f.io).roles[0]).toMatchObject({
+      persona: 'v1',
+      seeded: true,
+      source: 'bundled',
+      seedPersona: 'v1',
+      personaOverridden: false,
+    })
+    expect(manager.wireStatus(f.io)).toEqual([{ id: 'coder', overridden: false, source: 'bundled' }])
+
+    // revert at the current default is a no-write no-op restoring the bundled v1.
+    const revert = await manager.revert('coder', f.io)
+    expect(revert).toEqual({ reverted: true, persona: 'v1' })
+    expect(f.writes).toHaveLength(writesBefore)
+  })
+
+  it('qc2: a companion re-declaring a bundled-owned id with a different persona cannot rewrite the bundled row', async () => {
+    const manager = new FallbacksSeedManager({ warn: vi.fn() })
+    const f = fakeIo(baseConfig())
+    // Bundled preset declares task = P_b.
+    await manager.declare([{ id: 'task', persona: 'P_b' }], f.io, { bundled: true })
+    // Companion same-persona attach — quiet (no conflict, no write).
+    const attach = await manager.declare([{ id: 'task', persona: 'P_b' }], f.io)
+    expect(attach.conflicts).toEqual([])
+    expect(f.io.read().roles.list).toEqual([{ id: 'task', persona: 'P_b' }])
+
+    // Companion re-declares task = P_c — bundled still wins the label, so the
+    // row must stay P_b: no tracking, no conflict, no settings write.
+    const writesBefore = f.writes.length
+    const outcome = await manager.declare([{ id: 'task', persona: 'P_c' }], f.io)
+    expect(outcome.conflicts).toEqual([])
+    expect(f.io.read().roles.list).toEqual([{ id: 'task', persona: 'P_b' }])
+    expect(f.writes).toHaveLength(writesBefore)
+    expect(manager.effectiveRoles(f.io).roles[0]).toMatchObject({
+      persona: 'P_b',
+      seeded: true,
+      source: 'bundled',
+      seedPersona: 'P_b',
+      personaOverridden: false,
+    })
+    expect(manager.wireStatus(f.io)).toEqual([{ id: 'task', overridden: false, source: 'bundled' }])
+  })
+
+  it('qc3a: companion declares its own persona for a bundled id BEFORE the bundled declare — the bundled winner claims the row; the companion cannot rewrite it later', async () => {
+    const manager = new FallbacksSeedManager({ warn: vi.fn() })
+    const f = fakeIo(baseConfig())
+    // Companion declares task = E1 (its own persona) before the bundled declare.
+    await manager.declare([{ id: 'task', persona: 'E1' }], f.io)
+    expect(f.io.read().roles.list).toEqual([{ id: 'task', persona: 'E1' }])
+
+    // Bundled declares task = B: bundled is the resolution winner and the row
+    // is at the previous effective default (E1) → the row tracks to B.
+    const bundled = await manager.declare([{ id: 'task', persona: 'B' }], f.io, { bundled: true })
+    expect(bundled.conflicts).toEqual([])
+    expect(f.io.read().roles.list).toEqual([{ id: 'task', persona: 'B' }])
+
+    // The companion re-declares task = E2 — it is NOT the winner → row untouched.
+    const outcome = await manager.declare([{ id: 'task', persona: 'E2' }], f.io)
+    expect(outcome.conflicts).toEqual([])
+    expect(f.io.read().roles.list).toEqual([{ id: 'task', persona: 'B' }])
+    expect(manager.effectiveRoles(f.io).roles[0]).toMatchObject({
+      persona: 'B',
+      seeded: true,
+      source: 'bundled',
+      seedPersona: 'B',
+      personaOverridden: false,
+    })
+  })
+
+  it('qc3b: companion declares its own persona for a bundled id AFTER the bundled declare — the row stays at the bundled default through both companion declares', async () => {
+    const manager = new FallbacksSeedManager({ warn: vi.fn() })
+    const f = fakeIo(baseConfig())
+    // Bundled declares task = B first.
+    await manager.declare([{ id: 'task', persona: 'B' }], f.io, { bundled: true })
+    expect(f.io.read().roles.list).toEqual([{ id: 'task', persona: 'B' }])
+
+    // Companion declares its own persona E1 — bundled still wins → quiet, row untouched.
+    const attach = await manager.declare([{ id: 'task', persona: 'E1' }], f.io)
+    expect(attach.conflicts).toEqual([])
+    expect(f.io.read().roles.list).toEqual([{ id: 'task', persona: 'B' }])
+
+    // Companion re-declares E2 — still not the winner → row untouched.
+    const outcome = await manager.declare([{ id: 'task', persona: 'E2' }], f.io)
+    expect(outcome.conflicts).toEqual([])
+    expect(f.io.read().roles.list).toEqual([{ id: 'task', persona: 'B' }])
+    expect(manager.effectiveRoles(f.io).roles[0]).toMatchObject({
+      persona: 'B',
+      seeded: true,
+      source: 'bundled',
+      seedPersona: 'B',
+      personaOverridden: false,
+    })
+  })
+
+  it('single-producer tracking is bit-identical: a producer own at-default row tracks its update; a bundled preset persona update tracks', async () => {
+    const manager = new FallbacksSeedManager({ warn: vi.fn() })
+    const f = fakeIo(baseConfig())
+    // A producer's own update still tracks when the row sits at its previous default.
+    await manager.declare([{ id: 'coder', persona: 'v1' }], f.io, { set: 'a' })
+    await manager.declare([{ id: 'coder', persona: 'v2' }], f.io, { set: 'a' })
+    expect(f.io.read().roles.list).toEqual([{ id: 'coder', persona: 'v2' }])
+
+    // A bundled preset persona update still tracks.
+    await manager.declare([{ id: 'task', persona: 'P_b' }], f.io, { bundled: true })
+    await manager.declare([{ id: 'task', persona: 'P_b2' }], f.io, { bundled: true })
+    expect(f.io.read().roles.list.find((row) => row.id === 'task')).toEqual({ id: 'task', persona: 'P_b2' })
+  })
+
+  it('R2: an id omitted from the declaring batch leaves the row persona untouched; the readback may report overridden against the new winner (accepted behaviour)', async () => {
+    const manager = new FallbacksSeedManager({ warn: vi.fn() })
+    const f = fakeIo(baseConfig())
+    // A (set a) declares coder v1; B (set b) declares coder v2 — B wins and
+    // the row tracks to v2.
+    await manager.declare([{ id: 'coder', persona: 'v1' }], f.io, { set: 'a' })
+    await manager.declare([{ id: 'coder', persona: 'v2' }], f.io, { set: 'b' })
+    expect(f.io.read().roles.list).toEqual([{ id: 'coder', persona: 'v2' }])
+
+    // B re-declares WITHOUT coder (omitted from the batch): the row is
+    // untouched (R2) — B's slice drops coder, and A's v1 becomes the winner.
+    await manager.declare([{ id: 'other', persona: 'x' }], f.io, { set: 'b' })
+    expect(f.io.read().roles.list.find((row) => row.id === 'coder')).toEqual({ id: 'coder', persona: 'v2' })
+    // The readback legitimately reports the row overridden against A's
+    // now-winning default v1 — accepted R2 behaviour, not a defect.
+    expect(manager.effectiveRoles(f.io).roles.find((role) => role.id === 'coder')).toMatchObject({
+      persona: 'v2',
+      seeded: true,
+      source: 'a',
+      seedPersona: 'v1',
+      personaOverridden: true,
+    })
   })
 })

@@ -528,4 +528,34 @@ describe('bundled preset self-declaration (real apply)', () => {
       expect(roles.find((role) => role.id === seed.id)).toMatchObject({ seeded: true, source: 'external' })
     }
   })
+
+  it('qc2: a companion re-declaring a preset id with a different persona cannot rewrite the bundled row (F-001 fix)', async () => {
+    const ctx = await compose()
+    await vi.waitFor(() => {
+      expect(gateway(ctx).get().seeds).toHaveLength(presetRoles.length)
+    })
+    const task = presetRoles.find((preset) => preset.id === 'task')!
+
+    // Companion same-persona attach — quiet (bundled still wins the label).
+    await service(ctx).declareSeeds([{ id: 'task', persona: task.persona }])
+    // Companion re-declares task with a DIFFERENT persona — bundled still
+    // wins, so the row must stay at the bundled default (F-001 fix: a
+    // non-winning producer never rewrites the row).
+    await service(ctx).declareSeeds([{ id: 'task', persona: 'Companion Task' }])
+
+    const rows = gateway(ctx).get().config.roles.list
+    expect(rows.find((row) => row.id === 'task')!.persona).toBe(task.persona)
+    expect(gateway(ctx).get().seeds.find((seed) => seed.id === 'task')).toEqual({
+      id: 'task',
+      overridden: false,
+      source: 'bundled',
+    })
+    expect(service(ctx).getEffectiveRoles().roles.find((role) => role.id === 'task')).toMatchObject({
+      persona: task.persona,
+      seeded: true,
+      source: 'bundled',
+      seedPersona: task.persona,
+      personaOverridden: false,
+    })
+  })
 })
