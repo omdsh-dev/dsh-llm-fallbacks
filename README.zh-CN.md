@@ -161,7 +161,7 @@ pnpm repair:session-logs -- --apply                  # 发布修复后的后继�
 
 **`--apply` 拒绝发布它不是基于其解码的那一版。** 本次运行读取到的字节摘要会在暂存任何内容之前与文件比对，因此并发追加会在首次写入前被拒绝。若源文件在本次运行**创建**的后继发布之后发生变化，该后继会被移除；若是在接受一个已存在的相同后继之后发生变化，失败信息会指出该文件并说明需删除它以回滚——绝不会说 “nothing was published”。
 
-**退出码**：`0` = 每个日志都能加载（在严格策略下会丢行打开的会话报告为 `ok-truncated`，仍以 `0` 退出）；`1` = 至少一个日志仍被拒绝/不可修复、修复失败、有日志未发布（包括被 `--class` 排除的），或某个输入无法被检查（`skipped` 路径）；`2` = 致命错误（参数非法、缺少或无法读取 `--root`、`--apply` 未解析出 catalog、catalog 低于格式 v3、`--apply --drop-legacy-events` 缺少 `--backup`，或运行时没有 `node:zlib` zstd）。
+**退出码**：`0` = 每个日志都能加载（在严格策略下会丢行打开的会话报告为 `ok-truncated`，仍以 `0` 退出）；`1` = 至少一个日志仍被拒绝/不可修复、修复失败、有日志未发布（包括被 `--class` 排除的）、某个输入无法被检查（`skipped` 路径），或发现残留的 `session.repair.*.jsonl.zstd.tmp`；`2` = 致命错误（参数非法、缺少或无法读取 `--root`、`--apply` 未解析出 catalog、catalog 低于格式 v3、`--apply --drop-legacy-events` 缺少 `--backup`，或运行时没有 `node:zlib` zstd）。
 
 ### fallbacks/switch 的有损恢复（opt-in）
 

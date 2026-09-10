@@ -87,7 +87,9 @@
  * `ok` come from the host loader's policy (`recovery: 'recoverable'`), which is
  * what decides whether the GUI opens the session — but that policy can swallow a
  * refusal and drop the rows after it. Every `ok` log is therefore cross-checked
- * with the strict, current-format policy: when that refuses, the log is reported
+ * with the SAME loader policy under STRICT recovery (one axis apart, so a refusal
+ * there means rows were dropped rather than "not current-shaped"): when it refuses,
+ * the log is reported
  * as `ok-truncated` (a distinct token, an `okTruncated` summary count and a
  * `strictRefusal` reason in `--json`) because the session opens WITHOUT the rows
  * the strict policy rejects. Its exit code stays `0`: those sessions do load.
@@ -115,8 +117,9 @@
  * EXIT CODES: 0 = every log loads (a session that opens with rows dropped under
  * the strict policy is reported `ok-truncated` and still exits 0); 1 = at least
  * one log is still refused/unrepairable, a repair failed, a log was left
- * unpublished (including one `--class` excluded), or an input could not be
- * inspected at all (`skipped`); 2 = fatal (bad arguments, missing/unreadable
+ * unpublished (including one `--class` excluded), an input could not be inspected
+ * at all (`skipped`), or a stale `session.repair.*.jsonl.zstd.tmp` was found under
+ * the root; 2 = fatal (bad arguments, missing/unreadable
  * `--root`, `--apply` without a resolved catalog, a catalog below the required
  * format version, `--apply --drop-legacy-events` without `--backup`, or a runtime
  * without zstd).
@@ -757,9 +760,10 @@ function sha256(bytes: Buffer): string {
 }
 
 /**
- * Why the STRICT, current-format policy refuses these rows, or `null` when it
- * accepts them (or when no oracle resolved: without one there is no strict verdict
- * to report, and the structural class already says what this run knows).
+ * Why the released chain with STRICT recovery — the loader's own validation axis —
+ * refuses these rows, or `null` when it accepts them (or when no oracle resolved:
+ * without one there is no strict verdict to report, and the structural class
+ * already says what this run knows).
  *
  * The defensive copy matters: the released restore normalizes some rows in place
  * (`publish.ts` step 3), and these rows are still the ones the run may publish.
@@ -1027,7 +1031,7 @@ async function analyzeLog(candidate: LogGeneration, context: InspectContext): Pr
   if (refusal === 'ok') {
     // The lenient policy is the host loader's, so it decides "the GUI opens it" —
     // but it can swallow a refusal and silently drop the rows after it. Cross-check
-    // with the strict, current-format policy and report the difference: a log that
+    // the same policy under STRICT recovery and report the difference: a log that
     // opens with rows missing must never be printed as a clean `ok`. The legacy-row
     // population is measured here too, because such a log can carry one.
     const strictRefusal = strictRefusalOf(rows, context.catalog)
@@ -1749,7 +1753,8 @@ declared plaintext exceeds the tool's frame ceiling is refused as decompress-fai
 EXIT CODES: 0 = every log loads (a session that opens with rows dropped under the strict
 policy is reported ok-truncated and still exits 0); 1 = at least one log is still
 refused/unrepairable, a repair failed, a log was left unpublished (including one --class
-excluded), or an input could not be inspected (a skipped path); 2 = fatal (bad arguments,
+excluded), an input could not be inspected (a skipped path), or a stale
+session.repair.*.jsonl.zstd.tmp was found under the root; 2 = fatal (bad arguments,
 a missing or unreadable --root, --apply without a resolved catalog, a catalog below
 format v${CURRENT_VERSION_FLOOR}, --apply --drop-legacy-events without --backup, or a runtime
 without node:zlib zstd).`

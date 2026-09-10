@@ -161,7 +161,7 @@ The original generation is never modified and never truncated; rollback is delet
 
 **`--apply` refuses a revision it did not decode.** The digest of the bytes this run read is compared with the file before anything is staged, so a concurrent append is refused before the first write. If the source moves *after* a publication this run created, that successor is removed again; if it moves after accepting a pre-existing identical successor, the failure names that file and says to delete it — never "nothing was published".
 
-**Exit codes**: `0` = every log loads (a session that opens with rows dropped under the strict policy is `ok-truncated` and still exits `0`); `1` = at least one log is still refused/unrepairable, a repair failed, a log was left unpublished (including one `--class` excluded), or an input could not be inspected (a `skipped` path); `2` = fatal (bad arguments, a missing or unreadable `--root`, `--apply` without a resolved catalog, a catalog below format v3, `--apply --drop-legacy-events` without `--backup`, or a runtime without `node:zlib` zstd).
+**Exit codes**: `0` = every log loads (a session that opens with rows dropped under the strict policy is `ok-truncated` and still exits `0`); `1` = at least one log is still refused/unrepairable, a repair failed, a log was left unpublished (including one `--class` excluded), an input could not be inspected (a `skipped` path), or a stale `session.repair.*.jsonl.zstd.tmp` was found under the root; `2` = fatal (bad arguments, a missing or unreadable `--root`, `--apply` without a resolved catalog, a catalog below format v3, `--apply --drop-legacy-events` without `--backup`, or a runtime without `node:zlib` zstd).
 
 ### Lossy recovery for `fallbacks/switch` (opt-in)
 

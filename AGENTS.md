@@ -28,8 +28,9 @@ into dsh as a **pure mount** — see [Code constraints](#code-constraints).
   contract tests in `tests/release-scripts.spec.ts`).
 - `pnpm build` — full build: `tsc -p tsconfig.build.json` → `tsdown` →
   `build-client` → `tsc` → `verify-dist`.
-- `pnpm typecheck` — TypeScript only (host build config + project emit
-  check); faster than full build.
+- `pnpm typecheck` — TypeScript only: the host build config + project emit
+  check, then `typecheck:scripts` (`tsc -p tsconfig.scripts.json`) over
+  `scripts/**`; faster than full build.
 - `pnpm release:prepare [-- <version> | -- --patch]` — release prep
   (see [Release flow](#release-flow)).
 - `pnpm release:validate -- v<version>` — version/tag consistency check.

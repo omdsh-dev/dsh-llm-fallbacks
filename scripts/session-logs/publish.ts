@@ -408,9 +408,12 @@ export async function publishSuccessor(
  * and leaving a successor this call CREATED would leave the store changed after a
  * failed run. A created target is therefore removed again (the store is as it
  * was) while an ACCEPTED pre-existing one is never touched; either way the failure
- * names the path so rollback is actionable, and only the stale-accepted case is a
- * {@link PublishedFromStaleSourceError} (the case a caller must not describe as
- * "nothing was published").
+ * names the path so rollback is actionable. Two cases raise
+ * {@link PublishedFromStaleSourceError} — an ACCEPTED pre-existing successor (not
+ * this call's to delete) and a CREATED one whose own unlink failed — because in
+ * both a successor IS on disk and no caller may describe it as "nothing was
+ * published"; a created target that was successfully removed raises a plain error,
+ * where that wording is true.
  *
  * Always throws. Exported because this is the decision table the fix round added,
  * and it is reachable in production only by an actual race.
