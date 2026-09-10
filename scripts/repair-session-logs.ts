@@ -76,6 +76,19 @@
  * stay inside `--root`. A stale `session.repair.*.jsonl.zstd.tmp` (the residue of
  * an interrupted run) is reported too, and never deleted by this tool.
  *
+ * THE TEXT REPORT IS LIVE: the header and the input diagnostics print as soon as
+ * discovery is done, every per-log line prints the moment that log has been
+ * triaged (and, under `--apply`, published), and only the by-class table and the
+ * summary line wait for the end of the walk — so a run that dies mid-walk (a
+ * crash, an OOM, a Ctrl-C, a closed stdout) keeps the lines it has already written
+ * out (stream bytes not yet flushed can still be lost with the process). `--json`
+ * is unchanged: ONE document built from the finished run.
+ * `--quiet` is unchanged too (see its own contract below). A consumer that stops
+ * reading — a closed stdout/stderr, the ordinary `| head -n 5` — is not a store
+ * event: the first EPIPE stops writes to that stream, the run still finishes (an
+ * `--apply` pass publishes every remaining successor) and the exit code keeps
+ * describing the store (see `pipeSafeWriter`).
+ *
  * `--class NAME` restricts RULE APPLICATION to one class (default: all rules),
  * which is what `--apply` will repair. It never narrows the listing, the class
  * table or the exit code: the report's `repairable` verdict is always computed
@@ -528,12 +541,20 @@ async function readableDirectoryProblem(dir: string): Promise<string | null> {
  * row fails loudly (the log is then reported as `decompress-failed`, never
  * silently truncated).
  *
+ * Frames are consumed one at a time from ANY iterable (the publisher's decoder is
+ * a generator), so the frames are never joined into one string and no array of every
+ * line is built. Each frame's own plaintext is materialized whole, and the event
+ * batch is ONE frame — so that frame is the session's whole event plaintext (see the
+ * frame ceiling in `session-logs/publish.ts`). A line split across two frames is
+ * reassembled exactly like concatenating the frames first would, so the framing
+ * stays irrelevant to the row stream.
+ *
  * @param frames decoded frame plaintexts, in file order.
  */
-export function decodeRows(frames: readonly string[]): ParsedRow[] {
+export function decodeRows(frames: Iterable<string>): ParsedRow[] {
   const rows: ParsedRow[] = []
-  for (const line of frames.join('').split('\n')) {
-    if (line.length === 0) continue
+  const push = (line: string): void => {
+    if (line.length === 0) return
     let record: unknown
     try {
       record = JSON.parse(line)
@@ -545,26 +566,31 @@ export function decodeRows(frames: readonly string[]): ParsedRow[] {
     }
     if (rows.length === 0) {
       rows.push({ seq: 0, ...(record as Record<string, unknown>) } as unknown as ParsedRow)
-      continue
+      return
     }
     if (typeof (record as Record<string, unknown>)['type'] !== 'string') {
       throw new Error(`row ${rows.length + 1} has no string "type"`)
     }
     rows.push(record as unknown as ParsedRow)
   }
+  // One frame's plaintext at a time: only the current line and the current frame
+  // are alive, and the frame's last (possibly partial) line is carried into the
+  // next frame so a line split across a frame boundary still parses.
+  let pending = ''
+  for (const frame of frames) {
+    const text = pending === '' ? frame : pending + frame
+    let start = 0
+    for (;;) {
+      const end = text.indexOf('\n', start)
+      if (end < 0) break
+      push(text.slice(start, end))
+      start = end + 1
+    }
+    pending = text.slice(start)
+  }
+  push(pending)
   if (rows.length === 0) throw new Error('the log carries no JSONL record')
   return rows
-}
-
-/**
- * Canonical successor filename for one generation.
- *
- * Mirrors the released `generationLogFilename` (and `publish.ts`'s private
- * `successorFilename`, which is not exported): version 0 keeps the suffix-only
- * name, later generations carry `v<N>`.
- */
-export function successorFilename(generation: number): string {
-  return generation === 0 ? 'session.jsonl.zstd' : `session.v${generation}.jsonl.zstd`
 }
 
 /* ------------------------------------------------------------------ */
@@ -800,7 +826,20 @@ interface InspectContext {
   rules: readonly LogRule[]
   dropLegacyEvents: boolean
   catalog: CatalogHandle | null
-  decodeZstdFrames(bytes: Buffer): string[]
+  /**
+   * Canonical successor filename for one generation: the publisher's exported
+   * rule, taken from the same module instance that publishes (this module is
+   * imported dynamically, AFTER the `node:zlib` zstd runtime probe, so the CLI
+   * cannot import this statically). One implementation — no local copy here.
+   */
+  successorFilename(version: number): string
+  /**
+   * The publisher's frame decoder, one frame's plaintext at a time (`decodeRows`
+   * consumes it lazily, so no two frames are materialized at once). Typed as an
+   * iterable — not `string[]` — on purpose: the array form would hold every frame,
+   * the whole event batch included, simultaneously.
+   */
+  decodeFrameTexts(bytes: Buffer): Iterable<string>
   publishSuccessor: (
     logPath: string,
     rows: readonly ParsedRow[],
@@ -1048,7 +1087,7 @@ async function analyzeLog(candidate: LogGeneration, context: InspectContext): Pr
     // successor from any other revision (C-2): decoding and publishing must be
     // about the same bytes.
     sourceDigest = sha256(sourceBytes)
-    rows = decodeRows(context.decodeZstdFrames(sourceBytes))
+    rows = decodeRows(context.decodeFrameTexts(sourceBytes))
   } catch (error) {
     return {
       ...base,
@@ -1194,8 +1233,18 @@ async function analyzeLog(candidate: LogGeneration, context: InspectContext): Pr
   // is still reported `repairable` from the rule registry alone), and `--apply`
   // was already refused as fatal by the caller — which is why the null case is
   // checked here rather than assumed away.
+  //
+  // The name comes from the publisher's own exported rule (no local copy). Note
+  // the two INPUTS differ: this probe uses the resolved catalog's declared
+  // `currentVersion`, while `publishSuccessor` derives its target from the version
+  // the RESTORED header settles on. They agree for every catalog whose restore
+  // settles at the version it declares (the released one does — its successor is
+  // read back and pinned to that version before publication); a catalog that
+  // declared one version and settled at another would leave this probe looking for
+  // a name the publication never used, so report mode alone could call such a log
+  // unpublished while `--apply` accepts the existing successor as byte-identical.
   const catalog = context.catalog
-  const expected = catalog === null ? null : successorFilename(catalog.catalog.currentVersion)
+  const expected = catalog === null ? null : context.successorFilename(catalog.catalog.currentVersion)
   const successorPath = expected === null ? null : join(candidate.sessionDir, expected)
   const existingSuccessor =
     successorPath !== null && (await fileExists(successorPath)) ? successorPath : null
@@ -1316,7 +1365,7 @@ async function analyzeLog(candidate: LogGeneration, context: InspectContext): Pr
  */
 async function classifyFile(path: string, context: InspectContext): Promise<RefusalClass> {
   try {
-    const rows = decodeRows(context.decodeZstdFrames(await readFile(path)))
+    const rows = decodeRows(context.decodeFrameTexts(await readFile(path)))
     // The report's structural pass uses the RUN'S policy rules (not the default
     // registry): an existing successor is judged by the same rule set this run was
     // invoked with. The catalog-null arm is DEFENSIVE — this function's only call
@@ -1374,9 +1423,34 @@ function policyRules(dropLegacyEvents: boolean): readonly LogRule[] {
 }
 
 /**
+ * The live progress seam of one walk: the text report uses it to print each log's
+ * line while the run is still working, instead of buffering the whole report until
+ * the walk ends. A run that dies mid-walk (a crash, an OOM, a Ctrl-C, a closed
+ * stdout) therefore loses at most the output its stream had not written out yet.
+ * `--json` — and every library caller — passes no sink and sees the buffered
+ * behaviour.
+ */
+export interface RunProgress {
+  /**
+   * Discovery is done and the catalog is resolved: everything the text report
+   * prints BEFORE the first per-log line is now known — the header, the inputs the
+   * walk could not inspect (`skipped`) and the stale staging residue.
+   */
+  onDiscovery(discovery: DiscoveryResult, catalog: RunResult['catalog']): void
+  /**
+   * One finished log, in walk order. Called after all of that log's own work
+   * (classification, proof and any publication) is done.
+   */
+  onLog(log: LogOutcome): void
+}
+
+/**
  * Do the work: resolve the oracle, triage every candidate, and publish when
  * `--apply` asks for it.
  *
+ * @param progress optional live sink; see {@link RunProgress}. Every callback
+ *   fires after the corresponding fact is known, so no fatal path (all of which
+ *   precede discovery) can report a partial line.
  * @throws FatalError on a missing or unreadable `--root`, a runtime without
  *   `node:zlib` zstd, `--apply` without a resolved catalog, a resolved catalog
  *   below {@link REQUIRED_CATALOG_VERSION}, or `--apply --drop-legacy-events`
@@ -1385,6 +1459,7 @@ function policyRules(dropLegacyEvents: boolean): readonly LogRule[] {
 export async function runRepair(
   options: CliOptions,
   env: NodeJS.ProcessEnv = process.env,
+  progress?: RunProgress,
 ): Promise<RunResult> {
   // The lossy opt-in is the one write that removes data from the readable
   // session, so an `--apply` run must not proceed without a byte copy of the only
@@ -1425,6 +1500,18 @@ export async function runRepair(
   const catalogProblem = catalog === null ? null : catalogVersionRefusal(catalog)
   if (catalogProblem !== null) throw new FatalError(catalogProblem)
 
+  // Built once and used by BOTH the progress callback and the returned result, so
+  // a streaming run reports exactly the catalog the finished document carries.
+  const catalogReport: RunResult['catalog'] = catalog === null
+    ? { resolved: false }
+    : {
+      resolved: true,
+      modulePath: catalog.modulePath,
+      resolvedBy: catalog.resolvedBy,
+      packageVersion: catalog.packageVersion,
+      currentVersion: catalog.catalog.currentVersion,
+    }
+
   const reportRules = policyRules(options.dropLegacyEvents)
   const rules =
     options.classFilter === null
@@ -1432,6 +1519,9 @@ export async function runRepair(
       : reportRules.filter((rule) => rule.class === options.classFilter)
   const discovery = await findGenerations(options.root)
   if (discovery.rootFailure !== null) throw new FatalError(discovery.rootFailure)
+  // Every fatal check is behind us, so a text run may report its header now: the
+  // resolved catalog and the walk's inputs are known, the logs are not.
+  progress?.onDiscovery(discovery, catalogReport)
   const context: InspectContext = {
     apply: options.apply,
     backup: options.backup,
@@ -1440,30 +1530,28 @@ export async function runRepair(
     rules,
     dropLegacyEvents: options.dropLegacyEvents,
     catalog,
-    decodeZstdFrames: publishing.decodeZstdFrames,
+    successorFilename: publishing.successorFilename,
+    decodeFrameTexts: publishing.decodeZstdFrameTexts,
     publishSuccessor: publishing.publishSuccessor,
     stalePublicationPath: (error) =>
       error instanceof publishing.PublishedFromStaleSourceError ? error.successorPath : null,
   }
 
   const logs: LogOutcome[] = []
-  for (const candidate of discovery.generations) logs.push(await inspectLog(candidate, context))
+  for (const candidate of discovery.generations) {
+    const log = await inspectLog(candidate, context)
+    logs.push(log)
+    // Report THIS log now (its publication, if any, is complete): a later crash,
+    // OOM or Ctrl-C can only take down output this run had not written out yet.
+    progress?.onLog(log)
+  }
 
   const summary = summarize(logs, discovery.skipped.length)
   return {
     root: options.root,
     mode: options.apply ? 'apply' : 'report',
     classFilter: options.classFilter,
-    catalog:
-      catalog === null
-        ? { resolved: false }
-        : {
-          resolved: true,
-          modulePath: catalog.modulePath,
-          resolvedBy: catalog.resolvedBy,
-          packageVersion: catalog.packageVersion,
-          currentVersion: catalog.catalog.currentVersion,
-        },
+    catalog: catalogReport,
     logs,
     summary,
     skipped: discovery.skipped,
@@ -1523,15 +1611,52 @@ export interface CliIO {
   err(text: string): void
 }
 
-/** The default sinks: one line per call on stdout / stderr. */
+/**
+ * A stream's guarded writer, once: the closed-pipe state belongs to the STREAM, so a
+ * second `consoleIO()` in the same process reuses the writer instead of stacking a
+ * second 'error' listener on a process stream.
+ */
+const guardedWriters = new WeakMap<NodeJS.WriteStream, (text: string) => void>()
+
+/**
+ * A writer for ONE process stream that survives its reader going away.
+ *
+ * Piping the report into a consumer that stops reading (`… | head -n 5`) closes the
+ * read end, and the next write then raises `EPIPE` as an UNHANDLED `'error'` event:
+ * a raw `node:events … write EPIPE` stack trace and an exit code that says nothing
+ * about the store — the exact opposite of what this tool's exit codes mean. A reader
+ * is not a store event, so the FIRST `EPIPE` marks this stream dead, every later
+ * write to it is skipped, and the run itself finishes normally (an `--apply` pass
+ * still publishes every remaining successor) with the exit code it computed.
+ *
+ * A stream error that is NOT `EPIPE` keeps the previous behaviour (an uncaught
+ * error): a report that genuinely could not be delivered (a full disk, an I/O
+ * failure) must never be swallowed silently.
+ */
+function pipeSafeWriter(stream: NodeJS.WriteStream): (text: string) => void {
+  const existing = guardedWriters.get(stream)
+  if (existing !== undefined) return existing
+  let closed = false
+  stream.on('error', (error: NodeJS.ErrnoException) => {
+    if (error.code === 'EPIPE') {
+      closed = true
+      return
+    }
+    throw error
+  })
+  const write = (text: string): void => {
+    if (closed) return
+    stream.write(`${text}\n`)
+  }
+  guardedWriters.set(stream, write)
+  return write
+}
+
+/** The default sinks: one line per call on stdout / stderr, closed-pipe safe. */
 export function consoleIO(): CliIO {
   return {
-    out: (text) => {
-      process.stdout.write(`${text}\n`)
-    },
-    err: (text) => {
-      process.stderr.write(`${text}\n`)
-    },
+    out: pipeSafeWriter(process.stdout),
+    err: pipeSafeWriter(process.stderr),
   }
 }
 
@@ -1598,24 +1723,31 @@ export function lossyResultNotice(result: RunResult): string | null {
   ].join('\n')
 }
 
-/** The text report (per-log lines + per-class table + summary line). */
-function reportText(result: RunResult, io: CliIO, quiet: boolean): void {
+/** The run's report minus the parts that only exist once the walk is over. */
+type ReportHead = Omit<RunResult, 'logs' | 'summary' | 'exitCode'>
+
+/**
+ * The text report's head: the header lines plus the input diagnostics, i.e.
+ * everything that precedes the first per-log line. A streaming text run prints it
+ * the moment discovery is done (see {@link textProgress}).
+ */
+function reportHead(head: ReportHead, io: CliIO): void {
   io.out(
     `${PROGRAM}: ${
-      result.mode === 'apply' ? 'apply (publishes successor generations; originals are never modified)' : 'report only (no write)'
+      head.mode === 'apply' ? 'apply (publishes successor generations; originals are never modified)' : 'report only (no write)'
     }`,
   )
-  io.out(`root: ${result.root}`)
+  io.out(`root: ${head.root}`)
   io.out(
-    result.catalog.resolved
-      ? `catalog: ${result.catalog.modulePath} (v${result.catalog.currentVersion},`
-        + ` package ${result.catalog.packageVersion ?? 'version unknown'}, resolved by ${result.catalog.resolvedBy})`
+    head.catalog.resolved
+      ? `catalog: ${head.catalog.modulePath} (v${head.catalog.currentVersion},`
+        + ` package ${head.catalog.packageVersion ?? 'version unknown'}, resolved by ${head.catalog.resolvedBy})`
       : `catalog: none resolved — classification is STRUCTURAL ONLY and --apply would refuse `
         + `(no --catalog, no ${CATALOG_ENV_VAR}, no dsh on PATH, no npx install)`,
   )
-  if (result.classFilter !== null) {
+  if (head.classFilter !== null) {
     io.out(
-      `class filter: ${result.classFilter} (rule application only; the listing, the class table and the exit code `
+      `class filter: ${head.classFilter} (rule application only; the listing, the class table and the exit code `
       + 'still cover every log, and the repairable verdict is always computed over the full policy)',
     )
   }
@@ -1624,23 +1756,39 @@ function reportText(result: RunResult, io: CliIO, quiet: boolean): void {
   // (named with its errno) and the residue of an interrupted publication. These are
   // diagnostics about the ROOT, not per-log report rows, and each of them makes the
   // run exit 1 — which is what the README promises.
-  if (result.logs.length === 0 && result.skipped.length === 0 && result.staleStagingFiles.length === 0) {
-    io.out(`  no session log with a canonical generation below v${CURRENT_VERSION_FLOOR} under this root`)
-  }
-  for (const entry of result.skipped) {
+  for (const entry of head.skipped) {
     io.out(`  ${'skipped'.padEnd(TOKEN_WIDTH)} ${entry.path}: ${entry.reason}`)
   }
-  for (const path of result.staleStagingFiles) {
+  for (const path of head.staleStagingFiles) {
     io.out(
       `  ${'stale staging'.padEnd(TOKEN_WIDTH)} ${path}: residue of an interrupted publication; `
       + 'this tool never removes it, delete it once no run is active',
     )
   }
+}
+
+/** One per-log line — the single place the per-log report format lives. */
+function logLine(log: LogOutcome, mode: RunMode): string {
+  return `  ${token(log, mode).padEnd(TOKEN_WIDTH)} ${log.path} (v${log.generation}): ${log.detail}`
+}
+
+/**
+ * The text report's tail, printed once the walk is over: the empty-root line, the
+ * by-class table (unless `--quiet`) and the summary line. The per-log lines are
+ * NOT printed here — a text run emitted each of them during the walk (see
+ * {@link textProgress}), which is what lets an interrupted run keep them.
+ *
+ * The empty-root line only prints when there is no per-log line at all (no
+ * candidate, no skipped entry, no stale staging file), so keeping it in the tail
+ * leaves the printed order identical to the buffered report — a streaming run
+ * simply learns `logs.length` one walk later than it learns the header.
+ */
+function reportTail(result: RunResult, io: CliIO, quiet: boolean): void {
+  if (result.logs.length === 0 && result.skipped.length === 0 && result.staleStagingFiles.length === 0) {
+    io.out(`  no session log with a canonical generation below v${CURRENT_VERSION_FLOOR} under this root`)
+  }
 
   if (!quiet) {
-    for (const log of result.logs) {
-      io.out(`  ${token(log, result.mode).padEnd(TOKEN_WIDTH)} ${log.path} (v${log.generation}): ${log.detail}`)
-    }
     io.out('')
     io.out('class                        logs')
     for (const name of REFUSAL_CLASSES) {
@@ -1657,6 +1805,31 @@ function reportText(result: RunResult, io: CliIO, quiet: boolean): void {
     + `| not selected ${summary.notSelected} | refused ${summary.refused} `
     + `| skipped ${summary.skipped} | stale staging ${result.staleStagingFiles.length}`,
   )
+}
+
+/**
+ * The text report's live sink: the head prints at discovery and each per-log line
+ * prints as that log finishes, so an interrupted run keeps what it has already
+ * written out (R-004). `--quiet` still prints no per-log line (its documented
+ * contract: only the per-log lines and the by-class table are suppressed), and it
+ * still prints the head and the summary.
+ */
+function textProgress(options: CliOptions, io: CliIO): RunProgress {
+  const mode: RunMode = options.apply ? 'apply' : 'report'
+  return {
+    onDiscovery: (discovery, catalog) =>
+      reportHead({
+        root: options.root,
+        mode,
+        classFilter: options.classFilter,
+        catalog,
+        skipped: discovery.skipped,
+        staleStagingFiles: discovery.staleStagingFiles,
+      }, io),
+    onLog: (log) => {
+      if (!options.quiet) io.out(logLine(log, mode))
+    },
+  }
 }
 
 /** The machine-readable report: the same data the text report prints. */
@@ -1678,9 +1851,12 @@ export async function execute(
 ): Promise<number> {
   if (options.apply) io.err(preconditionNotice())
   if (options.apply && options.dropLegacyEvents) io.err(lossyApplyNotice())
+  // Text mode streams the report through the walk; `--json` passes no sink and
+  // stays ONE document built from the finished result.
+  const progress = options.json ? undefined : textProgress(options, io)
   let result: RunResult
   try {
-    result = await runRepair(options, env)
+    result = await runRepair(options, env, progress)
   } catch (error) {
     if (error instanceof FatalError) {
       io.err(`${PROGRAM}: ${error.message}`)
@@ -1689,7 +1865,7 @@ export async function execute(
     throw error
   }
   if (options.json) reportJson(result, io)
-  else reportText(result, io, options.quiet)
+  else reportTail(result, io, options.quiet)
   const lossy = lossyResultNotice(result)
   if (lossy !== null) io.err(lossy)
   return result.exitCode
@@ -1801,6 +1977,12 @@ under --root. The successor is linked into the session directory without observi
 host's flock lease (that lease is host-internal and cannot be taken from this repo), so
 a dsh that is still appending to the old generation would be orphaned once the host
 prefers the successor. Stop dsh first. Rollback: delete the successor generation.
+
+CLOSED OUTPUT: a consumer that stops reading the report — a closed stdout or stderr,
+the ordinary "| head -n 5" — is NOT a store event. The first EPIPE stops further
+writes to that stream (no stack trace), while the run itself still finishes: an
+--apply pass publishes every remaining successor, and the exit code keeps describing
+the STORE (see EXIT CODES). Any other stream error is not swallowed.
 
 RUNTIME: reading and writing session logs needs node:zlib zstd (Node >= 22.15, while
 engines.node allows >= 22); a runtime without it fails closed with exit 2. A frame whose

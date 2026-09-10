@@ -154,24 +154,42 @@ function recordLine(record: Record<string, unknown>, subject: string): string {
  * frame holds EXACTLY the header line, the second (when the log has events)
  * holds the event batch.
  *
+ * The event batch is folded one line at a time into a byte chunk list: each
+ * event's JSON string is dropped as soon as its chunk exists, so those strings
+ * never accumulate. The chunk list is then concatenated ONCE for the compressor,
+ * so the batch's whole plaintext DOES exist at that moment — as that single
+ * contiguous buffer, which is the batch's peak (the per-record chunks it was built
+ * from are still referenced by the list while it lives). What the fold avoids is a
+ * SECOND copy of the batch, not every copy: no `join('')` string is built beside
+ * the chunks. The bytes are the same ones a `join('')` + encode would produce.
+ *
  * @param headerRecord released current header record.
  * @param eventRecords released current event records, in log order.
  * @returns the complete container bytes.
  */
 export function encodeZstdFrames(
   headerRecord: Record<string, unknown>,
-  eventRecords: readonly Record<string, unknown>[],
+  eventRecords: Iterable<Record<string, unknown>>,
 ): Buffer {
   const frames = [compressFrame(recordLine(headerRecord, 'session header'))]
-  if (eventRecords.length > 0) {
-    const batch = eventRecords.map((record, index) => recordLine(record, `session event ${index}`)).join('')
-    frames.push(compressFrame(batch))
+  const batch: Buffer[] = []
+  let index = 0
+  for (const record of eventRecords) {
+    batch.push(Buffer.from(recordLine(record, `session event ${index}`), 'utf8'))
+    index += 1
   }
+  if (batch.length > 0) frames.push(compressFrame(Buffer.concat(batch)))
   return Buffer.concat(frames)
 }
 
 /**
- * Decode every frame of one concatenated container, in file order.
+ * Decode every frame of one concatenated container, in file order, ONE FRAME AT A
+ * TIME: the consumer receives frame N's plaintext and decides when to ask for frame
+ * N+1, so this generator holds ONE frame's plaintext at a time and never two. That
+ * bounds the FRAME, not the session: the event batch is a single frame, so it IS the
+ * session's whole event plaintext (see {@link MAX_FRAME_PLAINTEXT_BYTES}). The frame
+ * STRUCTURE (the scanner) is still walked before the first frame's plaintext is
+ * produced, so a torn or corrupt container is refused up front.
  *
  * Bounded: the scanner reports each frame's DECLARED content size, a declaration
  * above {@link MAX_FRAME_PLAINTEXT_BYTES} is refused before any decompression, and
@@ -180,10 +198,10 @@ export function encodeZstdFrames(
  * coded exit), never an out-of-memory crash.
  *
  * @param bytes container bytes (an original log or a published generation).
- * @returns the plaintext of each frame.
+ * @yields the plaintext of each frame, in file order.
  */
-export function decodeZstdFrames(bytes: Buffer): string[] {
-  return scanZstdFrames(bytes).map(({ start, end, declaredBytes }, index) => {
+export function* decodeZstdFrameTexts(bytes: Buffer): Generator<string> {
+  for (const [index, { start, end, declaredBytes }] of scanZstdFrames(bytes).entries()) {
     if (declaredBytes !== null && declaredBytes > MAX_FRAME_PLAINTEXT_BYTES) {
       throw new Error(
         `refusing to decompress Zstandard frame ${index} at byte ${start}: it declares ${declaredBytes} bytes of `
@@ -206,13 +224,26 @@ export function decodeZstdFrames(bytes: Buffer): string[] {
         + `${plaintext.length}`,
       )
     }
-    return plaintext.toString('utf8')
-  })
+    yield plaintext.toString('utf8')
+  }
+}
+
+/**
+ * Materializing convenience over {@link decodeZstdFrameTexts}: every frame's
+ * plaintext as one array. Specification code uses it as the independent read-back
+ * oracle; nothing on the tool's own path needs the whole container in memory, so
+ * production code consumes the generator instead.
+ *
+ * @param bytes container bytes.
+ * @returns the plaintext of each frame, in file order.
+ */
+export function decodeZstdFrames(bytes: Buffer): string[] {
+  return [...decodeZstdFrameTexts(bytes)]
 }
 
 /** Compress one frame with the released writer's checksummed options. */
-function compressFrame(text: string): Buffer {
-  return zstdCompressSync(Buffer.from(text, 'utf8'), ZSTD_CHECKSUM_OPTIONS)
+function compressFrame(text: string | Buffer): Buffer {
+  return zstdCompressSync(typeof text === 'string' ? Buffer.from(text, 'utf8') : text, ZSTD_CHECKSUM_OPTIONS)
 }
 
 /**
@@ -296,8 +327,16 @@ function sizeToNumber(buffer: Buffer, offset: number, width: number): number | n
  * Canonical successor filename for one generation (SSOT:
  * `generationLogFilename` in `@deepseek-ai/dsh-session-persistence-jsonl`):
  * version 0 keeps the suffix-only name, later generations carry `v<N>`.
+ *
+ * Exported because this is the ONE implementation of the rule: the CLI's
+ * report-mode existing-successor probe resolves the same name through this
+ * function, which it receives from `runRepair`'s dynamic import of this module
+ * (a static import would defeat the `node:zlib` zstd runtime probe that must run
+ * first). `publishSuccessor` derives its target from the RESTORED header's
+ * version, the CLI's probe from the resolved catalog's declared
+ * `currentVersion` — see the probe's comment in `repair-session-logs.ts`.
  */
-function successorFilename(version: number): string {
+export function successorFilename(version: number): string {
   return version === 0 ? 'session.jsonl.zstd' : `session.v${version}.jsonl.zstd`
 }
 
@@ -362,9 +401,15 @@ export async function publishSuccessor(
     throw new Error(`refusing to publish the successor generation over its own source: ${logPath}`)
   }
 
+  // The released encoder's records are handed to `encodeZstdFrames` one at a time
+  // (lazily): materializing them all first would hold a second copy of the session
+  // alongside the restored artifact it was built from.
+  const encodedEvents = function* (): Generator<Record<string, unknown>> {
+    for (const event of artifact.events) yield handle.catalog.encodeCurrentEvent(event)
+  }
   const bytes = encodeZstdFrames(
     handle.catalog.encodeCurrentHeader(artifact.header, artifact.inheritedEventCount),
-    artifact.events.map((event) => handle.catalog.encodeCurrentEvent(event)),
+    encodedEvents(),
   )
 
   const temporaryPath = join(dirname(logPath), `session.repair.${randomBytes(6).toString('hex')}.jsonl.zstd.tmp`)
@@ -474,19 +519,27 @@ function verifyGeneration(
   bytes: Buffer,
   expectedGeneration: number,
 ): ReleasedArtifact {
-  const [headerFrame, ...eventFrames] = decodeZstdFrames(bytes)
-  if (headerFrame === undefined) throw new Error('published generation carries no Zstandard frame')
-  if (headerFrame.indexOf('\n') !== headerFrame.length - 1) {
-    throw new Error('published generation frame 1 is not exactly one header line')
+  // The staged container is read back frame by frame: no array of every frame's
+  // plaintext, no joined event batch and no split of it — each frame's lines are
+  // decoded as that frame is decompressed.
+  let restore: ReturnType<ReleasedCatalog['createRestore']> | null = null
+  for (const frame of decodeZstdFrameTexts(bytes)) {
+    if (restore === null) {
+      if (frame.indexOf('\n') !== frame.length - 1) {
+        throw new Error('published generation frame 1 is not exactly one header line')
+      }
+      restore = catalog.createRestore(JSON.parse(frame.slice(0, -1)), {
+        recovery: 'strict',
+        validation: 'current',
+      })
+      continue
+    }
+    for (const line of frame.split('\n')) {
+      if (line.length === 0) continue
+      restore.decodeRow(JSON.parse(line))
+    }
   }
-  const restore = catalog.createRestore(JSON.parse(headerFrame.slice(0, -1)), {
-    recovery: 'strict',
-    validation: 'current',
-  })
-  for (const line of eventFrames.join('').split('\n')) {
-    if (line.length === 0) continue
-    restore.decodeRow(JSON.parse(line))
-  }
+  if (restore === null) throw new Error('published generation carries no Zstandard frame')
   const artifact = restore.finish()
   if (artifact.header.version !== expectedGeneration) {
     throw new Error(
