@@ -526,12 +526,14 @@ describe('role notice — behavioural (public call path)', () => {
     expect(textOf(caller[1]!)).toBe('[role: scout]')
   })
 
-  it('reports an UNREGISTERED provider as a skip without a debug line (case l arm)', async () => {
+  it('reports an UNREGISTERED provider as a skip with ONE surface-naming debug line (case l arm)', async () => {
     ctx = new Context()
     const debug = vi.fn()
-    // `spawn` is NOT in the provider table: `personaGate` returns `unknown`, and
-    // that verdict stays SILENT (the native start fails loud `NO_PROVIDER` its own
-    // way — the seam must not shadow that contract).
+    // `spawn` is NOT in the provider table: `personaGate` returns `unknown`. The
+    // request stays untouched (the native start fails loud `NO_PROVIDER` its own
+    // way), but the declared persona IS undelivered — a skip reason like any
+    // other, so the plan Errata's "one debug line per skip reason naming the
+    // surface" applies (Task 4 review C-4).
     const fake = fakeSubagents(childIdFromLabel, { nocap: { capabilities: { persona: false } } })
     ctx.provide('subagents', fake.service)
     installSubagentSeam(ctx, { roleIds: () => ROLE_IDS, roles: () => ROLES, debug })
@@ -540,20 +542,21 @@ describe('role notice — behavioural (public call path)', () => {
 
     await start('spawn', { prompt: [{ type: 'text', text: assignment('coder') }], label: 'child-unknown' })
     const unknown = admittedMessages(await drivePreStep(ctx, childAgent('child-unknown'), [claimed], 1))
-    // The suffix is the ONLY signal this verdict produces — and it proves the
-    // merge ran and reported the undelivered declared persona.
+    // The suffix is the row's signal; the debug line is the operator's.
     expect(textOf(unknown[1]!)).toBe('[role: coder] (persona not applied)')
-    expect(debug).not.toHaveBeenCalled()
+    expect(debug).toHaveBeenCalledTimes(1)
+    expect(String(debug.mock.calls[0]![0])).toContain("no subagent provider 'spawn' is registered")
+    expect(String(debug.mock.calls[0]![0])).toContain('one-shot')
 
-    // Positive control for the silence: the SAME merge through a REGISTERED but
-    // capability-less provider produces the same suffix AND one contained line,
-    // so "no debug" above is the unknown verdict's documented silence rather
-    // than a persona path that never ran.
+    // Positive control for the DISCRIMINATION: the SAME merge through a
+    // REGISTERED but capability-less provider produces the same suffix with its
+    // OWN line — so the line above names the unknown verdict and not a persona
+    // path that never ran.
     await start('nocap', { prompt: [{ type: 'text', text: assignment('coder') }], label: 'child-unknown-cap' })
     const capped = admittedMessages(await drivePreStep(ctx, childAgent('child-unknown-cap'), [claimed], 1))
     expect(textOf(capped[1]!)).toBe('[role: coder] (persona not applied)')
-    expect(debug).toHaveBeenCalledTimes(1)
-    expect(String(debug.mock.calls[0]![0])).toContain('lacks the persona capability')
+    expect(debug).toHaveBeenCalledTimes(2)
+    expect(String(debug.mock.calls[1]![0])).toContain('lacks the persona capability')
   })
 
   it('keeps a declared-persona skip reported when a later resume recomputes it (case h + sticky verdict)', async () => {

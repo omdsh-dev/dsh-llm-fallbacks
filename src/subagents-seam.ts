@@ -54,6 +54,12 @@
  * `noticeEmitted` marker is exposed here for the caller's cleanup sites
  * (`agent/disposed` + plugin dispose, exactly like the record map).
  *
+ * Durable role visibility (plan Task 3b): the SAME install point registers the
+ * host-side session projection unit (`./role-projection.ts`) that folds that
+ * notice row out of the child's own log, so the session-header badge can show
+ * the role for a settled child and after a host restart — a read of the SAME
+ * single write primitive, never a second one.
+ *
  * Degrade-never-crash: an absent/reshaped service, an unexpected result
  * shape, or any throwing bookkeeping degrades to the native path with at most
  * ONE contained debug log — a dispatch is never affected.
@@ -64,6 +70,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { INHERIT_ROLE_ID, type FallbacksRole } from './config.ts'
 import { installRoleNotice } from './role-notice.ts'
+import { installRoleProjection } from './role-projection.ts'
 
 /**
  * The cordis service-read waterfall event the seam registers on. Referenced
@@ -411,7 +418,7 @@ const subagentSeamStores = new WeakMap<Context, SubagentSeam>()
 const subagentSeamRoots = new WeakSet<Context>()
 
 /**
- * @internal Test seam (mirrors `subagentRoleRecords`): the seam installed on
+ * @internal Test seam (mirrors `chainHeads`): the seam installed on
  * `ctx`, if any. Not part of the plugin's public surface — lets tests read and
  * seed the per-child record map without reaching into the installation
  * closure. `undefined` when no seam is installed.
@@ -574,10 +581,13 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
   /**
    * The persona-capability gate verdict for one surface (plan Global
    * Constraints: merge ONLY when the target provider advertises the persona
-   * capability). `'unknown'` (no provider registered) stays SILENT: the native
-   * start fails loud its own way (`NO_PROVIDER`) and the seam must not shadow
-   * that contract. `'unavailable'` (a reshaped runtime without `getProvider`)
-   * cannot verify the capability, so the persona is skipped.
+   * capability). `'unknown'` (no provider registered) does not shadow the
+   * native contract — the start still runs and fails loud its own way
+   * (`NO_PROVIDER`) — but the declared persona IS undelivered, so it is
+   * reported like every other skip (plan Errata: ONE debug line per skip reason,
+   * naming the surface; QA's live discrimination depends on those signals).
+   * `'unavailable'` (a reshaped runtime without `getProvider`) cannot verify the
+   * capability, so the persona is skipped.
    */
   const personaGate = (
     service: SubagentsServiceView,
@@ -608,7 +618,8 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
    *    even be read (silent, `false`).
    * 3. the role declares no persona (or a blank one) → nothing to deliver
    *    (silent, `false`).
-   * 4. provider unknown → silent (the native start fails loud its own way), but
+   * 4. provider unknown → ONE contained debug log naming the surface (the
+   *    native start fails loud its own way, so the request is untouched), and
    *    the declared persona really is undelivered → `true`.
    * 5. gate miss (capability absent / unverifiable) → ONE contained debug log,
    *    request unchanged — merging what the runtime would reject is never
@@ -632,7 +643,12 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
     const persona = personaForRole(readRoles(), role)
     if (persona === undefined) return { request, personaNotApplied: false }
     const gate = personaGate(service, providerName, surface)
-    if (gate === 'unknown') return { request, personaNotApplied: true }
+    if (gate === 'unknown') {
+      debug(
+        `llm-fallbacks: no subagent provider '${providerName}' is registered on the ${surface} start — role persona for '${role}' not delivered (the native start fails loud its own way)`,
+      )
+      return { request, personaNotApplied: true }
+    }
     if (gate === 'unavailable') {
       debug(
         `llm-fallbacks: role persona for '${role}' skipped on the ${surface} start — the '${SUBAGENT_SEAM_SERVICE}' runtime exposes no provider lookup, so the persona capability cannot be verified (the start proceeds unchanged)`,
@@ -807,6 +823,15 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
   // registration anywhere else would add listeners that can never announce
   // anything.
   disposers.push(installRoleNotice(ctx, { records, emitted: noticeEmitted, debug }))
+
+  // Task 3b: the durable READ of that same row — one host session projection
+  // unit folding the notice out of the child's own log, so the header badge
+  // works for a settled child and after a host restart. Registered at this ONE
+  // install point too (same multi-fiber dedupe: the projection is a pure log
+  // read with no per-fiber state, and the host registry counts a shared key, so
+  // a second fiber registering it would be harmless — but the seam is where the
+  // plugin's Task 3 surface is installed, and the dedupe keeps one owner).
+  disposers.push(installRoleProjection(ctx, { debug }))
 
   const seam: SubagentSeam = {
     records,

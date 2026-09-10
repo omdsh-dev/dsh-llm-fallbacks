@@ -54,8 +54,6 @@ import {
   fallbacksTypertContribution,
   type FallbacksSettingsBridge,
   type SubagentPolicySnapshotFn,
-  type SubagentRoleRecord,
-  type SubagentRolesSnapshotFn,
 } from '../src/gateway.ts'
 import { FallbacksSeedManager } from '../src/seeds.ts'
 import { MemorySettings } from './support/memory-settings.ts'
@@ -982,14 +980,10 @@ class FakeConnectionService extends Service {
 
 /**
  * Compose the full endpoint harness (settings + typert registry + fake
- * connection + typertGateway + explicit registration) around a 3-arg gateway,
- * or a 5-arg one when `subagentRoles` is passed (the T4 case-e wire face).
- * Hoisted to module scope so both the claims describe and the
- * `fallbacks/subagent-roles` describe share it.
+ * connection + typertGateway + explicit registration) around a 3-arg gateway.
  */
 async function composeGatewayHarness(
   seedUser?: Record<string, unknown>,
-  subagentRoles?: SubagentRolesSnapshotFn,
 ): Promise<{ ctx: Context; connection: FakeConnectionService }> {
   const ctx = track(new Context())
   await ctx.plugin(MemorySettings)
@@ -1004,7 +998,7 @@ async function composeGatewayHarness(
   await ctx.plugin(FakeConnectionService)
   await ctx.plugin(TypertGatewayService)
   const bridge = installFallbacksBridge(ctx, entryConfig({ cooldownMs: 120_000, maxSwitchesPerStep: 5 }))
-  new FallbacksConfigGateway(ctx, bridge, makeSeeds(), undefined, subagentRoles)
+  new FallbacksConfigGateway(ctx, bridge, makeSeeds(), undefined)
   ctx.typert.register(fallbacksTypertContribution())
   await waitRegistered(ctx)
   const connection = ctx.get('connection') as unknown as FakeConnectionService
@@ -1256,180 +1250,5 @@ describe('subagentPolicy wire projection (plan dsh-012 T5 fix round 1)', () => {
       .rejects.toThrow(/unknown config key "subagentPolicy"/)
     const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)!
     expect(descriptor.user).toBeUndefined()
-  })
-})
-
-// ---------------------------------------------------------------------------
-// ⑪ plan subagent-role-badge T2 + T4 case (e): the `subagentRoles` batch
-//    readback — PERMANENT coverage of the cases the T2 review could only
-//    verify against a scratch spec (known ids returned / unknown omitted /
-//    malformed ids rejected / degrade-never-crash on unwired + throwing
-//    snapshots) plus the live typertGateway dispatch of the new endpoint.
-// ---------------------------------------------------------------------------
-
-/** One well-formed dispatch-resolved role record fixture (T1 writer shape). */
-function roleRecord(overrides: Partial<SubagentRoleRecord> = {}): SubagentRoleRecord {
-  return {
-    role: 'coder',
-    model: { provider: 'anthropic', model: 'claude-sonnet-4' },
-    at: 1_725_900_000_000,
-    ...overrides,
-  }
-}
-
-describe('subagentRoles readback (plan subagent-role-badge T4 case e)', () => {
-  function gatewayWithSnapshot(records: ReadonlyMap<string, SubagentRoleRecord>): FallbacksConfigGateway {
-    const ctx = track(new Context())
-    return new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()), makeSeeds(), undefined, () => records)
-  }
-
-  it('returns records for known ids and omits unknown ids (never an error)', () => {
-    const gateway = gatewayWithSnapshot(new Map([
-      ['session-a', roleRecord()],
-      ['session-b', roleRecord({ role: 'reviewer', model: { provider: 'deepseek', model: 'deepseek-chat' }, at: 1_725_900_000_001 })],
-    ]))
-
-    const result = gateway.subagentRoles(['session-a', 'session-b', 'session-unknown'])
-    expect(result).toEqual({
-      'session-a': roleRecord(),
-      'session-b': roleRecord({ role: 'reviewer', model: { provider: 'deepseek', model: 'deepseek-chat' }, at: 1_725_900_000_001 }),
-    })
-    expect('session-unknown' in result).toBe(false)
-  })
-
-  it('omits the model field when the record has none (never present-as-undefined on the wire)', () => {
-    // The wire type allows a model-less record (version skew); the projection
-    // must copy only the declared fields so the result validator never sees a
-    // `model: undefined`.
-    const gateway = gatewayWithSnapshot(new Map([['session-a', roleRecord({ model: undefined })]]))
-
-    const result = gateway.subagentRoles(['session-a'])
-    expect(result).toEqual({ 'session-a': { role: 'coder', at: 1_725_900_000_000 } })
-    expect('model' in result['session-a']!).toBe(false)
-  })
-
-  it('returns an empty object for an empty id batch', () => {
-    const gateway = gatewayWithSnapshot(new Map([['session-a', roleRecord()]]))
-    expect(gateway.subagentRoles([])).toEqual({})
-  })
-
-  it('rejects a non-array ids argument with a TypeError', () => {
-    const gateway = gatewayWithSnapshot(new Map())
-    expect(() => gateway.subagentRoles('session-a' as never)).toThrow(TypeError)
-    expect(() => gateway.subagentRoles('session-a' as never)).toThrow(/ids must be an array of strings/)
-    expect(() => gateway.subagentRoles(undefined as never)).toThrow(TypeError)
-    expect(() => gateway.subagentRoles({ ids: ['session-a'] } as never)).toThrow(TypeError)
-  })
-
-  it('rejects a batch carrying a non-string element with a TypeError', () => {
-    const gateway = gatewayWithSnapshot(new Map([['session-a', roleRecord()]]))
-    expect(() => gateway.subagentRoles(['session-a', 42 as never])).toThrow(TypeError)
-    expect(() => gateway.subagentRoles(['session-a', null as never])).toThrow(TypeError)
-  })
-
-  it('rejects a batch above the 256-id cap with a TypeError (QC fix wave: bounded batch)', () => {
-    const gateway = gatewayWithSnapshot(new Map([['session-a', roleRecord()]]))
-    const oversized = Array.from({ length: 257 }, (_, i) => `session-${i}`)
-    expect(() => gateway.subagentRoles(oversized)).toThrow(TypeError)
-    expect(() => gateway.subagentRoles(oversized)).toThrow(/ids batch exceeds 256 entries/)
-    // The bound is inclusive at the boundary: exactly 256 ids is a legal batch
-    // (known ids still project through it).
-    const atCap = ['session-a', ...Array.from({ length: 255 }, (_, i) => `session-${i}`)]
-    expect(atCap).toHaveLength(256)
-    expect(gateway.subagentRoles(atCap)).toEqual({ 'session-a': roleRecord() })
-  })
-
-  it('projects a pathological `__proto__` id as an OWN property (never the prototype setter)', () => {
-    // A Map can legitimately hold the key; a plain `result[id] = …` assignment
-    // would trigger the inherited `__proto__` accessor and the record would
-    // silently vanish from the JSON response. The fromEntries projection
-    // creates an own data property instead (QC fix wave).
-    const gateway = gatewayWithSnapshot(new Map([['__proto__', roleRecord()]]))
-
-    const result = gateway.subagentRoles(['__proto__'])
-    expect(Object.hasOwn(result, '__proto__')).toBe(true)
-    expect(Object.keys(result)).toEqual(['__proto__'])
-    expect(result['__proto__']).toEqual(roleRecord())
-    // Still a plain object — and the serialized wire response carries the
-    // record (the original failure mode was the key vanishing from the JSON).
-    expect(Object.getPrototypeOf(result)).toBe(Object.prototype)
-    expect(JSON.stringify(result)).toContain('"__proto__"')
-  })
-
-  it('returns an empty object when no snapshot is wired (pre-T2 constructors stay byte-identical)', () => {
-    const ctx = track(new Context())
-    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()), makeSeeds())
-    expect(gateway.subagentRoles(['session-a'])).toEqual({})
-  })
-
-  it('returns an empty object when the snapshot throws (degrade-never-crash, projectSubagentPolicy shape)', () => {
-    const ctx = track(new Context())
-    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()), makeSeeds(), undefined, () => {
-      throw new Error('snapshot blew up')
-    })
-    expect(gateway.subagentRoles(['session-a'])).toEqual({})
-  })
-})
-
-describe('fallbacks/subagent-roles endpoint on the live typertGateway (T4 case e, wire face)', () => {
-  const records: ReadonlyMap<string, SubagentRoleRecord> = new Map([['session-a', roleRecord()]])
-
-  it('registers the descriptor with the implementation alias and the ids wire param', async () => {
-    const { ctx, connection } = await composeGatewayHarness(undefined, () => records)
-    // The hyphenated method needs the `implementation` alias (the gateway
-    // dispatches `implementation ?? method`; `revert-seed` precedent).
-    expect(ctx.typert.local.get('fallbacks/subagent-roles')).toMatchObject({
-      service: 'fallbacks',
-      namespace: 'fallbacks',
-      method: 'subagent-roles',
-      implementation: 'subagentRoles',
-      invocation: { kind: 'direct' },
-    })
-    expect(ctx.typert.local.get('fallbacks/subagent-roles')?.parameters).toEqual([
-      { name: 'ids', wire: 'ids', source: 'json', codec: { mode: 'src-json' } },
-    ])
-    expect(connection.matches!('fallbacks/subagent-roles')).toBe(true)
-  })
-
-  it('dispatches with the { args: { ids } } payload contract and projects the records', async () => {
-    const { connection } = await composeGatewayHarness(undefined, () => records)
-    const signal = new AbortController().signal
-
-    const result = await connection.handler!('fallbacks/subagent-roles', { args: { ids: ['session-a', 'session-unknown'] } }, signal)
-    expect(result).toEqual({
-      ok: true,
-      value: { 'session-a': roleRecord() },
-    })
-
-    // Unknown ids are omitted, never an RPC failure; an empty batch is {}.
-    const empty = await connection.handler!('fallbacks/subagent-roles', { args: { ids: [] } }, signal)
-    expect(empty).toEqual({ ok: true, value: {} })
-  })
-
-  it('folds a malformed ids argument to an RPC failure (TypeError at the wire boundary)', async () => {
-    const { connection } = await composeGatewayHarness(undefined, () => records)
-    const signal = new AbortController().signal
-
-    const nonArray = await connection.handler!('fallbacks/subagent-roles', { args: { ids: 'session-a' } }, signal)
-    expect(nonArray.ok).toBe(false)
-    if (!nonArray.ok) expect(nonArray.error.message).toContain('ids must be an array of strings')
-
-    const nonString = await connection.handler!('fallbacks/subagent-roles', { args: { ids: ['session-a', 42] } }, signal)
-    expect(nonString.ok).toBe(false)
-    if (!nonString.ok) expect(nonString.error.message).toContain('ids must be an array of strings')
-
-    // The batch bound folds the same way at the wire (QC fix wave).
-    const oversized = await connection.handler!('fallbacks/subagent-roles', { args: { ids: Array.from({ length: 257 }, () => 'session-a') } }, signal)
-    expect(oversized.ok).toBe(false)
-    if (!oversized.ok) expect(oversized.error.message).toContain('ids batch exceeds 256 entries')
-  })
-
-  it('enforces the descriptor wire shape: an unknown args field is rejected', async () => {
-    const { connection } = await composeGatewayHarness(undefined, () => records)
-    const signal = new AbortController().signal
-
-    const badWire = await connection.handler!('fallbacks/subagent-roles', { args: { ids: ['session-a'], extra: 1 } }, signal)
-    expect(badWire.ok).toBe(false)
-    if (!badWire.ok) expect(badWire.error.message).toContain('args fields do not match the descriptor')
   })
 })

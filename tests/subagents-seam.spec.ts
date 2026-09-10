@@ -591,6 +591,15 @@ describe('subagent seam — behavioural (public call path)', () => {
     // reading the log has to tell a one-shot capability miss from any other one.
     expect(String(debug.mock.calls[0]![0])).toContain('lacks the persona capability')
     expect(String(debug.mock.calls[0]![0])).toContain('one-shot')
+
+    // Positive control (discrimination, Task 4 review Minor 3): the SAME wrapper
+    // with the capability PRESENT merges the persona — so the identity and the
+    // single line above are the capability verdict, not a merge that never runs.
+    ;(fake.service as { getProvider?: unknown }).getProvider = () => ({ capabilities: { persona: true } })
+    await (value.start as (name: string, request: SubagentStartRequestView) => Promise<unknown>)('spawn', {
+      prompt: [{ type: 'text', text: assignment('scout') }],
+    })
+    expect(fake.starts[1]!.request.persona).toBe('Scout persona')
   })
 
   it('skips the persona with ONE contained debug when the runtime has no provider lookup', async () => {
@@ -613,6 +622,16 @@ describe('subagent seam — behavioural (public call path)', () => {
     expect(debug).toHaveBeenCalledTimes(1)
     expect(String(debug.mock.calls[0]![0])).toContain('exposes no provider lookup')
     expect(String(debug.mock.calls[0]![0])).toContain('one-shot')
+
+    // Positive control (discrimination, Task 4 review Minor 3): restoring the
+    // provider lookup on the SAME service object (the wrapper delegates through
+    // the prototype, so the read is live) delivers the persona — so the skip
+    // above is the unverifiable capability, not a dead wrapper.
+    ;(fake.service as { getProvider?: unknown }).getProvider = () => ({ capabilities: { persona: true } })
+    await (value.start as (name: string, request: SubagentStartRequestView) => Promise<unknown>)('spawn', {
+      prompt: [{ type: 'text', text: assignment('scout') }],
+    })
+    expect(fake.starts[1]!.request.persona).toBe('Scout persona')
   })
 
   it('does not merge when the role declares no persona (blank after trim)', async () => {
@@ -655,6 +674,14 @@ describe('subagent seam — behavioural (public call path)', () => {
     expect(fake.starts[0]!.request).toBe(request)
     expect(debug).toHaveBeenCalledTimes(1)
     expect(String(debug.mock.calls[0]![0])).toContain('no role resolved')
+
+    // Positive control (discrimination, Task 4 review Minor 3): a DECLARED role
+    // through the SAME wrapper does merge — so the identity above is the
+    // unresolved role, not an inactive seam.
+    await (value.start as (name: string, request: SubagentStartRequestView) => Promise<unknown>)('spawn', {
+      prompt: [{ type: 'text', text: assignment('scout') }],
+    })
+    expect(fake.starts[1]!.request.persona).toBe('Scout persona')
   })
 
   it('canonicalizes a padded, @-prefixed declaration end to end (case g)', async () => {
@@ -1022,5 +1049,37 @@ describe('subagent seam — per-apply lifetime through apply()', () => {
     await start('spawn', { prompt: [{ type: 'text', text: assignment('coder') }] })
 
     expect(fake.starts.map((call) => call.request.persona)).toEqual(['Before persona', 'After persona'])
+  })
+
+  it('reads the live declared-role map per start, so a role ADDED by a settings edit resolves without a re-install', async () => {
+    const fake = fakeSubagents({ id: 'child-role-added' }, undefined, { capabilities: { persona: true } })
+    ctx.provide('subagents', fake.service)
+    apply(ctx, cfg({ roles: { list: [{ id: 'coder', persona: 'Coder persona', chain: [] }], rules: [] } }))
+
+    const { value } = await injectSubagents(ctx)
+    const start = value.start as (name: string, request: SubagentStartRequestView) => Promise<unknown>
+    // Before the edit `rookie` is UNDECLARED: nothing resolves, nothing is
+    // recorded — the negative half of this pin (the sed-like half lives in the
+    // case above).
+    await start('spawn', { prompt: [{ type: 'text', text: assignment('rookie') }] })
+    expect(subagentSeamOf(ctx)!.records.size).toBe(0)
+    expect(fake.starts[0]!.request.persona).toBeUndefined()
+
+    // A REAL settings write adds the role id: `roleIds` is a LIVE read (the same
+    // thunk the persona source rides), so the NEXT dispatch resolves the new id
+    // and delivers its persona through the seam installed BEFORE the edit — no
+    // re-install, no stale trimmed-id map (Task 4 review Minor 4).
+    await ctx.settings.update(FALLBACKS_SETTINGS_NAMESPACE, {
+      roles: {
+        list: [
+          { id: 'coder', persona: 'Coder persona', chain: [] },
+          { id: 'rookie', persona: 'Rookie persona', chain: [] },
+        ],
+        rules: [],
+      },
+    })
+    await start('spawn', { prompt: [{ type: 'text', text: assignment('rookie') }] })
+    expect(subagentSeamOf(ctx)!.records.get('child-role-added')?.role).toBe('rookie')
+    expect(fake.starts[1]!.request.persona).toBe('Rookie persona')
   })
 })
