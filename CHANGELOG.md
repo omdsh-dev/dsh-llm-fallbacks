@@ -6,6 +6,18 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-09-10
+
+### Changed
+
+- Retarget the all-day `rootChain` tail set to the renamed official line: exactly one of `deepseek-official/deepseek-flash` or `deepseek-official/deepseek-pro` (XOR). The retired `deepseek-v4-flash` / `deepseek-v4-pro` ids are no longer legal tails — a saved V4 tail now warns at startup, keeps slot rows and the virtual picker inert, and blocks save until a legal tail is picked. `deepseek-pro` is a legal selector whose model is not yet served by the catalog: the settings card shows it disabled ("not yet available"), and requests to it fail at the provider until the gateway enables the id. The plugin does not probe catalog availability — a chain containing `deepseek-pro` dispatches to it like any other exact entry, and the override resolves the first exact head of the effective chain, so a chain with a working entry before Pro still routes to that earlier entry.
+- Add `CODE_OF_CONDUCT.md`, `CONTRIBUTING.md`, and `SECURITY.md` at the repository root.
+- Upgrade every `@deepseek-ai/dsh-*` peer dependency to `^0.1.5-rc.1` (dsh 0.1.5-rc.1, corridor from 0.1.2-rc.1 through 0.1.3/0.1.5 alphas). Conversation seats (`conversation.chat.node` / `conversation.session.header.utilities`) unchanged — not a top-level panel Slot migrate. Add host-externalized transitive runtime deps of `dsh-client-ui-primitives` / `dsh-client-store` (`clsx`, `zustand`, `immer`, shiki/micromark stack) as `devDependencies` so the out-of-tree vitest graph still resolves after those packages moved them out of `dependencies`.
+
+### Fixed
+
+- `scripts/repair-fallbacks-switch-logs.ts` now fails closed: the released session-format migration chain (v0→v1) refuses unknown event types even when marked `ignorable`, so a "repaired" log would still be rejected on load — the script no longer reports or writes such logs and exits non-zero instead (the durable fix belongs upstream at the migration edges).
+
 ## [0.4.3] - 2026-09-10
 
 ### Added
