@@ -27,9 +27,10 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
-import { apply } from '../src/index.ts'
+import { apply, stateStore } from '../src/index.ts'
 import { FALLBACKS_CHAIN_MODEL, FALLBACKS_PROVIDER } from '../src/virtual-adapter.ts'
 import { OFFICIAL_FLASH } from '../src/time-slots.ts'
+import { selectorKey } from '../src/selectors.ts'
 import { MemorySettings } from './support/memory-settings.ts'
 import { cfg, dispatchRequest, dispatchRequestError, makeAgent } from './support/harness.ts'
 
@@ -204,5 +205,45 @@ describe('virtual-route pass-through (root agent/request never rewrites)', () =>
     expect(await dispatchRequestError(ctx, agent, { provider: 'anthropic' })).toEqual({ kind: 'retry' })
     const config = await dispatchRequest(ctx, agent, virtualSeed)
     expect(config).toEqual({ provider: 'openai', model: 'gpt-4o' })
+  })
+})
+
+/**
+ * Failure walk on the virtual route (plan model-change-notice-loop Task 2).
+ *
+ * Post-T1 the plugin serves a root-origin `FallbacksChain/Auto` seed unchanged,
+ * so `agent/request-error` reports the VIRTUAL pair while the request was
+ * really dispatched by `FallbacksChainAdapter.stream()` to the effective
+ * chain's first dispatchable exact head. The walk must therefore start from
+ * that head: anchored on the virtual pair it would treat the head that just
+ * failed as a fresh candidate (switching straight back into the failure) and
+ * would cool down the picker key instead of the failing route.
+ */
+describe('failure walk anchored at the served head (root virtual route)', () => {
+  it('attributes the failure to the head the virtual row was served by, not to the virtual pair', async () => {
+    const { agent } = makeAgent('t2-anchor', { provider: 'mock', model: 'gpt-4o' }, { origin: 'root' })
+    // A conforming all-day chain (official tail) whose FIRST dispatchable exact
+    // head is a real route: the adapter serves the virtual row by delegating
+    // there, and the walk has a target past it.
+    apply(ctx, cfg({ rootChain: ['anthropic/claude-sonnet-4', 'openai/gpt-4o', OFFICIAL_FLASH] }))
+
+    // Serve the virtual route: the plugin rewrites nothing, the loop records the
+    // virtual pair, and the delegate dispatches to anthropic.
+    expect(await dispatchRequest(ctx, agent, virtualSeed)).toEqual(virtualSeed)
+
+    expect(await dispatchRequestError(ctx, agent, { provider: FALLBACKS_PROVIDER })).toEqual({ kind: 'retry' })
+
+    const state = stateStore(ctx)?.peek(agent.id)
+    // The decision starts at the route that really failed (the head) — so the
+    // walk moves PAST it instead of re-targeting the model that just rejected
+    // the request.
+    expect(state?.pendingSwitch?.from).toEqual({ provider: 'anthropic', model: 'claude-sonnet-4' })
+    expect(state?.pendingSwitch?.to).toEqual({ provider: 'openai', model: 'gpt-4o' })
+    // Route-scoped bookkeeping (AUTH) belongs to the failing ROUTE: the head is
+    // suppressed and step-failed, the virtual picker key is untouched.
+    expect(state?.cooldown.peek('anthropic/claude-sonnet-4')).toBeDefined()
+    expect(state?.cooldown.peek(selectorKey(FALLBACKS_PROVIDER, FALLBACKS_CHAIN_MODEL))).toBeUndefined()
+    expect(state?.stepFailures.failed.has('anthropic/claude-sonnet-4')).toBe(true)
+    expect(state?.stepFailures.failed.has(selectorKey(FALLBACKS_PROVIDER, FALLBACKS_CHAIN_MODEL))).toBe(false)
   })
 })

@@ -86,7 +86,12 @@ import {
 import { presetRoles } from './presets.ts'
 import { installTuiClient } from './tui.ts'
 import { installTuiSettingsSection } from './tui-settings.ts'
-import { installFallbacksAdapter } from './virtual-adapter.ts'
+import {
+  FALLBACKS_CHAIN_MODEL,
+  FALLBACKS_PROVIDER,
+  firstDispatchableExactHead,
+  installFallbacksAdapter,
+} from './virtual-adapter.ts'
 
 /** The plugin row id mounted by the profile bundle patch. */
 export const name = 'llm-fallbacks'
@@ -485,10 +490,43 @@ export function countRetryEvents(session: Session, turn: number, step: number, p
   return count
 }
 
-/** The model the failed/current request was routed to. */
-function currentModel(agent: Agent, provider: string): FailingModel {
+/**
+ * Anchor a request route at the exact head the virtual picker row is served by
+ * (plan model-change-notice-loop Task 2).
+ *
+ * A root-origin `FallbacksChain/Auto` seed is served UNCHANGED, so the loop
+ * records the virtual pair while `FallbacksChainAdapter.stream()` really
+ * dispatches the effective chain's first dispatchable exact head. Every
+ * decision that compares the failing route against the chain must therefore
+ * compare against THAT head: left on the virtual pair, the walk treats the head
+ * that just failed as a fresh candidate (switching straight back into the
+ * failure) and the route-scoped bookkeeping (cooldown / step-failed) lands on
+ * the picker key instead of the failing route.
+ *
+ * The chain and the walk rule are the adapter's own (`effectiveHeadOf`:
+ * `isAllDayConforming` + `resolveEffectiveChain` + `firstDispatchableExactHead`),
+ * so the anchor names exactly the route the delegate dispatched. A real route —
+ * and a non-conforming all-day chain, where the adapter refuses to delegate at
+ * all — is returned unchanged.
+ */
+function anchorServedRoute(config: FallbacksConfig, route: FailingModel, now: Date): FailingModel {
+  if (route.provider !== FALLBACKS_PROVIDER || route.model !== FALLBACKS_CHAIN_MODEL) return route
+  if (!isAllDayConforming(config.rootChain)) return route
+  const head = firstDispatchableExactHead(resolveEffectiveChain(config, now, config.tz ?? 'Asia/Shanghai'))
+  return head === undefined ? route : { provider: head.provider, model: head.model }
+}
+
+/**
+ * The model the failed/current request was routed to — anchored at the served
+ * head when the route is the virtual pair ({@link anchorServedRoute}). The
+ * context-window comparison reads this same pair, so the failing route's window
+ * is the HEAD's window (the one the provider actually rejected), never the
+ * picker row's proxy.
+ */
+function currentModel(agent: Agent, provider: string, config: FallbacksConfig, now: Date): FailingModel {
   const header = agent.session.requestHeader()
-  return { provider, model: header?.config.model ?? agent.options.model ?? '' }
+  const route = { provider, model: header?.config.model ?? agent.options.model ?? '' }
+  return anchorServedRoute(config, route, now)
 }
 
 /**
@@ -1222,7 +1260,7 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
     // failures must pass through here too — the cap lives at agent/request
     // (ADR-2). Only trigger codes enter the decision path.
     if (!config.enabled || !config.triggerCodes.includes(failure.code)) return next()
-    const current = currentModel(agent, provider)
+    const current = currentModel(agent, provider, config, new Date())
     if (!current.model) return next()
     // F-005: the decision path is defensive — an unexpected throw (e.g. a
     // future refactor) must not replace the original failure semantics
