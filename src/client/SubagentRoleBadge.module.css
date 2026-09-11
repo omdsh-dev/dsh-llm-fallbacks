@@ -1,14 +1,14 @@
 /* Session-header subagent role badge (plan subagent-role-badge T3): a
- * compact read-only pill in the conversation header's utilities strip
- * (right-aligned per the slot contract; order -20 keeps it title-adjacent,
- * ahead of the host's open-in-app at -10). Geometry mirrors the transcript
- * role badge (`ConversationFallbackSwitch.module.css .roleBadge`) — same
+ * compact read-only pill in the conversation header's actions row, sorting
+ * right after the agent-preset (mode) chip (order -5 against the chip's
+ * -10). Geometry mirrors the transcript role badge
+ * (`ConversationFallbackSwitch.module.css .roleBadge`) — same
  * pill shape and module-platform tone — so the same role reads as the same
  * tag in both seats. Every color resolves through a `--dsw-alias-*` token
  * (light/dark adaptive); bare `--border` / `--surface` / `--text-*` names,
  * which nothing in this app defines, would render the light-mode literals
  * and stay light under the dark theme. An absent record renders nothing
- * (the component returns null), so the strip collapses cleanly. */
+ * (the component returns null), so the actions row collapses cleanly. */
 
 .badge {
   display: inline-block;

@@ -311,7 +311,7 @@ export function apply(ctx: ClientContext): void {
 
   // Session-header subagent role badge (plan subagent-role-badge T3; durable
   // channel plan Task 3b): a compact read-only pill in the
-  // `conversation.session.header.utilities` list slot (scope 'session') showing
+  // `conversation.session.header.actions` list slot (scope 'session') showing
   // which Subagent role the viewed session's dispatch resolved — hover
   // `role → latest request route`. Render-only (C4 pattern): a view
   // contribution, no message construction, no model-context injection. Its data
@@ -320,15 +320,22 @@ export function apply(ctx: ClientContext): void {
   // compiled peer types do not carry the ui-session merge into this program; see
   // the component docblock) — NO inject face and no rpc: the plugin gateway and
   // the badge's polling probe are gone (Task 3b). Degrade-never-crash: an absent
-  // key / a foreign value / `inherit` / a skewed host render `null`. List-slot
-  // shape (`id` + `order`) matches the upstream ui-open-in-app registration;
-  // order -20 keeps the badge title-adjacent, ahead of the host's open-in-app
-  // (-10).
-  ctx.slots.inject('conversation.session.header.utilities', function* () {
+  // key / a foreign value / `inherit` / a skewed host render `null`.
+  // Placement (user decision 2026-09-11; verified against the installed
+  // `@deepseek-ai/dsh-client-ui-*` 0.1.5-rc.2 on 2026-09-11 — a host-side
+  // reorder can shift this placement): the actions row hosts the agent-preset
+  // (mode) chip (`dsh-client-ui-agent-preset` AgentPresetLabel, id
+  // `agent-preset`, order -10), then the schedule catalog (order 10) and the job
+  // list (order 20). order -5 sorts the badge immediately AFTER that chip and
+  // BEFORE the schedule/jobs actions (the list slot's ascending stable sort), so
+  // the role sits next to the agent-preset chip instead of the far-right
+  // utilities strip. (`dsh-client-ui-open-in-app` is a utilities-row occupant,
+  // not an actions-row one.)
+  ctx.slots.inject('conversation.session.header.actions', function* () {
     yield ctx.slots.register({
-      name: 'conversation.session.header.utilities',
+      name: 'conversation.session.header.actions',
       id: 'fallbacks-subagent-role',
-      order: -20,
+      order: -5,
       locale: NS,
     }, SubagentRoleBadge)
   })

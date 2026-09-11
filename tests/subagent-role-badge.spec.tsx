@@ -58,7 +58,7 @@ function selection(provider: string, model: string): unknown {
 }
 
 /**
- * The props the utilities-slot outlet would bind: runtime share (the
+ * The props the actions-slot outlet would bind: runtime share (the
  * conversation-merged standard-kit members are `as never` — the card/row spec
  * pattern; `useProjection` is the ui-session merge NOT carried by this program's
  * peer types, so the real seat crosses the same structural cast the component

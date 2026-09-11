@@ -1,7 +1,7 @@
 /**
  * Session-header subagent role badge (plan subagent-role-badge T3; durable
  * channel plan role-based-subagent-adoption Task 3b): a compact read-only pill
- * in `conversation.session.header.utilities` showing which Subagent role the
+ * in `conversation.session.header.actions` showing which Subagent role the
  * viewed session's dispatch resolved, hovering as `role → latest request route`.
  *
  * Contract notes (verified 2026-09-09 against the harness checkout):
@@ -33,12 +33,12 @@
  * - Render-only discipline (C4 pattern, same as `ConversationFallbackSwitch`):
  *   the badge contributes a view; no message construction, no model-context
  *   injection. Degrade-never-crash: a missing/foreign projection value or an
- *   `inherit` role renders `null` — the utilities strip collapses cleanly.
+ *   `inherit` role renders `null` — the actions row collapses cleanly.
  */
 import type { ReactNode } from 'react'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 // Type-only: pulls the conversation header slot-contract merge (the
-// `conversation.session.header.utilities` entry — this file's registration
+// `conversation.session.header.actions` entry — this file's registration
 // target and props key). Same empty type-only pattern as the other
 // conversation merges in index.ts.
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
@@ -57,9 +57,9 @@ const MODEL_SELECTION_PROJECTION_KEY = 'modelSelection'
 /** The keyed-hook seat the session kit binds: `useProjection(key) → value | undefined`. */
 type ProjectionReader = (key: string) => unknown
 
-/** Props delivered by the utilities slot outlet: runtime share + locale seat. */
+/** Props delivered by the actions slot outlet: runtime share + locale seat. */
 export type SubagentRoleBadgeProps =
-  PropsRuntime<'conversation.session.header.utilities'> & PropsLocale<'fallbacks'>
+  PropsRuntime<'conversation.session.header.actions'> & PropsLocale<'fallbacks'>
 
 /**
  * `provider/model` of the model-selection projection's `lastUsed`, or
