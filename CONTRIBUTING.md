@@ -29,7 +29,7 @@ enforces.
 - **pnpm >= 10** — the project stack is pnpm 11.21+; CI installs with pnpm
   11.21.0 (`.github/workflows/ci.yml`).
 - **Peer resolution at development time.** The `@deepseek-ai/*` packages are
-  private to the dsh host and declared as `peerDependencies` (`^0.1.5-rc.1`).
+  private to the dsh host and declared as `peerDependencies` (`^0.1.5-rc.2`).
   They resolve from the npm registry during development through
   `autoInstallPeers: true` in `pnpm-workspace.yaml` plus an authentication token
   in your user-level `~/.npmrc`. The full setup (including the pnpm 11
