@@ -48,7 +48,7 @@ const OUT_FILE = 'index.js'
 
 /**
  * Frozen loader module table (dsh mechanism-guide): the plan-documented
- * composition = PLATFORM_MODULES (9 entries in 0.1.5-rc.1,
+ * composition = PLATFORM_MODULES (9 entries in 0.1.5-rc.2,
  * `web/src/platform.ts:8-16` — the old runtime `./client` exemption became
  * the `@deepseek-ai/dsh-client-store` platform module, so the store VALUE
  * import stays external and resolves from the host loader table) + the

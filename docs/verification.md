@@ -23,7 +23,7 @@ This document records the installation / runtime-contract verification already c
 | command (AC-5) | `command.spec.ts` | 78 | `/fallbacks` registration shape (name/description/empty hint/handler, disposer passthrough), conditional `commands` child injection (registers only when a registry exists; silent without a service), snapshot building (role/chain resolution with the default fallback, recent switches newest-first capped, cooldown read-only snapshot), output states (configured chain / no chain / switches present + absent / cooldown present + absent / `never` does not revert), zh/en rendering smoke, real runtime-state integration (switch events + cooldown read from real state; read-only, never adds state) |
 | release/consumer tooling | `service.spec.ts` / `export-surface.spec.ts` / `release-scripts.spec.ts` | 12 / 29 / 17 | the named cordis service surface (static provide metadata, `ctx.get` availability while applied, unregister on dispose, multi-fiber dedupe, same functions as the package-root re-exports); the package export surface (runtime values + callable smokes + type exports matching the docs-inventory keys); release-script gates (autoBumpPatch / insertSection / parseArgs / validateReleaseVersion / tagExists) |
 | session tooling + repair | `session-event-registration.spec.ts` / `session-event-registration-guard.spec.ts` / `session-write-surface.spec.ts` / `repair-session-logs.spec.ts` / `session-log-rules.spec.ts` / `session-log-publish.spec.ts` / `client-slot-registration.spec.ts` | 2 / 2 / 3 / 85 / 62 / 43 / 2 | issue #52 stop-write registration guards (no durable `fallbacks/switch` append); the repo-wide write-surface lint over `src/**` (no durable session-event append, no `MessageSourceMap` merge, no unreleased `MessageSource.kind`); the pre-V3 session-log triage/repair tool (refusal classification, released-catalog oracle, the rule registry with its exact-set-pinned source vocabulary, successor publication) that replaced the retired fail-closed detector; client slot registration ledger |
-| regression | `skeleton.spec.ts` / `host-native.spec.ts` / `peer-deps.test.ts` | 3 / 3 / 5 | bundle contract (row id, empty schema accepted, host+client apply entry points); host-native behavior baseline (real `@deepseek-ai/dsh-agent` module: trigger-code switches route to the chain target, always-cap second return point, no-op invariant); registry peer contract (`@deepseek-ai/*` as peerDependencies only, dsh-* pinned to `^0.1.5-rc.1`, autoInstallPeers, no link farm) |
+| regression | `skeleton.spec.ts` / `host-native.spec.ts` / `peer-deps.test.ts` | 3 / 3 / 5 | bundle contract (row id, empty schema accepted, host+client apply entry points); host-native behavior baseline (real `@deepseek-ai/dsh-agent` module: trigger-code switches route to the chain target, always-cap second return point, no-op invariant); registry peer contract (`@deepseek-ai/*` as peerDependencies only, dsh-* pinned to `^0.1.5-rc.2`, autoInstallPeers, no link farm) |
 
 **Test-double caveats (plan `model-change-notice-loop`)**, so a future reader does not mistake them for coverage:
 
@@ -40,7 +40,7 @@ This document records the installation / runtime-contract verification already c
 
 Result: **as of `main`'s session-log-repair records refresh — 55 files / 1335 tests passed** (`corepack pnpm@11.21.0 test`, vitest run); `pnpm build` (`tsc -p tsconfig.build.json` emits JS first (standard decorator downgrade `__esDecorate`) → tsdown host bundle →
 `pnpm run build-client` → `tsc` declarations → `node scripts/verify-dist.mjs` artifact-parsing guard) all green — `tsc` is
-driven by the real host type surface (registry peer `@deepseek-ai/*@0.1.5-rc.1`, no in-repo type shims). The no-op regression
+driven by the real host type surface (registry peer `@deepseek-ai/*@0.1.5-rc.2`, no in-repo type shims). The no-op regression
 invariants (empty chains / no match / chain exhausted / safety-valve cap exceeded → pass through without producing
 `fallbacks/switch` events) are persistently asserted by T3/T4 tests.
 
@@ -79,7 +79,7 @@ order section of [docs/install.md](docs/install.md); the real web profile's laye
 - **No residue on unload**: `agent/disposed` removes state, `agent/status` idle is defensively cleaned, `ctx.effect`
   dispose clears everything (T3 assertions).
 - **Real-type contract**: the type layer does not use hand-written `peer-stubs/` — the real
-  `@deepseek-ai/*@0.1.5-rc.1` packages drive `tsc` and the integration tests (`tests/support/harness.ts` +
+  `@deepseek-ai/*@0.1.5-rc.2` packages drive `tsc` and the integration tests (`tests/support/harness.ts` +
   llm-retry-stub + model-selection-stub): in registry mode `autoInstallPeers` resolves them from npm (user-level
   `~/.npmrc` auth, no local link farm); the local-link alternative (a sibling dsh checkout linked into
   `node_modules`) remains available for pre-publish lines (see docs/install.md). Runtime seams run the real
@@ -154,7 +154,7 @@ Then restart the dsh web session so the host half and the client half load.
 #### 4.1 Environment preparation (new snapshot baseline)
 
 1. **Preflight check**: record `dsh --version` (snapshot); the plugin-side peer dependencies resolve from the npm registry
-   (`@deepseek-ai/*@0.1.5-rc.1`, no source tree needed).
+   (`@deepseek-ai/*@0.1.5-rc.2`, no source tree needed).
 2. **Plugin build**: `cd <plugin-repo> && pnpm build` (host bundle + client bundle + tsc
    declarations) green — pure-mount semantics: no dsh source-tree modification, no patch step; settings read/write go through the plugin
    gateway channel (`/api/fallbacks/get|set|reset`), usable right after installation.
