@@ -6,6 +6,12 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-09-11
+
+### Changed
+
+- The session-header subagent role badge now renders next to the session's agent-preset (mode) chip instead of the far-right utilities area of the header.
+
 ## [0.5.1] - 2026-09-11
 
 ### Fixed
