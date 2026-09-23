@@ -10,17 +10,22 @@
  * such case carries an in-test positive control (the Task 1 I-1 / M-1 lesson:
  * a negative that also holds with the behaviour broken proves nothing).
  *
- * The last describe block is the contract guard: the emitted source kind must be
- * a member of the FROZEN released kind set the V2→V3 edge classifies.
+ * The last describe block is the contract guard: the emitted source kind must
+ * survive the released session-format edges (the V3→V4 migration retains the
+ * direct kind verbatim and native V4 restore admits it).
  */
 
-import { readFileSync } from 'node:fs'
-import { createRequire } from 'node:module'
-import { resolve } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
 import { createUserMessage, type UserMessage } from '@deepseek-ai/dsh-llm'
+// VALUE import, deliberately not a vitest stub: the contract guard below must
+// run against the REAL released session-format codecs (the V3→V4 edge), so it
+// rides the transitively installed @deepseek-ai/dsh-session-format-catalog
+// (0.1.7-rc.1). It stays out of peerDependencies on purpose — the plugin
+// itself never imports it, and tests/peer-deps.test.ts enforces the
+// peers-only contract for @deepseek-ai/*.
+import { createSessionFormatCatalogWithChildren } from '@deepseek-ai/dsh-session-format-catalog'
 import { apply } from '../src/index.ts'
 import { installSubagentSeam, subagentSeamOf, type SubagentSeamRecord, type SubagentStartRequestView } from '../src/subagents-seam.ts'
 import { buildRoleNotice, installRoleNotice, markNoticeEmitted, NOTICE_EMITTED_LIMIT, ROLE_NOTICE_PLUGIN, ROLE_NOTICE_SOURCE_KIND, type RoleNoticeBuilder } from '../src/role-notice.ts'
@@ -170,13 +175,12 @@ function childAgent(id: string): Agent {
 }
 
 describe('buildRoleNotice — the sanctioned session-write shape (pure)', () => {
-  it('writes [role: <id>] with the plugin notice source', () => {
+  it('writes [role: <id>] with the producer-declared notice source', () => {
     const notice = buildRoleNotice('coder', false)
     expect(notice.role).toBe('user')
     expect(notice.content).toEqual([{ type: 'text', text: '[role: coder]' }])
-    expect(notice.source.kind).toBe('plugin')
+    expect(notice.source.kind).toBe('llm-fallbacks-role-notice')
     expect(notice.source.kind).toBe(ROLE_NOTICE_SOURCE_KIND)
-    expect((notice.source as { plugin?: string }).plugin).toBe(ROLE_NOTICE_PLUGIN)
     expect((notice.source as { form?: string }).form).toBe('notice')
     expect((notice.source as { summary?: string }).summary).toBe('role: coder')
   })
@@ -788,84 +792,39 @@ describe('role notice — the bounded, session-stable marker (CF-6)', () => {
 })
 
 /**
- * The frozen released V2→V3 source-kind set — CHECKED-IN MIRROR.
- *
- * Provenance: `@deepseek-ai/dsh-session-format-v2-to-v3@0.1.5-rc.1`
- * `lib/index.js:14-30` (`const SOURCE_KINDS = new Set([...])`; checkout
- * `packages/session/session-format-v2-to-v3/src/payload.ts:10`), the boundary
- * that throws `cannot safely transform unclassified message source` (`:125`) for
- * anything outside it. The package does NOT export the set, so the guard below
- * derives it from the installed lib's source when that lib resolves in this
- * tree and falls back to this mirror otherwise — and cross-checks the two when
- * both are available, so neither can drift silently.
+ * The RELEASED session-format edge verdict for the notice source — driven
+ * through the INSTALLED `@deepseek-ai/dsh-session-format-catalog` restore
+ * (the same physical-row path a real log open takes), not a checked-in text
+ * mirror: 0.1.7-rc.1 removed the frozen V2→V3 kind set ("each producer
+ * declares its own `kind` in its own module" — dsh-llm message.d.ts), so the
+ * contract under guard is that the DIRECT kind survives the V3→V4 migration
+ * verbatim and is admitted by native V4 restore, and that the pre-0.1.7
+ * `kind: 'plugin', plugin: …` rows migrate to the exact `plugin:<plugin>`
+ * form the role projection also accepts.
  */
-const MIRROR_RELEASED_SOURCE_KINDS: ReadonlySet<string> = new Set([
-  'user',
-  'plugin',
-  'model',
-  'tool',
-  'agent-instructions',
-  'session-reference',
-  'team-message',
-  'goal',
-  'skill-invocation',
-  'skill-catalog',
-  'coordinator',
-  'subagent-report',
-  'subagent-settled',
-  'webhook',
-  'agent-message',
-])
-
-/**
- * The RELEASED size of that set (plan `## Global Constraints`: "one of the
- * frozen 15 SOURCE_KINDS"). Pinned literally so the guard cannot be tautological
- * in the mode where the package does not resolve (`derived === undefined` ⇒ the
- * mirror IS the subject, and comparing the mirror with itself proves nothing):
- * a mirror that gained or lost a kind fails here, and a future frozen edge with
- * a different count fails on the `derived` branch too.
- */
-const RELEASED_SOURCE_KIND_COUNT = 15
-
-/** The package whose V2→V3 edge hard-codes the load-safe source-kind set. */
-const FROZEN_EDGE_PACKAGE = '@deepseek-ai/dsh-session-format-v2-to-v3'
-
-/**
- * Derive the frozen set from the INSTALLED frozen edge, or `undefined` when the
- * package is absent from this tree (the expected case in registry mode: the
- * plugin's peers are only the packages it imports) or its bundle shape changed.
- * Anchored on `process.cwd()` — the worktree vitest runs in — exactly like
- * `vitest.config.ts` (a bundled `import.meta.url` can point into a dependency
- * tree's temp dir).
- */
-function deriveReleasedSourceKinds(): ReadonlySet<string> | undefined {
-  try {
-    const require = createRequire(resolve(process.cwd(), 'package.json'))
-    const entry = require.resolve(FROZEN_EDGE_PACKAGE)
-    const match = /SOURCE_KINDS\s*=\s*new Set\(\[([\s\S]*?)\]\)/.exec(readFileSync(entry, 'utf8'))
-    if (match === null || match[1] === undefined) return undefined
-    const kinds = [...match[1].matchAll(/["']([^"']+)["']/g)].map((quoted) => quoted[1]!)
-    return kinds.length === 0 ? undefined : new Set(kinds)
-  } catch {
-    return undefined
+function restoreWithSource(source: unknown, version: 3 | 4): { source: unknown } {
+  const header = { type: 'session', version, id: 'role-notice-guard', createdAt: 1, delegationDepth: 0, isSeeded: false }
+  const row = {
+    type: 'user/message',
+    seq: 0,
+    time: 1,
+    surfaceOp: 'append',
+    data: {
+      id: 'u0',
+      role: 'user',
+      source,
+      content: [{ type: 'text', text: '[role: coder]' }],
+    },
   }
+  const reader = createSessionFormatCatalogWithChildren([]).createRestore(header, { recovery: 'strict', validation: 'current' })
+  reader.decodeRow(JSON.parse(JSON.stringify(row)))
+  const artifact = reader.finish()
+  const event = artifact.events[0] as { data?: { source?: unknown } } | undefined
+  return { source: event?.data?.source }
 }
 
-describe('role notice — frozen released source-kind contract guard', () => {
-  it('emits a source kind the frozen released V2→V3 edge classifies', async () => {
-    const derived = deriveReleasedSourceKinds()
-    const kinds = derived ?? MIRROR_RELEASED_SOURCE_KINDS
-    // The count is pinned to the RELEASED set (15 kinds). This is the check that
-    // is live in the mode that actually runs here (`derived === undefined` ⇒
-    // `kinds` IS the mirror, so comparing the two would be a tautology — Task 3
-    // review Minor 1): an empty mirror, an "everything" mirror, or a mirror that
-    // grew an extra kind while keeping `plugin` all fail HERE.
-    expect(kinds.size).toBe(RELEASED_SOURCE_KIND_COUNT)
-    expect(MIRROR_RELEASED_SOURCE_KINDS.size).toBe(RELEASED_SOURCE_KIND_COUNT)
-    // When the frozen edge DOES resolve in this tree, it must agree with the
-    // mirror name for name — neither copy can drift silently.
-    if (derived !== undefined) expect([...derived].sort()).toEqual([...MIRROR_RELEASED_SOURCE_KINDS].sort())
-
+describe('role notice — released session-format edge contract guard', () => {
+  it('emits a source kind the released format edges retain verbatim', async () => {
     // Read the emitted kind off the row the PRODUCTION path actually admits (a
     // recorded child's first non-empty pre-step), not off a direct builder call:
     // the emitter must not publish a different message than the builder.
@@ -880,19 +839,45 @@ describe('role notice — frozen released source-kind contract guard', () => {
       expect(decision).toHaveLength(2)
 
       const emitted = decision[1]!
-      expect(kinds.has(emitted.source.kind)).toBe(true)
       expect(emitted.source.kind).toBe(ROLE_NOTICE_SOURCE_KIND)
       // The pure builder agrees with the emitted row (the literal is exported so
       // this cannot be satisfied by two different constants).
       expect(buildRoleNotice('coder', false).source.kind).toBe(emitted.source.kind)
+
+      // The REAL edge verdict: the emitted source rides a V3 log through the
+      // V3→V4 migration (kind retained verbatim, form/summary untouched) and
+      // native V4 restore admits the same source unchanged.
+      const source = {
+        kind: emitted.source.kind,
+        form: 'notice',
+        summary: (emitted.source as { summary?: string }).summary,
+      }
+      expect(restoreWithSource(source, 3).source).toEqual(source)
+      expect(restoreWithSource(source, 4).source).toEqual(source)
     } finally {
       await ctx.fiber.dispose()
     }
+  })
 
-    // Positive control for the membership: a BESPOKE kind — the failure class
-    // this guard exists for — is NOT a member, so "member" above is the frozen
-    // set's verdict and not a predicate that accepts any string.
-    expect(kinds.has('llm-fallbacks-role')).toBe(false)
-    expect(kinds.has('')).toBe(false)
+  it('pre-0.1.7 plugin rows migrate to the exact legacy kind the projection accepts', () => {
+    // The V3→V4 edge rewrites every unlisted V3 plugin source to
+    // `plugin:<plugin>` — the durable form of THIS plugin's pre-upgrade rows
+    // (`src/role-projection.ts` gates on it for badge continuity).
+    const legacy = { kind: 'plugin', plugin: ROLE_NOTICE_PLUGIN, form: 'notice', summary: 'role: coder' }
+    const migrated = restoreWithSource(legacy, 3).source as { kind?: string }
+    expect(migrated.kind).toBe(`plugin:${ROLE_NOTICE_PLUGIN}`)
+    expect(migrated.form).toBe('notice')
+    expect(migrated.summary).toBe('role: coder')
+    // Positive control: a foreign plugin's row keeps ITS plugin id — the
+    // projection gate never reads another plugin's rows as ours.
+    expect((restoreWithSource({ kind: 'plugin', plugin: 'someone-else' }, 3).source as { kind?: string }).kind)
+      .toBe('plugin:someone-else')
+  })
+
+  it('an empty source kind is refused by the released edge (the admission is not any-string)', () => {
+    // Native V4 admission refuses a non-producer-owned kind; the V3→V4
+    // migration refuses a nonempty-kind source with its own message.
+    expect(() => restoreWithSource({ kind: '' }, 4)).toThrow(/producer-owned source kind/)
+    expect(() => restoreWithSource({ kind: '' }, 3)).toThrow(/nonempty kind/)
   })
 })

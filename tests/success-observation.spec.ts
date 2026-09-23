@@ -112,10 +112,12 @@ describe('P3 success observation — session/event listener (plan fallbacks-half
     seedHalfOpen(agent.id, 'mock/gpt-4o', 1_000, 2_000)
 
     // A plugin-produced assistant message (e.g. injected context) carries a
-    // non-model source and must not close the circuit.
+    // non-model source and must not close the circuit. 0.1.7-rc.1 removed the
+    // shared `plugin` kind: the V3→V4 edge rewrites such rows to the migrated
+    // `plugin:<name>` form, which is the reachable shape this fixture uses.
     const message = {
       ...createAssistantMessage({ content: [{ type: 'text', text: 'ok' }], provider: 'mock', model: 'gpt-4o' }),
-      source: { kind: 'plugin', plugin: 'test' },
+      source: { kind: 'plugin:test' },
     } as unknown as AssistantMessage
     ctx.emit('session/event', agent.session, {
       type: 'assistant/message',

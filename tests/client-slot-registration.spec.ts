@@ -1,5 +1,5 @@
 /**
- * Regression: the `settings.plugin.item` card must register with BOTH the
+ * Regression: the `plugins.bundle.config` card must register with the package-name
  * `key` (rc.7+ keyed-slot hosts) and `id` (pre-rc.7 list-slot hosts whose
  * loader throws "list slot ... requires options.id"). Without the id, the
  * card fails to load on pre-rc.7 dsh hosts and the plugin reports a loader
@@ -20,9 +20,13 @@ beforeEach(() => {
   ctx.provide('uiConversation', { events: { register: () => () => {}, registerFallback: () => () => {} } })
   // Locale service double: register + bind (bind returns a translate thunk).
   ctx.provide('locale', { register: () => () => {}, bind: () => () => '' })
-  // Sessions service double: no current session.
+  // Sessions service double: empty `SessionListState` (0.1.7-rc.1 shape — no
+  // `current` field; the viewed session is the `mainView`-retained row).
   ctx.provide('sessions', {
-    list: { getSnapshot: () => ({ current: undefined }), subscribe: () => () => {} },
+    list: {
+      getSnapshot: () => ({ ids: [], byId: {}, phase: 'ready', projectionsBySession: {} }),
+      subscribe: () => () => {},
+    },
   })
   ctx.provide('connection', {
     api: {
@@ -58,7 +62,7 @@ describe('client slot registration', () => {
     ])
   })
 
-  it('registers the settings.plugin.item card with both key and id', () => {
+  it('registers the plugins.bundle.config card with package-name key', () => {
     const registered: Array<{ name: string; key?: string; id?: string }> = []
     ctx.provide('slots', {
       inject: (_name: string, thunk: () => Iterable<unknown>) => { for (const _dispose of thunk()) { /* run the registration generator */ } },
@@ -68,9 +72,9 @@ describe('client slot registration', () => {
       },
     })
     applyClient(ctx)
-    const card = registered.find((entry) => entry.name === 'settings.plugin.item')
+    const card = registered.find((entry) => entry.name === 'plugins.bundle.config')
     expect(card).toBeDefined()
-    expect(card!.key).toBe('fallbacks')
-    expect(card!.id).toBe('fallbacks')
+    expect(card!.key).toBe('dsh-llm-fallbacks')
+    expect(card!.id).toBeUndefined()
   })
 })

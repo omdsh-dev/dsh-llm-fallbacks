@@ -323,10 +323,10 @@ describe('conversation switch registration (D1 definition + D2 keyed seat)', () 
     // rc.7 keyed-slot `key` alongside the list-slot `id` (pre-rc.7 hosts
     // require options.id; the keyed loader ignores the extra id), and
     // general.item keeps the list shape.
-    const cards = slotsLedger['settings.plugin.item'] ?? []
+    const cards = slotsLedger['plugins.bundle.config'] ?? []
     expect(cards).toHaveLength(1)
-    expect(cards[0].options.key).toBe('fallbacks')
-    expect(cards[0].options.id).toBe('fallbacks')
+    expect(cards[0].options.key).toBe('dsh-llm-fallbacks')
+    expect(cards[0].options.id).toBeUndefined()
     expect(cards[0].options).not.toHaveProperty('order')
     const rows = slotsLedger['settings.general.item'] ?? []
     expect(rows).toHaveLength(1)

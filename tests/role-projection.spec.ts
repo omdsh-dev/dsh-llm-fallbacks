@@ -23,7 +23,7 @@ import { SessionProjectionRegistry } from '@deepseek-ai/dsh-session-projection'
 import { createUserMessage, type UserMessage } from '@deepseek-ai/dsh-llm'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import { apply } from '../src/index.ts'
-import { buildRoleNotice, ROLE_NOTICE_PLUGIN } from '../src/role-notice.ts'
+import { buildRoleNotice, ROLE_NOTICE_PLUGIN, ROLE_NOTICE_SOURCE_KIND } from '../src/role-notice.ts'
 import { installRoleProjection, roleProjectionUnit, ROLE_PROJECTION_STATE_VERSION } from '../src/role-projection.ts'
 import { ROLE_PROJECTION_KEY } from '../src/role-projection-key.ts'
 import { MemorySettings } from './support/memory-settings.ts'
@@ -67,11 +67,11 @@ function fakeSession(events: readonly SessionEvent[], inheritedEventCount = 0): 
   } as unknown as Session
 }
 
-/** A message from ANOTHER plugin carrying the same text shape (the foreign row). */
+/** A message from ANOTHER producer carrying the same text shape (the foreign row). */
 function foreignNotice(text: string): UserMessage {
   return createUserMessage({
     content: [{ type: 'text', text }],
-    source: { kind: 'plugin', plugin: 'someone-else', form: 'notice', summary: text },
+    source: { kind: 'someone-else-notice', form: 'notice', summary: text },
   })
 }
 
@@ -79,7 +79,7 @@ function foreignNotice(text: string): UserMessage {
 function ownNonNoticeRow(text: string): UserMessage {
   return createUserMessage({
     content: [{ type: 'text', text }],
-    source: { kind: 'plugin', plugin: ROLE_NOTICE_PLUGIN, form: 'notice', summary: text },
+    source: { kind: ROLE_NOTICE_SOURCE_KIND, form: 'notice', summary: text },
   })
 }
 
@@ -130,8 +130,8 @@ describe('role projection — Step 0 channel proof (registry + ctx.inject + key 
     // source.summary" rule.
     const longRole = `role-${'x'.repeat(140)}`
     const notice = buildRoleNotice(longRole, false)
-    expect(notice.source.kind).toBe('plugin')
-    if (notice.source.kind !== 'plugin' || notice.source.form !== 'notice') throw new Error('unexpected notice source')
+    expect(notice.source.kind).toBe(ROLE_NOTICE_SOURCE_KIND)
+    if (notice.source.kind !== ROLE_NOTICE_SOURCE_KIND || notice.source.form !== 'notice') throw new Error('unexpected notice source')
     expect(notice.source.summary.length).toBeLessThan(longRole.length)
     expect(notice.source.summary).not.toContain(longRole)
 
@@ -144,7 +144,7 @@ describe('role projection — Step 0 channel proof (registry + ctx.inject + key 
     // a row whose summary is missing/blank still yields the content's role.
     const noSummary = createUserMessage({
       content: [{ type: 'text', text: '[role: scout]' }],
-      source: { kind: 'plugin', plugin: ROLE_NOTICE_PLUGIN, form: 'notice', summary: '' },
+      source: { kind: ROLE_NOTICE_SOURCE_KIND, form: 'notice', summary: '' },
     })
     expect(registry.snapshot(fakeSession([messageEvent(0, noSummary)])).values[ROLE_PROJECTION_KEY]).toBe('scout')
   })
@@ -178,7 +178,7 @@ describe('role projection — fold contract', () => {
       // Our provenance, a notice with no captureable id.
       ownNonNoticeRow('[role: ]'),
       // Our provenance, a non-text block only.
-      createUserMessage({ content: [{ type: 'image', attachment: { id: 'a1' } } as never], source: { kind: 'plugin', plugin: ROLE_NOTICE_PLUGIN, form: 'notice', summary: 'role: evil' } }),
+      createUserMessage({ content: [{ type: 'image', attachment: { id: 'a1' } } as never], source: { kind: ROLE_NOTICE_SOURCE_KIND, form: 'notice', summary: 'role: evil' } }),
     ]
     for (const [index, message] of cases.entries()) {
       expect(registry.snapshot(fakeSession([messageEvent(0, message)])).values[ROLE_PROJECTION_KEY]).toBeNull()
@@ -198,6 +198,23 @@ describe('role projection — fold contract', () => {
     // ` (persona not applied)` is part of the row, not of the role.
     expect(roleProjectionUnit.apply(null, messageEvent(0, buildRoleNotice('coder', true))))
       .toEqual({ inheritedEventCount: 0, role: 'coder' })
+  })
+
+  it('accepts the V3→V4-migrated form of a pre-0.1.7 row (badge continuity across the upgrade)', () => {
+    // The released V3→V4 edge rewrites `{ kind: 'plugin', plugin: 'dsh-llm-fallbacks' }`
+    // to `kind: 'plugin:dsh-llm-fallbacks'` — a child session carried across
+    // the upgrade carries that form, and the fold must still read it.
+    const migrated = roleProjectionUnit.apply(null, messageEvent(0, createUserMessage({
+      content: [{ type: 'text', text: '[role: coder]' }],
+      source: { kind: `plugin:${ROLE_NOTICE_PLUGIN}`, form: 'notice', summary: 'role: coder' },
+    })))
+    expect(migrated).toEqual({ inheritedEventCount: 0, role: 'coder' })
+    // A DIFFERENT plugin's migrated row stays foreign.
+    const foreign = roleProjectionUnit.apply(null, messageEvent(1, createUserMessage({
+      content: [{ type: 'text', text: '[role: evil]' }],
+      source: { kind: 'plugin:someone-else', form: 'notice', summary: 'role: evil' },
+    })))
+    expect(foreign).toBeNull()
   })
 
   it('is idempotent: any other event and a repeated notice return the SAME state reference', () => {
@@ -241,15 +258,15 @@ describe('role projection — fold contract', () => {
       { type: 'user/message', data: 'nope' },
       { type: 'user/message', data: {} },
       // OUR provenance but no content at all.
-      { type: 'user/message', data: { source: { kind: 'plugin', plugin: ROLE_NOTICE_PLUGIN } } },
+      { type: 'user/message', data: { source: { kind: ROLE_NOTICE_SOURCE_KIND } } },
       // A notice text with no source (a repaired row).
       { type: 'user/message', data: { content: [{ type: 'text', text: '[role: evil]' }] } },
       noticeText('[role: evil]', null),
       noticeText('[role: evil]', { kind: 'user' }),
-      noticeText('[role: evil]', { kind: 'plugin' }),
+      noticeText('[role: evil]', { kind: 'someone-else-notice' }),
       // OUR provenance, content of the wrong shape.
-      { type: 'user/message', data: { content: 'not an array', source: { kind: 'plugin', plugin: ROLE_NOTICE_PLUGIN } } },
-      { type: 'user/message', data: { content: [null, 42, { type: 'text' }, { type: 'text', text: 7 }], source: { kind: 'plugin', plugin: ROLE_NOTICE_PLUGIN } } },
+      { type: 'user/message', data: { content: 'not an array', source: { kind: ROLE_NOTICE_SOURCE_KIND } } },
+      { type: 'user/message', data: { content: [null, 42, { type: 'text' }, { type: 'text', text: 7 }], source: { kind: ROLE_NOTICE_SOURCE_KIND } } },
     ]
     for (const event of malformed) {
       expect(() => roleProjectionUnit.apply(state, event as SessionEvent)).not.toThrow()
@@ -281,7 +298,7 @@ describe('role projection — fold contract', () => {
       time: 0,
       data: {
         content: [{ type: 'text', text: '[role: scout] (persona not applied) (persona not applied)' }],
-        source: { kind: 'plugin', plugin: ROLE_NOTICE_PLUGIN },
+        source: { kind: ROLE_NOTICE_SOURCE_KIND },
       },
     } as unknown as SessionEvent)).toBeNull()
   })

@@ -32,7 +32,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { apply } from '../src/index.ts'
-import { FALLBACKS_SETTINGS_NAMESPACE } from '../src/gateway.ts'
+import { FALLBACKS_PROFILE_ENTRY } from '../src/gateway.ts'
 import { FALLBACKS_TUI_ROOT } from '../src/tui.ts'
 import { FALLBACKS_TUI_SECTION_NS } from '../src/tui-settings.ts'
 import { presetRoles } from '../src/presets.ts'
@@ -93,7 +93,7 @@ function track(ctx: Context): Context {
 
 /** The raw user-layer roles section of the fallbacks settings namespace. */
 function userSection(ctx: Context): { roles: { list: Array<{ id: string; persona: string }>; rules: unknown[] } } | undefined {
-  return ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)?.user
+  return ctx.settings.describe().find((d) => d.ns === FALLBACKS_PROFILE_ENTRY)?.user
 }
 
 /** Capture every ctx.logger export (info/warn/...) from this point on (seeds-integration pattern). */
@@ -143,7 +143,7 @@ describe('seeds declare window — service visibility ordering (issue #105)', ()
     // A conflict on the preset fire makes a wrongful SECOND fire observable
     // (presets-integration multi-fiber pattern): each fiber's manager is
     // fresh, so every fired declare emits its own scout conflict warn.
-    ;(ctx.settings as unknown as MemorySettings).seed(FALLBACKS_SETTINGS_NAMESPACE, {
+    ;(ctx.settings as unknown as MemorySettings).seed(FALLBACKS_PROFILE_ENTRY, {
       roles: { list: [{ id: 'scout', persona: 'operator persona' }], rules: [] },
     })
     const logs = captureLogs(ctx)
@@ -189,24 +189,15 @@ describe('seeds declare window — service visibility ordering (issue #105)', ()
     expect(rows).toHaveLength(presetRoles.length)
     expect(new Set(rows.map((row) => row.id)).size).toBe(presetRoles.length)
     expect(rows.find((row) => row.id === 'scout')!.persona).toBe('operator persona')
-    // No unexpected child failed loud in the window. The deduped fiber's
-    // unconditional settings-section child still logs ONE PRE-EXISTING cordis
-    // root-logger fiber error (`settings namespace "fallbacks" is already
-    // registered` — unchanged by this plan and out of scope here); it must
-    // occur EXACTLY ONCE and be the ONLY non-plugin-named error. An uncaught
-    // child-fiber failure logs under the fiber-derived `root` name rather
-    // than `llm-fallbacks`, so the whitelist is asserted exhaustively — a NEW
-    // loud child failure fails this test instead of being filtered away.
-    const knownSectionDuplicate = logs.filter(
-      (message) =>
-        message.type === 'error'
-        && message.name !== 'llm-fallbacks'
-        && String(message.args[0]).includes('settings namespace "fallbacks" is already registered'),
-    )
-    expect(knownSectionDuplicate).toHaveLength(1)
-    expect(logs.filter((message) => message.type === 'error' && message.name !== 'llm-fallbacks')).toEqual(
-      knownSectionDuplicate,
-    )
+    // No unexpected child failed loud in the window. 0.1.7-rc.1 has no
+    // settings registration step, so the deduped fiber's settings child
+    // (describe-cache + change listener) installs without conflict — the old
+    // `settings namespace "fallbacks" is already registered` duplicate error
+    // is GONE with the registration step. The error whitelist is asserted
+    // exhaustively: an uncaught child-fiber failure logs under the
+    // fiber-derived `root` name rather than `llm-fallbacks`, so ANY
+    // non-plugin-named error fails this test instead of being filtered away.
+    expect(logs.filter((message) => message.type === 'error' && message.name !== 'llm-fallbacks')).toEqual([])
     // The plugin's own surfaces additionally never fail under their own name:
     // every degradation rides the dedupe catches.
     expect(logs.filter((message) => message.type === 'error' && message.name === 'llm-fallbacks')).toHaveLength(0)
@@ -230,14 +221,15 @@ describe('seeds declare window — service visibility ordering (issue #105)', ()
     expect(() => apply(ctx)).not.toThrow()
     await settle()
 
-    // The service never appeared, and the fallbacks namespace IS registered:
-    // the installSection child fired after the failed provide child (FIFO
-    // registration order holds across a child failure), so the preset child
-    // — last registered — fired too and read the corrected `serviceOwned`
-    // flag. The empty user layer is therefore the skip path, not
-    // "children never fired": zero preset rows despite presets being enabled.
+    // The service never appeared, and the settings binding child DID fire
+    // after the failed provide child (FIFO registration order holds across a
+    // child failure) — its bind-time `describe()` is the observable (the
+    // double counts the calls) — so the preset child, last registered, fired
+    // too and read the corrected `serviceOwned` flag. The empty user layer is
+    // therefore the skip path, not "children never fired": zero preset rows
+    // despite presets being enabled.
     expect(ctx.get('llm-fallbacks')).toBeUndefined()
-    expect(ctx.settings.describe().some((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)).toBe(true)
+    await vi.waitFor(() => expect((ctx.settings as unknown as MemorySettings).describeCalls).toBeGreaterThan(0))
     expect(userSection(ctx)).toBeUndefined()
 
     // Exactly ONE error — the rethrown non-dedupe failure, logged by the

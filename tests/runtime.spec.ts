@@ -31,7 +31,7 @@ import { Context, type Logger } from '@deepseek-ai/cordis'
 import type { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import { apply, countRetryEvents, stateStore } from '../src/index.ts'
-import { FALLBACKS_SETTINGS_NAMESPACE } from '../src/gateway.ts'
+import { FALLBACKS_PROFILE_ENTRY } from '../src/gateway.ts'
 import { resolveChainForDiagnostic } from '../src/commands.ts'
 import { defaultFallbacksConfig, type FallbacksConfig } from '../src/config.ts'
 import { MemorySettings } from './support/memory-settings.ts'
@@ -836,19 +836,21 @@ describe('per-agent state lifecycle', () => {
 describe('settings live re-read', () => {
   it('re-reads rootChain and enabled through the real settings service on update', async () => {
     const { agent } = makeAgent('agent-settings', { provider: 'mock', model: 'gpt-4o' })
-    const ns = FALLBACKS_SETTINGS_NAMESPACE
+    const ns = FALLBACKS_PROFILE_ENTRY
     apply(ctx, cfg({ rootChain: ['other/gpt-4o'] }))
 
-    // The real installSettingsSection registers through `ctx.inject` (a
-    // deferred callback even when the service is already mounted), so settle
-    // one macrotask before probing the registration.
+    // The real settings child registers through `ctx.inject` (a deferred
+    // callback even when the service is already mounted), so settle one
+    // macrotask before probing the binding.
     const { promise: settled, resolve: settle } = Promise.withResolvers<void>()
     setTimeout(settle, 0)
     await settled
 
-    // The namespace is registered on the mounted service; the user document
-    // is empty, so the composition entry (the cfg() default) resolves.
-    expect(ctx.settings.describe().map((descriptor) => descriptor.ns)).toContain(ns)
+    // The settings binding child has fired — its bind-time `describe()` is
+    // the observable (0.1.7-rc.1 has no registration step; the double counts
+    // the calls). The stored section is absent, so the composition entry (the
+    // cfg() default) resolves.
+    expect((ctx.settings as unknown as MemorySettings).describeCalls).toBeGreaterThan(0)
 
     // A real settings update merges into the user document; scope.watch →
     // onChange re-reads the source thunk (scope.get()) and re-applies.

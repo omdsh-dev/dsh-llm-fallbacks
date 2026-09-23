@@ -2,7 +2,7 @@
  * Vitest configuration.
  *
  * Type-level access flows through the REAL `@deepseek-ai/*` packages (the
- * `peerDependencies`, resolved from the npm registry at 0.1.5-rc.2 on this
+ * `peerDependencies`, resolved from the npm registry at 0.1.7-rc.1 on this
  * branch — registry mode, see docs/install.md). The local-link alternative
  * (a sibling dsh checkout linked into `node_modules`) is documented below:
  * linked packages are tsc-built into `lib/types/` only — the tsdown bundle
@@ -51,7 +51,7 @@ import { defaultExclude, defineConfig } from 'vitest/config'
 // worktree when vitest is invoked there) is the honest anchor.
 const here = process.cwd()
 // Mode probe (qc3 F-002): the config serves TWO install modes — LINKED,
-// this dev tree's node_modules pointing at the local 0.1.5-rc.2 sources,
+// this dev tree's node_modules pointing at the local 0.1.7-rc.1 sources,
 // and REGISTRY (docs/install.md — the current mode on this branch), where
 // the peers come from npm and carry only the exports-mapped `lib/index.js`.
 // The compiled store entry is the anchor: when it is absent, every
@@ -63,7 +63,7 @@ const linkedMode = existsSync(
   resolve(here, 'node_modules/@deepseek-ai/dsh-client-store/lib/types/index.js'),
 )
 // A linked peer's compiled implementation: `<pkg>/lib/types/index.js` — the
-// tsc emit a linked 0.1.5-rc.2 tree ships instead of the exports-mapped
+// tsc emit a linked 0.1.7-rc.1 tree ships instead of the exports-mapped
 // `lib/index.js`. realpathSync walks the node_modules symlink out to the
 // upstream tree so the resolved id no longer sits under this checkout's
 // node_modules.
@@ -109,14 +109,64 @@ const stripInlinedDepSourceMaps = {
   },
 }
 
+// REGISTRY MODE ONLY: the published `dsh-client-ui-primitives` 0.1.7-rc.1
+// bundle value-imports two of its own devDependencies at runtime (`diff`,
+// `simple-icons` — upstream packaging gap), so a registry install can never
+// resolve them (devDependencies of a dependency are not installed, and the
+// lockfile rightly has no record). The client specs value-import the barrel
+// for Button/icons/Tooltip, so the test graph stubs exactly those two
+// specifiers: `simple-icons` gets inert placeholder icon objects (the names
+// are parsed from the installed bundle's own import, so upstream drift fails
+// loudly instead of stubbing blind), and `diff` throws on use — nothing in
+// this repo's test graph diffs text, so a call means the stub got too narrow.
+// Linked mode is untouched: the linked tree dev-installs both packages.
+const primitivesLibPath = resolve(here, 'node_modules/@deepseek-ai/dsh-client-ui-primitives/lib/index.js')
+const stubPrimitivesDevDeps = {
+  name: 'stub-primitives-dev-deps',
+  resolveId(source: string) {
+    if (linkedMode) return null
+    if (source === 'simple-icons') return '\0stub-simple-icons'
+    if (source === 'diff') return '\0stub-diff'
+    return null
+  },
+  load(id: string) {
+    if (id === '\0stub-simple-icons') {
+      const code = existsSync(primitivesLibPath) ? readFileSync(primitivesLibPath, 'utf8') : ''
+      const names = [...code.matchAll(/import\s*\{([^}]*)\}\s*from\s*"simple-icons"/g)]
+        .flatMap((match) => (match[1] ?? '').split(',').map((name) => name.trim()))
+        .filter((name) => /^si[A-Z]/.test(name))
+      if (names.length === 0) throw new Error('vitest: could not parse the simple-icons import from dsh-client-ui-primitives')
+      return [
+        ...names.map((name) => `export const ${name} = { title: ${JSON.stringify(name)}, path: '' }`),
+        `export default { ${names.join(', ')} }`,
+      ].join('\n')
+    }
+    if (id === '\0stub-diff') {
+      return [
+        // Virtual module — plain JS (no TS annotations); loud on use: nothing
+        // in this repo's test graph diffs text.
+        'export function structuredPatch() {',
+        '  throw new Error(\'vitest: "diff" is stubbed in the test graph (dsh-client-ui-primitives 0.1.7-rc.1 imports it as a devDependency); a call here means the stub got too narrow\')',
+        '}',
+        'export default { structuredPatch }',
+      ].join('\n')
+    }
+    return null
+  },
+}
+
 export default defineConfig({
-  plugins: [stripInlinedDepSourceMaps, ...(linkedMode ? [dshLlmAttribution] : [])],
+  plugins: [stripInlinedDepSourceMaps, stubPrimitivesDevDeps, ...(linkedMode ? [dshLlmAttribution] : [])],
   test: {
     // Feature worktrees under `.worktrees/` carry duplicate copies of
     // tests/; the default include glob picks them up (gitignore does not
     // filter it), which makes `pnpm test` counts non-deterministic and
-    // drifts from the documented baseline.
-    exclude: [...defaultExclude, '**/.worktrees/**'],
+    // drifts from the documented baseline. `.pnpm-store/` (gitignored; a
+    // store-dir symlink when pnpm is pointed inside the workspace) holds
+    // `v11/projects/<hash>/` snapshots of this checkout taken at install
+    // time — pre-fix sources whose tests then fail — and needs the same
+    // treatment.
+    exclude: [...defaultExclude, '**/.worktrees/**', '**/.pnpm-store/**'],
     server: {
       deps: {
         // Inline the peers whose VALUE imports the test graph needs (see

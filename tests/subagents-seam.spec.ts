@@ -25,7 +25,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { apply } from '../src/index.ts'
-import { FALLBACKS_SETTINGS_NAMESPACE } from '../src/gateway.ts'
+import { FALLBACKS_PROFILE_ENTRY } from '../src/gateway.ts'
 import {
   installSubagentSeam,
   PENDING_CORRELATION_LIMIT,
@@ -1303,7 +1303,7 @@ describe('subagent seam — per-apply lifetime through apply()', () => {
     // the ONE the seam's `roles: () => source().roles.list` reads PER START
     // (src/index.ts, the "cross-fiber" comment this test pins). The seam is not
     // re-installed here: the second start must observe the swap by itself.
-    await ctx.settings.update(FALLBACKS_SETTINGS_NAMESPACE, {
+    await ctx.settings.update(FALLBACKS_PROFILE_ENTRY, {
       roles: { list: [{ id: 'coder', persona: 'After persona', chain: [] }], rules: [] },
     })
     await start('spawn', { prompt: [{ type: 'text', text: assignment('coder') }] })
@@ -1329,7 +1329,7 @@ describe('subagent seam — per-apply lifetime through apply()', () => {
     // thunk the persona source rides), so the NEXT dispatch resolves the new id
     // and delivers its persona through the seam installed BEFORE the edit — no
     // re-install, no stale trimmed-id map (Task 4 review Minor 4).
-    await ctx.settings.update(FALLBACKS_SETTINGS_NAMESPACE, {
+    await ctx.settings.update(FALLBACKS_PROFILE_ENTRY, {
       roles: {
         list: [
           { id: 'coder', persona: 'Coder persona', chain: [] },

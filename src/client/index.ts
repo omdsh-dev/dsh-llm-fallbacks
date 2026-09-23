@@ -1,9 +1,7 @@
 /**
  * dsh-llm-fallbacks client half: registers the Fallbacks card into the
- * plugin-config page's `settings.plugin.item` keyed slot (the official
- * "插件配置" settings page — key `fallbacks`, the settings namespace the card
- * edits, appearing after the upstream bash / agent-loop / web-search cards
- * and the advisor card in registration order).
+ * Plugins page `plugins.bundle.config` keyed slot (key = bundle package name
+ * `dsh-llm-fallbacks`).
  *
  * Wiring (mirrors dsh-advisor):
  * - Registers the `fallbacks` locale dictionaries (zh/en).
@@ -13,13 +11,10 @@
  *   namespace directory), the provider/model catalog, and the switch-history
  *   tail page ride the typed `ctx.remote` namespaces (0.1.2:
  *   `ConnectionHandle` dropped `api`; see `fallbacks-store.ts`).
- * - Registers the `settings.plugin.item` card `key: 'fallbacks'` with a
- *   matching `id: 'fallbacks'` (the rc.7 keyed slot — no `order`; the id
- *   keeps the card mountable on hosts that still declare the slot as a list,
- *   which requires `options.id`) with a business-only inject face
- *   ({@link FallbacksSettingsController} + the snapshot-selector hook); the
- *   old Settings-nav section registration is removed — deleting the section
- *   registration deletes the nav entry.
+ * - Registers the `plugins.bundle.config` card `key: 'dsh-llm-fallbacks'`
+ *   (bundle package name) with a business-only inject face
+ *   ({@link FallbacksSettingsController} + hooks.snapshot); the old
+ *   Settings-nav section registration stays removed.
  * - Refreshes the store on pushed invalidations — the forwarded remote
  *   events `settings/document-updated` (ns-filtered to the fallbacks
  *   namespace; refetches the descriptor + recent-switch summary) and
@@ -34,16 +29,17 @@
  */
 
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
-import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
+import type { ISessions, SessionListState } from '@deepseek-ai/dsh-api-session-controller/client'
+import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import { bindSnapshotSelector } from './use-snapshot.ts'
 // Type-only: pulls the `ctx.locale` Context merge (LocaleService face).
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 // Type-only: pulls the plugin-config card slot's SlotMap merge (the
-// 'settings.plugin.item' entry — this half's registration target). Same empty
+// 'plugins.bundle.config' entry — this half's registration target). Same empty
 // type-only import pattern as the old ui-settings one: it loads the module's
 // types (the ./client entry re-exports the slot-contract merge) without any
 // value import.
-import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
+import type {} from '@deepseek-ai/dsh-client-ui-plugin-manager/client'
 // Type-only: the settings domain's slot-contract merge (the
 // 'settings.general.item' entry — the General page status row's registration
 // target). Same empty type-only pattern; the ui-settings package is already
@@ -123,8 +119,35 @@ export { FallbacksSettingsController, FALLBACKS_SETTINGS_NS } from './fallbacks-
 export const inject = ['slots', 'locale', 'connection', 'remote', 'uiConversation', 'remote.llm', 'remote.settings', 'remote.session']
 
 /**
+ * The session the client is LOOKING at, derived from the sessions-list
+ * snapshot. 0.1.7-rc.1 moved view ownership out of `SessionListState` (the
+ * `current` field is gone — "navigation belongs to view owners"): the viewed
+ * session is the one the shell retains under the `mainView` reference source,
+ * surfaced as a positive `retainedBy.mainView` count on the row
+ * (`SessionSummary.retainedBy`, the same signal `ui-session`'s main-view
+ * derivation reads). First match in host list order; `undefined` while no
+ * session is open — the switches face degrades to its empty state.
+ */
+function viewedSessionId(state: SessionListState): SessionId | undefined {
+  // Total over the snapshot (the fold degrades, never crashes): a host whose
+  // list state does not carry the V4-era shape simply has no readable main
+  // view — the switches face stays in its empty state.
+  if (!Array.isArray(state?.ids)) return undefined
+  for (const id of state.ids) {
+    const row = state.byId[id]
+    // Structural read: the `mainView` key is declared by the ui-session
+    // package's `SessionReferenceSourceMap` merge, and that merge is not in
+    // this program (ui-session is not a peer — the same reason
+    // SubagentRoleBadge consumes its seat structurally).
+    const mainView = (row?.retainedBy as { mainView?: number } | undefined)?.mainView ?? 0
+    if (row !== undefined && mainView > 0) return id
+  }
+  return undefined
+}
+
+/**
  * Register the `fallbacks` dictionaries and the plugin-config card once the
- * `settings.plugin.item` declaration is on the ledger.
+ * `plugins.bundle.config` declaration is on the ledger.
  * @param ctx - client root context.
  */
 export function apply(ctx: ClientContext): void {
@@ -176,7 +199,7 @@ export function apply(ctx: ClientContext): void {
   //   reconnects, which re-pull the list).
   ctx.effect(() => {
     const syncSession = (): void => {
-      controller.setCurrentSession(sessions?.list.getSnapshot().current)
+      controller.setCurrentSession(sessions === undefined ? undefined : viewedSessionId(sessions.list.getSnapshot()))
     }
     if (sessions !== undefined) syncSession()
     // The `$on` listener seat is `Events['settings/document-updated']`
@@ -235,25 +258,17 @@ export function apply(ctx: ClientContext): void {
   // registration (the "Fallbacks" nav entry) is removed — deleting the
   // section registration deletes the nav entry. rc.7 made the slot keyed:
   // `key` is the settings namespace the card edits, and the card renders in
-  // registration order. Pre-rc.7 hosts still declare `settings.plugin.item`
-  // as a list slot, whose loader requires `options.id` — passing `id`
-  // alongside `key` keeps the card mountable on both slot kinds (the keyed
-  // loader ignores the extra id).
-  ctx.slots.inject('settings.plugin.item', function* () {
-    const cardOptions = {
-      name: 'settings.plugin.item',
-      key: 'fallbacks', // the settings namespace the card edits
-      id: 'fallbacks', // pre-rc.7 list-slot hosts require options.id
+  // 0.1.6+ Plugins page: `plugins.bundle.config` keyed by bundle package name
+  // (was `settings.plugin.item` with key = settings namespace).
+  const BUNDLE_NAME = 'dsh-llm-fallbacks'
+  ctx.slots.inject('plugins.bundle.config', function* () {
+    yield ctx.slots.register({
+      name: 'plugins.bundle.config',
+      key: BUNDLE_NAME,
       locale: NS,
-      inject: () => ({ controller, useSnapshot }),
-    }
-    // The rc.7+ slot-contract types this half compiles against declare the
-    // slot keyed (no `id` in the options literal type); pre-rc.7 hosts
-    // declare it as a list slot whose loader throws without `options.id`.
-    // Both fields are passed — the keyed loader ignores the extra `id` — so
-    // the cast only widens the literal past the rc.7 contract, never past
-    // the runtime shape either host accepts.
-    yield ctx.slots.register(cardOptions as never, FallbacksCard)
+      // Hooks compartment: renderer binds `hooks.snapshot` → useSnapshot.
+      inject: () => ({ controller, hooks: { snapshot: controller.store } }),
+    }, FallbacksCard)
   })
 
   // The General settings page status row (plan fallbacks-aux-seams T1): a
@@ -322,7 +337,7 @@ export function apply(ctx: ClientContext): void {
   // the badge's polling probe are gone (Task 3b). Degrade-never-crash: an absent
   // key / a foreign value / `inherit` / a skewed host render `null`.
   // Placement (user decision 2026-09-11; verified against the installed
-  // `@deepseek-ai/dsh-client-ui-*` 0.1.5-rc.2 on 2026-09-11 — a host-side
+  // `@deepseek-ai/dsh-client-ui-*` 0.1.7-rc.1 on 2026-09-11 — a host-side
   // reorder can shift this placement): the actions row hosts the agent-preset
   // (mode) chip (`dsh-client-ui-agent-preset` AgentPresetLabel, id
   // `agent-preset`, order -10), then the schedule catalog (order 10) and the job

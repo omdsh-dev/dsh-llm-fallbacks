@@ -13,26 +13,23 @@
  * `scripts/session-logs/` exists. Format edges are FROZEN, so this is a one-way
  * door; this test is the tripwire that keeps it shut:
  *
- *   1. no durable session-event append in `src/**` (`session.append(…)`);
- *   2. no `MessageSourceMap` augmentation/merge in `src/**` — the persisted
- *      message-source vocabulary is frozen per format edge
- *      (`packages/session/session-format-v2-to-v3/src/payload.ts` `SOURCE_KINDS`
- *      in the `deepseek-harness` checkout), so a merged custom kind poisons
- *      every log that carries it;
- *   3. no `MessageSource.kind` literal in `src/**` outside that released
- *      vocabulary, checked through `isReleasedSourceKind` from
- *      `scripts/session-logs/rules.ts` so "released" has ONE definition shared
- *      with the repair tool (that set is itself pinned by exact equality in
- *      `tests/session-log-rules.spec.ts`).
+ *   1. no durable session-event append in `src/**` (`session.append(…)`) —
+ *      the event-type vocabulary is still catalog-frozen, so an unknown
+ *      custom event type remains a one-way door;
+ *   2. no EMPTY `MessageSource.kind` literal in `src/**` — since 0.1.7-rc.1
+ *      the source vocabulary is producer-declared ("each producer declares
+ *      its own `kind` in its own module; there is no shared catch-all
+ *      `plugin` kind" — dsh-llm message.d.ts) and the only admission rule a
+ *      released edge applies to a direct kind is that it is non-empty
+ *      (`session-format-v3-to-v4` "producer-owned source kind"); the old
+ *      frozen-set half of this guard (no `MessageSourceMap` merge, kinds
+ *      checked against the V2→V3 `SOURCE_KINDS` via `isReleasedSourceKind`)
+ *      pinned a vocabulary that no longer exists and went away with it.
  *
  * LIMITS — this is a LINT, NOT A PROOF, and it must not be read as one:
  *   - it matches literal SYNTAX. A write path built at runtime
  *     (`session[method](…)`, a `kind` held in a variable or produced by a
  *     computed property, a destructured `append`) is invisible to it;
- *   - `MessageSourceMap` is searched for in a DECLARATION position
- *     (`interface MessageSourceMap` — the only merge form TypeScript offers for
- *     it, bare or inside a `declare module`). A bare type READ
- *     (`MessageSourceMap['plugin']`) is allowed on purpose;
  *   - the `source: { … }` scan is brace-counted, not parsed: braces inside
  *     string literals or comments are not understood, so a pathological literal
  *     could hide (or falsely expose) a `kind`;
@@ -47,7 +44,6 @@ import { readdirSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { isReleasedSourceKind } from '../scripts/session-logs/rules.ts'
 
 /** Repository `src/` — the whole plugin write surface (host half + `client/`). */
 const SRC_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'src')
@@ -55,7 +51,7 @@ const SRC_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'src')
 /** Extensions the walker reads. */
 const SOURCE_EXTENSIONS = ['.ts', '.tsx']
 
-type ViolationRule = 'durable-session-append' | 'message-source-map-merge' | 'unreleased-source-kind'
+type ViolationRule = 'durable-session-append' | 'empty-source-kind'
 
 /** One finding, before the file that produced it is attached. */
 interface Violation {
@@ -82,11 +78,14 @@ const SOURCE_LITERAL_PATTERN = /\bsource\s*:\s*\{/g
 const KIND_LITERAL_PATTERN = /\bkind\s*:\s*(['"])([^'"]*)\1/
 
 /**
- * The only merge form TypeScript offers for the released map: an
- * `interface MessageSourceMap` declaration (bare, inside `declare module`, or
- * `extends`-ing) — the exact syntax that lets a plugin add a custom kind.
+ * The one admission rule a released edge applies to a direct source kind
+ * (`session-format-v3-to-v4` "producer-owned source kind"): it must be
+ * non-empty. Producer-declared kinds are the sanctioned 0.1.7-rc.1 mechanism
+ * — this lint's predecessor enforced the retired frozen vocabulary instead.
  */
-const MESSAGE_SOURCE_MAP_MERGE_PATTERN = /\binterface\s+MessageSourceMap\b/g
+function isAdmissibleSourceKind(value: string): boolean {
+  return value.length > 0
+}
 
 /** Every match of `pattern`, as a fresh clone so `lastIndex` is never shared. */
 function matches(source: string, pattern: RegExp): RegExpExecArray[] {
@@ -134,26 +133,17 @@ function checkDurableSessionAppends(source: string): Violation[] {
   )
 }
 
-/** Check 2: a `MessageSourceMap` augmentation/merge (the vocabulary half). */
-function checkMessageSourceMapMerges(source: string): Violation[] {
-  return matches(source, MESSAGE_SOURCE_MAP_MERGE_PATTERN).map((match) => ({
-    rule: 'message-source-map-merge' as const,
-    line: lineAt(source, match.index),
-    evidence: match[0],
-  }))
-}
-
-/** Check 3: a `source.kind` literal outside the released vocabulary. */
-function checkReleasedSourceKinds(source: string): Violation[] {
+/** Check 2: an EMPTY `source.kind` literal (the V4 producer-owned-source-kind refusal). */
+function checkEmptySourceKinds(source: string): Violation[] {
   const found: Violation[] = []
   for (const literal of matches(source, SOURCE_LITERAL_PATTERN)) {
     const open = literal.index + literal[0].length - 1
     const kind = KIND_LITERAL_PATTERN.exec(braceBody(source, open))
-    if (kind === null || isReleasedSourceKind(kind[2])) continue
+    if (kind === null || isAdmissibleSourceKind(kind[2])) continue
     found.push({
-      rule: 'unreleased-source-kind',
+      rule: 'empty-source-kind',
       line: lineAt(source, open),
-      evidence: `${literal[0].trim()} … ${kind[0]} — outside the released vocabulary`,
+      evidence: `${literal[0].trim()} … ${kind[0]} — a source kind must be non-empty`,
     })
   }
   return found
@@ -163,8 +153,7 @@ function checkReleasedSourceKinds(source: string): Violation[] {
 function checkSource(file: string, source: string): FileViolation[] {
   const violations = [
     ...checkDurableSessionAppends(source),
-    ...checkMessageSourceMapMerges(source),
-    ...checkReleasedSourceKinds(source),
+    ...checkEmptySourceKinds(source),
   ]
   return violations.map((violation) => ({ file, ...violation }))
 }
@@ -198,7 +187,7 @@ function describeViolation(repoRoot: string, violation: FileViolation): string {
 const REPO_ROOT = join(SRC_DIR, '..')
 
 describe('session write surface (lint over src/**)', () => {
-  it('adds no durable session-event append, no MessageSourceMap merge and no unreleased source.kind', () => {
+  it('adds no durable session-event append and no empty source.kind', () => {
     const { files, violations } = scanSourceTree(SRC_DIR)
     // A vacuous pass would be worse than a false alarm: prove the walker read the
     // real source tree before trusting an empty finding list.
@@ -220,45 +209,25 @@ describe('session write surface (lint over src/**)', () => {
       { file: 'poison.ts', rule: 'durable-session-append', line: 1, evidence: "session['append'](" },
     ])
 
-    // 2. the incident's declaring half — a custom message-source kind map.
-    const merge = [
-      "declare module '@deepseek-ai/dsh-llm' {",
-      '  interface MessageSourceMap {',
-      "    'mstar-role': { role: string }",
-      '  }',
-      '}',
-    ].join('\n')
-    expect(checkSource('poison.ts', merge)).toEqual([
+    // 2. the one residual refusal a released edge applies to a source kind:
+    //    an EMPTY kind (the V4 "producer-owned source kind" admission).
+    expect(checkSource('poison.ts', "const row = { source: { kind: '' } }")).toEqual([
       {
         file: 'poison.ts',
-        rule: 'message-source-map-merge',
-        line: 2,
-        evidence: 'interface MessageSourceMap',
-      },
-    ])
-    expect(checkSource('poison.ts', "interface MessageSourceMap { 'x': unknown }")).toEqual([
-      { file: 'poison.ts', rule: 'message-source-map-merge', line: 1, evidence: 'interface MessageSourceMap' },
-    ])
-
-    // 3. a foreign kind at a message-source position.
-    const foreign = ['const message = {', "  source: { kind: 'mstar-role' },", '}'].join('\n')
-    expect(checkSource('poison.ts', foreign)).toEqual([
-      {
-        file: 'poison.ts',
-        rule: 'unreleased-source-kind',
-        line: 2,
-        evidence: 'source: { … kind: \'mstar-role\' — outside the released vocabulary',
+        rule: 'empty-source-kind',
+        line: 1,
+        evidence: "source: { … kind: '' — a source kind must be non-empty",
       },
     ])
 
-    // Honest shapes stay quiet: the released `plugin` arm, the released `user`
-    // kind this plugin actually writes, a source literal with no `kind` at all,
-    // a bare type READ of the map, and a non-source `kind`.
+    // Honest shapes stay quiet: the producer-declared kind this plugin writes
+    // and declares (sanctioned since 0.1.7-rc.1 — "each producer declares its
+    // own `kind` in its own module"), a source literal with no `kind` at all,
+    // and a non-source `kind`.
     const honest = [
-      "const notice = { source: { kind: 'plugin', plugin: 'dsh-advisor', form: 'notice' } }",
+      "const notice = { source: { kind: 'llm-fallbacks-role-notice', form: 'notice' } }",
       "const user = { source: { kind: 'user' } }",
       'const other = { source: { messageId, seq } }',
-      "type Local = MessageSourceMap['plugin']",
       "const result = { kind: 'success' }",
     ].join('\n')
     expect(checkSource('honest.ts', honest)).toEqual([])

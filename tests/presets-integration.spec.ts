@@ -27,7 +27,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
 import { apply, defaultFallbacksConfig, type FallbacksService } from '../src/index.ts'
-import { FALLBACKS_SETTINGS_NAMESPACE, type FallbacksConfigGateway } from '../src/gateway.ts'
+import { FALLBACKS_PROFILE_ENTRY, type FallbacksConfigGateway } from '../src/gateway.ts'
 import { presetRoles } from '../src/presets.ts'
 import { MemorySettings } from './support/memory-settings.ts'
 import { settle } from './support/settle.ts'
@@ -68,7 +68,7 @@ function gateway(ctx: Context): FallbacksConfigGateway {
 
 /** The raw user-layer roles section of the fallbacks settings namespace. */
 function userSection(ctx: Context): { roles: { list: Array<{ id: string; persona: string }>; rules: unknown[] } } | undefined {
-  return ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)?.user
+  return ctx.settings.describe().find((d) => d.ns === FALLBACKS_PROFILE_ENTRY)?.user
 }
 
 /** Capture every ctx.logger export (info/warn/...) from this point on (seeds-integration pattern). */
@@ -197,7 +197,7 @@ describe('bundled preset self-declaration (real apply)', () => {
     // fiber-swap pattern): the re-fire is a no-delta declare — zero writes.
     const second = track(new Context())
     await second.plugin(CountingSettings)
-    ;(second.settings as unknown as MemorySettings).seed(FALLBACKS_SETTINGS_NAMESPACE, persisted!)
+    ;(second.settings as unknown as MemorySettings).seed(FALLBACKS_PROFILE_ENTRY, persisted!)
     apply(second)
     await vi.waitFor(() => {
       expect(gateway(second).get().config.roles.list).toHaveLength(presetRoles.length)
@@ -252,7 +252,7 @@ describe('bundled preset self-declaration (real apply)', () => {
     // short-circuits before declare: zero declarations, zero writes.
     const second = track(new Context())
     await second.plugin(CountingSettings)
-    ;(second.settings as unknown as MemorySettings).seed(FALLBACKS_SETTINGS_NAMESPACE, persisted!)
+    ;(second.settings as unknown as MemorySettings).seed(FALLBACKS_PROFILE_ENTRY, persisted!)
     const secondSettings = second.settings as unknown as CountingSettings
     apply(second)
     await vi.waitFor(() => {
@@ -274,7 +274,7 @@ describe('bundled preset self-declaration (real apply)', () => {
     // Pre-seed an operator user-layer row BEFORE the namespace registers —
     // the dev-time mirror of a provider whose document already carries the
     // row when the owning plugin loads.
-    ;(ctx.settings as unknown as MemorySettings).seed(FALLBACKS_SETTINGS_NAMESPACE, {
+    ;(ctx.settings as unknown as MemorySettings).seed(FALLBACKS_PROFILE_ENTRY, {
       roles: { list: [{ id: 'scout', persona: 'operator persona' }], rules: [] },
     })
     const logs = captureLogs(ctx)
@@ -373,7 +373,7 @@ describe('bundled preset self-declaration (real apply)', () => {
     await ctx.plugin(CountingSettings)
     const settings = ctx.settings as unknown as CountingSettings
     // A conflict on the FIRST fire makes a second fire observable via warns.
-    ;(ctx.settings as unknown as MemorySettings).seed(FALLBACKS_SETTINGS_NAMESPACE, {
+    ;(ctx.settings as unknown as MemorySettings).seed(FALLBACKS_PROFILE_ENTRY, {
       roles: { list: [{ id: 'scout', persona: 'operator persona' }], rules: [] },
     })
     const logs = captureLogs(ctx)
@@ -445,7 +445,7 @@ describe('bundled preset self-declaration (real apply)', () => {
     // seed keeps the raw document in place before the inject children
     // re-activate (a cordis-init publish would otherwise wipe the doc).
     const fresh = new CountingSettings(ctx)
-    fresh.seed(FALLBACKS_SETTINGS_NAMESPACE, persisted!)
+    fresh.seed(FALLBACKS_PROFILE_ENTRY, persisted!)
 
     // The re-fired settings child re-binds the write channel and re-provides
     // the service — the old registration was withdrawn with the child unload,

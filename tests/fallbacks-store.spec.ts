@@ -1941,14 +1941,52 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
     await ctx.fiber.dispose()
   })
 
+
+/**
+ * Sessions service double in the 0.1.7-rc.1 `SessionListState` shape: the
+ * `current` field is gone — the viewed session is the row the shell retains
+ * under the `mainView` source (`retainedBy.mainView > 0`), which is exactly
+ * what `viewedSessionId` (src/client/index.ts) reads. `viewed()` answers the
+ * id the client should follow at snapshot time; `emitViewedChange` drives the
+ * list subscription the way a shell selection change does (D-5).
+ */
+function sessionsDouble(viewed: () => string | undefined): {
+  sessions: { list: { getSnapshot: () => unknown; subscribe: (fn: () => void) => () => void } }
+  emitViewedChange: () => void
+} {
+  const listeners = new Set<() => void>()
+  return {
+    sessions: {
+      list: {
+        getSnapshot: () => {
+          const id = viewed()
+          return id === undefined
+            ? { ids: [], byId: {}, phase: 'ready', projectionsBySession: {} }
+            : {
+                ids: [id],
+                byId: { [id]: { id, displayTitle: id, running: false, retainedBy: { mainView: 1 } } },
+                phase: 'ready',
+                projectionsBySession: {},
+              }
+        },
+        subscribe: (fn: () => void) => {
+          listeners.add(fn)
+          return () => { listeners.delete(fn) }
+        },
+      },
+    },
+    emitViewedChange: () => {
+      for (const fn of [...listeners]) fn()
+    },
+  }
+}
+
   it('stops in-flight settings responses from publishing after the fiber is disposed', async () => {
     // Locale service double: register + bind (bind returns a translate thunk).
     ctx.provide('locale', { register: () => () => {}, bind: () => () => '' })
     // Sessions service double: the apply wiring reads `list` current and
     // subscribes to changes (D-5) — no current session in this test.
-    ctx.provide('sessions', {
-      list: { getSnapshot: () => ({ current: undefined }), subscribe: () => () => {} },
-    })
+    ctx.provide('sessions', sessionsDouble(() => undefined).sessions)
     // Connection service double: only the gateway rpc face (never reached —
     // describe never resolves pre-dispose).
     const gate = Promise.withResolvers<unknown>()
@@ -2003,9 +2041,7 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
     // Locale service double: register + bind (bind returns a translate thunk).
     ctx.provide('locale', { register: () => () => {}, bind: () => () => '' })
     // Sessions service double: a fixed current session so switches can load.
-    ctx.provide('sessions', {
-      list: { getSnapshot: () => ({ current: 'sess-1' }), subscribe: () => () => {} },
-    })
+    ctx.provide('sessions', sessionsDouble(() => 'sess-1').sessions)
     const describe = vi.fn().mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
     const providers = vi.fn()
     const models = vi.fn()
@@ -2060,9 +2096,7 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
     // Locale service double: register + bind (bind returns a translate thunk).
     ctx.provide('locale', { register: () => () => {}, bind: () => () => '' })
     // Sessions service double: no current session; the wiring still subscribes.
-    ctx.provide('sessions', {
-      list: { getSnapshot: () => ({ current: undefined }), subscribe: () => () => {} },
-    })
+    ctx.provide('sessions', sessionsDouble(() => undefined).sessions)
     // Connection service double: only the gateway rpc face.
     const describe = vi.fn()
     const providers = vi.fn()
@@ -2116,17 +2150,9 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
     ctx.provide('locale', { register: () => () => {}, bind: () => () => '' })
     // Sessions service double: a controllable current selection with a real
     // subscriber list, so the apply wiring's D-5 subscription can be driven.
-    let current: string | undefined = 'sess-1'
-    const listeners = new Set<() => void>()
-    ctx.provide('sessions', {
-      list: {
-        getSnapshot: () => ({ current }),
-        subscribe: (fn: () => void) => {
-          listeners.add(fn)
-          return () => { listeners.delete(fn) }
-        },
-      },
-    })
+    let viewed: string | undefined = 'sess-1'
+    const { sessions, emitViewedChange } = sessionsDouble(() => viewed)
+    ctx.provide('sessions', sessions)
     // Connection service double: only the gateway rpc face.
     const history = vi.fn().mockImplementation(() => followAnswer([switchEntry(1)]))
     ctx.provide('connection', {
@@ -2164,8 +2190,8 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
     }, expect.any(AbortSignal))
 
     // The user switches session → the list subscription reloads for the new id.
-    current = 'sess-2'
-    for (const listener of [...listeners]) listener()
+    viewed = 'sess-2'
+    emitViewedChange()
     await Promise.resolve()
     expect(history).toHaveBeenCalledTimes(2)
     expect(history).toHaveBeenLastCalledWith({
@@ -2178,9 +2204,7 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
     // Locale service double: register + bind (bind returns a translate thunk).
     ctx.provide('locale', { register: () => () => {}, bind: () => () => '' })
     // Sessions service double: a fixed current session so switches can load.
-    ctx.provide('sessions', {
-      list: { getSnapshot: () => ({ current: 'sess-1' }), subscribe: () => () => {} },
-    })
+    ctx.provide('sessions', sessionsDouble(() => 'sess-1').sessions)
     // Connection service double: a scripted gateway rpc so load() succeeds.
     const describe = vi.fn().mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
     const providers = vi.fn()
@@ -2234,9 +2258,7 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
     // Locale service double: register + bind (bind returns a translate thunk).
     ctx.provide('locale', { register: () => () => {}, bind: () => () => '' })
     // Sessions service double: a fixed current session so switches can load.
-    ctx.provide('sessions', {
-      list: { getSnapshot: () => ({ current: 'sess-1' }), subscribe: () => () => {} },
-    })
+    ctx.provide('sessions', sessionsDouble(() => 'sess-1').sessions)
     const describe = vi.fn().mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
     const history = vi.fn().mockImplementation(() => followAnswer([switchEntry(1)]))
     ctx.provide('connection', {
@@ -2278,9 +2300,7 @@ describe('client apply disposal wiring (F-006 / M-01)', () => {
   it('connection/reset refreshes settings + switches + catalog (burst coalesces)', async () => {
     // Locale service double: register + bind (bind returns a translate thunk).
     ctx.provide('locale', { register: () => () => {}, bind: () => () => '' })
-    ctx.provide('sessions', {
-      list: { getSnapshot: () => ({ current: 'sess-1' }), subscribe: () => () => {} },
-    })
+    ctx.provide('sessions', sessionsDouble(() => 'sess-1').sessions)
     const describe = vi.fn().mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
     const providers = vi.fn()
     const models = vi.fn()

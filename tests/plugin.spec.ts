@@ -452,9 +452,9 @@ describe('model-selection notice on the virtual route (Task 4)', () => {
 
   /** The notices the host listener appended — source-tagged, so a plain message can never count. */
   function notices(decision: PreStepDecision): UserMessage[] {
-    return admitted(decision).filter(
-      (message) => message.source.kind === 'plugin' && message.source.plugin === 'model-selection',
-    )
+    // 0.1.7-rc.1: the model-selection producer declares its own source kind
+    // (`{ kind: 'model-selection' }` — the shared `plugin` kind is gone).
+    return admitted(decision).filter((message) => message.source.kind === 'model-selection')
   }
 
   /** The default web-profile composition: the plugin registers at bundle load, model-selection after it. */
@@ -501,8 +501,7 @@ describe('model-selection notice on the virtual route (Task 4)', () => {
     expect(appended).toHaveLength(1)
     // Exactly the chip the user reported: source `model-selection`, summary `from → to`.
     expect(appended[0]?.source).toMatchObject({
-      kind: 'plugin',
-      plugin: 'model-selection',
+      kind: 'model-selection',
       form: 'notice',
       summary: 'FallbacksChain/Auto → deepseek-official/deepseek-flash',
     })

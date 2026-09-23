@@ -7,7 +7,7 @@
 ![node](https://img.shields.io/badge/node-%3E%3D22-339933.svg)
 ![pnpm](https://img.shields.io/badge/pnpm-%3E%3D10-f69220.svg)
 ![dsh tui](https://img.shields.io/badge/dsh%20tui-compatible-4B32C3.svg)
-![dsh](https://img.shields.io/badge/DSH-0.1.5--rc.1-4B32C3.svg)
+![dsh](https://img.shields.io/badge/DSH-0.1.7--rc.1-4B32C3.svg)
 [![dshfind](https://dshfind.com/api/badge/omdsh-dev/dsh-llm-fallbacks?lang=zh)](https://dshfind.com/zh/plugins/omdsh-dev/dsh-llm-fallbacks?ref=badge)
 
 dsh（DeepSeek Harness）的自动模型降级插件：当 root agent 或 subagent 的模型请求持续失败（重试耗尽、权限、配额超限、限流 429）时，按角色/模型 fallback 链自动切换 provider/model，当前 step/turn 在目标模型上继续完成——任务不因模型问题中断。
@@ -120,7 +120,7 @@ fallbacks:
 
 第三类——遗留 `fallbacks/switch` 事件类型——**无法**通过改写修复：见 [fallbacks/switch 的有损恢复（opt-in）](#fallbacksswitch-的有损恢复opt-in)。
 
-**如果你在编写插件：绝不要新增自定义 `source.kind`。** 持久化词汇表按格式边界冻结，自定义 kind 会让携带它的每个会话在后续 dsh 发行版中都无法读取。请改用受支持的 `plugin` 分支——`{ kind: 'plugin', plugin: '<stable-id>', form: … }`——正如 dsh 自身的 `model-selection` notice 那样；稳定 id 记录了原 kind 是什么。
+**如果你在编写插件：** dsh 0.1.6 及之前，持久化 source 词汇表按格式边界冻结，受支持的写法是 `{ kind: 'plugin', plugin: '<stable-id>', form: … }`。自 dsh 0.1.7-rc.1 起词汇表改为由生产者自行声明（“每个生产者在自己的模块里声明自己的 `kind`”——dsh 自身的 `model-selection` notice 写的是 `{ kind: 'model-selection', form: 'notice', … }`），发行边界对直接 kind 唯一强制的规则是**非空**。按冻结词汇表写入的历史日志正是本工具 `source-kind` 类别要修复的对象。
 
 ### 用法
 

@@ -8,16 +8,17 @@
  * ① No settings service (plain cordis ctx) — `get` returns the entry
  *    composed value (schema defaults → entry base), and `set`/`reset` fail
  *    cleanly (the settings service is unavailable — KD-G5 error path).
- * ② With a settings service mounted — `set` writes the USER layer (visible in
- *    `describe().user`), the composed value changes (base defaults the patch
- *    did not touch are kept), the write is LIVE (the bridge source reflects
- *    it), `set` returns the new composed value, and `reset` clears the user
- *    layer so the composition defaults reapply.
+ * ② With a settings service mounted — `set` writes the plugin's profile-entry
+ *    section (visible in `describe().user`), the composed value changes (base
+ *    defaults the patch did not touch are kept), the write is LIVE (the
+ *    bridge source reflects it), `set` returns the new composed value, and
+ *    `reset` clears the section so the composition defaults reapply.
  * ③ `set` with an unknown key is rejected by the `Config` schema
  *    (unknown-key rejection unchanged) and nothing is persisted — including
  *    prototype-chain names (`__proto__`, `constructor`) that used to bypass
- *    the `in` guard (F-001, own-key membership) and never wipe the user layer.
- * ④ Containment (guide §10): a malformed stored user layer that the
+ *    the `in` guard (F-001, own-key membership) and never wipe the patch
+ *    section.
+ * ④ Containment (guide §10): a malformed stored patch section that the
  *    non-strict settings schema let through (an unknown key) never fails
  *    `get` — only schema-declared keys cross the wire, and a schema key
  *    whose composed value is `undefined` is omitted, never
@@ -35,9 +36,9 @@
  *    `chains`/`roles.default`/undeclared rule-role leftovers on the composed
  *    source; the wire config itself stays the new shape.
  * ⑧ `set`/`reset` return the same `{ config, legacyKeys }` shape computed on
- *    the POST-WRITE composed source (W-1/F-1): the settings merge retains a
- *    legacy user layer, so a save keeps re-reporting it; reset drops the user
- *    layer but re-reports entry-base leftovers.
+ *    the POST-WRITE composed source (W-1/F-1): the config merge retains a
+ *    legacy patch section, so a save keeps re-reporting it; reset drops the
+ *    section but re-reports entry-base leftovers.
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -49,7 +50,7 @@ import { Config } from '../src/schema.ts'
 import { defaultFallbacksConfig, type FallbacksConfig } from '../src/config.ts'
 import { OFFICIAL_FLASH, OFFICIAL_PRO } from '../src/time-slots.ts'
 import {
-  FALLBACKS_SETTINGS_NAMESPACE,
+  FALLBACKS_PROFILE_ENTRY,
   FallbacksConfigGateway,
   fallbacksTypertContribution,
   type FallbacksSettingsBridge,
@@ -86,27 +87,44 @@ function makeSeeds(): FallbacksSeedManager {
 }
 
 /**
- * Build the `FallbacksSettingsBridge` exactly the way `apply()` wires it (the
- * same conditional `ctx.inject(['settings'])` child calling
- * `SettingsProvider.installSection` + setSource/onChange hooks) — the gateway
- * under test consumes this live source. No settings service composed → the
- * child never fires and the bridge serves the composition entry.
+ * Build the `FallbacksSettingsBridge` the way `apply()` wires it (0.1.7-rc.1
+ * form-service model): the source reads the settings-composed view — the
+ * entry's stored section merged over the normalized entry — refreshed on the
+ * settings seam's `settings/document-updated` event, exactly the binding the
+ * plugin's settings child installs for a plain (non-Loader-reference) config.
+ * No settings service composed → the child never fires and the bridge serves
+ * the composition entry.
  */
 function installFallbacksBridge(ctx: Context, entry: FallbacksConfig): FallbacksSettingsBridge {
-  let source = (): FallbacksConfig => entry
+  let userSection: Record<string, unknown> | undefined
   ctx.inject(['settings'], (sctx) => {
-    sctx.settings.installSection(ctx, FALLBACKS_SETTINGS_NAMESPACE, Config, entry, {
-      setSource: (current) => {
-        source = current
-      },
-      onChange: () => {
-        // no bridge fan-out — the gateway reads source() live per call
-      },
+    const settings = sctx.settings
+    const refresh = (): void => {
+      const descriptor = settings.describe().find((d) => d.ns === FALLBACKS_PROFILE_ENTRY)
+      userSection = descriptor?.value as Record<string, unknown> | undefined
+    }
+    refresh()
+    return ctx.on('settings/document-updated', (ns) => {
+      if (ns === FALLBACKS_PROFILE_ENTRY) refresh()
     })
-    return undefined
   })
   return {
-    source: (): FallbacksConfig => source(),
+    source: (): FallbacksConfig => {
+      if (userSection === undefined) return entry
+      // The same layering rule the settings merge applies (objects deep-merge,
+      // arrays replace) — a local twin of `mergeConfigLayer` in src/index.ts —
+      // then resolved through the schema so defaults fold in exactly like the
+      // Loader-composed entry does (roleAutoMatch, materialized row fields).
+      const merged: Record<string, unknown> = { ...entry }
+      for (const [key, value] of Object.entries(userSection)) {
+        const current = merged[key]
+        merged[key] = typeof current === 'object' && current !== null && !Array.isArray(current)
+          && typeof value === 'object' && value !== null && !Array.isArray(value)
+          ? { ...current, ...(value as Record<string, unknown>) }
+          : value
+      }
+      return Config(merged) as FallbacksConfig
+    },
   }
 }
 
@@ -115,10 +133,14 @@ function settingsOf(gateway: FallbacksConfigGateway): unknown {
   return (gateway as unknown as { settings?: unknown }).settings
 }
 
-/** Wait until the conditional `ctx.inject(['settings'], ...)` child registered the namespace. */
+/**
+ * Wait until the conditional `ctx.inject(['settings'], ...)` children have
+ * fired — 0.1.7-rc.1 has no registration step, so the observable is the
+ * settings child's bind-time `describe()` (the double counts the calls).
+ */
 async function waitRegistered(ctx: Context): Promise<void> {
   await vi.waitFor(() => {
-    expect(ctx.settings.describe().some((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)).toBe(true)
+    expect((ctx.settings as unknown as MemorySettings).describeCalls).toBeGreaterThan(0)
   })
 }
 
@@ -233,11 +255,11 @@ describe('no settings service (entry fallback)', () => {
 })
 
 // ---------------------------------------------------------------------------
-// ② with a settings service → set writes the user layer, reset clears it
+// ② with a settings service → set writes the profile-entry section, reset clears it
 // ---------------------------------------------------------------------------
 
-describe('with a settings service (set writes the user layer)', () => {
-  it('set writes the user layer (describe visible), the composed value changes live, and set returns it', async () => {
+describe('with a settings service (set writes the profile-entry section)', () => {
+  it('set writes the profile-entry section (describe visible), the composed value changes live, and set returns it', async () => {
     const ctx = track(new Context())
     await ctx.plugin(MemorySettings)
     const entry = entryConfig({ rootChain: ['other/gpt-4o'], cooldownMs: 120_000 })
@@ -249,7 +271,7 @@ describe('with a settings service (set writes the user layer)', () => {
     const result = await gateway.set({ enabled: true })
 
     // describe exposes the raw user layer (what the UI form wrote).
-    const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)!
+    const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_PROFILE_ENTRY)!
     expect(descriptor.user).toEqual({ enabled: true })
     // The composed value keeps the base defaults the patch did not override.
     const composed: FallbacksConfig = { ...entry, enabled: true }
@@ -283,7 +305,7 @@ describe('with a settings service (set writes the user layer)', () => {
 
     // The user layer keeps ALL keys written across the two calls — a
     // replace-semantics write would have dropped the earlier pair.
-    const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)!
+    const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_PROFILE_ENTRY)!
     expect(descriptor.user).toEqual({ enabled: true, cooldownMs: 120_000, maxSwitchesPerStep: 3 })
     expect(gateway.get().config).toEqual({
       ...defaultFallbacksConfig,
@@ -302,8 +324,9 @@ describe('with a settings service (set writes the user layer)', () => {
     await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
 
     const result = await gateway.set({})
-    const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)!
-    expect(descriptor.user).toBeUndefined()
+    // Nothing persisted ⇒ the double lists no section descriptor at all
+    // (the 0.1.7 form service keys descriptors by written profile entries).
+    expect(ctx.settings.describe().find((d) => d.ns === FALLBACKS_PROFILE_ENTRY)?.user).toBeUndefined()
     // A no-op set reports the unchanged composed source exactly like get
     // (W-1/F-1: every set/reset response carries the post-write legacyKeys).
     expect(result).toEqual(gateway.get())
@@ -319,7 +342,7 @@ describe('with a settings service (set writes the user layer)', () => {
     await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
 
     await gateway.set({ cooldownMs: null, maxSwitchesPerStep: 3 } as never)
-    const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)!
+    const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_PROFILE_ENTRY)!
     expect(descriptor.user).toEqual({ maxSwitchesPerStep: 3 })
     // Dropping the null did not clear the base-pinned cooldown: the composed
     // config keeps it and the new cap.
@@ -335,8 +358,9 @@ describe('with a settings service (set writes the user layer)', () => {
     await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
 
     await gateway.set({ enabled: null, cooldownMs: null } as never)
-    const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)!
-    expect(descriptor.user).toBeUndefined()
+    // Nothing persisted ⇒ the double lists no section descriptor at all
+    // (the 0.1.7 form service keys descriptors by written profile entries).
+    expect(ctx.settings.describe().find((d) => d.ns === FALLBACKS_PROFILE_ENTRY)?.user).toBeUndefined()
     expect(gateway.get().config).toEqual(entry)
   })
 
@@ -355,7 +379,7 @@ describe('with a settings service (set writes the user layer)', () => {
 
     // The user layer is cleared: the composed value returns to the
     // composition base (entry), so the earlier write no longer influences it.
-    const after = ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)!
+    const after = ctx.settings.describe().find((d) => d.ns === FALLBACKS_PROFILE_ENTRY)!
     expect(after.user).toEqual({})
     expect(gateway.get()).toEqual({ config: entry, legacyKeys: [], seeds: [] })
     // reset returns the same { config, legacyKeys, seeds } shape as get (W-1/F-1).
@@ -394,7 +418,7 @@ describe('with a settings service (set writes the user layer)', () => {
     const outcome = await seeds.declare([{ id: 'architect', persona: 'seed default' }], {
       read: () => bridge.source(),
       writeRoles: async (roles) => {
-        await ctx.settings.update(FALLBACKS_SETTINGS_NAMESPACE, { roles })
+        await ctx.settings.update(FALLBACKS_PROFILE_ENTRY, { roles })
       },
     })
     expect(outcome).toEqual({ applied: ['architect'], skipped: [], conflicts: [] })
@@ -402,7 +426,7 @@ describe('with a settings service (set writes the user layer)', () => {
 
     // An operator edit flips the badge to override; the set response reports
     // the POST-WRITE state (the merge keeps the rows — set is not a reset).
-    await ctx.settings.update(FALLBACKS_SETTINGS_NAMESPACE, {
+    await ctx.settings.update(FALLBACKS_PROFILE_ENTRY, {
       roles: { list: [{ id: 'architect', persona: 'operator edit' }], rules: [] },
     })
     const setResult = await gateway.set({ enabled: true })
@@ -432,8 +456,9 @@ describe('set validation (Config schema, unknown-key rejection unchanged)', () =
 
     await expect(gateway.set({ bogus: 1 } as never)).rejects.toThrow(/unknown config key "bogus"/)
     // Nothing was persisted: the user layer stays absent.
-    const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)!
-    expect(descriptor.user).toBeUndefined()
+    // Nothing persisted ⇒ the double lists no section descriptor at all
+    // (the 0.1.7 form service keys descriptors by written profile entries).
+    expect(ctx.settings.describe().find((d) => d.ns === FALLBACKS_PROFILE_ENTRY)?.user).toBeUndefined()
   })
 
   it('accepts the roleAutoMatch switch (plan fallbacks-role-automatch Task 1 — toggleable)', async () => {
@@ -466,8 +491,9 @@ describe('set validation (Config schema, unknown-key rejection unchanged)', () =
     const poisoned = Object.fromEntries([['__proto__', { enabled: true }]])
     await expect(gateway.set(poisoned as never)).rejects.toThrow(/unknown config key "__proto__"/)
     // Nothing was persisted: the user layer stays absent (no wipe, no junk).
-    const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)!
-    expect(descriptor.user).toBeUndefined()
+    // Nothing persisted ⇒ the double lists no section descriptor at all
+    // (the 0.1.7 form service keys descriptors by written profile entries).
+    expect(ctx.settings.describe().find((d) => d.ns === FALLBACKS_PROFILE_ENTRY)?.user).toBeUndefined()
   })
 
   it('rejects a constructor key (prototype-chain name, not a config key)', async () => {
@@ -478,8 +504,9 @@ describe('set validation (Config schema, unknown-key rejection unchanged)', () =
     await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
 
     await expect(gateway.set({ constructor: { enabled: true } } as never)).rejects.toThrow(/unknown config key "constructor"/)
-    const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)!
-    expect(descriptor.user).toBeUndefined()
+    // Nothing persisted ⇒ the double lists no section descriptor at all
+    // (the 0.1.7 form service keys descriptors by written profile entries).
+    expect(ctx.settings.describe().find((d) => d.ns === FALLBACKS_PROFILE_ENTRY)?.user).toBeUndefined()
   })
 
   it('the user layer survives an attempted __proto__ wipe (F-001)', async () => {
@@ -498,7 +525,7 @@ describe('set validation (Config schema, unknown-key rejection unchanged)', () =
     const poisoned = Object.fromEntries([['__proto__', { enabled: true }]])
     await expect(gateway.set(poisoned as never)).rejects.toThrow(/unknown config key "__proto__"/)
 
-    const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)!
+    const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_PROFILE_ENTRY)!
     expect(descriptor.user).toEqual({ enabled: true, cooldownMs: 120_000 })
     expect(gateway.get().config).toEqual({ ...entryConfig(), enabled: true, cooldownMs: 120_000 })
   })
@@ -528,8 +555,9 @@ describe('set validation (Config schema, unknown-key rejection unchanged)', () =
       /unknown config key "chains"/,
     )
     // Nothing was persisted: the user layer stays absent.
-    const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)!
-    expect(descriptor.user).toBeUndefined()
+    // Nothing persisted ⇒ the double lists no section descriptor at all
+    // (the 0.1.7 form service keys descriptors by written profile entries).
+    expect(ctx.settings.describe().find((d) => d.ns === FALLBACKS_PROFILE_ENTRY)?.user).toBeUndefined()
   })
 
   it('a non-object patch is rejected as malformed input', async () => {
@@ -556,8 +584,9 @@ describe('set validation (Config schema, unknown-key rejection unchanged)', () =
     // top-level unknown-key guard).
     await expect(gateway.set({ roles: { default: 'reviewer' } } as never))
       .rejects.toThrow(/unknown config key "roles\.default"/)
-    const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)!
-    expect(descriptor.user).toBeUndefined()
+    // Nothing persisted ⇒ the double lists no section descriptor at all
+    // (the 0.1.7 form service keys descriptors by written profile entries).
+    expect(ctx.settings.describe().find((d) => d.ns === FALLBACKS_PROFILE_ENTRY)?.user).toBeUndefined()
   })
 
   it('accepts only the declared roles nested keys (list/rules patch passes)', async () => {
@@ -570,7 +599,7 @@ describe('set validation (Config schema, unknown-key rejection unchanged)', () =
     await gateway.set({
       roles: { list: [{ id: 'coder', persona: 'Coding subagent' }], rules: [{ role: 'coder' }] },
     } as never)
-    const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)!
+    const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_PROFILE_ENTRY)!
     expect(descriptor.user).toEqual({
       roles: {
         list: [{ id: 'coder', persona: 'Coding subagent' }],
@@ -731,7 +760,7 @@ describe('containment (malformed stored user layer)', () => {
     // whose raw document already contains the section when the plugin loads.
     // The non-strict settings schema merges the unknown key through.
     const settings = ctx.settings as unknown as MemorySettings
-    settings.seed(FALLBACKS_SETTINGS_NAMESPACE, { enabled: true, bogus: 1 })
+    settings.seed(FALLBACKS_PROFILE_ENTRY, { enabled: true, bogus: 1 })
     const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()), makeSeeds())
     await waitRegistered(ctx)
 
@@ -821,7 +850,7 @@ describe('get legacyKeys detection (two-block-era leftovers)', () => {
     // USER-LAYER merge path — the exact path a real legacy user hits (the
     // entry-base composition tests prove only the schema-defaults path).
     const settings = ctx.settings as unknown as MemorySettings
-    settings.seed(FALLBACKS_SETTINGS_NAMESPACE, {
+    settings.seed(FALLBACKS_PROFILE_ENTRY, {
       chains: { default: ['other/gpt-4o'] },
       roles: { default: 'reviewer', rules: [{ role: 'reviewer' }] },
     })
@@ -857,7 +886,7 @@ describe('set/reset return post-write legacyKeys (W-1/F-1)', () => {
     const ctx = track(new Context())
     await ctx.plugin(MemorySettings)
     const settings = ctx.settings as unknown as MemorySettings
-    settings.seed(FALLBACKS_SETTINGS_NAMESPACE, {
+    settings.seed(FALLBACKS_PROFILE_ENTRY, {
       chains: { default: ['other/gpt-4o'] },
       roles: { default: 'reviewer', rules: [{ role: 'reviewer' }] },
     })
@@ -910,7 +939,7 @@ describe('legacy roleAutoMatch on the real gateway wire (AC-7 re-scope Option A)
     // exercised a hand-built absent-key wire that the real gateway never
     // produces.
     const settings = ctx.settings as unknown as MemorySettings
-    settings.seed(FALLBACKS_SETTINGS_NAMESPACE, {
+    settings.seed(FALLBACKS_PROFILE_ENTRY, {
       enabled: true,
       rootChain: ['other/gpt-4o'],
     })
@@ -933,7 +962,7 @@ describe('legacy roleAutoMatch on the real gateway wire (AC-7 re-scope Option A)
     // semantically identical to the schema default.
     const result = await gateway.set({ roleAutoMatch: true, cooldownMs: 120_000 })
     expect(result.config.roleAutoMatch).toBe(true)
-    const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)!
+    const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_PROFILE_ENTRY)!
     expect(descriptor.user).toMatchObject({ roleAutoMatch: true, cooldownMs: 120_000 })
     // The next get agrees.
     expect(gateway.get().config.roleAutoMatch).toBe(true)
@@ -992,7 +1021,7 @@ async function composeGatewayHarness(
     // the dev-time mirror of a file-backed provider whose raw document
     // already contains the section when the plugin loads.
     const settings = ctx.settings as unknown as MemorySettings
-    settings.seed(FALLBACKS_SETTINGS_NAMESPACE, seedUser)
+    settings.seed(FALLBACKS_PROFILE_ENTRY, seedUser)
   }
   await ctx.plugin(TypertRegistry)
   await ctx.plugin(FakeConnectionService)
@@ -1177,13 +1206,13 @@ describe('composed plugin (apply wires the gateway)', () => {
     const after = await ctx.typertGateway.invoke({ namespace: 'fallbacks', method: 'get', args: {} })
     expect(invokeConfig(after)).toEqual({ ...entry, enabled: true, rootChain: [OFFICIAL_FLASH] })
     // describe shows the user layer written through the gateway.
-    const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)!
+    const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_PROFILE_ENTRY)!
     expect(descriptor.user).toEqual({ enabled: true, rootChain: [OFFICIAL_FLASH] })
 
     // reset through the gateway returns the composition base (entry).
     const reset = await ctx.typertGateway.invoke({ namespace: 'fallbacks', method: 'reset', args: {} })
     expect(invokeConfig(reset)).toEqual(entry)
-    const afterReset = ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)!
+    const afterReset = ctx.settings.describe().find((d) => d.ns === FALLBACKS_PROFILE_ENTRY)!
     expect(afterReset.user).toEqual({})
   })
 })
@@ -1248,7 +1277,8 @@ describe('subagentPolicy wire projection (plan dsh-012 T5 fix round 1)', () => {
 
     await expect(gateway.set({ subagentPolicy: { state: 'disabled' } } as never))
       .rejects.toThrow(/unknown config key "subagentPolicy"/)
-    const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)!
-    expect(descriptor.user).toBeUndefined()
+    // Nothing persisted ⇒ the double lists no section descriptor at all
+    // (the 0.1.7 form service keys descriptors by written profile entries).
+    expect(ctx.settings.describe().find((d) => d.ns === FALLBACKS_PROFILE_ENTRY)?.user).toBeUndefined()
   })
 })
