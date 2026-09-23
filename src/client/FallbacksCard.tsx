@@ -1,6 +1,6 @@
 /**
- * Fallbacks settings card — the `fallbacks` plugin card on the web settings
- * "插件配置" page (spec §4). Registered into the `plugins.bundle.config` keyed
+ * Fallbacks settings card — the `fallbacks` plugin card on the web
+ * Plugins page (spec §4). Registered into the `plugins.bundle.config` keyed
  * slot (key `dsh-llm-fallbacks`, the bundle package name, alongside
  * the upstream bash/agent-loop/web-search cards and the advisor card, in
  * registration order); owner props are empty and all data flows
