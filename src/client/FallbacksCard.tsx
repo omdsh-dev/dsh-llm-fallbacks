@@ -1,7 +1,7 @@
 /**
  * Fallbacks settings card — the `fallbacks` plugin card on the web settings
  * "插件配置" page (spec §4). Registered into the `plugins.bundle.config` keyed
- * slot (key `fallbacks`, the settings namespace the card edits, alongside
+ * slot (key `dsh-llm-fallbacks`, the bundle package name, alongside
  * the upstream bash/agent-loop/web-search cards and the advisor card, in
  * registration order); owner props are empty and all data flows
  * through {@link FallbacksSettingsController}.
@@ -10,7 +10,7 @@
  * the upstream client value face exports no reusable card): a collapsible
  * `<li>` whose header is a button stacking the plugin name over its
  * description, with a dirty "unsaved" pill and a rotating chevron
- * (`IconChevronDownOutline14` from ui-primitives — a CLIENT_EXTERNALS value
+ * (`IconChevronDownOutlineMedium` from ui-primitives — a CLIENT_EXTERNALS value
  * import), `aria-expanded`/`aria-label` like the upstream header; a divider
  * under the header; then the form content. PR #62 UX round 2: the card
  * footer is gone — each big section (主代理 / 子代理 / 高级选项) carries its
@@ -83,7 +83,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { LlmConfigurableProvider } from '@deepseek-ai/dsh-api-remotes/client'
 import {
-  Button, IconChevronDownOutline14, IconChevronUpOutline14, IconEllipsisOutline16, IconPlusOutline16, IconTrashOutline16, Tooltip,
+  Button, IconChevronDownOutlineMedium, IconChevronUpOutlineMedium, IconEllipsisOutlineMedium, IconPlusOutlineMedium, IconTrashOutlineMedium, Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { SnapshotSelectorHook } from '@deepseek-ai/dsh-client-ui-slots'
@@ -694,7 +694,7 @@ function ChainSelectorEditor({
           aria-label={t('chains.selector.remove')}
           onClick={onRemove}
         >
-          <IconTrashOutline16 />
+          <IconTrashOutlineMedium />
         </button>
       </div>
     </div>
@@ -1340,7 +1340,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
         <span className={css.description}>{t('intro')}</span>
       </span>
       {dirty ? <span className={css.pending}>{t('unsaved')}</span> : null}
-      <IconChevronDownOutline14
+      <IconChevronDownOutlineMedium
         className={open ? `${css.chevron} ${css.chevronOpen}` : css.chevron}
       />
     </button>
@@ -1573,7 +1573,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                           disabled={!writable}
                           onClick={() => { updateTimeSlotRow(index, { collapsed: !row.collapsed }) }}
                         >
-                          <IconChevronDownOutline14 className={slotExpanded ? `${css.chevron} ${css.chevronOpen}` : css.chevron} />
+                          <IconChevronDownOutlineMedium className={slotExpanded ? `${css.chevron} ${css.chevronOpen}` : css.chevron} />
                           <span className={css.collapseTitle}>
                             {row.kind === 'preset'
                               ? t(`timeSlots.preset.${row.preset}.label` as FallbacksKey)
@@ -1616,7 +1616,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                           }}
                           onDragEnd={() => { setDraggedSlotIndex(null); setOverSlotIndex(null) }}
                         >
-                          <IconEllipsisOutline16 className={css.dragHandleIcon} />
+                          <IconEllipsisOutlineMedium className={css.dragHandleIcon} />
                         </button>
                       </div>
                       {slotExpanded && (
@@ -1743,7 +1743,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                       <Button
                         variant="outline"
                         size="sm"
-                        icon={<IconPlusOutline16 size={14} />}
+                        icon={<IconPlusOutlineMedium size={14} />}
                         className={css.addButton}
                         onClick={() => { addTimeSlotSelector(index) }}
                       >
@@ -1759,7 +1759,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                             disabled={!writable || index === 0}
                             onClick={() => { moveTimeSlotRow(index, -1) }}
                           >
-                            <IconChevronUpOutline14 />
+                            <IconChevronUpOutlineMedium />
                           </button>
                           <button
                             type="button"
@@ -1769,7 +1769,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                             disabled={!writable || index === timeSlotRows.length - 1}
                             onClick={() => { moveTimeSlotRow(index, 1) }}
                           >
-                            <IconChevronDownOutline14 />
+                            <IconChevronDownOutlineMedium />
                           </button>
                           <button
                             type="button"
@@ -1778,7 +1778,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                             aria-label={t('timeSlots.remove')}
                             onClick={() => { removeTimeSlotRow(index) }}
                           >
-                            <IconTrashOutline16 />
+                            <IconTrashOutlineMedium />
                           </button>
                         </div>
                       </div>
@@ -1816,7 +1816,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                   <Button
                     variant="outline"
                     size="sm"
-                    icon={<IconPlusOutline16 size={14} />}
+                    icon={<IconPlusOutlineMedium size={14} />}
                     disabled={!writable || presetToAdd === ''}
                     onClick={addPresetSlotRow}
                   >
@@ -1825,7 +1825,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                   <Button
                     variant="outline"
                     size="sm"
-                    icon={<IconPlusOutline16 size={14} />}
+                    icon={<IconPlusOutlineMedium size={14} />}
                     disabled={!writable}
                     onClick={addCustomSlotRow}
                   >
@@ -1874,7 +1874,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                     <Button
                       variant="outline"
                       size="sm"
-                      icon={<IconPlusOutline16 size={14} />}
+                      icon={<IconPlusOutlineMedium size={14} />}
                       className={css.addButton}
                       onClick={addAllDayChainSelector}
                     >
@@ -2066,7 +2066,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                           disabled={!writable}
                           onClick={() => { updateRoleRow(index, { collapsed: !row.collapsed }) }}
                         >
-                          <IconChevronDownOutline14 className={roleExpanded ? `${css.chevron} ${css.chevronOpen}` : css.chevron} />
+                          <IconChevronDownOutlineMedium className={roleExpanded ? `${css.chevron} ${css.chevronOpen}` : css.chevron} />
                           <span className={css.collapseTitle}>{row.id}</span>
                           {seedBadge !== null && (
                             // Non-interactive — it rides the whole-row toggle
@@ -2173,7 +2173,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                                       }
                                     }}
                                   >
-                                    <IconChevronDownOutline14 className={row.personaOpen ? `${css.chevron} ${css.chevronOpen}` : css.chevron} />
+                                    <IconChevronDownOutlineMedium className={row.personaOpen ? `${css.chevron} ${css.chevronOpen}` : css.chevron} />
                                   </span>
                                 )}
                               </div>
@@ -2235,7 +2235,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                       <Button
                         variant="outline"
                         size="sm"
-                        icon={<IconPlusOutline16 size={14} />}
+                        icon={<IconPlusOutlineMedium size={14} />}
                         className={css.addButton}
                         onClick={() => { addRoleSelector(index) }}
                       >
@@ -2249,7 +2249,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                           aria-label={t('roles.remove')}
                           onClick={() => { removeRole(index) }}
                         >
-                          <IconTrashOutline16 />
+                          <IconTrashOutlineMedium />
                         </button>
                       </div>
                       </>
@@ -2261,7 +2261,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                 <Button
                   variant="outline"
                   size="sm"
-                  icon={<IconPlusOutline16 size={14} />}
+                  icon={<IconPlusOutlineMedium size={14} />}
                   className={css.addButton}
                   onClick={addRole}
                 >
@@ -2396,7 +2396,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                             setRuleRows(rows => rows.filter((_, rowIndex) => rowIndex !== index))
                           }}
                         >
-                          <IconTrashOutline16 />
+                          <IconTrashOutlineMedium />
                         </button>
                       </div>
                     </div>
@@ -2406,7 +2406,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                 <Button
                   variant="outline"
                   size="sm"
-                  icon={<IconPlusOutline16 size={14} />}
+                  icon={<IconPlusOutlineMedium size={14} />}
                   className={css.addButton}
                   onClick={() => {
                     setRuleRows(rows => [...rows, { provider: null, model: null, role: '' }])
@@ -2437,7 +2437,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                   onClick={() => { if (writable) setAdvancedOpen(!advancedOpen) }}
                 >
                   <span id="fallbacks-advanced" className={css.sectionToggleText}>{t('advanced.label')}</span>
-                  <IconChevronDownOutline14 className={advancedVisible ? `${css.chevron} ${css.chevronOpen}` : css.chevron} />
+                  <IconChevronDownOutlineMedium className={advancedVisible ? `${css.chevron} ${css.chevronOpen}` : css.chevron} />
                 </button>
                 {advancedVisible && (
                   <div id="fallbacks-advanced-body">

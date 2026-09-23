@@ -45,7 +45,7 @@ import {
   type FallbacksConfig,
   type FallbacksService,
 } from '../src/index.ts'
-import { FALLBACKS_SETTINGS_NAMESPACE } from '../src/gateway.ts'
+import { FALLBACKS_PROFILE_ENTRY } from '../src/gateway.ts'
 import { MemorySettings } from './support/memory-settings.ts'
 import { settle } from './support/settle.ts'
 
@@ -228,7 +228,7 @@ describe('llm-fallbacks named cordis service', () => {
     ])
     // And the materialized row landed in the settings user layer (the write
     // channel the same child bound), not just in the manager registry.
-    const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)!
+    const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_PROFILE_ENTRY)!
     expect(descriptor.user).toEqual({
       roles: { list: [{ id: 'architect', persona: 'architects the fallback flow' }], rules: [] },
     })
@@ -251,7 +251,7 @@ describe('llm-fallbacks named cordis service', () => {
     // Operator edit through the settings user layer (the settings-card
     // channel) — the row persona IS the override; nothing override-shaped is
     // stored separately (spec §9.2).
-    await ctx.settings.update(FALLBACKS_SETTINGS_NAMESPACE, {
+    await ctx.settings.update(FALLBACKS_PROFILE_ENTRY, {
       roles: { list: [{ id: 'architect', persona: 'operator edit' }], rules: [] },
     })
     expect(fb.getEffectiveRoles().roles[0]).toMatchObject({ personaOverridden: true })

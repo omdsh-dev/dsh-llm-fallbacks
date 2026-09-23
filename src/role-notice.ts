@@ -27,17 +27,24 @@
  * decision has neither failure mode.
  *
  * Session-write contract (plan Global Constraints, hard): the row is a
- * `user/message` built with `createUserMessage` and the sanctioned plugin source
- * `{ kind: 'plugin', plugin: 'dsh-llm-fallbacks', form: 'notice', summary: … }`.
- * `plugin` is a member of the FROZEN released source-kind set the V2→V3 edge
- * classifies (`dsh-session-format-v2-to-v3/lib/index.js:14-30`: 15 kinds,
- * includes `plugin`); a bespoke kind would write fine and then refuse at the
- * next frozen edge with `cannot safely transform unclassified message source`
- * (`:125`). NO custom session event type, NO `ignorable` marker — a mount-only
- * plugin cannot publish either (`.mstar/projects/_default/references/
- * subagent-role-badge-visible/explore-role-seam-report.md` §Q3). The guard test
- * in `tests/role-notice.spec.ts` pins that membership against a checked-in
- * mirror of the set.
+ * `user/message` built with `createUserMessage` and the producer-declared
+ * source `{ kind: 'llm-fallbacks-role-notice', form: 'notice', summary: … }`.
+ * 0.1.7-rc.1 removed the shared `plugin` kind: `MessageSourceMap` is
+ * producer-declared now ("each producer declares its own `kind` in its own
+ * module; there is no shared catch-all `plugin` kind" — dsh-llm message.d.ts),
+ * so this module merges its own kind and stamps `form: 'notice'` + the bound
+ * summary exactly like the host's own model-switch notice
+ * (`core/agent/src/model-selection.ts`). User-role messages carry any
+ * producer's kind, consumers fall through unknown kinds, and the V4 format
+ * edge retains every direct source kind verbatim — a bespoke kind writes and
+ * survives every frozen edge. NO custom session event type, NO `ignorable`
+ * marker — a mount-only plugin cannot publish either (`.mstar/projects/
+ * _default/references/subagent-role-badge-visible/explore-role-seam-report.md`
+ * §Q3). The guard test in `tests/role-notice.spec.ts` pins the exact literal.
+ * Pre-upgrade durable rows (`kind: 'plugin', plugin: 'dsh-llm-fallbacks'`)
+ * migrate to `kind: 'plugin:dsh-llm-fallbacks'` at the V3→V4 edge; the role
+ * projection accepts that legacy form alongside this kind (see
+ * {@link ROLE_NOTICE_LEGACY_SOURCE_KINDS}).
  *
  * Once per child SESSION: the emitter consumes the seam's per-child record
  * marker (`firstNoticePending`) AND a per-agent `emitted` set (mirroring the
@@ -65,23 +72,44 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
-import { boundContextSummary, createUserMessage, type UserMessage } from '@deepseek-ai/dsh-llm'
+import { boundContextSummary, createUserMessage, type ContextFormed, type UserMessage } from '@deepseek-ai/dsh-llm'
 import type { SubagentSeamRecord } from './subagents-seam.ts'
 
+declare module '@deepseek-ai/dsh-llm' {
+  interface MessageSourceMap {
+    'llm-fallbacks-role-notice': { kind: 'llm-fallbacks-role-notice' } & ContextFormed
+  }
+}
+
 /**
- * The `plugin` field of every notice this plugin writes. Stable: the durable
- * source's provenance label is read from it (`ui-conversation`
- * `context-provenance.ts` — "the plugin id, or the bare source kind").
+ * The provenance label this plugin's notice rows carried under the pre-0.1.7
+ * `kind: 'plugin'` source API. The durable rows survive as data: the V3→V4
+ * session-format edge rewrites every unlisted V3 plugin source to
+ * `kind: 'plugin:<plugin>'`, so pre-upgrade child sessions carry
+ * `plugin:dsh-llm-fallbacks` rows — {@link ROLE_NOTICE_LEGACY_SOURCE_KINDS}
+ * and the role projection gate on this constant to keep badge continuity
+ * across the upgrade.
  */
 export const ROLE_NOTICE_PLUGIN = 'dsh-llm-fallbacks'
 
 /**
- * The message source KIND the notice rides. `plugin` is the sanctioned kind for
- * a plugin-authored notice and a member of the frozen released set (see the
- * module header); the value is exported so the guard test asserts on the exact
- * literal the emitter uses.
+ * The message source KIND the notice rides. 0.1.7-rc.1 removed the shared
+ * `plugin` kind (`MessageSourceMap` is producer-declared now — each producer
+ * declares its own `kind` in its own module, the upstream `model-selection`
+ * precedent), so this module declares `llm-fallbacks-role-notice` above and
+ * the emitter stamps it with `form: 'notice'` + the bound summary exactly like
+ * the host's own model-switch notice. The value is exported so the guard test
+ * asserts on the exact literal the emitter uses.
  */
-export const ROLE_NOTICE_SOURCE_KIND = 'plugin'
+export const ROLE_NOTICE_SOURCE_KIND = 'llm-fallbacks-role-notice'
+
+/**
+ * The source kinds the role projection must ALSO accept besides
+ * {@link ROLE_NOTICE_SOURCE_KIND}: the V4-migrated form of the pre-0.1.7
+ * `kind: 'plugin', plugin: 'dsh-llm-fallbacks'` rows (see
+ * {@link ROLE_NOTICE_PLUGIN}).
+ */
+export const ROLE_NOTICE_LEGACY_SOURCE_KINDS = [`plugin:${ROLE_NOTICE_PLUGIN}`] as const
 
 /** Suffix appended when the role declares a persona that was NOT delivered. */
 export const ROLE_NOTICE_PERSONA_SKIPPED_SUFFIX = ' (persona not applied)'
@@ -131,7 +159,6 @@ export function buildRoleNotice(role: string, personaNotApplied: boolean): UserM
     }],
     source: {
       kind: ROLE_NOTICE_SOURCE_KIND,
-      plugin: ROLE_NOTICE_PLUGIN,
       form: 'notice' as const,
       // `summary` is caller text (the role id comes from plugin settings), so it
       // rides the same bound the first-party notice producer uses.

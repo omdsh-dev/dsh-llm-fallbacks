@@ -19,13 +19,34 @@
  * `roles.default`) on the composed object at startup (warn + gateway
  * `legacyKeys`, see `src/index.ts` apply()).
  *
+ * 0.1.7-rc.1 adoption: the whole schema is marked `volatile` (dsh 0.1.6
+ * retired `installSection` — the Loader entry Config IS the settings
+ * section now, and `SettingsForms.update` only accepts volatile paths, so
+ * the marker is what keeps the gateway/card write path legal). One marker
+ * on the ROOT object makes every field live-editable and hands `apply` a
+ * single identity-stable config reference the Loader commits saves into
+ * (no remount per save). The marker rides the generic `.extra()` writer —
+ * the exact bytes `.volatile()` (schemastery ≥3.18.4) writes — because the
+ * dev-time schemastery resolved from the lockfile can predate that sugar;
+ * the `Meta` augmentation below declares the field the ^3.18.2 peer range
+ * admits at its upper end.
+ *
  * @module dsh-llm-fallbacks/schema
  */
 
 import z from '@deepseek-ai/schemastery'
 import type { FallbacksConfig } from './config.ts'
 
-export const Config = z.object({
+declare module '@deepseek-ai/schemastery' {
+  namespace Schemastery {
+    interface Meta {
+      /** Live-editable marker read by the Loader / `SettingsForms` (dsh 0.1.6+). */
+      volatile?: boolean;
+    }
+  }
+}
+
+const configSchema = z.object({
   enabled: z.boolean().default(false),
   triggerCodes: z.array(z.string()).default(['AUTH', 'QUOTA', 'RATE_LIMIT']),
   rootChain: z.array(z.string()).default([]),
@@ -103,4 +124,9 @@ export const Config = z.object({
   // resolve, and the default guarantees every resolved config carries
   // `recovery`.
   recovery: z.union([z.const('timer'), z.const('half-open')]).default('timer'),
-}) as unknown as z<FallbacksConfig>
+})
+// Root volatile marker (see the module docblock). `extra` CLONES the schema
+// and marks the clone — exactly what schemastery ≥3.18.4's `.volatile()` does
+// (`return this.extra('volatile', true)`) — so the marked clone is the export.
+export const Config = configSchema.extra('volatile', true) as unknown as z<FallbacksConfig>
+

@@ -6,9 +6,11 @@
  * `llm-fallbacks` (see `bundle/cordis.patch.yml`), composed AFTER llm-retry.
  *
  * Wiring:
- * - `fallbacks` settings namespace via {@link installSettingsSection}
- *   (composition entry as base; `scope.watch` → `onChange` re-reads the
- *   runtime and re-validates selectors — spec §4).
+ * - `fallbacks` settings via the Loader entry Config (0.1.7-rc.1: the
+ *   volatile `Config` schema in `src/schema.ts` IS the settings section;
+ *   `apply` reads the Loader's live config reference, and the
+ *   `settings/document-updated` listener re-derives the runtime caches —
+ *   the old `installSection` setSource/onChange contract, spec §4).
  * - `agent/request-error` waterfall: `!enabled` / code ∉ `triggerCodes`
  *   (**always mode included**) → `next()`; otherwise resolve role + chain,
  *   and when a candidate survives the filter (current / cooldown /
@@ -39,6 +41,11 @@ import type { Context, Logger } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { LlmCallConfig } from '@deepseek-ai/dsh-llm'
 import type { Session } from '@deepseek-ai/dsh-session'
+// Type-only: the settings seam's cordis `Events` entry
+// (`settings/document-updated(ns, revision)` — the live-config change event
+// the settings child below follows).
+import type {} from '@deepseek-ai/dsh-settings/types'
+import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
 import { defaultFallbacksConfig, detectLegacyKeys, INHERIT_ROLE_ID, validateFallbacksConfig, type FallbacksConfig } from './config.ts'
 import { Config } from './schema.ts'
 import { pickRoleByLlm } from './automatch.ts'
@@ -61,7 +68,7 @@ import {
 } from './time-slots.ts'
 import type { FallbackSwitchReason } from './events.ts'
 import {
-  FALLBACKS_SETTINGS_NAMESPACE,
+  FALLBACKS_PROFILE_ENTRY,
   FallbacksConfigGateway,
   fallbacksTypertContribution,
   type FallbacksSettingsBridge,
@@ -657,11 +664,65 @@ function authorizedRouteView(ctx: Context, agent: Agent): AuthorizedRouteSession
   }
 }
 
-export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksConfig): void {
+/**
+ * The live config reference the 0.1.7-rc.1 Loader hands `apply` for a
+ * volatile Config schema: an identity-stable `{ get }` view (cosmokit's
+ * `Volatile` protocol) whose snapshot the Loader re-commits on every form
+ * save, so reading `.get()` per call is the authoritative live composed
+ * config. Detected STRUCTURALLY on purpose — the protocol is duck-shaped and
+ * the dev-time schemastery resolved from the lockfile can predate it, in
+ * which case the plain composed object arrives exactly as before.
+ */
+interface LiveConfigRef {
+  get(): unknown
+}
+
+/** Whether `value` is a live Loader config reference rather than a plain object. */
+function isLiveConfigRef(value: unknown): value is LiveConfigRef {
+  return typeof value === 'object' && value !== null && typeof (value as { get?: unknown }).get === 'function'
+}
+
+/**
+ * Materialize one apply-time config value: unwrap a live reference, then
+ * resolve schema defaults. `Config(...)` on a volatile-aware schemastery
+ * re-wraps its result into a live reference (the marker rides the whole
+ * schema), so the result is unwrapped once more — a no-op where the dev-time
+ * schemastery resolves to a plain object.
+ */
+function normalizeConfig(value: FallbacksConfig | LiveConfigRef): FallbacksConfig {
+  const plain = isLiveConfigRef(value) ? (value.get() as FallbacksConfig) : value
+  const resolved: unknown = Config(plain)
+  return isLiveConfigRef(resolved) ? (resolved.get() as FallbacksConfig) : (resolved as FallbacksConfig)
+}
+
+/**
+ * Deep-merge a stored patch section onto a composed base: plain objects merge
+ * recursively, every other value (arrays included) replaces — the same
+ * layering rule the settings merge applies, so a plain-config read (no live
+ * Loader reference; direct calls and settings-service-backed test doubles)
+ * composes `entry` with the entry's stored section identically.
+ */
+function mergeConfigLayer(under: FallbacksConfig, over: unknown): FallbacksConfig {
+  if (typeof over !== 'object' || over === null || Array.isArray(over)) return under
+  const merged: Record<string, unknown> = { ...under }
+  for (const [key, value] of Object.entries(over)) {
+    if (value === undefined) continue
+    const current = merged[key]
+    merged[key] = typeof current === 'object' && current !== null && !Array.isArray(current)
+      && typeof value === 'object' && value !== null && !Array.isArray(value)
+      ? mergeConfigLayer(current as FallbacksConfig, value)
+      : value
+  }
+  return merged as unknown as FallbacksConfig
+}
+
+export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = defaultFallbacksConfig): void {
   const logger = ctx.logger('llm-fallbacks')
   // Cordis resolves the entry through the schema before apply, so `config` is
-  // already defaulted; re-resolving keeps direct calls (tests) normalized.
-  const entry = Config(config)
+  // already defaulted (and — volatile schema — is the LIVE reference the
+  // Loader commits form saves into); re-resolving keeps direct calls (tests)
+  // normalized and unwraps the reference for the startup derivations below.
+  const entry = normalizeConfig(config)
   // Role-seeds (plan fallbacks-role-seeds T2): the per-apply seed manager
   // and its io adapter are constructed BEFORE the service provide block so
   // the service value closes over them (spec §9.5 — one registry per plugin
@@ -702,7 +763,7 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   // clears `serviceOwned` BEFORE rethrowing any other error, so the preset
   // child skips when the child fiber fails (the fiber logs the failure).
   ctx.inject(['settings'], (sctx) => {
-    writeRoles = (roles) => sctx.settings.update(FALLBACKS_SETTINGS_NAMESPACE, { roles })
+    writeRoles = (roles) => sctx.settings.update(FALLBACKS_PROFILE_ENTRY, { roles })
     try {
       sctx.provide('llm-fallbacks', {
         name: 'llm-fallbacks',
@@ -757,7 +818,20 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   // deduped/failed fiber BEFORE the preset child fires (same-service inject
   // children settle in registration order — the provide child fires first).
   let serviceOwned = ctx.get('llm-fallbacks') === undefined
-  let source: () => FallbacksConfig = () => entry
+  // Live composed source (0.1.7-rc.1): with the volatile Config schema the
+  // Loader hands `apply` an identity-stable config reference and commits every
+  // form save INTO it — reading it per call is the live view, and the old
+  // installSection `setSource` swap is served by the Loader itself. A plain
+  // config (direct calls; test doubles that stand in for the settings service)
+  // has no Loader commit to lean on, so the settings child below keeps a
+  // settings-composed view fresh instead; before that child fires the
+  // normalized entry is the source.
+  let settingsComposed: FallbacksConfig | undefined
+  let source = (): FallbacksConfig => {
+    if (isLiveConfigRef(config)) return config.get() as FallbacksConfig
+    if (settingsComposed !== undefined) return settingsComposed
+    return entry
+  }
   // Virtual FallbacksChain/Auto adapter (plan fallbacks-virtual-chain
   // Task 1, P2; PR #62 feedback): ONE conditional `ctx.inject(['llm'])`
   // child — the picker row registers whenever `enabled` (conformance of
@@ -770,10 +844,10 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   // the catalog never flickers; the condition deliberately ignores
   // timeSlots and conformance, so slot-row / chain edits never churn
   // registration.
-  // `() => source()` — the mutable binding, not the initial thunk: the
-  // settings section's setSource swaps `source` for the composed scope, and
-  // reconcile must read the LIVE composed snapshot (same pattern as the
-  // settings bridge below).
+  // `() => source()` — the mutable binding, not the initial thunk: `source`
+  // reads the Loader's live config reference (or the settings-composed view —
+  // same binding), and reconcile must read the LIVE composed snapshot (same
+  // pattern as the settings bridge below).
   const reconcileFallbacksAdapter = installFallbacksAdapter(ctx, () => source())
   // AC-4: warn-not-crash startup validation — the schema-resolved entry is
   // checked once (invalid ids / undeclared rule references / illegal
@@ -804,54 +878,66 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   // entries or a declared role's own chain (T1 review Minor 2 rewire).
   let hasChains = entry.rootChain.length > 0 || entry.roles.list.some((role) => (role.chain?.length ?? 0) > 0)
 
-  // Guide §7 (plan llm-fallbacks-settings-gateway): the setSource hook is
-  // wired into the FallbacksSettingsBridge the gateway consumes — the SAME
-  // live source the runtime reads (schema defaults → plugin-row base →
-  // settings user layer). The existing onChange re-derives roleIds/hasChains
-  // from that live source (new config shape — no chain map anymore).
-  // No settings-exposure opt-in here: upstream dsh has no such
-  // registration-level option (it existed only via a local patch, now
-  // removed) — web clients reach the config through the gateway channel
-  // instead. The gateway reads `source()` live per call, so the bridge
-  // carries no change fan-out (dead machinery removed in the QC fix wave —
-  // nothing ever subscribed).
-  // 0.1.2 re-home: the standalone `installSettingsSection` helper is gone —
-  // `SettingsProvider.installSection(owner, ns, schema, entry, hooks)` is the
-  // service method (same setSource/onChange hook contract). The conditional
-  // `ctx.inject(['settings'])` child preserves the helper's optional-settings
-  // semantics: no settings service composed → no registration (the runtime
-  // keeps serving the composition entry), and the deferred callback settles
-  // one macrotask after apply (the "real installSettingsSection registers
-  // through ctx.inject" behavior the tests pin). Registration order matters:
-  // this child fires AFTER the writeRoles+provide child above (the service's
-  // owner fiber), so its fire sees the write channel already bound and the
-  // service provided.
+  // Guide §7 (plan llm-fallbacks-settings-gateway): the gateway's
+  // FallbacksSettingsBridge consumes the SAME live source the runtime reads
+  // (schema defaults → plugin-row base → profile patch). No settings-exposure
+  // opt-in here: upstream dsh has no such registration-level option — web
+  // clients reach the config through the gateway channel instead. The gateway
+  // reads `source()` live per call, so the bridge carries no change fan-out
+  // (dead machinery removed in the QC fix wave — nothing ever subscribed).
+  // 0.1.7-rc.1 re-home: `SettingsForms` has no registration step at all — the
+  // Loader entry Config IS the settings section (the volatile `Config` export
+  // in `src/schema.ts` is what makes the entry describable and writable), and
+  // the change notification the old `installSection` `onChange` hook delivered
+  // is now the settings seam's `settings/document-updated` event. The
+  // conditional `ctx.inject(['settings'])` child preserves the old
+  // optional-settings semantics: no settings service composed → no binding
+  // (the runtime keeps serving the composition entry), and the deferred
+  // callback settles one macrotask after apply (the same "registers through
+  // ctx.inject" behavior the tests pin). Registration order matters: this
+  // child fires AFTER the writeRoles+provide child above (the service's owner
+  // fiber), so its fire sees the write channel already bound and the service
+  // provided. The listener re-derives the caches from `source()` — on the live
+  // Loader reference path the commit already landed there; on the plain-config
+  // path the composed view is refreshed from the settings service first.
   ctx.inject(['settings'], (sctx) => {
-    sctx.settings.installSection(ctx, FALLBACKS_SETTINGS_NAMESPACE, Config, entry, {
-      setSource: (current) => {
-        source = current
-      },
-      onChange: () => {
-        // A settings update can change roles.list / rootChain — roleIds and
-        // hasChains re-derive from the same live source the runtime reads.
-        // Validation (validateFallbacksConfig / detectLegacyKeys) is
-        // intentionally STARTUP-ONLY: a live settings merge is already
-        // schema-validated by the settings layer, and the defensive runtime
-        // (resolveRole / resolveChainViews / roleDef lookups) tolerates bad
-        // values with warn-not-crash semantics (qc1 F-006).
-        const current = source()
-        roleIds = new Map(current.roles.list.map((role) => [role.id.trim(), role.id] as const))
-        hasChains = current.rootChain.length > 0 || current.roles.list.some((role) => (role.chain?.length ?? 0) > 0)
-        // Virtual adapter registration reconcile (P2): enabled / all-day
-        // conformance transitions only — idempotent, slot edits no-op.
-        reconcileFallbacksAdapter()
-        // P7: a settings edit is a config change, not a wall-clock rotation —
-        // re-baseline the 分时切换 markers so the next root request starts
-        // from the new config instead of logging a spurious switch.
-        slotWinners.clear()
-      },
+    const settings = sctx.settings
+    const refreshComposed = (): void => {
+      const descriptor = settings.describe().find((d) => d.ns === FALLBACKS_PROFILE_ENTRY)
+      // Merge the stored section over the entry, then resolve through the
+      // schema — the same layering the Loader applies to a profile patch, so
+      // the plain-config path composes identically (defaults fold in, stored
+      // rows materialize).
+      settingsComposed = descriptor === undefined
+        ? undefined
+        : normalizeConfig(mergeConfigLayer(entry, descriptor.value))
+    }
+    if (!isLiveConfigRef(config)) refreshComposed()
+    const disposeDocumentUpdated = ctx.on('settings/document-updated', (ns: SettingsNamespace) => {
+      if (ns !== FALLBACKS_PROFILE_ENTRY) return
+      if (!isLiveConfigRef(config)) refreshComposed()
+      // A settings update can change roles.list / rootChain — roleIds and
+      // hasChains re-derive from the same live source the runtime reads.
+      // Validation (validateFallbacksConfig / detectLegacyKeys) is
+      // intentionally STARTUP-ONLY: a live settings merge is already
+      // schema-validated by the settings layer, and the defensive runtime
+      // (resolveRole / resolveChainViews / roleDef lookups) tolerates bad
+      // values with warn-not-crash semantics (qc1 F-006).
+      const current = source()
+      roleIds = new Map(current.roles.list.map((role) => [role.id.trim(), role.id] as const))
+      hasChains = current.rootChain.length > 0 || current.roles.list.some((role) => (role.chain?.length ?? 0) > 0)
+      // Virtual adapter registration reconcile (P2): enabled / all-day
+      // conformance transitions only — idempotent, slot edits no-op.
+      reconcileFallbacksAdapter()
+      // P7: a settings edit is a config change, not a wall-clock rotation —
+      // re-baseline the 分时切换 markers so the next root request starts
+      // from the new config instead of logging a spurious switch.
+      slotWinners.clear()
     })
-    return undefined
+    return () => {
+      disposeDocumentUpdated()
+      settingsComposed = undefined
+    }
   })
   const bridge: FallbacksSettingsBridge = {
     source: (): FallbacksConfig => source(),
@@ -1752,13 +1838,14 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   // Bundled preset self-declaration (plan fallbacks-preset-roles T3, spec
   // §9.3 D9.3-a): a NEW conditional settings inject child, registered LAST
   // (after the writeRoles+provide child — the service's owner fiber — and
-  // installSettingsSection's internal child), so by cordis' activation
-  // order its fire sees the composed live source (setSource already ran), a
+  // the document-updated binding child above), so by cordis' activation
+  // order its fire sees the composed live source (the settings binding is
+  // in place), a
   // live write channel, and the provide child's final `serviceOwned`
   // verdict (a deduped/failed fiber had its optimistic claim corrected to
   // false before this child fires) — reusing the writeRoles child would
   // materialize against the base-only entry and
-  // clobber operator user-layer rows. apply() stays synchronous (D9.3-a):
+  // clobber operator-declared role rows. apply() stays synchronous (D9.3-a):
   // the fire is fire-and-forget with a terminal catch — a failed write
   // never FAILEDs this fiber (cordis would treat a rejected thenable apply
   // return as a plugin load failure), never rethrows, and leaves no

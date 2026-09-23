@@ -5,14 +5,15 @@
  *
  * Data source = Task 3's notice row, the plugin's single write primitive: the
  * fold reads the child's committed `user/message` events, keeps the one whose
- * provenance is ours (`source.kind === 'plugin'` + `source.plugin ===
- * ROLE_NOTICE_PLUGIN`), and parses the role out of its **content text**
- * (`[role: <id>]`). No second write path, no new event type, no plugin-owned
- * store: the projection is a pure READ of the log, and the host's projection
- * cache checkpoints every registered unit at session creation, `turn/end` and
- * disposal — so a settled child (served as an unpublished observation whose
- * `projections` ride the follow opening snapshot) and a post-restart view both
- * work with nothing of ours on disk.
+ * provenance is ours (`source.kind` is the producer-declared
+ * ROLE_NOTICE_SOURCE_KIND, or the V3→V4-migrated form of a pre-0.1.7 row —
+ * `ROLE_NOTICE_LEGACY_SOURCE_KINDS`), and parses the role out of its
+ * **content text** (`[role: <id>]`). No second write path, no new event type,
+ * no plugin-owned store: the projection is a pure READ of the log, and the
+ * host's projection cache checkpoints every registered unit at session
+ * creation, `turn/end` and disposal — so a settled child (served as an
+ * unpublished observation whose `projections` ride the follow opening
+ * snapshot) and a post-restart view both work with nothing of ours on disk.
  *
  * NEVER `source.summary`: summaries are truncated at
  * `CONTEXT_SUMMARY_MAX_CHARS = 120` (`@deepseek-ai/dsh-llm` `message.ts`,
@@ -32,16 +33,16 @@
  * The runtime shape relied on — `register({ key, stateSchema, init, apply,
  * wire: { viewSchema, view }, stateVersion })` → unregister disposer — is the
  * documented `ProjectionDefinition` contract of
- * `@deepseek-ai/dsh-session-projection@0.1.5-rc.1`
+ * `@deepseek-ai/dsh-session-projection@0.1.7-rc.1`
  * (`lib/types/index.d.ts:38-80,150-152`); only `.parse` is ever called on the
- * schemas (`lib/index.js:255,305,433`).
+ * schemas (`lib/index.js:255,305,422`).
  *
  * @module dsh-llm-fallbacks/role-projection
  */
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
-import { ROLE_NOTICE_PERSONA_SKIPPED_SUFFIX, ROLE_NOTICE_PLUGIN } from './role-notice.ts'
+import { ROLE_NOTICE_LEGACY_SOURCE_KINDS, ROLE_NOTICE_PERSONA_SKIPPED_SUFFIX, ROLE_NOTICE_SOURCE_KIND } from './role-notice.ts'
 import { ROLE_PROJECTION_KEY, type RoleProjectionValue } from './role-projection-key.ts'
 
 /**
@@ -241,11 +242,16 @@ function roleFromEvent(event: unknown): string | undefined {
   if (typeof data !== 'object' || data === null) return undefined
   const { content, source } = data as { content?: unknown; source?: unknown }
   if (typeof source !== 'object' || source === null) return undefined
-  const { kind, plugin } = source as { kind?: unknown; plugin?: unknown }
+  const { kind } = source as { kind?: unknown }
   // Provenance gate (never a wrong role): only THIS plugin's notice rows are
-  // read — a human prompt, another plugin's notice, or a row whose text merely
+  // read — the producer-declared kind, plus the V3→V4-migrated form of a
+  // pre-0.1.7 row so a child session carried across the upgrade keeps its
+  // badge. A human prompt, another plugin's notice, or a row whose text merely
   // looks like a notice is ignored outright.
-  if (kind !== 'plugin' || plugin !== ROLE_NOTICE_PLUGIN) return undefined
+  if (typeof kind !== 'string') return undefined
+  if (kind !== ROLE_NOTICE_SOURCE_KIND && !(ROLE_NOTICE_LEGACY_SOURCE_KINDS as readonly string[]).includes(kind)) {
+    return undefined
+  }
   return roleFromContent(content)
 }
 

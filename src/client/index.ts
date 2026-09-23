@@ -29,7 +29,8 @@
  */
 
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
-import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
+import type { ISessions, SessionListState } from '@deepseek-ai/dsh-api-session-controller/client'
+import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import { bindSnapshotSelector } from './use-snapshot.ts'
 // Type-only: pulls the `ctx.locale` Context merge (LocaleService face).
 import type {} from '@deepseek-ai/dsh-client-locale/client'
@@ -118,6 +119,33 @@ export { FallbacksSettingsController, FALLBACKS_SETTINGS_NS } from './fallbacks-
 export const inject = ['slots', 'locale', 'connection', 'remote', 'uiConversation', 'remote.llm', 'remote.settings', 'remote.session']
 
 /**
+ * The session the client is LOOKING at, derived from the sessions-list
+ * snapshot. 0.1.7-rc.1 moved view ownership out of `SessionListState` (the
+ * `current` field is gone — "navigation belongs to view owners"): the viewed
+ * session is the one the shell retains under the `mainView` reference source,
+ * surfaced as a positive `retainedBy.mainView` count on the row
+ * (`SessionSummary.retainedBy`, the same signal `ui-session`'s main-view
+ * derivation reads). First match in host list order; `undefined` while no
+ * session is open — the switches face degrades to its empty state.
+ */
+function viewedSessionId(state: SessionListState): SessionId | undefined {
+  // Total over the snapshot (the fold degrades, never crashes): a host whose
+  // list state does not carry the V4-era shape simply has no readable main
+  // view — the switches face stays in its empty state.
+  if (!Array.isArray(state?.ids)) return undefined
+  for (const id of state.ids) {
+    const row = state.byId[id]
+    // Structural read: the `mainView` key is declared by the ui-session
+    // package's `SessionReferenceSourceMap` merge, and that merge is not in
+    // this program (ui-session is not a peer — the same reason
+    // SubagentRoleBadge consumes its seat structurally).
+    const mainView = (row?.retainedBy as { mainView?: number } | undefined)?.mainView ?? 0
+    if (row !== undefined && mainView > 0) return id
+  }
+  return undefined
+}
+
+/**
  * Register the `fallbacks` dictionaries and the plugin-config card once the
  * `plugins.bundle.config` declaration is on the ledger.
  * @param ctx - client root context.
@@ -171,7 +199,7 @@ export function apply(ctx: ClientContext): void {
   //   reconnects, which re-pull the list).
   ctx.effect(() => {
     const syncSession = (): void => {
-      controller.setCurrentSession(sessions?.list.getSnapshot().current)
+      controller.setCurrentSession(sessions === undefined ? undefined : viewedSessionId(sessions.list.getSnapshot()))
     }
     if (sessions !== undefined) syncSession()
     // The `$on` listener seat is `Events['settings/document-updated']`

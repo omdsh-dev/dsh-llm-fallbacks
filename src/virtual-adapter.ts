@@ -225,7 +225,10 @@ function restoreEnvelopeProvenance(messages: DelegatedMessage[]): DelegatedMessa
   let changed = false
   const restored = messages.map((message): DelegatedMessage => {
     const source = message.source
-    if (message.role !== 'assistant' || source.kind !== 'model') return message
+    // `source` is optional on the request-message union (an identity-free
+    // one-shot user input carries `source?: never`), and only an assistant
+    // message's `model` source names a provider/model pair to re-stamp.
+    if (message.role !== 'assistant' || source?.kind !== 'model') return message
     if (source.provider !== FALLBACKS_PROVIDER || source.model !== FALLBACKS_CHAIN_MODEL) return message
     const provenance = envelopeProvenance(source.replayState)
     if (provenance === undefined) return message

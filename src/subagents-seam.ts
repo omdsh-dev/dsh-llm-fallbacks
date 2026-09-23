@@ -46,13 +46,13 @@
  * `chain: []` role gets its persona exactly like a chained one (no routing
  * state is read). Both native start surfaces are covered, with the gate each
  * one's fail-loud contract needs (measured on the installed
- * `@deepseek-ai/dsh-subagent` `0.1.5-rc.1`): the one-shot `start` REJECTS a
+ * `@deepseek-ai/dsh-subagent` `0.1.7-rc.1`): the one-shot `start` REJECTS a
  * request carrying `persona` for a provider whose
- * `getProvider(name).capabilities.persona` is not `true` (`lib/index.js:3202-3227`,
+ * `getProvider(name).capabilities.persona` is not `true` (`lib/index.js:3284,3340-3363`,
  * `assertCapabilities`), so the merge pre-checks that flag; the continuable
  * surface is composed by the continuation manager, which applies
- * `request.persona` unconditionally (`lib/index.js:1703-1705`) and is gated by
- * the provider's `prepareContinuable` presence instead (`lib/index.js:3179-3183`).
+ * `request.persona` unconditionally (`lib/index.js:1691`) and is gated by
+ * the provider's `prepareContinuable` presence instead (`lib/index.js:3316-3319`).
  * A gate miss skips the persona with ONE contained debug log — never a failed
  * start. An explicit caller `persona` WINS (the slot is filled only when it is
  * absent), and every skip path returns the caller's OWN request object, so the

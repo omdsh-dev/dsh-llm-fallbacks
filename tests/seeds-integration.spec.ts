@@ -30,7 +30,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { apply, defaultFallbacksConfig, type FallbacksService } from '../src/index.ts'
 import {
-  FALLBACKS_SETTINGS_NAMESPACE,
+  FALLBACKS_PROFILE_ENTRY,
   type FallbacksConfigGateway,
 } from '../src/gateway.ts'
 import { presetRoles } from '../src/presets.ts'
@@ -93,7 +93,7 @@ async function declare(
 
 /** The raw user-layer roles section of the fallbacks settings namespace. */
 function userSection(ctx: Context): { roles: { list: Array<{ id: string; persona: string }>; rules: unknown[] } } | undefined {
-  return ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)?.user
+  return ctx.settings.describe().find((d) => d.ns === FALLBACKS_PROFILE_ENTRY)?.user
 }
 
 /** Capture every ctx.logger export (info/warn/...) from this point on (runtime.spec.ts pattern). */
@@ -143,7 +143,7 @@ describe('seeds → gateway integration (real apply)', () => {
     // two-key `{ id, persona }` write shape (R4 — chain/fallback/prompt/
     // permissions keys omitted on insert), and no revision churn from the
     // second declare.
-    const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)!
+    const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_PROFILE_ENTRY)!
     expect(descriptor.user).toEqual({ roles: { list: [{ id: 'architect', persona: 'default' }], rules: [] } })
   })
 
@@ -170,7 +170,7 @@ describe('seeds → gateway integration (real apply)', () => {
     })
 
     // The operator edits the row persona while the fiber is alive.
-    await first.settings.update(FALLBACKS_SETTINGS_NAMESPACE, {
+    await first.settings.update(FALLBACKS_PROFILE_ENTRY, {
       roles: { list: [{ id: 'architect', persona: 'operator edit', chain: ['op-chain'] }], rules: [] },
     })
     expect(fb.getEffectiveRoles().roles[0]).toMatchObject({
@@ -182,13 +182,13 @@ describe('seeds → gateway integration (real apply)', () => {
     // in-memory settings store is per-context; a real file-backed provider
     // keeps it across HMR, which the seed below mirrors (dev-time
     // seed-before-register pattern from gateway.spec.ts).
-    const persisted = first.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)!.user
+    const persisted = first.settings.describe().find((d) => d.ns === FALLBACKS_PROFILE_ENTRY)!.user
     await first.fiber.dispose()
 
     // Fiber swap: a NEW fiber over the SAME persisted user layer.
     const second = track(new Context())
     await second.plugin(MemorySettings)
-    ;(second.settings as unknown as MemorySettings).seed(FALLBACKS_SETTINGS_NAMESPACE, persisted)
+    ;(second.settings as unknown as MemorySettings).seed(FALLBACKS_PROFILE_ENTRY, persisted)
     apply(second, { ...defaultFallbacksConfig, presets: 'none' })
 
     // Re-declare on the fresh fiber: the row exists with no previous default
@@ -258,7 +258,7 @@ describe('seeds → gateway integration (real apply)', () => {
 
     // Operator override then re-declare → loud persona-source conflict, row
     // never overwritten (AC-2).
-    await ctx.settings.update(FALLBACKS_SETTINGS_NAMESPACE, {
+    await ctx.settings.update(FALLBACKS_PROFILE_ENTRY, {
       roles: { list: [{ id: 'architect', persona: 'operator edit' }], rules: [] },
     })
     await expect(fb.declareSeeds([{ id: 'architect', persona: 'v2' }])).resolves.toEqual({
@@ -279,7 +279,7 @@ describe('seeds → gateway integration (real apply)', () => {
     await declare(ctx, [{ id: 'architect', persona: 'v1' }])
 
     // Operator edit → override visible on the wire badge.
-    await ctx.settings.update(FALLBACKS_SETTINGS_NAMESPACE, {
+    await ctx.settings.update(FALLBACKS_PROFILE_ENTRY, {
       roles: { list: [{ id: 'architect', persona: 'operator edit' }], rules: [] },
     })
     expect(gateway(ctx).get().seeds).toEqual([{ id: 'architect', overridden: true, source: 'external' }])
@@ -290,7 +290,7 @@ describe('seeds → gateway integration (real apply)', () => {
 
     // Operator edits again; gateway-side revert (the card endpoint) restores
     // the same current default and reports the post-write read result.
-    await ctx.settings.update(FALLBACKS_SETTINGS_NAMESPACE, {
+    await ctx.settings.update(FALLBACKS_PROFILE_ENTRY, {
       roles: { list: [{ id: 'architect', persona: 'operator edit 2' }], rules: [] },
     })
     const viaGateway = await gateway(ctx).revertSeed('architect')
@@ -301,7 +301,7 @@ describe('seeds → gateway integration (real apply)', () => {
     // The companion re-declares a NEW persona → revert goes to the NEW
     // default, never a historical snapshot (R3).
     await declare(ctx, [{ id: 'architect', persona: 'v2' }])
-    await ctx.settings.update(FALLBACKS_SETTINGS_NAMESPACE, {
+    await ctx.settings.update(FALLBACKS_PROFILE_ENTRY, {
       roles: { list: [{ id: 'architect', persona: 'operator edit 3' }], rules: [] },
     })
     await expect(gateway(ctx).revertSeed('architect')).resolves.toMatchObject({
@@ -322,7 +322,7 @@ describe('seed provenance — source labels on the wire (seed-source-provenance,
     const ctx = await compose()
     // An operator row that no companion ever declares — its provenance must
     // stay `user` while the declared batch carries the set name.
-    await ctx.settings.update(FALLBACKS_SETTINGS_NAMESPACE, {
+    await ctx.settings.update(FALLBACKS_PROFILE_ENTRY, {
       roles: { list: [{ id: 'solo', persona: 'operator row' }], rules: [] },
     })
     await declare(ctx, [
@@ -409,7 +409,7 @@ describe('seed provenance — designer/librarian trim upgrade (seed-source-prove
   async function composeOverPreTrimLayer(): Promise<Context> {
     const ctx = track(new Context())
     await ctx.plugin(MemorySettings)
-    ;(ctx.settings as unknown as MemorySettings).seed(FALLBACKS_SETTINGS_NAMESPACE, preTrimUserLayer())
+    ;(ctx.settings as unknown as MemorySettings).seed(FALLBACKS_PROFILE_ENTRY, preTrimUserLayer())
     apply(ctx)
     // The preset fire commits: exactly the 5 in-batch ids are seeded (the
     // trimmed ids are outside the batch, so the badge never covers them).
@@ -453,7 +453,7 @@ describe('seed provenance — designer/librarian trim upgrade (seed-source-prove
     await ctx.plugin(MemorySettings)
     // Pre-trim layer with every row AT ITS SEED PERSONA (5 surviving + the
     // 2 trimmed ids) — the honest upgrade/restart fixture.
-    ;(ctx.settings as unknown as MemorySettings).seed(FALLBACKS_SETTINGS_NAMESPACE, preTrimUserLayer())
+    ;(ctx.settings as unknown as MemorySettings).seed(FALLBACKS_PROFILE_ENTRY, preTrimUserLayer())
     const logs = captureLogs(ctx)
     apply(ctx)
     // The preset fire commits: exactly the 5 in-batch ids are seeded.

@@ -20,9 +20,13 @@ beforeEach(() => {
   ctx.provide('uiConversation', { events: { register: () => () => {}, registerFallback: () => () => {} } })
   // Locale service double: register + bind (bind returns a translate thunk).
   ctx.provide('locale', { register: () => () => {}, bind: () => () => '' })
-  // Sessions service double: no current session.
+  // Sessions service double: empty `SessionListState` (0.1.7-rc.1 shape — no
+  // `current` field; the viewed session is the `mainView`-retained row).
   ctx.provide('sessions', {
-    list: { getSnapshot: () => ({ current: undefined }), subscribe: () => () => {} },
+    list: {
+      getSnapshot: () => ({ ids: [], byId: {}, phase: 'ready', projectionsBySession: {} }),
+      subscribe: () => () => {},
+    },
   })
   ctx.provide('connection', {
     api: {

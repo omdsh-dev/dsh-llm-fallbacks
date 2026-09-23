@@ -25,7 +25,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { apply, stateStore } from '../src/index.ts'
 import { MemorySettings } from './support/memory-settings.ts'
-import { FALLBACKS_SETTINGS_NAMESPACE } from '../src/gateway.ts'
+import { FALLBACKS_PROFILE_ENTRY } from '../src/gateway.ts'
 import {
   appendLlmRetry,
   cfg,
@@ -261,12 +261,12 @@ describe('half-open runtime integration (plan fallbacks-half-open-recovery P4)',
       // cooldown-expiry; the operator switches to 'never' while the episode
       // is unresolved. Under 'never' every suppression must be Infinity — the
       // 5b write must not land a finite escalated until.
-      // installSettingsSection registers through `ctx.inject` (a deferred
-      // callback even when the service is already mounted) — wait for the
-      // namespace registration before flipping (vi.waitFor advances the
-      // fake timers this suite runs under).
-      await vi.waitFor(() => expect(ctx.settings.get(FALLBACKS_SETTINGS_NAMESPACE)).toBeDefined())
-      await ctx.settings.update(FALLBACKS_SETTINGS_NAMESPACE, { revertPolicy: 'never' })
+      // The settings child registers through `ctx.inject` (a deferred callback
+      // even when the service is already mounted) — wait for its bind-time
+      // `describe()` (the double counts the calls) before flipping (vi.waitFor
+      // advances the fake timers this suite runs under).
+      await vi.waitFor(() => expect((ctx.settings as unknown as MemorySettings).describeCalls).toBeGreaterThan(0))
+      await ctx.settings.update(FALLBACKS_PROFILE_ENTRY, { revertPolicy: 'never' })
       const store = stateStore(ctx)!
       const state = store.peek('probe-5b-never')!
       // The probe routes to mock (pending switch applied), then fails with
@@ -307,12 +307,12 @@ describe('half-open runtime integration (plan fallbacks-half-open-recovery P4)',
       expect(store.isSuppressed(state, 'mock/gpt-4o', t0 + 2_000, 'half-open')).toBe(false)
       expect(state.recovery.isHalfOpen('mock/gpt-4o')).toBe(true)
       // Mid-session flip to timer while the episode is in progress.
-      // installSettingsSection registers through `ctx.inject` (a deferred
-      // callback even when the service is already mounted) — wait for the
-      // namespace registration before flipping (vi.waitFor advances the
-      // fake timers this suite runs under).
-      await vi.waitFor(() => expect(ctx.settings.get(FALLBACKS_SETTINGS_NAMESPACE)).toBeDefined())
-      await ctx.settings.update(FALLBACKS_SETTINGS_NAMESPACE, { recovery: 'timer' })
+      // The settings child registers through `ctx.inject` (a deferred callback
+      // even when the service is already mounted) — wait for its bind-time
+      // `describe()` (the double counts the calls) before flipping (vi.waitFor
+      // advances the fake timers this suite runs under).
+      await vi.waitFor(() => expect((ctx.settings as unknown as MemorySettings).describeCalls).toBeGreaterThan(0))
+      await ctx.settings.update(FALLBACKS_PROFILE_ENTRY, { recovery: 'timer' })
       // The next walk selects mock as the surviving target (timer drops the
       // lapsed cooldown entry) — but the probe log is live-mode gated, so no
       // half-open line is emitted while the plugin is in timer mode.

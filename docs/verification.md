@@ -83,9 +83,10 @@ order section of [docs/install.md](docs/install.md); the real web profile's laye
   llm-retry-stub + model-selection-stub): in registry mode `autoInstallPeers` resolves them from npm (user-level
   `~/.npmrc` auth, no local link farm); the local-link alternative (a sibling dsh checkout linked into
   `node_modules`) remains available for pre-publish lines (see docs/install.md). Runtime seams run the real
-  implementations: `installSettingsSection` mounts the real
-  `@deepseek-ai/dsh-settings` (in-memory provider `tests/support/memory-settings.ts`, inheriting the real
-  `SettingsProvider` base class), and the client store VALUE import runs the real `@deepseek-ai/dsh-client-store`
+  implementations: the settings section is the Loader entry Config itself (0.1.7-rc.1 form-service model — the
+  volatile `Config` schema is what makes the entry describable/writable), exercised through the real
+  `SettingsForms` face over the in-memory double `tests/support/memory-settings.ts` (the 0.1.5-era
+  `SettingsProvider` base class is gone), and the client store VALUE import runs the real `@deepseek-ai/dsh-client-store`
   snapshot-store engine — resolved from the published package in registry mode, or through the vitest alias in
   the local-link alternative (a linked tree is tsc-built into `lib/types/` only, so its VALUE imports resolve
   via `vitest.config.ts` aliases instead of the packages' exports maps).

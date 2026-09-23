@@ -41,7 +41,7 @@ import {
   pickerDisplayName,
   UNDISPATCHABLE_HEAD_CODE,
 } from '../src/virtual-adapter.ts'
-import { FALLBACKS_SETTINGS_NAMESPACE } from '../src/gateway.ts'
+import { FALLBACKS_PROFILE_ENTRY } from '../src/gateway.ts'
 import { MemorySettings } from './support/memory-settings.ts'
 import { alwaysPolicy, cfg, dispatchRequest, makeAgent } from './support/harness.ts'
 
@@ -185,10 +185,10 @@ describe('registration lifecycle (P2)', () => {
     apply(ctx, cfg({ rootChain: [OFFICIAL_FLASH] }))
     await vi.waitFor(() => expect(listed()).toBe(true))
 
-    await ctx.settings.update(FALLBACKS_SETTINGS_NAMESPACE, { enabled: false })
+    await ctx.settings.update(FALLBACKS_PROFILE_ENTRY, { enabled: false })
     expect(listed()).toBe(false)
 
-    await ctx.settings.update(FALLBACKS_SETTINGS_NAMESPACE, { enabled: true })
+    await ctx.settings.update(FALLBACKS_PROFILE_ENTRY, { enabled: true })
     expect(listed()).toBe(true)
   })
 
@@ -196,7 +196,7 @@ describe('registration lifecycle (P2)', () => {
     apply(ctx, cfg({ rootChain: [OFFICIAL_FLASH] }))
     await vi.waitFor(() => expect(listed()).toBe(true))
 
-    await ctx.settings.update(FALLBACKS_SETTINGS_NAMESPACE, { rootChain: ['other/gpt-4o', 'other/gpt-5'] })
+    await ctx.settings.update(FALLBACKS_PROFILE_ENTRY, { rootChain: ['other/gpt-4o', 'other/gpt-5'] })
     expect(listed()).toBe(true)
   })
 
@@ -206,7 +206,7 @@ describe('registration lifecycle (P2)', () => {
     const updated: number[] = []
     ctx.events.on('llm/adapters-updated', () => updated.push(updated.length))
 
-    await ctx.settings.update(FALLBACKS_SETTINGS_NAMESPACE, {
+    await ctx.settings.update(FALLBACKS_PROFILE_ENTRY, {
       timeSlots: [{ kind: 'custom', start: '09:00', end: '10:00', chain: [OFFICIAL_FLASH] }],
     })
     // The condition deliberately ignores timeSlots — no register/unregister churn.

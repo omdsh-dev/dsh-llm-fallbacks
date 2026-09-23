@@ -120,7 +120,7 @@ A session log reaches the GUI only through the **frozen released migration chain
 
 A third class — the legacy `fallbacks/switch` event type — is **not** repairable by a rewrite: see [Lossy recovery for `fallbacks/switch`](#lossy-recovery-for-fallbacksswitch-opt-in).
 
-**If you author a plugin: never add a custom `source.kind`.** The persisted vocabulary is frozen per format edge, so a custom kind makes every session that carries it unreadable by later dsh releases. Use the sanctioned `plugin` arm instead — `{ kind: 'plugin', plugin: '<stable-id>', form: … }` — exactly as dsh's own `model-selection` notice does; the stable id records what the original kind was.
+**If you author a plugin:** through dsh 0.1.6 the persisted source vocabulary was frozen per format edge, and the sanctioned arm was `{ kind: 'plugin', plugin: '<stable-id>', form: … }`. Since dsh 0.1.7-rc.1 that vocabulary is producer-declared instead ("each producer declares its own `kind` in its own module" — dsh's own `model-selection` notice writes `{ kind: 'model-selection', form: 'notice', … }`), and the one rule a released edge enforces on a direct kind is that it is **non-empty**. Old logs written against the frozen vocabulary are exactly what this tool's `source-kind` class repairs.
 
 ### Usage
 

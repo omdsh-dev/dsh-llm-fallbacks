@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import type { CommandDefinition, CommandInvocation } from '@deepseek-ai/dsh-commands'
 import { apply } from '../src/index.ts'
-import { FALLBACKS_SETTINGS_NAMESPACE } from '../src/gateway.ts'
+import { FALLBACKS_PROFILE_ENTRY } from '../src/gateway.ts'
 import { cfg, dispatchRequestError, makeAgent } from './support/harness.ts'
 import { MemorySettings } from './support/memory-settings.ts'
 import {
@@ -1110,7 +1110,7 @@ describe('apply() wiring — conditional commands child', () => {
     })
 
     // Operator override first, so the revert has a delta to restore.
-    await ctx.settings.update(FALLBACKS_SETTINGS_NAMESPACE, {
+    await ctx.settings.update(FALLBACKS_PROFILE_ENTRY, {
       roles: { list: [{ id: 'coder', persona: 'operator edit' }], rules: [] },
     })
 
@@ -1126,7 +1126,7 @@ describe('apply() wiring — conditional commands child', () => {
     // revert wrote through the same settings channel as declare). The row
     // may carry schema-resolved defaults (chain/fallback/permissions) from
     // the operator-override update above — the persona is the delta.
-    const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)!
+    const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_PROFILE_ENTRY)!
     expect(descriptor.user).toMatchObject({
       roles: { list: [{ id: 'coder', persona: 'seed default' }], rules: [] },
     })
@@ -1153,7 +1153,7 @@ describe('apply() wiring — conditional commands child', () => {
 
     // No write happened for an id that was never seeded — the namespace is
     // registered by the plugin, but its user layer stays empty.
-    const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)
+    const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_PROFILE_ENTRY)
     expect(descriptor?.user).toBeUndefined()
   })
 
@@ -1182,7 +1182,7 @@ describe('apply() wiring — conditional commands child', () => {
     // Delete the row from the operator config — the seed stays declared, so
     // the revert hits the `row-absent` reason (seeds.ts revert), never
     // `not-seeded`.
-    await ctx.settings.update(FALLBACKS_SETTINGS_NAMESPACE, { roles: { list: [], rules: [] } })
+    await ctx.settings.update(FALLBACKS_PROFILE_ENTRY, { roles: { list: [], rules: [] } })
 
     const result = await registered[0]!.handler({
       commandId: 'x',
@@ -1194,7 +1194,7 @@ describe('apply() wiring — conditional commands child', () => {
 
     // The empty list was NOT written again by the failed revert — the user
     // layer still holds the row deletion the test staged (no phantom write).
-    const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_SETTINGS_NAMESPACE)
+    const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_PROFILE_ENTRY)
     expect(descriptor?.user).toMatchObject({ roles: { list: [] } })
   })
 

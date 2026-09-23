@@ -22,7 +22,7 @@ import {
   type TuiCommandTreeProvider,
 } from '../src/tui.ts'
 import { FALLBACKS_COMMAND_LOCALES } from '../src/commands.ts'
-import { FALLBACKS_SETTINGS_NAMESPACE } from '../src/gateway.ts'
+import { FALLBACKS_PROFILE_ENTRY } from '../src/gateway.ts'
 import { cfg, makeAgent } from './support/harness.ts'
 import { MemorySettings } from './support/memory-settings.ts'
 
@@ -333,10 +333,10 @@ describe('apply() wiring — conditional tuiCommandTrees child', () => {
     // A live settings update mutates the user layer; the next readback must
     // reflect it — getConfig() shares the exact per-call source() accessor
     // the runtime reads (no cached readback).
-    await ctx.settings.update(FALLBACKS_SETTINGS_NAMESPACE, { triggerCodes: ['QUOTA'] })
+    await ctx.settings.update(FALLBACKS_PROFILE_ENTRY, { triggerCodes: ['QUOTA'] })
     await vi.waitFor(() => expect(invoke(' config')).toContain('触发码: QUOTA'))
     expect(invoke(' config')).not.toContain('触发码: AUTH')
-    await ctx.settings.update(FALLBACKS_SETTINGS_NAMESPACE, { enabled: false })
+    await ctx.settings.update(FALLBACKS_PROFILE_ENTRY, { enabled: false })
     await vi.waitFor(() => expect(invoke(' config').split('\n')[0]).toBe('Fallbacks 配置: 未启用'))
 
     // Read-only: the readbacks never grow the session log.
