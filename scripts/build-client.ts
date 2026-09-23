@@ -31,8 +31,9 @@
  * The `@deepseek-ai/*` purity gate (mirror of the host's
  * `dsh-client-bundle-purity` plugin) is enforced at resolution time: any
  * value import of an `@deepseek-ai/*` module outside CLIENT_EXTERNALS
- * throws, so the 20260812 type-only peers (`dsh-client-ui-settings-plugins`,
- * `dsh-client-locale`, `dsh-api-remotes`, …) can never leak into the
+ * throws, so the type-only peers (`dsh-client-locale`, `dsh-api-remotes`, …;
+ * since 0.1.7 also `dsh-client-ui-plugin-manager`, which replaced the retired
+ * `dsh-client-ui-settings-plugins` in the inject table) can never leak into the
  * browser-loadable artifact. The emitted text may reference only
  * CLIENT_EXTERNALS entries (asserted below).
  */
@@ -309,8 +310,8 @@ function collectCssSelectors(cssText: string): string[] {
 // css-module class map (the transform ran), must NOT contain `import.meta` /
 // ESM statements (the classic-script loader would fail to parse them), every
 // `@deepseek-ai/*` reference in the emitted text must be a documented
-// CLIENT_EXTERNALS entry (the 20260812 type-only peers —
-// `dsh-client-ui-settings-plugins` / `dsh-client-locale` / `dsh-api-remotes` and
+// CLIENT_EXTERNALS entry (the type-only peers —
+// `dsh-client-ui-plugin-manager` / `dsh-client-locale` / `dsh-api-remotes` and
 // the other type-only imports — must never appear at runtime, whether as
 // `require(...)` calls or as any other surviving text reference), and every
 // css-module class must be a legal CSS identifier — `hashClass` emits

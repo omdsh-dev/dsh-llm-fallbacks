@@ -40,7 +40,7 @@ import type { ConversationNodeDefinition } from '@deepseek-ai/dsh-client-ui-conv
 // Type-only: pulls the `conversation.chat.node` SlotMap entry + the
 // `ChatNodeDataMap` merge seat (the keyed dispatch key domain) — both re-homed
 // from ui-conversation to ui-chat in 0.1.2. Same empty type-only pattern as
-// the ui-settings / ui-settings-plugins merges in index.ts.
+// the ui-settings / ui-plugin-manager merges in index.ts.
 import type {} from '@deepseek-ai/dsh-client-ui-chat/client'
 import type { FallbackSwitchReason } from '../events.ts'
 import { SWITCH_REASON_KEYS } from './locales.ts'

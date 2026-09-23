@@ -19,9 +19,12 @@ import type { FallbacksConfig } from './config.ts'
 
 /** Official all-day selectors — the ONLY legal tails (length 1, XOR):
  * Flash (the current official default, selectable) and Pro (displayed but
- * disabled — its model is not yet served by the 0.1.5-rc.1 catalog). The
- * retired V4 ids (`deepseek-v4-flash` / `deepseek-v4-pro`) are no longer
- * legal tails. */
+ * disabled — its `deepseek-official/deepseek-pro` id is not in the official
+ * catalog: still true at 0.1.7-rc.1, whose default catalog serves
+ * `deepseek-flash` plus a re-introduced `deepseek-v4-pro` instead). The
+ * retired-here V4 ids (`deepseek-v4-flash` / `deepseek-v4-pro`) remain
+ * non-legal tails; whether the Pro tail should adopt the re-added
+ * `deepseek-v4-pro` id is an open product decision, not a schema fact. */
 export const OFFICIAL_FLASH = 'deepseek-official/deepseek-flash'
 export const OFFICIAL_PRO = 'deepseek-official/deepseek-pro'
 

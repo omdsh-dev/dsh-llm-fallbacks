@@ -1,6 +1,8 @@
 /* Fallbacks settings card — chrome aligned to the upstream PluginCard
  * (dsh-private packages/client/ui-settings-plugins/src/client/PluginCard.module.css,
- * shape re-read 2026-08-12:158), form-field styles kept from the section-era
+ * shape re-read 2026-08-12:158 — that file no longer exists at 0.1.7-rc.1:
+ * the Plugins-page chrome moved to ui-plugin-manager's PluginManagerPage.module.css,
+ * and this card has not been re-aligned to it), form-field styles kept from the section-era
  * file (h32 r8 inputs / h36 r18 capsule actions). Every color resolves through
  * a `--dsw-alias-*` token (light/dark adaptive); bare `--border` / `--surface`
  * / `--text-*` names, which nothing in this app defines, would render the

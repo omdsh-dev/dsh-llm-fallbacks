@@ -19,6 +19,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
 import { createUserMessage, type UserMessage } from '@deepseek-ai/dsh-llm'
+// VALUE import, deliberately not a vitest stub: the contract guard below must
+// run against the REAL released session-format codecs (the V3→V4 edge), so it
+// rides the transitively installed @deepseek-ai/dsh-session-format-catalog
+// (0.1.7-rc.1). It stays out of peerDependencies on purpose — the plugin
+// itself never imports it, and tests/peer-deps.test.ts enforces the
+// peers-only contract for @deepseek-ai/*.
 import { createSessionFormatCatalogWithChildren } from '@deepseek-ai/dsh-session-format-catalog'
 import { apply } from '../src/index.ts'
 import { installSubagentSeam, subagentSeamOf, type SubagentSeamRecord, type SubagentStartRequestView } from '../src/subagents-seam.ts'
