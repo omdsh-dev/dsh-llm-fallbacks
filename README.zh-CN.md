@@ -31,7 +31,7 @@ dsh（DeepSeek Harness）的自动模型降级插件：当 root agent 或 subage
 
 GLM 峰与 GLM 谷仅在已配置 `zai-coding-cn` 时出现在设置卡选择器中。
 
-每个 root 请求时刻，第一条窗口包含当前时刻（按 `fallbacks.tz`，默认 Asia/Shanghai）的额外行生效；无行命中 → 全时段 `rootChain`——其链尾（默认模型）必须是恰好一个官方模型：`deepseek-official/deepseek-flash` 或 `deepseek-official/deepseek-pro`（二选一）。分时切换是路由种子而非失败决策：在下一个 root 请求生效、不消耗冷却、不计入 `maxSwitchesPerStep`，日志记为**分时切换**；失败降级保持**降级切换**。完整语义 → [分时槽预设（分时切换）](#分时槽预设分时切换) 与 [docs/configuration.md](docs/configuration.md)。
+每个 root 请求时刻，第一条窗口包含当前时刻（按 `fallbacks.tz`，默认 Asia/Shanghai）的额外行生效；无行命中 → 全时段 `rootChain`——其链尾（默认模型）必须是恰好一个官方模型：`deepseek-official/deepseek-flash` 或 `deepseek-official/deepseek-v4-pro`（二选一）。分时切换是路由种子而非失败决策：在下一个 root 请求生效、不消耗冷却、不计入 `maxSwitchesPerStep`，日志记为**分时切换**；失败降级保持**降级切换**。完整语义 → [分时槽预设（分时切换）](#分时槽预设分时切换) 与 [docs/configuration.md](docs/configuration.md)。
 
 ## 快速开始
 
@@ -95,7 +95,7 @@ fallbacks:
 
 **2. 配置全时段 `rootChain`。** 前面的条目是降级链，请求失败时先走；**最后**一项是默认模型。
 
-> **链尾合规**：最后一项必须是恰好一个官方模型——`deepseek-official/deepseek-flash` 或 `deepseek-official/deepseek-pro`（二选一）。设置卡与 gateway 在保存时拒绝其它尾巴；遗留的非合规尾巴启动时告警并继续按 fallback-only 走原链，但无法原样保存。已退役的 `deepseek-v4-flash` / `deepseek-v4-pro` 不再是合法链尾——已保存的 V4 尾巴现在会告警、进入惰性（分时行 + 虚拟选择器）、并在选到合法链尾前阻止保存。`deepseek-pro` 是合法选择器但其模型尚未进入目录：设置卡中显示为禁用（「暂不可用」），请求在 gateway 启用该 id 前会在 provider 处失败。插件不探测目录可用性——含 `deepseek-pro` 的链会像其它精确条目一样派发到它；在虚拟路由上由 `stream()` 委派服务生效链的第一个可派发精确链头，因此 Pro 之前有可用条目的链仍路由到更早的条目。
+> **链尾合规**：最后一项必须是恰好一个官方模型——`deepseek-official/deepseek-flash` 或 `deepseek-official/deepseek-v4-pro`（二选一）。设置卡与 gateway 在保存时拒绝其它尾巴；遗留的非合规尾巴启动时告警并继续按 fallback-only 走原链，但无法原样保存。已退役的 `deepseek-v4-flash` 不再是合法链尾——已保存的该尾巴现在会告警、进入惰性（分时行 + 虚拟选择器）、并在选到合法链尾前阻止保存。官方 Pro 链尾由目录以 `deepseek-official/deepseek-v4-pro` 提供（dsh 0.1.7-rc.1），并可在设置卡中直接选择；手写的遗留 `deepseek-official/deepseek-pro` 尾巴——从未进入目录——读回为不合规（无迁移；请重选链尾）。插件不探测目录可用性——含 `deepseek-official/deepseek-v4-pro` 的链会像其它精确条目一样派发到它；在虚拟路由上由 `stream()` 委派服务生效链的第一个可派发精确链头，因此 Pro 之前有可用条目的链仍路由到更早的条目。
 
 **3. 添加 `timeSlots`（可选）。** 各行按墙钟窗口轮换生效 root 链。预设行使用冻结的 UTC+8 窗口（仅链可编辑；存在预设行时 `tz` 锁定 `Asia/Shanghai`）；自定义行使用 `start`/`end`（可跨午夜）与可选的 `days` 列表。第一个窗口包含当前时刻的行生效；无行命中 → 全时段 `rootChain`。分时切换是路由种子——在下一个 root 请求生效、不消耗冷却（见 [峰谷无忧](#峰谷无忧)）。
 
@@ -223,7 +223,7 @@ pnpm repair:session-logs -- --drop-legacy-events --apply --backup  # 此处必�
 
 - **选择器文案**：目录行的 `name`（composer 触发器显示）是动态的——`Auto: DeepSeek Flash[Liang Peak]` / `Auto: DeepSeek Flash[all-day]`（用 catalog 显示名，不是 model id）；id 仍是 `Auto`。all-day 尾巴不合规则只显示 `Auto`。重新打开选择器即可刷新。
 - **全来源同一个薄委托**：root 代理与继承了该选择的 subagent 会话由同一个 `stream()` 薄委托服务——subagent 的角色解析与注入语义不变，只有一处刻意的放宽：派发时规则匹配接受**记录 pair 或实际服务的链头**（此前匹配的超集，因此以真实链头为键的规则仍能命中），虚拟行绝不是第二个路由引擎。继承了该选择的 subagent 仍经链头路由。
-- **链尾合规门槛**：委托成功要求 all-day 链**尾巴合规**——最后一项必须是恰好一个官方模型（`deepseek-official/deepseek-flash` 或 `deepseek-official/deepseek-pro`，即设置卡的「默认模型」面板）；前面的默认降级链先走。禁用插件后该行隐藏（slot/链编辑不会触发注册抖动）。
+- **链尾合规门槛**：委托成功要求 all-day 链**尾巴合规**——最后一项必须是恰好一个官方模型（`deepseek-official/deepseek-flash` 或 `deepseek-official/deepseek-v4-pro`，即设置卡的「默认模型」面板）；前面的默认降级链先走。禁用插件后该行隐藏（slot/链编辑不会触发注册抖动）。
 - **过期选择**：行消失（插件禁用）而会话仍选中 `FallbacksChain / Auto` 时，会话继续把它显示为当前模型，但 `routable: false`——从目录选一个真实模型即可继续（宿主原生目录语义）。
 - **能力与重试策略跟随链头**：该行的模型元数据（上下文窗口、模态、推理）镜像当前生效链头，`providerRetryPolicy` 返回**该链头的**策略——因此用户配置的 `llm-deepseek.retryPolicy` 在这条路由上同样生效，不再退回宽松默认。宿主在注册时一次性捕获该策略，因此之后修改策略、或分时槽导致链头 provider 轮换，都只有在插件重新注册后才会反映。重试事件按虚拟 provider 记账——即运行时实际看到的路由。完整语义 → [docs/configuration.md](docs/configuration.md)。
 
