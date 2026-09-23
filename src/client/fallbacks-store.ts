@@ -1,6 +1,6 @@
 /**
  * Fallbacks settings controller — the client half's own store (slot owner
- * props are empty; data rides this store, per the `settings.plugin.item`
+ * props are empty; data rides this store, per the `plugins.bundle.config`
  * card contract).
  *
  * Read path: the fallbacks config rides the plugin's own gateway channel —

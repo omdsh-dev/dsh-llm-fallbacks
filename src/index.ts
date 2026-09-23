@@ -1571,7 +1571,7 @@ export function apply(ctx: Context, config: FallbacksConfig = defaultFallbacksCo
   // P3 (plan fallbacks-half-open-recovery): plugin-scope success observation —
   // a read-only `session/event` subscription that closes half-open circuits on
   // observed completions. Plain `ctx.on` (no `{ global: true }` — the
-  // dsh-agent-presets precedent): scoping parity with the plugin's own
+  // dsh-agent-preset precedent): scoping parity with the plugin's own
   // `agent/*` listeners, so exactly the managed agents' sessions are observed.
   // Cordis auto-disposes listeners with the plugin fiber — no explicit
   // disposer, mirroring the existing four. Filter chain (cheap, in order):

@@ -1,6 +1,6 @@
 /**
  * Fallbacks settings card — the `fallbacks` plugin card on the web settings
- * "插件配置" page (spec §4). Registered into the `settings.plugin.item` keyed
+ * "插件配置" page (spec §4). Registered into the `plugins.bundle.config` keyed
  * slot (key `fallbacks`, the settings namespace the card edits, alongside
  * the upstream bash/agent-loop/web-search cards and the advisor card, in
  * registration order); owner props are empty and all data flows
@@ -85,7 +85,7 @@ import type { LlmConfigurableProvider } from '@deepseek-ai/dsh-api-remotes/clien
 import {
   Button, IconChevronDownOutline14, IconChevronUpOutline14, IconEllipsisOutline16, IconPlusOutline16, IconTrashOutline16, Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
+import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { SnapshotSelectorHook } from '@deepseek-ai/dsh-client-ui-slots'
 import type { FallbacksConfig, FallbacksRole, FallbackStrategy, RevertPolicy } from '../config.ts'
 import { defaultFallbacksConfig, INHERIT_ROLE_ID, ROLE_ID_PATTERN } from '../config.ts'
@@ -93,6 +93,7 @@ import { parseSelector } from '../selectors.ts'
 import { isOfficialAllDayId, OFFICIAL_ALL_DAY_IDS, OFFICIAL_PRO, resolveSlotState } from '../time-slots.ts'
 import {
   FallbacksSettingsController,
+  type FallbacksSettingsState,
   classifyModel,
   classifyProvider,
   mergeRoleExtras,
@@ -108,7 +109,6 @@ import {
   timeSlotsToRows,
   type CatalogLookup,
   type ChainSelectorRow,
-  type FallbacksSettingsState,
   type RoleRow,
   type RoleRuleRow,
   type RootChainRow,
@@ -201,13 +201,17 @@ function allDayChainRowOf(chain: readonly string[], catalog: CatalogLookup | und
 export interface FallbacksCardInjected {
   /** The card store (loaded on mount, refreshed on pushed invalidations). */
   controller: FallbacksSettingsController
-  /** uSES subscription hook bound to the store (inject face — advisor pattern). */
-  useSnapshot: SnapshotSelectorHook<FallbacksSettingsState>
+  /** Bare snapshot source the renderer binds as `useSnapshot`. */
+  hooks: {
+    snapshot: import('@deepseek-ai/dsh-client-store').SnapshotStore<FallbacksSettingsState>
+  }
 }
 
 /** Props delivered by the slot outlet: runtime share + locale seat + inject face. */
 export type FallbacksCardProps =
-  PropsRuntime<'settings.plugin.item'> & PropsLocale<'fallbacks'> & FallbacksCardInjected
+  PropsRuntime<'plugins.bundle.config'>
+  & PropsLocale<'fallbacks'>
+  & InjectFace<FallbacksCardInjected>
 
 /** Scalar (non-row) fields of the form draft. */
 interface FallbacksScalars {
