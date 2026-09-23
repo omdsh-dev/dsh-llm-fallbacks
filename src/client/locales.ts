@@ -134,13 +134,12 @@ export const zh = {
   'timeSlots.selector.add': '添加选择器',
   // All-day head (plan fallbacks-timeslots Task 3; PR #62 feedback round):
   // the 默认模型 panel is the official Flash / Pro XOR head of the default
-  // fallback chain — separate from the 默认降级链 selector list. Pro is a
-  // legal tail but not yet in the catalog: its radio is disabled with the
-  // proCaveat reason (product precedent: the GLM unconfigured suffix).
+  // fallback chain — separate from the 默认降级链 selector list. Both tails
+  // are selectable: 0.1.7-rc.1's official catalog serves Pro as
+  // `deepseek-official/deepseek-v4-pro`.
   'allDay.hint': '全天链的最后一档兜底：官方 Flash 或 Pro 二选一',
   'allDay.flash': '官方 Flash（deepseek-official/deepseek-flash）',
-  'allDay.pro': '官方 Pro（deepseek-official/deepseek-pro）',
-  'allDay.proCaveat': '（暂不可用）',
+  'allDay.pro': '官方 Pro（deepseek-official/deepseek-v4-pro）',
   'allDay.nonconforming': '当前默认模型不合法：请选择官方 Flash 或 Pro 后保存',
   'roles.list.label': '角色实体',
   'roles.list.hint': '先声明角色，规则才能引用',
@@ -388,13 +387,11 @@ export const en = {
   // All-day head (plan fallbacks-timeslots Task 3; PR #62 feedback round):
   // the default-model panel is the official Flash / Pro XOR head of the
   // default fallback chain — separate from the default-chain selector list.
-  // Pro is a legal tail but not yet in the catalog: its radio is disabled
-  // with the proCaveat reason (product precedent: the GLM unconfigured
-  // suffix).
+  // Both tails are selectable: 0.1.7-rc.1's official catalog serves Pro as
+  // `deepseek-official/deepseek-v4-pro`.
   'allDay.hint': 'Last-resort fallback of the all-day chain: official Flash or Pro (pick exactly one)',
   'allDay.flash': 'Official Flash (deepseek-official/deepseek-flash)',
-  'allDay.pro': 'Official Pro (deepseek-official/deepseek-pro)',
-  'allDay.proCaveat': ' (not yet available)',
+  'allDay.pro': 'Official Pro (deepseek-official/deepseek-v4-pro)',
   'allDay.nonconforming': 'The current default model is not valid: pick official Flash or Pro before saving',
   'roles.list.label': 'Declared roles',
   'roles.list.hint': 'Declare roles before rules can reference them',

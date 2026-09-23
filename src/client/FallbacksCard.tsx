@@ -90,7 +90,7 @@ import type { SnapshotSelectorHook } from '@deepseek-ai/dsh-client-ui-slots'
 import type { FallbacksConfig, FallbacksRole, FallbackStrategy, RevertPolicy } from '../config.ts'
 import { defaultFallbacksConfig, INHERIT_ROLE_ID, ROLE_ID_PATTERN } from '../config.ts'
 import { parseSelector } from '../selectors.ts'
-import { isOfficialAllDayId, OFFICIAL_ALL_DAY_IDS, OFFICIAL_PRO, resolveSlotState } from '../time-slots.ts'
+import { isOfficialAllDayId, OFFICIAL_ALL_DAY_IDS, resolveSlotState } from '../time-slots.ts'
 import {
   FallbacksSettingsController,
   type FallbacksSettingsState,
@@ -130,9 +130,6 @@ import css from './FallbacksCard.module.css'
 // derives its validation and the 默认模型 radio list from it. Display labels
 // live in `locales.ts` (keys parallel to OFFICIAL_ALL_DAY_IDS below).
 const ALL_DAY_LABEL_KEYS = ['allDay.flash', 'allDay.pro'] as const
-/** Optional caveat suffix per option (parallel to OFFICIAL_ALL_DAY_IDS):
- * Pro's radio is always disabled — its model is not yet in the catalog. */
-const ALL_DAY_CAVEAT_KEYS = [undefined, 'allDay.proCaveat'] as const
 const SLOT_PRESET_IDS = ['liang-peak', 'liang-valley', 'glm-peak', 'glm-valley'] as const
 /** Custom-row day toggle order (index = weekday, 0=Sunday); display copy lives in the dictionaries. */
 const SLOT_WEEKDAYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'] as const
@@ -1886,12 +1883,13 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
 
               {/* 默认模型: official Flash | Pro 二选一 — the LAST fallback
                * of the all-day chain (UI order = walk order). Required: an
-               * empty or legacy tail (incl. the retired V4 ids) reads back
-               * unselected plus the nonconforming notice; save validation
-               * blocks. Radios derive from OFFICIAL_ALL_DAY_IDS (the shared
-               * legal set in src/time-slots.ts). Pro is a legal tail but
-               * not yet available in the catalog — its radio is always
-               * disabled (a hand-set Pro tail still reads back selected). */}
+               * empty or legacy tail (incl. the retired `deepseek-v4-flash`
+               * and the never-served legacy `deepseek-official/deepseek-pro`)
+               * reads back unselected plus the nonconforming notice; save
+               * validation blocks. Radios derive from OFFICIAL_ALL_DAY_IDS
+               * (the shared legal set in src/time-slots.ts) — both official
+               * tails are selectable; Pro is served by 0.1.7-rc.1's catalog
+               * as `deepseek-official/deepseek-v4-pro`. */}
               <div className={css.field} role="group" aria-labelledby="fallbacks-default-model">
                 <span className={css.fieldLabel}>
                   <span id="fallbacks-default-model">{t('defaultModel.label')}</span>
@@ -1905,13 +1903,10 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                           type="radio"
                           name="fallbacks-all-day"
                           checked={allDayModel === id}
-                          disabled={!writable || id === OFFICIAL_PRO}
+                          disabled={!writable}
                           onChange={() => { setAllDayModel(id) }}
                         />
                         {t(ALL_DAY_LABEL_KEYS[index])}
-                        {ALL_DAY_CAVEAT_KEYS[index] !== undefined && (
-                          <span className={css.hint}>{t(ALL_DAY_CAVEAT_KEYS[index])}</span>
-                        )}
                       </label>
                     ))}
                     {allDayModel === '' && (
