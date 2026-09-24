@@ -1,6 +1,6 @@
 ---
 module: dsh-llm-fallbacks virtual chain + time slots
-date: 2026-08-18
+date: 2026-09-24
 problem_type: architecture_pattern
 category: architecture-patterns
 severity: medium
@@ -30,7 +30,7 @@ rc.7 `buildModelCatalog` iterates registered providers only. There is no picker 
 - Register a virtual adapter whenever `enabled` (PR #62 feedback: row visibility is conformance-independent). Slot/chain edits must not churn registration.
 - `stream()` is a thin delegate to `firstDispatchableExactHead(resolveEffectiveChain(...))` — gated on a conforming all-day TAIL (last entry an official model; leading 默认降级链 entries walked first). Do not walk cooldown / maxSwitches inside the adapter.
 - Selecting the virtual pair = primary. Selecting a real pair = v0.2.2 fallback-only. No `rootMode` key.
-- Preset rows freeze windows in code constants; user edits models only; preset rows lock `tz` to Asia/Shanghai. Valleys complement peaks. The all-day chain **tail** is exactly one of `deepseek-official/deepseek-flash` or `deepseek-official/deepseek-pro` (the renamed official line; the retired `deepseek-v4-flash` / `deepseek-v4-pro` ids are no longer legal tails). Pro is a legal selector whose model is not yet in the 0.1.5-rc.1 catalog — the card shows it disabled, and requests to it fail at the provider until the gateway enables the id (the plugin does not probe catalog availability; a chain containing Pro dispatches to it like any other exact entry, and the override resolves the first exact head, so a working entry before Pro still routes to it).
+- Preset rows freeze windows in code constants; user edits models only; preset rows lock `tz` to Asia/Shanghai. Valleys complement peaks. The all-day chain **tail** is exactly one of `deepseek-official/deepseek-flash` or `deepseek-official/deepseek-v4-pro` (refreshed 2026-09-24, PR #125: the 0.1.7-rc.1 default catalog re-added `deepseek-v4-pro`, so it is now the official Pro tail and the card's Pro radio is selectable — the old `proCaveat` always-disabled mechanism was removed outright; `deepseek-v4-flash` stays retired and illegal). Legacy hand-set `deepseek-official/deepseek-pro` tails read back **nonconforming** through the same tail gate (no migration — the id was never catalog-served nor selectable). The plugin still does not probe catalog availability: a chain containing an exact entry dispatches to it like any other entry, and the override resolves the first exact head, so a working entry before Pro still routes to it.
 - Gate every slot observation surface on the same conforming helper (P6, tail-based).
 
 ## Why This Matters
