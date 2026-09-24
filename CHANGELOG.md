@@ -6,6 +6,15 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-24
+
+### Changed
+
+- Mount the Fallbacks settings card on the Plugins page `plugins.bundle.config` keyed slot (key `dsh-llm-fallbacks`, the bundle package name) via `dsh-client-ui-plugin-manager`, replacing the removed `settings.plugin.item` settings-page slot.
+- Serve the official Pro all-day tail as `deepseek-official/deepseek-v4-pro` (catalog-served since dsh 0.1.7-rc.1) and make the settings card's Pro radio selectable again.
+- Read hand-written legacy `deepseek-official/deepseek-pro` tails back as non-conforming (one startup warn, inert slot rows, unselected in the card) — no migration; re-pick the tail.
+- Upgrade the `@deepseek-ai/dsh-*` peer range to `^0.1.7-rc.1` and adapt to the 0.1.7-rc.1 APIs: the `fallbacks` settings section is the Loader entry Config now (volatile schema; the retired `SettingsProvider.installSection` registration is gone), settings writes target the plugin's profile entry `llm-fallbacks` through the `SettingsForms` form service, the role notice writes the producer-declared `llm-fallbacks-role-notice` source kind (the shared `plugin` kind was removed; pre-upgrade `plugin:dsh-llm-fallbacks` rows keep their badge), and the card icons follow the renamed `*OutlineMedium` ui-primitives exports.
+
 ## [0.5.2] - 2026-09-11
 
 ### Changed
