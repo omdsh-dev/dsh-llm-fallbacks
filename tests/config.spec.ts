@@ -13,6 +13,7 @@
 
 import { describe, expect, it, vi } from 'vitest'
 import { Config } from '../src/schema.ts'
+import { unwrapConfig } from './support/unwrap-config.ts'
 import {
   INHERIT_ROLE_ID,
   defaultFallbacksConfig,
@@ -39,18 +40,18 @@ function role(overrides: Partial<FallbacksRole> = {}): FallbacksRole {
 
 describe('fallbacks Config schema (two-block model)', () => {
   it('resolves the empty section to the spec defaults (AC-8 no-op invariant)', () => {
-    expect(Config({} as FallbacksConfig)).toEqual(defaultFallbacksConfig)
+    expect(unwrapConfig(Config({} as FallbacksConfig))).toEqual(defaultFallbacksConfig)
   })
 
   it('layers partial input over the spec defaults', () => {
-    const resolved = Config({
+    const resolved = unwrapConfig(Config({
       cooldownMs: 1_000,
       rootChain: ['other/gpt-4o'],
       roles: {
         list: [{ id: 'reviewer', persona: '' }],
         rules: [{ role: 'reviewer' }],
       },
-    } as unknown as FallbacksConfig)
+    } as unknown as FallbacksConfig))
     expect(resolved.cooldownMs).toBe(1_000)
     expect(resolved.rootChain).toEqual(['other/gpt-4o'])
     expect(resolved.roles.list).toEqual([{
@@ -70,9 +71,9 @@ describe('fallbacks Config schema (two-block model)', () => {
   })
 
   it('composed role entities carry the fallback default and keep string-optional fields absent', () => {
-    const resolved = Config({
+    const resolved = unwrapConfig(Config({
       roles: { list: [{ id: 'coder', persona: 'd' }] },
-    } as unknown as FallbacksConfig)
+    } as unknown as FallbacksConfig))
     expect(resolved.roles.list[0]).toEqual({
       id: 'coder',
       persona: 'd',
@@ -95,7 +96,7 @@ describe('fallbacks Config schema (two-block model)', () => {
   it('defaults the presets switch to bundled (spec §9.4 config key)', () => {
     // The 9th field rides the schema default exactly like the other
     // optional fields — `Config({})` must carry `presets: 'bundled'`.
-    const resolved = Config({} as FallbacksConfig)
+    const resolved = unwrapConfig(Config({} as FallbacksConfig))
     expect(resolved.presets).toBe('bundled')
   })
 
@@ -125,17 +126,17 @@ describe('fallbacks Config schema (two-block model)', () => {
 
 describe('roleAutoMatch config key (plan fallbacks-role-automatch Task 1)', () => {
   it('defaults roleAutoMatch to true when absent (Config({}) == defaultFallbacksConfig)', () => {
-    const resolved = Config({} as FallbacksConfig)
+    const resolved = unwrapConfig(Config({} as FallbacksConfig))
     expect(resolved.roleAutoMatch).toBe(true)
-    expect(Config({} as FallbacksConfig)).toEqual(defaultFallbacksConfig)
+    expect(unwrapConfig(Config({} as FallbacksConfig))).toEqual(defaultFallbacksConfig)
   })
 
   it('round-trips an explicit true', () => {
-    expect(Config({ roleAutoMatch: true } as FallbacksConfig).roleAutoMatch).toBe(true)
+    expect(unwrapConfig(Config({ roleAutoMatch: true } as FallbacksConfig)).roleAutoMatch).toBe(true)
   })
 
   it('round-trips an explicit false', () => {
-    expect(Config({ roleAutoMatch: false } as FallbacksConfig).roleAutoMatch).toBe(false)
+    expect(unwrapConfig(Config({ roleAutoMatch: false } as FallbacksConfig)).roleAutoMatch).toBe(false)
   })
 
   it('defaultFallbacksConfig carries roleAutoMatch: true', () => {

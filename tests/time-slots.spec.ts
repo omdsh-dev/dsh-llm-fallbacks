@@ -11,6 +11,7 @@
 
 import { afterEach, describe, expect, it, vi, type MockInstance } from 'vitest'
 import { Config } from '../src/schema.ts'
+import { unwrapConfig } from './support/unwrap-config.ts'
 import {
   defaultFallbacksConfig,
   validateFallbacksConfig,
@@ -369,16 +370,16 @@ describe('resolveEffectiveChain — tz interpreted with Intl rules', () => {
 
 describe('config schema — timeSlots and tz (P5)', () => {
   it('defaults timeSlots to [] and tz to Asia/Shanghai', () => {
-    const resolved = Config({} as FallbacksConfig)
+    const resolved = unwrapConfig(Config({} as FallbacksConfig))
     expect(resolved.timeSlots).toEqual([])
     expect(resolved.tz).toBe('Asia/Shanghai')
-    expect(Config({} as FallbacksConfig)).toEqual(defaultFallbacksConfig)
+    expect(unwrapConfig(Config({} as FallbacksConfig))).toEqual(defaultFallbacksConfig)
   })
 
   it('composes row shapes; absent array fields become empty defaults', () => {
-    const resolved = Config({
+    const resolved = unwrapConfig(Config({
       timeSlots: [{ kind: 'preset', preset: 'liang-peak', chain: [OFFICIAL_FLASH] }],
-    } as unknown as FallbacksConfig)
+    } as unknown as FallbacksConfig))
     const row = resolved.timeSlots[0]
     expect(row.kind).toBe('preset')
     expect(row.preset).toBe('liang-peak')
@@ -389,7 +390,7 @@ describe('config schema — timeSlots and tz (P5)', () => {
   })
 
   it('round-trips an explicit tz', () => {
-    expect(Config({ tz: 'UTC' } as unknown as FallbacksConfig).tz).toBe('UTC')
+    expect(unwrapConfig(Config({ tz: 'UTC' } as unknown as FallbacksConfig)).tz).toBe('UTC')
   })
 
   it('defaultFallbacksConfig carries timeSlots: [] and tz: Asia/Shanghai', () => {

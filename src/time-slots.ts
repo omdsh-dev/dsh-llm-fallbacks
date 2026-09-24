@@ -19,9 +19,9 @@ import type { FallbacksConfig } from './config.ts'
 
 /** Official all-day selectors — the ONLY legal tails (length 1, XOR):
  * Flash (the current official default) and Pro, both selectable. The Pro
- * tail id is the catalog id verbatim: 0.1.7-rc.1's official default catalog
- * serves `deepseek-v4-pro` alongside `deepseek-flash`, so the card's Pro
- * radio is selectable again. `deepseek-v4-flash` stays retired (dropped
+ * tail id is the catalog id verbatim: 0.1.7-rc.2's official default catalog
+ * still serves `deepseek-v4-pro` alongside `deepseek-flash` — re-verified
+ * at rc.2 (rc.1 re-introduced it), so the card's Pro radio is selectable. `deepseek-v4-flash` stays retired (dropped
  * from the catalog); a hand-written legacy `deepseek-official/deepseek-pro`
  * tail — never catalog-served nor selectable — is just a non-legal tail
  * that degrades through the existing nonconforming walk. */
