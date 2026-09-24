@@ -58,6 +58,7 @@ import {
 } from '../src/gateway.ts'
 import { FallbacksSeedManager } from '../src/seeds.ts'
 import { MemorySettings } from './support/memory-settings.ts'
+import { unwrapConfig } from './support/unwrap-config.ts'
 
 /** Track every test context and dispose it after the case (settings/gateway effects hygiene). */
 const contexts = new Set<Context>()
@@ -115,6 +116,8 @@ function installFallbacksBridge(ctx: Context, entry: FallbacksConfig): Fallbacks
       // arrays replace) — a local twin of `mergeConfigLayer` in src/index.ts —
       // then resolved through the schema so defaults fold in exactly like the
       // Loader-composed entry does (roleAutoMatch, materialized row fields).
+      // The resolution returns a live reference under schemastery ≥3.18.4
+      // (volatile-marked schema) — unwrapped, mirroring `normalizeConfig`.
       const merged: Record<string, unknown> = { ...entry }
       for (const [key, value] of Object.entries(userSection)) {
         const current = merged[key]
@@ -123,7 +126,7 @@ function installFallbacksBridge(ctx: Context, entry: FallbacksConfig): Fallbacks
           ? { ...current, ...(value as Record<string, unknown>) }
           : value
       }
-      return Config(merged) as FallbacksConfig
+      return unwrapConfig(Config(merged)) as FallbacksConfig
     },
   }
 }
