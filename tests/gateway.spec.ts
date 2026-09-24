@@ -633,16 +633,15 @@ describe('timeSlots + all-day set guards (plan fallbacks-timeslots Task 3)', () 
     expect(pro.config.rootChain).toEqual([OFFICIAL_PRO])
   })
 
-  it('rejects a non-conforming all-day chain on save (legacy multi-model, empty, and the retired V4 ids — P6)', async () => {
+  it('rejects a non-conforming all-day chain on save (legacy multi-model, empty, and the retired v4-flash — P6)', async () => {
     const { gateway } = await mountGateway()
     await expect(gateway.set({ rootChain: ['openai/gpt-4o', 'anthropic/claude-3-5-sonnet'] })).rejects
       .toThrow(/rootChain must end with exactly one official model/)
     await expect(gateway.set({ rootChain: ['openai/gpt-4o'] })).rejects
       .toThrow(/rootChain must end with exactly one official model/)
-    // The retired V4 ids are no longer legal tails.
+    // The retired v4-flash id is no longer a legal tail (its sibling
+    // deepseek-v4-pro IS — OFFICIAL_PRO, covered by the accepts test).
     await expect(gateway.set({ rootChain: ['deepseek-official/deepseek-v4-flash'] })).rejects
-      .toThrow(/rootChain must end with exactly one official model/)
-    await expect(gateway.set({ rootChain: ['deepseek-official/deepseek-v4-pro'] })).rejects
       .toThrow(/rootChain must end with exactly one official model/)
     // The empty default is the "no all-day" state — also rejected on save:
     // everything saved through the gateway is tail-conforming.

@@ -18,15 +18,15 @@
 import type { FallbacksConfig } from './config.ts'
 
 /** Official all-day selectors — the ONLY legal tails (length 1, XOR):
- * Flash (the current official default, selectable) and Pro (displayed but
- * disabled — its `deepseek-official/deepseek-pro` id is not in the official
- * catalog: still true at 0.1.7-rc.1, whose default catalog serves
- * `deepseek-flash` plus a re-introduced `deepseek-v4-pro` instead). The
- * retired-here V4 ids (`deepseek-v4-flash` / `deepseek-v4-pro`) remain
- * non-legal tails; whether the Pro tail should adopt the re-added
- * `deepseek-v4-pro` id is an open product decision, not a schema fact. */
+ * Flash (the current official default) and Pro, both selectable. The Pro
+ * tail id is the catalog id verbatim: 0.1.7-rc.1's official default catalog
+ * serves `deepseek-v4-pro` alongside `deepseek-flash`, so the card's Pro
+ * radio is selectable again. `deepseek-v4-flash` stays retired (dropped
+ * from the catalog); a hand-written legacy `deepseek-official/deepseek-pro`
+ * tail — never catalog-served nor selectable — is just a non-legal tail
+ * that degrades through the existing nonconforming walk. */
 export const OFFICIAL_FLASH = 'deepseek-official/deepseek-flash'
-export const OFFICIAL_PRO = 'deepseek-official/deepseek-pro'
+export const OFFICIAL_PRO = 'deepseek-official/deepseek-v4-pro'
 
 /** The two official all-day tail ids (XOR — exactly one legal tail). */
 export const OFFICIAL_ALL_DAY_IDS = [OFFICIAL_FLASH, OFFICIAL_PRO] as const
@@ -240,8 +240,10 @@ function labelOf(row: SlotRowConfig): string {
  * entry (the tail — the card's 默认模型 panel) is exactly one official
  * model — Flash or Pro (XOR). Leading entries (the card's 默认降级链 block)
  * are the ordered walk before that last-resort fallback. An empty chain or
- * a chain whose tail is not an official model (including the retired V4
- * ids) keeps slot rows inert and refuses the virtual-row
+ * a chain whose tail is not an official model (the retired
+ * `deepseek-v4-flash` and the never-served legacy
+ * `deepseek-official/deepseek-pro` included) keeps slot rows inert and
+ * refuses the virtual-row
  * delegate; the v0.2.2 failure walk over the raw chain stays
  * verbatim.
  */

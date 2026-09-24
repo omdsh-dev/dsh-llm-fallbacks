@@ -160,17 +160,18 @@ describe('isAllDayConforming — official Flash / Pro tail', () => {
   it('accepts an official tail, with or without leading fallback entries', () => {
     expect(isAllDayConforming([OFFICIAL_FLASH])).toBe(true)
     expect(isAllDayConforming([OFFICIAL_PRO])).toBe(true)
+    // OFFICIAL_PRO verbatim: the 0.1.7-rc.1 catalog id.
+    expect(isAllDayConforming(['deepseek-official/deepseek-v4-pro'])).toBe(true)
     expect(isAllDayConforming(['openai/gpt-4o', OFFICIAL_FLASH])).toBe(true)
     expect(isAllDayConforming(['openai/gpt-4o', OFFICIAL_PRO])).toBe(true)
     expect(isAllDayConforming(['openai/gpt-4o', OFFICIAL_FLASH, OFFICIAL_PRO])).toBe(true)
   })
 
-  it('rejects empty chains, non-official tails, and the retired V4 ids', () => {
+  it('rejects empty chains, non-official tails, and the retired v4-flash', () => {
     expect(isAllDayConforming([])).toBe(false)
     expect(isAllDayConforming(['openai/gpt-4o'])).toBe(false)
     expect(isAllDayConforming(['openai/gpt-4o', 'anthropic/claude-3-5-sonnet'])).toBe(false)
     expect(isAllDayConforming(['deepseek-official/deepseek-v4-flash'])).toBe(false)
-    expect(isAllDayConforming(['deepseek-official/deepseek-v4-pro'])).toBe(false)
     expect(isAllDayConforming(['deepseek-official/deepseek-v4-ultra'])).toBe(false)
     // Tail-position rule: an official id in a non-tail position with a
     // non-official tail is still non-conforming (XOR is about the tail).

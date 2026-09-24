@@ -472,14 +472,19 @@ function flashRadio(): HTMLInputElement {
   return screen.getByLabelText(new RegExp(`^${esc(en['allDay.flash'])}$`)) as HTMLInputElement
 }
 
-/** The all-day chooser's Pro radio, by its full accessible label (label + caveat suffix). */
+/** The all-day chooser's Pro radio, by its full accessible label. */
 function proRadio(): HTMLInputElement {
-  return screen.getByLabelText(new RegExp(`^${esc(en['allDay.pro'])}${esc(en['allDay.proCaveat'])}$`)) as HTMLInputElement
+  return screen.getByLabelText(new RegExp(`^${esc(en['allDay.pro'])}$`)) as HTMLInputElement
 }
 
 /** Pick the official Flash radio in the all-day chooser (Task 3). */
 function pickAllDayFlash(): void {
   fireEvent.click(flashRadio())
+}
+
+/** Pick the official Pro radio in the all-day chooser (0.1.7-rc.1 catalog). */
+function pickAllDayPro(): void {
+  fireEvent.click(proRadio())
 }
 
 /**
@@ -1073,8 +1078,8 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     expect(within(chainGroup).queryByLabelText(en['roles.rule.provider'])).toBeNull()
     // Exactly the two official radios in the default-model panel; the
     // accepted conforming head is pre-selected (Flash) and no
-    // nonconforming notice shows. Pro is a legal tail but not yet in the
-    // catalog — its radio is always disabled; Flash is the selectable one.
+    // nonconforming notice shows. Both tails are selectable — 0.1.7-rc.1's
+    // catalog serves Pro as deepseek-v4-pro.
     expect(screen.getByText(en['defaultModel.label'])).toBeTruthy()
     const modelGroup = screen.getByText(en['defaultModel.label']).closest('[role="group"]') as HTMLElement
     // Panel-scoped count: exactly two all-day radios (a third official
@@ -1087,7 +1092,7 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     expect(flash.checked).toBe(true)
     expect(pro.checked).toBe(false)
     expect(flash.disabled).toBe(false)
-    expect(pro.disabled).toBe(true)
+    expect(pro.disabled).toBe(false)
     expect(within(modelGroup).queryByText(en['allDay.nonconforming'])).toBeNull()
   })
 
@@ -1130,14 +1135,14 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     expect(within(modelGroup).getByText(en['allDay.nonconforming'])).toBeTruthy()
   })
 
-  it('reads back a Pro all-day tail as the selected (disabled) default model — legal but not yet in the catalog', async () => {
+  it('reads back a Pro all-day tail as the selected default model — catalog-served as deepseek-v4-pro', async () => {
     const { view, props } = await mountCard({ config: { ...TWO_BLOCK_CONFIG, rootChain: [OFFICIAL_PRO] } })
     toggleCard()
     view.rerender(<FallbacksCard {...props} />)
     // The Pro tail is consumed by the 默认模型 panel → the chain editor
     // starts with no trailing selectors and the Pro radio is pre-selected
-    // but disabled (the id is legal, it just cannot be newly chosen); no
-    // nonconforming notice shows.
+    // (and selectable — the id is catalog-served); no nonconforming notice
+    // shows.
     const chainGroup = screen.getByText(en['rootChain.label']).closest('[role="group"]') as HTMLElement
     expect(within(chainGroup).queryByLabelText(en['roles.rule.provider'])).toBeNull()
     const modelGroup = screen.getByText(en['defaultModel.label']).closest('[role="group"]') as HTMLElement
@@ -1146,8 +1151,24 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     const pro = proRadio()
     expect(flash.checked).toBe(false)
     expect(pro.checked).toBe(true)
-    expect(pro.disabled).toBe(true)
+    expect(pro.disabled).toBe(false)
     expect(within(modelGroup).queryByText(en['allDay.nonconforming'])).toBeNull()
+  })
+
+  it('offers the official Pro tail as a selectable default model (0.1.7-rc.1 catalog)', async () => {
+    const { view, props } = await mountCard({ config: TWO_BLOCK_CONFIG })
+    toggleCard()
+    view.rerender(<FallbacksCard {...props} />)
+    // Both official tails are selectable: picking Pro selects it and the
+    // Flash radio clears (XOR head).
+    const flash = flashRadio()
+    const pro = proRadio()
+    expect(flash.checked).toBe(true)
+    expect(pro.checked).toBe(false)
+    pickAllDayPro()
+    view.rerender(<FallbacksCard {...props} />)
+    expect(pro.checked).toBe(true)
+    expect(flash.checked).toBe(false)
   })
 
   it('renders the chain/role sections before the advanced options and offers no provider wildcard in any chain editor', async () => {
