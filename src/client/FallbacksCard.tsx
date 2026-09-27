@@ -6,85 +6,76 @@
  * registration order); owner props are empty and all data flows
  * through {@link FallbacksSettingsController}.
  *
- * The card chrome replicates the upstream `PluginCard` contract (self-drawn:
- * the upstream client value face exports no reusable card): a collapsible
- * `<li>` whose header is a button stacking the plugin name over its
- * description, with a dirty "unsaved" pill and a rotating chevron
- * (`IconChevronDownOutlineMedium` from ui-primitives — a CLIENT_EXTERNALS value
- * import), `aria-expanded`/`aria-label` like the upstream header; a divider
- * under the header; then the form content. PR #62 UX round 2: the card
- * footer is gone — each big section (主代理 / 子代理 / 高级选项) carries its
- * own Save/Discard actions beside its heading (高级选项: inside the expanded
- * body) and its own validation / save-error surface. PR #62 UX round 3:
- * each section's Save writes ONLY that section's fields — 主代理 owns
- * rootChain / timeSlots / tz (+ the card-level `enabled`), 子代理 owns
- * roles, 高级选项 owns the advanced scalars; the patch spreads the last
- * ACCEPTED config for every other section, so a 主代理 Save can never
- * ride along an unsaved 子代理 edit (and vice versa) — and validation /
- * the dirty gate apply per section too (a bad role id never blocks 主代理,
- * and only the saved section's Discard reverts that section's edits).
- * Save/discard disabled terms: save = `!sectionDirty || saving ||
- * !writable`, discard = `!sectionDirty || saving` (KD-U1). Disclosure is
- * card-local state:
- * which card a user has open is a reading gesture, and staged edits outlive
- * collapsing — the pill rides the header (upstream rationale).
+ * FLAT rebuild (plan fallbacks-web-ux-alignment T3, the advisor PR #98
+ * pattern): the collapsible card chrome is gone — no header button, no
+ * rotating chevron, no dirty "unsaved" pill, no card-local open state, no
+ * bordered `<li>` box. The page already renders the plugin title/description
+ * above the card (the `locale/*.json` meta files the host resolves per UI
+ * language), so the notices, the form, and the footer tile directly beneath
+ * it in the official flat settings-form language (reference §3): fields at
+ * 12px vertical padding with 0.5px hairline separators, 34px inputs on the
+ * 0.5px l4 border, one dark solid Save footer. The card is ALWAYS open —
+ * nothing is hidden, so nothing needs disclosure state; the degraded /
+ * error / read-only / migration notices render flat atop the form (the
+ * unavailable notice stays always-visible per KD-G5 — the documented
+ * divergence from the advisor, whose unavailable card renders nothing: the
+ * fallbacks skeleton stays the USABLE last-known form and saves are
+ * attempted).
  *
- * The form body is the two-block editing surface (spec §8): the `enabled`
- * checkbox row, the 6 top-level scalar fields (trigger codes / revert
- * policy / three numeric fields), the `rootChain` block (block 1 — the
- * root agent's single chain, no key input), and the roles block (block 2 —
- * declared role entity cards from `roles.list` plus the rule rows from
- * `roles.rules`, whose role field is a dropdown bound to the declared ids
- * + the built-in `inherit`, same-page live). Saving runs `validateDraft`
- * first — id format/reserved word/duplicates, undeclared rule role
- * references, illegal selectors, and a role with no chain entries (no
- * model config) block the write with a validation banner + inline red
- * borders / hints (never touching the store error path); a
- * non-empty `state.legacyKeys` renders the migration banner at the top of
- * the card body. The row editors keep their filled editorCard surface
- * inside the card, with `--dsw-alias-*` tokens throughout. The reset-
- * to-defaults affordance is GONE from the card (PR #62 UX round 3) — the
- * gateway RPC `fallbacks/reset` and the store `resetToDefaults()` stay as
- * host APIs (store/gateway tests unchanged), only the card UI was removed.
+ * The config-level `enabled` switch is REMOVED (T2, breaking): there is no
+ * checkbox row and no `enabled.off` hiding — all fields render
+ * unconditionally; the Plugins-page row toggle is the master switch and the
+ * runtime gates read content presence (`isFallbackActive`).
  *
- * The page-only chrome is gone (720px column wrapper, title/intro banners,
- * page-bottom status block): the AC-7 read-only status (derived effective
- * model + recent-switch summary) is folded into the card body, and the
- * plugin-config section owns the column width.
+ * ONE Save replaces the per-section saves (T3): the per-section split
+ * existed so one section's Save could not ride along another section's
+ * unsaved edits (PR #62 UX round 3) — with ONE save over ONE document that
+ * concern is moot. The footer's Save writes the whole validated draft
+ * (disabled = `!dirty || invalid || saving || !writable` — `invalid` is the
+ * LIVE whole-form `validateDraft` verdict plus the empty-rule-row check;
+ * section bucketing survives for ERROR PLACEMENT only: each violation
+ * renders under its owning section heading). Save additionally carries
+ * `!writable` (W-1, qc2 fix wave: the dirty-implies-writable assumption
+ * does not hold for this in-place-draft store). Discard is kept — our
+ * staged edits survive refresh, the advisor's documented divergence from
+ * the official no-discard form — a pure client-side revert of the WHOLE
+ * draft to the last accepted config (`!dirty || saving`).
  *
- * Degraded/error/loading states keep the same card chrome (KD-U3): the
- * header always renders title+description+chevron, and the body carries the
- * config-channel notice or the load error. A card that cannot reach the
- * `fallbacks/get` gateway channel (`ready && !present`) keeps the USABLE
- * skeleton — the form stays writable and saves are attempted (KD-G5) — with
- * the `unavailable` notice ALWAYS visible (derived open — the header cannot
- * collapse it away), while a healthy card is collapsed until the user
- * expands it (AC-1, the documented divergence from upstream whose
- * unavailable card renders nothing). A hard load failure (`status ===
- * 'error'`) also forces the body open with an error notice and — when the
- * form is inert (`!writable`, i.e. the load never landed) — a Retry button;
- * a save failure keeps the editable form so the Save action itself is the
- * retry. PR #62 UX round 2: the single `state.error` surface is split by
- * origin — a LOAD failure keeps the card-top notice (with Retry when
- * inert), while a WRITE failure renders under the section whose Save was
- * last clicked (`lastSaveSection`), unlike the advisor's separate
- * apply-failure hints.
+ * The form body is the two-block editing surface (spec §8): the 6 top-level
+ * scalar fields (trigger codes / revert policy / three numeric fields), the
+ * `rootChain` block (block 1 — the root agent's single chain, no key input),
+ * and the roles block (block 2 — declared role entity cards from
+ * `roles.list` plus the rule rows from `roles.rules`, whose role field is a
+ * dropdown bound to the declared ids + the built-in `inherit`, same-page
+ * live). Row-level disclosures that are CONTENT keep their expand/collapse:
+ * the time-slot row cards and the role entity cards (with the seeded
+ * persona briefs) stay collapsible — a read-only view forces them open so
+ * the configs stay reachable. The 主代理 / 子代理 / 高级选项 group labels
+ * stay as flat, non-collapsible section headings.
  *
- * The degraded derivation is latched in the card (the store stays untouched):
- * `present` only ever changes inside the store's `accept()`, so the settled
- * `ready` read is authoritative, and a card-local latch carries that value
- * through refresh/save windows (`loading`/`saving`) so the notice body can
- * never collapse mid-refresh (the advisor's latched `degraded` field,
- * implemented without a store change); on a first mount the latch is false,
- * so the healthy card starts (and stays) collapsed through its first load.
+ * Validation: id format/reserved word/duplicates, undeclared rule role
+ * references, illegal selectors, and a role with no chain entries (no model
+ * config) block the write (the Save disabled gate) with per-section banners
+ * + inline red borders / hints (never touching the store error path); a
+ * non-empty `state.legacyKeys` renders the migration banner at the top.
+ * The reset-to-defaults affordance is GONE from the card (PR #62 UX
+ * round 3) — the gateway RPC `fallbacks/reset` and the store
+ * `resetToDefaults()` stay as host APIs, only the card UI was removed.
+ *
+ * The AC-7 read-only status block (recent-switch summary, D-5) stays at the
+ * bottom, flat.
+ *
+ * Presentation is ui-primitives-free (T4, advisor parity + reference §4
+ * risk): Button/Tooltip and the five icon imports are replaced by
+ * self-drawn styled elements — inline SVG icons (plus / trash / chevron /
+ * grip) and the CSS `data-tip` tooltip bubble (the card's existing
+ * icon-button pattern); every color resolves through a `--dsw-alias-*`
+ * token so the card adapts to the light/dark theme.
  */
 
 import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { LlmConfigurableProvider } from '@deepseek-ai/dsh-api-remotes/client'
-import {
-  Button, IconChevronDownOutlineMedium, IconChevronUpOutlineMedium, IconEllipsisOutlineMedium, IconPlusOutlineMedium, IconTrashOutlineMedium, Tooltip,
-} from '@deepseek-ai/dsh-client-ui-primitives'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { SnapshotSelectorHook } from '@deepseek-ai/dsh-client-ui-slots'
 import type { FallbacksConfig, FallbacksRole, FallbackStrategy, RevertPolicy } from '../config.ts'
@@ -133,6 +124,54 @@ const ALL_DAY_LABEL_KEYS = ['allDay.flash', 'allDay.pro'] as const
 const SLOT_PRESET_IDS = ['liang-peak', 'liang-valley', 'glm-peak', 'glm-valley'] as const
 /** Custom-row day toggle order (index = weekday, 0=Sunday); display copy lives in the dictionaries. */
 const SLOT_WEEKDAYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'] as const
+
+// ---------------------------------------------------------------------------
+// Self-drawn icons (T4 — the ui-primitives icon imports are gone; the shapes
+// are minimal inline SVGs on `currentColor`, 12-unit viewBox to match the
+// card's other 12px glyphs).
+// ---------------------------------------------------------------------------
+
+/** The disclosure chevron (12px) — content-level row/panel toggles only. */
+function ChevronDownIcon({ className }: { className?: string }): ReactNode {
+  return (
+    <svg className={className} width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+      <path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+}
+
+/** The plus glyph (14px default) for the inline add buttons. */
+function PlusIcon({ size = 14 }: { size?: number }): ReactNode {
+  return (
+    <svg width={size} height={size} viewBox="0 0 12 12" fill="none" aria-hidden="true">
+      <path d="M6 2.25V9.75M2.25 6H9.75" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  )
+}
+
+/** The trash glyph (14px) for the row removals. */
+function TrashIcon(): ReactNode {
+  return (
+    <svg width="14" height="14" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+      <path d="M2.5 3.5H9.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+      <path d="M4.75 3.25V2.5C4.75 2.22386 4.97386 2 5.25 2H6.75C7.02614 2 7.25 2.22386 7.25 2.5V3.25" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+      <path d="M3.5 3.5L3.87464 9.24692C3.91109 9.80186 4.36905 10.2333 4.92513 10.2333H7.07487C7.63095 10.2333 8.08891 9.80186 8.12536 9.24692L8.5 3.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+      <path d="M5.1 5.4V8.4M6.9 5.4V8.4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+    </svg>
+  )
+}
+
+/** The vertical grip (⋮) for the slot-row drag handle. */
+function GripIcon(): ReactNode {
+  return (
+    <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+      <circle cx="6" cy="2.4" r="0.95" fill="currentColor" />
+      <circle cx="6" cy="6" r="0.95" fill="currentColor" />
+      <circle cx="6" cy="9.6" r="0.95" fill="currentColor" />
+    </svg>
+  )
+}
+
 /** IANA timezone of this renderer (browser / host). */
 function hostTimeZone(): string {
   try {
@@ -212,7 +251,6 @@ export type FallbacksCardProps =
 
 /** Scalar (non-row) fields of the form draft. */
 interface FallbacksScalars {
-  enabled: boolean
   triggerCodes: string[]
   cooldownMs: number
   revertPolicy: RevertPolicy
@@ -234,7 +272,6 @@ interface FallbacksScalars {
 /** Split scalars from the row editors (rootChain / role entities / role rules). */
 function scalarsOf(config: FallbacksConfig): FallbacksScalars {
   return {
-    enabled: config.enabled,
     triggerCodes: [...config.triggerCodes],
     cooldownMs: config.cooldownMs,
     revertPolicy: config.revertPolicy,
@@ -284,7 +321,6 @@ function assembleConfig(
   const trailingChain = rowsToRootChain([allDayChainRow])
   const tz = resolvedSlotTz(timeSlotRows, scalars.tz)
   return {
-    enabled: scalars.enabled,
     triggerCodes: [...scalars.triggerCodes],
     rootChain: allDayModel === '' ? [...acceptedRootChain] : [...trailingChain, allDayModel],
     roles: { list, rules: rowsToRules(ruleRows) },
@@ -300,20 +336,15 @@ function assembleConfig(
 }
 
 /**
- * The three big sections the card's Save/Discard actions and error surfaces
- * live on (PR #62 UX round 2): 主代理 (main agent — time slots / default
- * chain / default model), 子代理 (subagents — role entities + role rules),
- * and 高级选项 (advanced options — trigger codes / cooldown / revert /
- * caps / roleAutoMatch). Validation errors are tagged by their OWNING
- * section so a 主代理 violation never renders under 子代理; store write
- * failures render under the section whose Save was last clicked.
+ * The form's error buckets (formerly the per-section SAVE anchors — PR #62
+ * UX round 2; T3 keeps the BUCKETS for error placement only): 主代理
+ * (main agent — time slots / default chain / default model), 子代理
+ * (subagents — role entities + role rules), and 高级选项 (advanced
+ * options — trigger codes / cooldown / revert / caps / roleAutoMatch).
+ * ONE Save writes the whole draft; each bucket's violations render under
+ * its owning section heading so the user can locate them.
  */
 type ValidationSection = 'main' | 'sub' | 'advanced'
-
-/** An empty per-section validation-error record (the clean-draft shape). */
-function emptyValidationErrors(): Record<ValidationSection, string[]> {
-  return { main: [], sub: [], advanced: [] }
-}
 
 /**
  * One live seed entry's card-facing bits (trimmed-id keyed, derived from
@@ -353,26 +384,26 @@ function seedBadgeLabel(seed: SeedRowInfo | undefined, t: FallbacksCardProps['t'
  * (only reachable through the synthetic outside option — the dropdown
  * itself constrains normal edits), and illegal selector entries in
  * rootChain and role chains. Returns one localized message per violation,
- * bucketed by the section that owns the offending field (PR #62 UX round
- * 2 — 主代理: allDay / timeSlots / slot* / tz / default model / default
- * chain; 子代理: role* / rule*; 高级选项: trigger / cooldown / revert /
- * always / roleAutoMatch — the scalars are never validated, so the
- * advanced bucket stays empty today). A non-empty result blocks
- * {@link save} — the draft is never written. `persona` is free text and
- * never validated.
+ * bucketed by the section that owns the offending field (主代理: allDay /
+ * timeSlots / slot* / tz / default model / default chain; 子代理: role* /
+ * rule*; 高级选项: trigger / cooldown / revert / always / roleAutoMatch —
+ * the scalars are never validated, so the advanced bucket stays empty
+ * today). A non-empty result is the Save disabled gate's `invalid` term —
+ * the draft is never written while any bucket is non-empty. `persona` is
+ * free text and never validated.
  *
  * `seedInfo` is the live trimmed-id → seed-entry map derived from
  * `state.seeds` (spec §9.4): the empty-chain block relaxes for seeded ids
  * only (spec §9.6 / AC-3 — a seeded role's chain is legitimately empty by
- * design, R4, and the row must stay persistable through a section save);
- * non-seeded behavior is byte-identical.
+ * design, R4, and the row must stay persistable); non-seeded behavior is
+ * byte-identical.
  */
 function validateDraft(
   draft: FallbacksConfig,
   t: FallbacksCardProps['t'],
   seedInfo: ReadonlyMap<string, SeedRowInfo>,
 ): Record<ValidationSection, string[]> {
-  const errors = emptyValidationErrors()
+  const errors: Record<ValidationSection, string[]> = { main: [], sub: [], advanced: [] }
   const declaredIds = new Set<string>()
   for (const role of draft.roles.list) {
     if (!ROLE_ID_PATTERN.test(role.id)) {
@@ -398,8 +429,8 @@ function validateDraft(
     // the save is blocked with an inline hint on the role card. Seeded
     // roles are the one exception (spec §9.6 / AC-3): seeds never invent a
     // chain (R4), so a seeded role's chain is legitimately empty by design
-    // and the block relaxes for seeded ids only — the row rides a section
-    // save instead of blocking it. Non-seeded behavior is byte-identical.
+    // and the block relaxes for seeded ids only. Non-seeded behavior is
+    // byte-identical.
     if ((role.chain ?? []).length === 0 && !seedInfo.has(role.id.trim())) {
       errors.sub.push(t('validation.roleChainRequired', { id: role.id }))
     }
@@ -477,11 +508,12 @@ function validateDraft(
 
 /**
  * The trimmed role ids that are validation failures (format / reserved word
- * / duplicate) — drives the inline red border after a blocked save attempt.
- * Derived once per render into a Set (qc3 F-3): a duplicate scan inside the
- * render loop would be O(N²) per row; here the whole derivation is O(N) and
- * each row's check is a single Set lookup. Selector errors stay on the
- * banner only (plan Task 3 inline-scope rule).
+ * / duplicate) — drives the inline red border on the offending id input
+ * (live: the border tracks the draft, matching the live Save disabled
+ * gate). Derived once per render into a Set (qc3 F-3): a duplicate scan
+ * inside the render loop would be O(N²) per row; here the whole derivation
+ * is O(N) and each row's check is a single Set lookup. Selector errors stay
+ * on the banner only (plan Task 3 inline-scope rule).
  */
 function collectInvalidRoleIds(rows: readonly RoleRow[]): Set<string> {
   const counts = new Map<string, number>()
@@ -507,9 +539,8 @@ function parseCount(raw: string): number {
 
 /**
  * Custom time-slot rows whose window is not valid `HH:mm` — drives the
- * inline red border after a blocked save attempt (same derivation pattern
- * as {@link collectInvalidRoleIds}: one pass per render, index lookup per
- * row).
+ * inline red border on the start/end inputs (same derivation pattern as
+ * {@link collectInvalidRoleIds}: one pass per render, index lookup per row).
  */
 function collectInvalidSlotRows(rows: readonly SlotEditorRow[]): Set<number> {
   const invalid = new Set<number>()
@@ -526,12 +557,13 @@ function catalogOf(state: FallbacksSettingsState): CatalogLookup | undefined {
 }
 
 /**
- * Inline "!" info badge (T3): the detailed explanation rides a primitives
- * Tooltip bubble (side "right", ~300ms hover delay, immediate on keyboard
- * focus) while the short inline hint stays on the row. The badge is an
- * exposed, focusable image — the Models page credential-status pattern
- * (role="img" + aria-label) — so the accessible name is always available;
- * the tooltip is a progressive enhancement on top.
+ * Inline "!" info badge (T3): the detailed explanation rides a CSS
+ * `data-tip` bubble (the card's self-drawn tooltip pattern — T4 replaces
+ * the primitives Tooltip; anchored to the RIGHT of the badge, the original
+ * primitives side="right" contract) while the short inline hint stays on
+ * the row. The badge is an exposed, focusable image — the Models page
+ * credential-status pattern (role="img" + aria-label) — so the accessible
+ * name is always available; the bubble is a progressive enhancement on top.
  *
  * `disabled` mirrors the read-only/loading suppression of the surrounding
  * controls: the bubble is suppressed, the badge drops out of the tab order
@@ -545,16 +577,15 @@ function catalogOf(state: FallbacksSettingsState): CatalogLookup | undefined {
  */
 function InfoHint({ label, disabled = false }: { label: string; disabled?: boolean }): ReactNode {
   return (
-    <Tooltip label={label} side="right" delayMs={300} disabled={disabled}>
-      <span
-        className={disabled ? `${css.infoHint} ${css.infoHintDisabled}` : css.infoHint}
-        role="img"
-        aria-label={label}
-        tabIndex={disabled ? -1 : 0}
-      >
-        !
-      </span>
-    </Tooltip>
+    <span
+      className={disabled ? `${css.infoHint} ${css.infoHintDisabled}` : css.infoHint}
+      role="img"
+      aria-label={label}
+      data-tip={label}
+      tabIndex={disabled ? -1 : 0}
+    >
+      !
+    </span>
   )
 }
 
@@ -691,7 +722,7 @@ function ChainSelectorEditor({
           aria-label={t('chains.selector.remove')}
           onClick={onRemove}
         >
-          <IconTrashOutlineMedium />
+          <TrashIcon />
         </button>
       </div>
     </div>
@@ -699,10 +730,9 @@ function ChainSelectorEditor({
 }
 
 /**
- * Render the Fallbacks settings card inside the plugin-config section,
- * replicating the upstream PluginCard chrome (KD-U1). The body carries the
- * existing form content unchanged plus the folded-in status block and the
- * footer actions (Discard / Reset / Save).
+ * Render the Fallbacks settings card inside the plugin-config section —
+ * flat: the notices, the form, and the footer tile directly under the
+ * page's plugin title/description, with no chrome of our own.
  * @param props - slot-delivered injected dependencies and the synthesized t seat.
  * @returns the card.
  */
@@ -725,7 +755,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
   }, [controller])
 
   // Editors seed from `defaultFallbacksConfig` on mount (readme-settings spec
-  // §1.4-1): the skeleton is always visible — even before any descriptor
+  // §1.4-1): the form is always visible — even before any descriptor
   // arrives (idle/loading) or while the gateway channel is unreachable
   // (`present: false`). The mount seed is only a placeholder:
   // `seededConfigKey` stays null until the first ready state, and every
@@ -735,7 +765,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
   // holds on both sides: the store never publishes defaults over an
   // accepted real config, and the card never re-seeds identical content.
   // Controls are not gated on `ready` — a channel-down load with
-  // `writable: true` leaves the switch/form body editable pre-ready
+  // `writable: true` leaves the form body editable pre-ready
   // (§1.4-4) — so a mid-edit push (channel recovers → settings/document-updated →
   // refresh → load → ready) overwrites the draft with server truth on the
   // next content-changing ready: unsaved drafts are not preserved across
@@ -751,30 +781,17 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
   const [ruleRows, setRuleRows] = useState<RoleRuleRow[]>(() => rulesToRows(defaultFallbacksConfig.roles.rules))
   // The preset picker's pending selection (UI-only, never part of the draft).
   const [presetToAdd, setPresetToAdd] = useState<string>('')
-  // Pre-save validation (spec §8; PR #62 UX round 2): save() validates the
-  // assembled draft and a blocked write leaves the messages bucketed by
-  // their OWNING section (主代理 / 子代理 / 高级选项) so each section's
-  // error surface only shows its own violations, with `validationAttempted`
-  // true so the offending role-id rows keep their inline red border. Both
-  // clear when a save passes validation or the user discards the draft.
-  const [validationErrors, setValidationErrors] = useState<Record<ValidationSection, string[]>>(emptyValidationErrors)
-  const [validationAttempted, setValidationAttempted] = useState(false)
-  // The section whose Save was last clicked (PR #62 UX round 2): a store
-  // write failure (`state.error`) renders under THAT section instead of the
-  // card-top banner; null means no save has been attempted, so a load
-  // failure keeps the card-top notice + Retry.
-  const [lastSaveSection, setLastSaveSection] = useState<ValidationSection | null>(null)
   const seededConfigKey = useRef<string | null>(null)
 
-  // PR #62 UX round 3 — the assembled draft + the PER-SECTION dirty flags,
-  // computed once per render and shared by the reseed effects, the header
-  // pill, the per-section Save/Discard gates, and save(). Field ownership:
-  // 主代理 owns rootChain / timeSlots / tz (+ the card-level `enabled`
-  // while the form is shown), 子代理 owns roles (incl. empty rule rows —
-  // they serialize away but still count as pending UI), 高级选项 owns the
-  // advanced scalars. Each section's dirty term gates ONLY that section's
-  // Save/Discard, so a 子代理 edit never enables 主代理 Save (and vice
-  // versa); the header pill is the union.
+  // The assembled draft + the PER-SECTION dirty flags, computed once per
+  // render and shared by the reseed effects and the footer gates. Field
+  // ownership: 主代理 owns rootChain / timeSlots / tz, 子代理 owns roles
+  // (incl. empty rule rows — they serialize away but still count as pending
+  // UI), 高级选项 owns the advanced scalars. The per-section flags drive the
+  // PER-SECTION reseeds (a content-changing ready never clobbers a dirty
+  // section's staged edits — the documented divergence from the official
+  // no-discard form); the single footer Save/Discard gate on their union.
+  // There is no config-level `enabled` term (T2 — the switch is removed).
   const draft = assembleConfig(
     scalars, allDayModel, state.config.rootChain, allDayChainRow,
     roleRows, ruleRows,
@@ -786,13 +803,11 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
   // an edit + a validation error instead of silently discarding on save
   // (qc3 F-4).
   const hasEmptyRuleRows = ruleRows.some(row => row.role === '')
-  const enabledDirty = scalars.enabled !== state.config.enabled
   // Timezone is not a user control (host tz for custom-only, Asia/Shanghai
   // with presets). Do not include it in dirty — otherwise a UTC CI host
-  // vs the Asia/Shanghai default lights the unsaved pill on a clean load.
-  const mainDirty = enabledDirty
-    || JSON.stringify([...draft.rootChain, draft.timeSlots])
-      !== JSON.stringify([...state.config.rootChain, state.config.timeSlots ?? []])
+  // vs the Asia/Shanghai default lights the footer gate on a clean load.
+  const mainDirty = JSON.stringify([...draft.rootChain, draft.timeSlots])
+    !== JSON.stringify([...state.config.rootChain, state.config.timeSlots ?? []])
   const subDirty = hasEmptyRuleRows || JSON.stringify(draft.roles) !== JSON.stringify(state.config.roles)
   const advancedDirty = JSON.stringify([
     draft.triggerCodes, draft.cooldownMs, draft.revertPolicy,
@@ -805,10 +820,11 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
 
   // Editors seed from the accepted config on every content-changing ready
   // (PR #62 UX round 3): the reseed is PER-SECTION — only CLEAN sections
-  // re-seed, so a 主代理 save can never clobber unsaved 子代理 rows (and
-  // vice versa). The FIRST ready is the mount seed (the useState
-  // placeholders came from `defaultFallbacksConfig`), which must always
-  // land the real config — `firstSeed` bypasses the dirty gates once.
+  // re-seed, so a staged 主代理 edit is never clobbered by a server refresh
+  // that lands 子代理 truth (and vice versa). The FIRST ready is the mount
+  // seed (the useState placeholders came from `defaultFallbacksConfig`),
+  // which must always land the real config — `firstSeed` bypasses the dirty
+  // gates once.
   const firstSeedDone = useRef(false)
   useEffect(() => {
     if (state.status !== 'ready') return
@@ -822,7 +838,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
       setAllDayModel(allDayModelOf(state.config.rootChain))
       setAllDayChainRow(allDayChainRowOf(state.config.rootChain, catalog))
       setTimeSlotRows(timeSlotsToRows(state.config.timeSlots ?? [], catalog))
-      setScalars(prev => ({ ...prev, enabled: state.config.enabled, tz: state.config.tz ?? 'Asia/Shanghai' }))
+      setScalars(prev => ({ ...prev, tz: state.config.tz ?? 'Asia/Shanghai' }))
     }
     if (firstSeed || !subDirty) {
       setRoleRows(rolesToRows(state.config.roles.list, catalog))
@@ -840,14 +856,6 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
       }))
     }
   }, [state.status, state.config, mainDirty, subDirty, advancedDirty])
-
-  // The skeleton always renders inside the open body (readme-settings spec
-  // §1.2): the `enabled` switch, the form body (or its off-notice), the
-  // status block, and the footer actions are visible in every store state
-  // (idle / loading / ready / saving / error). The form body below is gated
-  // on the draft's `enabled` flag. Controls are disabled while `writable` is
-  // false (initial load, loading, or a read-only describe response), so an
-  // empty skeleton never invites edits the host would refuse.
 
   const updateScalars = (mutator: (draft: FallbacksScalars) => void): void => {
     setScalars(prev => {
@@ -1008,11 +1016,6 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
     })
   }
 
-  // The joined validation errors across all sections — the disabled-state
-  // row's single error surface (the per-section surfaces are unmounted
-  // while the form is hidden). The per-section dirty flags live with the
-  // draft at the top of the component (shared by the reseed effects).
-  const allValidationErrors = [...validationErrors.main, ...validationErrors.sub, ...validationErrors.advanced]
   const saving = state.status === 'saving'
   const writable = state.writable
   const unknownCodes = scalars.triggerCodes.filter(code => !KNOWN_TRIGGER_CODES.includes(code))
@@ -1046,23 +1049,35 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
   // the store dedupes on the canonical (trimmed) ids so mid-edit duplicate
   // ids never render duplicate options.
   const roleOptions = ruleRoleOptions({ list: roleRows })
-  // Offending role ids after a blocked save attempt, derived once per render
-  // into a Set (qc3 F-3) — each row's inline red border is one lookup.
-  const invalidRoleIds = validationAttempted ? collectInvalidRoleIds(roleRows) : null
-  // Custom slot rows with an invalid `HH:mm` window after a blocked save
-  // attempt (same derivation pattern — red borders on the start/end inputs).
-  const invalidSlotRows = validationAttempted ? collectInvalidSlotRows(timeSlotRows) : null
+  // Offending role ids (live — the inline red border tracks the draft the
+  // same way the Save disabled gate does), derived once per render into a
+  // Set (qc3 F-3) — each row's inline check is one lookup.
+  const invalidRoleIds = collectInvalidRoleIds(roleRows)
+  // Custom slot rows with an invalid `HH:mm` window (same derivation
+  // pattern — red borders on the start/end inputs).
+  const invalidSlotRows = collectInvalidSlotRows(timeSlotRows)
   // Seeded-role badge state, derived ONCE per render from the wire `seeds`
   // (spec §9.4; the qc3 F-3 same-derivation pattern): trimmed role id → the
   // entry's override verdict + provenance label. The same map drives the
   // source badge, the read-only persona presentation, and the seeded-only
-  // Save relax — each row's membership is a single lookup. Non-seeded rows
-  // keep the ordinary editing UX (they carry the `User` badge); a seeded
+  // validation relax — each row's membership is a single lookup. Non-seeded
+  // rows keep the ordinary editing UX (they carry the `User` badge); a seeded
   // entry without `source` (gateway version skew) degrades to no badge.
   const seedInfo = new Map<string, SeedRowInfo>()
   for (const seed of state.seeds) {
     seedInfo.set(seed.id.trim(), { overridden: seed.overridden, source: seed.source })
   }
+
+  // The whole-form validation verdict (T3): computed ONCE per render and
+  // shared by the Save disabled gate (`invalid`), the per-section banners,
+  // and nothing else. There is no "blocked save attempt" state anymore —
+  // Save is disabled while the draft is invalid, so the violations surface
+  // live under their owning section headings.
+  const liveErrors = validateDraft(draft, t, seedInfo)
+  const invalid = hasEmptyRuleRows
+    || liveErrors.main.length > 0
+    || liveErrors.sub.length > 0
+    || liveErrors.advanced.length > 0
 
   // The compact recent-switch line: the most recent switch (from → to +
   // role/reason) or an honest empty/loading/error state — one line, never a
@@ -1128,1502 +1143,1172 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
     }
   }, [state.catalogStatus, state.catalogEpoch, state.config, mainDirty, subDirty])
 
-  // PR #62 UX round 3: every section's Save writes ONLY that section's
-  // fields through the one gateway (`controller.save`), with the other
-  // sections' values taken from the last ACCEPTED config — a 子代理 Save
-  // of a 主代理 edit persists neither (the unsaved sibling drafts stay in
-  // the editors). The saved section is recorded so a store write failure
-  // renders under the section whose Save was clicked; validation violations
-  // render under their OWNING section (validateDraft buckets them), and
-  // ONLY the saved section's bucket blocks the write.
-  const sectionPatch = (section: ValidationSection): FallbacksConfig => {
-    const base = { ...state.config, enabled: scalars.enabled }
-    switch (section) {
-      case 'main':
-        return { ...base, rootChain: draft.rootChain, timeSlots: draft.timeSlots, tz: draft.tz }
-      case 'sub':
-        return { ...base, roles: draft.roles }
-      case 'advanced':
-        return {
-          ...base,
-          triggerCodes: draft.triggerCodes,
-          cooldownMs: draft.cooldownMs,
-          revertPolicy: draft.revertPolicy,
-          maxSwitchesPerStep: draft.maxSwitchesPerStep,
-          alwaysModeRetryCap: draft.alwaysModeRetryCap,
-          roleAutoMatch: draft.roleAutoMatch,
-        }
-    }
+  // ONE Save (T3): writes the whole validated draft through the one gateway
+  // (`controller.save`). The write only fires from the footer button, whose
+  // disabled gate is `!dirty || invalid || saving || !writable` — the
+  // validation is enforced by the gate, so no pre-write re-validation pass
+  // is needed here.
+  const save = (): void => {
+    void controller.save(draft)
   }
 
-  const save = (section: ValidationSection): void => {
-    setLastSaveSection(section)
-    const errors = validateDraft(draft, t, seedInfo)
-    // An empty rule row is invisible to validateDraft (rowsToRules dropped
-    // it from the draft) — the row would vanish on a successful save with no
-    // explanation. Block the SUB save alongside the draft violations (qc3
-    // F-4); the row keeps its inline hint so the user sees why.
-    if (section === 'sub' && hasEmptyRuleRows) {
-      errors.sub.push(t('validation.ruleRoleRequired'))
-    }
-    if (errors[section].length > 0) {
-      // Validation blocks the write: the draft is never sent to the gateway,
-      // and the violations surface under their owning sections + inline red
-      // borders (spec §8 — the store's `state.error` data path stays
-      // untouched).
-      setValidationErrors(errors)
-      setValidationAttempted(true)
-      return
-    }
-    setValidationErrors(emptyValidationErrors())
-    setValidationAttempted(false)
-    void controller.save(sectionPatch(section))
+  // Discard is a pure client-side revert of the WHOLE draft to the last
+  // accepted config (no gateway write — upstream semantics). KEPT in the
+  // flat card (the advisor's documented divergence from the official
+  // no-discard form): our staged edits survive refresh, so the user needs a
+  // way back. The upstream disabled term `!dirty || saving` applies (no
+  // `!writable`: in read-only the draft can still hold staged edits from
+  // before a mid-session writable flip, and a client-side revert is always
+  // safe).
+  const discard = (): void => {
+    const catalog = catalogOf(state)
+    setAllDayModel(allDayModelOf(state.config.rootChain))
+    setAllDayChainRow(allDayChainRowOf(state.config.rootChain, catalog))
+    setTimeSlotRows(timeSlotsToRows(state.config.timeSlots ?? [], catalog))
+    setRoleRows(rolesToRows(state.config.roles.list, catalog))
+    setRuleRows(rulesToRows(state.config.roles.rules, catalog))
+    setScalars(scalarsOf(state.config))
   }
 
-  // The compact disabled-state row (PR #62 UX round 3): the `enabled`
-  // master switch is card-level, NOT a section — while the plugin is OFF
-  // the row's Save writes ONLY `enabled` merged onto the accepted config
-  // (hidden in-memory edits of the other sections are never persisted).
-  const saveEnabled = (): void => {
-    setLastSaveSection('main')
-    setValidationErrors(emptyValidationErrors())
-    setValidationAttempted(false)
-    void controller.save({ ...state.config, enabled: scalars.enabled })
-  }
-
-  // Discard is a pure client-side revert to the last accepted config (no
-  // gateway write — upstream semantics), now PER-SECTION: 主代理 Discard
-  // reverts main fields (+ the card-level `enabled`), 子代理 Discard reverts
-  // roles, 高级选项 Discard reverts the advanced scalars — a 主代理 Discard
-  // never reverts 子代理 edits. The upstream disabled term
-  // `!sectionDirty || saving` applies (no `!writable`: in read-only the
-  // draft can still hold staged edits from before a mid-session writable
-  // flip, and a client-side revert is always safe).
-  const discardSection = (section: ValidationSection): void => {
-    switch (section) {
-      case 'main': {
-        setAllDayModel(allDayModelOf(state.config.rootChain))
-        setAllDayChainRow(allDayChainRowOf(state.config.rootChain, catalogOf(state)))
-        setTimeSlotRows(timeSlotsToRows(state.config.timeSlots ?? [], catalogOf(state)))
-        setScalars(prev => ({ ...prev, enabled: state.config.enabled, tz: state.config.tz ?? 'Asia/Shanghai' }))
-        break
-      }
-      case 'sub': {
-        setRoleRows(rolesToRows(state.config.roles.list, catalogOf(state)))
-        setRuleRows(rulesToRows(state.config.roles.rules, catalogOf(state)))
-        break
-      }
-      case 'advanced': {
-        setScalars(prev => ({
-          ...prev,
-          triggerCodes: [...state.config.triggerCodes],
-          cooldownMs: state.config.cooldownMs,
-          revertPolicy: state.config.revertPolicy,
-          maxSwitchesPerStep: state.config.maxSwitchesPerStep,
-          alwaysModeRetryCap: state.config.alwaysModeRetryCap,
-          roleAutoMatch: state.config.roleAutoMatch,
-        }))
-        break
-      }
-    }
-    // The draft (section) reverted to the accepted config: any blocked-
-    // validation banner/inline marks no longer describe the current draft.
-    setValidationErrors(emptyValidationErrors())
-    setValidationAttempted(false)
-  }
-
-  // The compact disabled-state row's Discard (PR #62 UX round 3): reverts
-  // `enabled` only — the smallest correct behavior (hidden drafts of other
-  // sections stay staged, matching the save side that never persisted them).
-  const discardEnabled = (): void => {
-    setScalars(prev => ({ ...prev, enabled: state.config.enabled }))
-    setValidationErrors(emptyValidationErrors())
-    setValidationAttempted(false)
-  }
-
-  // Live-clear the blocked-save presentation once the draft is valid again:
-  // a user fixing the offending field would otherwise stare at a stale
-  // "save was blocked" banner over a now-valid draft (the Save action is
-  // dirty-gated, so the next attempt may never fire).
-  useEffect(() => {
-    if (!validationAttempted) return
-    // The empty-rule-row violation lives outside the draft (rowsToRules
-    // dropped the row), so it must clear on the ROW state, not just the
-    // assembled draft (qc3 F-4).
-    const errors = validateDraft(draft, t, seedInfo)
-    if (errors.main.length === 0 && errors.sub.length === 0 && errors.advanced.length === 0
-      && !ruleRows.some(row => row.role === '')) {
-      setValidationErrors(emptyValidationErrors())
-      setValidationAttempted(false)
-    }
-    // `seedInfo` is intentionally NOT a dep: it is a fresh Map per render
-    // (derived from state.seeds, spec §9.4) and `draft` already re-runs
-    // this effect on every render — listing it would only re-run the
-    // bounded validateDraft pass with zero behavioral change (qc1 S-8).
-  }, [validationAttempted, draft, ruleRows, t])
-
-  // PR #62 UX round 2: a store write failure renders under the section
-  // whose Save was clicked; once the store settles READY (a successful
-  // write or load) the section anchor is no longer meaningful — a later
-  // load failure must go back to the card-top notice + Retry.
-  useEffect(() => {
-    if (state.status === 'ready') setLastSaveSection(null)
-  }, [state.status])
-
-  // Disclosure is card-local USER state (upstream rationale): the healthy
-  // card starts collapsed and opens on the header click only. The degraded
-  // (`ready && !present` — gateway channel unreachable) and error cards
-  // render their notice body ALWAYS visible (AC-1 — the notice must appear
-  // without interaction), so `open` is DERIVED from the current snapshot —
-  // never from a mount-time snapshot read and never through a useEffect
-  // (I-1): the mount-time snapshot is the store default ('idle',
-  // present=false), so a mount-time read would wrongly start the healthy
-  // card open.
-  // `present` is only written by the store's `accept()`, so a settled
-  // `ready` read is authoritative; during a refresh/save window
-  // (`loading`/`saving`) the open derivation falls back to a card-local
-  // LATCH of the last settled degraded value (the advisor qc1 S-2 pattern,
-  // implemented in the card because the store stays untouched) — without it
-  // the notice body would collapse every time a degraded card refreshes.
-  // The latch update is a deterministic render-time write: it only runs on
-  // the settled `ready` snapshot and stores the same value every render of
-  // that snapshot.
-  // The error term gets the same latch treatment (qc2 S-1): a settled
-  // `error` (initial-load failure, save rejection) forces the card open
-  // with the error notice; the latch keeps the body open through the
-  // Retry→loading window — an unlatched `state.status === 'error'` term
-  // would collapse the body the moment Retry flips status to 'loading' (the
-  // user never opened the card, so `userOpen` is false) and hide the error
-  // notice mid-flight. It releases on the next settled `ready` — the
-  // successful state transition — so a recovered card collapses like any
-  // healthy card.
-  const [userOpen, setUserOpen] = useState(false)
-  // The advanced options disclosure is card-local USER state, default
-  // collapsed (the section is a quiet detail surface). The derived
-  // `advancedVisible` mirrors the card header's degraded-open semantics:
-  // a read-only view must show the advanced fields without interaction.
-  const [advancedOpen, setAdvancedOpen] = useState(false)
+  // The degraded derivation is latched in the card (the store stays
+  // untouched): `present` only ever changes inside the store's `accept()`,
+  // so the settled `ready` read is authoritative, and a card-local latch
+  // carries that value through refresh/save windows (`loading`/`saving`) so
+  // the unavailable notice can never disappear mid-refresh (the advisor's
+  // latched `degraded` field, implemented without a store change); on a
+  // first mount the latch is false, so a healthy first load renders no
+  // notice. The notice renders FLAT atop the form (the card is always open
+  // — there is no derived-open surface left to hide it behind).
   const degradedLatch = useRef(false)
-  const errorLatch = useRef(false)
   if (state.status === 'ready') {
     degradedLatch.current = !state.present
-    errorLatch.current = false
-  } else if (state.status === 'error') {
-    errorLatch.current = true
   }
   const degraded = state.status === 'ready' ? !state.present : degradedLatch.current
-  const open = userOpen || errorLatch.current || degraded
-  // Advanced options: user-collapsible while writable; forced visible in the
-  // read-only (degraded) view — same forced-open rule as the card header.
-  const advancedVisible = advancedOpen || !writable
-
-  const title = t('title')
-  const header = (
-    <button
-      type="button"
-      className={css.header}
-      aria-expanded={open}
-      aria-label={`${t(open ? 'collapse' : 'expand')}: ${title}`}
-      // The click toggles `userOpen` only, gated to the user-collapsible
-      // (healthy) state (advisor qc3 S-1): while degraded/error the derived
-      // open is forced true, so the click must be a NO-OP — toggling userOpen
-      // would silently latch it and pre-open the recovered form, and the
-      // "collapse" aria-label would announce an action the control cannot
-      // perform. The header stays focusable; aria-expanded stays true.
-      onClick={() => { if (!degraded && state.status !== 'error') setUserOpen(!userOpen) }}
-    >
-      <span className={css.headText}>
-        <span className={css.name}>{title}</span>
-        <span className={css.description}>{t('intro')}</span>
-      </span>
-      {dirty ? <span className={css.pending}>{t('unsaved')}</span> : null}
-      <IconChevronDownOutlineMedium
-        className={open ? `${css.chevron} ${css.chevronOpen}` : css.chevron}
-      />
-    </button>
-  )
 
   return (
-    <li className={open ? `${css.card} ${css.cardOpen}` : css.card}>
-      {header}
-      {open && (
-        <div className={css.body}>
-          {/* Migration banner (spec §8): the wire's legacyKeys detected
-              two-block-era leftovers → an informational notice at the top of
-              the card body. Never blocks editing and never touches disk —
-              a save MERGES over the user layer (W-1/F-1), so legacy keys
-              survive until manually removed; the banner stays until a get
-              reports them gone. */}
-          {state.legacyKeys.length > 0 && (
-            <p className={css.legacyNotice} role="status">
-              {t('legacy.banner', { keys: state.legacyKeys.join(', ') })}
-            </p>
+    <div className={css.root}>
+      {/* Migration banner (spec §8): the wire's legacyKeys detected
+          two-block-era leftovers → an informational notice at the top of
+          the flat form. Never blocks editing and never touches disk —
+          a save MERGES over the user layer (W-1/F-1), so legacy keys
+          survive until manually removed; the banner stays until a get
+          reports them gone. */}
+      {state.legacyKeys.length > 0 && (
+        <p className={css.legacyNotice} role="status">
+          {t('legacy.banner', { keys: state.legacyKeys.join(', ') })}
+        </p>
+      )}
+      {state.status === 'error' && state.error !== null && (
+        // Flat error notice (KD-U3): a LOAD failure (initial load or a
+        // refresh that never landed) and a WRITE failure render the same
+        // way now — there is no per-section anchor anymore (ONE Save). The
+        // Retry button only shows when the form is inert (the load never
+        // landed): with writable the form itself is the retry surface
+        // (Save), and a reload would clobber staged edits.
+        <div className={css.noticeRow}>
+          <p className={css.error} role="alert">{t('error.generic', { message: state.error })}</p>
+          {!state.writable && (
+            <button type="button" className={css.outlineButton} onClick={() => { void controller.load() }}>
+              {t('retry')}
+            </button>
           )}
-          {state.status === 'error' && state.error !== null && lastSaveSection === null && (
-            // PR #62 UX round 2: a store WRITE failure renders under the
-            // section whose Save was clicked (lastSaveSection set); this
-            // card-top notice is the LOAD-failure surface (initial load or
-            // a refresh that never landed) — the Retry button only shows
-            // when the form is inert (the load never landed): with
-            // writable the form itself is the retry surface (Save), and a
-            // reload would clobber staged edits.
-            <div className={css.noticeRow}>
-              <p className={css.error} role="alert">{t('error.generic', { message: state.error })}</p>
-              {!state.writable && (
-                <Button variant="outline" size="sm" onClick={() => { void controller.load() }}>
-                  {t('retry')}
-                </Button>
-              )}
-            </div>
-          )}
-          {degraded && (
-            // Gateway channel unreachable (KD-G5 — the fallbacks config rides
-            // the plugin gateway, not describe): an informational notice — the
-            // card stays the usable skeleton (last accepted config, or the
-            // defaults on a first load) and saves are attempted; failures land
-            // in the error notice above.
-            <p className={css.notice} role="status">{t('unavailable')}</p>
-          )}
-          {state.status === 'ready' && !state.writable && (
-            // The host describe said read-only. Gated on `ready`: the initial
-            // idle/loading window has `writable:false` and must not flash a
-            // read-only notice on a card that simply has not loaded yet
-            // (upstream/advisor read the notice from a settled store).
-            <p className={css.readOnly} role="status">{t('readOnly')}</p>
-          )}
-
-          {/* The form body sits directly in the card body (the upstream cards
-           * stack their controls in the body); the container only paces the
-           * content below the divider. The `enabled` switch is a row-level
-           * preference (the advisor checkboxRow rhythm): label text on the
-           * left, the native checkbox on the right, no separator line — the
-           * panel has no switch primitive, and the checkbox semantics are the
-           * behavior the spec pins. */}
-          <div className={css.form}>
-            <div className={css.checkboxRow}>
-              <div className={css.checkLabel}>
-                <span className={css.checkLabelTitle}>
-                  <label htmlFor="fallbacks-enabled">{t('enabled.label')}</label>
-                  <InfoHint label={t('enabled.tooltip')} disabled={!writable} />
-                </span>
-                <span className={css.checkLabelDesc}>{t('enabled.hint')}</span>
-              </div>
-              <input
-                id="fallbacks-enabled"
-                type="checkbox"
-                className={css.checkbox}
-                checked={scalars.enabled}
-                disabled={!writable}
-                onChange={event => { updateScalars(draft => { draft.enabled = event.target.checked }) }}
-              />
-            </div>
-
-            {/* Enabled OFF (readme-settings spec §1.2): the form body is hidden
-             * but never discarded — the draft stays in state and comes right
-             * back when the switch is toggled on. */}
-            {!scalars.enabled && (
-              <>
-                <p className={css.offNotice}>{t('enabled.off')}</p>
-                {/* PR #62 UX round 2: the form (and its per-section actions
-                 * and error surfaces) is hidden while disabled — this
-                 * compact row keeps the enabled flip saveable/discardable
-                 * (the old footer's always-visible role; the section
-                 * actions themselves live beside the headings once the form
-                 * is shown). PR #62 UX round 3: the row writes ONLY
-                 * `enabled` merged onto the accepted config (never the
-                 * hidden in-memory edits of the other sections); its
-                 * Save/Discard gate on the enabled flip alone. Blocked-save
-                 * and store errors surface right here (the per-section
-                 * surfaces are unmounted). */}
-                {allValidationErrors.length > 0 && (
-                  <p className={css.error} role="alert">
-                    {`${t('validation.blocked')}${allValidationErrors.join('; ')}`}
-                  </p>
-                )}
-                {lastSaveSection === 'main' && state.status === 'error' && state.error !== null && (
-                  <p className={css.error} role="alert">{t('error.generic', { message: state.error })}</p>
-                )}
-                <div className={css.sectionActions}>
-                  <button
-                    type="button"
-                    className={`${css.secondaryButton} ${css.sectionAction}`}
-                    disabled={!enabledDirty || saving}
-                    onClick={discardEnabled}
-                  >
-                    {t('discard')}
-                  </button>
-                  <button
-                    type="button"
-                    className={`${css.primaryButton} ${css.sectionAction}`}
-                    disabled={!writable || saving || !enabledDirty}
-                    onClick={saveEnabled}
-                  >
-                    {saving ? t('save.saving') : t('save')}
-                  </button>
-                </div>
-              </>
-            )}
-
-            {scalars.enabled && (
-            /* The form body is one fieldset without a legend: the enabled
-             * toggle above it is the group's question (the advisor fieldset).
-             * `disabled` propagates to every control inside — read-only/loading
-             * describes keep the whole body inert. The multi-control groups
-             * (triggerCodes / revertPolicy / chains / roles) keep the group
-             * labels the previous per-group legends provided via role="group" +
-             * aria-labelledby. */
-            <fieldset className={css.fieldset} disabled={!writable}>
-              {/* PR #62 feedback round: the 主代理 (main agent) section
-               * heading groups 分时槽设置 / 默认降级链 / 默认模型 below.
-               * PR #62 UX round 2: Save/Discard sit BESIDE the heading and
-               * this section's validation / save errors render directly
-               * under it (the card footer is gone). PR #62 UX round 3: the
-               * actions gate on the MAIN section's dirty term (its fields +
-               * the card-level `enabled`) and save only main fields. */}
-              <div className={css.sectionHeading} id="fallbacks-main-agent">
-                <span className={css.sectionHeadingText}>{t('mainAgent.label')}</span>
-                <div className={css.sectionActions}>
-                  <button
-                    type="button"
-                    className={`${css.secondaryButton} ${css.sectionAction}`}
-                    disabled={!mainDirty || saving}
-                    onClick={() => { discardSection('main') }}
-                  >
-                    {t('discard')}
-                  </button>
-                  <button
-                    type="button"
-                    className={`${css.primaryButton} ${css.sectionAction}`}
-                    disabled={!writable || saving || !mainDirty}
-                    onClick={() => { save('main') }}
-                  >
-                    {saving ? t('save.saving') : t('save')}
-                  </button>
-                </div>
-              </div>
-              {validationErrors.main.length > 0 && (
-                <p className={css.error} role="alert">
-                  {`${t('validation.blocked')}${validationErrors.main.join('; ')}`}
-                </p>
-              )}
-              {lastSaveSection === 'main' && state.status === 'error' && state.error !== null && (
-                <p className={css.error} role="alert">{t('error.generic', { message: state.error })}</p>
-              )}
-              {/* 分时槽设置 (plan fallbacks-timeslots Task 3; PR #62 feedback
-               * round): the extra-row list — first matching row wins, the
-               * all-day (默认降级链) row is always last. Preset rows freeze
-               * their windows (read-only summary; models-only edits); custom
-               * rows edit start/end/days + models. Rows can be removed,
-               * reordered with the buttons, or DRAG-reordered. No
-               * `timeSlots.enabled` master switch — adding a row IS the
-               * opt-in (spec Settings UX). */}
-              <div className={css.field} role="group" aria-labelledby="fallbacks-time-slots">
-                <span className={css.fieldLabel}>
-                  <span id="fallbacks-time-slots">{t('timeSlots.label')}</span>
-                  <InfoHint label={t('timeSlots.tooltip')} disabled={!writable} />
-                </span>
-                <span className={css.hint}>{t('timeSlots.hint')}</span>
-                <div className={css.list}>
-                  {timeSlotRows.map((row, index) => {
-                    const invalidWindow = invalidSlotRows?.has(index) ?? false
-                    const chainEmpty = row.selectors.every(selector => selectorRowToRaw(selector) === '')
-                    const firstModel = row.selectors.map(selectorRowToRaw).find(entry => entry !== '')
-                    // PR #62 UX round 4 part C: slot rows default COLLAPSED
-                    // (same rule as role cards) but a read-only view FORCES
-                    // them open — the collapse toggle is disabled when
-                    // `!writable`, so without the forced-open term the slot
-                    // configs would be unreachable in read-only (mirror of
-                    // `roleExpanded` below).
-                    const slotExpanded = !row.collapsed || !writable
-                    return (
-                    <div
-                      key={index}
-                      className={`${css.editorCard} ${draggedSlotIndex === index ? css.slotCardDragging : ''} ${overSlotIndex === index && draggedSlotIndex !== null && draggedSlotIndex !== index ? css.slotCardOver : ''}`}
-                      // PR #62 UX round 2: the CARD is only the drop target —
-                      // dragging starts from the dedicated handle below, so a
-                      // click on the collapse header never starts a drag.
-                      onDragOver={(event) => {
-                        if (draggedSlotIndex === null) return
-                        event.preventDefault()
-                        if (overSlotIndex !== index) setOverSlotIndex(index)
-                      }}
-                      onDrop={(event) => {
-                        event.preventDefault()
-                        const from = draggedSlotIndex
-                        setDraggedSlotIndex(null)
-                        setOverSlotIndex(null)
-                        if (from !== null && from !== index) reorderTimeSlotRow(from, index)
-                      }}
-                    >
-                      {/* Collapse header (PR #62 feedback round; UX round 2):
-                       * the WHOLE first row is the toggle (one header
-                       * control — chevron + name + first model), with a
-                       * SEPARATE drag handle so click ≠ drag. Collapsed rows
-                       * show the row name + its first model only, and stay
-                       * drag-reorderable (the handle works in both states). */}
-                      <div className={css.collapseRow}>
-                        <button
-                          type="button"
-                          className={css.collapseToggle}
-                          aria-expanded={slotExpanded}
-                          aria-label={t(slotExpanded ? 'timeSlots.collapse' : 'timeSlots.expand')}
-                          disabled={!writable}
-                          onClick={() => { updateTimeSlotRow(index, { collapsed: !row.collapsed }) }}
-                        >
-                          <IconChevronDownOutlineMedium className={slotExpanded ? `${css.chevron} ${css.chevronOpen}` : css.chevron} />
-                          <span className={css.collapseTitle}>
-                            {row.kind === 'preset'
-                              ? t(`timeSlots.preset.${row.preset}.label` as FallbacksKey)
-                              : (row.name !== '' ? row.name : `custom ${row.start}-${row.end}`)}
-                          </span>
-                          {/* PR #62 UX round 4: cost/multiplier tags on the
-                           * peak presets (red 高消耗 + yellow x2/x3) and the
-                           * 激活 tag on the currently-active row (resolved by
-                           * index — see `activeSlotIndex`). The chips sit
-                           * AFTER the ellipsizing title span (never inside it
-                           * — an in-title chip would be clipped by the
-                           * title's text-overflow) and before the first-model
-                           * meta, in the same title flex row. */}
-                          {row.kind === 'preset' && (row.preset === 'liang-peak' || row.preset === 'glm-peak') && (
-                            <>
-                              <span className={`${css.slotTag} ${css.slotTagHighCost}`}>{t('timeSlots.preset.highCost')}</span>
-                              <span className={`${css.slotTag} ${css.slotTagMultiplier}`}>
-                                {t('timeSlots.preset.multiplier', { n: row.preset === 'liang-peak' ? '2' : '3' })}
-                              </span>
-                            </>
-                          )}
-                          {activeSlotIndex === index && (
-                            <span className={`${css.slotTag} ${css.slotTagActive}`}>{t('timeSlots.active')}</span>
-                          )}
-                          {firstModel !== undefined && (
-                            <span className={css.collapseMeta}>{firstModel}</span>
-                          )}
-                        </button>
-                        <button
-                          type="button"
-                          className={css.dragHandle}
-                          draggable={writable}
-                          data-tip={t('timeSlots.drag')}
-                          aria-label={t('timeSlots.drag')}
-                          disabled={!writable}
-                          onDragStart={() => {
-                            if (!writable) return
-                            setDraggedSlotIndex(index)
-                            setOverSlotIndex(index)
-                          }}
-                          onDragEnd={() => { setDraggedSlotIndex(null); setOverSlotIndex(null) }}
-                        >
-                          <IconEllipsisOutlineMedium className={css.dragHandleIcon} />
-                        </button>
-                      </div>
-                      {slotExpanded && (
-                      <>
-                      {row.kind === 'preset' ? (
-                        <>
-                          <div className={css.ruleGrid}>
-                            <div className={css.ruleCell}>
-                              <span className={css.ruleCellLabel}>{t('timeSlots.preset.name')}</span>
-                              <span className={css.slotPresetName}>
-                                {t(`timeSlots.preset.${row.preset}.label` as FallbacksKey)}
-                              </span>
-                            </div>
-                            <div className={css.ruleCell}>
-                              <span className={css.ruleCellLabel}>{t('timeSlots.preset.windowLabel')}</span>
-                              <span className={css.hint}>
-                                {t(`timeSlots.preset.${row.preset}.window` as FallbacksKey)}
-                              </span>
-                            </div>
-                          </div>
-                          <span className={css.hint}>{t('timeSlots.preset.chainsOnly')}</span>
-                          {(row.preset === 'glm-peak' || row.preset === 'glm-valley') && (
-                            // PR #62 feedback: GLM presets route to
-                            // zai-coding-cn models — the caveat rides both
-                            // GLM preset rows.
-                            <span className={css.hint}>{t('timeSlots.preset.glm.note')}</span>
-                          )}
-                        </>
-                      ) : (
-                        <>
-                          {/* Custom rows carry an editable display name (PR
-                           * #62 feedback round — the collapsed header shows
-                           * it). */}
-                          <div className={css.field}>
-                            <span className={css.ruleCellLabel}>{t('timeSlots.name')}</span>
-                            <input
-                              className={css.input}
-                              value={row.name}
-                              placeholder={t('timeSlots.name')}
-                              aria-label={t('timeSlots.name')}
-                              disabled={!writable}
-                              onChange={event => { updateTimeSlotRow(index, { name: event.target.value }) }}
-                            />
-                          </div>
-                          <div className={css.field}>
-                            <span className={css.ruleCellLabel}>{t('timeSlots.tz.label')}</span>
-                            <span className={css.hint} aria-label={t('timeSlots.tz.label')}>
-                              {tzDisplayLabel(presetsPresent ? 'Asia/Shanghai' : hostTimeZone())}
-                            </span>
-                          </div>
-                          <div className={css.ruleGrid}>
-                            <label className={css.ruleCell}>
-                              <span className={css.ruleCellLabel}>{t('timeSlots.start')}</span>
-                              <input
-                                className={`${css.input} ${invalidWindow ? css.inputInvalid : ''}`}
-                                value={row.start}
-                                placeholder="09:00"
-                                aria-label={t('timeSlots.start')}
-                                disabled={!writable}
-                                onChange={event => { updateTimeSlotRow(index, { start: event.target.value }) }}
-                              />
-                            </label>
-                            <label className={css.ruleCell}>
-                              <span className={css.ruleCellLabel}>{t('timeSlots.end')}</span>
-                              <input
-                                className={`${css.input} ${invalidWindow ? css.inputInvalid : ''}`}
-                                value={row.end}
-                                placeholder="18:00"
-                                aria-label={t('timeSlots.end')}
-                                disabled={!writable}
-                                onChange={event => { updateTimeSlotRow(index, { end: event.target.value }) }}
-                              />
-                            </label>
-                          </div>
-                          <div className={css.field}>
-                            <span className={css.ruleCellLabel}>{t('timeSlots.days')}</span>
-                            <div className={css.dayRow}>
-                              {SLOT_WEEKDAYS.map((day, dayIndex) => (
-                                <label key={day} className={css.dayCell}>
-                                  <input
-                                    type="checkbox"
-                                    checked={row.days.includes(dayIndex)}
-                                    disabled={!writable}
-                                    onChange={() => {
-                                      updateTimeSlotRow(index, {
-                                        days: row.days.includes(dayIndex)
-                                          ? row.days.filter(existing => existing !== dayIndex)
-                                          : [...row.days, dayIndex],
-                                      })
-                                    }}
-                                  />
-                                  {t(`timeSlots.day.${day}` as FallbacksKey)}
-                                </label>
-                              ))}
-                            </div>
-                            <span className={css.hint}>{t('timeSlots.days.hint')}</span>
-                          </div>
-                          {/* The window-format hint surfaces while a custom
-                           * row is partially filled (a fresh blank row stays
-                           * quiet — the chain hint below already marks it). */}
-                          {(row.start !== '' || row.end !== '')
-                            && !(HHMM_RE.test(row.start) && HHMM_RE.test(row.end)) && (
-                            <span className={css.hint}>{t('validation.slotWindow')}</span>
-                          )}
-                        </>
-                      )}
-                      {chainEmpty && (
-                        <span className={css.hint}>{t('validation.slotChainRequired')}</span>
-                      )}
-                      <div className={css.chainSelectors}>
-                        {row.selectors.map((selector, selectorIndex) => (
-                          <ChainSelectorEditor
-                            key={selectorIndex}
-                            selector={selector}
-                            catalog={catalogOf(state)}
-                            configuredProviders={state.configuredProviders}
-                            disabled={!writable}
-                            t={t}
-                            onChange={patch => { updateTimeSlotSelector(index, selectorIndex, patch) }}
-                            onRemove={() => { removeTimeSlotSelector(index, selectorIndex) }}
-                          />
-                        ))}
-                      </div>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        icon={<IconPlusOutlineMedium size={14} />}
-                        className={css.addButton}
-                        onClick={() => { addTimeSlotSelector(index) }}
-                      >
-                        {t('timeSlots.selector.add')}
-                      </Button>
-                      <div className={css.cardFoot}>
-                        <div className={css.rowActions}>
-                          <button
-                            type="button"
-                            className={css.iconButton}
-                            data-tip={t('timeSlots.moveUp')}
-                            aria-label={t('timeSlots.moveUp')}
-                            disabled={!writable || index === 0}
-                            onClick={() => { moveTimeSlotRow(index, -1) }}
-                          >
-                            <IconChevronUpOutlineMedium />
-                          </button>
-                          <button
-                            type="button"
-                            className={css.iconButton}
-                            data-tip={t('timeSlots.moveDown')}
-                            aria-label={t('timeSlots.moveDown')}
-                            disabled={!writable || index === timeSlotRows.length - 1}
-                            onClick={() => { moveTimeSlotRow(index, 1) }}
-                          >
-                            <IconChevronDownOutlineMedium />
-                          </button>
-                          <button
-                            type="button"
-                            className={`${css.iconButton} ${css.iconButtonDanger}`}
-                            data-tip={t('timeSlots.remove')}
-                            aria-label={t('timeSlots.remove')}
-                            onClick={() => { removeTimeSlotRow(index) }}
-                          >
-                            <IconTrashOutlineMedium />
-                          </button>
-                        </div>
-                      </div>
-                      </>
-                      )}
-                    </div>
-                    )
-                  })}
-                </div>
-                <div className={css.slotAddRow}>
-                  <select
-                    className={`${css.input} ${css.selectInput}`}
-                    value={presetToAdd}
-                    aria-label={t('timeSlots.presetPlaceholder')}
-                    disabled={!writable}
-                    onChange={event => { setPresetToAdd(event.target.value) }}
-                  >
-                    <option value="">{t('timeSlots.presetPlaceholder')}</option>
-                    {SLOT_PRESET_IDS
-                      .filter(id => !timeSlotRows.some(row => row.kind === 'preset' && row.preset === id))
-                      .map(id => {
-                        // PR #62 UX round 4 part B: the GLM presets are
-                        // unselectable until zai-coding-cn is configured —
-                        // the options stay VISIBLE (disabled, never removed)
-                        // so the user sees why, with the reason suffix.
-                        const glmUnconfigured = !glmConfigured && (id === 'glm-peak' || id === 'glm-valley')
-                        return (
-                          <option key={id} value={id} disabled={glmUnconfigured}>
-                            {t(`timeSlots.preset.${id}.label` as FallbacksKey)}
-                            {glmUnconfigured ? t('timeSlots.preset.glm.unconfigured') : null}
-                          </option>
-                        )
-                      })}
-                  </select>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    icon={<IconPlusOutlineMedium size={14} />}
-                    disabled={!writable || presetToAdd === ''}
-                    onClick={addPresetSlotRow}
-                  >
-                    {t('timeSlots.addPreset')}
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    icon={<IconPlusOutlineMedium size={14} />}
-                    disabled={!writable}
-                    onClick={addCustomSlotRow}
-                  >
-                    {t('timeSlots.addCustom')}
-                  </Button>
-                </div>
-              </div>
-
-              {/* 默认降级链 (PR #62 feedback round): the all-day fallback
-               * chain as a configurable selector list (add/remove) — the
-               * Flash|Pro panel lives in the separate 默认模型 block below.
-               * The preemption hints are removed. */}
-              <div className={css.field} role="group" aria-labelledby="fallbacks-root-chain">
-                <span className={css.fieldLabel}>
-                  <span id="fallbacks-root-chain">{t('rootChain.label')}</span>
-                  <InfoHint label={t('rootChain.tooltip')} disabled={!writable} />
-                </span>
-                {/* Catalog state is an enrichment of the dropdowns, never a blocker:
-                 * a failed read (or an empty directory) only adds a hint line and
-                 * leaves every other field editable and saveable (spec §2.3 R-3a). */}
-                {state.catalogStatus === 'error' && state.catalogError !== null && (
-                  <span className={css.hint}>{t('catalog.error', { message: state.catalogError })}</span>
-                )}
-                {state.catalogStatus === 'ready' && state.catalogError !== null && (
-                  <span className={css.hint}>{t('catalog.partial', { message: state.catalogError })}</span>
-                )}
-                {state.catalogStatus === 'ready' && (state.groups.length === 0 || state.configuredProviders.length === 0) && (
-                  <span className={css.hint}>{t('catalog.empty')}</span>
-                )}
-                <div className={css.list}>
-                  <div className={css.editorCard}>
-                    <div className={css.chainSelectors}>
-                      {allDayChainRow.selectors.map((selector, selectorIndex) => (
-                        <ChainSelectorEditor
-                          key={selectorIndex}
-                          selector={selector}
-                          catalog={catalogOf(state)}
-                          configuredProviders={state.configuredProviders}
-                          disabled={!writable}
-                          t={t}
-                          onChange={patch => { updateAllDayChainSelector(selectorIndex, patch) }}
-                          onRemove={() => { removeAllDayChainSelector(selectorIndex) }}
-                        />
-                      ))}
-                    </div>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      icon={<IconPlusOutlineMedium size={14} />}
-                      className={css.addButton}
-                      onClick={addAllDayChainSelector}
-                    >
-                      {t('timeSlots.selector.add')}
-                    </Button>
-                  </div>
-                </div>
-              </div>
-
-              {/* 默认模型: official Flash | Pro 二选一 — the LAST fallback
-               * of the all-day chain (UI order = walk order). Required: an
-               * empty or legacy tail (incl. the retired `deepseek-v4-flash`
-               * and the never-served legacy `deepseek-official/deepseek-pro`)
-               * reads back unselected plus the nonconforming notice; save
-               * validation blocks. Radios derive from OFFICIAL_ALL_DAY_IDS
-               * (the shared legal set in src/time-slots.ts) — both official
-               * tails are selectable; Pro is served by 0.1.7-rc.2's catalog
-               * as `deepseek-official/deepseek-v4-pro` (re-verified at rc.2;
-               * rc.1 re-introduced the id). */}
-              <div className={css.field} role="group" aria-labelledby="fallbacks-default-model">
-                <span className={css.fieldLabel}>
-                  <span id="fallbacks-default-model">{t('defaultModel.label')}</span>
-                </span>
-                <span className={css.hint}>{t('allDay.hint')}</span>
-                <div className={css.list}>
-                  <div className={css.editorCard}>
-                    {OFFICIAL_ALL_DAY_IDS.map((id, index) => (
-                      <label key={id} className={css.optionRow}>
-                        <input
-                          type="radio"
-                          name="fallbacks-all-day"
-                          checked={allDayModel === id}
-                          disabled={!writable}
-                          onChange={() => { setAllDayModel(id) }}
-                        />
-                        {t(ALL_DAY_LABEL_KEYS[index])}
-                      </label>
-                    ))}
-                    {allDayModel === '' && (
-                      <span className={css.hint}>{t('allDay.nonconforming')}</span>
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              {/* PR #62 feedback: the 子代理 (subagents) section heading
-               * groups the roles list + the role rules below. PR #62 UX
-               * round 2: Save/Discard sit BESIDE the heading and this
-               * section's validation / save errors render directly under it
-               * (the card footer is gone). PR #62 UX round 3: the actions
-               * gate on the SUB section's dirty term (roles/rules + empty
-               * rule rows) and save only the roles section. */}
-              <div className={css.sectionHeading} id="fallbacks-subagents">
-                <span className={css.sectionHeadingText}>{t('subagents.label')}</span>
-                <div className={css.sectionActions}>
-                  <button
-                    type="button"
-                    className={`${css.secondaryButton} ${css.sectionAction}`}
-                    disabled={!subDirty || saving}
-                    onClick={() => { discardSection('sub') }}
-                  >
-                    {t('discard')}
-                  </button>
-                  <button
-                    type="button"
-                    className={`${css.primaryButton} ${css.sectionAction}`}
-                    disabled={!writable || saving || !subDirty}
-                    onClick={() => { save('sub') }}
-                  >
-                    {saving ? t('save.saving') : t('save')}
-                  </button>
-                </div>
-              </div>
-              {validationErrors.sub.length > 0 && (
-                <p className={css.error} role="alert">
-                  {`${t('validation.blocked')}${validationErrors.sub.join('; ')}`}
-                </p>
-              )}
-              {lastSaveSection === 'sub' && state.status === 'error' && state.error !== null && (
-                <p className={css.error} role="alert">{t('error.generic', { message: state.error })}</p>
-              )}
-              {/* Spec D4 / T5: read-only host-policy status. Hidden when the
-               * additive field is absent or disabled — never an active
-               * allowlist. Unprovable is its own state (T3 contract), not
-               * an empty-intersection warning. Roles/rules editors below
-               * stay untouched. */}
-              {state.subagentPolicy?.state === 'enabled' && (
-                <div className={css.policyStatus} role="status">
-                  <span className={css.policyStatusLabel}>{t('subagents.policy.label')}</span>
-                  <span className={css.policyStatusLine}>
-                    {`${t('subagents.policy.allowlist')}: ${state.subagentPolicy.allowedModels
-                      .map((route) => `${route.provider}/${route.model}`)
-                      .join(', ')}`}
-                  </span>
-                  {state.subagentPolicy.head !== undefined && (
-                    <span className={css.policyStatusLine}>
-                      {`${t('subagents.policy.head')}: ${state.subagentPolicy.head.route.provider}/${state.subagentPolicy.head.route.model} (${t(
-                        state.subagentPolicy.head.source === 'authorized'
-                          ? 'subagents.policy.source.authorized'
-                          : 'subagents.policy.source.injected',
-                      )})`}
-                    </span>
-                  )}
-                  {state.subagentPolicy.blockedAttempt !== undefined && (
-                    <span className={css.policyStatusWarn} role="alert">
-                      {t('subagents.policy.blocked')}
-                    </span>
-                  )}
-                </div>
-              )}
-              {state.subagentPolicy?.state === 'unprovable' && (
-                <div className={css.policyStatus} role="status">
-                  <span className={css.policyStatusWarn} role="alert">
-                    {t('subagents.policy.unprovable')}
-                  </span>
-                </div>
-              )}
-              <div className={css.field} role="group" aria-labelledby="fallbacks-roles-list">
-                <span className={css.fieldLabel}>
-                  <span id="fallbacks-roles-list">{t('roles.list.label')}</span>
-                  <InfoHint label={t('roles.list.tooltip')} disabled={!writable} />
-                </span>
-                <span className={css.hint}>{t('roles.list.hint')}</span>
-                {/* Block 2a (spec §8): declared role entities — identity text
-                 * fields, the role's own chain selectors, the append
-                 * strategy, removal. prompt/permissions are schema-reserved
-                 * and never rendered this round. The id input carries the
-                 * format hint inline; a blocked save attempt marks offending
-                 * ids with the red border (aria-invalid). Seeded rows (R2 —
-                 * incl. preset-materialized rows, which surface as seeded
-                 * rows) present as reference material (plan
-                 * role-card-seeded-ux): no id input (the collapse title
-                 * carries the id), a read-only persona brief instead of the
-                 * textarea, no revert button; the chain/fallback editors and
-                 * the remove action stay operator-owned (R4). A rename can
-                 * only arrive via an external config edit; a row whose id no
-                 * longer matches the wire's seed declaration renders as an
-                 * ordinary row. */}
-                <div className={css.list}>
-                  {roleRows.map((row, index) => {
-                    const invalid = invalidRoleIds?.has(row.id.trim()) ?? false
-                    // undefined = not a currently seeded row (ordinary config
-                    // row: full editing UX; R2 — dropping a declaration keeps
-                    // the row). A seeded row (incl. preset-materialized ones)
-                    // is identity+persona read-only: the id hides (the title
-                    // carries it) and the persona brief replaces the editor.
-                    // Renames arrive only via external config edits; a row
-                    // whose id no longer matches the wire's seed declaration
-                    // renders as an ordinary row again.
-                    const seed = seedInfo.get(row.id.trim())
-                    // The provenance badge rides EVERY collapse title (plan
-                    // role-card-seeded-ux): the declaring set's name
-                    // verbatim, the reserved labels localized (bundled /
-                    // external / User). null (a seeded entry without a
-                    // wire `source` — gateway version skew) renders no
-                    // badge: the degradation path, never an error.
-                    const seedBadge = seedBadgeLabel(seed, t)
-                    // The brief's blank verdict: a whitespace-only persona is
-                    // the same `(not set)` empty state as an empty one — no
-                    // brief text and NO disclosure chevron (there is nothing
-                    // to disclose).
-                    const personaBlank = row.persona.trim() === ''
-                    // Collapse summary (PR #62 feedback round): the first
-                    // chain model, or the raw strategy token when the chain
-                    // is empty (inherit-root = the role rides the root
-                    // chain).
-                    const roleFirstModel = row.selectors.map(selectorRowToRaw).find(entry => entry !== '')
-                    const roleSummary = roleFirstModel ?? row.fallback
-                    // PR #62 UX round 2: role cards default collapsed, but a
-                    // read-only view FORCES them open (same rule as the
-                    // advanced section) — the collapse toggle is disabled
-                    // when `!writable`, so without the forced-open term the
-                    // role configs would be unreachable in read-only.
-                    const roleExpanded = !row.collapsed || !writable
-                    return (
-                    <div key={index} className={css.editorCard}>
-                      {/* Collapse header (PR #62 UX round 2): the WHOLE first
-                       * row is the toggle — one header control (chevron + id
-                       * + summary) — so a click anywhere on the row
-                       * expands/collapses. Collapsed roles show id + first
-                       * chain model (or inherit-root / none). */}
-                      <div className={css.collapseRow}>
-                        <button
-                          type="button"
-                          className={css.collapseToggle}
-                          aria-expanded={roleExpanded}
-                          aria-label={t(roleExpanded ? 'roles.collapse' : 'roles.expand')}
-                          disabled={!writable}
-                          onClick={() => { updateRoleRow(index, { collapsed: !row.collapsed }) }}
-                        >
-                          <IconChevronDownOutlineMedium className={roleExpanded ? `${css.chevron} ${css.chevronOpen}` : css.chevron} />
-                          <span className={css.collapseTitle}>{row.id}</span>
-                          {seedBadge !== null && (
-                            // Non-interactive — it rides the whole-row toggle
-                            // hit area (PR #62 pattern), so no stopPropagation
-                            // is needed. The title tooltip carries uncapped
-                            // set names verbatim (case-preserved; the CSS
-                            // ellipsizes instead of wrapping).
-                            <span className={css.seedBadge} title={seedBadge}>{seedBadge}</span>
-                          )}
-                          <span className={css.collapseMeta}>{roleSummary}</span>
-                        </button>
-                      </div>
-                      {roleExpanded && (
-                      <>
-                      {seed === undefined && (
-                        // Seeded rows render no id field at all: the id is
-                        // seed-immutable (R2) and the collapse title already
-                        // carries it (plan role-card-seeded-ux).
-                        <div className={css.ruleGrid}>
-                          <div className={css.ruleCell}>
-                            <span className={css.ruleCellLabel}>{t('roles.id')}</span>
-                            <input
-                              className={`${css.input} ${invalid ? css.inputInvalid : ''}`}
-                              value={row.id}
-                              placeholder={t('roles.idPlaceholder')}
-                              aria-label={t('roles.id')}
-                              aria-invalid={invalid ? true : undefined}
-                              disabled={!writable}
-                              onChange={event => { updateRoleRow(index, { id: event.target.value }) }}
-                            />
-                            <span className={css.hint}>{t('roles.id.hint')}</span>
-                          </div>
-                        </div>
-                      )}
-                      <div className={css.ruleGrid}>
-                        <div className={css.ruleCell}>
-                          <span className={css.ruleCellLabel}>{t('roles.persona')}</span>
-                          {seed === undefined ? (
-                            <textarea
-                              rows={3}
-                              className={`${css.input} ${css.inputTextarea}`}
-                              value={row.persona}
-                              placeholder={t('roles.personaPlaceholder')}
-                              aria-label={t('roles.persona')}
-                              disabled={!writable}
-                              onChange={event => { updateRoleRow(index, { persona: event.target.value }) }}
-                            />
-                          ) : (
-                            // Seeded persona = reference material (plan
-                            // role-card-seeded-ux): a read-only single-line
-                            // brief (CSS ellipsis) plus a chevron disclosing
-                            // the full multi-line text. The disclosure is
-                            // CLIENT-LOCAL state (`row.personaOpen`, the row
-                            // collapse's twin) — never a settings write —
-                            // and the persona never changes through this
-                            // surface: rowsToRoles passes it through
-                            // unchanged. No revert affordance: the card no
-                            // longer offers the seed-persona revert (an
-                            // override arrives via an external config edit
-                            // and the brief honestly shows the effective
-                            // persona).
-                            <>
-                              <div className={css.personaBriefRow}>
-                                <span
-                                  className={personaBlank
-                                    ? `${css.personaBrief} ${css.personaBriefEmpty}`
-                                    : css.personaBrief}
-                                >
-                                  {personaBlank ? t('roles.persona.empty') : row.persona}
-                                </span>
-                                {!personaBlank && (
-                                  /* NOT a native <button> (QA finding e, plan
-                                   * role-card-seeded-ux fix wave 2): this row
-                                   * sits inside the form body's `disabled`
-                                   * fieldset (`<fieldset disabled={!writable}>`,
-                                   * the 主代理 form opening tag) and
-                                   * fieldset[disabled] propagation kills every descendant form
-                                   * control in real browsers — a button here
-                                   * renders but is implicitly dead exactly in
-                                   * the read-only view whose forced-open rows
-                                   * make the disclosure the only way to read
-                                   * the full persona (live-confirmed in
-                                   * Chromium). The disclosure toggles
-                                   * client-local `personaOpen` only, so the
-                                   * control is a span with role="button": the
-                                   * aria/tooltip/click contract is identical,
-                                   * and a non-form-control is immune to
-                                   * fieldset propagation while keeping the
-                                   * DOM in place. A span has no native button
-                                   * semantics, so Enter/Space activation is
-                                   * carried explicitly. */
-                                  <span
-                                    role="button"
-                                    tabIndex={0}
-                                    className={css.iconButton}
-                                    aria-expanded={row.personaOpen}
-                                    aria-label={t(row.personaOpen ? 'roles.persona.collapse' : 'roles.persona.expand')}
-                                    data-tip={t(row.personaOpen ? 'roles.persona.collapse' : 'roles.persona.expand')}
-                                    onClick={() => { updateRoleRow(index, { personaOpen: !row.personaOpen }) }}
-                                    onKeyDown={event => {
-                                      if (event.key === 'Enter' || event.key === ' ') {
-                                        event.preventDefault()
-                                        updateRoleRow(index, { personaOpen: !row.personaOpen })
-                                      }
-                                    }}
-                                  >
-                                    <IconChevronDownOutlineMedium className={row.personaOpen ? `${css.chevron} ${css.chevronOpen}` : css.chevron} />
-                                  </span>
-                                )}
-                              </div>
-                              {row.personaOpen && (
-                                <p className={css.personaFull}>{row.persona}</p>
-                              )}
-                            </>
-                          )}
-                        </div>
-                      </div>
-                      <div className={css.chainSelectors}>
-                        {row.selectors.map((selector, selectorIndex) => (
-                          <ChainSelectorEditor
-                            key={selectorIndex}
-                            selector={selector}
-                            catalog={catalogOf(state)}
-                            configuredProviders={state.configuredProviders}
-                            disabled={!writable}
-                            t={t}
-                            onChange={patch => { updateRoleSelector(index, selectorIndex, patch) }}
-                            onRemove={() => { removeRoleSelector(index, selectorIndex) }}
-                          />
-                        ))}
-                        {row.selectors.every(selector => selectorRowToRaw(selector) === '') && (
-                          // A role whose chain area is empty — no selector
-                          // rows, or only blank placeholder rows — has no
-                          // model config. Non-seeded: save is blocked
-                          // (roleChainRequired) and the inline hint explains
-                          // why (plan fallbacks-feedback-round T2),
-                          // unconditional while no row serializes to a usable
-                          // chain entry. Seeded: the chain is legitimately
-                          // empty by design (R4 — seeds never invent one), so
-                          // the hint turns non-blocking (seedChainOptional)
-                          // and the Save relax lets the seeded row ride a
-                          // section save (e.g. a sibling edit) instead of
-                          // blocking it (spec §9.6 / AC-3).
-                          <span className={css.hint}>
-                            {seed !== undefined
-                              ? t('roles.seedChainOptional', { id: row.id })
-                              : t('validation.roleChainRequired', { id: row.id })}
-                          </span>
-                        )}
-                      </div>
-                      <div className={css.ruleGrid}>
-                        <div className={css.ruleCell}>
-                          <span className={css.ruleCellLabel}>{t('roles.fallback')}</span>
-                          <select
-                            className={`${css.input} ${css.selectInput}`}
-                            value={row.fallback}
-                            aria-label={t('roles.fallback')}
-                            disabled={!writable}
-                            onChange={event => { updateRoleRow(index, { fallback: event.target.value as FallbackStrategy }) }}
-                          >
-                            <option value="inherit-root">{t('roles.fallback.inherit-root')}</option>
-                            <option value="none">{t('roles.fallback.none')}</option>
-                          </select>
-                        </div>
-                      </div>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        icon={<IconPlusOutlineMedium size={14} />}
-                        className={css.addButton}
-                        onClick={() => { addRoleSelector(index) }}
-                      >
-                        {t('roles.selector.add')}
-                      </Button>
-                      <div className={css.cardFoot}>
-                        <button
-                          type="button"
-                          className={`${css.iconButton} ${css.iconButtonDanger}`}
-                          data-tip={t('roles.remove')}
-                          aria-label={t('roles.remove')}
-                          onClick={() => { removeRole(index) }}
-                        >
-                          <IconTrashOutlineMedium />
-                        </button>
-                      </div>
-                      </>
-                      )}
-                    </div>
-                    )
-                  })}
-                </div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  icon={<IconPlusOutlineMedium size={14} />}
-                  className={css.addButton}
-                  onClick={addRole}
-                >
-                  {t('roles.add')}
-                </Button>
-              </div>
-
-              <div className={css.field} role="group" aria-labelledby="fallbacks-roles-rules">
-                <span className={css.fieldLabel}>
-                  <span id="fallbacks-roles-rules">{t('roles.rules')}</span>
-                  <InfoHint label={t('roles.rules.tooltip')} disabled={!writable} />
-                </span>
-                <span className={css.hint}>{t('roles.rules.hint')}</span>
-                {state.catalogStatus === 'error' && state.catalogError !== null && (
-                  <span className={css.hint}>{t('catalog.error', { message: state.catalogError })}</span>
-                )}
-                {state.catalogStatus === 'ready' && state.catalogError !== null && (
-                  <span className={css.hint}>{t('catalog.partial', { message: state.catalogError })}</span>
-                )}
-                {state.catalogStatus === 'ready' && (state.groups.length === 0 || state.configuredProviders.length === 0) && (
-                  <span className={css.hint}>{t('catalog.empty')}</span>
-                )}
-                <div className={css.list}>
-                  {ruleRows.map((row, index) => {
-                    const catalog = catalogOf(state)
-                    const providerRaw = selectionToRaw(row.provider)
-                    const group = catalog?.groups.find(entry => entry.id === providerRaw)
-                    const providerOutside = row.provider?.kind === 'outside'
-                    // Same read-back treatment as the chain selector rows: a catalog
-                    // provider that is not configured stays visible but unofferable.
-                    const providerUnconfigured = !providerOutside && providerRaw !== ''
-                      && (catalog?.providers.some(entry => entry.provider === providerRaw) ?? false)
-                      && !state.configuredProviders.some(entry => entry.provider === providerRaw)
-                    const modelOutside = row.model?.kind === 'outside'
-                    // roleOptions is hoisted once per render (qc3 F-3): the
-                    // offer set derives LIVE from the declared role rows —
-                    // a role added/removed on the same page is reflected
-                    // immediately (spec §8 同页联动). A role deleted under
-                    // a referencing rule leaves the row's value orphaned —
-                    // it stays visible as a synthetic "undeclared" option
-                    // so the dangling reference is honest, and save()'s
-                    // validation flags it. The offer set uses the same
-                    // canonical (trimmed) ids that rowsToRoles/rowsToRules
-                    // rebuild, so what the dropdown offers is exactly what
-                    // save-time validation accepts.
-                    const roleOutside = row.role !== '' && !roleOptions.includes(row.role)
-                    return (
-                    <div key={index} className={css.editorCard}>
-                      {/* PR #62 feedback: no origin cell — rules are
-                       * subagent-only; a persisted wire `origin` is ignored. */}
-                      <div className={css.ruleGrid}>
-                        <label className={css.ruleCell}>
-                          <span className={css.ruleCellLabel}>{t('roles.rule.provider')}</span>
-                          <select
-                            className={`${css.input} ${css.selectInput}`}
-                            value={providerRaw}
-                            onChange={event => {
-                              // Cascade (same D-3 rule as chains): a DIFFERENT provider
-                              // clears the model choice; re-picking the same provider
-                              // keeps the model (S-e).
-                              if (event.target.value === providerRaw) return
-                              updateRuleRow(index, { provider: classifyProvider(event.target.value, catalog), model: null })
-                            }}
-                          >
-                            <option value="">{t('roles.rule.provider.any')}</option>
-                            {state.configuredProviders.map(entry => (
-                              <option key={entry.provider} value={entry.provider}>{entry.displayName}</option>
-                            ))}
-                            {providerUnconfigured && (
-                              <option value={providerRaw}>{`${providerRaw}${t('catalog.unconfigured.short')}`}</option>
-                            )}
-                            {providerOutside && (
-                              <option value={providerRaw}>{`${providerRaw}${t('catalog.outside.short')}`}</option>
-                            )}
-                          </select>
-                        </label>
-                        <label className={css.ruleCell}>
-                          <span className={css.ruleCellLabel}>{t('roles.rule.model')}</span>
-                          <select
-                            className={`${css.input} ${css.selectInput}`}
-                            value={selectionToRaw(row.model)}
-                            onChange={event => {
-                              updateRuleRow(index, { model: classifyModel(providerRaw, event.target.value, catalog) })
-                            }}
-                          >
-                            <option value="">{t('roles.rule.model.any')}</option>
-                            {(group?.models ?? []).map(model => (
-                              <option key={model.id} value={model.id}>{model.name}</option>
-                            ))}
-                            {modelOutside && (
-                              <option value={selectionToRaw(row.model)}>{`${selectionToRaw(row.model)}${t('catalog.outside.short')}`}</option>
-                            )}
-                          </select>
-                        </label>
-                        <label className={css.ruleCell}>
-                          <span className={css.ruleCellLabel}>{t('roles.rule.role')}</span>
-                          <select
-                            className={`${css.input} ${css.selectInput}`}
-                            value={row.role}
-                            disabled={!writable}
-                            onChange={event => { updateRuleRow(index, { role: event.target.value }) }}
-                          >
-                            <option value="">{t('roles.rule.roleSelectPlaceholder')}</option>
-                            {roleOptions.map(id => (
-                              <option key={id} value={id}>{id === INHERIT_ROLE_ID ? t('roles.rule.role.inherit') : id}</option>
-                            ))}
-                            {roleOutside && (
-                              <option value={row.role}>{`${row.role}${t('roles.rule.roleUndeclared.short')}`}</option>
-                            )}
-                          </select>
-                        </label>
-                      </div>
-                      {(providerOutside || modelOutside) && (
-                        <span className={css.hint}>
-                          {t('catalog.outside.hint')}
-                          <InfoHint label={t('catalog.outside.tooltip')} disabled={!writable} />
-                        </span>
-                      )}
-                      {row.role === '' && (
-                        // qc3 F-4: an empty role row would be dropped by
-                        // rowsToRules on assembly and vanish on save — the
-                        // inline hint explains why save is blocked.
-                        <span className={css.hint}>{t('validation.ruleRoleRequired')}</span>
-                      )}
-                      <div className={css.cardFoot}>
-                        <button
-                          type="button"
-                          className={`${css.iconButton} ${css.iconButtonDanger}`}
-                          data-tip={t('roles.removeRule')}
-                          aria-label={t('roles.removeRule')}
-                          onClick={() => {
-                            setRuleRows(rows => rows.filter((_, rowIndex) => rowIndex !== index))
-                          }}
-                        >
-                          <IconTrashOutlineMedium />
-                        </button>
-                      </div>
-                    </div>
-                    )
-                  })}
-                </div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  icon={<IconPlusOutlineMedium size={14} />}
-                  className={css.addButton}
-                  onClick={() => {
-                    setRuleRows(rows => [...rows, { provider: null, model: null, role: '' }])
-                  }}
-                >
-                  {t('roles.addRule')}
-                </Button>
-              </div>
-              <div className={css.field} role="group" aria-labelledby="fallbacks-advanced">
-                {/* The toggle is explicitly `disabled` in a read-only view
-                    (`!writable` — the same value the wrapping fieldset uses,
-                    made explicit so the inert state survives jsdom, which
-                    does not propagate fieldset[disabled] to buttons); the
-                    click gate below covers the writable-only toggle;
-                    aria-expanded stays derived (forced true in the read-only
-                    view). The group's accessible name rides a STATIC span id
-                    (not the button's flipping aria-label): `fallbacks-advanced`
-                    names the inner text span, so the group name is always
-                    "Advanced options"; aria-controls is conditional because
-                    the body unmounts while collapsed (F-006). */}
-                <button
-                  type="button"
-                  className={css.sectionToggle}
-                  disabled={!writable}
-                  aria-expanded={advancedVisible}
-                  aria-controls={advancedVisible ? 'fallbacks-advanced-body' : undefined}
-                  aria-label={t(advancedVisible ? 'advanced.collapse' : 'advanced.expand')}
-                  onClick={() => { if (writable) setAdvancedOpen(!advancedOpen) }}
-                >
-                  <span id="fallbacks-advanced" className={css.sectionToggleText}>{t('advanced.label')}</span>
-                  <IconChevronDownOutlineMedium className={advancedVisible ? `${css.chevron} ${css.chevronOpen}` : css.chevron} />
-                </button>
-                {advancedVisible && (
-                  <div id="fallbacks-advanced-body">
-                    {/* The roleAutoMatch toggle (plan fallbacks-settings-visibility Task 3): a
-                     * row-level preference in the advanced section, default on (the
-                     * config-model default). It ALWAYS renders (AC-7 re-scope, PM
-                     * decision 2026-08-17 Option A): the gateway composition always
-                     * resolves the schema default `true` for the key — even for a
-                     * legacy config that never declared it — so there is no
-                     * client-side key-presence signal to hide on. The toggle reads
-                     * and writes the scalar → the existing draft → config path via
-                     * `assembleConfig`; a legacy config's first save therefore
-                     * persists `roleAutoMatch: true` (semantically identical to the
-                     * default). */}
-                    <div className={css.checkboxRow}>
-                      <div className={css.checkLabel}>
-                        <span className={css.checkLabelTitle}>
-                          <label htmlFor="fallbacks-role-automatch">{t('roleAutoMatch.label')}</label>
-                          <InfoHint label={t('roleAutoMatch.tooltip')} disabled={!writable} />
-                        </span>
-                        <span className={css.checkLabelDesc}>{t('roleAutoMatch.hint')}</span>
-                      </div>
-                      <input
-                        id="fallbacks-role-automatch"
-                        type="checkbox"
-                        className={css.checkbox}
-                        checked={scalars.roleAutoMatch}
-                        disabled={!writable}
-                        onChange={event => { updateScalars(draft => { draft.roleAutoMatch = event.target.checked }) }}
-                      />
-                    </div>
-                    <div className={css.field} role="group" aria-labelledby="fallbacks-trigger-codes">
-                      <span className={css.fieldLabel}>
-                        <span id="fallbacks-trigger-codes">{t('triggerCodes.label')}</span>
-                        <InfoHint label={t('triggerCodes.tooltip')} disabled={!writable} />
-                      </span>
-                      <span className={css.hint}>{t('triggerCodes.hint')}</span>
-                      {KNOWN_TRIGGER_CODES.map(code => (
-                        <label key={code} className={css.optionRow}>
-                          <input
-                            type="checkbox"
-                            checked={scalars.triggerCodes.includes(code)}
-                            onChange={event => {
-                              updateScalars(draft => { draft.triggerCodes = withTriggerCode(draft.triggerCodes, code, event.target.checked) })
-                            }}
-                          />
-                          {t(TRIGGER_CODE_LABELS[code])}
-                        </label>
-                      ))}
-                      {unknownCodes.length > 0 && (
-                        <span className={css.hint}>{t('triggerCodes.extra', { codes: unknownCodes.join(', ') })}</span>
-                      )}
-                    </div>
-
-                    <div className={css.field} role="group" aria-labelledby="fallbacks-revert-policy">
-                      <span className={css.fieldLabel}>
-                        <span id="fallbacks-revert-policy">{t('revertPolicy.label')}</span>
-                        <InfoHint label={t('revertPolicy.tooltip')} disabled={!writable} />
-                      </span>
-                      <span className={css.hint}>{t('revertPolicy.hint')}</span>
-                      {(['cooldown-expiry', 'never'] as const).map(policy => (
-                        <label key={policy} className={css.optionRow}>
-                          <input
-                            type="radio"
-                            name="fallbacks-revert-policy"
-                            checked={scalars.revertPolicy === policy}
-                            onChange={() => { updateScalars(draft => { draft.revertPolicy = policy }) }}
-                          />
-                          {t(`revertPolicy.${policy}`)}
-                        </label>
-                      ))}
-                    </div>
-
-                    {/* The three short numeric fields sit side by side, each keeping a
-                     * full-width field of its own grid column. */}
-                    <div className={css.numberFields}>
-                      <div className={css.field}>
-                        <span className={css.fieldLabel}>
-                          <label htmlFor="fallbacks-cooldown-ms">{t('cooldownMs.label')}</label>
-                          <InfoHint label={t('cooldownMs.tooltip')} disabled={!writable} />
-                          <span className={css.defaultNote}>{t('defaults.prefix')}: {state.config.cooldownMs}</span>
-                        </span>
-                        <input
-                          id="fallbacks-cooldown-ms"
-                          className={css.input}
-                          type="number"
-                          min={0}
-                          value={String(scalars.cooldownMs)}
-                          disabled={!writable}
-                          onChange={event => { updateScalars(draft => { draft.cooldownMs = parseCount(event.target.value) }) }}
-                        />
-                        <span className={css.hint}>{t('cooldownMs.hint')}</span>
-                      </div>
-
-                      <div className={css.field}>
-                        <span className={css.fieldLabel}>
-                          <label htmlFor="fallbacks-max-switches">{t('maxSwitchesPerStep.label')}</label>
-                          <InfoHint label={t('maxSwitchesPerStep.tooltip')} disabled={!writable} />
-                          <span className={css.defaultNote}>{t('defaults.prefix')}: {state.config.maxSwitchesPerStep}</span>
-                        </span>
-                        <input
-                          id="fallbacks-max-switches"
-                          className={css.input}
-                          type="number"
-                          min={0}
-                          value={String(scalars.maxSwitchesPerStep)}
-                          disabled={!writable}
-                          onChange={event => { updateScalars(draft => { draft.maxSwitchesPerStep = parseCount(event.target.value) }) }}
-                        />
-                        <span className={css.hint}>{t('maxSwitchesPerStep.hint')}</span>
-                      </div>
-
-                      <div className={css.field}>
-                        <span className={css.fieldLabel}>
-                          <label htmlFor="fallbacks-always-cap">{t('alwaysModeRetryCap.label')}</label>
-                          <InfoHint label={t('alwaysModeRetryCap.tooltip')} disabled={!writable} />
-                          <span className={css.defaultNote}>{t('defaults.prefix')}: {state.config.alwaysModeRetryCap}</span>
-                        </span>
-                        <input
-                          id="fallbacks-always-cap"
-                          className={css.input}
-                          type="number"
-                          min={0}
-                          value={String(scalars.alwaysModeRetryCap)}
-                          disabled={!writable}
-                          onChange={event => { updateScalars(draft => { draft.alwaysModeRetryCap = parseCount(event.target.value) }) }}
-                        />
-                        <span className={css.hint}>{t('alwaysModeRetryCap.hint')}</span>
-                      </div>
-                    </div>
-                    {/* PR #62 UX round 2: the advanced section's Save/Discard
-                     * live INSIDE the expanded body (not next to the collapsed
-                     * toggle). PR #62 UX round 3: they gate on the advanced
-                     * section's own dirty term only; the global Reset is gone
-                     * from the card. This section's validation / save errors
-                     * render right above the actions. */}
-                    {validationErrors.advanced.length > 0 && (
-                      <p className={css.error} role="alert">
-                        {`${t('validation.blocked')}${validationErrors.advanced.join('; ')}`}
-                      </p>
-                    )}
-                    {lastSaveSection === 'advanced' && state.status === 'error' && state.error !== null && (
-                      <p className={css.error} role="alert">{t('error.generic', { message: state.error })}</p>
-                    )}
-                    <div className={css.sectionActions}>
-                      <button
-                        type="button"
-                        className={`${css.secondaryButton} ${css.sectionAction}`}
-                        disabled={!advancedDirty || saving}
-                        onClick={() => { discardSection('advanced') }}
-                      >
-                        {t('discard')}
-                      </button>
-                      <button
-                        type="button"
-                        className={`${css.primaryButton} ${css.sectionAction}`}
-                        disabled={!writable || saving || !advancedDirty}
-                        onClick={() => { save('advanced') }}
-                      >
-                        {saving ? t('save.saving') : t('save')}
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </fieldset>
-            )}
-          </div>
-
-          {/* AC-2 read-only status, compact and folded into the card body
-           * (above the footer — the page-bottom block is gone): only the most
-           * recent switch (D-5 — read through the store's `sessions.history`
-           * face). The effective-model line (D-6) and the selectionNote
-           * degradation line moved out of the card (compass AC-2): the
-           * selectionNote degradation is re-homed to docs/verification.md
-           * §4.7, while the D-6 trim itself is documented there at §4.3
-           * item 4 (the derived-value helper stays as a store export — D-6
-           * contract retention). The verbose config-summary dump is gone;
-           * errors/empty still render, compact. */}
-          <div className={css.statusBlock}>
-            <span className={css.statusTitle}>{t('status.title')}</span>
-            <p className={css.statusLine} role={state.switchesStatus === 'error' ? 'alert' : undefined}>
-              <span className={css.statusLineLabel}>{t('status.switches.label')}</span>
-              {switchesLine}
-            </p>
-          </div>
-
         </div>
       )}
+      {degraded && (
+        // Gateway channel unreachable (KD-G5 — the fallbacks config rides
+        // the plugin gateway, not describe): an informational notice — the
+        // card stays the usable skeleton (last accepted config, or the
+        // defaults on a first load) and saves are attempted; failures land
+        // in the error notice above.
+        <p className={css.notice} role="status">{t('unavailable')}</p>
+      )}
+      {state.status === 'ready' && !state.writable && (
+        // The host describe said read-only. Gated on `ready`: the initial
+        // idle/loading window has `writable:false` and must not flash a
+        // read-only notice on a card that simply has not loaded yet
+        // (upstream/advisor read the notice from a settled store).
+        <p className={css.readOnly} role="status">{t('readOnly')}</p>
+      )}
 
-    </li>
+      {/* The form body is one fieldset without a legend: the section
+       * headings below are the group markers. `disabled` propagates to
+       * every control inside — read-only/loading describes keep the whole
+       * body inert. The multi-control groups (triggerCodes / revertPolicy /
+       * chains / roles) keep the group labels via role="group" +
+       * aria-labelledby. `min-width: 0` is the persona-width clamp (see the
+       * css module). */}
+      <fieldset className={css.fieldset} disabled={!writable}>
+        {/* 主代理 (main agent) section heading groups 分时槽设置 / 默认降级链
+         * / 默认模型 below. Flat and non-collapsible (T3) — no actions live
+         * beside it anymore (ONE footer Save); this section's validation
+         * violations render directly under it. */}
+        <div className={css.sectionHeading} id="fallbacks-main-agent">
+          <span className={css.sectionHeadingText}>{t('mainAgent.label')}</span>
+        </div>
+        {liveErrors.main.length > 0 && (
+          <p className={css.error} role="alert">
+            {`${t('validation.blocked')}${liveErrors.main.join('; ')}`}
+          </p>
+        )}
+        {/* 分时槽设置 (plan fallbacks-timeslots Task 3; PR #62 feedback
+         * round): the extra-row list — first matching row wins, the all-day
+         * (默认降级链) row is always last. Preset rows freeze their windows
+         * (read-only summary; models-only edits); custom rows edit
+         * start/end/days + models. Rows can be removed, reordered with the
+         * buttons, or DRAG-reordered. No `timeSlots.enabled` master switch
+         * — adding a row IS the opt-in (spec Settings UX). */}
+        <div className={css.field} role="group" aria-labelledby="fallbacks-time-slots">
+          <span className={css.fieldLabel}>
+            <span id="fallbacks-time-slots">{t('timeSlots.label')}</span>
+            <InfoHint label={t('timeSlots.tooltip')} disabled={!writable} />
+          </span>
+          <span className={css.hint}>{t('timeSlots.hint')}</span>
+          <div className={css.list}>
+            {timeSlotRows.map((row, index) => {
+              const invalidWindow = invalidSlotRows.has(index)
+              const chainEmpty = row.selectors.every(selector => selectorRowToRaw(selector) === '')
+              const firstModel = row.selectors.map(selectorRowToRaw).find(entry => entry !== '')
+              // PR #62 UX round 4 part C: slot rows default COLLAPSED
+              // (same rule as role cards) but a read-only view FORCES
+              // them open — the collapse toggle is disabled when
+              // `!writable`, so without the forced-open term the slot
+              // configs would be unreachable in read-only (mirror of
+              // `roleExpanded` below). CONTENT disclosure — kept in the
+              // flat card (T3).
+              const slotExpanded = !row.collapsed || !writable
+              return (
+              <div
+                key={index}
+                className={`${css.editorCard} ${draggedSlotIndex === index ? css.slotCardDragging : ''} ${overSlotIndex === index && draggedSlotIndex !== null && draggedSlotIndex !== index ? css.slotCardOver : ''}`}
+                // PR #62 UX round 2: the CARD is only the drop target —
+                // dragging starts from the dedicated handle below, so a
+                // click on the collapse header never starts a drag.
+                onDragOver={(event) => {
+                  if (draggedSlotIndex === null) return
+                  event.preventDefault()
+                  if (overSlotIndex !== index) setOverSlotIndex(index)
+                }}
+                onDrop={(event) => {
+                  event.preventDefault()
+                  const from = draggedSlotIndex
+                  setDraggedSlotIndex(null)
+                  setOverSlotIndex(null)
+                  if (from !== null && from !== index) reorderTimeSlotRow(from, index)
+                }}
+              >
+                {/* Collapse header (PR #62 feedback round; UX round 2):
+                 * the WHOLE first row is the toggle (one header
+                 * control — chevron + name + first model), with a
+                 * SEPARATE drag handle so click ≠ drag. Collapsed rows
+                 * show the row name + its first model only, and stay
+                 * drag-reorderable (the handle works in both states). */}
+                <div className={css.collapseRow}>
+                  <button
+                    type="button"
+                    className={css.collapseToggle}
+                    aria-expanded={slotExpanded}
+                    aria-label={t(slotExpanded ? 'timeSlots.collapse' : 'timeSlots.expand')}
+                    disabled={!writable}
+                    onClick={() => { updateTimeSlotRow(index, { collapsed: !row.collapsed }) }}
+                  >
+                    <ChevronDownIcon className={slotExpanded ? `${css.chevron} ${css.chevronOpen}` : css.chevron} />
+                    <span className={css.collapseTitle}>
+                      {row.kind === 'preset'
+                        ? t(`timeSlots.preset.${row.preset}.label` as FallbacksKey)
+                        : (row.name !== '' ? row.name : `custom ${row.start}-${row.end}`)}
+                    </span>
+                    {/* PR #62 UX round 4: cost/multiplier tags on the
+                     * peak presets (red 高消耗 + yellow x2/x3) and the
+                     * 激活 tag on the currently-active row (resolved by
+                     * index — see `activeSlotIndex`). The chips sit
+                     * AFTER the ellipsizing title span (never inside it
+                     * — an in-title chip would be clipped by the
+                     * title's text-overflow) and before the first-model
+                     * meta, in the same title flex row. */}
+                    {row.kind === 'preset' && (row.preset === 'liang-peak' || row.preset === 'glm-peak') && (
+                      <>
+                        <span className={`${css.slotTag} ${css.slotTagHighCost}`}>{t('timeSlots.preset.highCost')}</span>
+                        <span className={`${css.slotTag} ${css.slotTagMultiplier}`}>
+                          {t('timeSlots.preset.multiplier', { n: row.preset === 'liang-peak' ? '2' : '3' })}
+                        </span>
+                      </>
+                    )}
+                    {activeSlotIndex === index && (
+                      <span className={`${css.slotTag} ${css.slotTagActive}`}>{t('timeSlots.active')}</span>
+                    )}
+                    {firstModel !== undefined && (
+                      <span className={css.collapseMeta}>{firstModel}</span>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    className={css.dragHandle}
+                    draggable={writable}
+                    data-tip={t('timeSlots.drag')}
+                    aria-label={t('timeSlots.drag')}
+                    disabled={!writable}
+                    onDragStart={() => {
+                      if (!writable) return
+                      setDraggedSlotIndex(index)
+                      setOverSlotIndex(index)
+                    }}
+                    onDragEnd={() => { setDraggedSlotIndex(null); setOverSlotIndex(null) }}
+                  >
+                    <GripIcon />
+                  </button>
+                </div>
+                {slotExpanded && (
+                <>
+                {row.kind === 'preset' ? (
+                  <>
+                    <div className={css.ruleGrid}>
+                      <div className={css.ruleCell}>
+                        <span className={css.ruleCellLabel}>{t('timeSlots.preset.name')}</span>
+                        <span className={css.slotPresetName}>
+                          {t(`timeSlots.preset.${row.preset}.label` as FallbacksKey)}
+                        </span>
+                      </div>
+                      <div className={css.ruleCell}>
+                        <span className={css.ruleCellLabel}>{t('timeSlots.preset.windowLabel')}</span>
+                        <span className={css.hint}>
+                          {t(`timeSlots.preset.${row.preset}.window` as FallbacksKey)}
+                        </span>
+                      </div>
+                    </div>
+                    <span className={css.hint}>{t('timeSlots.preset.chainsOnly')}</span>
+                    {(row.preset === 'glm-peak' || row.preset === 'glm-valley') && (
+                      // PR #62 feedback: GLM presets route to
+                      // zai-coding-cn models — the caveat rides both
+                      // GLM preset rows.
+                      <span className={css.hint}>{t('timeSlots.preset.glm.note')}</span>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    {/* Custom rows carry an editable display name (PR
+                     * #62 feedback round — the collapsed header shows
+                     * it). */}
+                    <div className={css.field}>
+                      <span className={css.ruleCellLabel}>{t('timeSlots.name')}</span>
+                      <input
+                        className={css.input}
+                        value={row.name}
+                        placeholder={t('timeSlots.name')}
+                        aria-label={t('timeSlots.name')}
+                        disabled={!writable}
+                        onChange={event => { updateTimeSlotRow(index, { name: event.target.value }) }}
+                      />
+                    </div>
+                    <div className={css.field}>
+                      <span className={css.ruleCellLabel}>{t('timeSlots.tz.label')}</span>
+                      <span className={css.hint} aria-label={t('timeSlots.tz.label')}>
+                        {tzDisplayLabel(presetsPresent ? 'Asia/Shanghai' : hostTimeZone())}
+                      </span>
+                    </div>
+                    <div className={css.ruleGrid}>
+                      <label className={css.ruleCell}>
+                        <span className={css.ruleCellLabel}>{t('timeSlots.start')}</span>
+                        <input
+                          className={`${css.input} ${invalidWindow ? css.inputInvalid : ''}`}
+                          value={row.start}
+                          placeholder="09:00"
+                          aria-label={t('timeSlots.start')}
+                          disabled={!writable}
+                          onChange={event => { updateTimeSlotRow(index, { start: event.target.value }) }}
+                        />
+                      </label>
+                      <label className={css.ruleCell}>
+                        <span className={css.ruleCellLabel}>{t('timeSlots.end')}</span>
+                        <input
+                          className={`${css.input} ${invalidWindow ? css.inputInvalid : ''}`}
+                          value={row.end}
+                          placeholder="18:00"
+                          aria-label={t('timeSlots.end')}
+                          disabled={!writable}
+                          onChange={event => { updateTimeSlotRow(index, { end: event.target.value }) }}
+                        />
+                      </label>
+                    </div>
+                    <div className={css.field}>
+                      <span className={css.ruleCellLabel}>{t('timeSlots.days')}</span>
+                      <div className={css.dayRow}>
+                        {SLOT_WEEKDAYS.map((day, dayIndex) => (
+                          <label key={day} className={css.dayCell}>
+                            <input
+                              type="checkbox"
+                              checked={row.days.includes(dayIndex)}
+                              disabled={!writable}
+                              onChange={() => {
+                                updateTimeSlotRow(index, {
+                                  days: row.days.includes(dayIndex)
+                                    ? row.days.filter(existing => existing !== dayIndex)
+                                    : [...row.days, dayIndex],
+                                })
+                              }}
+                            />
+                            {t(`timeSlots.day.${day}` as FallbacksKey)}
+                          </label>
+                        ))}
+                      </div>
+                      <span className={css.hint}>{t('timeSlots.days.hint')}</span>
+                    </div>
+                    {/* The window-format hint surfaces while a custom
+                     * row is partially filled (a fresh blank row stays
+                     * quiet — the chain hint below already marks it). */}
+                    {(row.start !== '' || row.end !== '')
+                      && !(HHMM_RE.test(row.start) && HHMM_RE.test(row.end)) && (
+                      <span className={css.hint}>{t('validation.slotWindow')}</span>
+                    )}
+                  </>
+                )}
+                {chainEmpty && (
+                  <span className={css.hint}>{t('validation.slotChainRequired')}</span>
+                )}
+                <div className={css.chainSelectors}>
+                  {row.selectors.map((selector, selectorIndex) => (
+                    <ChainSelectorEditor
+                      key={selectorIndex}
+                      selector={selector}
+                      catalog={catalogOf(state)}
+                      configuredProviders={state.configuredProviders}
+                      disabled={!writable}
+                      t={t}
+                      onChange={patch => { updateTimeSlotSelector(index, selectorIndex, patch) }}
+                      onRemove={() => { removeTimeSlotSelector(index, selectorIndex) }}
+                    />
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  className={`${css.outlineButton} ${css.addButton}`}
+                  disabled={!writable}
+                  onClick={() => { addTimeSlotSelector(index) }}
+                >
+                  <PlusIcon />
+                  {t('timeSlots.selector.add')}
+                </button>
+                <div className={css.cardFoot}>
+                  <div className={css.rowActions}>
+                    <button
+                      type="button"
+                      className={css.iconButton}
+                      data-tip={t('timeSlots.moveUp')}
+                      aria-label={t('timeSlots.moveUp')}
+                      disabled={!writable || index === 0}
+                      onClick={() => { moveTimeSlotRow(index, -1) }}
+                    >
+                      <ChevronDownIcon className={css.chevronFlip} />
+                    </button>
+                    <button
+                      type="button"
+                      className={css.iconButton}
+                      data-tip={t('timeSlots.moveDown')}
+                      aria-label={t('timeSlots.moveDown')}
+                      disabled={!writable || index === timeSlotRows.length - 1}
+                      onClick={() => { moveTimeSlotRow(index, 1) }}
+                    >
+                      <ChevronDownIcon />
+                    </button>
+                    <button
+                      type="button"
+                      className={`${css.iconButton} ${css.iconButtonDanger}`}
+                      data-tip={t('timeSlots.remove')}
+                      aria-label={t('timeSlots.remove')}
+                      onClick={() => { removeTimeSlotRow(index) }}
+                    >
+                      <TrashIcon />
+                    </button>
+                  </div>
+                </div>
+                </>
+                )}
+              </div>
+              )
+            })}
+          </div>
+          <div className={css.slotAddRow}>
+            <select
+              className={`${css.input} ${css.selectInput}`}
+              value={presetToAdd}
+              aria-label={t('timeSlots.presetPlaceholder')}
+              disabled={!writable}
+              onChange={event => { setPresetToAdd(event.target.value) }}
+            >
+              <option value="">{t('timeSlots.presetPlaceholder')}</option>
+              {SLOT_PRESET_IDS
+                .filter(id => !timeSlotRows.some(row => row.kind === 'preset' && row.preset === id))
+                .map(id => {
+                  // PR #62 UX round 4 part B: the GLM presets are
+                  // unselectable until zai-coding-cn is configured —
+                  // the options stay VISIBLE (disabled, never removed)
+                  // so the user sees why, with the reason suffix.
+                  const glmUnconfigured = !glmConfigured && (id === 'glm-peak' || id === 'glm-valley')
+                  return (
+                    <option key={id} value={id} disabled={glmUnconfigured}>
+                      {t(`timeSlots.preset.${id}.label` as FallbacksKey)}
+                      {glmUnconfigured ? t('timeSlots.preset.glm.unconfigured') : null}
+                    </option>
+                  )
+                })}
+            </select>
+            <button
+              type="button"
+              className={`${css.outlineButton} ${css.addButton}`}
+              disabled={!writable || presetToAdd === ''}
+              onClick={addPresetSlotRow}
+            >
+              <PlusIcon />
+              {t('timeSlots.addPreset')}
+            </button>
+            <button
+              type="button"
+              className={`${css.outlineButton} ${css.addButton}`}
+              disabled={!writable}
+              onClick={addCustomSlotRow}
+            >
+              <PlusIcon />
+              {t('timeSlots.addCustom')}
+            </button>
+          </div>
+        </div>
+
+        {/* 默认降级链 (PR #62 feedback round): the all-day fallback
+         * chain as a configurable selector list (add/remove) — the
+         * Flash|Pro panel lives in the separate 默认模型 block below.
+         * The preemption hints are removed. */}
+        <div className={css.field} role="group" aria-labelledby="fallbacks-root-chain">
+          <span className={css.fieldLabel}>
+            <span id="fallbacks-root-chain">{t('rootChain.label')}</span>
+            <InfoHint label={t('rootChain.tooltip')} disabled={!writable} />
+          </span>
+          {/* Catalog state is an enrichment of the dropdowns, never a blocker:
+           * a failed read (or an empty directory) only adds a hint line and
+           * leaves every other field editable and saveable (spec §2.3 R-3a). */}
+          {state.catalogStatus === 'error' && state.catalogError !== null && (
+            <span className={css.hint}>{t('catalog.error', { message: state.catalogError })}</span>
+          )}
+          {state.catalogStatus === 'ready' && state.catalogError !== null && (
+            <span className={css.hint}>{t('catalog.partial', { message: state.catalogError })}</span>
+          )}
+          {state.catalogStatus === 'ready' && (state.groups.length === 0 || state.configuredProviders.length === 0) && (
+            <span className={css.hint}>{t('catalog.empty')}</span>
+          )}
+          <div className={css.list}>
+            <div className={css.editorCard}>
+              <div className={css.chainSelectors}>
+                {allDayChainRow.selectors.map((selector, selectorIndex) => (
+                  <ChainSelectorEditor
+                    key={selectorIndex}
+                    selector={selector}
+                    catalog={catalogOf(state)}
+                    configuredProviders={state.configuredProviders}
+                    disabled={!writable}
+                    t={t}
+                    onChange={patch => { updateAllDayChainSelector(selectorIndex, patch) }}
+                    onRemove={() => { removeAllDayChainSelector(selectorIndex) }}
+                  />
+                ))}
+              </div>
+              <button
+                type="button"
+                className={`${css.outlineButton} ${css.addButton}`}
+                disabled={!writable}
+                onClick={addAllDayChainSelector}
+              >
+                <PlusIcon />
+                {t('timeSlots.selector.add')}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* 默认模型: official Flash | Pro 二选一 — the LAST fallback
+         * of the all-day chain (UI order = walk order). Required: an
+         * empty or legacy tail (incl. the retired `deepseek-v4-flash`
+         * and the never-served legacy `deepseek-official/deepseek-pro`)
+         * reads back unselected plus the nonconforming notice; save
+         * validation blocks. Radios derive from OFFICIAL_ALL_DAY_IDS
+         * (the shared legal set in src/time-slots.ts) — both official
+         * tails are selectable; Pro is served by 0.1.7-rc.2's catalog
+         * as `deepseek-official/deepseek-v4-pro` (re-verified at rc.2;
+         * rc.1 re-introduced the id). */}
+        <div className={css.field} role="group" aria-labelledby="fallbacks-default-model">
+          <span className={css.fieldLabel}>
+            <span id="fallbacks-default-model">{t('defaultModel.label')}</span>
+          </span>
+          <span className={css.hint}>{t('allDay.hint')}</span>
+          <div className={css.list}>
+            <div className={css.editorCard}>
+              {OFFICIAL_ALL_DAY_IDS.map((id, index) => (
+                <label key={id} className={css.optionRow}>
+                  <input
+                    type="radio"
+                    name="fallbacks-all-day"
+                    checked={allDayModel === id}
+                    disabled={!writable}
+                    onChange={() => { setAllDayModel(id) }}
+                  />
+                  {t(ALL_DAY_LABEL_KEYS[index])}
+                </label>
+              ))}
+              {allDayModel === '' && (
+                <span className={css.hint}>{t('allDay.nonconforming')}</span>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* 子代理 (subagents) section heading groups the roles list + the
+         * role rules below. Flat and non-collapsible (T3). */}
+        <div className={css.sectionHeading} id="fallbacks-subagents">
+          <span className={css.sectionHeadingText}>{t('subagents.label')}</span>
+        </div>
+        {liveErrors.sub.length > 0 && (
+          <p className={css.error} role="alert">
+            {`${t('validation.blocked')}${liveErrors.sub.join('; ')}`}
+          </p>
+        )}
+        {/* Spec D4 / T5: read-only host-policy status. Hidden when the
+         * additive field is absent or disabled — never an active
+         * allowlist. Unprovable is its own state (T3 contract), not
+         * an empty-intersection warning. Roles/rules editors below
+         * stay untouched. */}
+        {state.subagentPolicy?.state === 'enabled' && (
+          <div className={css.policyStatus} role="status">
+            <span className={css.policyStatusLabel}>{t('subagents.policy.label')}</span>
+            <span className={css.policyStatusLine}>
+              {`${t('subagents.policy.allowlist')}: ${state.subagentPolicy.allowedModels
+                .map((route) => `${route.provider}/${route.model}`)
+                .join(', ')}`}
+            </span>
+            {state.subagentPolicy.head !== undefined && (
+              <span className={css.policyStatusLine}>
+                {`${t('subagents.policy.head')}: ${state.subagentPolicy.head.route.provider}/${state.subagentPolicy.head.route.model} (${t(
+                  state.subagentPolicy.head.source === 'authorized'
+                    ? 'subagents.policy.source.authorized'
+                    : 'subagents.policy.source.injected',
+                )})`}
+              </span>
+            )}
+            {state.subagentPolicy.blockedAttempt !== undefined && (
+              <span className={css.policyStatusWarn} role="alert">
+                {t('subagents.policy.blocked')}
+              </span>
+            )}
+          </div>
+        )}
+        {state.subagentPolicy?.state === 'unprovable' && (
+          <div className={css.policyStatus} role="status">
+            <span className={css.policyStatusWarn} role="alert">
+              {t('subagents.policy.unprovable')}
+            </span>
+          </div>
+        )}
+        <div className={css.field} role="group" aria-labelledby="fallbacks-roles-list">
+          <span className={css.fieldLabel}>
+            <span id="fallbacks-roles-list">{t('roles.list.label')}</span>
+            <InfoHint label={t('roles.list.tooltip')} disabled={!writable} />
+          </span>
+          <span className={css.hint}>{t('roles.list.hint')}</span>
+          {/* Block 2a (spec §8): declared role entities — identity text
+           * fields, the role's own chain selectors, the append
+           * strategy, removal. prompt/permissions are schema-reserved
+           * and never rendered this round. The id input carries the
+           * format hint inline; an invalid id marks the row with the
+           * red border (aria-invalid, live). Seeded rows (R2 —
+           * incl. preset-materialized rows, which surface as seeded
+           * rows) present as reference material (plan
+           * role-card-seeded-ux): no id input (the collapse title
+           * carries the id), a read-only persona brief instead of the
+           * textarea, no revert button; the chain/fallback editors and
+           * the remove action stay operator-owned (R4). A rename can
+           * only arrive via an external config edit; a row whose id no
+           * longer matches the wire's seed declaration renders as an
+           * ordinary row. */}
+          <div className={css.list}>
+            {roleRows.map((row, index) => {
+              const invalid = invalidRoleIds.has(row.id.trim())
+              // undefined = not a currently seeded row (ordinary config
+              // row: full editing UX; R2 — dropping a declaration keeps
+              // the row). A seeded row (incl. preset-materialized ones)
+              // is identity+persona read-only: the id hides (the title
+              // carries it) and the persona brief replaces the editor.
+              // Renames arrive only via external config edits; a row
+              // whose id no longer matches the wire's seed declaration
+              // renders as an ordinary row again.
+              const seed = seedInfo.get(row.id.trim())
+              // The provenance badge rides EVERY collapse title (plan
+              // role-card-seeded-ux): the declaring set's name
+              // verbatim, the reserved labels localized (bundled /
+              // external / User). null (a seeded entry without a
+              // wire `source` — gateway version skew) renders no
+              // badge: the degradation path, never an error.
+              const seedBadge = seedBadgeLabel(seed, t)
+              // The brief's blank verdict: a whitespace-only persona is
+              // the same `(not set)` empty state as an empty one — no
+              // brief text and NO disclosure chevron (there is nothing
+              // to disclose).
+              const personaBlank = row.persona.trim() === ''
+              // Collapse summary (PR #62 feedback round): the first
+              // chain model, or the raw strategy token when the chain
+              // is empty (inherit-root = the role rides the root
+              // chain).
+              const roleFirstModel = row.selectors.map(selectorRowToRaw).find(entry => entry !== '')
+              const roleSummary = roleFirstModel ?? row.fallback
+              // PR #62 UX round 2: role cards default collapsed, but a
+              // read-only view FORCES them open (same rule as the slot
+              // rows) — the collapse toggle is disabled when
+              // `!writable`, so without the forced-open term the
+              // role configs would be unreachable in read-only.
+              const roleExpanded = !row.collapsed || !writable
+              return (
+              <div key={index} className={css.editorCard}>
+                {/* Collapse header (PR #62 UX round 2): the WHOLE first
+                 * row is the toggle — one header control (chevron + id
+                 * + summary) — so a click anywhere on the row
+                 * expands/collapses. Collapsed roles show id + first
+                 * chain model (or inherit-root / none). CONTENT
+                 * disclosure — kept in the flat card (T3). */}
+                <div className={css.collapseRow}>
+                  <button
+                    type="button"
+                    className={css.collapseToggle}
+                    aria-expanded={roleExpanded}
+                    aria-label={t(roleExpanded ? 'roles.collapse' : 'roles.expand')}
+                    disabled={!writable}
+                    onClick={() => { updateRoleRow(index, { collapsed: !row.collapsed }) }}
+                  >
+                    <ChevronDownIcon className={roleExpanded ? `${css.chevron} ${css.chevronOpen}` : css.chevron} />
+                    <span className={css.collapseTitle}>{row.id}</span>
+                    {seedBadge !== null && (
+                      // Non-interactive — it rides the whole-row toggle
+                      // hit area (PR #62 pattern), so no stopPropagation
+                      // is needed. The title tooltip carries uncapped
+                      // set names verbatim (case-preserved; the CSS
+                      // ellipsizes instead of wrapping).
+                      <span className={css.seedBadge} title={seedBadge}>{seedBadge}</span>
+                    )}
+                    <span className={css.collapseMeta}>{roleSummary}</span>
+                  </button>
+                </div>
+                {roleExpanded && (
+                <>
+                {seed === undefined && (
+                  // Seeded rows render no id field at all: the id is
+                  // seed-immutable (R2) and the collapse title already
+                  // carries it (plan role-card-seeded-ux).
+                  <div className={css.ruleGrid}>
+                    <div className={css.ruleCell}>
+                      <span className={css.ruleCellLabel}>{t('roles.id')}</span>
+                      <input
+                        className={`${css.input} ${invalid ? css.inputInvalid : ''}`}
+                        value={row.id}
+                        placeholder={t('roles.idPlaceholder')}
+                        aria-label={t('roles.id')}
+                        aria-invalid={invalid ? true : undefined}
+                        disabled={!writable}
+                        onChange={event => { updateRoleRow(index, { id: event.target.value }) }}
+                      />
+                      <span className={css.hint}>{t('roles.id.hint')}</span>
+                    </div>
+                  </div>
+                )}
+                <div className={css.ruleGrid}>
+                  <div className={css.ruleCell}>
+                    <span className={css.ruleCellLabel}>{t('roles.persona')}</span>
+                    {seed === undefined ? (
+                      <textarea
+                        rows={3}
+                        className={`${css.input} ${css.inputTextarea}`}
+                        value={row.persona}
+                        placeholder={t('roles.personaPlaceholder')}
+                        aria-label={t('roles.persona')}
+                        disabled={!writable}
+                        onChange={event => { updateRoleRow(index, { persona: event.target.value }) }}
+                      />
+                    ) : (
+                      // Seeded persona = reference material (plan
+                      // role-card-seeded-ux): a read-only single-line
+                      // brief (CSS ellipsis) plus a chevron disclosing
+                      // the full multi-line text. The disclosure is
+                      // CLIENT-LOCAL state (`row.personaOpen`, the row
+                      // collapse's twin) — never a settings write —
+                      // and the persona never changes through this
+                      // surface: rowsToRoles passes it through
+                      // unchanged. No revert affordance: the card no
+                      // longer offers the seed-persona revert (an
+                      // override arrives via an external config edit
+                      // and the brief honestly shows the effective
+                      // persona).
+                      <>
+                        <div className={css.personaBriefRow}>
+                          <span
+                            className={personaBlank
+                              ? `${css.personaBrief} ${css.personaBriefEmpty}`
+                              : css.personaBrief}
+                          >
+                            {personaBlank ? t('roles.persona.empty') : row.persona}
+                          </span>
+                          {!personaBlank && (
+                            /* NOT a native <button> (QA finding e, plan
+                             * role-card-seeded-ux fix wave 2): this row
+                             * sits inside the form body's `disabled`
+                             * fieldset and
+                             * fieldset[disabled] propagation kills every descendant form
+                             * control in real browsers — a button here
+                             * renders but is implicitly dead exactly in
+                             * the read-only view whose forced-open rows
+                             * make the disclosure the only way to read
+                             * the full persona (live-confirmed in
+                             * Chromium). The disclosure toggles
+                             * client-local `personaOpen` only, so the
+                             * control is a span with role="button": the
+                             * aria/tooltip/click contract is identical,
+                             * and a non-form-control is immune to
+                             * fieldset propagation while keeping the
+                             * DOM in place. A span has no native button
+                             * semantics, so Enter/Space activation is
+                             * carried explicitly. */
+                            <span
+                              role="button"
+                              tabIndex={0}
+                              className={css.iconButton}
+                              aria-expanded={row.personaOpen}
+                              aria-label={t(row.personaOpen ? 'roles.persona.collapse' : 'roles.persona.expand')}
+                              data-tip={t(row.personaOpen ? 'roles.persona.collapse' : 'roles.persona.expand')}
+                              onClick={() => { updateRoleRow(index, { personaOpen: !row.personaOpen }) }}
+                              onKeyDown={event => {
+                                if (event.key === 'Enter' || event.key === ' ') {
+                                  event.preventDefault()
+                                  updateRoleRow(index, { personaOpen: !row.personaOpen })
+                                }
+                              }}
+                            >
+                              <ChevronDownIcon className={row.personaOpen ? `${css.chevron} ${css.chevronOpen}` : css.chevron} />
+                            </span>
+                          )}
+                        </div>
+                        {row.personaOpen && (
+                          <p className={css.personaFull}>{row.persona}</p>
+                        )}
+                      </>
+                    )}
+                  </div>
+                </div>
+                <div className={css.chainSelectors}>
+                  {row.selectors.map((selector, selectorIndex) => (
+                    <ChainSelectorEditor
+                      key={selectorIndex}
+                      selector={selector}
+                      catalog={catalogOf(state)}
+                      configuredProviders={state.configuredProviders}
+                      disabled={!writable}
+                      t={t}
+                      onChange={patch => { updateRoleSelector(index, selectorIndex, patch) }}
+                      onRemove={() => { removeRoleSelector(index, selectorIndex) }}
+                    />
+                  ))}
+                  {row.selectors.every(selector => selectorRowToRaw(selector) === '') && (
+                    // A role whose chain area is empty — no selector
+                    // rows, or only blank placeholder rows — has no
+                    // model config. Non-seeded: save is blocked
+                    // (roleChainRequired) and the inline hint explains
+                    // why (plan fallbacks-feedback-round T2),
+                    // unconditional while no row serializes to a usable
+                    // chain entry. Seeded: the chain is legitimately
+                    // empty by design (R4 — seeds never invent one), so
+                    // the hint turns non-blocking (seedChainOptional)
+                    // and the Save relax lets the seeded row ride the
+                    // whole-form save instead of blocking it (spec §9.6
+                    // / AC-3).
+                    <span className={css.hint}>
+                      {seed !== undefined
+                        ? t('roles.seedChainOptional', { id: row.id })
+                        : t('validation.roleChainRequired', { id: row.id })}
+                    </span>
+                  )}
+                </div>
+                <div className={css.ruleGrid}>
+                  <div className={css.ruleCell}>
+                    <span className={css.ruleCellLabel}>{t('roles.fallback')}</span>
+                    <select
+                      className={`${css.input} ${css.selectInput}`}
+                      value={row.fallback}
+                      aria-label={t('roles.fallback')}
+                      disabled={!writable}
+                      onChange={event => { updateRoleRow(index, { fallback: event.target.value as FallbackStrategy }) }}
+                    >
+                      <option value="inherit-root">{t('roles.fallback.inherit-root')}</option>
+                      <option value="none">{t('roles.fallback.none')}</option>
+                    </select>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className={`${css.outlineButton} ${css.addButton}`}
+                  disabled={!writable}
+                  onClick={() => { addRoleSelector(index) }}
+                >
+                  <PlusIcon />
+                  {t('roles.selector.add')}
+                </button>
+                <div className={css.cardFoot}>
+                  <button
+                    type="button"
+                    className={`${css.iconButton} ${css.iconButtonDanger}`}
+                    data-tip={t('roles.remove')}
+                    aria-label={t('roles.remove')}
+                    onClick={() => { removeRole(index) }}
+                  >
+                    <TrashIcon />
+                  </button>
+                </div>
+                </>
+                )}
+              </div>
+              )
+            })}
+          </div>
+          <button
+            type="button"
+            className={`${css.outlineButton} ${css.addButton}`}
+            disabled={!writable}
+            onClick={addRole}
+          >
+            <PlusIcon />
+            {t('roles.add')}
+          </button>
+        </div>
+
+        <div className={css.field} role="group" aria-labelledby="fallbacks-roles-rules">
+          <span className={css.fieldLabel}>
+            <span id="fallbacks-roles-rules">{t('roles.rules')}</span>
+            <InfoHint label={t('roles.rules.tooltip')} disabled={!writable} />
+          </span>
+          <span className={css.hint}>{t('roles.rules.hint')}</span>
+          {state.catalogStatus === 'error' && state.catalogError !== null && (
+            <span className={css.hint}>{t('catalog.error', { message: state.catalogError })}</span>
+          )}
+          {state.catalogStatus === 'ready' && state.catalogError !== null && (
+            <span className={css.hint}>{t('catalog.partial', { message: state.catalogError })}</span>
+          )}
+          {state.catalogStatus === 'ready' && (state.groups.length === 0 || state.configuredProviders.length === 0) && (
+            <span className={css.hint}>{t('catalog.empty')}</span>
+          )}
+          <div className={css.list}>
+            {ruleRows.map((row, index) => {
+              const catalog = catalogOf(state)
+              const providerRaw = selectionToRaw(row.provider)
+              const group = catalog?.groups.find(entry => entry.id === providerRaw)
+              const providerOutside = row.provider?.kind === 'outside'
+              // Same read-back treatment as the chain selector rows: a catalog
+              // provider that is not configured stays visible but unofferable.
+              const providerUnconfigured = !providerOutside && providerRaw !== ''
+                && (catalog?.providers.some(entry => entry.provider === providerRaw) ?? false)
+                && !state.configuredProviders.some(entry => entry.provider === providerRaw)
+              const modelOutside = row.model?.kind === 'outside'
+              // roleOptions is hoisted once per render (qc3 F-3): the
+              // offer set derives LIVE from the declared role rows —
+              // a role added/removed on the same page is reflected
+              // immediately (spec §8 同页联动). A role deleted under
+              // a referencing rule leaves the row's value orphaned —
+              // it stays visible as a synthetic "undeclared" option
+              // so the dangling reference is honest, and the Save
+              // gate's validation flags it. The offer set uses the same
+              // canonical (trimmed) ids that rowsToRoles/rowsToRules
+              // rebuild, so what the dropdown offers is exactly what
+              // save-time validation accepts.
+              const roleOutside = row.role !== '' && !roleOptions.includes(row.role)
+              return (
+              <div key={index} className={css.editorCard}>
+                {/* PR #62 feedback: no origin cell — rules are
+                 * subagent-only; a persisted wire `origin` is ignored. */}
+                <div className={css.ruleGrid}>
+                  <label className={css.ruleCell}>
+                    <span className={css.ruleCellLabel}>{t('roles.rule.provider')}</span>
+                    <select
+                      className={`${css.input} ${css.selectInput}`}
+                      value={providerRaw}
+                      onChange={event => {
+                        // Cascade (same D-3 rule as chains): a DIFFERENT provider
+                        // clears the model choice; re-picking the same provider
+                        // keeps the model (S-e).
+                        if (event.target.value === providerRaw) return
+                        updateRuleRow(index, { provider: classifyProvider(event.target.value, catalog), model: null })
+                      }}
+                    >
+                      <option value="">{t('roles.rule.provider.any')}</option>
+                      {state.configuredProviders.map(entry => (
+                        <option key={entry.provider} value={entry.provider}>{entry.displayName}</option>
+                      ))}
+                      {providerUnconfigured && (
+                        <option value={providerRaw}>{`${providerRaw}${t('catalog.unconfigured.short')}`}</option>
+                      )}
+                      {providerOutside && (
+                        <option value={providerRaw}>{`${providerRaw}${t('catalog.outside.short')}`}</option>
+                      )}
+                    </select>
+                  </label>
+                  <label className={css.ruleCell}>
+                    <span className={css.ruleCellLabel}>{t('roles.rule.model')}</span>
+                    <select
+                      className={`${css.input} ${css.selectInput}`}
+                      value={selectionToRaw(row.model)}
+                      onChange={event => {
+                        updateRuleRow(index, { model: classifyModel(providerRaw, event.target.value, catalog) })
+                      }}
+                    >
+                      <option value="">{t('roles.rule.model.any')}</option>
+                      {(group?.models ?? []).map(model => (
+                        <option key={model.id} value={model.id}>{model.name}</option>
+                      ))}
+                      {modelOutside && (
+                        <option value={selectionToRaw(row.model)}>{`${selectionToRaw(row.model)}${t('catalog.outside.short')}`}</option>
+                      )}
+                    </select>
+                  </label>
+                  <label className={css.ruleCell}>
+                    <span className={css.ruleCellLabel}>{t('roles.rule.role')}</span>
+                    <select
+                      className={`${css.input} ${css.selectInput}`}
+                      value={row.role}
+                      disabled={!writable}
+                      onChange={event => { updateRuleRow(index, { role: event.target.value }) }}
+                    >
+                      <option value="">{t('roles.rule.roleSelectPlaceholder')}</option>
+                      {roleOptions.map(id => (
+                        <option key={id} value={id}>{id === INHERIT_ROLE_ID ? t('roles.rule.role.inherit') : id}</option>
+                      ))}
+                      {roleOutside && (
+                        <option value={row.role}>{`${row.role}${t('roles.rule.roleUndeclared.short')}`}</option>
+                      )}
+                    </select>
+                  </label>
+                </div>
+                {(providerOutside || modelOutside) && (
+                  <span className={css.hint}>
+                    {t('catalog.outside.hint')}
+                    <InfoHint label={t('catalog.outside.tooltip')} disabled={!writable} />
+                  </span>
+                )}
+                {row.role === '' && (
+                  // qc3 F-4: an empty role row would be dropped by
+                  // rowsToRules on assembly and vanish on save — the
+                  // inline hint explains why save is blocked.
+                  <span className={css.hint}>{t('validation.ruleRoleRequired')}</span>
+                )}
+                <div className={css.cardFoot}>
+                  <button
+                    type="button"
+                    className={`${css.iconButton} ${css.iconButtonDanger}`}
+                    data-tip={t('roles.removeRule')}
+                    aria-label={t('roles.removeRule')}
+                    onClick={() => {
+                      setRuleRows(rows => rows.filter((_, rowIndex) => rowIndex !== index))
+                    }}
+                  >
+                    <TrashIcon />
+                  </button>
+                </div>
+              </div>
+              )
+            })}
+          </div>
+          <button
+            type="button"
+            className={`${css.outlineButton} ${css.addButton}`}
+            disabled={!writable}
+            onClick={() => {
+              setRuleRows(rows => [...rows, { provider: null, model: null, role: '' }])
+            }}
+          >
+            <PlusIcon />
+            {t('roles.addRule')}
+          </button>
+        </div>
+
+        {/* 高级选项 (advanced options) section heading: flat and
+         * non-collapsible (T3 — the old disclosure toggle is gone; the
+         * fields render unconditionally in read-only too). */}
+        <div className={css.sectionHeading} id="fallbacks-advanced">
+          <span className={css.sectionHeadingText}>{t('advanced.label')}</span>
+        </div>
+        {liveErrors.advanced.length > 0 && (
+          <p className={css.error} role="alert">
+            {`${t('validation.blocked')}${liveErrors.advanced.join('; ')}`}
+          </p>
+        )}
+        {/* The roleAutoMatch toggle (plan fallbacks-settings-visibility Task 3): a
+         * row-level preference in the advanced section, default on (the
+         * config-model default). It ALWAYS renders (AC-7 re-scope, PM
+         * decision 2026-08-17 Option A): the gateway composition always
+         * resolves the schema default `true` for the key — even for a
+         * legacy config that never declared it — so there is no
+         * client-side key-presence signal to hide on. The toggle reads
+         * and writes the scalar → the existing draft → config path via
+         * `assembleConfig`; a legacy config's first save therefore
+         * persists `roleAutoMatch: true` (semantically identical to the
+         * default). */}
+        <div className={css.checkboxRow}>
+          <div className={css.checkLabel}>
+            <span className={css.checkLabelTitle}>
+              <label htmlFor="fallbacks-role-automatch">{t('roleAutoMatch.label')}</label>
+              <InfoHint label={t('roleAutoMatch.tooltip')} disabled={!writable} />
+            </span>
+            <span className={css.checkLabelDesc}>{t('roleAutoMatch.hint')}</span>
+          </div>
+          <input
+            id="fallbacks-role-automatch"
+            type="checkbox"
+            className={css.checkbox}
+            checked={scalars.roleAutoMatch}
+            disabled={!writable}
+            onChange={event => { updateScalars(draft => { draft.roleAutoMatch = event.target.checked }) }}
+          />
+        </div>
+        <div className={css.field} role="group" aria-labelledby="fallbacks-trigger-codes">
+          <span className={css.fieldLabel}>
+            <span id="fallbacks-trigger-codes">{t('triggerCodes.label')}</span>
+            <InfoHint label={t('triggerCodes.tooltip')} disabled={!writable} />
+          </span>
+          <span className={css.hint}>{t('triggerCodes.hint')}</span>
+          {KNOWN_TRIGGER_CODES.map(code => (
+            <label key={code} className={css.optionRow}>
+              <input
+                type="checkbox"
+                checked={scalars.triggerCodes.includes(code)}
+                onChange={event => {
+                  updateScalars(draft => { draft.triggerCodes = withTriggerCode(draft.triggerCodes, code, event.target.checked) })
+                }}
+              />
+              {t(TRIGGER_CODE_LABELS[code])}
+            </label>
+          ))}
+          {unknownCodes.length > 0 && (
+            <span className={css.hint}>{t('triggerCodes.extra', { codes: unknownCodes.join(', ') })}</span>
+          )}
+        </div>
+
+        <div className={css.field} role="group" aria-labelledby="fallbacks-revert-policy">
+          <span className={css.fieldLabel}>
+            <span id="fallbacks-revert-policy">{t('revertPolicy.label')}</span>
+            <InfoHint label={t('revertPolicy.tooltip')} disabled={!writable} />
+          </span>
+          <span className={css.hint}>{t('revertPolicy.hint')}</span>
+          {(['cooldown-expiry', 'never'] as const).map(policy => (
+            <label key={policy} className={css.optionRow}>
+              <input
+                type="radio"
+                name="fallbacks-revert-policy"
+                checked={scalars.revertPolicy === policy}
+                onChange={() => { updateScalars(draft => { draft.revertPolicy = policy }) }}
+              />
+              {t(`revertPolicy.${policy}`)}
+            </label>
+          ))}
+        </div>
+
+        {/* The three short numeric fields sit side by side, each keeping a
+         * full-width field of its own grid column. */}
+        <div className={css.numberFields}>
+          <div className={css.field}>
+            <span className={css.fieldLabel}>
+              <label htmlFor="fallbacks-cooldown-ms">{t('cooldownMs.label')}</label>
+              <InfoHint label={t('cooldownMs.tooltip')} disabled={!writable} />
+              <span className={css.defaultNote}>{t('defaults.prefix')}: {state.config.cooldownMs}</span>
+            </span>
+            <input
+              id="fallbacks-cooldown-ms"
+              className={css.input}
+              type="number"
+              min={0}
+              value={String(scalars.cooldownMs)}
+              disabled={!writable}
+              onChange={event => { updateScalars(draft => { draft.cooldownMs = parseCount(event.target.value) }) }}
+            />
+            <span className={css.hint}>{t('cooldownMs.hint')}</span>
+          </div>
+
+          <div className={css.field}>
+            <span className={css.fieldLabel}>
+              <label htmlFor="fallbacks-max-switches">{t('maxSwitchesPerStep.label')}</label>
+              <InfoHint label={t('maxSwitchesPerStep.tooltip')} disabled={!writable} />
+              <span className={css.defaultNote}>{t('defaults.prefix')}: {state.config.maxSwitchesPerStep}</span>
+            </span>
+            <input
+              id="fallbacks-max-switches"
+              className={css.input}
+              type="number"
+              min={0}
+              value={String(scalars.maxSwitchesPerStep)}
+              disabled={!writable}
+              onChange={event => { updateScalars(draft => { draft.maxSwitchesPerStep = parseCount(event.target.value) }) }}
+            />
+            <span className={css.hint}>{t('maxSwitchesPerStep.hint')}</span>
+          </div>
+
+          <div className={css.field}>
+            <span className={css.fieldLabel}>
+              <label htmlFor="fallbacks-always-cap">{t('alwaysModeRetryCap.label')}</label>
+              <InfoHint label={t('alwaysModeRetryCap.tooltip')} disabled={!writable} />
+              <span className={css.defaultNote}>{t('defaults.prefix')}: {state.config.alwaysModeRetryCap}</span>
+            </span>
+            <input
+              id="fallbacks-always-cap"
+              className={css.input}
+              type="number"
+              min={0}
+              value={String(scalars.alwaysModeRetryCap)}
+              disabled={!writable}
+              onChange={event => { updateScalars(draft => { draft.alwaysModeRetryCap = parseCount(event.target.value) }) }}
+            />
+            <span className={css.hint}>{t('alwaysModeRetryCap.hint')}</span>
+          </div>
+        </div>
+      </fieldset>
+
+      {/* The ONE footer (T3): Discard (kept — staged edits survive refresh,
+       * the documented divergence from the official no-discard form) + the
+       * dark solid Save. Save disabled = `!dirty || invalid || saving ||
+       * !writable`; Discard disabled = `!dirty || saving` (a pure
+       * client-side revert — disabling it in read-only would strand staged
+       * edits the user cannot clear, and the store-side writable guard
+       * makes a read-only write fail cleanly even if it were reached).
+       * OUTSIDE the fieldset: fieldset[disabled] would kill the buttons in
+       * read-only, stranding staged edits. */}
+      <div className={css.footer}>
+        <button
+          type="button"
+          className={css.discard}
+          disabled={!dirty || saving}
+          onClick={discard}
+        >
+          {t('discard')}
+        </button>
+        <button
+          type="button"
+          className={css.save}
+          disabled={!dirty || invalid || saving || !writable}
+          onClick={save}
+        >
+          {saving ? t('save.saving') : t('save')}
+        </button>
+      </div>
+
+      {/* AC-2 read-only status, compact and flat (the page-bottom block is
+       * gone): only the most recent switch (D-5 — read through the store's
+       * `sessions.history` face). The effective-model line (D-6) and the
+       * selectionNote degradation line moved out of the card (see
+       * docs/verification.md §4.7 / §4.3 item 4 — the derived-value helper
+       * stays as a store export — D-6 contract retention). The verbose
+       * config-summary dump is gone; errors/empty still render, compact. */}
+      <div className={css.statusBlock}>
+        <span className={css.statusTitle}>{t('status.title')}</span>
+        <p className={css.statusLine} role={state.switchesStatus === 'error' ? 'alert' : undefined}>
+          <span className={css.statusLineLabel}>{t('status.switches.label')}</span>
+          {switchesLine}
+        </p>
+      </div>
+    </div>
   )
 }

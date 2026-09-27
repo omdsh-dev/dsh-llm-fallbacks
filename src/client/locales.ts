@@ -12,11 +12,6 @@ import type { FallbackSwitchReason } from '../events.ts'
 
 /** Simplified Chinese dictionary (the key-set source of truth). */
 export const zh = {
-  'title': 'Fallbacks',
-  'intro': '模型故障自动降级',
-  'collapse': '收起设置',
-  'expand': '展开设置',
-  'unsaved': '未保存',
   'discard': '放弃修改',
   'retry': '重试',
   'readOnly': '当前环境中的设置为只读。',
@@ -42,8 +37,6 @@ export const zh = {
   'alwaysModeRetryCap.hint': '达到上限次数后切换；0 表示禁用',
   'alwaysModeRetryCap.tooltip': 'retryPolicy 为 always 的模型在同一请求内重试达到该次数后切换；0 表示禁用。',
   'advanced.label': '高级选项',
-  'advanced.expand': '展开高级选项',
-  'advanced.collapse': '收起高级选项',
   'roleAutoMatch.label': '启用角色自动匹配',
   'roleAutoMatch.hint': '规则未命中时，由模型自选最贴近的已声明角色',
   'roleAutoMatch.tooltip': '规则未命中时，模型会自动从已声明角色（id + persona）中选择最匹配者并注入该角色的链；关闭后未命中规则时按现状回落（inherit / rootChain）。',
@@ -264,11 +257,6 @@ export type FallbacksKey = keyof typeof zh
 
 /** English dictionary, checked complete against the zh key set. */
 export const en = {
-  'title': 'Fallbacks',
-  'intro': 'Automatic fallback on model failures',
-  'collapse': 'Hide settings',
-  'expand': 'Show settings',
-  'unsaved': 'Unsaved',
   'discard': 'Discard',
   'retry': 'Retry',
   'readOnly': 'Settings are read-only in this environment.',
@@ -294,8 +282,6 @@ export const en = {
   'alwaysModeRetryCap.hint': 'Switches after the cap; 0 disables',
   'alwaysModeRetryCap.tooltip': 'Models whose retryPolicy is always switch after this many retries within one request; 0 disables.',
   'advanced.label': 'Advanced options',
-  'advanced.expand': 'Show advanced options',
-  'advanced.collapse': 'Hide advanced options',
   'roleAutoMatch.label': 'Enable role auto-match',
   'roleAutoMatch.hint': 'On rules-miss, the model picks the closest declared role',
   'roleAutoMatch.tooltip': 'When no rule matches, the model auto-selects the best-fit declared role (id + persona) and uses its chain; turn off to keep today\'s fallback (inherit / rootChain) on a rules-miss.',
