@@ -17,7 +17,7 @@ This document records the installation / runtime-contract verification already c
 | unit (T3) | `state.spec.ts` / `events.spec.ts` / `config.spec.ts` / `runtime.spec.ts` | 22 / 4 / 38 / 50 | state machine (pendingSwitch created → applied → cleared, `appliedTurnStep` replay guard, reset on step advance), `fallbacks/switch` event shape and JSON round-trip, `Config({})` always equals the default config (no-op baseline), all items of mini-integration Step 6 |
 | integration (T4) | `plugin.spec.ts` / `coexist-llm-retry.spec.ts` / `always-mode.spec.ts` | 22 / 4 / 8 | end-to-end re-integration (including the registration-order dependency of the model-selection combination, T2 — the harness double installs the real `agent/pre-step` notice listener, so a re-armed notice loop now fails the suite), **two-plugin coexistence order** (normal backs off first, switches after the budget is exhausted; non-retryable codes switch directly), **always delegates downstream first + cap at the request boundary** (ADR-2; the cap is reachable on the virtual route since plan `model-change-notice-loop` Task 1), cooldown/revert integration, **safety-valve** original error semantics after the cap, combination order without mutual interference |
 | dispatch + subagent routing (T4 ext) | `allowlist-switch.spec.ts` / `dispatch-injection.spec.ts` / `dispatch-integration.spec.ts` / `index-request.spec.ts` / `route-allowlist.spec.ts` / `subagent-policy.spec.ts` / `automatch.spec.ts` / `role-resolution.spec.ts` / `subagents-seam.spec.ts` / `role-notice.spec.ts` / `role-projection.spec.ts` / `subagent-role-badge.spec.tsx` | 10 / 35 / 6 / 12 / 8 / 5 / 25 / 18 / 44 / 20 / 14 / 9 | dispatch-time role resolution from the Assignment header at the subagent dispatch seam (explicit → rules → LLM auto-match), role persona delivery to the child (chain-independent), role-inject and allowlist/policy gates, subagent route allowlist intersection, the in-session role notice row, the projection-key subagent role badge, index `agent/request` path (the virtual picker pair is served unchanged — plan `model-change-notice-loop` Task 1) |
-| client (T5) | `fallbacks-store.spec.ts` / `fallbacks-card.spec.tsx` / `general-row.spec.tsx` / `conversation-switch.spec.tsx` | 115 / 97 / 10 / 19 | card read/write via the **gateway channel** (rpc mock of `/api/fallbacks/get|set|reset`: `load` fetches config from `get`, `save` goes through `set`, `resetToDefaults` goes through `reset`), `present` flag and unreachable-channel skeleton, describe only reads writable + other namespaces (the fallbacks namespace no longer appears in describe), KD-G3 new error path (errors surface truthfully after the revision guard was removed), draft seeded only from a real `get` result (I-1 invariant), chain/rule row-edit round trips, status-block recent-switch extraction (sessions.history event surface), card chrome (plugin-config page listing, collapse/expand, dirty/save/discard), controller lifecycle; General page status row (`settings.general.item` registration shape id `fallbacks` order 100, enabled badge + recent-switch summary, KD-G5 unreachable does not masquerade as disabled, lazy first read and no re-read once read); conversation switch row (`conversation.chat.node` keyed registration key `fallbacks-switch`, D1-defined state machine match/start/update/buildViewNode, renders `from → to (role · reason)` with unknown reasons passed through verbatim, role=status, malformed payloads degrade to the title row without throwing, zh rendering parity smoke) |
+| client (T5) | `fallbacks-store.spec.ts` / `fallbacks-card.spec.tsx` / `general-row.spec.tsx` / `conversation-switch.spec.tsx` | 115 / 97 / 10 / 19 | card read/write via the **gateway channel** (rpc mock of `/api/fallbacks/get|set|reset`: `load` fetches config from `get`, `save` goes through `set`, `resetToDefaults` goes through `reset`), `present` flag and unreachable-channel skeleton, describe only reads writable + other namespaces (the fallbacks namespace no longer appears in describe), KD-G3 new error path (errors surface truthfully after the revision guard was removed), draft seeded only from a real `get` result (I-1 invariant), chain/rule row-edit round trips, status-block recent-switch extraction (sessions.history event surface), flat card contract (plugin-config page listing, always-open form, ONE footer save/discard with the `!dirty || invalid || saving || !writable` gate, whole-form validation placement), controller lifecycle; General page status row (`settings.general.item` registration shape id `fallbacks` order 100, active badge + recent-switch summary, KD-G5 unreachable does not masquerade as disabled, lazy first read and no re-read once read); conversation switch row (`conversation.chat.node` keyed registration key `fallbacks-switch`, D1-defined state machine match/start/update/buildViewNode, renders `from → to (role · reason)` with unknown reasons passed through verbatim, role=status, malformed payloads degrade to the title row without throwing, zh rendering parity smoke) |
 | time slots + virtual picker (T5 ext) | `time-slots.spec.ts` / `time-slots-runtime.spec.ts` / `virtual-adapter.spec.ts` / `tui-settings.spec.ts` / `tui-client.spec.ts` / `context-window.spec.ts` / `override.spec.ts` | 43 / 12 / 33 / 51 / 15 / 9 / 14 | all-day tail conformance (Flash / Pro XOR; the retired V4 ids rejected), slot resolver first-match windows, virtual FallbacksChain adapter delegate (served route, no rewrite) + effective-head retry-policy proxy + pi-ai replay-envelope re-stamp for history recorded on the virtual route (with the real-route boundary pin), TUI settings schema readback, context-window cap skip, request override path |
 | recovery + seeds + presets | `recovery.spec.ts` / `runtime-recovery.spec.ts` / `success-observation.spec.ts` / `seeds.spec.ts` / `seeds-integration.spec.ts` / `seeds-declare-window.spec.ts` / `presets.spec.ts` / `presets-integration.spec.ts` | 17 / 8 / 13 / 52 / 9 / 3 / 5 / 13 | half-open recovery circuit, runtime recovery listener, role-seed manager + integration, preset seed declarations |
 | command (AC-5) | `command.spec.ts` | 78 | `/fallbacks` registration shape (name/description/empty hint/handler, disposer passthrough), conditional `commands` child injection (registers only when a registry exists; silent without a service), snapshot building (role/chain resolution with the default fallback, recent switches newest-first capped, cooldown read-only snapshot), output states (configured chain / no chain / switches present + absent / cooldown present + absent / `never` does not revert), zh/en rendering smoke, real runtime-state integration (switch events + cooldown read from real state; read-only, never adds state) |
@@ -114,20 +114,20 @@ Then restart the dsh web session so the host half and the client half load.
 
 ### 2. Web plugin-config card verification
 
-1. Open the web settings GUI → Settings → **插件配置** (**Plugin Settings**), confirm the **Fallbacks card** appears (same list as the bash / agent-loop / web-search / advisor cards).
-2. **First open (no `fallbacks` config yet)**: the card shows its skeleton (card header / intro / read-only status block /
-   feature switch / save actions), the feature switch `enabled` is **OFF by default**, the configuration form body is hidden
-   and the "Feature disabled" hint shows — the card is always usable and never blank just because the namespace is missing.
-3. Turn on the `enabled` switch → the configuration form body appears (`triggerCodes` / `rootChain` / `roles` /
-   `cooldownMs` / `revertPolicy` / `maxSwitchesPerStep` / `alwaysModeRetryCap`).
-4. Edit any field (e.g. change `cooldownMs` to `600000`) and save.
-5. **Expected**: the save succeeds with no conflict banner; `$DSH_HOME/settings.yaml` (or that profile's settings
-   path) gets the new value written (including `enabled: true`); re-entering the page shows the saved value with the switch
-   still ON, and a concurrent modification from another session surfaces as a truthful error banner on save — the gateway
-   `set` has no revision guard, so there is no "Reload" prompt and no silent overwrite (KD-G3).
-6. Turn off the `enabled` switch → the form body hides again (an in-progress draft is kept and still there when reopened);
-   the compact row's Save/Discard operate on `enabled` only (PR #62 UX round 3 — hidden section drafts are never persisted,
-   and the card's Reset-to-defaults button is gone; the gateway `fallbacks/reset` RPC remains a host API).
+1. Open the web settings GUI → Settings → **插件配置** (**Plugin Settings**), confirm the **Fallbacks card** appears (same list as the bash / agent-loop / web-search / advisor cards), titled/described/iconified from the plugin's `locale/*.json` meta + `icon.svg`.
+2. **Flat always-open form**: the card renders its full configuration form unconditionally — no collapsible chrome and no
+   feature switch (the config-level `enabled` key was removed; the Plugins-page row toggle is the master switch) — with the
+   主代理 / 子代理 / 高级选项 headings as flat, non-collapsible section markers and the read-only status block at the bottom.
+   The card is always usable and never blank just because the namespace is missing.
+3. Edit any field (e.g. change `cooldownMs` to `600000`) — the single footer Save/Discard pair arms (Save disabled =
+   `!dirty || invalid || saving || !writable`) — and save.
+4. **Expected**: the save succeeds with no conflict banner; `$DSH_HOME/settings.yaml` (or that profile's settings
+   path) gets the whole validated draft written; re-entering the page shows the saved values, and a concurrent
+   modification from another session surfaces as a truthful error banner on save — the gateway `set` has no revision
+   guard, so there is no "Reload" prompt and no silent overwrite (KD-G3).
+5. **Discard**: click the footer Discard → the WHOLE draft reverts to the last accepted config and the gates relock
+   (staged edits survive refresh in the store, so Discard is kept — the documented divergence from the official
+   no-discard form; the card's Reset-to-defaults button is gone and the gateway `fallbacks/reset` RPC remains a host API).
 
 ### 3. Runtime fallback verification (simulated failures)
 
@@ -163,19 +163,18 @@ Then restart the dsh web session so the host half and the client half load.
    (when `--dev` is unavailable, rebuild web artifacts and refresh the verification URL).
 4. **Record the baseline**: `ps -o pid,lstart -p <dsh-web-pid>` (or locate via `pgrep -fl "dsh web"`) —
    **PID + start time** serve as the §4.2 "no host restart" comparison anchor; also record the current `fallbacks:` section
-   state in `$DSH_HOME/settings.yaml` (expected: no such section, or `enabled: false`).
+   state in `$DSH_HOME/settings.yaml` (expected: no such section, or one without content).
 
 #### 4.2 Plugin-config card read/write loop (save-takes-effect, AC-1)
 
 1. Open the web settings GUI → Settings → **Plugin Settings** → **Fallbacks card**.
-2. **Expected ① (gateway channel works)**: the card renders its skeleton (card header / intro / read-only status block /
-   `enabled` switch / save / reset to defaults) — config read/write goes through the plugin's gateway channel
+2. **Expected ① (gateway channel works)**: the card renders its flat always-open form (the 主代理 / 子代理 / 高级选项
+   section headings, the read-only status block, one Save/Discard footer; no feature switch — the config-level `enabled`
+   key was removed) — config read/write goes through the plugin's gateway channel
    (`/api/fallbacks/get|set|reset`), independent of any settings-exposure mechanism of the dsh host (the `fallbacks`
    namespace not appearing in the describe exposure set is by design); a successful `get` sets `present`,
-   and an unreachable channel shows an actionable skeleton rather than a dead page.
-3. Turn on the `enabled` switch → the configuration form body appears (`triggerCodes` / `rootChain` / `roles` /
-   `cooldownMs` / `revertPolicy` / `maxSwitchesPerStep` / `alwaysModeRetryCap`).
-4. **Add a chain via catalog selection**: in the `rootChain` selector row pick a target in the provider/model **dropdown
+   and an unreachable channel shows the flat informational notice atop the still-usable form rather than a dead page.
+3. **Add a chain via catalog selection**: in the `rootChain` selector row pick a target in the provider/model **dropdown
    (model catalog)** to add a chain entry (e.g. the root chain → a fallback `provider/model` that exists in the
    catalog); same for `roles.list` role-chain rows and `roles.rules` row editing (optional). New rows only offer
    in-catalog options; out-of-catalog values are kept, annotated as synthetic options.
@@ -183,7 +182,7 @@ Then restart the dsh web session so the host half and the client half load.
    merge-semantics with no revision guard — concurrent modifications no longer show a conflict banner; errors always
    surface truthfully in a banner).
 6. **Disk evidence**: `$DSH_HOME/settings.yaml` gains a `fallbacks:` section matching the saved values
-   (`enabled: true` + the added chain line).
+   (the added chain line — no `enabled` key exists any more).
 7. **Take-effect evidence (AC-1 core)**: **without restarting the host or reloading the page** — first confirm the host PID/start
    time matches the §4.1 baseline (`ps -o pid,lstart -p <pid>`), then trigger one trigger-code failure (§4.3
    injection method, e.g. AUTH/QUOTA) → expected:
@@ -193,8 +192,7 @@ Then restart the dsh web session so the host half and the client half load.
    - subsequent requests route to the chain target (provider/model becomes the first chain entry), and the current step/turn
      is not interrupted.
    → **the next failure after saving switches = no session restart needed**.
-8. **Read-back evidence**: reload the page → the server truth renders via `fallbacks/get` (`enabled` stays ON,
-   the chain line is there);
+8. **Read-back evidence**: reload the page → the server truth renders via `fallbacks/get` (the chain line is there);
    the status block does **not** show step 7's switch (no durable event was written — the recent-switch line reflects
    only events already in the session history, see §4.3 step 4).
 9. **Counter-evidence control**: if step 7 shows the change **only takes effect after a host restart** → record it
@@ -245,8 +243,9 @@ Then restart the dsh web session so the host half and the client half load.
 
 #### 4.4 No-regression spot checks
 
-1. **Default-config no-op**: set `fallbacks.enabled` back to `false` (or the unconfigured state) → trigger the same kind
-   of failure → no switch, no `fallbacks/switch` event, and request behavior identical to an uninstalled plugin.
+1. **Default-config no-op**: empty the `fallbacks:` section (or the unconfigured state — there is no `enabled` switch to
+   turn off any more) → trigger the same kind of failure → no switch, no `fallbacks/switch` event, and request behavior
+   identical to an uninstalled plugin.
 2. **Out-of-catalog values survive read-back**: hand-write an out-of-catalog selector (e.g. `provider/legacy-model`) and
    save → reloading the page still shows the value (synthetic option annotated "outside catalog"), not discarded by the
    catalog selection.
@@ -262,7 +261,7 @@ Then restart the dsh web session so the host half and the client half load.
 
 #### 4.6 Dispatch-time role injection (`role-inject` reason) — documented degradation (listener order)
 
-1. **Setup**: with `fallbacks.enabled: true` and a role resolvable for a subagent — an explicit `agentPreset` matching a
+1. **Setup**: with fallback content configured and a role resolvable for a subagent — an explicit `agentPreset` matching a
    declared role id, a `roles.rules` match, or (with `roleAutoMatch` left at its default `true`) the LLM auto-match stage —
    dispatch a subagent whose resolved role's chain head differs from the request's current model.
 2. **Expected**: on the subagent's **first** request the chain-head model is injected — an info-level

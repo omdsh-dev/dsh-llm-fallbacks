@@ -125,7 +125,7 @@ And the layer **before** it includes llm-retry (from `@deepseek-ai/dsh-base`) �
 Then **restart the dsh web session** (`dsh web`, or restart the running session) so that both the host half and the client half (the plugin config card) load:
 
 - The web settings GUI's Settings → **插件配置** page should show the **Fallbacks card**, **always available** — the card skeleton also renders on first open (before any `fallbacks` config exists).
-- The card is readable, editable, and saveable; the feature switch `enabled` **defaults to OFF** (hiding the config form body while off) — turning the switch on reveals the full config form; with no chains configured the behavior is a no-op (see [docs/configuration.md](docs/configuration.md)).
+- The card is readable, editable, and saveable; it renders as the flat always-open form (no feature switch — the config-level `enabled` key was removed) with one Save/Discard footer; with nothing configured the behavior is a no-op (see [docs/configuration.md](docs/configuration.md)).
 - In-session, type `/fallbacks` directly to inspect the current session's diagnostics (role → chain → recent switches → cooldown); see the README's `/fallbacks` section.
 
 ## 7. Uninstall

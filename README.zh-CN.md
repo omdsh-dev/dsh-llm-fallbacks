@@ -42,7 +42,7 @@ dsh plugin --profile web add dsh-llm-fallbacks      # web profile（设置 → F
 dsh plugin --profile dsh-tui add dsh-llm-fallbacks  # dsh-tui 终端 profile
 ```
 
-同一个插件、两个前端——区别只在 `--profile` 参数。钉版本：加 `@<version>`。registry 安装拉取的是**已构建产物**（`dist/`），目标机无需构建。registry / git / 本地目录变体、卸载与 `--dump-config` 验证 → [docs/install.md](docs/install.md)。
+同一个插件、两个前端——区别只在 `--profile` 参数。钉版本：加 `@<version>`。registry 安装拉取的是**已构建产物**（`dist/`），目标机无需构建。registry / git / 本地目录变体、卸载与 `--dump-config` 验证 → [docs/install.md](docs/install.md)。插件自带**本地化元数据**（插件页详情视图的标题/描述，英文 + 简体中文）与**图标**——均以包内声明（`locale/*.json` + `icon.svg`）交由宿主自动读取。
 
 ### 配置界面
 
@@ -62,7 +62,6 @@ dsh plugin --profile dsh-tui add dsh-llm-fallbacks  # dsh-tui 终端 profile
 
 ```yaml
 fallbacks:
-  enabled: true            # 功能开关——默认关闭（否则插件完全 no-op）
   rootChain:               # 全时段链：前面的条目 = 降级路径，最后一项 = 默认模型（官方模型）
     - anthropic/claude-3-5-sonnet          # 先走
     - deepseek-official/deepseek-flash  # 最后一档（Flash 或 Pro）
@@ -91,7 +90,7 @@ fallbacks:
 
 按四个步骤逐步构建：
 
-**1. 启用插件。** `enabled: true` 打开降级引擎。默认**关闭（`false`）**——未配置任何链时插件完全 no-op。
+**1. 配置内容。** 本分节**没有功能开关**——只要配置了内容（非空 `rootChain`、至少一条 `timeSlots` 行、或一个已声明角色），插件即介入；空分节完全 no-op。插件页的行开关是总开关（停用插件行即完全停止）。
 
 **2. 配置全时段 `rootChain`。** 前面的条目是降级链，请求失败时先走；**最后**一项是默认模型。
 
@@ -103,7 +102,7 @@ fallbacks:
 
 完整参考（角色实体、fallback 策略、规则、selector、预设角色、分时槽预设）→ [docs/configuration.md](docs/configuration.md)。
 
-> **升级提示（行为变更）**：已有 `fallbacks:` 配置若**未显式写 `enabled` 键**，升级后解析为 `false`——请补上 `enabled: true` 以保持插件继续生效。
+> **升级提示（破坏性变更）**：配置级 `enabled` 开关已**移除**——存量配置仍携带 `enabled: true/false` 时可正常加载（该键被忽略，下次保存时剥离），但不再起任何门控作用。如果你靠 `enabled: false` 保持插件惰性，请改为清空分节（或在插件页停用该行）。
 
 ### 验证
 
@@ -185,7 +184,7 @@ pnpm repair:session-logs -- --drop-legacy-events --apply --backup  # 此处必�
 
 - **root / subagent 自动降级**：任意 agent 在模型故障下按链切换到下一个可用 provider/model，无需手动换模型。
 - **两块制配置**：`rootChain` 管 root 代理；声明式角色实体（`roles.list`）供 `roles.rules` 引用（或内置 `inherit`）。
-- **选择器里把链当主模型**：`enabled` 开启时，宿主模型选择器（web 与 TUI 一致）出现虚拟 `FallbacksChain` / `Auto` 行——选中它即以配置的链作为 root 主模型（需要 all-day 链头合规才能成功委托）；选真实模型则保持 fallback-only（见 [模型选择器中的 FallbacksChain](#模型选择器中的-fallbackschain)）。
+- **选择器里把链当主模型**：只要插件配置了内容，宿主模型选择器（web 与 TUI 一致）即出现虚拟 `FallbacksChain` / `Auto` 行——选中它即以配置的链作为 root 主模型（需要 all-day 链头合规才能成功委托）；选真实模型则保持 fallback-only（见 [模型选择器中的 FallbacksChain](#模型选择器中的-fallbackschain)）。
 - **峰谷无忧（分时切换）**：可选的 `fallbacks.timeSlots` 行按墙钟窗口（配置级 `tz` 时区，默认 `Asia/Shanghai`）轮换 root 生效链——四个冻结的 UTC+8 预设（`liang-peak` / `liang-valley` / `glm-peak` / `glm-valley`，窗口为代码常量、仅模型链可编辑），或自定义 `start`/`end`/`days` 窗口。第一条命中的行生效；全时段行固定最后。时段切换在**下一个** root 请求生效，日志记为**分时切换**——路由种子而非失败决策：不消耗冷却、不计入 `maxSwitchesPerStep`。失败降级保留**降级切换**文案（见 [分时槽预设（分时切换）](#分时槽预设分时切换)）。
 - **派发时角色解析**：在 subagent 的首次请求上，其角色按三个阶段解析——显式（`agentPreset` 匹配已声明角色 id）→ 确定性规则（匹配记录 pair 或实际服务的链头——见 [模型选择器中的 FallbacksChain](#模型选择器中的-fallbackschain)）→ LLM 自动匹配（从已声明角色体系中选择，`fallbacks.roleAutoMatch` 默认 `true`）。解析出的角色的链头模型注入首次请求，并以显式 `role → model` 日志行记录（不写 durable `fallbacks/switch` 事件——issue #52 停写）；设 `roleAutoMatch: false` 仅关闭 LLM 自动匹配阶段（显式 `agentPreset` 阶段仍生效——无显式角色时即复现原有仅规则行为）。设置卡总是渲染「启用角色自动匹配」开关（默认 `true`）以切换之——即使是从未声明过该键的旧配置，schema 默认值同样生效。
 - **角色人格注入到子代理（与链无关）**：当 subagent 的派发声明了本插件已知的角色（Assignment 的 `**Execute as**: <id>` 字段）时，该角色的 `persona` 会安装为子代理自身的人格——角色就是子代理的身份，而不只是路由决策；注入与路由无关：`chain` 为空的角色与带链角色的人格注入完全一致（链只负责选模型）。调用方已设置的人格永不覆盖；宿主 provider 无法承载人格时跳过注入，派发照常原生运行。
@@ -197,7 +196,7 @@ pnpm repair:session-logs -- --drop-legacy-events --apply --backup  # 此处必�
 - **半开恢复（可选）**：`recovery: half-open` 让恢复以证据驱动——冷却到期后路由进入 **half-open**，以一次记录探针（logged probe）放行，而不是直接恢复首选；连续失败使抑制时长按 **×2** 逐次升级、**1 小时**封顶；观察到完成即闭合回路、完全恢复首选。`revertPolicy: 'never'` 使该机制完全失效；状态为会话级内存态（重启即重置）。仅 YAML 配置——默认 `timer` 保持所有既有行为逐字节一致（见 [docs/configuration.md](docs/configuration.md#recovery-mode-recovery-key)）。
 - **行为可见**：每次切换以 info 级日志行（from/to/role/reason）记录——无静默换模型。插件**刻意不写** durable `fallbacks/switch` 会话事件（issue #52——apply() 时的事件类型注册被证伪无效，含该事件的会话在 dsh 重启后拒绝加载）。由旧版插件写入、含此类事件的会话**无法**通过 `ignorable` 标记修复——已发布的 session-format 迁移链（v0→v1）即使事件带 `ignorable` 也拒绝未知事件类型——因此 `pnpm repair:session-logs` 会报告此类日志（只有显式 opt-in 的有损 `--drop-legacy-events` 才会恢复它们——见 [修复已有会话](#修复已有会话)）。
 - **安全阀**：`maxSwitchesPerStep` 限制每 step 切换次数、`alwaysModeRetryCap` 限制 always 模式重试——链循环不会放大延迟。
-- **无配置回归（no-op）**：未配置任何链时行为与未安装插件完全一致——`enabled` 默认关闭（见 [最小配置](#最小配置)）。
+- **无配置回归（no-op）**：未配置任何内容时行为与未安装插件完全一致——内容在否即门控（见 [最小配置](#最小配置)）。
 
 ## dsh-tui profile（终端）
 
@@ -205,7 +204,7 @@ pnpm repair:session-logs -- --drop-legacy-events --apply --backup  # 此处必�
 
 - **`/fallbacks`** —— 本次会话发生了什么：来源、解析角色、生效链、最近降级切换、冷却状态（`recovery: half-open` 生效时显示 half-open 标记行）。只读。
 - **`/fallbacks config`** —— 配置了什么：组合配置回读（触发码、根链、分时槽、时区、角色、角色规则、冷却、回主策略、安全阀、预置、角色自动匹配）。除唯一的动作命令 **`/fallbacks config revert-seed <role-id>`** 外只读——该命令把某个 seed 角色的 persona 还原为已声明的默认（Web 设置卡将 seed 角色的 persona 呈现为只读、不提供还原入口，此命令是该动作的唯一入口）。
-- **`/settings`** —— 编辑界面。插件注册 **fallbacks** 区块，与 **Web 设置卡完全一致**：布尔（`enabled`、`roleAutoMatch`）渲染为开关、下拉（`presets`、`revertPolicy`）为选择器、数值（`cooldownMs`、`maxSwitchesPerStep`、`alwaysModeRetryCap`）为数字输入；复杂结构（`rootChain`、`timeSlots`、`roles.list`、`roles.rules`）为 JSON 文本字段，`triggerCodes` 为逗号分隔文本字段。非法草稿（JSON 解析失败、链尾不合规、分时行畸形）会阻止保存——区块绝不写入损坏配置。
+- **`/settings`** —— 编辑界面。插件注册 **fallbacks** 区块，与 **Web 设置卡完全一致**：布尔（`roleAutoMatch`）渲染为开关、下拉（`presets`、`revertPolicy`）为选择器、数值（`cooldownMs`、`maxSwitchesPerStep`、`alwaysModeRetryCap`）为数字输入；复杂结构（`rootChain`、`timeSlots`、`roles.list`、`roles.rules`）为 JSON 文本字段，`triggerCodes` 为逗号分隔文本字段。非法草稿（JSON 解析失败、链尾不合规、分时行畸形）会阻止保存——区块绝不写入损坏配置。
 
 **版本要求**：`/settings` 的 fallbacks 区块需要 **dsh-tui ≥ v0.8.5**（`main` 上 commit `c51661f` 及以后；settings seam 于 v0.8.0 引入，groups 结构与校验于 v0.8.5 引入）。更旧的 dsh-tui 没有该区块，文件编辑仍是 TUI 唯一编辑面。
 
@@ -213,7 +212,7 @@ pnpm repair:session-logs -- --drop-legacy-events --apply --backup  # 此处必�
 
 ## 模型选择器中的 FallbacksChain
 
-当 `enabled: true` 时，插件注册一个虚拟 provider **FallbacksChain**，目录中只有一行：**Auto**。web profile 与 dsh-tui 都能看到这一行：两者共享同一个 adapter catalog，无需设置页接线或宿主补丁（它与 `/settings` 的 fallbacks 区块相互独立——区块编辑的是配置，不是选择器目录）。该行只要插件启用就可见——遗留多模型或空的 all-day 链**不会**隐藏它（只是委托会拒绝服务）。
+只要插件配置了内容（非空 `rootChain`、至少一条 `timeSlots` 行、或一个已声明角色），它就注册一个虚拟 provider **FallbacksChain**，目录中只有一行：**Auto**。web profile 与 dsh-tui 都能看到这一行：两者共享同一个 adapter catalog，无需设置页接线或宿主补丁（它与 `/settings` 的 fallbacks 区块相互独立——区块编辑的是配置，不是选择器目录）。只要其它内容仍在，遗留多模型或空的 all-day 链**不会**隐藏它（只是委托会拒绝服务）；无任何内容时则没有这一行。
 
 选择 **FallbacksChain / Auto** = 把配置的链作为 root **主模型**：请求保留在虚拟对上，由 adapter 的薄委托在请求时刻派发到生效链的第一个精确 `provider/model`，失败后由降级引擎从该链头照常沿链切换。之所以让选择原样下发（而不是把路由改写成链头），也正是为了不让宿主的模型变更提示被反复触发：落盘的路由与会话选择一致，因此该提示只在**选择真的发生变化**时出现一次，而不再每一步重新注入。选择任何真实目录模型则保持 v0.2.2 的 fallback-only 行为——会话模型为主，链只在它失败后介入。
 
@@ -223,8 +222,8 @@ pnpm repair:session-logs -- --drop-legacy-events --apply --backup  # 此处必�
 
 - **选择器文案**：目录行的 `name`（composer 触发器显示）是动态的——`Auto: DeepSeek Flash[Liang Peak]` / `Auto: DeepSeek Flash[all-day]`（用 catalog 显示名，不是 model id）；id 仍是 `Auto`。all-day 尾巴不合规则只显示 `Auto`。重新打开选择器即可刷新。
 - **全来源同一个薄委托**：root 代理与继承了该选择的 subagent 会话由同一个 `stream()` 薄委托服务——subagent 的角色解析与注入语义不变，只有一处刻意的放宽：派发时规则匹配接受**记录 pair 或实际服务的链头**（此前匹配的超集，因此以真实链头为键的规则仍能命中），虚拟行绝不是第二个路由引擎。继承了该选择的 subagent 仍经链头路由。
-- **链尾合规门槛**：委托成功要求 all-day 链**尾巴合规**——最后一项必须是恰好一个官方模型（`deepseek-official/deepseek-flash` 或 `deepseek-official/deepseek-v4-pro`，即设置卡的「默认模型」面板）；前面的默认降级链先走。禁用插件后该行隐藏（slot/链编辑不会触发注册抖动）。
-- **过期选择**：行消失（插件禁用）而会话仍选中 `FallbacksChain / Auto` 时，会话继续把它显示为当前模型，但 `routable: false`——从目录选一个真实模型即可继续（宿主原生目录语义）。
+- **链尾合规门槛**：委托成功要求 all-day 链**尾巴合规**——最后一项必须是恰好一个官方模型（`deepseek-official/deepseek-flash` 或 `deepseek-official/deepseek-v4-pro`，即设置卡的「默认模型」面板）；前面的默认降级链先走。停用插件（插件页行开关，或清空全部已配置内容）后该行隐藏（slot/链编辑不会触发注册抖动）。
+- **过期选择**：行消失（插件停用）而会话仍选中 `FallbacksChain / Auto` 时，会话继续把它显示为当前模型，但 `routable: false`——从目录选一个真实模型即可继续（宿主原生目录语义）。
 - **能力与重试策略跟随链头**：该行的模型元数据（上下文窗口、模态、推理）镜像当前生效链头，`providerRetryPolicy` 返回**该链头的**策略——因此用户配置的 `llm-deepseek.retryPolicy` 在这条路由上同样生效，不再退回宽松默认。宿主在注册时一次性捕获该策略，因此之后修改策略、或分时槽导致链头 provider 轮换，都只有在插件重新注册后才会反映。重试事件按虚拟 provider 记账——即运行时实际看到的路由。完整语义 → [docs/configuration.md](docs/configuration.md)。
 
 ## 分时槽预设（分时切换）
@@ -235,7 +234,7 @@ pnpm repair:session-logs -- --drop-legacy-events --apply --backup  # 此处必�
 - **预设**（冻结，不可编辑窗口）：`liang-peak` = 周一至周五 09:00–12:00 **与** 14:00–18:00；`liang-valley` = 其它所有 UTC+8 时间；`glm-peak` = 周一至周五 14:00–18:00；`glm-valley` = 其余时间。一个预设 id 对应一行；设置卡的选择器不会重复提供已添加的预设。
 - **自定义行**：`start` / `end`（`HH:mm`，可跨午夜）+ 可选 `days`（0=周日…6=周六；缺省/空 = 每天）+ 模型。
 - **下一请求生效**：时段边界跨越绝不打断进行中的 step——新行在下一个 root 请求生效。轮换仅挂载生效：info 日志 + 设置卡/`/fallbacks` 状态行，无 durable 切换事件。
-- **设置卡**：主代理区块下分三块——**分时槽设置**（额外行：添加预设 / 添加自定义 / 删除 / 按钮或**拖拽**排序；预设行只读展示窗口摘要、仅可编辑模型链；自定义行带可编辑名称；**时区选择器**在此区块内，只要存在预设行就**锁定 Asia/Shanghai**——预设窗口是冻结的 UTC+8 常量）、**默认降级链**（all-day 链，可配置的 provider/model 选择器列表）与**默认模型**（官方 Flash | Pro 二选一链头）。行可折叠为「名称 + 首个模型」。没有 `timeSlots.enabled` 总开关（添加行即开启），也没有 `rootMode` 控件。
+- **平铺设置卡**（官方插件页表单语言）：卡片始终展开——无可折叠外壳、无功能开关——由唯一的底部 **保存/放弃** 按钮对写入整份通过校验的草稿。主代理区块下分三块——**分时槽设置**（额外行：添加预设 / 添加自定义 / 删除 / 按钮或**拖拽**排序；预设行只读展示窗口摘要、仅可编辑模型链；自定义行带可编辑名称；**时区选择器**在此区块内，只要存在预设行就**锁定 Asia/Shanghai**——预设窗口是冻结的 UTC+8 常量）、**默认降级链**（all-day 链，可配置的 provider/model 选择器列表）与**默认模型**（官方 Flash | Pro 二选一链头）。行可折叠为「名称 + 首个模型」（内容级折叠）。没有 `timeSlots.enabled` 总开关（添加行即开启），也没有 `rootMode` 控件。
 
 ## 预设角色（Preset roles）
 
@@ -243,6 +242,15 @@ pnpm repair:session-logs -- --drop-legacy-events --apply --backup  # 此处必�
 
 - **开关**：`fallbacks.presets`——`'bundled'`（默认）在 apply 时声明预设角色；`'none'` 关闭自动声明（已物化行保留）。
 - 完整语义（升级行为、冲突处理、`presetRoles` 库复用）→ [docs/configuration.md](docs/configuration.md)。
+
+## Agent 预设（插件组合）
+
+Agent **preset** 是 dsh 的插件组合机制——一份声明式的子插件行清单，用户可整组启用；preset 本身**不携带任何模型字段**。本插件无需 preset 专属配置：preset 组合的是插件，因此 fallback 生效于**插件行被挂载的每一处**——包含 `dsh-llm-fallbacks` 行的 preset，其会话即享有同一套链与角色配置。
+
+两条组合注意事项：
+
+- **用户 preset 覆盖会整体替换子插件清单**（无合并）：遗漏了 fallbacks 行的 preset 会在使用该 preset 的会话中静默卸载本插件。想保留的插件行都要重新写全。
+- **preset 级链配置可通过把插件行挂进 preset 实现**：preset 组合中插件行的 `config:` 覆盖会形成仅作用于该 preset 会话的链配置（patch 行整体替换 `config`，字段要写全）。
 
 ## 降级触发码（`triggerCodes`）
 
@@ -254,7 +262,6 @@ pnpm repair:session-logs -- --drop-legacy-events --apply --backup  # 此处必�
 
 ```yaml
 fallbacks:
-  enabled: true
   triggerCodes:
     - AUTH
     - QUOTA
