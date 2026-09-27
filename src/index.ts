@@ -845,9 +845,13 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
   // the settings
   // onChange below: transition-reconcile over COMMITTED composed
   // snapshots only (card drafts are client-side until gateway save), so
-  // the catalog never flickers; the condition deliberately ignores
-  // conformance, so slot-row / chain edits never churn
-  // registration.
+  // the catalog never flickers; the gate is `isFallbackActive` content
+  // presence (`rootChain` / `timeSlots` / declared roles), so slot-row
+  // edits churn registration whenever they flip that gate (e.g. removing
+  // the only slot while rootChain and roles are empty) — the intended
+  // content-presence contract (T2), not churn to design away; do NOT
+  // re-narrow the condition to ignore `timeSlots`. Conformance-only chain
+  // edits never churn (conformance gates the delegate, not the row).
   // `() => source()` — the mutable binding, not the initial thunk: `source`
   // reads the Loader's live config reference (or the settings-composed view —
   // same binding), and reconcile must read the LIVE composed snapshot (same

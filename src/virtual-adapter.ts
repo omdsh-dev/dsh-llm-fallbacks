@@ -16,8 +16,13 @@
  * The row is visible whenever something is configured — a non-conforming
  * all-day chain does NOT hide it (PR #62 feedback); conformance still gates
  * a successful delegate (`effectiveHeadOf` below refuses a non-conforming
- * all-day). The condition deliberately ignores `timeSlots` and conformance,
- * so slot-row edits and chain edits never churn registration.
+ * all-day). The registration gate is `isFallbackActive` content presence
+ * (`rootChain` / `timeSlots` / declared roles): a slot-row edit that flips
+ * that gate (e.g. removing the only slot while `rootChain` and roles are
+ * empty) intentionally churns registration — the content-presence contract
+ * (plan fallbacks-web-ux-alignment T2), not churn to design away; do NOT
+ * re-narrow the condition to ignore `timeSlots`. Conformance-only chain
+ * edits still never churn (conformance gates the delegate, not the row).
  *
  * Adapter behavior (P1/P3): `listModels` advertises exactly the one virtual
  * row; `stream()` is a THIN single-hop delegate to the effective chain head
