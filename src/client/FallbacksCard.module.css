@@ -6,8 +6,9 @@
  * (the former PluginCard-mirror chrome died with the config-level `enabled`
  * switch, T2). Field 12px 0 padding with 0.5px l2 hairline separators
  * between adjacent fields, labels 13px/500, hints 12px tertiary, inputs
- * 34px on the 0.5px l4 border with the md radius, one footer at 16px top
- * padding with the dark solid Save. Every color resolves through a
+ * 34px on the 0.5px l4 border with the md radius; per-section Discard +
+ * Save action pairs ride the section headings (dark solid Save). Every
+ * color resolves through a
  * `--dsw-alias-*` token (light/dark adaptive); bare `--border` / `--surface`
  * / `--text-*` names, which nothing in this app defines, would render the
  * light-mode literals written as their fallbacks and stay light under the
@@ -109,13 +110,19 @@
   min-width: 0;
 }
 
-/* Flat section headings (主代理 / 子代理 / 高级选项): field-label
-   typography on the primary label color. Non-collapsible (T3) — no
-   disclosure interaction, no per-section actions (ONE footer Save). */
+/* Flat section headings (主代理 / 子代理 / 高级选项): semantic h2 at
+   heading weight (plan fallbacks-card-section-ux T1) — 14px/600 on the
+   primary label color — laid out as a flex row carrying the section's own
+   Discard + Save pair (T2). 高级选项 hosts the disclosure toggle inside
+   its h2 (T3). */
 .sectionHeading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
   padding: 4px 0;
-  font-size: 12px;
-  line-height: 18px;
+  font-size: 14px;
+  line-height: 20px;
   font-weight: 600;
   color: var(--dsw-alias-label-primary);
 }
@@ -123,6 +130,73 @@
 .sectionHeadingText {
   display: block;
   min-width: 0;
+}
+
+/* Per-section action pair (plan fallbacks-card-section-ux T2): the
+   Discard + Save buttons right-aligned in the heading row (高级选项: at
+   the end of its expanded body). The compact sizing keeps the pair
+   subordinate to the heading it rides. */
+.sectionActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.sectionActions .discard,
+.sectionActions .save {
+  padding: 3px 12px;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+/* The 高级选项 disclosure toggle (plan fallbacks-card-section-ux T3): a
+   content-level control inside the h2 (the ARIA heading-with-button
+   pattern) — button chrome reset so the heading typography carries it. */
+.sectionToggle {
+  appearance: none;
+  border: 0;
+  background: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.sectionToggle:disabled {
+  cursor: default;
+}
+
+.sectionToggle:focus-visible {
+  outline: 2px solid var(--dsw-alias-brand-primary);
+  outline-offset: 1px;
+}
+
+/* The expanded 高级选项 body (plan fallbacks-card-section-ux T3): the
+   official field pacing re-scoped one level down — its fields are no
+   longer direct fieldset children, so the direct-child pacing rules above
+   get this twin (identical rhythm: 12px 0 fields, hairline separators
+   between adjacent fields). */
+.advancedBody {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.fieldset > .advancedBody > .field,
+.fieldset > .advancedBody > .checkboxRow,
+.fieldset > .advancedBody > .numberFields {
+  padding: 12px 0;
+}
+
+.fieldset > .advancedBody > .field + .field,
+.fieldset > .advancedBody > .checkboxRow + .field,
+.fieldset > .advancedBody > .field + .numberFields {
+  border-top: 0.5px solid var(--dsw-alias-border-l2);
 }
 
 /* Field grouping: label + hint + controls. `min-width: 0` keeps long option
@@ -166,8 +240,8 @@
 
 .fieldLabel {
   /* The official field-label form: 13px / weight 500 on the primary label
-     color; inline-flex so an inline note (`.defaultNote`) rides the same
-     baseline with a 10px gap, instead of a margin hack. */
+     color; inline-flex with a 10px gap so the info-hint badge rides the
+     same baseline. */
   display: inline-flex;
   align-items: center;
   gap: 10px;
@@ -185,13 +259,6 @@
   flex-wrap: wrap;
   font-size: 12px;
   line-height: 18px;
-  color: var(--dsw-alias-label-tertiary);
-}
-
-.defaultNote {
-  font-size: 12px;
-  line-height: 18px;
-  font-weight: 400;
   color: var(--dsw-alias-label-tertiary);
 }
 
@@ -893,20 +960,10 @@ select.input {
   gap: 4px;
 }
 
-/* The ONE footer (official SettingsForm): 16px top padding, no divider —
-   the field padding above provides the air. Actions right-aligned; the
-   failed message would flex wide if one ever rode the footer (errors render
-   atop the form — KD-U3). */
-.footer {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-  padding-top: 16px;
-}
-
-/* Discard (secondary outline) + Save (dark solid primary — the official
-   SettingsForm action pair). */
+/* Discard (secondary outline) + Save (dark solid primary) — the official
+   SettingsForm action pair, re-homed beside each section heading (plan
+   fallbacks-card-section-ux T2; the flat footer is gone). Sized by
+   `.sectionActions`. */
 .discard,
 .save {
   appearance: none;

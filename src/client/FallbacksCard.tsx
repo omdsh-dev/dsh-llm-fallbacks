@@ -11,11 +11,13 @@
  * rotating chevron, no dirty "unsaved" pill, no card-local open state, no
  * bordered `<li>` box. The page already renders the plugin title/description
  * above the card (the `locale/*.json` meta files the host resolves per UI
- * language), so the notices, the form, and the footer tile directly beneath
- * it in the official flat settings-form language (reference §3): fields at
+ * language), so the notices, the form, and the section actions directly
+ * beneath it in the official flat settings-form language (reference §3):
+ * fields at
  * 12px vertical padding with 0.5px hairline separators, 34px inputs on the
- * 0.5px l4 border, one dark solid Save footer. The card is ALWAYS open —
- * nothing is hidden, so nothing needs disclosure state; the degraded /
+ * 0.5px l4 border, per-section Discard + Save pairs on the section
+ * headings. The card is ALWAYS open —
+ * nothing needs card-level disclosure state; the degraded /
  * error / read-only / migration notices render flat atop the form (the
  * unavailable notice stays always-visible per KD-G5 — the documented
  * divergence from the advisor, whose unavailable card renders nothing: the
@@ -27,19 +29,22 @@
  * unconditionally; the Plugins-page row toggle is the master switch and the
  * runtime gates read content presence (`isFallbackActive`).
  *
- * ONE Save replaces the per-section saves (T3): the per-section split
- * existed so one section's Save could not ride along another section's
- * unsaved edits (PR #62 UX round 3) — with ONE save over ONE document that
- * concern is moot. The footer's Save writes the whole validated draft
- * (disabled = `!dirty || invalid || saving || !writable` — `invalid` is the
- * LIVE whole-form `validateDraft` verdict plus the empty-rule-row check;
- * section bucketing survives for ERROR PLACEMENT only: each violation
- * renders under its owning section heading). Save additionally carries
- * `!writable` (W-1, qc2 fix wave: the dirty-implies-writable assumption
- * does not hold for this in-place-draft store). Discard is kept — our
- * staged edits survive refresh, the advisor's documented divergence from
- * the official no-discard form — a pure client-side revert of the WHOLE
- * draft to the last accepted config (`!dirty || saving`).
+ * PER-SECTION Save/Discard return beside each section heading (plan
+ * fallbacks-card-section-ux, the maintainer's live-host feedback reversing
+ * the flat plan's one-document model): the scroll-to-save cost of ONE
+ * bottom Save outweighed it. Each section's Save writes ONLY that section's
+ * fields (patch = the last ACCEPTED config with the section's fields
+ * replaced — the ride-along protection, PR #62 UX round 3), gated by that
+ * section's dirty term and validation bucket only (KD-U1: save =
+ * `!sectionDirty || saving || !writable`, discard = `!sectionDirty ||
+ * saving`; Save additionally carries `!writable` — W-1, qc2 fix wave: the
+ * dirty-implies-writable assumption does not hold for this in-place-draft
+ * store). Violations render live under their OWNING section heading, and a
+ * store write failure renders under the section whose Save was last
+ * clicked (`lastSaveSection`). Discard is kept — our staged edits survive
+ * refresh, the advisor's documented divergence from the official
+ * no-discard form — a pure client-side revert of THAT section's editors to
+ * the last accepted config.
  *
  * The form body is the two-block editing surface (spec §8): the 6 top-level
  * scalar fields (trigger codes / revert policy / three numeric fields), the
@@ -51,7 +56,9 @@
  * the time-slot row cards and the role entity cards (with the seeded
  * persona briefs) stay collapsible — a read-only view forces them open so
  * the configs stay reachable. The 主代理 / 子代理 / 高级选项 group labels
- * stay as flat, non-collapsible section headings.
+ * are semantic `<h2>` headings (T1); 高级选项 is a content-level disclosure
+ * collapsed by default (T3 — same expand/collapse contract as the rows, a
+ * read-only view forces it open).
  *
  * Validation: id format/reserved word/duplicates, undeclared rule role
  * references, illegal selectors, and a role with no chain entries (no model
@@ -336,13 +343,14 @@ function assembleConfig(
 }
 
 /**
- * The form's error buckets (formerly the per-section SAVE anchors — PR #62
- * UX round 2; T3 keeps the BUCKETS for error placement only): 主代理
- * (main agent — time slots / default chain / default model), 子代理
+ * The form's error buckets AND the per-section save anchors (PR #62 UX
+ * round 2; plan fallbacks-card-section-ux restores the per-section saves):
+ * 主代理 (main agent — time slots / default chain / default model), 子代理
  * (subagents — role entities + role rules), and 高级选项 (advanced
  * options — trigger codes / cooldown / revert / caps / roleAutoMatch).
- * ONE Save writes the whole draft; each bucket's violations render under
- * its owning section heading so the user can locate them.
+ * Each bucket's violations render live under its owning section heading;
+ * a section's Save is blocked by ITS OWN bucket only (plus the empty-rule-
+ * row check on 子代理), so a bad role id never blocks a 主代理 save.
  */
 type ValidationSection = 'main' | 'sub' | 'advanced'
 
@@ -388,9 +396,10 @@ function seedBadgeLabel(seed: SeedRowInfo | undefined, t: FallbacksCardProps['t'
  * timeSlots / slot* / tz / default model / default chain; 子代理: role* /
  * rule*; 高级选项: trigger / cooldown / revert / always / roleAutoMatch —
  * the scalars are never validated, so the advanced bucket stays empty
- * today). A non-empty result is the Save disabled gate's `invalid` term —
- * the draft is never written while any bucket is non-empty. `persona` is
- * free text and never validated.
+ * today). A non-empty bucket blocks THAT section's Save write only
+ * (per-section saves, plan fallbacks-card-section-ux) — a sibling section
+ * with a clean bucket still saves. `persona` is free text and never
+ * validated.
  *
  * `seedInfo` is the live trimmed-id → seed-entry map derived from
  * `state.seeds` (spec §9.4): the empty-chain block relaxes for seeded ids
@@ -731,8 +740,8 @@ function ChainSelectorEditor({
 
 /**
  * Render the Fallbacks settings card inside the plugin-config section —
- * flat: the notices, the form, and the footer tile directly under the
- * page's plugin title/description, with no chrome of our own.
+ * flat: the notices, the form, and the section action pairs directly under
+ * the page's plugin title/description, with no chrome of our own.
  * @param props - slot-delivered injected dependencies and the synthesized t seat.
  * @returns the card.
  */
@@ -781,17 +790,32 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
   const [ruleRows, setRuleRows] = useState<RoleRuleRow[]>(() => rulesToRows(defaultFallbacksConfig.roles.rules))
   // The preset picker's pending selection (UI-only, never part of the draft).
   const [presetToAdd, setPresetToAdd] = useState<string>('')
+  // The section whose Save was last clicked (per-section saves, plan
+  // fallbacks-card-section-ux): a store write failure (`state.error`)
+  // renders under THAT section instead of the card-top banner; null means
+  // no save has been attempted, so a load failure keeps the card-top
+  // notice + Retry.
+  const [lastSaveSection, setLastSaveSection] = useState<ValidationSection | null>(null)
+  // The 高级选项 disclosure is card-local USER state, default COLLAPSED
+  // (plan fallbacks-card-section-ux T3 — the quiet detail surface; the
+  // expanded state resets on remount). The derived `advancedVisible`
+  // mirrors the row-disclosure read-only rule: a read-only view forces the
+  // section open so the fields stay reachable (the toggle is inert there —
+  // the F-002 contract).
+  const [advancedOpen, setAdvancedOpen] = useState(false)
   const seededConfigKey = useRef<string | null>(null)
 
   // The assembled draft + the PER-SECTION dirty flags, computed once per
-  // render and shared by the reseed effects and the footer gates. Field
-  // ownership: 主代理 owns rootChain / timeSlots / tz, 子代理 owns roles
-  // (incl. empty rule rows — they serialize away but still count as pending
-  // UI), 高级选项 owns the advanced scalars. The per-section flags drive the
-  // PER-SECTION reseeds (a content-changing ready never clobbers a dirty
-  // section's staged edits — the documented divergence from the official
-  // no-discard form); the single footer Save/Discard gate on their union.
-  // There is no config-level `enabled` term (T2 — the switch is removed).
+  // render and shared by the reseed effects and the per-section Save/Discard
+  // gates. Field ownership: 主代理 owns rootChain / timeSlots / tz, 子代理
+  // owns roles (incl. empty rule rows — they serialize away but still count
+  // as pending UI), 高级选项 owns the advanced scalars. The per-section
+  // flags drive the PER-SECTION reseeds (a content-changing ready never
+  // clobbers a dirty section's staged edits — the documented divergence
+  // from the official no-discard form) and gate ONLY their own section's
+  // actions: an edit in one section never arms a sibling's Save (plan
+  // fallbacks-card-section-ux). There is no config-level `enabled` term
+  // (T2 — the switch is removed).
   const draft = assembleConfig(
     scalars, allDayModel, state.config.rootChain, allDayChainRow,
     roleRows, ruleRows,
@@ -805,7 +829,8 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
   const hasEmptyRuleRows = ruleRows.some(row => row.role === '')
   // Timezone is not a user control (host tz for custom-only, Asia/Shanghai
   // with presets). Do not include it in dirty — otherwise a UTC CI host
-  // vs the Asia/Shanghai default lights the footer gate on a clean load.
+  // vs the Asia/Shanghai default lights the 主代理 Save gate on a clean
+  // load.
   const mainDirty = JSON.stringify([...draft.rootChain, draft.timeSlots])
     !== JSON.stringify([...state.config.rootChain, state.config.timeSlots ?? []])
   const subDirty = hasEmptyRuleRows || JSON.stringify(draft.roles) !== JSON.stringify(state.config.roles)
@@ -816,7 +841,6 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
     state.config.triggerCodes, state.config.cooldownMs, state.config.revertPolicy,
     state.config.maxSwitchesPerStep, state.config.alwaysModeRetryCap, state.config.roleAutoMatch,
   ])
-  const dirty = mainDirty || subDirty || advancedDirty
 
   // Editors seed from the accepted config on every content-changing ready
   // (PR #62 UX round 3): the reseed is PER-SECTION — only CLEAN sections
@@ -1018,6 +1042,19 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
 
   const saving = state.status === 'saving'
   const writable = state.writable
+  // Advanced options: user-collapsible while writable; forced visible in a
+  // read-only view (same forced-open rule as the slot/role rows) — the
+  // inert toggle there would otherwise hide the section for good.
+  const advancedVisible = advancedOpen || !writable
+  // The three numeric fields' default values ride their info-hint tooltip
+  // (data-tip + aria-label — exactly one info source per field; plan
+  // fallbacks-card-section-ux T4), replacing the standalone label-row note
+  // that wrapped long labels. Composed from `defaults.prefix` + the schema
+  // default (defaultFallbacksConfig — not the accepted value: the hint
+  // documents the default, whatever the operator's config carries now).
+  const cooldownMsTip = `${t('cooldownMs.tooltip')} ${t('defaults.prefix')}: ${defaultFallbacksConfig.cooldownMs}`
+  const maxSwitchesPerStepTip = `${t('maxSwitchesPerStep.tooltip')} ${t('defaults.prefix')}: ${defaultFallbacksConfig.maxSwitchesPerStep}`
+  const alwaysModeRetryCapTip = `${t('alwaysModeRetryCap.tooltip')} ${t('defaults.prefix')}: ${defaultFallbacksConfig.alwaysModeRetryCap}`
   const unknownCodes = scalars.triggerCodes.filter(code => !KNOWN_TRIGGER_CODES.includes(code))
   // PR #62 feedback round: preset rows lock the tz to UTC+8 / Asia/Shanghai
   // (frozen windows) — the picker is disabled and the assembled tz is forced.
@@ -1068,16 +1105,13 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
     seedInfo.set(seed.id.trim(), { overridden: seed.overridden, source: seed.source })
   }
 
-  // The whole-form validation verdict (T3): computed ONCE per render and
-  // shared by the Save disabled gate (`invalid`), the per-section banners,
-  // and nothing else. There is no "blocked save attempt" state anymore —
-  // Save is disabled while the draft is invalid, so the violations surface
-  // live under their owning section headings.
+  // The whole-form validation verdict (computed ONCE per render and shared
+  // by the per-section banners and the save path): each bucket's violations
+  // render live under its owning section heading, and a section's Save
+  // blocks on ITS OWN bucket (plus the empty-rule-row check on 子代理 —
+  // see {@link saveSection}). Violations in one section never block a
+  // sibling section's save.
   const liveErrors = validateDraft(draft, t, seedInfo)
-  const invalid = hasEmptyRuleRows
-    || liveErrors.main.length > 0
-    || liveErrors.sub.length > 0
-    || liveErrors.advanced.length > 0
 
   // The compact recent-switch line: the most recent switch (from → to +
   // role/reason) or an honest empty/loading/error state — one line, never a
@@ -1143,32 +1177,91 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
     }
   }, [state.catalogStatus, state.catalogEpoch, state.config, mainDirty, subDirty])
 
-  // ONE Save (T3): writes the whole validated draft through the one gateway
-  // (`controller.save`). The write only fires from the footer button, whose
-  // disabled gate is `!dirty || invalid || saving || !writable` — the
-  // validation is enforced by the gate, so no pre-write re-validation pass
-  // is needed here.
-  const save = (): void => {
-    void controller.save(draft)
+  // PER-SECTION saves (plan fallbacks-card-section-ux, the pre-flat model
+  // restored by the maintainer's live-host feedback): every section's Save
+  // writes ONLY that section's fields through the one gateway
+  // (`controller.save`), with the other sections' values taken from the
+  // last ACCEPTED config — a 高级选项 Save of a staged 主代理 edit
+  // persists neither (the ride-along protection, PR #62 UX round 3). The
+  // saved section is recorded so a store write failure renders under the
+  // section whose Save was clicked; validation violations render live
+  // under their OWNING sections (validateDraft buckets them), and ONLY the
+  // saved section's bucket blocks the write.
+  const sectionPatch = (section: ValidationSection): FallbacksConfig => {
+    const base = { ...state.config }
+    switch (section) {
+      case 'main':
+        return { ...base, rootChain: draft.rootChain, timeSlots: draft.timeSlots, tz: draft.tz }
+      case 'sub':
+        return { ...base, roles: draft.roles }
+      case 'advanced':
+        return {
+          ...base,
+          triggerCodes: draft.triggerCodes,
+          cooldownMs: draft.cooldownMs,
+          revertPolicy: draft.revertPolicy,
+          maxSwitchesPerStep: draft.maxSwitchesPerStep,
+          alwaysModeRetryCap: draft.alwaysModeRetryCap,
+          roleAutoMatch: draft.roleAutoMatch,
+        }
+    }
   }
 
-  // Discard is a pure client-side revert of the WHOLE draft to the last
-  // accepted config (no gateway write — upstream semantics). KEPT in the
-  // flat card (the advisor's documented divergence from the official
-  // no-discard form): our staged edits survive refresh, so the user needs a
-  // way back. The upstream disabled term `!dirty || saving` applies (no
-  // `!writable`: in read-only the draft can still hold staged edits from
-  // before a mid-session writable flip, and a client-side revert is always
-  // safe).
-  const discard = (): void => {
-    const catalog = catalogOf(state)
-    setAllDayModel(allDayModelOf(state.config.rootChain))
-    setAllDayChainRow(allDayChainRowOf(state.config.rootChain, catalog))
-    setTimeSlotRows(timeSlotsToRows(state.config.timeSlots ?? [], catalog))
-    setRoleRows(rolesToRows(state.config.roles.list, catalog))
-    setRuleRows(rulesToRows(state.config.roles.rules, catalog))
-    setScalars(scalarsOf(state.config))
+  const saveSection = (section: ValidationSection): void => {
+    setLastSaveSection(section)
+    // An empty rule row is invisible to validateDraft (rowsToRules dropped
+    // it from the draft) — the row would vanish on a successful save with
+    // no explanation. Block the SUB save alongside the section's bucket
+    // (qc3 F-4); the row keeps its inline hint so the user sees why.
+    if (liveErrors[section].length > 0 || (section === 'sub' && hasEmptyRuleRows)) return
+    void controller.save(sectionPatch(section))
   }
+
+  // Discard is a pure client-side revert to the last accepted config (no
+  // gateway write — upstream semantics), PER-SECTION: 主代理 Discard
+  // reverts the main fields (+ tz), 子代理 Discard reverts roles, 高级选项
+  // Discard reverts the advanced scalars — one section's Discard never
+  // reverts a sibling's staged edits. The disabled term
+  // `!sectionDirty || saving` applies (no `!writable`: in read-only the
+  // draft can still hold staged edits from before a mid-session writable
+  // flip, and a client-side revert is always safe).
+  const discardSection = (section: ValidationSection): void => {
+    const catalog = catalogOf(state)
+    switch (section) {
+      case 'main': {
+        setAllDayModel(allDayModelOf(state.config.rootChain))
+        setAllDayChainRow(allDayChainRowOf(state.config.rootChain, catalog))
+        setTimeSlotRows(timeSlotsToRows(state.config.timeSlots ?? [], catalog))
+        setScalars(prev => ({ ...prev, tz: state.config.tz ?? 'Asia/Shanghai' }))
+        break
+      }
+      case 'sub': {
+        setRoleRows(rolesToRows(state.config.roles.list, catalog))
+        setRuleRows(rulesToRows(state.config.roles.rules, catalog))
+        break
+      }
+      case 'advanced': {
+        setScalars(prev => ({
+          ...prev,
+          triggerCodes: [...state.config.triggerCodes],
+          cooldownMs: state.config.cooldownMs,
+          revertPolicy: state.config.revertPolicy,
+          maxSwitchesPerStep: state.config.maxSwitchesPerStep,
+          alwaysModeRetryCap: state.config.alwaysModeRetryCap,
+          roleAutoMatch: state.config.roleAutoMatch,
+        }))
+        break
+      }
+    }
+  }
+
+  // A store write failure renders under the section whose Save was
+  // clicked; once the store settles READY (a successful write or load) the
+  // section anchor is no longer meaningful — a later load failure must go
+  // back to the card-top notice + Retry.
+  useEffect(() => {
+    if (state.status === 'ready') setLastSaveSection(null)
+  }, [state.status])
 
   // The degraded derivation is latched in the card (the store stays
   // untouched): `present` only ever changes inside the store's `accept()`,
@@ -1198,10 +1291,10 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
           {t('legacy.banner', { keys: state.legacyKeys.join(', ') })}
         </p>
       )}
-      {state.status === 'error' && state.error !== null && (
+      {state.status === 'error' && state.error !== null && lastSaveSection === null && (
         // Flat error notice (KD-U3): a LOAD failure (initial load or a
-        // refresh that never landed) and a WRITE failure render the same
-        // way now — there is no per-section anchor anymore (ONE Save). The
+        // refresh that never landed) renders here — a WRITE failure renders
+        // under the section whose Save was clicked (`lastSaveSection`). The
         // Retry button only shows when the form is inert (the load never
         // landed): with writable the form itself is the retry surface
         // (Save), and a reload would clobber staged edits.
@@ -1239,16 +1332,38 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
        * css module). */}
       <fieldset className={css.fieldset} disabled={!writable}>
         {/* 主代理 (main agent) section heading groups 分时槽设置 / 默认降级链
-         * / 默认模型 below. Flat and non-collapsible (T3) — no actions live
-         * beside it anymore (ONE footer Save); this section's validation
-         * violations render directly under it. */}
-        <div className={css.sectionHeading} id="fallbacks-main-agent">
+         * / 默认模型 below. Semantic h2 (plan fallbacks-card-section-ux T1)
+         * carrying the section's own Discard + Save beside the label (T2 —
+         * the pre-flat pattern restored); this section's validation /
+         * save errors render directly under it. */}
+        <h2 className={css.sectionHeading} id="fallbacks-main-agent">
           <span className={css.sectionHeadingText}>{t('mainAgent.label')}</span>
-        </div>
+          <span className={css.sectionActions}>
+            <button
+              type="button"
+              className={css.discard}
+              disabled={!mainDirty || saving}
+              onClick={() => { discardSection('main') }}
+            >
+              {t('discard')}
+            </button>
+            <button
+              type="button"
+              className={css.save}
+              disabled={!writable || saving || !mainDirty}
+              onClick={() => { saveSection('main') }}
+            >
+              {saving ? t('save.saving') : t('save')}
+            </button>
+          </span>
+        </h2>
         {liveErrors.main.length > 0 && (
           <p className={css.error} role="alert">
             {`${t('validation.blocked')}${liveErrors.main.join('; ')}`}
           </p>
+        )}
+        {lastSaveSection === 'main' && state.status === 'error' && state.error !== null && (
+          <p className={css.error} role="alert">{t('error.generic', { message: state.error })}</p>
         )}
         {/* 分时槽设置 (plan fallbacks-timeslots Task 3; PR #62 feedback
          * round): the extra-row list — first matching row wins, the all-day
@@ -1659,14 +1774,36 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
         </div>
 
         {/* 子代理 (subagents) section heading groups the roles list + the
-         * role rules below. Flat and non-collapsible (T3). */}
-        <div className={css.sectionHeading} id="fallbacks-subagents">
+         * role rules below. Semantic h2 with the section's own Discard +
+         * Save (plan fallbacks-card-section-ux T1/T2). */}
+        <h2 className={css.sectionHeading} id="fallbacks-subagents">
           <span className={css.sectionHeadingText}>{t('subagents.label')}</span>
-        </div>
+          <span className={css.sectionActions}>
+            <button
+              type="button"
+              className={css.discard}
+              disabled={!subDirty || saving}
+              onClick={() => { discardSection('sub') }}
+            >
+              {t('discard')}
+            </button>
+            <button
+              type="button"
+              className={css.save}
+              disabled={!writable || saving || !subDirty}
+              onClick={() => { saveSection('sub') }}
+            >
+              {saving ? t('save.saving') : t('save')}
+            </button>
+          </span>
+        </h2>
         {liveErrors.sub.length > 0 && (
           <p className={css.error} role="alert">
             {`${t('validation.blocked')}${liveErrors.sub.join('; ')}`}
           </p>
+        )}
+        {lastSaveSection === 'sub' && state.status === 'error' && state.error !== null && (
+          <p className={css.error} role="alert">{t('error.generic', { message: state.error })}</p>
         )}
         {/* Spec D4 / T5: read-only host-policy status. Hidden when the
          * additive field is absent or disabled — never an active
@@ -2127,16 +2264,38 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
           </button>
         </div>
 
-        {/* 高级选项 (advanced options) section heading: flat and
-         * non-collapsible (T3 — the old disclosure toggle is gone; the
-         * fields render unconditionally in read-only too). */}
-        <div className={css.sectionHeading} id="fallbacks-advanced">
-          <span className={css.sectionHeadingText}>{t('advanced.label')}</span>
-        </div>
+        {/* 高级选项 (advanced options) section heading: a semantic h2 AND
+         * the content-level disclosure toggle (plan fallbacks-card-section-ux
+         * T1/T3 — the ARIA heading-with-button pattern, the same expand/
+         * collapse contract as the time-slot/role rows). Collapsed by
+         * default (card-local user state, resets on remount); a read-only
+         * view forces it open (the toggle is inert there — the F-002 rule,
+         * without the forced-open term the fields would be unreachable).
+         * The section's Discard/Save live inside the expanded body (the
+         * pre-flat pattern), with its validation / save errors above them. */}
+        <h2 className={css.sectionHeading} id="fallbacks-advanced">
+          <button
+            type="button"
+            className={css.sectionToggle}
+            disabled={!writable}
+            aria-expanded={advancedVisible}
+            aria-controls={advancedVisible ? 'fallbacks-advanced-body' : undefined}
+            aria-label={t(advancedVisible ? 'advanced.collapse' : 'advanced.expand')}
+            onClick={() => { if (writable) setAdvancedOpen(!advancedOpen) }}
+          >
+            <ChevronDownIcon className={advancedVisible ? `${css.chevron} ${css.chevronOpen}` : css.chevron} />
+            <span className={css.sectionHeadingText}>{t('advanced.label')}</span>
+          </button>
+        </h2>
+        {advancedVisible && (
+          <div id="fallbacks-advanced-body" className={css.advancedBody}>
         {liveErrors.advanced.length > 0 && (
           <p className={css.error} role="alert">
             {`${t('validation.blocked')}${liveErrors.advanced.join('; ')}`}
           </p>
+        )}
+        {lastSaveSection === 'advanced' && state.status === 'error' && state.error !== null && (
+          <p className={css.error} role="alert">{t('error.generic', { message: state.error })}</p>
         )}
         {/* The roleAutoMatch toggle (plan fallbacks-settings-visibility Task 3): a
          * row-level preference in the advanced section, default on (the
@@ -2214,8 +2373,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
           <div className={css.field}>
             <span className={css.fieldLabel}>
               <label htmlFor="fallbacks-cooldown-ms">{t('cooldownMs.label')}</label>
-              <InfoHint label={t('cooldownMs.tooltip')} disabled={!writable} />
-              <span className={css.defaultNote}>{t('defaults.prefix')}: {state.config.cooldownMs}</span>
+              <InfoHint label={cooldownMsTip} disabled={!writable} />
             </span>
             <input
               id="fallbacks-cooldown-ms"
@@ -2232,8 +2390,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
           <div className={css.field}>
             <span className={css.fieldLabel}>
               <label htmlFor="fallbacks-max-switches">{t('maxSwitchesPerStep.label')}</label>
-              <InfoHint label={t('maxSwitchesPerStep.tooltip')} disabled={!writable} />
-              <span className={css.defaultNote}>{t('defaults.prefix')}: {state.config.maxSwitchesPerStep}</span>
+              <InfoHint label={maxSwitchesPerStepTip} disabled={!writable} />
             </span>
             <input
               id="fallbacks-max-switches"
@@ -2250,8 +2407,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
           <div className={css.field}>
             <span className={css.fieldLabel}>
               <label htmlFor="fallbacks-always-cap">{t('alwaysModeRetryCap.label')}</label>
-              <InfoHint label={t('alwaysModeRetryCap.tooltip')} disabled={!writable} />
-              <span className={css.defaultNote}>{t('defaults.prefix')}: {state.config.alwaysModeRetryCap}</span>
+              <InfoHint label={alwaysModeRetryCapTip} disabled={!writable} />
             </span>
             <input
               id="fallbacks-always-cap"
@@ -2265,35 +2421,30 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
             <span className={css.hint}>{t('alwaysModeRetryCap.hint')}</span>
           </div>
         </div>
+        {/* The advanced section's own Discard + Save INSIDE the expanded
+         * body (plan fallbacks-card-section-ux T2/T3 — the pre-flat
+         * pattern): gating on the advanced section's dirty term only. */}
+        <div className={css.sectionActions}>
+          <button
+            type="button"
+            className={css.discard}
+            disabled={!advancedDirty || saving}
+            onClick={() => { discardSection('advanced') }}
+          >
+            {t('discard')}
+          </button>
+          <button
+            type="button"
+            className={css.save}
+            disabled={!writable || saving || !advancedDirty}
+            onClick={() => { saveSection('advanced') }}
+          >
+            {saving ? t('save.saving') : t('save')}
+          </button>
+        </div>
+          </div>
+        )}
       </fieldset>
-
-      {/* The ONE footer (T3): Discard (kept — staged edits survive refresh,
-       * the documented divergence from the official no-discard form) + the
-       * dark solid Save. Save disabled = `!dirty || invalid || saving ||
-       * !writable`; Discard disabled = `!dirty || saving` (a pure
-       * client-side revert — disabling it in read-only would strand staged
-       * edits the user cannot clear, and the store-side writable guard
-       * makes a read-only write fail cleanly even if it were reached).
-       * OUTSIDE the fieldset: fieldset[disabled] would kill the buttons in
-       * read-only, stranding staged edits. */}
-      <div className={css.footer}>
-        <button
-          type="button"
-          className={css.discard}
-          disabled={!dirty || saving}
-          onClick={discard}
-        >
-          {t('discard')}
-        </button>
-        <button
-          type="button"
-          className={css.save}
-          disabled={!dirty || invalid || saving || !writable}
-          onClick={save}
-        >
-          {saving ? t('save.saving') : t('save')}
-        </button>
-      </div>
 
       {/* AC-2 read-only status, compact and flat (the page-bottom block is
        * gone): only the most recent switch (D-5 — read through the store's
