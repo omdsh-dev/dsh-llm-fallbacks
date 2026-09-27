@@ -2319,14 +2319,12 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
          * `assembleConfig`; a legacy config's first save therefore
          * persists `roleAutoMatch: true` (semantically identical to the
          * default). */}
+        {/* Checkbox inline-LEFT of its text (the optionRow convention,
+         * card-ux-followup T2): the input is the row's first child and the
+         * whole text block is label-associated — the title AND description
+         * carry `htmlFor`, while the InfoHint stays a sibling of the
+         * label-text elements (QC W-2: never nested inside a `<label>`). */}
         <div className={css.checkboxRow}>
-          <div className={css.checkLabel}>
-            <span className={css.checkLabelTitle}>
-              <label htmlFor="fallbacks-role-automatch">{t('roleAutoMatch.label')}</label>
-              <InfoHint label={t('roleAutoMatch.tooltip')} disabled={!writable} />
-            </span>
-            <span className={css.checkLabelDesc}>{t('roleAutoMatch.hint')}</span>
-          </div>
           <input
             id="fallbacks-role-automatch"
             type="checkbox"
@@ -2335,6 +2333,13 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
             disabled={!writable}
             onChange={event => { updateScalars(draft => { draft.roleAutoMatch = event.target.checked }) }}
           />
+          <div className={css.checkLabel}>
+            <span className={css.checkLabelTitle}>
+              <label htmlFor="fallbacks-role-automatch">{t('roleAutoMatch.label')}</label>
+              <InfoHint label={t('roleAutoMatch.tooltip')} disabled={!writable} />
+            </span>
+            <label className={css.checkLabelDesc} htmlFor="fallbacks-role-automatch">{t('roleAutoMatch.hint')}</label>
+          </div>
         </div>
         <div className={css.field} role="group" aria-labelledby="fallbacks-trigger-codes">
           <span className={css.fieldLabel}>
