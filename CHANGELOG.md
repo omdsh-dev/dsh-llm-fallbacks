@@ -6,6 +6,20 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-09-27
+
+### Changed
+
+- Rebuilt the web settings card in the official Plugins-page flat form language: the card is always open with no collapsible chrome and no feature switch, all fields render unconditionally under flat section headings (主代理 / 子代理 / 高级选项), and ONE footer Save/Discard pair replaces the per-section saves — Save writes the whole validated draft (Discard is kept; staged edits survive refresh). Self-drawn buttons, icons, and tooltips replace the `@deepseek-ai/dsh-client-ui-primitives` dependency, which is dropped from the client bundle and from `peerDependencies`.
+
+### Added
+
+- Added localized plugin metadata and an icon: package-root `locale/en.json` / `locale/zh.json` (title "Fallbacks" / "故障降级" plus a one-line description) and a package `icon.svg` in the official gradient-tile style, declared through `package.json` (`icon`, `exports["./locale/*.json"]`, `files`) so the Plugins-page detail view and component row localize automatically.
+
+### Removed
+
+- Removed the config-level `enabled` switch (breaking): the Plugins-page row toggle is the master switch, and the runtime no-op gate re-keys to content presence — an empty configuration (no chains, time slots, or roles) behaves exactly like an uninstalled plugin. Stored profiles still carrying `enabled: true/false` load cleanly; the key is silently stripped from snapshots and saves and never re-persisted.
+
 ## [0.6.1] - 2026-09-24
 
 ### Changed
