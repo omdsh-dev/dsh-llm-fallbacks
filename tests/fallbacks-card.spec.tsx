@@ -888,9 +888,11 @@ describe('FallbacksCard section saves (plan fallbacks-card-section-ux)', () => {
     // propagates; the section Saves share the !writable term — KD-U1).
     expect((screen.getByLabelText(en['cooldownMs.label']) as HTMLInputElement).disabled).toBe(true)
     expect(saveButton('main').disabled).toBe(true)
-    // Discard stays available: a pure client-side revert must not strand
-    // staged edits in a read-only environment (KD-U1 has no !writable
-    // term) — a clean draft merely keeps it gated on !sectionDirty.
+    // In a real browser the section action pairs are inert under
+    // fieldset[disabled] when not writable (pre-flat parity; jsdom cannot
+    // model the propagation). The reported disabled state here comes from
+    // the button's own `!sectionDirty || saving` term (clean draft), not
+    // from an explicit !writable gate.
     expect(discardButton('main').disabled).toBe(true)
   })
 })

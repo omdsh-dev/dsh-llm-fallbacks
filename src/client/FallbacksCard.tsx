@@ -1208,12 +1208,16 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
   }
 
   const saveSection = (section: ValidationSection): void => {
-    setLastSaveSection(section)
     // An empty rule row is invisible to validateDraft (rowsToRules dropped
     // it from the draft) — the row would vanish on a successful save with
     // no explanation. Block the SUB save alongside the section's bucket
     // (qc3 F-4); the row keeps its inline hint so the user sees why.
     if (liveErrors[section].length > 0 || (section === 'sub' && hasEmptyRuleRows)) return
+    // Arm AFTER the early return: only an actually-dispatched save anchors
+    // the section. A validation-blocked click must not anchor
+    // `lastSaveSection`, or a later load failure would render under that
+    // section instead of the card-top notice + Retry.
+    setLastSaveSection(section)
     void controller.save(sectionPatch(section))
   }
 
@@ -1221,10 +1225,11 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
   // gateway write — upstream semantics), PER-SECTION: 主代理 Discard
   // reverts the main fields (+ tz), 子代理 Discard reverts roles, 高级选项
   // Discard reverts the advanced scalars — one section's Discard never
-  // reverts a sibling's staged edits. The disabled term
-  // `!sectionDirty || saving` applies (no `!writable`: in read-only the
-  // draft can still hold staged edits from before a mid-session writable
-  // flip, and a client-side revert is always safe).
+  // reverts a sibling's staged edits. The button term
+  // `!sectionDirty || saving` applies, but in a real browser the pairs are
+  // also inert when `!writable` — they sit inside the `fieldset[disabled]`
+  // body (pre-flat parity; jsdom cannot model the propagation). Staged
+  // edits are card-local: a page reload clears them.
   const discardSection = (section: ValidationSection): void => {
     const catalog = catalogOf(state)
     switch (section) {
@@ -1335,8 +1340,10 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
          * / 默认模型 below. Semantic h2 (plan fallbacks-card-section-ux T1)
          * carrying the section's own Discard + Save beside the label (T2 —
          * the pre-flat pattern restored); this section's validation /
-         * save errors render directly under it. */}
-        <h2 className={css.sectionHeading} id="fallbacks-main-agent">
+         * save errors render directly under it. The h2's aria-label holds
+         * ONLY the section title (QC F3): heading navigation must not read
+         * the Discard/Save button names as part of the heading. */}
+        <h2 className={css.sectionHeading} id="fallbacks-main-agent" aria-label={t('mainAgent.label')}>
           <span className={css.sectionHeadingText}>{t('mainAgent.label')}</span>
           <span className={css.sectionActions}>
             <button
@@ -1775,8 +1782,10 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
 
         {/* 子代理 (subagents) section heading groups the roles list + the
          * role rules below. Semantic h2 with the section's own Discard +
-         * Save (plan fallbacks-card-section-ux T1/T2). */}
-        <h2 className={css.sectionHeading} id="fallbacks-subagents">
+         * Save (plan fallbacks-card-section-ux T1/T2). The h2's aria-label
+         * holds only the section title (QC F3 — button names stay out of
+         * heading navigation). */}
+        <h2 className={css.sectionHeading} id="fallbacks-subagents" aria-label={t('subagents.label')}>
           <span className={css.sectionHeadingText}>{t('subagents.label')}</span>
           <span className={css.sectionActions}>
             <button
@@ -2272,8 +2281,10 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
          * view forces it open (the toggle is inert there — the F-002 rule,
          * without the forced-open term the fields would be unreachable).
          * The section's Discard/Save live inside the expanded body (the
-         * pre-flat pattern), with its validation / save errors above them. */}
-        <h2 className={css.sectionHeading} id="fallbacks-advanced">
+         * pre-flat pattern), with its validation / save errors above them.
+         * The h2's aria-label holds only the section title (QC F3 — the
+         * toggle's expand/collapse label stays out of heading navigation). */}
+        <h2 className={css.sectionHeading} id="fallbacks-advanced" aria-label={t('advanced.label')}>
           <button
             type="button"
             className={css.sectionToggle}
