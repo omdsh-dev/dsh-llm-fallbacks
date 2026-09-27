@@ -111,18 +111,19 @@
 }
 
 /* Flat section headings (主代理 / 子代理 / 高级选项): semantic h2 at
-   heading weight (plan fallbacks-card-section-ux T1) — 14px/600 on the
-   primary label color — laid out as a flex row carrying the section's own
-   Discard + Save pair (T2). 高级选项 hosts the disclosure toggle inside
-   its h2 (T3). */
+   heading weight (plan fallbacks-card-section-ux T1) — 16px/600 on the
+   primary label color (card-ux-followup T3: enlarged from 14px so the
+   headings clearly outrank the 13px field labels) — laid out as a flex row
+   carrying the section's own Discard + Save pair (T2). 高级选项 hosts the
+   disclosure toggle inside its h2 (T3). */
 .sectionHeading {
   display: flex;
   align-items: center;
   gap: 8px;
   margin: 0;
   padding: 4px 0;
-  font-size: 14px;
-  line-height: 20px;
+  font-size: 16px;
+  line-height: 24px;
   font-weight: 600;
   color: var(--dsw-alias-label-primary);
 }
@@ -230,12 +231,19 @@
   border-top: 0.5px solid var(--dsw-alias-border-l2);
 }
 
-/* The roleAutoMatch row keeps the settings-row rhythm inside its field
-   pacing. */
-.fieldset > .checkboxRow {
+/* The roleAutoMatch row is the card's only .checkboxRow and lives inside
+   the expanded 高级选项 body (not a direct fieldset child — the pacing rules
+   above match it one level down): a flex row with the checkbox inline-LEFT
+   of its text, the optionRow convention. */
+.checkboxRow {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
+}
+
+/* Optical centering: the 16px box on the 22px title line. */
+.checkboxRow .checkbox {
+  margin-top: 3px;
 }
 
 .fieldLabel {
@@ -262,8 +270,10 @@
   color: var(--dsw-alias-label-tertiary);
 }
 
-/* The enabled-row vocabulary lives on (the roleAutoMatch toggle): label
-   text on the left, the native checkbox on the right. */
+/* The enabled-row vocabulary lives on (the roleAutoMatch toggle): the
+   native checkbox sits inline-left (the row's first child) and this text
+   block rides to its right — both the title and the description are
+   `htmlFor` labels for the checkbox. */
 .checkLabel {
   flex: 1;
   min-width: 0;
@@ -634,15 +644,18 @@ select.input {
 }
 
 /* Disclosure chevron (CONTENT-level row/panel toggles only — the card-level
-   header chevron died with the chrome, T3). */
+   header chevron died with the chrome, T3). Standard disclosure convention:
+   COLLAPSED points right (the down-chevron glyph rotated -90deg), EXPANDED
+   points down (the glyph's natural rest state). */
 .chevron {
   flex: none;
   color: var(--dsw-alias-label-tertiary);
+  transform: rotate(-90deg);
   transition: transform .16s;
 }
 
 .chevronOpen {
-  transform: rotate(180deg);
+  transform: none;
 }
 
 /* The move-up affordance flips the shared chevron (the dedicated up-icon is
