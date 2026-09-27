@@ -493,6 +493,51 @@ describe('adapter contract (P1/P3)', () => {
   })
 })
 
+// ---------------------------------------------------------------------------
+// Catalog availability of selectable routes (rc.2 `modelAvailable` GUI gate —
+// plan fallbacks-web-ux-alignment T9b, the 2026-09-27 research adaptation):
+// since dsh 0.1.7-rc.2 (`session-controller/src/catalog.ts:73-89`) GUI model
+// selection is gated on ADVERTISED catalog membership — picking a pair no
+// `listModels` row advertises throws `session/model-unavailable`. The pin
+// below asserts every route the card can put into a chain resolves through an
+// advertised catalog row; the out-of-catalog boundary is documented, and the
+// evidence task found no gap to fix (the adapter already advertises its row).
+// ---------------------------------------------------------------------------
+
+describe('catalog availability of selectable routes (rc.2 modelAvailable gate, T9b)', () => {
+  /** The rc.2 GUI gate's resolution face: is the pair advertised by its provider's catalog rows? */
+  async function advertised(provider: string, model: string): Promise<boolean> {
+    const rows = await ctx.llm.listModels(provider)
+    return rows.some(row => row.id === model)
+  }
+
+  it('the virtual picker row the card composes is advertised (FallbacksChain / Auto)', async () => {
+    apply(ctx, cfg({ rootChain: [OFFICIAL_FLASH] }))
+    await vi.waitFor(() => expect(listed()).toBe(true))
+    // The adapter's `listModels` override (src/virtual-adapter.ts) is the
+    // advertisement the rc.2 gate reads — the row the picker offers when the
+    // card's Default model panel is filled.
+    expect(await advertised(FALLBACKS_PROVIDER, FALLBACKS_CHAIN_MODEL)).toBe(true)
+  })
+
+  it('a real chain model is advertised by its own provider (catalog-served, GUI-selectable)', async () => {
+    apply(ctx, cfg({ rootChain: [OFFICIAL_FLASH] }))
+    await vi.waitFor(() => expect(listed()).toBe(true))
+    // Chain entries picked in the card come from the aggregate model catalog,
+    // i.e. from a provider's own `listModels` rows — the head pair resolves.
+    expect(await advertised(HEAD_PROVIDER, HEAD_MODEL)).toBe(true)
+  })
+
+  it('an out-of-catalog chain entry is NOT advertised — GUI-unselectable, still core-routable (documented boundary)', async () => {
+    // The card keeps hand-written out-of-catalog chain values as annotated
+    // synthetic options (configuration.md §Save rules). Under the rc.2 gate
+    // such a pair can never be PICKED in the GUI — it is reachable only as a
+    // fallback TARGET (core routing accepts unlisted ids). That is the
+    // intended boundary, not a gap: no fix follows from the evidence task.
+    expect(await advertised(HEAD_PROVIDER, 'legacy-unlisted-model')).toBe(false)
+  })
+})
+
 describe('imageRequestPricing (0.1.2 adoption)', () => {
   it('delegates to the SAME effective head stream() dispatches (route-accurate)', async () => {
     stub.pricing = stubPricing()

@@ -342,21 +342,28 @@ describe('role projection — fold contract', () => {
     expect(roleProjectionUnit.wire.view(inheritedOnly)).toBeNull()
   })
 
-  it('validates the persisted state, so a corrupt checkpoint row is rejected instead of served', () => {
+  it('the persisted state parse is TOTAL: any unrecognized shape normalizes to null, never throws (T9a)', () => {
     expect(roleProjectionUnit.stateSchema.parse(null)).toBeNull()
     expect(roleProjectionUnit.stateSchema.parse({ inheritedEventCount: 0 })).toEqual({ inheritedEventCount: 0 })
     expect(roleProjectionUnit.stateSchema.parse({ role: 'coder', inheritedEventCount: 3, extra: 1 }))
       .toEqual({ inheritedEventCount: 3, role: 'coder' })
-    expect(() => roleProjectionUnit.stateSchema.parse('coder')).toThrow()
-    expect(() => roleProjectionUnit.stateSchema.parse({ role: '' , inheritedEventCount: 0 })).toThrow()
-    expect(() => roleProjectionUnit.stateSchema.parse({ role: 42, inheritedEventCount: 0 })).toThrow()
-    expect(() => roleProjectionUnit.stateSchema.parse(undefined)).toThrow()
-    // The fork boundary is REQUIRED (v2): a row that predates it must be
-    // rejected, not served with an invented boundary of 0 (which would let an
-    // ancestor's notice row through the fold).
-    expect(() => roleProjectionUnit.stateSchema.parse({ role: 'coder' })).toThrow()
-    expect(() => roleProjectionUnit.stateSchema.parse({ role: 'coder', inheritedEventCount: -1 })).toThrow()
-    expect(() => roleProjectionUnit.stateSchema.parse({ role: 'coder', inheritedEventCount: 1.5 })).toThrow()
+    // Plan fallbacks-web-ux-alignment T9a: rc.2 (`4e6a1c1073`) classifies a
+    // live projection rebuild failure as session corruption, and the host
+    // `restore`/`coldSnapshot` path parses with NO try/catch — a throwing
+    // parse would convert a cosmetic badge into a corrupt session. Every
+    // unrecognized shape therefore degrades to `null` ("no pill").
+    expect(roleProjectionUnit.stateSchema.parse('coder')).toBeNull()
+    expect(roleProjectionUnit.stateSchema.parse({ role: '' , inheritedEventCount: 0 })).toBeNull()
+    expect(roleProjectionUnit.stateSchema.parse({ role: 42, inheritedEventCount: 0 })).toBeNull()
+    expect(roleProjectionUnit.stateSchema.parse(undefined)).toBeNull()
+    // The fork boundary is REQUIRED (v2): a row that predates it normalizes
+    // to `null` as well — never served with an invented boundary of 0 (which
+    // would let an ancestor's notice row through the fold), and never thrown.
+    expect(roleProjectionUnit.stateSchema.parse({ role: 'coder' })).toBeNull()
+    expect(roleProjectionUnit.stateSchema.parse({ role: 'coder', inheritedEventCount: -1 })).toBeNull()
+    expect(roleProjectionUnit.stateSchema.parse({ role: 'coder', inheritedEventCount: 1.5 })).toBeNull()
+    expect(roleProjectionUnit.stateSchema.parse(42)).toBeNull()
+    expect(roleProjectionUnit.stateSchema.parse([])).toBeNull()
     // The WIRE value carries the role id itself (not the fold's object shape),
     // and passes its own guard on every client-visible read.
     expect(roleProjectionUnit.wire.view(roleProjectionUnit.stateSchema.parse({ role: 'coder', inheritedEventCount: 2 }))).toBe('coder')

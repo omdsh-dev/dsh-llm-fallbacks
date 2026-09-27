@@ -117,20 +117,24 @@ export const ROLE_PROJECTION_STATE_VERSION = 2
  * Accept only the state this unit can produce: `null`, or an object carrying the
  * fork boundary (`inheritedEventCount`) plus an OPTIONAL non-blank `role`. The
  * parse NORMALIZES to exactly those fields, so a persisted row cannot smuggle
- * anything else forward, and a row that predates the fork boundary is REFUSED
- * rather than served with an invented boundary of 0.
+ * anything else forward, and a row that predates the fork boundary normalizes to
+ * `null` (never served with an invented boundary of 0).
  *
  * Containment is the CALLER's, not this unit's, and it differs by rung
  * (role-projection Task 3b QC CF-9 — the earlier comment here claimed a refold
  * on every rung, which is not what the installed host does): `viewCheckpoint`
  * parses inside a `try/catch` and simply leaves the key absent, while `restore`
- * calls `def.stateSchema.parse(row.val)` with NO `try/catch` — so a malformed
- * row that reaches the `restore`/`coldSnapshot` path throws there instead of
- * degrading to "no pill". Making this schema TOTAL (`return null` for anything
- * unrecognized) is the alternative, and it is not free: a `null` seed keeps the
- * row `usable` and replays only the tail, so a role that landed at or below the
- * row's watermark would be silently lost for that read. The tradeoff is
- * registered as a residual instead of being silently resolved here.
+ * calls `def.stateSchema.parse(row.val)` with NO `try/catch`. The schema is
+ * therefore TOTAL — any unrecognized shape normalizes to `null` ("no pill"),
+ * never throws (plan fallbacks-web-ux-alignment T9a): since dsh 0.1.7-rc.2
+ * (`4e6a1c1073`) a live projection rebuild failure classifies as SESSION
+ * CORRUPTION, which raises the blast radius of a throwing parse from "the badge
+ * degrades" to "the session read degrades" — a lost badge read is strictly
+ * better. The cost (a `null` seed keeps the checkpoint row `usable` and replays
+ * only the tail, so a role that landed at or below the row's watermark would be
+ * silently lost for that read) is accepted: the degrade is cosmetic and
+ * recoverable by a refold, a corrupt-session classification is not. Supersedes
+ * the strict-parse tradeoff previously registered as a residual.
  */
 const ROLE_STATE_SCHEMA: ProjectionValueSchema<RoleProjectionState | null> = {
   parse(value: unknown): RoleProjectionState | null {
@@ -142,9 +146,12 @@ const ROLE_STATE_SCHEMA: ProjectionValueSchema<RoleProjectionState | null> = {
         if (typeof role === 'string' && role.trim() !== '') return { inheritedEventCount, role }
       }
     }
-    throw new TypeError(
-      `role projection: expected null or a non-blank role id with its fork boundary, got ${describeValue(value)}`,
-    )
+    // Total parse (T9a — see the block comment): an unrecognized shape (a
+    // malformed persisted row, a pre-fork-boundary row, garbage) degrades to
+    // `null` — "no pill" — instead of throwing inside the host's unguarded
+    // `restore`/`coldSnapshot` parse, which rc.2 classifies as session
+    // corruption.
+    return null
   },
 }
 
