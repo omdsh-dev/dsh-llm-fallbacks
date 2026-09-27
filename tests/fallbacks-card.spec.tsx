@@ -2817,6 +2817,20 @@ describe('FallbacksCard roleAutoMatch toggle (plan fallbacks-settings-visibility
     expect(toggle.checked).toBe(true)
   })
 
+  it('renders the checkbox inline-left of its text: input first in the row, title and description both label the control', async () => {
+    const { view, props } = await mountCard({ config: BASE_CONFIG })
+    view.rerender(<FallbacksCard {...props} />)
+    // The optionRow convention (card-ux-followup T2): the input is the
+    // row's FIRST child (checkbox on the left), and the whole text block is
+    // label-associated — the description resolves to the SAME control via
+    // its explicit `htmlFor` (label association, not click-forwarding).
+    expandAdvanced()
+    const toggle = screen.getByLabelText(en['roleAutoMatch.label']) as HTMLInputElement
+    expect(screen.getByLabelText(en['roleAutoMatch.hint'])).toBe(toggle)
+    const title = screen.getByText(en['roleAutoMatch.label'])
+    expect(toggle.compareDocumentPosition(title) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
   it('writes the toggle to the scalar and persists roleAutoMatch:false through a save', async () => {
     // A conforming all-day tail so the accepted config is save-valid; the
     // advanced section's own Save persists the scalar.
