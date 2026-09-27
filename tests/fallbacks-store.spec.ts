@@ -283,8 +283,9 @@ function error(code: string, message: string, details?: unknown) {
 
 describe('parseFallbacksConfig (descriptor read, redactSecrets face)', () => {
   it('passes a complete config through unchanged', () => {
+    // No `enabled` key (plan fallbacks-web-ux-alignment T2): the descriptor
+    // read keeps only declared keys — the removed switch is not one.
     const config: FallbacksConfig = {
-      enabled: false,
       triggerCodes: ['AUTH'],
       rootChain: ['openai/gpt-4o', 'openai/*'],
       roles: {
@@ -319,9 +320,13 @@ describe('parseFallbacksConfig (descriptor read, redactSecrets face)', () => {
   })
 
   it('drops unknown extra fields and keeps only declared keys', () => {
+    // A surviving removed `enabled:` line is just another unknown key at the
+    // descriptor read (the gateway strips it before the wire; the fold
+    // tolerates it either way — plan fallbacks-web-ux-alignment T2).
     const parsed = parseFallbacksConfig({ enabled: false, extra: 'junk' })
-    expect(parsed).toEqual({ ...defaultFallbacksConfig, enabled: false })
+    expect(parsed).toEqual(defaultFallbacksConfig)
     expect('extra' in parsed).toBe(false)
+    expect('enabled' in parsed).toBe(false)
   })
 
   it('rejects a non-object descriptor value', () => {
@@ -345,7 +350,9 @@ describe('parseFallbacksConfig (descriptor read, redactSecrets face)', () => {
     expect(() => parseFallbacksConfig({ presets: 'sometimes' })).toThrow(TypeError)
     expect(() => parseFallbacksConfig({ recovery: 'sometimes' })).toThrow(TypeError)
     expect(() => parseFallbacksConfig({ cooldownMs: 'soon' })).toThrow(TypeError)
-    expect(() => parseFallbacksConfig({ enabled: 'yes' })).toThrow(TypeError)
+    // The removed `enabled` key is no longer a declared field — any value
+    // folds to defaults instead of throwing (accepted-and-ignored, T2).
+    expect(parseFallbacksConfig({ enabled: 'yes' })).toEqual(defaultFallbacksConfig)
   })
 
   it('preserves schema-reserved prompt/permissions fields on a read (no row editing this round)', () => {
@@ -702,13 +709,15 @@ describe('extractRecentSwitches (spec §2.5 D-5 raw event face)', () => {
 })
 
 describe('deriveEffectiveModel (spec §2.5 D-6 display value)', () => {
-  const enabledConfig: FallbacksConfig = {
+  // The former `enabled: true` fixture flag is gone (plan
+  // fallbacks-web-ux-alignment T2): activity is content presence, so the
+  // fixture is "active" by carrying a non-empty rootChain.
+  const activeConfig: FallbacksConfig = {
     ...defaultFallbacksConfig,
-    enabled: true,
     rootChain: ['openai/gpt-4o', 'openai/*'],
   }
 
-  it('① disabled → unavailable even when switches exist', () => {
+  it('① no configured content → unavailable even when switches exist', () => {
     const view = deriveEffectiveModel(defaultFallbacksConfig, [{
       seq: 2, time: 1, turn: 1, step: 1,
       from: { provider: 'openai', model: 'gpt-4o' },
@@ -718,8 +727,8 @@ describe('deriveEffectiveModel (spec §2.5 D-6 display value)', () => {
     expect(view).toEqual({ kind: 'unavailable' })
   })
 
-  it('① enabled with an empty rootChain → unavailable', () => {
-    const config = { ...enabledConfig, rootChain: [] }
+  it('① empty rootChain → unavailable', () => {
+    const config = { ...activeConfig, rootChain: [] }
     expect(deriveEffectiveModel(config, [])).toEqual({ kind: 'unavailable' })
   })
 
@@ -729,7 +738,7 @@ describe('deriveEffectiveModel (spec §2.5 D-6 display value)', () => {
       { seq: 3, time: 1, turn: 1, step: 1, from: { provider: 'openai', model: 'gpt-4o' }, to: { provider: 'anthropic', model: 'claude-3-5-sonnet' }, role: 'inherit', reason: 'trigger-code' },
     ]
     // The store keeps switches newest-first, so [0] is the latest.
-    expect(deriveEffectiveModel(enabledConfig, switches)).toEqual({
+    expect(deriveEffectiveModel(activeConfig, switches)).toEqual({
       kind: 'switched',
       provider: 'google',
       model: 'gemini-2.0-flash',
@@ -737,7 +746,7 @@ describe('deriveEffectiveModel (spec §2.5 D-6 display value)', () => {
   })
 
   it('③ no switches → the config\'s primary target (first rootChain entry)', () => {
-    expect(deriveEffectiveModel(enabledConfig, [])).toEqual({
+    expect(deriveEffectiveModel(activeConfig, [])).toEqual({
       kind: 'config',
       provider: 'openai',
       model: 'gpt-4o',
@@ -745,12 +754,12 @@ describe('deriveEffectiveModel (spec §2.5 D-6 display value)', () => {
   })
 
   it('③ a wildcard first entry derives as provider/*', () => {
-    const config = { ...enabledConfig, rootChain: ['anthropic/*'] }
+    const config = { ...activeConfig, rootChain: ['anthropic/*'] }
     expect(deriveEffectiveModel(config, [])).toEqual({ kind: 'config', provider: 'anthropic', model: '*' })
   })
 
   it('③ a malformed first entry stays verbatim rather than mis-parsed', () => {
-    const config = { ...enabledConfig, rootChain: ['gpt-4o'] }
+    const config = { ...activeConfig, rootChain: ['gpt-4o'] }
     expect(deriveEffectiveModel(config, [])).toEqual({ kind: 'config', provider: 'gpt-4o', model: '*' })
   })
 })
@@ -759,14 +768,17 @@ describe('FallbacksSettingsController', () => {
   it('loads the config over the gateway into a ready state (describe stays for writable + directory)', async () => {
     const api = makeApi()
     api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
-    const { rpc, call, get } = makeRpc({ ...defaultFallbacksConfig, enabled: false })
+    const { rpc, call, get } = makeRpc({ ...defaultFallbacksConfig })
     const controller = new FallbacksSettingsController(api, rpc)
     await controller.load()
     const state = controller.store.getSnapshot()
     expect(state.status).toBe('ready')
     expect(state.writable).toBe(true)
     expect(state.present).toBe(true)
-    expect(state.config.enabled).toBe(false)
+    // No `enabled` key on the wire or in the folded config (plan
+    // fallbacks-web-ux-alignment T2 — the removed switch never crosses the
+    // gateway; activity re-keys to content presence).
+    expect('enabled' in state.config).toBe(false)
     // describe is still called (writable + namespace directory)…
     expect(api.settings.describe).toHaveBeenCalledWith()
     // …but the config itself rides the gateway channel, never describe.

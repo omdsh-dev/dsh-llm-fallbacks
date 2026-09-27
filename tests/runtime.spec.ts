@@ -113,9 +113,12 @@ describe('request-error → request switch closed loop', () => {
     expect(switchEvents(agent)).toHaveLength(0)
   })
 
-  it('passes through when disabled', async () => {
-    const { agent } = makeAgent('agent-disabled', { provider: 'mock', model: 'gpt-4o' })
-    apply(ctx, cfg({ enabled: false, rootChain: ['other/gpt-4o'] }))
+  it('passes through with no configured content (AC-8 — the removed enabled switch re-keyed)', async () => {
+    // Plan fallbacks-web-ux-alignment T2: no `enabled: false` term exists —
+    // an empty config (no chains/slots/roles) is a pass-through exactly like
+    // an uninstalled plugin.
+    const { agent } = makeAgent('agent-inactive', { provider: 'mock', model: 'gpt-4o' })
+    apply(ctx, cfg())
 
     const action = await dispatchRequestError(ctx, agent)
     expect(action).toBeUndefined()
@@ -834,7 +837,7 @@ describe('per-agent state lifecycle', () => {
 })
 
 describe('settings live re-read', () => {
-  it('re-reads rootChain and enabled through the real settings service on update', async () => {
+  it('re-reads rootChain through the real settings service on update (clearing content deactivates)', async () => {
     const { agent } = makeAgent('agent-settings', { provider: 'mock', model: 'gpt-4o' })
     const ns = FALLBACKS_PROFILE_ENTRY
     apply(ctx, cfg({ rootChain: ['other/gpt-4o'] }))
@@ -863,10 +866,12 @@ describe('settings live re-read', () => {
     expect(await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' }))
       .toEqual({ provider: 'third', model: 'x' })
 
-    await ctx.settings.update(ns, { enabled: false })
+    // Clearing the LAST configured content deactivates the plugin (content
+    // presence — there is no `enabled: false` write any more, T2).
+    await ctx.settings.update(ns, { rootChain: [] })
 
-    const disabled = await dispatchRequestError(ctx, agent)
-    expect(disabled).toBeUndefined()
+    const inactive = await dispatchRequestError(ctx, agent)
+    expect(inactive).toBeUndefined()
     expect(switchEvents(agent)).toHaveLength(0)
   })
 })

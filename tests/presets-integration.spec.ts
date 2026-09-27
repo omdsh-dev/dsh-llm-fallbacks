@@ -129,19 +129,20 @@ describe('bundled preset self-declaration (real apply)', () => {
     expect(service(ctx).getEffectiveRoles().roles.map((role) => role.id)).toEqual(presetRoles.map((preset) => preset.id))
   })
 
-  it("enabled: false still materializes the 5 preset rows (D9.3-c — no `enabled` gate)", async () => {
-    // Explicit `enabled: false` (the default): the preset fire is NOT gated
-    // by `enabled` — docs/configuration.md "Not gated by enabled" (F-002).
-    // The default-value coincidence in compose() must not be the only pin.
+  it("the bare default config still materializes the preset rows (no `enabled` gate — the switch is removed)", async () => {
+    // The preset fire was NEVER gated by `enabled` (D9.3-c / F-002) — and
+    // since plan fallbacks-web-ux-alignment T2 the key does not even exist:
+    // nothing gates the declaration, and the composed config carries no
+    // `enabled` key at all.
     const ctx = track(new Context())
     await ctx.plugin(MemorySettings)
-    apply(ctx, { ...defaultFallbacksConfig, enabled: false })
+    apply(ctx, { ...defaultFallbacksConfig })
     await vi.waitFor(() => {
       expect(gateway(ctx).get().config.roles.list).toHaveLength(presetRoles.length)
     })
 
     const rows = gateway(ctx).get().config.roles.list
-    expect(gateway(ctx).get().config.enabled).toBe(false)
+    expect('enabled' in gateway(ctx).get().config).toBe(false)
     expect(rows.map((row) => row.id)).toEqual(presetRoles.map((preset) => preset.id))
     expect(rows.map((row) => row.persona)).toEqual(presetRoles.map((preset) => preset.persona))
     expect(userSection(ctx)).toEqual({

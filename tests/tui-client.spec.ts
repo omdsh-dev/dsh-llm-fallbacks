@@ -312,7 +312,7 @@ describe('apply() wiring — conditional tuiCommandTrees child', () => {
         return () => {}
       },
     } as never)
-    apply(ctx, cfg({ enabled: true, triggerCodes: ['AUTH'] }))
+    apply(ctx, cfg({ triggerCodes: ['AUTH'], rootChain: ['other/gpt-4o'] }))
     await vi.waitFor(() => expect(registered).toHaveLength(1))
 
     const { agent } = makeAgent('cmd-live', { provider: 'mock', model: 'gpt-4o' })
@@ -326,7 +326,9 @@ describe('apply() wiring — conditional tuiCommandTrees child', () => {
       return result.kind === 'success' ? (result.text ?? '') : ''
     }
 
-    // At-apply composed values.
+    // At-apply composed values. The summary's 已启用/未启用 is the
+    // content-presence gate (`isFallbackActive`, plan
+    // fallbacks-web-ux-alignment T2) — no `enabled` switch any more.
     expect(invoke(' config').split('\n')[0]).toBe('Fallbacks 配置: 已启用')
     expect(invoke(' config')).toContain('触发码: AUTH')
 
@@ -336,7 +338,7 @@ describe('apply() wiring — conditional tuiCommandTrees child', () => {
     await ctx.settings.update(FALLBACKS_PROFILE_ENTRY, { triggerCodes: ['QUOTA'] })
     await vi.waitFor(() => expect(invoke(' config')).toContain('触发码: QUOTA'))
     expect(invoke(' config')).not.toContain('触发码: AUTH')
-    await ctx.settings.update(FALLBACKS_PROFILE_ENTRY, { enabled: false })
+    await ctx.settings.update(FALLBACKS_PROFILE_ENTRY, { rootChain: [] })
     await vi.waitFor(() => expect(invoke(' config').split('\n')[0]).toBe('Fallbacks 配置: 未启用'))
 
     // Read-only: the readbacks never grow the session log.

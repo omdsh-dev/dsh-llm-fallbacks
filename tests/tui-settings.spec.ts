@@ -115,7 +115,6 @@ function makeStubContext(service: TuiSettingsSectionsStub | undefined): {
 
 /** All 13 field key paths the section must declare (web-card capability map). */
 const EXPECTED_FIELD_PATHS = [
-  'enabled',
   'roleAutoMatch',
   'presets',
   'triggerCodes',
@@ -132,7 +131,7 @@ const EXPECTED_FIELD_PATHS = [
 
 /** Top-level `Config` schema keys (schema.ts) — every field path must resolve. */
 const SCHEMA_KEYS: Record<string, true> = {
-  enabled: true, triggerCodes: true, rootChain: true, roles: true, cooldownMs: true,
+  triggerCodes: true, rootChain: true, roles: true, cooldownMs: true,
   revertPolicy: true, maxSwitchesPerStep: true, alwaysModeRetryCap: true, presets: true,
   roleAutoMatch: true, timeSlots: true, tz: true,
 }
@@ -286,8 +285,7 @@ describe('fallbacks section — field inventory and schema resolution (AC-1)', (
 describe('fallbacks section — native kinds (AC-1)', () => {
   const section = buildFallbacksTuiSection()
 
-  it('enabled and roleAutoMatch are boolean fields', () => {
-    expect(fieldOf(section, 'enabled').kind).toBe('boolean')
+  it('roleAutoMatch is a boolean field (the removed enabled switch has no TUI row)', () => {
     expect(fieldOf(section, 'roleAutoMatch').kind).toBe('boolean')
   })
 

@@ -108,7 +108,7 @@ describe('export surface: runtime values', () => {
     expect(index.name).toBe('llm-fallbacks')
     expect(index.INHERIT_ROLE_ID).toBe('inherit')
     expect(index.ROLE_ID_PATTERN).toBeInstanceOf(RegExp)
-    expect(index.defaultFallbacksConfig.enabled).toBe(false)
+    expect('enabled' in index.defaultFallbacksConfig).toBe(false)
     expect(index.defaultFallbacksConfig.triggerCodes).toEqual(['AUTH', 'QUOTA', 'RATE_LIMIT'])
   })
 })
@@ -133,7 +133,6 @@ describe('export surface: callable smokes', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     const validConfig: index.FallbacksConfig = {
       ...index.defaultFallbacksConfig,
-      enabled: true,
       // Conforming all-day head (P6): rootChain must start with one official
       // Conforming all-day head (P6): rootChain must end with one official model.
       rootChain: ['deepseek-official/deepseek-flash'],
@@ -180,7 +179,7 @@ describe('export surface: type exports (compile-time only)', () => {
       rules: index.FallbacksRoleRule[]
     }>()
     expectTypeOf<index.FallbacksConfig>().toMatchTypeOf<{
-      enabled: boolean
+      // No `enabled` key (plan fallbacks-web-ux-alignment T2 — removed).
       rootChain: string[]
       cooldownMs: number
     }>()

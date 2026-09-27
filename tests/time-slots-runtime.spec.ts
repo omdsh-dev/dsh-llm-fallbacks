@@ -218,10 +218,13 @@ describe('分时切换 detection — per-root-agent last-winner marker (P7)', ()
     expect(slotSwitchLogs(logs)).toHaveLength(0)
   })
 
-  it('never logs when the plugin is disabled (slots inert)', async () => {
+  it('never logs with no configured content (the removed enabled switch re-keyed — plan fallbacks-web-ux-alignment T2)', async () => {
+    // There is no `enabled: false` inert state any more: inactivity IS
+    // content absence, and an empty config logs nothing on either side of
+    // a slot window boundary.
     const logs = captureLogs()
-    const { agent } = makeAgent('ts-off', { provider: 'mock', model: 'gpt-4o' }, { origin: 'root' })
-    apply(ctx, cfg({ enabled: false, rootChain: [OFFICIAL_FLASH], timeSlots: [morningSlotRow] }))
+    const { agent } = makeAgent('ts-inactive', { provider: 'mock', model: 'gpt-4o' }, { origin: 'root' })
+    apply(ctx, cfg())
     vi.useFakeTimers()
 
     vi.setSystemTime(new Date('2026-08-17T00:59:00Z'))

@@ -149,14 +149,24 @@ describe('registration lifecycle (P2)', () => {
     })
   })
 
-  it('hides the row when the plugin is disabled', () => {
-    apply(ctx, cfg({ enabled: false, rootChain: [OFFICIAL_FLASH] }))
-    expect(listed()).toBe(false)
+  it('a legacy enabled: false line does NOT hide the row — content registers (plan fallbacks-web-ux-alignment T2)', async () => {
+    // The removed switch is inert: a stored profile still carrying
+    // `enabled: false` with a configured chain is ACTIVE (the row toggle is
+    // the master switch), so the virtual route registers.
+    apply(ctx, cfg({ rootChain: [OFFICIAL_FLASH], ...({ enabled: false } as object) }))
+    await vi.waitFor(() => expect(listed()).toBe(true))
   })
 
-  it('shows the row for an empty all-day chain (enabled-only gate, PR #62 feedback)', async () => {
+  it('hides the row with no configured content (content presence replaces the enabled-only gate)', async () => {
+    // PR #62 feedback let an enabled-only (contentless) config show the row;
+    // T2 re-keyed the gate to content presence — an empty config is a
+    // pass-through exactly like an uninstalled plugin, so nothing registers.
     apply(ctx, cfg({ rootChain: [] }))
-    await vi.waitFor(() => expect(listed()).toBe(true))
+    // Give any (incorrect) registration a beat before asserting.
+    await vi.waitFor(() => {
+      expect(ctx.llm.listProviders().filter((provider) => provider.id === FALLBACKS_PROVIDER)).toHaveLength(0)
+    })
+    expect(listed()).toBe(false)
   })
 
   it('shows the row for a legacy multi-model rootChain (enabled-only gate, PR #62 feedback)', async () => {
@@ -181,15 +191,18 @@ describe('registration lifecycle (P2)', () => {
     expect(listed()).toBe(true)
   })
 
-  it('disabling unregisters the row and re-enabling re-registers it', async () => {
+  it('clearing content unregisters the row and restoring content re-registers it', async () => {
+    // The live gate is content presence (T2): clearing the all-day chain
+    // (the only configured content) deactivates the plugin; writing a chain
+    // back re-activates it. No `enabled` write exists any more.
     apply(ctx, cfg({ rootChain: [OFFICIAL_FLASH] }))
     await vi.waitFor(() => expect(listed()).toBe(true))
 
-    await ctx.settings.update(FALLBACKS_PROFILE_ENTRY, { enabled: false })
+    await ctx.settings.update(FALLBACKS_PROFILE_ENTRY, { rootChain: [] })
     expect(listed()).toBe(false)
 
-    await ctx.settings.update(FALLBACKS_PROFILE_ENTRY, { enabled: true })
-    expect(listed()).toBe(true)
+    await ctx.settings.update(FALLBACKS_PROFILE_ENTRY, { rootChain: [OFFICIAL_FLASH] })
+    await vi.waitFor(() => expect(listed()).toBe(true))
   })
 
   it('all-day conformance loss keeps the row registered (enabled-only gate)', async () => {
@@ -537,9 +550,14 @@ describe('imageRequestPricing (0.1.2 adoption)', () => {
     expect(ctx.llm.imageRequestPricing(FALLBACKS_PROVIDER, FALLBACKS_CHAIN_MODEL)).toBeUndefined()
   })
 
-  it('returns undefined when the effective chain is empty', async () => {
+  it('registers nothing with no configured content — the pricing face is moot (T2)', async () => {
+    // An empty config never registers the virtual route (content presence),
+    // so there is no `FallbacksChain` row to answer a pricing lookup with.
     apply(ctx, cfg({ rootChain: [] }))
-    await vi.waitFor(() => expect(listed()).toBe(true))
+    // Give any (incorrect) registration a beat before asserting.
+    await vi.waitFor(() => {
+      expect(ctx.llm.listProviders().filter((provider) => provider.id === FALLBACKS_PROVIDER)).toHaveLength(0)
+    })
     expect(ctx.llm.imageRequestPricing(FALLBACKS_PROVIDER, FALLBACKS_CHAIN_MODEL)).toBeUndefined()
   })
 })
