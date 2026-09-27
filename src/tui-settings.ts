@@ -233,9 +233,12 @@ function tzParse(text: string): TuiSettingsFieldWrite | undefined {
 const BUNDLED_PRESETS_LABEL = `Bundled (${presetRoles.length} preset roles)`
 
 /**
- * The `fallbacks` /settings section: 13 fields covering all 15 web-card
+ * The `fallbacks` /settings section: 12 fields covering all 14 web-card
  * capabilities (the default-model choice rides `rootChain`'s last entry and
- * the per-role fallback strategy rides `roles.list` JSON). Scalar
+ * the per-role fallback strategy rides `roles.list` JSON; the config-level
+ * `enabled` switch is REMOVED — plan fallbacks-web-ux-alignment T2, the
+ * Plugins-page row toggle is the master switch and the runtime gates read
+ * content presence). Scalar
  * capabilities use native kinds (boolean/number/select); complex structures
  * use `text` fields with custom `format`/`parse` that mirror the gateway's
  * validation. Built fresh per call — the host deep-freezes whatever it
@@ -256,13 +259,6 @@ export function buildFallbacksTuiSection(): TuiSettingsSection {
       { id: 'advanced', title: 'Advanced', descriptions: { zh: '高级', en: 'Advanced' } },
     ],
     fields: [
-      {
-        path: ['enabled'],
-        label: 'Enabled',
-        descriptions: { zh: '启用回退', en: 'Enabled' },
-        group: 'general',
-        kind: 'boolean',
-      },
       {
         path: ['roleAutoMatch'],
         label: 'LLM role auto-match',

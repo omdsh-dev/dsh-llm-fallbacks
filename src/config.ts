@@ -17,8 +17,14 @@
  * Spec §4 is authoritative for field names and default values — notably
  * `triggerCodes` defaults to dsh's stable failure codes `['AUTH', 'QUOTA',
  * 'RATE_LIMIT']` (there is no `QUOTA_EXCEEDED` code in dsh), and an
- * unconfigured install (`enabled: false`, empty `rootChain`, empty roles)
- * is a no-op pass-through exactly like an uninstalled plugin (AC-8).
+ * unconfigured install (empty `rootChain`, no time slots, empty roles) is a
+ * no-op pass-through exactly like an uninstalled plugin (AC-8 —
+ * {@link isFallbackActive}). There is NO config-level `enabled` switch
+ * (plan fallbacks-web-ux-alignment T2): the Plugins-page row toggle is the
+ * master switch (row disable = fiber destroy), and the runtime gates re-key
+ * to content presence. A stored profile still carrying the removed
+ * `enabled:` key loads cleanly — the gateway tolerates and strips it (the
+ * advisor LEGACY_KEYS mechanism), it is never read and never re-persisted.
  *
  * This module is pure logic: it must not import any `@deepseek-ai/*` package
  * (types included) — `FallbacksConfig` is the plugin's own type. Task 3
@@ -89,7 +95,6 @@ export interface FallbacksRoles {
  * field names).
  */
 export interface FallbacksConfig {
-  enabled: boolean
   triggerCodes: string[]
   rootChain: string[]
   roles: FallbacksRoles
@@ -150,13 +155,12 @@ export interface FallbacksConfig {
 
 /**
  * Spec §4 defaults — `Config({})` must equal this (no-op install).
- * `enabled` defaults to `false` (readme-settings spec §1.2): the feature
- * switch is off until the user turns it on in the settings page; an
- * unconfigured install (`enabled: false`, empty rootChain, empty roles)
- * behaves exactly like an uninstalled plugin (AC-3 / no-op invariant).
+ * There is no `enabled` default (the key is removed — the Plugins-page row
+ * toggle is the master switch): an unconfigured install (empty rootChain,
+ * no time slots, empty roles) behaves exactly like an uninstalled plugin
+ * (AC-3 / no-op invariant, {@link isFallbackActive}).
  */
 export const defaultFallbacksConfig: FallbacksConfig = {
-  enabled: false,
   triggerCodes: ['AUTH', 'QUOTA', 'RATE_LIMIT'],
   rootChain: [],
   roles: { list: [], rules: [] },
@@ -176,6 +180,23 @@ export const defaultFallbacksConfig: FallbacksConfig = {
  * the no-rule-match fallback, but FORBIDDEN in `roles.list[].id`.
  */
 export const INHERIT_ROLE_ID = 'inherit'
+
+/**
+ * The no-op gate (AC-8), re-keyed from the removed `enabled` switch to
+ * CONTENT PRESENCE (plan fallbacks-web-ux-alignment T2): the plugin
+ * intervenes exactly when something is configured — a non-empty `rootChain`
+ * (the all-day chain), at least one time-slot row, or at least one declared
+ * role. An inactive config is a pass-through exactly like an uninstalled
+ * plugin; the Plugins-page row toggle remains the master switch (row
+ * disable = fiber destroy). ONE helper for every runtime gate — the former
+ * `config.enabled` sites (request waterfalls, picker-row registration, TUI
+ * summary, General-row badge) all read through this.
+ */
+export function isFallbackActive(config: FallbacksConfig): boolean {
+  return config.rootChain.length > 0
+    || (config.timeSlots?.length ?? 0) > 0
+    || config.roles.list.length > 0
+}
 
 /** Role id format (aligned with yet-another-subagent `isValidProfileId`). */
 export const ROLE_ID_PATTERN = /^[a-z0-9-]{1,32}$/

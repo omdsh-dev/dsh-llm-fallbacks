@@ -47,7 +47,12 @@ declare module '@deepseek-ai/schemastery' {
 }
 
 const configSchema = z.object({
-  enabled: z.boolean().default(false),
+  // No `enabled` key (plan fallbacks-web-ux-alignment T2): the Plugins-page
+  // row toggle is the master switch; the runtime gates read content presence
+  // (`isFallbackActive`). A stored `enabled:` line is schema-unknown, so
+  // schemastery retains it on the composed object — inert (nothing reads it)
+  // and stripped from every gateway snapshot/write (LEGACY_KEYS in
+  // `src/gateway.ts`), never re-persisted.
   triggerCodes: z.array(z.string()).default(['AUTH', 'QUOTA', 'RATE_LIMIT']),
   rootChain: z.array(z.string()).default([]),
   roles: z

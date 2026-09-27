@@ -14,7 +14,9 @@
  * afterwards — no new data path, no store API change.
  *
  * The row is read-only by design (偏好位语义: a General preference row is not
- * a control surface): an enabled badge + a compact last-switch summary.
+ * a control surface): an active/inactive badge (content presence — the
+ * removed config-level `enabled` switch is re-keyed to `isFallbackActive`,
+ * plan fallbacks-web-ux-alignment T2) + a compact last-switch summary.
  * Honest degraded states: a hard load error or an unreachable gateway
  * channel (`ready && !present`) render the neutral 'unknown' badge — a
  * channel-down read must never masquerade as 'disabled' (KD-G5); the
@@ -35,6 +37,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type {
   FallbacksSettingsController, FallbacksSettingsState,
 } from './fallbacks-store.ts'
+import { isFallbackActive } from '../config.ts'
 import { SWITCH_REASON_KEYS } from './locales.ts'
 import css from './GeneralFallbacksRow.module.css'
 
@@ -70,13 +73,14 @@ export function GeneralFallbacksRow({ controller, useSnapshot, t }: GeneralFallb
     if (snapshot.switchesStatus === 'idle') void controller.loadSwitches()
   }, [controller])
 
-  // The enabled badge: only a settled `ready` read with a resolved gateway
-  // channel (`present`) states the real enabled flag; anything else — a
-  // hard load error, an unreachable channel, or a not-yet-settled read —
-  // renders the neutral 'unknown' badge (KD-G5 honesty).
+  // The active badge: only a settled `ready` read with a resolved gateway
+  // channel (`present`) states the real content-presence gate
+  // (`isFallbackActive` — the removed `enabled` switch re-keyed); anything
+  // else — a hard load error, an unreachable channel, or a not-yet-settled
+  // read — renders the neutral 'unknown' badge (KD-G5 honesty).
   const settled = state.status === 'ready'
   const badgeKey = settled && state.present
-    ? (state.config.enabled ? 'general.enabled' : 'general.disabled')
+    ? (isFallbackActive(state.config) ? 'general.enabled' : 'general.disabled')
     : 'general.unknown'
 
   // The compact summary line: the most recent switch (from → to + role/

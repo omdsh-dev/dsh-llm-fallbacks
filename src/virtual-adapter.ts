@@ -9,15 +9,15 @@
  * `ctx.inject(['llm'])` child — absent `llm` service (test harness) is a
  * clean no-op, and fiber unload ⇒ the child's disposer unregisters the
  * route. Registration is an idempotent transition-reconcile on COMMITTED
- * config snapshots: register on `enabled` false→true, unregister on
- * true→false, driven by the settings `onChange` hook (the returned
- * reconcile thunk, wired by `apply()`) plus child activation. The row is
- * visible whenever the plugin is enabled — a non-conforming all-day chain
- * does NOT hide it (PR #62 feedback); conformance still gates a
- * successful delegate (`effectiveHeadOf` below refuses a
- * non-conforming all-day). The condition deliberately ignores `timeSlots`
- * and conformance, so slot-row edits and chain edits never churn
- * registration.
+ * config snapshots: register when nothing is configured → something is
+ * (`isFallbackActive` — content presence, plan fallbacks-web-ux-alignment
+ * T2), unregister on the reverse, driven by the settings `onChange` hook
+ * (the returned reconcile thunk, wired by `apply()`) plus child activation.
+ * The row is visible whenever something is configured — a non-conforming
+ * all-day chain does NOT hide it (PR #62 feedback); conformance still gates
+ * a successful delegate (`effectiveHeadOf` below refuses a non-conforming
+ * all-day). The condition deliberately ignores `timeSlots` and conformance,
+ * so slot-row edits and chain edits never churn registration.
  *
  * Adapter behavior (P1/P3): `listModels` advertises exactly the one virtual
  * row; `stream()` is a THIN single-hop delegate to the effective chain head
@@ -45,7 +45,7 @@ import {
   type ResolvedRetryPolicy,
   type StreamChunk,
 } from '@deepseek-ai/dsh-llm'
-import type { FallbacksConfig } from './config.ts'
+import { isFallbackActive, type FallbacksConfig } from './config.ts'
 import { parseSelector, type Selector } from './selectors.ts'
 import { isAllDayConforming, resolveEffectiveChain, resolveSlotState } from './time-slots.ts'
 
@@ -425,11 +425,13 @@ export function installFallbacksAdapter(ctx: Context, readConfig: () => Fallback
 
   const reconcile = () => {
     const config = readConfig()
-    // PR #62 feedback: the row is visible whenever the plugin is enabled —
-    // conformance of the all-day chain is NOT part of registration (a
-    // legacy/empty chain still earns the row; the delegate refuses it via
+    // PR #62 feedback: the row is visible whenever something is configured
+    // (`isFallbackActive` — content presence; the removed `enabled` switch is
+    // re-keyed to it) — conformance of the all-day chain is NOT part of
+    // registration (a legacy/empty chain still earns the row as long as
+    // something is configured; the delegate refuses it via
     // `effectiveHeadOf`).
-    const shouldRegister = config.enabled
+    const shouldRegister = isFallbackActive(config)
     if (shouldRegister && !registered) {
       if (llm === undefined) return
       try {

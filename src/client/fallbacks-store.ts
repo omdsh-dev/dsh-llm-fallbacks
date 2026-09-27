@@ -41,7 +41,7 @@ import {
 } from '@deepseek-ai/dsh-client-store'
 import type { RemoteResult } from '@deepseek-ai/dsh-typert-protocol'
 import {
-  defaultFallbacksConfig, INHERIT_ROLE_ID,
+  defaultFallbacksConfig, INHERIT_ROLE_ID, isFallbackActive,
   type FallbackStrategy, type FallbacksConfig, type FallbacksRole,
   type FallbacksRoleRule, type FallbacksRoles,
 } from '../config.ts'
@@ -81,7 +81,7 @@ export interface FallbacksSwitchSnapshot extends FallbacksSwitchEventData {
  * live route probe.
  */
 export type EffectiveModelView =
-  /** ① `enabled: false` or an empty rootChain. */
+  /** ① An inactive config (nothing configured) or an empty rootChain. */
   | { kind: 'unavailable' }
   /** ② The most recent switch's target (`to`). */
   | { kind: 'switched'; provider: string; model: string }
@@ -399,10 +399,6 @@ export function parseFallbacksConfig(value: unknown): FallbacksConfig {
   if (presets !== undefined && presets !== 'bundled' && presets !== 'none') {
     throw new TypeError('fallbacks descriptor presets must be bundled|none')
   }
-  const enabled = value.enabled
-  if (enabled !== undefined && typeof enabled !== 'boolean') {
-    throw new TypeError('fallbacks descriptor enabled must be a boolean')
-  }
   const roleAutoMatch = value.roleAutoMatch
   if (roleAutoMatch !== undefined && typeof roleAutoMatch !== 'boolean') {
     throw new TypeError('fallbacks descriptor roleAutoMatch must be a boolean')
@@ -435,7 +431,6 @@ export function parseFallbacksConfig(value: unknown): FallbacksConfig {
     throw new TypeError('fallbacks descriptor recovery must be timer|half-open')
   }
   return {
-    enabled: enabled ?? defaultFallbacksConfig.enabled,
     triggerCodes: (triggerCodes as string[] | undefined) ?? [...defaultFallbacksConfig.triggerCodes],
     rootChain: (rootChain as string[] | undefined) ?? [...defaultFallbacksConfig.rootChain],
     roles: {
@@ -457,8 +452,8 @@ export function parseFallbacksConfig(value: unknown): FallbacksConfig {
     // §9.4 mirror: the host default gained `roleAutoMatch` (10th field), so
     // the client fold mirrors it too — `parseFallbacksConfig` output must
     // stay equal to `defaultFallbacksConfig` (pinned invariant). Mechanical
-    // mirror of `enabled`; the settings card renders the key as an always-on
-    // "Enable role auto-match" toggle (default true, plan
+    // mirror of `revertPolicy`; the settings card renders the key as an
+    // always-on "Enable role auto-match" toggle (default true, plan
     // fallbacks-settings-visibility Task 3).
     roleAutoMatch: roleAutoMatch ?? defaultFallbacksConfig.roleAutoMatch,
     // P5 mirror: the host default gained `timeSlots` (11th field), so the
@@ -565,10 +560,11 @@ function configPrimaryTarget(config: FallbacksConfig): { provider: string; model
 }
 
 /**
- * Derive the "current effective model" (spec §2.5 D-6): ① disabled / empty
- * rootChain → unavailable; ② a recent switch exists → the latest one's `to`;
- * ③ otherwise → the config's primary target. A **display value** — never a
- * live route probe.
+ * Derive the "current effective model" (spec §2.5 D-6): ① inactive (nothing
+ * configured — the removed `enabled` switch re-keyed to `isFallbackActive`)
+ * / empty rootChain → unavailable; ② a recent switch exists → the latest
+ * one's `to`; ③ otherwise → the config's primary target. A **display
+ * value** — never a live route probe.
  *
  * INTENTIONAL D-6 CONTRACT RETENTION: after the AC-2 trim (plan
  * fallbacks-settings-visibility Task 2) the settings card's status block no
@@ -582,7 +578,7 @@ export function deriveEffectiveModel(
   config: FallbacksConfig,
   switches: readonly FallbacksSwitchSnapshot[],
 ): EffectiveModelView {
-  if (!config.enabled || config.rootChain.length === 0) {
+  if (!isFallbackActive(config) || config.rootChain.length === 0) {
     return { kind: 'unavailable' }
   }
   const latest = switches[0]

@@ -11,7 +11,8 @@
  *   `apply` reads the Loader's live config reference, and the
  *   `settings/document-updated` listener re-derives the runtime caches —
  *   the old `installSection` setSource/onChange contract, spec §4).
- * - `agent/request-error` waterfall: `!enabled` / code ∉ `triggerCodes`
+ * - `agent/request-error` waterfall: inactive config (`isFallbackActive`) /
+ *   code ∉ `triggerCodes`
  *   (**always mode included**) → `next()`; otherwise resolve role + chain,
  *   and when a candidate survives the filter (current / cooldown /
  *   step-failed / `provider/*`-missing-id) write the pending switch +
@@ -46,7 +47,7 @@ import type { Session } from '@deepseek-ai/dsh-session'
 // the settings child below follows).
 import type {} from '@deepseek-ai/dsh-settings/types'
 import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
-import { defaultFallbacksConfig, detectLegacyKeys, INHERIT_ROLE_ID, validateFallbacksConfig, type FallbacksConfig } from './config.ts'
+import { defaultFallbacksConfig, detectLegacyKeys, INHERIT_ROLE_ID, isFallbackActive, validateFallbacksConfig, type FallbacksConfig } from './config.ts'
 import { Config } from './schema.ts'
 import { pickRoleByLlm } from './automatch.ts'
 import { annotateCandidates, createCandidateFilter, hasWildcardEntry, resolveChain, resolveChainViews, selectCandidates, type FailingModel } from './chains.ts'
@@ -834,15 +835,18 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
   }
   // Virtual FallbacksChain/Auto adapter (plan fallbacks-virtual-chain
   // Task 1, P2; PR #62 feedback): ONE conditional `ctx.inject(['llm'])`
-  // child — the picker row registers whenever `enabled` (conformance of
-  // the all-day chain is NOT part of registration: a legacy multi-model or
-  // empty rootChain still earns the row; the adapter's delegate still
+  // child — the picker row registers whenever the config is ACTIVE
+  // (`isFallbackActive` — content presence; the removed `enabled` switch is
+  // re-keyed to it. Conformance of the all-day chain is NOT part of
+  // registration: a legacy multi-model or empty rootChain still earns the
+  // row as long as something is configured; the adapter's delegate still
   // refuses a non-conforming all-day), and hides
-  // on disable. The returned reconcile thunk is wired into the settings
+  // when nothing is configured. The returned reconcile thunk is wired into
+  // the settings
   // onChange below: transition-reconcile over COMMITTED composed
   // snapshots only (card drafts are client-side until gateway save), so
   // the catalog never flickers; the condition deliberately ignores
-  // timeSlots and conformance, so slot-row / chain edits never churn
+  // conformance, so slot-row / chain edits never churn
   // registration.
   // `() => source()` — the mutable binding, not the initial thunk: `source`
   // reads the Loader's live config reference (or the settings-composed view —
@@ -926,7 +930,7 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
       const current = source()
       roleIds = new Map(current.roles.list.map((role) => [role.id.trim(), role.id] as const))
       hasChains = current.rootChain.length > 0 || current.roles.list.some((role) => (role.chain?.length ?? 0) > 0)
-      // Virtual adapter registration reconcile (P2): enabled / all-day
+      // Virtual adapter registration reconcile (P2): active / all-day
       // conformance transitions only — idempotent, slot edits no-op.
       reconcileFallbacksAdapter()
       // P7: a settings edit is a config change, not a wall-clock rotation —
@@ -1365,7 +1369,7 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
     // Always mode delegates downstream first (llm-retry), so non-trigger
     // failures must pass through here too — the cap lives at agent/request
     // (ADR-2). Only trigger codes enter the decision path.
-    if (!config.enabled || !config.triggerCodes.includes(failure.code)) return next()
+    if (!isFallbackActive(config) || !config.triggerCodes.includes(failure.code)) return next()
     const current = currentModel(agent, provider, config, new Date())
     if (!current.model) return next()
     // F-005: the decision path is defensive — an unexpected throw (e.g. a
@@ -1440,7 +1444,7 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
     // resolver already reports 'all-day', but the explicit gate also keeps
     // the per-agent marker and the log untouched across a config change).
     if (
-      config.enabled
+      isFallbackActive(config)
       && isAllDayConforming(config.rootChain)
       && (config.timeSlots?.length ?? 0) > 0
       && agent.session?.header?.origin !== 'subagent'
@@ -1483,7 +1487,7 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
     // identical to today. Defensive: any throw in the resolution/injection
     // path warns and the request proceeds unchanged (mirror the
     // `agent/request-error` defensive pattern).
-    if (config.enabled && hasChains && agent.session?.header?.origin === 'subagent' && !dispatchInjected.has(agent.id)) {
+    if (isFallbackActive(config) && hasChains && agent.session?.header?.origin === 'subagent' && !dispatchInjected.has(agent.id)) {
       dispatchInjected.add(agent.id)
       try {
         // W-002 + S-hard (qc fix wave): the same guarded, last-known-backed
@@ -1591,7 +1595,7 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
     }
     if (
       hasChains
-      && config.enabled
+      && isFallbackActive(config)
       && config.alwaysModeRetryCap > 0
       && countRetryEvents(agent.session, turn, step, seed.provider) >= config.alwaysModeRetryCap
     ) {
@@ -1768,7 +1772,7 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
     getConfig(): FallbacksConfigSummary {
       const config = source()
       return {
-        enabled: config.enabled,
+        active: isFallbackActive(config),
         triggerCodes: config.triggerCodes,
         rootChain: config.rootChain,
         timeSlots: (config.timeSlots ?? []).map((row) => row.kind === 'preset'
@@ -1854,8 +1858,9 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
   // unseeded (D9.3-b); retry happens on the next apply / child
   // re-activation — no in-process retry loop. `presets: 'none'` reads the
   // LIVE composed source at fire time and short-circuits before declare:
-  // zero declarations, zero writes, zero registry change (D9.3-c; no
-  // `enabled` gate — enabled:false still materializes). No per-apply
+  // zero declarations, zero writes, zero registry change (D9.3-c; the
+  // declaration is content-agnostic — no gate re-reads the removed
+  // `enabled` switch and no `isFallbackActive` condition either). No per-apply
   // one-shot guard: declare is idempotent (no-delta zero write, D9.3-d),
   // so every child re-activation re-fires safely.
   ctx.inject(['settings'], () => {

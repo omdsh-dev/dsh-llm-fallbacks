@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Fallbacks",
+    "description": "Automatic provider/model fallback chains that keep agent steps running when LLM requests keep failing (auth, quota, rate limit)."
+  }
+}

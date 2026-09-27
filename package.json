@@ -9,6 +9,7 @@
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "icon": "./icon.svg",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -18,12 +19,15 @@
       "types": "./dist/client/index.d.ts",
       "default": "./dist/client/index.js"
     },
+    "./locale/*.json": "./locale/*.json",
     "./bundle/cordis.patch.yml": "./bundle/cordis.patch.yml",
     "./package.json": "./package.json"
   },
   "files": [
     "dist",
     "bundle",
+    "locale",
+    "icon.svg",
     "scripts"
   ],
   "dsh": {

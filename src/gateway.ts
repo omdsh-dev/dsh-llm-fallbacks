@@ -28,7 +28,12 @@
  * profile patch). There is NO hard-gate resolver (unlike advisor's
  * `resolveAdvisorConfig`): the fallbacks decision path runs at
  * `agent/request` time in `src/index.ts`, so the gateway returns the raw
- * composed config — `enabled` is a plain config field, not a gate output.
+ * composed config. There is NO config-level `enabled` key on the contract
+ * (plan fallbacks-web-ux-alignment T2): the Plugins-page row toggle is the
+ * master switch, the runtime gates read content presence
+ * (`isFallbackActive` in `src/config.ts`), and a stored `enabled:` line is
+ * tolerated-and-stripped ({@link LEGACY_KEYS} — never read, never
+ * re-persisted).
  * `set` validates the patch against the `Config` schema first (unknown-key
  * rejection unchanged — the settings service itself is non-strict and would
  * merge the unknown key through), then writes the plugin's profile-entry
@@ -170,10 +175,12 @@ export interface FallbacksRevertResult extends FallbacksReadResult {
 /**
  * Complete configuration key lookup for strict unknown-key rejection. The
  * schemastery object resolver merges unknown keys by default, so the gateway
- * rejects them explicitly — same strictness as advisor and the Loader.
+ * rejects them explicitly — same strictness as advisor and the Loader. The
+ * removed config-level `enabled` is NOT here: it is the one tolerated
+ * unknown key ({@link LEGACY_KEYS}) and never crosses the wire (the read
+ * whitelist drops it, the write path strips it).
  */
 const CONFIG_KEYS: Record<string, true> = {
-  enabled: true,
   triggerCodes: true,
   rootChain: true,
   roles: true,
@@ -201,6 +208,21 @@ const ROLES_KEYS: Record<string, true> = {
   list: true,
   rules: true,
 }
+
+/**
+ * Removed config keys the strict unknown-key rejection TOLERATES — accepted
+ * into a patch but stripped from every snapshot/write so they are never read
+ * and never re-persisted (the advisor LEGACY_KEYS mechanism). Only the
+ * removed config-level `enabled` lives here: the Plugins-page row toggle
+ * replaced the master switch, and stored profiles still carrying
+ * `enabled: true/false` must load and save cleanly instead of being rejected
+ * (plan fallbacks-web-ux-alignment T2 — the stored line is simply ignored;
+ * no migration-banner entry, nothing for the user to rewrite). Every other
+ * unknown key stays a hard reject.
+ */
+const LEGACY_KEYS: ReadonlySet<string> = new Set([
+  'enabled',
+])
 
 /** Declared nested keys of one `timeSlots` row — anything else is rejected
  * (plan fallbacks-timeslots Task 3, the `ROLES_KEYS` pattern; `name` is the
@@ -281,7 +303,8 @@ export class FallbacksConfigGateway extends TypertRemoteService {
   /**
    * Read the current composed config (schema defaults → entry base → profile
    * patch). No hard-gate resolver (ADR-2): the raw composed config is
-   * the wire value — `enabled` is a plain field, not a gate output.
+   * the wire value. The removed `enabled` key never crosses the wire (the
+   * read whitelist drops it — the snapshot-strip half of LEGACY_KEYS).
    * @returns the wire-normalized composed config plus `legacyKeys` — legacy
    *   two-block-era fields (`chains` / `roles.default` / undeclared rule
    *   role refs) detected on the composed source (schemastery retains them,
@@ -324,8 +347,14 @@ export class FallbacksConfigGateway extends TypertRemoteService {
     // Wire normalization: JSON cannot carry undefined, so a null-valued key
     // is a third-party client's way of saying "absent". Drop null values
     // before the write (an all-null patch is a no-op, like the empty patch).
+    // The schema-removed `enabled` rides the same drop ({@link LEGACY_KEYS}):
+    // validateConfigPatch TOLERATES it in a patch — stored profiles must load
+    // and save cleanly — but the dead key must never be re-persisted here
+    // (the Plugins-page row toggle replaced it; writing it back would
+    // resurrect a switch nothing reads). An all-null / enabled-only patch is
+    // a no-op, like the empty patch above.
     const normalized = Object.fromEntries(
-      Object.entries(patch).filter(([, value]) => value !== null),
+      Object.entries(patch).filter(([key, value]) => !LEGACY_KEYS.has(key) && value !== null),
     )
     if (Object.keys(normalized).length === 0) return this.readResult()
     await settings.update(FALLBACKS_PROFILE_ENTRY, normalized)
@@ -536,8 +565,12 @@ export function validateConfigPatch(patch: unknown): void {
     // the guard (F-001, qc wave): an own `__proto__` key in particular can
     // corrupt the settings merge and wipe the profile patch section. Same
     // strictness as
-    // advisor's `CONFIG_KEYS.has(key)` on a Set.
-    if (!Object.hasOwn(CONFIG_KEYS, key)) {
+    // advisor's `CONFIG_KEYS.has(key)` on a Set. The removed `enabled` is the
+    // one tolerated exception ({@link LEGACY_KEYS}): a stored profile still
+    // carrying it must parse and save cleanly — the caller's write path
+    // strips it, so it is never persisted (plan fallbacks-web-ux-alignment
+    // T2).
+    if (!Object.hasOwn(CONFIG_KEYS, key) && !LEGACY_KEYS.has(key)) {
       throw new Error(`dsh-llm-fallbacks: unknown config key "${key}"`)
     }
     // qc2 S-1: the `roles` object is itself a patch boundary — schemastery

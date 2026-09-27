@@ -108,7 +108,12 @@ export interface FallbacksCommandSnapshot {
  * runtime) is summarized as `''` and rendered as `*`.
  */
 export interface FallbacksConfigSummary {
-  readonly enabled: boolean
+  /**
+   * Content-presence gate (`isFallbackActive`, plan fallbacks-web-ux-alignment
+   * T2 — the removed config-level `enabled` switch re-keyed): the plugin
+   * intervenes exactly when a chain/time-slot/role is configured.
+   */
+  readonly active: boolean
   readonly triggerCodes: readonly string[]
   readonly rootChain: readonly string[]
   /** Summarized time-slot rows (preset rows carry `preset`, custom rows carry `start`/`end`; both may carry a day mask). */
@@ -638,7 +643,7 @@ export function fallbacksConfigText(
 ): string {
   const t = FALLBACKS_COMMAND_LOCALES[locale]
   const lines: string[] = [
-    `${t.configTitle}: ${summary.enabled ? t.configEnabled : t.configDisabled}`,
+    `${t.configTitle}: ${summary.active ? t.configEnabled : t.configDisabled}`,
     `${t.configTriggerCodes}: ${summary.triggerCodes.length === 0 ? t.configEmpty : formatConfigList(summary.triggerCodes)}`,
     `${t.configRootChain}: ${summary.rootChain.length === 0 ? t.configEmpty : formatConfigList(summary.rootChain)}`,
     `${t.configTimeSlots}: ${summary.timeSlots.length === 0 ? t.configEmpty : formatConfigTimeSlots(summary.timeSlots, t)}`,
