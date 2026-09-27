@@ -28,11 +28,10 @@ import { defaultFallbacksConfig, type FallbacksConfig } from '../../src/config.t
 
 /**
  * Config helper: spec defaults + overrides (the plugin re-resolves through
- * the schema). The `enabled` baseline is explicit `true` — the default value
- * flipped to `false` in this iteration (readme-settings spec §1.2), and the
- * runtime tests exercise the *active* plugin, so every cfg() call inherits
- * `enabled: true` unless a case overrides it (AC-3 default no-op is pinned
- * by its own explicit test).
+ * the schema). There is NO `enabled` baseline any more (plan
+ * fallbacks-web-ux-alignment T2 — the config-level switch is removed; the
+ * runtime gates read content presence via `isFallbackActive`), so every
+ * cfg() call is active exactly when its overrides configure content.
  */
 export function cfg(overrides: Partial<FallbacksConfig> = {}): FallbacksConfig {
   // Default to `presets: 'none'` (fallbacks-preset-roles QC fix wave, qc1
@@ -41,7 +40,7 @@ export function cfg(overrides: Partial<FallbacksConfig> = {}): FallbacksConfig {
   // suites from preset behavior they do not test. Tests that need the
   // bundled behavior expand the default config explicitly
   // (`{ ...defaultFallbacksConfig, presets: 'bundled' }`).
-  return { ...defaultFallbacksConfig, enabled: true, presets: 'none', ...overrides }
+  return { ...defaultFallbacksConfig, presets: 'none', ...overrides }
 }
 
 /** Fake agent + session; `setRoute` simulates the loop logging a new request header after a switch. */

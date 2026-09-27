@@ -57,7 +57,9 @@ function snapshot(overrides: Partial<FallbacksCommandSnapshot> = {}): FallbacksC
 /** A fully-populated composed-config summary; `overrides` trim it to the state under test. */
 function configSummary(overrides: Partial<FallbacksConfigSummary> = {}): FallbacksConfigSummary {
   return {
-    enabled: true,
+    // Content-presence gate (plan fallbacks-web-ux-alignment T2 — the
+    // removed `enabled` switch re-keyed to `isFallbackActive`).
+    active: true,
     triggerCodes: ['AUTH', 'QUOTA', 'RATE_LIMIT'],
     rootChain: ['anthropic/claude-3-5-sonnet', 'openai/*'],
     timeSlots: [
@@ -388,15 +390,15 @@ describe('fallbacksConfigText — composed-config readback', () => {
   it('first line marks the composed-config surface — distinct from the diagnostic title and not USAGE', () => {
     const text = fallbacksConfigText(configSummary(), 'en')
     const first = text.split('\n')[0]!
-    expect(first).toBe('Fallbacks config: enabled')
+    expect(first).toBe('Fallbacks config: enabled') // active by content
     expect(first).not.toBe(FALLBACKS_COMMAND_LOCALES.en.title)
     expect(first).not.toContain('Session fallback diagnostics')
     expect(first).not.toMatch(/^  \/fallbacks/)
   })
 
-  it('renders the enabled/disabled switch as the first line', () => {
+  it('renders the content-presence gate as the first line (active/inactive — no enabled switch)', () => {
     expect(fallbacksConfigText(configSummary(), 'en').split('\n')[0]).toBe('Fallbacks config: enabled')
-    expect(fallbacksConfigText(configSummary({ enabled: false }), 'en').split('\n')[0]).toBe('Fallbacks config: disabled')
+    expect(fallbacksConfigText(configSummary({ active: false }), 'en').split('\n')[0]).toBe('Fallbacks config: disabled')
   })
 
   it('renders trigger codes as a joined list', () => {
@@ -1000,7 +1002,6 @@ describe('apply() wiring — conditional commands child', () => {
     // the chainCount summary; `presets: 'none'` (cfg default) keeps the
     // bundled preset self-declaration inert so the roles summary is stable.
     apply(ctx, cfg({
-      enabled: true,
       triggerCodes: ['AUTH'],
       rootChain: ['other/gpt-4o'],
       roles: {
@@ -1047,8 +1048,6 @@ describe('apply() wiring — conditional commands child', () => {
     // renderer, which must keep the C-9 invariant instead of indexing
     // DAY_NAMES to `undefined`.
     apply(ctx, cfg({
-      enabled: true,
-      enabled: true,
       rootChain: ['other/gpt-4o'],
       timeSlots: [{ kind: 'custom', start: '09:00', end: '12:00', days: [7], chain: ['other/gpt-4o'] }],
     }))

@@ -250,9 +250,12 @@ describe('dispatch-time role injection', () => {
     expect(switchEvents(agent)).toHaveLength(0)
   })
 
-  it('is a no-op when disabled (AC-8)', async () => {
-    const { agent } = makeAgent('t4-disabled', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent', agentPreset: 'coder' })
-    apply(ctx, cfg({ enabled: false, roles: coderRoles() }))
+  it('is a no-op with no configured content (AC-8 — the removed enabled switch re-keyed to content presence)', async () => {
+    // Plan fallbacks-web-ux-alignment T2: there is no `enabled: false` term —
+    // a config with no chains/slots/roles is a pass-through even for a
+    // subagent carrying an explicit preset (the roles never resolve).
+    const { agent } = makeAgent('t4-inactive', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent', agentPreset: 'coder' })
+    apply(ctx, cfg())
 
     const config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
     expect(config).toEqual({ provider: 'mock', model: 'gpt-4o' })

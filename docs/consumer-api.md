@@ -45,7 +45,7 @@ validateFallbacksConfig(config, logger)
 |---|---|
 | `INHERIT_ROLE_ID` | Built-in reserved role id `'inherit'` (fallback target when no rule matches). |
 | `ROLE_ID_PATTERN` | Role id format regex `/^[a-z0-9-]{1,32}$/`. |
-| `defaultFallbacksConfig` | Default config object (`enabled: false`, default `triggerCodes`, empty chains). |
+| `defaultFallbacksConfig` | Default config object (default `triggerCodes`, empty chains; no `enabled` key — the switch was removed). |
 | `provide` | Declarative service metadata `['llm-fallbacks'] as const` (for loader/tool recognition; actual registration happens inside the plugin's settings inject child — see the named service section below). |
 | `SelectorError` | The catchable error class thrown by `parseSelector` — catch-side type safety depends on it. |
 | `presetRoles` | The 5 bundled omp-style preset role declarations — `readonly SeedDeclaration[]`, pure data module, the exact payload the plugin self-declares on apply. Derivation: omp bundled agent prompts `packages/coding-agent/src/prompts/agents/`, snapshot 2026-08-16; persona text frozen per the plugin spec §9.2. See [Preset roles](#preset-roles). |

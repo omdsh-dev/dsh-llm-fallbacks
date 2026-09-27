@@ -1,0 +1,16 @@
+<svg width="36" height="36" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="dsh-llm-fallbacks-icon-a" x1="14.9894" y1="9.0697" x2="14.9894" y2="21.3063" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#69B9FF"/>
+      <stop offset="1" stop-color="#324DE2"/>
+    </linearGradient>
+    <linearGradient id="dsh-llm-fallbacks-icon-b" x1="21.1075" y1="15.1877" x2="21.1075" y2="27.4243" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#45E7A4"/>
+      <stop offset="1" stop-color="#05909D"/>
+    </linearGradient>
+  </defs>
+  <rect x="8.87109" y="9.0697" width="12.2365" height="12.2365" rx="2" fill="url(#dsh-llm-fallbacks-icon-a)" fill-opacity="0.8"/>
+  <rect x="14.9893" y="15.1877" width="12.2365" height="12.2365" rx="2" fill="url(#dsh-llm-fallbacks-icon-b)" fill-opacity="0.8"/>
+  <path d="M13.3 13.3L19.4 19.4" stroke="#F9FAFB" stroke-opacity="0.95" stroke-width="1.7" stroke-linecap="round"/>
+  <path d="M19.4 15.9V19.4H15.9" stroke="#F9FAFB" stroke-opacity="0.95" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

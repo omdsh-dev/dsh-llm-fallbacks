@@ -177,8 +177,12 @@ async function mountRow(
   return { view, controller, scripted, props }
 }
 
-/** A loaded config with `enabled: true`. */
-const ENABLED_CONFIG: typeof defaultFallbacksConfig = { ...defaultFallbacksConfig, enabled: true }
+/**
+ * A loaded config WITH CONTENT — the active-badge input (plan
+ * fallbacks-web-ux-alignment T2: activity is content presence via
+ * `isFallbackActive`; there is no `enabled` flag any more).
+ */
+const ACTIVE_CONFIG: typeof defaultFallbacksConfig = { ...defaultFallbacksConfig, rootChain: ['other/gpt-4o'] }
 
 /**
  * A minimal fake of the client slots service + context for the registration
@@ -295,9 +299,9 @@ describe('GeneralFallbacksRow registration (settings.general.item)', () => {
 })
 
 describe('GeneralFallbacksRow states (compact read-only row)', () => {
-  it('renders the enabled badge + last-switch summary from a settled read', async () => {
+  it('renders the active badge + last-switch summary from a settled read', async () => {
     await mountRow({
-      config: ENABLED_CONFIG,
+      config: ACTIVE_CONFIG,
       historyEntries: [switchEntry(9), switchEntry(4)],
     })
     await waitFor(() => expect(screen.getByText(en['general.enabled'])).toBeTruthy())
@@ -318,7 +322,7 @@ describe('GeneralFallbacksRow states (compact read-only row)', () => {
 
   it('renders an unknown reason value raw (forward-compatible log)', async () => {
     await mountRow({
-      config: ENABLED_CONFIG,
+      config: ACTIVE_CONFIG,
       historyEntries: [switchEntry(2, { reason: 'future-reason' as never })],
     })
     await waitFor(() => expect(screen.getByText(
@@ -333,7 +337,7 @@ describe('GeneralFallbacksRow states (compact read-only row)', () => {
     // (as the role→model mapping), not twice; the leading `{from} → {to}`
     // is dropped. Role + reason both stay visible (AC-5).
     await mountRow({
-      config: ENABLED_CONFIG,
+      config: ACTIVE_CONFIG,
       historyEntries: [switchEntry(9, { role: 'reviewer', reason: 'role-inject' })],
     })
     await waitFor(() => expect(screen.getByText(en['general.enabled'])).toBeTruthy())
@@ -360,14 +364,14 @@ describe('GeneralFallbacksRow states (compact read-only row)', () => {
   })
 
   it('keeps the enabled badge and surfaces the switches read error with an alert', async () => {
-    await mountRow({ config: ENABLED_CONFIG, historyError: 'history refused' })
+    await mountRow({ config: ACTIVE_CONFIG, historyError: 'history refused' })
     await waitFor(() => expect(screen.getByText(en['general.enabled'])).toBeTruthy())
     expect(screen.getByText('Switch history read failed: history refused')).toBeTruthy()
     expect(document.querySelector('[role="alert"]')).not.toBeNull()
   })
 
   it('pulls the first read on mount when the store is idle (lazy load)', async () => {
-    const scripted = scriptedApi({ config: ENABLED_CONFIG, historyEntries: [] })
+    const scripted = scriptedApi({ config: ACTIVE_CONFIG, historyEntries: [] })
     const controller = new FallbacksSettingsController(scripted.api, scripted.rpc)
     const view = render(<GeneralFallbacksRow {...rowProps(controller, bindSnapshotSelector(controller.store))} />)
     // The mount effect fires both idle guards.
@@ -381,7 +385,7 @@ describe('GeneralFallbacksRow states (compact read-only row)', () => {
   })
 
   it('does not re-read when the store was already loaded', async () => {
-    const scripted = scriptedApi({ config: ENABLED_CONFIG, historyEntries: [switchEntry(1)] })
+    const scripted = scriptedApi({ config: ACTIVE_CONFIG, historyEntries: [switchEntry(1)] })
     const controller = new FallbacksSettingsController(scripted.api, scripted.rpc)
     await controller.load()
     controller.setCurrentSession('sess-1' as never)

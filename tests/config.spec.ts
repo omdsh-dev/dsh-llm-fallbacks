@@ -18,6 +18,7 @@ import {
   INHERIT_ROLE_ID,
   defaultFallbacksConfig,
   detectLegacyKeys,
+  isFallbackActive,
   validateFallbacksConfig,
   type FallbacksConfig,
   type FallbacksRole,
@@ -64,10 +65,12 @@ describe('fallbacks Config schema (two-block model)', () => {
       fallback: 'inherit-root',
     }])
     expect(resolved.roles.rules).toEqual([{ role: 'reviewer' }])
-    // The feature switch defaults OFF (readme-settings spec §1.2); a partial
-    // input inherits the new default.
-    expect(resolved.enabled).toBe(false)
+    // The config-level `enabled` switch is retired (plan
+    // fallbacks-web-ux-alignment T2): no feature-switch key exists any more;
+    // activity re-keys to content presence (`isFallbackActive`).
+    expect('enabled' in resolved).toBe(false)
     expect(resolved.triggerCodes).toEqual(['AUTH', 'QUOTA', 'RATE_LIMIT'])
+    expect(isFallbackActive(resolved)).toBe(true)
   })
 
   it('composed role entities carry the fallback default and keep string-optional fields absent', () => {
@@ -162,9 +165,9 @@ describe('roleAutoMatch config key (plan fallbacks-role-automatch Task 1)', () =
   it('a FallbacksConfig literal without roleAutoMatch still type-checks (optional-on-type)', () => {
     // Compile-time pin: library consumers building configs with only the
     // pre-existing keys must not be forced to add roleAutoMatch (additive,
-    // non-breaking — the documented reason `presets` is optional).
+    // non-breaking — the documented reason `presets` is optional). There is
+    // no `enabled` key to carry any more (plan fallbacks-web-ux-alignment T2).
     const minimal: FallbacksConfig = {
-      enabled: false,
       triggerCodes: ['AUTH', 'QUOTA', 'RATE_LIMIT'],
       rootChain: [],
       roles: { list: [], rules: [] },
@@ -459,6 +462,8 @@ describe('validateFallbacksConfig — half-open escalation inertness (PR #87 rev
 describe('detectLegacyKeys — three legacy classes', () => {
   it('returns [] for a clean two-block config (no legacy keys, declared rule roles)', () => {
     expect(detectLegacyKeys({
+      // A riding `enabled:` line is NOT flagged — the removed key is
+      // silently stripped by the gateway (no banner entry, T2).
       enabled: true,
       rootChain: ['other/gpt-4o'],
       roles: { list: [{ id: 'coder' }], rules: [{ role: 'coder' }, { role: 'inherit' }] },

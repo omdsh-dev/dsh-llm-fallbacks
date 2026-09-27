@@ -11,7 +11,8 @@
  *   `cooldown-expiry` revert to the main model, `never` no-revert,
  * - the safety valve (spec §2 clause 4): the terminal `LlmError` keeps the
  *   original code and message (spec §6),
- * - the AC-8 no-op regression (unconfigured / disabled → zero events),
+ * - the AC-8 no-op regression (unconfigured content → zero events; the
+ *   removed `enabled` key is inert — plan fallbacks-web-ux-alignment T2),
  * - the composition order with a model-selection listener (T3 review ⚠️3:
  *   both registration orders, with and without an active selection — cordis
  *   waterfall semantics: the FIRST-registered listener is outer and has the
@@ -283,12 +284,22 @@ describe('no-op regression (AC-8)', () => {
     expect(await dispatchRequest(ctx, agent, seed)).toEqual(seed)
   })
 
-  it('disabled: zero events even with a rootChain configured', async () => {
-    const { agent } = makeAgent('noop-disabled', { provider: 'mock', model: 'gpt-4o' })
-    apply(ctx, cfg({ enabled: false, rootChain: ['other/gpt-4o'] }))
+  it('legacy enabled: line is inert — a profile carrying it (even enabled: false) with content stays active', async () => {
+    // Plan fallbacks-web-ux-alignment T2: the config-level `enabled` switch
+    // is removed. A stored profile still carrying the key must not be
+    // honored as a switch (there is no successor — the Plugins-page row
+    // toggle is the master switch): the schema retains the unknown key, no
+    // runtime gate reads it, and content presence (`isFallbackActive`)
+    // decides. So `enabled: false` + a configured rootChain still degrades.
+    const { agent } = makeAgent('noop-legacy-enabled', { provider: 'mock', model: 'gpt-4o' })
+    apply(ctx, cfg({ rootChain: ['other/gpt-4o'], ...({ enabled: false } as object) }))
 
-    expect(await dispatchRequestError(ctx, agent, { failure: { message: 'denied', code: 'AUTH' } })).toBeUndefined()
-    expect(await dispatchRequestError(ctx, agent, { failure: { message: '429', code: 'RATE_LIMIT' } })).toBeUndefined()
+    // The pending switch lands in the state store (stop-write: no durable
+    // event — issue #52), and the next request build applies it.
+    expect(await dispatchRequestError(ctx, agent, { failure: { message: 'denied', code: 'AUTH' } })).toEqual({ kind: 'retry' })
+    expect(stateStore(ctx)?.peek(agent.id)?.pendingSwitch).toBeDefined()
+    expect(await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' }))
+      .toEqual({ provider: 'other', model: 'gpt-4o' })
     expect(switchEvents(agent)).toHaveLength(0)
   })
 })

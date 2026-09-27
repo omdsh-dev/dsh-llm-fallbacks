@@ -74,7 +74,6 @@ export const CLIENT_EXTERNALS: readonly string[] = [
   '@deepseek-ai/cordis',
   '@deepseek-ai/dsh-client-store',
   '@deepseek-ai/dsh-client-ui-slots',
-  '@deepseek-ai/dsh-client-ui-primitives',
 ]
 
 /**

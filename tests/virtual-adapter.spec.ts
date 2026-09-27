@@ -149,14 +149,24 @@ describe('registration lifecycle (P2)', () => {
     })
   })
 
-  it('hides the row when the plugin is disabled', () => {
-    apply(ctx, cfg({ enabled: false, rootChain: [OFFICIAL_FLASH] }))
-    expect(listed()).toBe(false)
+  it('a legacy enabled: false line does NOT hide the row — content registers (plan fallbacks-web-ux-alignment T2)', async () => {
+    // The removed switch is inert: a stored profile still carrying
+    // `enabled: false` with a configured chain is ACTIVE (the row toggle is
+    // the master switch), so the virtual route registers.
+    apply(ctx, cfg({ rootChain: [OFFICIAL_FLASH], ...({ enabled: false } as object) }))
+    await vi.waitFor(() => expect(listed()).toBe(true))
   })
 
-  it('shows the row for an empty all-day chain (enabled-only gate, PR #62 feedback)', async () => {
+  it('hides the row with no configured content (content presence replaces the enabled-only gate)', async () => {
+    // PR #62 feedback let an enabled-only (contentless) config show the row;
+    // T2 re-keyed the gate to content presence — an empty config is a
+    // pass-through exactly like an uninstalled plugin, so nothing registers.
     apply(ctx, cfg({ rootChain: [] }))
-    await vi.waitFor(() => expect(listed()).toBe(true))
+    // Give any (incorrect) registration a beat before asserting.
+    await vi.waitFor(() => {
+      expect(ctx.llm.listProviders().filter((provider) => provider.id === FALLBACKS_PROVIDER)).toHaveLength(0)
+    })
+    expect(listed()).toBe(false)
   })
 
   it('shows the row for a legacy multi-model rootChain (enabled-only gate, PR #62 feedback)', async () => {
@@ -181,15 +191,18 @@ describe('registration lifecycle (P2)', () => {
     expect(listed()).toBe(true)
   })
 
-  it('disabling unregisters the row and re-enabling re-registers it', async () => {
+  it('clearing content unregisters the row and restoring content re-registers it', async () => {
+    // The live gate is content presence (T2): clearing the all-day chain
+    // (the only configured content) deactivates the plugin; writing a chain
+    // back re-activates it. No `enabled` write exists any more.
     apply(ctx, cfg({ rootChain: [OFFICIAL_FLASH] }))
     await vi.waitFor(() => expect(listed()).toBe(true))
 
-    await ctx.settings.update(FALLBACKS_PROFILE_ENTRY, { enabled: false })
+    await ctx.settings.update(FALLBACKS_PROFILE_ENTRY, { rootChain: [] })
     expect(listed()).toBe(false)
 
-    await ctx.settings.update(FALLBACKS_PROFILE_ENTRY, { enabled: true })
-    expect(listed()).toBe(true)
+    await ctx.settings.update(FALLBACKS_PROFILE_ENTRY, { rootChain: [OFFICIAL_FLASH] })
+    await vi.waitFor(() => expect(listed()).toBe(true))
   })
 
   it('all-day conformance loss keeps the row registered (enabled-only gate)', async () => {
@@ -480,6 +493,51 @@ describe('adapter contract (P1/P3)', () => {
   })
 })
 
+// ---------------------------------------------------------------------------
+// Catalog availability of selectable routes (rc.2 `modelAvailable` GUI gate —
+// plan fallbacks-web-ux-alignment T9b, the 2026-09-27 research adaptation):
+// since dsh 0.1.7-rc.2 (`session-controller/src/catalog.ts:73-89`) GUI model
+// selection is gated on ADVERTISED catalog membership — picking a pair no
+// `listModels` row advertises throws `session/model-unavailable`. The pin
+// below asserts every route the card can put into a chain resolves through an
+// advertised catalog row; the out-of-catalog boundary is documented, and the
+// evidence task found no gap to fix (the adapter already advertises its row).
+// ---------------------------------------------------------------------------
+
+describe('catalog availability of selectable routes (rc.2 modelAvailable gate, T9b)', () => {
+  /** The rc.2 GUI gate's resolution face: is the pair advertised by its provider's catalog rows? */
+  async function advertised(provider: string, model: string): Promise<boolean> {
+    const rows = await ctx.llm.listModels(provider)
+    return rows.some(row => row.id === model)
+  }
+
+  it('the virtual picker row the card composes is advertised (FallbacksChain / Auto)', async () => {
+    apply(ctx, cfg({ rootChain: [OFFICIAL_FLASH] }))
+    await vi.waitFor(() => expect(listed()).toBe(true))
+    // The adapter's `listModels` override (src/virtual-adapter.ts) is the
+    // advertisement the rc.2 gate reads — the row the picker offers when the
+    // card's Default model panel is filled.
+    expect(await advertised(FALLBACKS_PROVIDER, FALLBACKS_CHAIN_MODEL)).toBe(true)
+  })
+
+  it('a real chain model is advertised by its own provider (catalog-served, GUI-selectable)', async () => {
+    apply(ctx, cfg({ rootChain: [OFFICIAL_FLASH] }))
+    await vi.waitFor(() => expect(listed()).toBe(true))
+    // Chain entries picked in the card come from the aggregate model catalog,
+    // i.e. from a provider's own `listModels` rows — the head pair resolves.
+    expect(await advertised(HEAD_PROVIDER, HEAD_MODEL)).toBe(true)
+  })
+
+  it('an out-of-catalog chain entry is NOT advertised — GUI-unselectable, still core-routable (documented boundary)', async () => {
+    // The card keeps hand-written out-of-catalog chain values as annotated
+    // synthetic options (configuration.md §Save rules). Under the rc.2 gate
+    // such a pair can never be PICKED in the GUI — it is reachable only as a
+    // fallback TARGET (core routing accepts unlisted ids). That is the
+    // intended boundary, not a gap: no fix follows from the evidence task.
+    expect(await advertised(HEAD_PROVIDER, 'legacy-unlisted-model')).toBe(false)
+  })
+})
+
 describe('imageRequestPricing (0.1.2 adoption)', () => {
   it('delegates to the SAME effective head stream() dispatches (route-accurate)', async () => {
     stub.pricing = stubPricing()
@@ -537,9 +595,14 @@ describe('imageRequestPricing (0.1.2 adoption)', () => {
     expect(ctx.llm.imageRequestPricing(FALLBACKS_PROVIDER, FALLBACKS_CHAIN_MODEL)).toBeUndefined()
   })
 
-  it('returns undefined when the effective chain is empty', async () => {
+  it('registers nothing with no configured content — the pricing face is moot (T2)', async () => {
+    // An empty config never registers the virtual route (content presence),
+    // so there is no `FallbacksChain` row to answer a pricing lookup with.
     apply(ctx, cfg({ rootChain: [] }))
-    await vi.waitFor(() => expect(listed()).toBe(true))
+    // Give any (incorrect) registration a beat before asserting.
+    await vi.waitFor(() => {
+      expect(ctx.llm.listProviders().filter((provider) => provider.id === FALLBACKS_PROVIDER)).toHaveLength(0)
+    })
     expect(ctx.llm.imageRequestPricing(FALLBACKS_PROVIDER, FALLBACKS_CHAIN_MODEL)).toBeUndefined()
   })
 })

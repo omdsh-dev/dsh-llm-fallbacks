@@ -9,6 +9,7 @@
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "icon": "./icon.svg",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -18,12 +19,15 @@
       "types": "./dist/client/index.d.ts",
       "default": "./dist/client/index.js"
     },
+    "./locale/*.json": "./locale/*.json",
     "./bundle/cordis.patch.yml": "./bundle/cordis.patch.yml",
     "./package.json": "./package.json"
   },
   "files": [
     "dist",
     "bundle",
+    "locale",
+    "icon.svg",
     "scripts"
   ],
   "dsh": {
@@ -71,7 +75,6 @@
     "@deepseek-ai/dsh-client-ui-chat": "^0.1.7-rc.2",
     "@deepseek-ai/dsh-client-ui-conversation": "^0.1.7-rc.2",
     "@deepseek-ai/dsh-client-ui-plugin-manager": "^0.1.7-rc.2",
-    "@deepseek-ai/dsh-client-ui-primitives": "^0.1.7-rc.2",
     "@deepseek-ai/dsh-client-ui-renderer": "^0.1.7-rc.2",
     "@deepseek-ai/dsh-client-ui-settings": "^0.1.7-rc.2",
     "@deepseek-ai/dsh-client-ui-slots": "^0.1.7-rc.2",
