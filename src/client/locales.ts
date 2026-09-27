@@ -37,6 +37,11 @@ export const zh = {
   'alwaysModeRetryCap.hint': '达到上限次数后切换；0 表示禁用',
   'alwaysModeRetryCap.tooltip': 'retryPolicy 为 always 的模型在同一请求内重试达到该次数后切换；0 表示禁用。',
   'advanced.label': '高级选项',
+  // 高级选项 disclosure (plan fallbacks-card-section-ux T3/T5): the
+  // section is collapsed by default — the expand/collapse a11y labels ride
+  // the heading toggle (the time-slot/role-row contract).
+  'advanced.expand': '展开高级选项',
+  'advanced.collapse': '收起高级选项',
   'roleAutoMatch.label': '启用角色自动匹配',
   'roleAutoMatch.hint': '规则未命中时，由模型自选最贴近的已声明角色',
   'roleAutoMatch.tooltip': '规则未命中时，模型会自动从已声明角色（id + persona）中选择最匹配者并注入该角色的链；关闭后未命中规则时按现状回落（inherit / rootChain）。',
@@ -282,6 +287,9 @@ export const en = {
   'alwaysModeRetryCap.hint': 'Switches after the cap; 0 disables',
   'alwaysModeRetryCap.tooltip': 'Models whose retryPolicy is always switch after this many retries within one request; 0 disables.',
   'advanced.label': 'Advanced options',
+  // Advanced-options disclosure (plan fallbacks-card-section-ux T3/T5).
+  'advanced.expand': 'Expand advanced options',
+  'advanced.collapse': 'Collapse advanced options',
   'roleAutoMatch.label': 'Enable role auto-match',
   'roleAutoMatch.hint': 'On rules-miss, the model picks the closest declared role',
   'roleAutoMatch.tooltip': 'When no rule matches, the model auto-selects the best-fit declared role (id + persona) and uses its chain; turn off to keep today\'s fallback (inherit / rootChain) on a rules-miss.',
