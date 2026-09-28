@@ -5,12 +5,13 @@
  * This is the ONE hook constructor in the plugin's client stack — engines and
  * hosts traffic in bare sources; binding happens on the React side.
  *
- * rc.8 migration: upstream `@deepseek-ai/dsh-client-web-react` (which exported
- * this exact implementation) was deleted in dsh 0.1.0-rc.8; its
+ * Migration: the upstream `@deepseek-ai/dsh-client-web-react` (which exported
+ * this exact implementation) was deleted from dsh; its
  * `bindSnapshotSelector` moved into `@deepseek-ai/dsh-client-ui-renderer` as a
  * module-private helper (not part of the published export surface), and
  * `SnapshotSelectorHook` now ships from `@deepseek-ai/dsh-client-ui-slots`.
- * The plugin vendors the same uSES bridge it consumed in rc.7 so the
+ * The plugin vendors the same uSES bridge it consumed from the deleted
+ * package so the
  * snapshot-selector contract (selector + optional equality) is preserved
  * verbatim without importing from a package that no longer exposes it.
  *

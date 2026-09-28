@@ -29,7 +29,7 @@
  * Session-write contract (plan Global Constraints, hard): the row is a
  * `user/message` built with `createUserMessage` and the producer-declared
  * source `{ kind: 'llm-fallbacks-role-notice', form: 'notice', summary: … }`.
- * 0.1.7-rc.1 removed the shared `plugin` kind: `MessageSourceMap` is
+ * The host removed the shared `plugin` kind: `MessageSourceMap` is
  * producer-declared now ("each producer declares its own `kind` in its own
  * module; there is no shared catch-all `plugin` kind" — dsh-llm message.d.ts),
  * so this module merges its own kind and stamps `form: 'notice'` + the bound
@@ -82,7 +82,7 @@ declare module '@deepseek-ai/dsh-llm' {
 }
 
 /**
- * The provenance label this plugin's notice rows carried under the pre-0.1.7
+ * The provenance label this plugin's notice rows carried under the legacy
  * `kind: 'plugin'` source API. The durable rows survive as data: the V3→V4
  * session-format edge rewrites every unlisted V3 plugin source to
  * `kind: 'plugin:<plugin>'`, so pre-upgrade child sessions carry
@@ -93,7 +93,7 @@ declare module '@deepseek-ai/dsh-llm' {
 export const ROLE_NOTICE_PLUGIN = 'dsh-llm-fallbacks'
 
 /**
- * The message source KIND the notice rides. 0.1.7-rc.1 removed the shared
+ * The message source KIND the notice rides. The host removed the shared
  * `plugin` kind (`MessageSourceMap` is producer-declared now — each producer
  * declares its own `kind` in its own module, the upstream `model-selection`
  * precedent), so this module declares `llm-fallbacks-role-notice` above and
@@ -105,7 +105,7 @@ export const ROLE_NOTICE_SOURCE_KIND = 'llm-fallbacks-role-notice'
 
 /**
  * The source kinds the role projection must ALSO accept besides
- * {@link ROLE_NOTICE_SOURCE_KIND}: the V4-migrated form of the pre-0.1.7
+ * {@link ROLE_NOTICE_SOURCE_KIND}: the V4-migrated form of the legacy
  * `kind: 'plugin', plugin: 'dsh-llm-fallbacks'` rows (see
  * {@link ROLE_NOTICE_PLUGIN}).
  */

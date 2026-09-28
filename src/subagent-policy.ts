@@ -44,7 +44,7 @@ export type PolicyRoute = { readonly provider: string; readonly model: string }
  * Effective subagent routing policy for one session.
  *
  * - `disabled`: host policy off or absent — selection matches pre-policy
- *   (0.3.5) behavior.
+ *   behavior.
  * - `enabled`: an allowlist is proven; plugin-originated routes must stay
  *   inside it.
  * - `unprovable`: the policy is on but unreadable (malformed event payload,

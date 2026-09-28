@@ -9,8 +9,8 @@
  *   config rides the plugin's gateway channel (`connection.rpc` →
  *   `/api/fallbacks/get|set|reset`), while `settings/describe` (writable +
  *   namespace directory), the provider/model catalog, and the switch-history
- *   tail page ride the typed `ctx.remote` namespaces (0.1.2:
- *   `ConnectionHandle` dropped `api`; see `fallbacks-store.ts`).
+ *   tail page ride the typed `ctx.remote` namespaces (`ConnectionHandle`
+ *   dropped `api`; see `fallbacks-store.ts`).
  * - Registers the `plugins.bundle.config` card `key: 'dsh-llm-fallbacks'`
  *   (bundle package name) with a business-only inject face
  *   ({@link FallbacksSettingsController} + hooks.snapshot); the old
@@ -46,14 +46,14 @@ import type {} from '@deepseek-ai/dsh-client-ui-plugin-manager/client'
 // a type-only peer (`peerDependencies`) and a manifest inject entry.
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 // Type-only: the conversation domain's Context merge (the `uiConversation`
-// service seat — the D1 Definition registry's home since 0.1.2). Same empty
+// service seat — the D1 Definition registry's home). Same empty
 // type-only pattern; the ui-conversation package is already a type-only peer
 // (`peerDependencies`) and a manifest inject entry.
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 // Type-only: the chat target's slot-contract merge (the
 // 'conversation.chat.node' keyed entry — the transcript switch node's
 // registration target) + the `ChatNodeDataMap` key seat, both re-homed from
-// ui-conversation to ui-chat in 0.1.2. Same empty type-only pattern; the
+// ui-conversation to ui-chat upstream. Same empty type-only pattern; the
 // ui-chat package joins the type-only peers with this registration.
 import type {} from '@deepseek-ai/dsh-client-ui-chat/client'
 // Type-only: the renderer host's Context merge (the `slots` service seat +
@@ -109,7 +109,7 @@ export { FallbacksSettingsController, FALLBACKS_SETTINGS_NS } from './fallbacks-
  * (`setCurrentSession` never called, `loadSwitches` ready with an empty
  * array, which the store already supports).
  *
- * rc.1 dotted-namespace contract: each client Remote namespace is a
+ * The host's dotted-namespace contract: each client Remote namespace is a
  * child-fiber service named `remote.<ns>` (upstream `remoteServiceKey`), and
  * the traceable proxy forwards `ctx.remote.llm` / `.settings` / `.session`
  * to those context properties — consumers MUST declare the dotted names
@@ -120,7 +120,7 @@ export const inject = ['slots', 'locale', 'connection', 'remote', 'uiConversatio
 
 /**
  * The session the client is LOOKING at, derived from the sessions-list
- * snapshot. 0.1.7-rc.1 moved view ownership out of `SessionListState` (the
+ * snapshot. The host moved view ownership out of `SessionListState` (the
  * `current` field is gone — "navigation belongs to view owners"): the viewed
  * session is the one the shell retains under the `mainView` reference source,
  * surfaced as a positive `retainedBy.mainView` count on the row
@@ -169,7 +169,7 @@ export function apply(ctx: ClientContext): void {
   // casts once to the store's structural face — the session-controller
   // client's `ctx.remote as unknown as SessionRemotes` pattern. The dotted
   // namespace services `remote.llm` / `remote.settings` / `remote.session`
-  // are declared in `inject` (rc.1 dotted-namespace contract): the traceable
+  // are declared in `inject` (the dotted-namespace contract): the traceable
   // proxy forwards `ctx.remote.<ns>` to the child-fiber service
   // `remote.<ns>`, which the fiber walk only resolves when the dotted name
   // is injected — dropping one throws `cannot get property "remote.settings"
@@ -256,9 +256,9 @@ export function apply(ctx: ClientContext): void {
   // `locale: NS` (PropsLocale<'fallbacks'>), exactly like the upstream
   // three cards and the advisor card; the old Settings-nav section
   // registration (the "Fallbacks" nav entry) is removed — deleting the
-  // section registration deletes the nav entry. rc.7 made the slot keyed:
+  // section registration deletes the nav entry. The host made the slot keyed:
   // `key` is the settings namespace the card edits, and the card renders in
-  // 0.1.6+ Plugins page: `plugins.bundle.config` keyed by bundle package name
+  // the current Plugins page: `plugins.bundle.config` keyed by bundle package name
   // (was `settings.plugin.item` with key = settings namespace).
   const BUNDLE_NAME = 'dsh-llm-fallbacks'
   ctx.slots.inject('plugins.bundle.config', function* () {
@@ -337,7 +337,7 @@ export function apply(ctx: ClientContext): void {
   // the badge's polling probe are gone (Task 3b). Degrade-never-crash: an absent
   // key / a foreign value / `inherit` / a skewed host render `null`.
   // Placement (user decision 2026-09-11; verified against the installed
-  // `@deepseek-ai/dsh-client-ui-*` 0.1.7-rc.1 on 2026-09-11 — a host-side
+  // `@deepseek-ai/dsh-client-ui-*` on 2026-09-11 — a host-side
   // reorder can shift this placement): the actions row hosts the agent-preset
   // (mode) chip (`dsh-client-ui-agent-preset` AgentPresetLabel, id
   // `agent-preset`, order -10), then the schedule catalog (order 10) and the job

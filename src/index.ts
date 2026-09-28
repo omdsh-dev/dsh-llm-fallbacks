@@ -6,7 +6,7 @@
  * `llm-fallbacks` (see `bundle/cordis.patch.yml`), composed AFTER llm-retry.
  *
  * Wiring:
- * - `fallbacks` settings via the Loader entry Config (0.1.7-rc.1: the
+ * - `fallbacks` settings via the Loader entry Config (the current host contract: the
  *   volatile `Config` schema in `src/schema.ts` IS the settings section;
  *   `apply` reads the Loader's live config reference, and the
  *   `settings/document-updated` listener re-derives the runtime caches —
@@ -277,7 +277,7 @@ const REQUEST_SCOPED_CODES: ReadonlySet<string> = new Set([CONTEXT_WINDOW_EXCEED
  *
  * `contextWindow` is the advisory catalog row's window when the host's
  * adapter discloses one there; `resolveModelInfo(provider, model)` is the
- * exact-route metadata dsh 0.1.2-rc.1 actually carries it on
+ * exact-route metadata the dsh host actually carries it on
  * (`LlmResolvedModelInfo.context.contextWindow`) — `LlmModelInfo`, what
  * `listModels` returns there, has no window field at all.
  * Both are optional and read structurally — a host service that offers
@@ -391,8 +391,8 @@ async function makeModelExists(
  *
  * Two sources, cheapest first: the advertised catalog row when it discloses a
  * window (one `listModels` per distinct provider), then — for routes still
- * unknown — the exact-route `resolveModelInfo` metadata, which is where dsh
- * 0.1.2-rc.1 puts `context.contextWindow`. A missing `llm` service, a service
+ * unknown — the exact-route `resolveModelInfo` metadata, which is where the
+ * dsh host puts `context.contextWindow`. A missing `llm` service, a service
  * without either method, a throwing probe, or a route that discloses nothing
  * all read as UNKNOWN (`undefined`), and unknown always KEEPS the candidate:
  * an undisclosed window must never empty a chain (warn-not-crash, the same
@@ -579,7 +579,7 @@ function readSubagentSettings(ctx: Context): PolicySettings | undefined {
  * `undefined` still means "policy off" (service absent, nothing retained);
  * `!ok` means the live read threw and no last-known snapshot exists for the
  * agent — the wiring resolves that to the same fail-closed skip as
- * `'unprovable'`, never a fail-open 0.3.5 selection.
+ * `'unprovable'`, never a fail-open unconstrained selection.
  */
 type GuardedPolicySettings =
   | { readonly ok: true; readonly settings: PolicySettings | undefined }
@@ -597,9 +597,9 @@ type GuardedPolicySettings =
  *   a mid-session service disappearance (or a later throwing read) feeds the
  *   last proven snapshot to {@link effectivePolicy} instead of `undefined` —
  *   an enabled policy stays enabled (fail-closed), never silently reverting
- *   to unconstrained 0.3.5 switching;
- * - agents never proven anything keep `undefined` (policy off) — 0.3.5
- *   selection unchanged.
+ *   to the earlier unconstrained switching;
+ * - agents never proven anything keep `undefined` (policy off) — the
+ *   pre-policy selection unchanged.
  *
  * A throwing read with nothing retained resolves to `{ ok: false }`: the
  * callers treat it exactly like `'unprovable'` (warn + skip, host seed
@@ -666,7 +666,7 @@ function authorizedRouteView(ctx: Context, agent: Agent): AuthorizedRouteSession
 }
 
 /**
- * The live config reference the 0.1.7-rc.1 Loader hands `apply` for a
+ * The live config reference the Loader hands `apply` for a
  * volatile Config schema: an identity-stable `{ get }` view (cosmokit's
  * `Volatile` protocol) whose snapshot the Loader re-commits on every form
  * save, so reading `.get()` per call is the authoritative live composed
@@ -819,7 +819,7 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
   // deduped/failed fiber BEFORE the preset child fires (same-service inject
   // children settle in registration order — the provide child fires first).
   let serviceOwned = ctx.get('llm-fallbacks') === undefined
-  // Live composed source (0.1.7-rc.1): with the volatile Config schema the
+  // Live composed source: with the volatile Config schema the
   // Loader hands `apply` an identity-stable config reference and commits every
   // form save INTO it — reading it per call is the live view, and the old
   // installSection `setSource` swap is served by the Loader itself. A plain
@@ -893,7 +893,7 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
   // clients reach the config through the gateway channel instead. The gateway
   // reads `source()` live per call, so the bridge carries no change fan-out
   // (dead machinery removed in the QC fix wave — nothing ever subscribed).
-  // 0.1.7-rc.1 re-home: `SettingsForms` has no registration step at all — the
+  // Current re-home: `SettingsForms` has no registration step at all — the
   // Loader entry Config IS the settings section (the volatile `Config` export
   // in `src/schema.ts` is what makes the entry describable and writable), and
   // the change notification the old `installSection` `onChange` hook delivered
@@ -1083,7 +1083,7 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
   // snapshots — the freshest successful settings read per agent, retained so a
   // mid-session service disappearance (or a later throwing read) keeps a
   // proven-enabled policy constraining (fail-closed) instead of reverting to
-  // unconstrained 0.3.5. Grown only by the guarded policy read
+  // unconstrained pre-policy behavior. Grown only by the guarded policy read
   // (`readGuardedPolicySettings`); cleaned on agent/disposed + plugin dispose
   // (mirrors `dispatchInjected` / `slotWinners`). In-memory only.
   const lastKnownPolicySettings = new Map<string, PolicySettings>()
@@ -1131,7 +1131,7 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
     // append). P6 (qc1 F-001 — the gate lives in `resolveSlotState`, the
     // single source every slot surface reads): without a conforming all-day
     // the effective chain IS the raw rootChain — slot rows stay inert and
-    // the v0.2.2 walk over the raw rootChain runs verbatim (mirror the
+    // the legacy walk over the raw rootChain runs verbatim (mirror the
     // virtual adapter registration gate).
     const rootTail = agent.session?.header?.origin === 'subagent'
       ? config.rootChain
@@ -1192,7 +1192,7 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
     // reader (same ADR path as the inject site) — intersects the RESOLVED
     // survivors with the effective allowlist in candidate order (spec D1);
     // the existing cooldown / step-failed / same-as-current / missing-id
-    // filters above already ran. Root-origin walks are untouched (0.3.5).
+    // filters above already ran. Root-origin walks are untouched (pre-policy).
     const first = surviving[0]
     let target: { readonly provider: string; readonly model: string } | undefined
     if (first !== undefined && first.model !== undefined) {
@@ -1223,7 +1223,7 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
       if (policy.state === 'enabled') {
         const allowed = firstAllowedCandidate(resolvedRoutes(surviving), policy.allowedModels)
         if (allowed === undefined) {
-          // Empty intersection: the 0.3.5 walk would have switched to
+          // Empty intersection: the unconstrained walk would have switched to
           // `target` — the allowlist emptied it. Warn + in-memory
           // blocked-attempt record (T5 consumes; issue #52 — no session
           // write) and stay on the current route. No request is sent.
@@ -1482,7 +1482,7 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
     // plugin-originated and must be on the allowlist: `firstAllowedCandidate`
     // over the resolved candidates (label `injected`); empty intersection →
     // skip inject, host seed stands, warn. Policy off/absent → inject exactly
-    // as 0.3.5 (first exact candidate, unchanged).
+    // as the pre-policy walk (first exact candidate, unchanged).
     //
     // This is NOT a failure decision: no commit(), no pending switch, no
     // cooldown, no failure bookkeeping — only the override + an explicit role
@@ -1558,7 +1558,7 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
                   )
                 }
               } else {
-                // Policy off: the first exact candidate exactly as 0.3.5.
+                // Policy off: the first exact candidate, exactly the pre-policy behavior.
                 const head = firstExactCandidate(all, wildcard)
                 if (head !== undefined && head.model !== undefined) {
                   to = { provider: head.provider, model: head.model }
