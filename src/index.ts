@@ -6,7 +6,7 @@
  * `llm-fallbacks` (see `bundle/cordis.patch.yml`), composed AFTER llm-retry.
  *
  * Wiring:
- * - `fallbacks` settings via the Loader entry Config (0.1.7-rc.1: the
+ * - `fallbacks` settings via the Loader entry Config (the current host contract: the
  *   volatile `Config` schema in `src/schema.ts` IS the settings section;
  *   `apply` reads the Loader's live config reference, and the
  *   `settings/document-updated` listener re-derives the runtime caches —
@@ -277,7 +277,7 @@ const REQUEST_SCOPED_CODES: ReadonlySet<string> = new Set([CONTEXT_WINDOW_EXCEED
  *
  * `contextWindow` is the advisory catalog row's window when the host's
  * adapter discloses one there; `resolveModelInfo(provider, model)` is the
- * exact-route metadata dsh 0.1.2-rc.1 actually carries it on
+ * exact-route metadata the dsh host actually carries it on
  * (`LlmResolvedModelInfo.context.contextWindow`) — `LlmModelInfo`, what
  * `listModels` returns there, has no window field at all.
  * Both are optional and read structurally — a host service that offers
@@ -391,8 +391,8 @@ async function makeModelExists(
  *
  * Two sources, cheapest first: the advertised catalog row when it discloses a
  * window (one `listModels` per distinct provider), then — for routes still
- * unknown — the exact-route `resolveModelInfo` metadata, which is where dsh
- * 0.1.2-rc.1 puts `context.contextWindow`. A missing `llm` service, a service
+ * unknown — the exact-route `resolveModelInfo` metadata, which is where the
+ * dsh host puts `context.contextWindow`. A missing `llm` service, a service
  * without either method, a throwing probe, or a route that discloses nothing
  * all read as UNKNOWN (`undefined`), and unknown always KEEPS the candidate:
  * an undisclosed window must never empty a chain (warn-not-crash, the same
@@ -666,7 +666,7 @@ function authorizedRouteView(ctx: Context, agent: Agent): AuthorizedRouteSession
 }
 
 /**
- * The live config reference the 0.1.7-rc.1 Loader hands `apply` for a
+ * The live config reference the Loader hands `apply` for a
  * volatile Config schema: an identity-stable `{ get }` view (cosmokit's
  * `Volatile` protocol) whose snapshot the Loader re-commits on every form
  * save, so reading `.get()` per call is the authoritative live composed
@@ -819,7 +819,7 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
   // deduped/failed fiber BEFORE the preset child fires (same-service inject
   // children settle in registration order — the provide child fires first).
   let serviceOwned = ctx.get('llm-fallbacks') === undefined
-  // Live composed source (0.1.7-rc.1): with the volatile Config schema the
+  // Live composed source: with the volatile Config schema the
   // Loader hands `apply` an identity-stable config reference and commits every
   // form save INTO it — reading it per call is the live view, and the old
   // installSection `setSource` swap is served by the Loader itself. A plain
@@ -893,7 +893,7 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
   // clients reach the config through the gateway channel instead. The gateway
   // reads `source()` live per call, so the bridge carries no change fan-out
   // (dead machinery removed in the QC fix wave — nothing ever subscribed).
-  // 0.1.7-rc.1 re-home: `SettingsForms` has no registration step at all — the
+  // Current re-home: `SettingsForms` has no registration step at all — the
   // Loader entry Config IS the settings section (the volatile `Config` export
   // in `src/schema.ts` is what makes the entry describable and writable), and
   // the change notification the old `installSection` `onChange` hook delivered

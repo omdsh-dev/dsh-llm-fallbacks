@@ -46,7 +46,7 @@
  * `chain: []` role gets its persona exactly like a chained one (no routing
  * state is read). Both native start surfaces are covered, with the gate each
  * one's fail-loud contract needs (measured on the installed
- * `@deepseek-ai/dsh-subagent` `0.1.7-rc.1`): the one-shot `start` REJECTS a
+ * `@deepseek-ai/dsh-subagent`): the one-shot `start` REJECTS a
  * request carrying `persona` for a provider whose
  * `getProvider(name).capabilities.persona` is not `true` (`lib/index.js:3284,3340-3363`,
  * `assertCapabilities`), so the merge pre-checks that flag; the continuable

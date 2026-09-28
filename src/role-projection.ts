@@ -6,7 +6,7 @@
  * Data source = Task 3's notice row, the plugin's single write primitive: the
  * fold reads the child's committed `user/message` events, keeps the one whose
  * provenance is ours (`source.kind` is the producer-declared
- * ROLE_NOTICE_SOURCE_KIND, or the V3→V4-migrated form of a pre-0.1.7 row —
+ * ROLE_NOTICE_SOURCE_KIND, or the V3→V4-migrated form of a legacy row —
  * `ROLE_NOTICE_LEGACY_SOURCE_KINDS`), and parses the role out of its
  * **content text** (`[role: <id>]`). No second write path, no new event type,
  * no plugin-owned store: the projection is a pure READ of the log, and the
@@ -33,7 +33,7 @@
  * The runtime shape relied on — `register({ key, stateSchema, init, apply,
  * wire: { viewSchema, view }, stateVersion })` → unregister disposer — is the
  * documented `ProjectionDefinition` contract of
- * `@deepseek-ai/dsh-session-projection@0.1.7-rc.1`
+ * `@deepseek-ai/dsh-session-projection`
  * (`lib/types/index.d.ts:38-80,150-152`); only `.parse` is ever called on the
  * schemas (`lib/index.js:255,305,422`).
  *
@@ -126,8 +126,8 @@ export const ROLE_PROJECTION_STATE_VERSION = 2
  * parses inside a `try/catch` and simply leaves the key absent, while `restore`
  * calls `def.stateSchema.parse(row.val)` with NO `try/catch`. The schema is
  * therefore TOTAL — any unrecognized shape normalizes to `null` ("no pill"),
- * never throws (plan fallbacks-web-ux-alignment T9a): since dsh 0.2.0-rc.1
- * (`4e6a1c1073`) a live projection rebuild failure classifies as SESSION
+ * never throws (plan fallbacks-web-ux-alignment T9a): the host
+ * (`4e6a1c1073`) classifies a live projection rebuild failure as SESSION
  * CORRUPTION, which raises the blast radius of a throwing parse from "the badge
  * degrades" to "the session read degrades" — a lost badge read is strictly
  * better. The cost (a `null` seed keeps the checkpoint row `usable` and replays
@@ -149,7 +149,7 @@ const ROLE_STATE_SCHEMA: ProjectionValueSchema<RoleProjectionState | null> = {
     // Total parse (T9a — see the block comment): an unrecognized shape (a
     // malformed persisted row, a pre-fork-boundary row, garbage) degrades to
     // `null` — "no pill" — instead of throwing inside the host's unguarded
-    // `restore`/`coldSnapshot` parse, which rc.2 classifies as session
+    // `restore`/`coldSnapshot` parse, which the host classifies as session
     // corruption.
     return null
   },
@@ -252,7 +252,7 @@ function roleFromEvent(event: unknown): string | undefined {
   const { kind } = source as { kind?: unknown }
   // Provenance gate (never a wrong role): only THIS plugin's notice rows are
   // read — the producer-declared kind, plus the V3→V4-migrated form of a
-  // pre-0.1.7 row so a child session carried across the upgrade keeps its
+  // legacy row so a child session carried across the upgrade keeps its
   // badge. A human prompt, another plugin's notice, or a row whose text merely
   // looks like a notice is ignored outright.
   if (typeof kind !== 'string') return undefined

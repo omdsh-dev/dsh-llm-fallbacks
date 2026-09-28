@@ -1,7 +1,7 @@
 /**
  * Unwrap a live config reference: schemastery ≥3.18.4 resolves the plugin's
  * volatile-marked section schema into a stable reference whose `get()` hands
- * out the current immutable snapshot (the 0.2.0-rc.1 host contract — the
+ * out the current immutable snapshot (the current host contract — the
  * dsh-settings Loader commits form saves into the reference). The runtime
  * unwrap lives in `normalizeConfig` (src/index.ts); the specs that consume
  * `Config(...)` results directly use this mirror. A no-op on a plain object

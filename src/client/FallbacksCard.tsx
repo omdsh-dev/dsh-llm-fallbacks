@@ -1751,9 +1751,8 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
          * reads back unselected plus the nonconforming notice; save
          * validation blocks. Radios derive from OFFICIAL_ALL_DAY_IDS
          * (the shared legal set in src/time-slots.ts) — both official
-         * tails are selectable; Pro is served by 0.2.0-rc.1's catalog
-         * as `deepseek-official/deepseek-v4-pro` (re-verified at rc.2;
-         * rc.1 re-introduced the id). */}
+         * tails are selectable; Pro is served by the official default
+         * catalog as `deepseek-official/deepseek-v4-pro`. */}
         <div className={css.field} role="group" aria-labelledby="fallbacks-default-model">
           <span className={css.fieldLabel}>
             <span id="fallbacks-default-model">{t('defaultModel.label')}</span>

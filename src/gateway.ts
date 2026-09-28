@@ -38,7 +38,7 @@
  * rejection unchanged — the settings service itself is non-strict and would
  * merge the unknown key through), then writes the plugin's profile-entry
  * section in-process via `ctx.settings.update` (the `SettingsForms` form
- * service; 0.1.7-rc.1 replaced the namespace registry — the write lands in
+ * service; the host replaced the namespace registry — the write lands in
  * the active profile's patch under {@link FALLBACKS_PROFILE_ENTRY} and the
  * Loader commits it into the plugin's live config reference), and returns
  * the new composed value. `reset` (fallbacks-specific third method —
@@ -79,7 +79,7 @@ import type { FallbacksSeedManager, SeedRevertOutcome, SeedsIo, SeedsWireStatus 
 /**
  * The `fallbacks` service/typert namespace identity (`fallbacks`): the cordis
  * service key, the typert namespace under `/api/fallbacks/*`, and the settings
- * identity under the pre-0.1.6 dsh API. 0.1.7-rc.1 settings writes target the
+ * identity under the legacy dsh API. Current settings writes target the
  * PROFILE ENTRY id instead (see {@link FALLBACKS_PROFILE_ENTRY}); the branded
  * `SettingsNamespace` type the old service APIs constrained on survives as the
  * type this constant carries.
@@ -87,7 +87,7 @@ import type { FallbacksSeedManager, SeedRevertOutcome, SeedsIo, SeedsWireStatus 
 export const FALLBACKS_SETTINGS_NAMESPACE: SettingsNamespace = 'fallbacks' as SettingsNamespace
 
 /**
- * The plugin's profile ENTRY id — the settings-write target on dsh 0.1.7-rc.1:
+ * The plugin's profile ENTRY id — the settings-write target on the current dsh host:
  * `SettingsForms` keys every form and write by the Loader entry id
  * (`entry.options.id`), and this plugin's bundle row ships `id: llm-fallbacks`
  * (`bundle/cordis.patch.yml`), so `settings.update('llm-fallbacks', …)` edits

@@ -19,7 +19,7 @@
  * `roles.default`) on the composed object at startup (warn + gateway
  * `legacyKeys`, see `src/index.ts` apply()).
  *
- * 0.1.7-rc.1 adoption: the whole schema is marked `volatile` (dsh 0.1.6
+ * Current host contract: the whole schema is marked `volatile` (the host
  * retired `installSection` — the Loader entry Config IS the settings
  * section now, and `SettingsForms.update` only accepts volatile paths, so
  * the marker is what keeps the gateway/card write path legal). One marker
@@ -40,7 +40,7 @@ import type { FallbacksConfig } from './config.ts'
 declare module '@deepseek-ai/schemastery' {
   namespace Schemastery {
     interface Meta {
-      /** Live-editable marker read by the Loader / `SettingsForms` (dsh 0.1.6+). */
+      /** Live-editable marker read by the Loader / `SettingsForms`. */
       volatile?: boolean;
     }
   }
