@@ -129,7 +129,7 @@ export const zh = {
   // All-day head (plan fallbacks-timeslots Task 3; PR #62 feedback round):
   // the 默认模型 panel is the official Flash / Pro XOR head of the default
   // fallback chain — separate from the 默认降级链 selector list. Both tails
-  // are selectable: 0.1.7-rc.2's official catalog serves Pro as
+  // are selectable: 0.2.0-rc.1's official catalog serves Pro as
   // `deepseek-official/deepseek-v4-pro` (re-verified at rc.2; rc.1
   // re-introduced the id).
   'allDay.hint': '全天链的最后一档兜底：官方 Flash 或 Pro 二选一',
@@ -374,7 +374,7 @@ export const en = {
   // All-day head (plan fallbacks-timeslots Task 3; PR #62 feedback round):
   // the default-model panel is the official Flash / Pro XOR head of the
   // default fallback chain — separate from the default-chain selector list.
-  // Both tails are selectable: 0.1.7-rc.2's official catalog serves Pro as
+  // Both tails are selectable: 0.2.0-rc.1's official catalog serves Pro as
   // `deepseek-official/deepseek-v4-pro` (re-verified at rc.2; rc.1
   // re-introduced the id).
   'allDay.hint': 'Last-resort fallback of the all-day chain: official Flash or Pro (pick exactly one)',

@@ -496,7 +496,7 @@ describe('adapter contract (P1/P3)', () => {
 // ---------------------------------------------------------------------------
 // Catalog availability of selectable routes (rc.2 `modelAvailable` GUI gate —
 // plan fallbacks-web-ux-alignment T9b, the 2026-09-27 research adaptation):
-// since dsh 0.1.7-rc.2 (`session-controller/src/catalog.ts:73-89`) GUI model
+// since dsh 0.2.0-rc.1 (`session-controller/src/catalog.ts:73-89`) GUI model
 // selection is gated on ADVERTISED catalog membership — picking a pair no
 // `listModels` row advertises throws `session/model-unavailable`. The pin
 // below asserts every route the card can put into a chain resolves through an

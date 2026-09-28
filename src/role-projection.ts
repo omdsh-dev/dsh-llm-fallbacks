@@ -126,7 +126,7 @@ export const ROLE_PROJECTION_STATE_VERSION = 2
  * parses inside a `try/catch` and simply leaves the key absent, while `restore`
  * calls `def.stateSchema.parse(row.val)` with NO `try/catch`. The schema is
  * therefore TOTAL — any unrecognized shape normalizes to `null` ("no pill"),
- * never throws (plan fallbacks-web-ux-alignment T9a): since dsh 0.1.7-rc.2
+ * never throws (plan fallbacks-web-ux-alignment T9a): since dsh 0.2.0-rc.1
  * (`4e6a1c1073`) a live projection rebuild failure classifies as SESSION
  * CORRUPTION, which raises the blast radius of a throwing parse from "the badge
  * degrades" to "the session read degrades" — a lost badge read is strictly
