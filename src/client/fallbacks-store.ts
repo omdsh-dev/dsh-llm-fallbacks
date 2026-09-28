@@ -25,7 +25,7 @@
  * `settings-conflict` branch is gone).
  */
 
-// 0.1.2 re-home: the connection client entry dropped the apiproxy-era view
+// Host re-home: the connection client entry dropped the apiproxy-era view
 // types; they now live with their owner packages, re-exported through the
 // remotes assembly barrel (`ModelProviderGroup`/`SessionFollow*` →
 // api-session-controller types, `SettingsNamespaceView`/`SettingsDescribeValue`
@@ -532,7 +532,7 @@ export function extractRecentSwitches(
 ): FallbacksSwitchSnapshot[] {
   const switches: FallbacksSwitchSnapshot[] = []
   for (const entry of entries) {
-    // 0.1.2 history pages interleave packed Assistant chunk runs
+    // Host history pages interleave packed Assistant chunk runs
     // (`type: 'chunks'`) with scalar events; only the scalar face is read.
     if (entry.type !== 'event') continue
     const event = entry.event
@@ -862,7 +862,7 @@ export function rowsToRules(rows: readonly RoleRuleRow[]): FallbacksRoleRule[] {
 
 /**
  * The settings Remote namespace face the fallbacks store reads
- * (0.1.2 `ctx.remote.settings`; api-settings-controller `@Remote` methods).
+ * (`ctx.remote.settings`; api-settings-controller `@Remote` methods).
  */
 export interface FallbacksSettingsRemote {
   /** Redacted describe: provider writability plus the namespace directory. */
@@ -871,7 +871,7 @@ export interface FallbacksSettingsRemote {
 
 /**
  * The llm Remote namespace face the fallbacks store reads
- * (0.1.2 `ctx.remote.llm`; dsh-llm `@Remote` methods).
+ * (`ctx.remote.llm`; dsh-llm `@Remote` methods).
  */
 export interface FallbacksLlmRemote {
   /** Declared configurable-provider directory, registered or dormant. */
@@ -880,7 +880,7 @@ export interface FallbacksLlmRemote {
 
 /**
  * The session Remote namespace face the fallbacks store reads
- * (0.1.2 `ctx.remote.session`; api-session-controller `@Remote` methods).
+ * (`ctx.remote.session`; api-session-controller `@Remote` methods).
  */
 export interface FallbacksSessionRemote {
   /** Host-generation model catalog: provider groups plus per-provider failures. */
@@ -888,7 +888,7 @@ export interface FallbacksSessionRemote {
   /**
    * Live event stream for one durable session address; the opening snapshot
    * frame carries the tail page this store reads, then the stream is
-   * cancelled (0.1.2 successor of the apiproxy `sessions.history` unary —
+   * cancelled (successor of the apiproxy `sessions.history` unary —
    * `session/page` needs the follow opening frame's cursor, so a cold tail
    * read goes through the follow opening).
    */
@@ -1117,7 +1117,7 @@ export class FallbacksSettingsController {
   /**
    * Read the recent-switch summary for the current session (spec §2.5 D-5):
    * one tail page (`maxMessages` = {@link SWITCHES_HISTORY_PAGE}) read from
-   * the `session/follow` opening snapshot — 0.1.2 has no unary tail-page
+   * the `session/follow` opening snapshot — the host has no unary tail-page
    * read (`session/page` needs the follow opening frame's cursor), so the
    * stream is cancelled right after its first frame —
    * `fallbacks/switch` events extracted newest-first capped at

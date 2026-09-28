@@ -10,7 +10,7 @@
  * so the `unknown-surface` fallback never picked it up and the transcript
  * showed nothing).
  *
- * Contract notes (dsh-private, 0.1.2 homes, verified 2026-08-28):
+ * Contract notes (dsh-private, current homes, verified 2026-08-28):
  * - D1 registry: `ConversationEventRegistry.register(definition)` — the
  *   client Context's `uiConversation.events` service seat
  *   (`ui-conversation conversation/event-registry.ts:17-25`); external
@@ -39,7 +39,7 @@ import type { ChatConversationViewNode } from '@deepseek-ai/dsh-client-ui-chat/c
 import type { ConversationNodeDefinition } from '@deepseek-ai/dsh-client-ui-conversation/client'
 // Type-only: pulls the `conversation.chat.node` SlotMap entry + the
 // `ChatNodeDataMap` merge seat (the keyed dispatch key domain) — both re-homed
-// from ui-conversation to ui-chat in 0.1.2. Same empty type-only pattern as
+// from ui-conversation to ui-chat upstream. Same empty type-only pattern as
 // the ui-settings / ui-plugin-manager merges in index.ts.
 import type {} from '@deepseek-ai/dsh-client-ui-chat/client'
 import type { FallbackSwitchReason } from '../events.ts'

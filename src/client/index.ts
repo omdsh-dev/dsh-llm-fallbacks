@@ -9,8 +9,8 @@
  *   config rides the plugin's gateway channel (`connection.rpc` →
  *   `/api/fallbacks/get|set|reset`), while `settings/describe` (writable +
  *   namespace directory), the provider/model catalog, and the switch-history
- *   tail page ride the typed `ctx.remote` namespaces (0.1.2:
- *   `ConnectionHandle` dropped `api`; see `fallbacks-store.ts`).
+ *   tail page ride the typed `ctx.remote` namespaces (`ConnectionHandle`
+ *   dropped `api`; see `fallbacks-store.ts`).
  * - Registers the `plugins.bundle.config` card `key: 'dsh-llm-fallbacks'`
  *   (bundle package name) with a business-only inject face
  *   ({@link FallbacksSettingsController} + hooks.snapshot); the old
@@ -46,14 +46,14 @@ import type {} from '@deepseek-ai/dsh-client-ui-plugin-manager/client'
 // a type-only peer (`peerDependencies`) and a manifest inject entry.
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 // Type-only: the conversation domain's Context merge (the `uiConversation`
-// service seat — the D1 Definition registry's home since 0.1.2). Same empty
+// service seat — the D1 Definition registry's home). Same empty
 // type-only pattern; the ui-conversation package is already a type-only peer
 // (`peerDependencies`) and a manifest inject entry.
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 // Type-only: the chat target's slot-contract merge (the
 // 'conversation.chat.node' keyed entry — the transcript switch node's
 // registration target) + the `ChatNodeDataMap` key seat, both re-homed from
-// ui-conversation to ui-chat in 0.1.2. Same empty type-only pattern; the
+// ui-conversation to ui-chat upstream. Same empty type-only pattern; the
 // ui-chat package joins the type-only peers with this registration.
 import type {} from '@deepseek-ai/dsh-client-ui-chat/client'
 // Type-only: the renderer host's Context merge (the `slots` service seat +
@@ -258,7 +258,7 @@ export function apply(ctx: ClientContext): void {
   // registration (the "Fallbacks" nav entry) is removed — deleting the
   // section registration deletes the nav entry. The host made the slot keyed:
   // `key` is the settings namespace the card edits, and the card renders in
-  // 0.1.6+ Plugins page: `plugins.bundle.config` keyed by bundle package name
+  // the current Plugins page: `plugins.bundle.config` keyed by bundle package name
   // (was `settings.plugin.item` with key = settings namespace).
   const BUNDLE_NAME = 'dsh-llm-fallbacks'
   ctx.slots.inject('plugins.bundle.config', function* () {

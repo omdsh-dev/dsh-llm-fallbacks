@@ -65,14 +65,14 @@ export interface PendingSwitch {
 /**
  * One plugin-originated subagent switch the host allowlist blocked (plan
  * dsh-012-subagent-routing T3; spec D1). The intersection of the resolved
- * candidates with the effective allowlist was empty while the 0.3.5 walk
+ * candidates with the effective allowlist was empty while the unconstrained walk
  * would have switched — the attempt is recorded in-memory only (issue #52:
  * no durable session write) for the Subagents card warning (spec D4/T5).
  */
 export interface BlockedSwitchAttempt {
   /** Epoch ms when the switch was blocked. */
   at: number
-  /** The route the 0.3.5 walk would have switched to (exact provider+model). */
+  /** The route the unconstrained walk would have switched to (exact provider+model). */
   route: { provider: string; model: string }
   /** The failure reason that triggered the would-be switch. */
   reason: FallbackSwitchReason

@@ -26,10 +26,10 @@
  * on the ROOT object makes every field live-editable and hands `apply` a
  * single identity-stable config reference the Loader commits saves into
  * (no remount per save). The marker rides the generic `.extra()` writer —
- * the exact bytes `.volatile()` (schemastery ≥3.18.4) writes — because the
+ * the exact bytes `.volatile()` writes in newer schemastery — because the
  * dev-time schemastery resolved from the lockfile can predate that sugar;
- * the `Meta` augmentation below declares the field the ^3.18.2 peer range
- * admits at its upper end.
+ * the `Meta` augmentation below declares the field the peer range admits
+ * at its upper end.
  *
  * @module dsh-llm-fallbacks/schema
  */
@@ -131,7 +131,7 @@ const configSchema = z.object({
   recovery: z.union([z.const('timer'), z.const('half-open')]).default('timer'),
 })
 // Root volatile marker (see the module docblock). `extra` CLONES the schema
-// and marks the clone — exactly what schemastery ≥3.18.4's `.volatile()` does
+// and marks the clone — exactly what schemastery's `.volatile()` does
 // (`return this.extra('volatile', true)`) — so the marked clone is the export.
 export const Config = configSchema.extra('volatile', true) as unknown as z<FallbacksConfig>
 

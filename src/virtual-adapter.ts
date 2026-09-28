@@ -341,7 +341,7 @@ export class FallbacksChainAdapter extends LlmAdapter {
   }
 
   /**
-   * Route-accurate image pricing (0.1.2 adoption): the virtual row has no
+   * Route-accurate image pricing: the virtual row has no
    * pricing of its own — the virtual `provider`/`model` arguments are
    * intentionally ignored. Resolves the SAME effective head `stream()`
    * dispatches and delegates through the runtime lookup, so the token

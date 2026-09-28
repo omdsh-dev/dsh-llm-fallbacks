@@ -579,7 +579,7 @@ function readSubagentSettings(ctx: Context): PolicySettings | undefined {
  * `undefined` still means "policy off" (service absent, nothing retained);
  * `!ok` means the live read threw and no last-known snapshot exists for the
  * agent — the wiring resolves that to the same fail-closed skip as
- * `'unprovable'`, never a fail-open 0.3.5 selection.
+ * `'unprovable'`, never a fail-open unconstrained selection.
  */
 type GuardedPolicySettings =
   | { readonly ok: true; readonly settings: PolicySettings | undefined }
@@ -597,9 +597,9 @@ type GuardedPolicySettings =
  *   a mid-session service disappearance (or a later throwing read) feeds the
  *   last proven snapshot to {@link effectivePolicy} instead of `undefined` —
  *   an enabled policy stays enabled (fail-closed), never silently reverting
- *   to unconstrained 0.3.5 switching;
- * - agents never proven anything keep `undefined` (policy off) — 0.3.5
- *   selection unchanged.
+ *   to the earlier unconstrained switching;
+ * - agents never proven anything keep `undefined` (policy off) — the
+ *   pre-policy selection unchanged.
  *
  * A throwing read with nothing retained resolves to `{ ok: false }`: the
  * callers treat it exactly like `'unprovable'` (warn + skip, host seed
@@ -1083,7 +1083,7 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
   // snapshots — the freshest successful settings read per agent, retained so a
   // mid-session service disappearance (or a later throwing read) keeps a
   // proven-enabled policy constraining (fail-closed) instead of reverting to
-  // unconstrained 0.3.5. Grown only by the guarded policy read
+  // unconstrained pre-policy behavior. Grown only by the guarded policy read
   // (`readGuardedPolicySettings`); cleaned on agent/disposed + plugin dispose
   // (mirrors `dispatchInjected` / `slotWinners`). In-memory only.
   const lastKnownPolicySettings = new Map<string, PolicySettings>()
@@ -1131,7 +1131,7 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
     // append). P6 (qc1 F-001 — the gate lives in `resolveSlotState`, the
     // single source every slot surface reads): without a conforming all-day
     // the effective chain IS the raw rootChain — slot rows stay inert and
-    // the v0.2.2 walk over the raw rootChain runs verbatim (mirror the
+    // the legacy walk over the raw rootChain runs verbatim (mirror the
     // virtual adapter registration gate).
     const rootTail = agent.session?.header?.origin === 'subagent'
       ? config.rootChain
@@ -1192,7 +1192,7 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
     // reader (same ADR path as the inject site) — intersects the RESOLVED
     // survivors with the effective allowlist in candidate order (spec D1);
     // the existing cooldown / step-failed / same-as-current / missing-id
-    // filters above already ran. Root-origin walks are untouched (0.3.5).
+    // filters above already ran. Root-origin walks are untouched (pre-policy).
     const first = surviving[0]
     let target: { readonly provider: string; readonly model: string } | undefined
     if (first !== undefined && first.model !== undefined) {
@@ -1223,7 +1223,7 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
       if (policy.state === 'enabled') {
         const allowed = firstAllowedCandidate(resolvedRoutes(surviving), policy.allowedModels)
         if (allowed === undefined) {
-          // Empty intersection: the 0.3.5 walk would have switched to
+          // Empty intersection: the unconstrained walk would have switched to
           // `target` — the allowlist emptied it. Warn + in-memory
           // blocked-attempt record (T5 consumes; issue #52 — no session
           // write) and stay on the current route. No request is sent.
@@ -1482,7 +1482,7 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
     // plugin-originated and must be on the allowlist: `firstAllowedCandidate`
     // over the resolved candidates (label `injected`); empty intersection →
     // skip inject, host seed stands, warn. Policy off/absent → inject exactly
-    // as 0.3.5 (first exact candidate, unchanged).
+    // as the pre-policy walk (first exact candidate, unchanged).
     //
     // This is NOT a failure decision: no commit(), no pending switch, no
     // cooldown, no failure bookkeeping — only the override + an explicit role
@@ -1558,7 +1558,7 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
                   )
                 }
               } else {
-                // Policy off: the first exact candidate exactly as 0.3.5.
+                // Policy off: the first exact candidate, exactly the pre-policy behavior.
                 const head = firstExactCandidate(all, wildcard)
                 if (head !== undefined && head.model !== undefined) {
                   to = { provider: head.provider, model: head.model }

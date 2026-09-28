@@ -10,7 +10,7 @@
  * throw: they warn ONCE per row instance (through `console.warn` — the
  * resolver's 3-argument contract has no logger parameter) and are
  * skipped; a legacy non-empty non-conforming `rootChain` keeps the
- * v0.2.2 failure walk verbatim (P6).
+ * legacy failure walk verbatim (P6).
  *
  * @module dsh-llm-fallbacks/time-slots
  */
@@ -243,7 +243,7 @@ function labelOf(row: SlotRowConfig): string {
  * `deepseek-v4-flash` and the never-served legacy
  * `deepseek-official/deepseek-pro` included) keeps slot rows inert and
  * refuses the virtual-row
- * delegate; the v0.2.2 failure walk over the raw chain stays
+ * delegate; the legacy failure walk over the raw chain stays
  * verbatim.
  */
 export function isAllDayConforming(chain: readonly string[]): boolean {
@@ -280,7 +280,7 @@ export function resolveEffectiveChain(config: FallbacksConfig, now: Date, tz: st
  * (`isAllDayConforming(config.rootChain)`) the winner is ALWAYS `'all-day'`
  * — a legacy multi-model (or empty) chain earns no slot rows, so every
  * surface fed by this resolver reports the inert state and routing stays on
- * the raw `rootChain` (the v0.2.2 walk verbatim).
+ * the raw `rootChain` (the legacy walk verbatim).
  */
 export function resolveSlotState(
   config: FallbacksConfig,

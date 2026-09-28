@@ -3,7 +3,7 @@
  * role-based-subagent-adoption Task 1).
  *
  * The seam is the documented cordis service-read waterfall
- * (`Events['internal/get']`, `@deepseek-ai/cordis` 4.0.2
+ * (`Events['internal/get']`, `@deepseek-ai/cordis`
  * `lib/types/events.d.ts`): a listener wraps the `subagents` service VALUE on
  * read and returns a prototype-delegating wrapper whose `start` /
  * `startContinuable` resolve the dispatch role from the incoming request
