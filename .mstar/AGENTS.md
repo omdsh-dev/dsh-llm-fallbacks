@@ -1,20 +1,24 @@
 # AGENTS.md — .mstar/ (harness layer)
 
 Harness-layer rules for `dsh-llm-fallbacks`. Source priority: user instruction →
-root `AGENTS.md` → this file → harness rules in `mstar-*` skills.
+root `AGENTS.md` → this file → harness rules in `mstar-*` skills. This file carries
+structure and rules only — never state, counts, findings or current progress.
 
 ## Path symbols (SSOT: `mstar-conventions`)
 
 - `{HARNESS_DIR}` = `.mstar/`; `{PLAN_DIR}` = `plans/`; `{SDD_DIR}` = `sdd/<plan-id>/`;
   `{ITERATION_DIR}` = `iterations/`; `{KNOWLEDGE_DIR}` = `knowledge/`;
   `{SPECS_DIR}` = `specs/`; `{WORKFLOW_DIR}` = `workflows/`; `{PROJECT_DIR}` = `projects/`.
-- Execution, issue, catalog, roadmap and milestone authority is `{HARNESS_DIR}/store.db`
-  (`execution_*`, `issues`, `catalog_*`, `project_roadmaps`, `project_milestones`).
-  Read it through the CLI (`mstar status validate`, `plan show`, `issue list`,
-  `roadmap show`, `milestone list`, `catalog list`) or `mstar dashboard`.
-- Migration history lives in `archived/` and carries no authority: `status.v2.json`,
-  `status.v1.json`, `snapshots/`, `tmp/`, `workflows-snapshots/`, `workflow-sessions/`,
-  `workflows-empty/`, `plans/`, `projects/_default/{roadmap.md,residuals.json}`.
+- Execution, issue, catalog, roadmap and milestone authority is `{HARNESS_DIR}/store.db`:
+  `execution_*` holds work state, `issues` holds findings, `catalog_*` holds registered
+  identity, `project_roadmaps` / `project_milestones` hold project direction. Read it
+  through the CLI (`mstar status validate`, `plan show`, `issue list`, `roadmap show`,
+  `milestone list`, `catalog list`) or `mstar dashboard` — never infer work, finding or
+  roadmap state from files.
+- `archived/` holds retired migration sources and carries no authority. A retired
+  register, a legacy `status.json` root, a workflow `snapshot.json` and legacy session
+  JSON are read-only history: never a write target and never a read fallback for
+  authority.
 
 ## Process vs results
 
@@ -33,14 +37,16 @@ root `AGENTS.md` → this file → harness rules in `mstar-*` skills.
 | `iterations/` | iteration packages: prototypes, compass, guides/specs |
 | `knowledge/` | implementation SSOT crystallized from solved problems |
 | `specs/` | frozen specs / ADRs |
-| `projects/<id>/` | `references/` (research corpus) and `reports/`; the retired `roadmap.md` / `residuals.json` sources live under `archived/projects/` |
+| `projects/<id>/` | `references/` research corpus and `reports/`; a retired register or roadmap belongs to `archived/`, not here |
 | `workflows/<id>/` | retained `notes.jsonl` bodies |
+| `archived/` | retired migration sources; no authority, never a write target |
 | `docs/` | human documentation (outside the harness) |
 
 ## State and gates
 
-- States: `Todo` → `InProgress` → `InReview` → `Done` | `Blocked`. Only `@project-manager`
-  or qualified QA evidence sets `Done`; implementers stop at `InReview`.
+- States: `Todo` → `InProgress` → `InReview` → `Done` | `Blocked`, held in `store.db`.
+  Only `@project-manager` or qualified QA evidence sets `Done`; implementers stop at
+  `InReview`.
 - Per-plan flow: `specify → clarify → plan (locked) → tasks → implement` → QC tri-review +
   QA gate (`mandatory` or `pm-acceptance`) → Done; `inline` plans use the single-seat
   exception. Standalone plans then continue through the delivery tail (compound
@@ -54,15 +60,11 @@ root `AGENTS.md` → this file → harness rules in `mstar-*` skills.
   active plan, `mstar issue add` outside one. A recurrence appends an occurrence
   (`mstar issue occurrence`); dedup is by source identity + root cause, never by title.
 - Capture records evidence only — disposition is a separate authorized act
-  (`issue close` / `waive` / `duplicate` / `supersede`).
-- The retired registers (`projects/<id>/residuals.json`, archived under `archived/projects/`)
-  are read-only history and never a write target. The 2026-10-16 `_default` register import
-  mapped its 55 rows: 46 open, 8 resolved (closed with their original closure evidence), and
-  1 superseded recorded as `waived` because no store-resident successor issue exists — that
-  disposition is a documented lossy mapping, not a faithful `supersede`. One further,
-  still-actionable residual existed only in the archived v1 register
-  (`llm-fallbacks-session-event-fix` R2 / S-002: Windows-host reopen confirmation) and was
-  captured separately as an open issue.
+  (`issue close` / `waive` / `duplicate` / `supersede`). A migrated disposition with no
+  equivalent in the target lifecycle is recorded as the closest supported one and flagged
+  in the closure reason, never silently relabelled.
+- A retired register is read-only migration history, never a write target; open findings
+  live only in the issue store.
 
 ## Authoritative references
 
