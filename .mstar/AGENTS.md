@@ -15,10 +15,8 @@ structure and rules only — never state, counts, findings or current progress.
   through the CLI (`mstar status validate`, `plan show`, `issue list`, `roadmap show`,
   `milestone list`, `catalog list`) or `mstar dashboard` — never infer work, finding or
   roadmap state from files.
-- `archived/` holds retired migration sources and carries no authority. A retired
-  register, a legacy `status.json` root, a workflow `snapshot.json` and legacy session
-  JSON are read-only history: never a write target and never a read fallback for
-  authority.
+- `archived/` holds retired sources and carries no authority: nothing under it is a write
+  target or an authority fallback.
 
 ## Process vs results
 
@@ -37,9 +35,9 @@ structure and rules only — never state, counts, findings or current progress.
 | `iterations/` | iteration packages: prototypes, compass, guides/specs |
 | `knowledge/` | implementation SSOT crystallized from solved problems |
 | `specs/` | frozen specs / ADRs |
-| `projects/<id>/` | `references/` research corpus and `reports/`; a retired register or roadmap belongs to `archived/`, not here |
+| `projects/<id>/` | `references/` research corpus and `reports/`; a retired source belongs to `archived/`, not here |
 | `workflows/<id>/` | retained `notes.jsonl` bodies |
-| `archived/` | retired migration sources; no authority, never a write target |
+| `archived/` | retired sources; no authority, never a write target |
 | `docs/` | human documentation (outside the harness) |
 
 ## State and gates
