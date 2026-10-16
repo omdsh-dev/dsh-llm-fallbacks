@@ -57,9 +57,12 @@ root `AGENTS.md` → this file → harness rules in `mstar-*` skills.
   (`issue close` / `waive` / `duplicate` / `supersede`).
 - The retired registers (`projects/<id>/residuals.json`, archived under `archived/projects/`)
   are read-only history and never a write target. The 2026-10-16 `_default` register import
-  mapped 55 rows: 46 open, 8 resolved (closed with their original closure evidence), and 1
-  superseded recorded as `waived` because no store-resident successor issue exists — that
-  last disposition is a documented lossy mapping, not a faithful `supersede`.
+  mapped its 55 rows: 46 open, 8 resolved (closed with their original closure evidence), and
+  1 superseded recorded as `waived` because no store-resident successor issue exists — that
+  disposition is a documented lossy mapping, not a faithful `supersede`. One further,
+  still-actionable residual existed only in the archived v1 register
+  (`llm-fallbacks-session-event-fix` R2 / S-002: Windows-host reopen confirmation) and was
+  captured separately as an open issue.
 
 ## Authoritative references
 
