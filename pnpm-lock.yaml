@@ -4444,8 +4444,7 @@ snapshots:
 
   xmlchars@2.2.0: {}
 
-  yaml@2.9.1:
-    optional: true
+  yaml@2.9.1: {}
 
   yuku-ast@0.8.7:
     dependencies:
