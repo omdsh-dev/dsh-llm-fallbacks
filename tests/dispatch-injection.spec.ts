@@ -30,6 +30,7 @@ import { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { StreamChunk } from '@deepseek-ai/dsh-llm'
 import { detectAuthorizedRoute } from '../src/authorized-route.ts'
+import { FALLBACKS_PROFILE_ENTRY } from '../src/gateway.ts'
 import { apply, chainHeads, stateStore } from '../src/index.ts'
 import { subagentSeamOf } from '../src/subagents-seam.ts'
 import { FALLBACKS_CHAIN_MODEL, FALLBACKS_PROVIDER } from '../src/virtual-adapter.ts'
@@ -352,15 +353,49 @@ describe('dispatch role from the seam record (plan dsh-148 T1)', () => {
   })
 
   it('leaves the request unchanged when the recorded role is no longer declared', async () => {
-    // Settings edit removed `coder` after the child was dispatched: the stale
-    // hint falls through instead of routing to a role the taxonomy lost.
-    const { agent } = makeAgent('t1-record-stale', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent' })
+    // Never declared at all: the stale hint falls through instead of routing to
+    // a role the taxonomy never carried.
+    const { agent } = makeAgent('t1-record-unknown', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent' })
     apply(ctx, cfg({ roles: { list: [{ id: 'writer', persona: '', chain: ['other/writer-model'] }], rules: [] } }))
     recordDispatchRole(agent, 'coder')
 
     const config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
     expect(config).toEqual({ provider: 'mock', model: 'gpt-4o' })
     expect(switchEvents(agent)).toHaveLength(0)
+  })
+
+  it('leaves the request unchanged when a settings edit removes the recorded role before its first request', async () => {
+    // The LIVE staleness path (plan T1): `coder` IS declared when the child is
+    // dispatched, then a real settings write drops it before that child's first
+    // `agent/request`. A role map cached at install (or a trimmed-id map not
+    // re-derived on `settings/document-updated`) would still resolve `coder`
+    // and inject `anthropic/claude-sonnet-4`; a stale list that shifted would
+    // inject the OTHER declared role's head (`other/writer-model`) — the extra
+    // chain makes either staleness visible as a non-unchanged request.
+    const logs = captureLogs()
+    const { agent } = makeAgent('t1-record-removed', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent' })
+    apply(ctx, cfg({
+      roles: {
+        list: [
+          { id: 'coder', persona: '', chain: ['anthropic/claude-sonnet-4'] },
+          { id: 'writer', persona: '', chain: ['other/writer-model'] },
+        ],
+        rules: [],
+      },
+    }))
+    recordDispatchRole(agent, 'coder')
+
+    // The real settings write path (the `SettingsForms` face the gateway and
+    // the settings UI write through), not a hand-built config object.
+    await ctx.settings.update(FALLBACKS_PROFILE_ENTRY, {
+      roles: { list: [{ id: 'writer', persona: '', chain: ['other/writer-model'] }], rules: [] },
+    })
+
+    const config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
+    expect(config).toEqual({ provider: 'mock', model: 'gpt-4o' })
+    expect(switchEvents(agent)).toHaveLength(0)
+    // Nothing was injected — neither the removed `coder` nor `writer`.
+    expect(logs.filter((message) => String(message.args[0]).includes('role-inject'))).toHaveLength(0)
   })
 
   it('reads only its own child: an unrecorded sibling keeps the previous behaviour', async () => {
