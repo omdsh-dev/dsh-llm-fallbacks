@@ -31,7 +31,7 @@ has no slot left to write and no method left to wrap.
 
 ## Guidance
 
-### The mount-only persona channel is an `agent/created` scoped prompt section
+### Newly dispatched role personas: an `agent/created` scoped prompt section
 
 - `agent/created` fires **before** the agent's first prompt assembly. The
   creation contract (upstream `packages/core/agent`, `CreateAgentOptions.setup`)
@@ -67,6 +67,17 @@ has no slot left to write and no method left to wrap.
 - External (acp) children create no local agent, so no `agent/created` fires for
   them: role resolution and any catalog record still apply, but no persona,
   notice row or badge can be delivered on this channel.
+- **A resumed child can already carry a persona by ANOTHER route — and that is
+  where the same-name duplicate comes from.** A continuable subagent whose
+  descriptor was persisted with a persona reapplies it on cold resume: upstream
+  `manager` composes `descriptor.persona`, and `applyChildOverrides` registers a
+  same-named `deployment:persona-prefix` section on the child's own scope. That
+  path does not pass through a dispatch seam, so a plugin installing its own
+  section must treat a same-name duplicate as "an already-present section" and
+  skip — the registry cannot say who registered it. rc.1's own descriptor writer
+  has no persona source for new activations, so this concerns descriptors
+  persisted by an earlier install (or a future writer), not the normal dispatch
+  path.
 
 ### An Agent Preset is NOT a persona overlay
 
