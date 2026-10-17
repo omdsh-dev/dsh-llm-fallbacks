@@ -14,10 +14,11 @@ allowBuilds:
 # bare-imports it at runtime (markdown code highlighting; the source tree
 # declares it only as a devDependency). Patch the manifest so the vitest/dev
 # graph can resolve the import. Remove once the upstream published manifest
-# declares the dependency. The injected spec is the upstream `next` dist-tag so
-# it tracks the prerelease channel the @deepseek-ai/* peers resolve from and
-# never needs re-pinning; a `*`/`latest` spec would instead pull the stale
-# stable tag, which is not the version the host's package set ships.
+# declares the dependency. The injected spec is the upstream `next` dist-tag: a
+# moving tag that selects the prerelease channel, not a compatibility promise,
+# so a re-resolution can land on a version other than the one the host's peer
+# line resolves. It is chosen over `*`/`latest`, which resolve to a stale tag
+# (itself a prerelease the line has left behind) rather than the live channel.
 packageExtensions:
   '@deepseek-ai/dsh-client-ui-primitives':
     dependencies:
