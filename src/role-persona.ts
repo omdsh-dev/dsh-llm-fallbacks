@@ -11,25 +11,31 @@
  * persona REPLACES the deployment prefix instead of stacking under it — the
  * semantics the removed request slot had.
  *
- * Timing: `CreateAgentOptions.setup`'s contract plus `AgentLoop`'s announce
- * guarantee that everything registered for the child exists before
- * `agent/created` is emitted, and the emitter is awaited before the child's
- * first prompt assembly. The seam's `agent/pre-step` notice emitter therefore
- * always observes a child whose persona section is already registered; both
- * surfaces read the SAME ROOT-shared record map, which is what keeps the
- * ` (persona not applied)` suffix truthful.
+ * Timing: `agent/created` is a serial event awaited before the child's first
+ * prompt assembly, and this listener AWAITS the injected section fiber: cordis
+ * activates a child fiber on a later tick, so awaiting it is what makes the
+ * persona observable by the time the dispatch resolves (the shipped
+ * `file-reference-local` shape). The seam's `agent/pre-step` notice emitter
+ * therefore always observes a child whose persona section is already
+ * registered; both surfaces read the SAME ROOT-shared record map, which is what
+ * keeps the ` (persona not applied)` suffix truthful.
+ *
+ * Ownership: the injected fiber belongs to the CHILD's scope, so it does not
+ * die with this listener's fiber — this module holds it per agent and releases
+ * it on `agent/disposed`, on plugin-fiber teardown, and on explicit `dispose()`.
  *
  * Containment (the seam's degrade-never-crash invariant, and required here
  * because a throwing serial `agent/created` listener fails agent creation):
  * only an agent whose id hits the shared record map is touched (a miss is a
- * silent no-op), a same-name duplicate throw means the descriptor channel
- * already delivered the persona (silent skip), and every other throw is
- * contained to ONE debug line plus the record's sticky `personaNotApplied`.
+ * silent no-op), the registry's exact same-name SCOPED section duplicate means
+ * the descriptor channel already delivered the persona (logged skip), and every
+ * other throw — including a failed fiber activation — is contained to ONE debug
+ * line plus the record's sticky `personaNotApplied`.
  *
  * @module dsh-llm-fallbacks/role-persona
  */
 
-import type { Context } from '@deepseek-ai/cordis'
+import type { Context, Fiber } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { PERSONA_PREFIX_SECTION } from '@deepseek-ai/dsh-system-prompt'
 import { personaForRole, type SubagentSeamRecord } from './subagents-seam.ts'
@@ -90,6 +96,8 @@ function rolePersonaStateFor(root: Context): Set<string> {
 export function installRolePersona(ctx: Context, options: RolePersonaOptions): RolePersona {
   const root = ctx.root
   const registered = rolePersonaStateFor(root)
+  /** This listener's OWN injected section fibers, by agent id. */
+  const fibers = new Map<string, Fiber>()
   const debug = (message: string): void => {
     try {
       options.debug?.(message)
@@ -99,35 +107,36 @@ export function installRolePersona(ctx: Context, options: RolePersonaOptions): R
   }
 
   /**
-   * One contained failure at the persona slot. A same-name duplicate means the
-   * descriptor channel already delivered the persona: silent. Anything else is
-   * reported once and recorded as the STICKY `personaNotApplied` verdict the
-   * notice row reads (the record map is shared with the seam, so the verdict
-   * rides the child's own record).
-   *
-   * The duplicate test is the registry's DUPLICATE-NAME error — the signature of
-   * a resumed continuable child whose persisted descriptor already registered
-   * `deployment:persona-prefix` on its own scope (upstream
-   * `applyChildOverrides` composes the descriptor's persona), i.e. the persona
-   * IS delivered and must not be reported missing. Upstream throws a plain
-   * `Error` (`prompt section "<name>" is already registered in this scope`) and
-   * the registry exposes no read of its registered names, so the message is the
-   * only available signal.
-   * simplify: message-coupled — an upstream reword downgrades the skip to a
-   * contained degrade, and the notice row would then claim "persona not applied"
-   * for a persona the descriptor did deliver. Upgrade path: a typed error/code
-   * from `SystemPrompt.section`.
+   * One contained failure at the persona slot: one debug line plus the STICKY
+   * `personaNotApplied` verdict the notice row reads (the record map is shared
+   * with the seam, so the verdict rides the child's own record).
    */
   const contain = (agent: Agent, record: SubagentSeamRecord, error: unknown): void => {
-    if (error instanceof Error && error.message.includes('is already registered')) return
     debug(
       `llm-fallbacks: role persona for agent "${agent.id}" (role "${record.role}") not applied — contained, the child runs unchanged: ${errorMessage(error)}`,
     )
     record.personaNotApplied = true
   }
 
+  /**
+   * Withdraw this listener's own injected section for one agent id. Cordis
+   * unloads the child fiber on a later tick, so the unload is not awaited here;
+   * the promise is still consumed so a rejected unload cannot surface as an
+   * unhandled rejection.
+   */
+  const release = (id: string): void => {
+    const fiber = fibers.get(id)
+    if (fiber === undefined) return
+    fibers.delete(id)
+    void fiber.dispose().catch((error: unknown) => {
+      debug(
+        `llm-fallbacks: role persona section for agent "${id}" not withdrawn (contained): ${errorMessage(error)}`,
+      )
+    })
+  }
+
   /** Register the resolved role persona for one agent; never throws. */
-  const installPersona = (agent: Agent): void => {
+  const installPersona = async (agent: Agent): Promise<void> => {
     // A miss is not a role child (an unrelated agent, or a dispatch the seam
     // never saw): nothing to deliver, nothing to report.
     const record = options.records.get(agent.id)
@@ -150,12 +159,11 @@ export function installRolePersona(ctx: Context, options: RolePersonaOptions): R
     // A role that declares no (or a blank) persona has nothing to deliver.
     if (persona === undefined) return
     const text = persona
-    // Claim BEFORE the fiber applies: `inject` registers a child plugin, so the
-    // section lands on a later tick — the claim is what keeps a sibling fiber's
-    // listener from registering the same name on the same scope.
+    // Claim BEFORE the fiber applies: a sibling fiber's listener must not
+    // register the same name on the same scope while this one is in flight.
     registered.add(agent.id)
     try {
-      agent.ctx.inject(['systemPrompt'], (scope) => {
+      const fiber = agent.ctx.inject(['systemPrompt'], (scope) => {
         try {
           scope.systemPrompt.section({
             name: PERSONA_PREFIX_SECTION,
@@ -163,12 +171,46 @@ export function installRolePersona(ctx: Context, options: RolePersonaOptions): R
             text,
           })
         } catch (error) {
+          // The ONE skippable failure — the registry's duplicate for THIS name
+          // in a SCOPED layer: the signature of a resumed continuable child
+          // whose persisted descriptor already registered
+          // `deployment:persona-prefix` on its own scope (upstream
+          // `applyChildOverrides` composes the descriptor's persona), i.e. the
+          // persona IS delivered and must not be reported missing.
+          //
+          // Upstream `SystemPrompt.section` throws a plain `Error` and the
+          // registry exposes no read of its registered names, so the message is
+          // the only available signal. It is matched EXACTLY, name included, so
+          // a duplicate of any OTHER registry entry (context, variable, or the
+          // unscoped global section, each with its own wording) and every other
+          // registration failure still reach the contained verdict below. It
+          // cannot tell WHO registered the name, so any same-name section this
+          // scope already carries is skipped, whoever put it there.
+          // simplify: message-coupled — an upstream reword downgrades this skip
+          // to a contained degrade (a false "persona not applied" for a persona
+          // the descriptor did deliver). Upgrade path: a typed error/code from
+          // `SystemPrompt.section`.
+          if (
+            error instanceof Error &&
+            error.message === `prompt section "${PERSONA_PREFIX_SECTION}" is already registered in this scope`
+          ) {
+            debug(
+              `llm-fallbacks: role persona for agent "${agent.id}" already delivered by the descriptor channel on its own scope — keeping it: ${errorMessage(error)}`,
+            )
+            return
+          }
           contain(agent, record, error)
         }
       })
+      fibers.set(agent.id, fiber)
+      // The child fiber activates on its own tick; awaiting it is what makes the
+      // section observable before this serial dispatch resolves, i.e. before the
+      // child's first prompt assembly.
+      await fiber
     } catch (error) {
-      // Registering the section's own fiber failed (an agent scope that already
-      // unwound): same containment, since a throw would fail agent creation.
+      // A failed activation, or an agent scope that already unwound: same
+      // containment, since a throw would fail agent creation.
+      release(agent.id)
       contain(agent, record, error)
     }
   }
@@ -176,29 +218,44 @@ export function installRolePersona(ctx: Context, options: RolePersonaOptions): R
   const disposers: Array<() => void> = []
   // `agent/created` is a serial event: its listener contract is
   // `undefined | Promise<undefined>` (a rejection fails agent creation), so the
-  // explicitly returned `undefined` is the contract, not a style choice.
-  disposers.push(ctx.on('agent/created', ({ agent }) => {
-    installPersona(agent)
+  // awaited dispatch and the explicitly returned `undefined` are the contract,
+  // not style choices — awaiting the injected fiber is what puts the section on
+  // the child before its first prompt assembly.
+  disposers.push(ctx.on('agent/created', async ({ agent }) => {
+    await installPersona(agent)
     return undefined
   }))
-  disposers.push(ctx.on('agent/disposed', ({ agent }) => { registered.delete(agent.id) }))
+  disposers.push(ctx.on('agent/disposed', ({ agent }) => {
+    // The child is gone: withdraw the section this listener installed for it,
+    // then free its id for a re-created agent.
+    release(agent.id)
+    registered.delete(agent.id)
+  }))
   // Backfill: a child created before this fiber applied (a plugin reload over a
   // live root) is still a role child the persona owes. The consumed surface is
   // read structurally — an absent registry, or a narrower `agents` service
   // without `list` (hosts and test doubles both), simply has no child to
-  // backfill; nothing here may break the plugin's apply.
+  // backfill; nothing here may break the plugin's apply. `installPersona` never
+  // rejects, so the deferred activation against the already-existing child is
+  // safe to leave unawaited.
   const agents: { list?: () => readonly Agent[] } | undefined = ctx.get('agents')
   if (typeof agents?.list === 'function') {
-    for (const agent of agents.list()) installPersona(agent)
+    for (const agent of agents.list()) void installPersona(agent)
   }
 
-  return {
-    dispose: () => {
-      for (const dispose of disposers.splice(0)) dispose()
-      // Drop the root's claims so a reloaded fiber can attempt the children
-      // again: the sections of a disposed fiber's agents are gone with it, and a
-      // surviving duplicate is contained as a descriptor-delivered skip.
-      registered.clear()
-    },
+  const dispose = (): void => {
+    for (const off of disposers.splice(0)) off()
+    // Withdraw every section this listener installed, then drop the root's
+    // claims so a reloaded fiber can attempt the children again. A sibling
+    // fiber's surviving section is deliberately not withdrawn here — it is not
+    // ours — and a re-registration against it is the descriptor-delivered
+    // duplicate skipped above.
+    for (const id of [...fibers.keys()]) release(id)
+    registered.clear()
   }
+  // The injected fibers belong to the CHILD scopes, so they outlive THIS fiber:
+  // a plugin unload/reload must run the same teardown (the peer
+  // `subagentSeam.dispose()` is wired into the plugin effect the same way).
+  ctx.effect(() => dispose, 'llm-fallbacks: role persona listener')
+  return { dispose }
 }
