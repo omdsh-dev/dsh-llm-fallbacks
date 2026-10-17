@@ -187,11 +187,11 @@ export function installRolePersona(ctx: Context, options: RolePersonaOptions): R
           })
         } catch (error) {
           // The ONE skippable failure — the registry's duplicate for THIS name
-          // in a SCOPED layer: the signature of a resumed continuable child
-          // whose persisted descriptor already registered
-          // `deployment:persona-prefix` on its own scope (upstream
-          // `applyChildOverrides` composes the descriptor's persona), i.e. the
-          // persona IS delivered and must not be reported missing.
+          // in a SCOPED layer: the scope already carries a section of this
+          // name (a sibling listener's registration, or one a resumed child's
+          // own scope brought with it — upstream `applyChildOverrides` composes
+          // the descriptor's persona there), i.e. the persona IS delivered and
+          // must not be reported missing, whoever registered the section.
           //
           // Upstream `SystemPrompt.section` throws a plain `Error` and the
           // registry exposes no read of its registered names, so the message is
@@ -205,8 +205,8 @@ export function installRolePersona(ctx: Context, options: RolePersonaOptions): R
           // section the scope already carries is skipped, whoever put it there.
           // simplify: message-coupled — an upstream reword downgrades this skip
           // to a contained degrade (a false "persona not applied" for a persona
-          // the descriptor did deliver). Upgrade path: a typed error/code from
-          // `SystemPrompt.section`.
+          // the already-present section delivered). Upgrade path: a typed
+          // error/code from `SystemPrompt.section`.
           if (
             error instanceof Error &&
             error.message === `prompt section "${PERSONA_PREFIX_SECTION}" is already registered in this scope`

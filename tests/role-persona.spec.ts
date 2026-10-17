@@ -91,7 +91,7 @@ function seamRecord(role: string): SubagentSeamRecord {
  * One dispatched child: its seam record plus an agent whose own scope provides
  * an isolated `systemPrompt` double journalling the sections registered on it.
  * `sectionError` reproduces the registry's throw sites — the same-name
- * duplicate (the descriptor channel already registered the persona) or any
+ * duplicate (the child's scope already carries a section of that name) or any
  * other registration failure.
  */
 function child(id: string, role: string, sectionError?: Error): ChildFixture {
@@ -159,8 +159,9 @@ describe('role persona — the agent/created listener', () => {
 
   it('treats the same-name scoped duplicate as already delivered (logged skip, no verdict)', async () => {
     ctx = new Context()
-    // The descriptor channel already put `deployment:persona-prefix` on this
-    // child's scope: the registry's exact scoped duplicate is the signal.
+    // This child's scope already carries a `deployment:persona-prefix`
+    // section — whoever put it there: the registry's exact scoped duplicate is
+    // the signal.
     const delivered = child('child-delivered', 'coder', new Error(DUPLICATE_MESSAGE))
     ctx.provide('agents', { list: () => [] })
     const records = recordMap(delivered)
@@ -349,9 +350,10 @@ describe('role persona — real cordis + real dsh-system-prompt', () => {
     const scopeKey = {}
     // The REAL registry seen from the child scope, except that the persona
     // placement resolves to a non-finite order — the registry's own
-    // NON-duplicate throw site. The descriptor-delivered skip is message-coupled
-    // to the duplicate wording, so this case is what proves that check has not
-    // swallowed every registration failure as "already delivered".
+    // NON-duplicate throw site. The already-present same-name skip is
+    // message-coupled to the duplicate wording, so this case is what proves
+    // that check has not swallowed every registration failure as "already
+    // delivered".
     const registry = ctx.systemPrompt
     const isolated = ctx.isolate('systemPrompt')
     isolated.provide('systemPrompt', {
@@ -487,7 +489,8 @@ describe('role persona — real cordis + real dsh-system-prompt', () => {
 
     // The reload declares CHANGED persona text: the new text is observable only
     // if the owner's teardown really withdrew the first section — a section that
-    // outlived its handle would survive and be kept as descriptor-delivered.
+    // outlived its handle would survive and be kept as an already-present
+    // same-name section.
     installRolePersona(ctx.extend(), { records, roles: () => ROLES_RELOADED })
     await ctx.serial('agent/created', { agent, source: 'startup' })
     expect(await assembledPersona(scopeKey)).toBe('Coder persona v2')
