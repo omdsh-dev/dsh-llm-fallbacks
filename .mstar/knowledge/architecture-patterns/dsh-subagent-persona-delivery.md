@@ -136,6 +136,45 @@ carried to the **resolved** activation id, or the notice reports a delivered
 persona for a child that never received one. A resume that already carries a
 caller-reserved `childId` rides the same record fallback.
 
+## Agent Team members
+
+The experimental Agent Team bundle replaces ordinary delegation with
+`spawn_teammate` / `send_message`, and it has **no role or persona slot on its
+own request**: `SpawnTeammateRequest = { name, description, prompt:
+ContentBlock[], context: 'fresh' | 'fork', provider, signal }`
+(`packages/experimental/agent-team/src/types.ts:165-172`). The carrier therefore
+stays dynamic — the role is whatever `**Execute as**: <id>` header the model
+writes into the teammate's initial prompt.
+
+- **The existing seam already sees every teammate.** `roster.spawn` mints
+  `childId` and creates the member through
+  `ctx.subagents.startActivation({ delivery: 'parent', childId, provider,
+  label: description, request: { prompt, parent } })`
+  (`packages/experimental/agent-team/src/roster.ts:248-283`) — the same call the
+  plugin's wrapper already intercepts, so persona, notice, badge and role
+  resolution need no Agent-Team-specific wiring and no wrapping of the Agent
+  Team service.
+- **Model selection joined the same seam** (plan
+  `dsh-148-agent-team-role-delivery`): the seam's resolved role is now an
+  explicit dispatch stage of `resolveRoleAtDispatch`, after the explicit
+  `agentPreset` stage and before rules, so the declared role's chain head drives
+  the teammate's first request. The stage is generic to the seam, so a normally
+  delegated `**Execute as**` child gets the same routing — it closes the latent
+  contract gap where the declared role carried the persona but never the model.
+- **Absent / undeclared headers fall through.** A prompt without the header, or
+  with an id the live declaration set does not hold, resolves to no role and
+  takes the ordinary rules → auto-match → `inherit` path; the teammate still
+  runs.
+- **Names are arbitrary and repeatable.** The role comes from the header, never
+  from `name`, so several differently named teammates can carry one role; there
+  is deliberately no name→role mapping.
+- **External providers deliver nothing.** A provider that creates no local agent
+  (external / acp) gets no `agent/created`, so the role resolves and is recorded
+  but no persona, notice row or badge can be delivered — the same limit already
+  documented above for a normally delegated external child. Persona delivery
+  stays non-durable: it is a section on the child's own context, so a teammate
+  resumed after a host restart carries none.
+
 ## Verification that actually proves the channel
 
 - A unit fake shaped like the **old** surface keeps a suite green straight
