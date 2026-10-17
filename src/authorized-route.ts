@@ -99,7 +99,7 @@ function lastModelSelection(entries: AuthorizedRouteSession['events']): PolicyRo
  * Detect the subagent's explicit authorized route at its first request, or
  * `undefined` for pure inheritance (semantics in the module doc). The wiring
  * skips role-inject on a defined result — the authorized route is the chain
- * head (spec D2) — and runs the allowlist-constrained three-stage inject on
+ * head (spec D2) — and runs the allowlist-constrained four-stage inject on
  * `undefined`.
  */
 export function detectAuthorizedRoute(session: AuthorizedRouteSession): PolicyRoute | undefined {

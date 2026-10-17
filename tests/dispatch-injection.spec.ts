@@ -2,9 +2,10 @@
  * Dispatch-time role injection tests (plan fallbacks-role-automatch Task 4).
  *
  * At a subagent-origin agent's FIRST `agent/request`, the runtime resolves the
- * role (explicit → rules → auto-match hook) and injects the resolved role's
- * chain head — the first exact (non-wildcard) candidate of the concatenated
- * chain — when it differs from the request's current model: via
+ * role (explicit → dispatch-declared (seam record) → rules → auto-match hook)
+ * and injects the resolved role's chain head — the first exact (non-wildcard)
+ * candidate of the concatenated chain — when it differs from the request's
+ * current model: via
  * `overrideConfig` + an explicit `role → model` log line. No durable
  * `fallbacks/switch` session event is written (issue #52 — the plugin fully
  * stopped writing it; see `tests/session-event-registration-guard.spec.ts`).
@@ -29,7 +30,9 @@ import { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { StreamChunk } from '@deepseek-ai/dsh-llm'
 import { detectAuthorizedRoute } from '../src/authorized-route.ts'
+import { FALLBACKS_PROFILE_ENTRY } from '../src/gateway.ts'
 import { apply, chainHeads, stateStore } from '../src/index.ts'
+import { subagentSeamOf } from '../src/subagents-seam.ts'
 import { FALLBACKS_CHAIN_MODEL, FALLBACKS_PROVIDER } from '../src/virtual-adapter.ts'
 import { MemorySettings } from './support/memory-settings.ts'
 import { cfg, dispatchRequest, dispatchRequestError, makeAgent, switchEvents } from './support/harness.ts'
@@ -300,6 +303,113 @@ describe('dispatch-time role injection', () => {
     const config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
     expect(config).toEqual({ provider: 'anthropic', model: 'claude-sonnet-4' })
     expect(switchEvents(agent)).toHaveLength(0)
+  })
+})
+
+describe('dispatch role from the seam record (plan dsh-148 T1)', () => {
+  /** Seed the role a child was dispatched with, through the INSTALLED seam's record map. */
+  function recordDispatchRole(agent: Agent, role: string): void {
+    const seam = subagentSeamOf(ctx)
+    if (seam === undefined) throw new Error('subagent seam not installed — cannot seed a dispatch role')
+    seam.records.set(agent.id, { role, at: Date.now(), firstNoticePending: true })
+  }
+
+  it("injects the recorded role's chain head on the child's first request", async () => {
+    const { agent } = makeAgent('t1-record', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent' })
+    apply(ctx, cfg({ roles: coderRoles() }))
+    recordDispatchRole(agent, 'coder')
+
+    const config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
+    expect(config).toEqual({ provider: 'anthropic', model: 'claude-sonnet-4' })
+    // Stop-write (issue #52): the injected request writes no durable event.
+    expect(switchEvents(agent)).toHaveLength(0)
+  })
+
+  it('outranks a matching rule (the dispatch stage sits before rules)', async () => {
+    const { agent } = makeAgent('t1-record-rule', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent' })
+    apply(ctx, cfg({
+      roles: {
+        list: [
+          { id: 'coder', persona: '', chain: ['anthropic/claude-sonnet-4'] },
+          { id: 'writer', persona: '', chain: ['other/writer-model'] },
+        ],
+        rules: [{ provider: 'mock', role: 'writer' }],
+      },
+    }))
+    recordDispatchRole(agent, 'coder')
+
+    const config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
+    expect(config).toEqual({ provider: 'anthropic', model: 'claude-sonnet-4' })
+  })
+
+  it("leaves the request unchanged for a recorded 'inherit'", async () => {
+    const { agent } = makeAgent('t1-record-inherit', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent' })
+    apply(ctx, cfg({ roles: coderRoles() }))
+    recordDispatchRole(agent, 'inherit')
+
+    const config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
+    expect(config).toEqual({ provider: 'mock', model: 'gpt-4o' })
+    expect(switchEvents(agent)).toHaveLength(0)
+  })
+
+  it('leaves the request unchanged when the recorded role is no longer declared', async () => {
+    // Never declared at all: the stale hint falls through instead of routing to
+    // a role the taxonomy never carried.
+    const { agent } = makeAgent('t1-record-unknown', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent' })
+    apply(ctx, cfg({ roles: { list: [{ id: 'writer', persona: '', chain: ['other/writer-model'] }], rules: [] } }))
+    recordDispatchRole(agent, 'coder')
+
+    const config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
+    expect(config).toEqual({ provider: 'mock', model: 'gpt-4o' })
+    expect(switchEvents(agent)).toHaveLength(0)
+  })
+
+  it('leaves the request unchanged when a settings edit removes the recorded role before its first request', async () => {
+    // The LIVE staleness path (plan T1): `coder` IS declared when the child is
+    // dispatched, then a real settings write drops it before that child's first
+    // `agent/request`. A role map cached at install (or a trimmed-id map not
+    // re-derived on `settings/document-updated`) would still resolve `coder`
+    // and inject `anthropic/claude-sonnet-4`; a stale list that shifted would
+    // inject the OTHER declared role's head (`other/writer-model`) — the extra
+    // chain makes either staleness visible as a non-unchanged request.
+    const logs = captureLogs()
+    const { agent } = makeAgent('t1-record-removed', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent' })
+    apply(ctx, cfg({
+      roles: {
+        list: [
+          { id: 'coder', persona: '', chain: ['anthropic/claude-sonnet-4'] },
+          { id: 'writer', persona: '', chain: ['other/writer-model'] },
+        ],
+        rules: [],
+      },
+    }))
+    recordDispatchRole(agent, 'coder')
+
+    // The real settings write path (the `SettingsForms` face the gateway and
+    // the settings UI write through), not a hand-built config object.
+    await ctx.settings.update(FALLBACKS_PROFILE_ENTRY, {
+      roles: { list: [{ id: 'writer', persona: '', chain: ['other/writer-model'] }], rules: [] },
+    })
+
+    const config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
+    expect(config).toEqual({ provider: 'mock', model: 'gpt-4o' })
+    expect(switchEvents(agent)).toHaveLength(0)
+    // Nothing was injected — neither the removed `coder` nor `writer`.
+    expect(logs.filter((message) => String(message.args[0]).includes('role-inject'))).toHaveLength(0)
+  })
+
+  it('reads only its own child: an unrecorded sibling keeps the previous behaviour', async () => {
+    const { agent: recorded } = makeAgent('t1-scope-recorded', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent' })
+    const { agent: plain } = makeAgent('t1-scope-plain', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent' })
+    apply(ctx, cfg({ roles: coderRoles() }))
+    recordDispatchRole(recorded, 'coder')
+
+    expect(await dispatchRequest(ctx, recorded, { provider: 'mock', model: 'gpt-4o' }))
+      .toEqual({ provider: 'anthropic', model: 'claude-sonnet-4' })
+    // No record → no dispatch stage, exactly as before this change.
+    expect(await dispatchRequest(ctx, plain, { provider: 'mock', model: 'gpt-4o' }))
+      .toEqual({ provider: 'mock', model: 'gpt-4o' })
+    expect(switchEvents(plain)).toHaveLength(0)
   })
 })
 

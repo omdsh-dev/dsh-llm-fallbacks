@@ -3,10 +3,12 @@
  * Task 1).
  *
  * This module is the RULES stage. Dispatch-time role resolution
- * (plan fallbacks-role-automatch) is the three-stage resolver in
- * `role-resolution.ts` — explicit (`session.header.agentPreset`) → this
- * rules stage → an optional auto-match hook; `AgentLike` carries the additive
- * `session.header.agentPreset?` carrier for that explicit stage.
+ * (plan fallbacks-role-automatch; plan dsh-148 added the dispatch stage) is
+ * the four-stage resolver in `role-resolution.ts` — explicit
+ * (`session.header.agentPreset`) → dispatch-declared role (the seam record
+ * resolved from `**Execute as**`) → this rules stage → an optional auto-match
+ * hook; `AgentLike` carries the additive `session.header.agentPreset?`
+ * carrier for that explicit stage.
  *
  * Precedence (first hit wins):
  * 1. the first `rules` entry whose specified provider/model patterns match

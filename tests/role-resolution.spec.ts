@@ -1,14 +1,18 @@
 /**
- * Dispatch-time three-stage role resolution unit tests (plan
- * fallbacks-role-automatch Task 2).
+ * Dispatch-time ordered role resolution unit tests (plan
+ * fallbacks-role-automatch Task 2; dispatch stage added by plan
+ * dsh-148-agent-team-role-delivery Task 1).
  *
- * `resolveRoleAtDispatch` orders explicit → rules → auto-match hook:
+ * `resolveRoleAtDispatch` orders explicit → dispatch → rules → auto-match:
  * 1. explicit — `session.header.agentPreset` trimmed matches a declared role
  *    id → the declared RAW id (via the `roleIds` trimmed-id map, the same
  *    canonicalization the rules path uses); `'inherit'` and undeclared
- *    presets are never dispatchable explicit roles and fall through to rules;
- * 2. rules — the existing `resolveRole` passthrough (a declared role wins);
- * 3. auto-match — only when stage 2 resolved to `'inherit'` AND
+ *    presets are never dispatchable explicit roles and fall through;
+ * 2. dispatch — `opts.dispatchRole`, the role the dispatch seam resolved from
+ *    the prompt, canonicalized the same way; absent / empty / `'inherit'` /
+ *    no-longer-declared fall through silently (no warn);
+ * 3. rules — the existing `resolveRole` passthrough (a declared role wins);
+ * 4. auto-match — only when stage 3 resolved to `'inherit'` AND
  *    `automatchEnabled`; the hook MUST return a declared raw id or `null`,
  *    and the resolver defensively validates the return against `roleIds` —
  *    an unknown id warns and resolves to `'inherit'`, never an undeclared
@@ -97,7 +101,74 @@ describe('resolveRoleAtDispatch — stage 1 explicit', () => {
   })
 })
 
-describe('resolveRoleAtDispatch — stage 2 rules', () => {
+describe('resolveRoleAtDispatch — stage 2 dispatch-declared role', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('returns the declared RAW id and beats a matching rule', async () => {
+    // The agent matches the `anthropic-only` rule — the dispatch stage must
+    // win before rules, and canonicalize through roleIds (' coder ').
+    const agent: AgentLike = {
+      options: { provider: 'anthropic' },
+      session: { header: { origin: 'subagent' } },
+    }
+    await expect(
+      resolveRoleAtDispatch(agent, RULES, ROLE_IDS, { automatchEnabled: true, dispatchRole: 'coder', warn: () => {} }),
+    ).resolves.toBe(' coder ')
+  })
+
+  it('loses to a declared explicit preset (stage 1 stays first)', async () => {
+    const agent: AgentLike = { session: { header: { origin: 'subagent', agentPreset: 'anthropic-only' } } }
+    await expect(
+      resolveRoleAtDispatch(agent, RULES, ROLE_IDS, { automatchEnabled: true, dispatchRole: 'coder', warn: () => {} }),
+    ).resolves.toBe('anthropic-only')
+  })
+
+  it('canonicalizes a padded dispatch role by trim before the roleIds lookup', async () => {
+    const agent: AgentLike = { session: { header: { origin: 'subagent' } } }
+    await expect(
+      resolveRoleAtDispatch(agent, RULES, ROLE_IDS, { automatchEnabled: true, dispatchRole: ' coder ', warn: () => {} }),
+    ).resolves.toBe(' coder ')
+  })
+
+  it("falls through to rules for an absent, empty or reserved-inherit dispatch role", async () => {
+    const agent: AgentLike = { session: { header: { origin: 'subagent' } } }
+    await expect(
+      resolveRoleAtDispatch(agent, RULES, ROLE_IDS, { automatchEnabled: true, warn: () => {} }),
+    ).resolves.toBe('code-review')
+    for (const dispatchRole of ['', '   ', 'inherit']) {
+      await expect(
+        resolveRoleAtDispatch(agent, RULES, ROLE_IDS, { automatchEnabled: true, dispatchRole, warn: () => {} }),
+      ).resolves.toBe('code-review')
+    }
+  })
+
+  it('falls through silently (no warn) when the dispatch role is no longer declared', async () => {
+    const warn = vi.fn()
+    const agent: AgentLike = { session: { header: { origin: 'subagent' } } }
+    await expect(
+      resolveRoleAtDispatch(agent, RULES, ROLE_IDS, {
+        automatchEnabled: true,
+        dispatchRole: 'role-removed-after-dispatch',
+        warn,
+      }),
+    ).resolves.toBe('code-review')
+    expect(warn).not.toHaveBeenCalled()
+  })
+
+  it("reaches 'inherit' when a stale dispatch role matches no rule and auto-match is off", async () => {
+    await expect(
+      resolveRoleAtDispatch(NO_MATCH_AGENT, RULES, ROLE_IDS, {
+        automatchEnabled: false,
+        dispatchRole: 'role-removed-after-dispatch',
+        warn: () => {},
+      }),
+    ).resolves.toBe('inherit')
+  })
+})
+
+describe('resolveRoleAtDispatch — stage 3 rules', () => {
   afterEach(() => {
     vi.restoreAllMocks()
   })
@@ -118,7 +189,7 @@ describe('resolveRoleAtDispatch — stage 2 rules', () => {
   })
 })
 
-describe('resolveRoleAtDispatch — stage 3 auto-match hook', () => {
+describe('resolveRoleAtDispatch — stage 4 auto-match hook', () => {
   afterEach(() => {
     vi.restoreAllMocks()
   })

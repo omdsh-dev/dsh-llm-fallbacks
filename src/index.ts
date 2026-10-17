@@ -1489,7 +1489,7 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
     // explicit authorized route detected on the child's durable state → the
     // authorized route IS the chain head (label `authorized`) — inject
     // skipped, never overwritten at first request (D2). Pure inheritance →
-    // the three-stage resolution runs, but a policy-on injected head is
+    // the four-stage resolution runs, but a policy-on injected head is
     // plugin-originated and must be on the allowlist: `firstAllowedCandidate`
     // over the resolved candidates (label `injected`); empty intersection →
     // skip inject, host seed stands, warn. Policy off/absent → inject exactly
@@ -1498,10 +1498,10 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
     // This is NOT a failure decision: no commit(), no pending switch, no
     // cooldown, no failure bookkeeping — only the override + an explicit role
     // → model log. `'inherit'` ("no specific role") NEVER injects, so with
-    // `roleAutoMatch: false` and no explicit/rules role the outcome is
-    // identical to today. Defensive: any throw in the resolution/injection
-    // path warns and the request proceeds unchanged (mirror the
-    // `agent/request-error` defensive pattern).
+    // `roleAutoMatch: false` and no explicit/dispatch-declared/rules role
+    // the outcome is identical to today. Defensive: any throw in the
+    // resolution/injection path warns and the request proceeds unchanged
+    // (mirror the `agent/request-error` defensive pattern).
     if (isFallbackActive(config) && hasChains && agent.session?.header?.origin === 'subagent' && !dispatchInjected.has(agent.id)) {
       dispatchInjected.add(agent.id)
       try {
@@ -1544,6 +1544,10 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
             const role = await resolveRoleAtDispatch(agent, config.roles.rules, roleIds, {
               automatchEnabled: config.roleAutoMatch ?? true,
               automatch: (agent) => pickRoleByLlm(ctx, config.roles, agent, { warn: logger.warn }),
+              // The dispatch seam's live hint for this child (the
+              // `**Execute as**: <id>` it resolved) — same map the notice row
+              // and `subagentSeamOf` read.
+              dispatchRole: subagentSeam.records.get(agent.id)?.role,
               warn: logger.warn,
               servedRoute: servedRouteFor(agent, config),
             })
