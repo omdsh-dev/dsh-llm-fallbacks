@@ -8,8 +8,9 @@
  * cordis-waterfall harness (`tests/support/harness.ts`, the same seam
  * `tests/dispatch-injection.spec.ts` uses). Covers:
  *
- * - the three-stage path on ONE subagent first request: explicit preset miss →
- *   rules miss → auto-match picks a declared role → injects its chain head →
+ * - the four-stage path on ONE subagent first request: explicit preset miss →
+ *   dispatch-role miss → rules miss → auto-match picks a declared role →
+ *   injects its chain head →
  *   the role-inject override (NO durable `fallbacks/switch` event, issue #52 —
  *   the plugin fully stopped writing it), plus
  *   the stage-precedence wiring (explicit > rules > auto-match; the hook is not
@@ -72,11 +73,12 @@ function llmAnswering(id: string) {
   }
 }
 
-describe('end-to-end dispatch resolution + injection (three-stage path)', () => {
-  it('walks explicit → rules → auto-match on one subagent first request and injects the matched role head + role-inject event', async () => {
+describe('end-to-end dispatch resolution + injection (four-stage path)', () => {
+  it('walks explicit → dispatch role → rules → auto-match on one subagent first request and injects the matched role head + role-inject event', async () => {
     // Stage 1 (explicit): the preset names no declared role id → falls through.
-    // Stage 2 (rules): no rules → 'inherit'.
-    // Stage 3 (auto-match): the stub llm picks the declared 'coder' role.
+    // Stage 2 (dispatch role): no seam record → falls through.
+    // Stage 3 (rules): no rules → 'inherit'.
+    // Stage 4 (auto-match): the stub llm picks the declared 'coder' role.
     ctx.provide('llm', llmAnswering('coder'))
     const { agent } = makeAgent('t6-three', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent', agentPreset: 'qa-preset' })
     apply(ctx, cfg({ rootChain: ['other/gpt-4o'], roles: coderRoles() }))
