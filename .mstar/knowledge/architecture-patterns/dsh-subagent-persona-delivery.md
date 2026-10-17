@@ -52,9 +52,17 @@ has no slot left to write and no method left to wrap.
   ```
 
   A scoped section **shadows** a same-named global section, so this REPLACES the
-  deployment persona rather than concatenating with it. The upstream
-  `@deepseek-ai/dsh-file-reference-local` package is the shipped precedent for
-  the `agent/created` + `inject(['systemPrompt'])` shape.
+  deployment persona rather than concatenating with it.
+
+  Two shipped packages are precedents for this shape, and the closer one is the
+  identity case: `@deepseek-ai/dsh-file-reference-local` installs a conditional
+  prompt section per agent this way, and **`@deepseek-ai/dsh-tool-agent-team` —
+  the Agent Team tool surface — registers its teammate identity and policy on
+  `agent.ctx` from an `agent/created` listener**: `scoped.systemPrompt.section({
+  name: 'team:policy', … })` plus `scoped.systemPrompt.context({ name:
+  'team:identity', …, text: () => \`You are teammate "${name}"…\` })`. Neither
+  package uses an Agent Preset or an `agentPreset` request field to deliver
+  identity.
 - No provider capability participates. The removed `capabilities.persona` gate
   belonged to the request slot, not to this channel, so spawn, fork and acp
   children are all reachable as long as they create a local agent.
