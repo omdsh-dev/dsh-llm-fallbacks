@@ -6,6 +6,20 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.6.6] - 2026-10-17
+
+### Fixed
+
+- Adapt the subagent dispatch seam to the installed `@deepseek-ai/dsh-subagent` activation API (`startActivation` in place of the removed `start` / `startContinuable`), so role resolution, the in-session `[role: <id>]` notice row and the session-header role badge keep working with the dsh peer range declared in `package.json`.
+- Deliver the resolved role persona as a scoped `deployment:persona-prefix` system-prompt section on the child instead of a request persona: it still replaces the deployment persona for that dispatched child, but it is no longer durable — a role child resumed after a host restart now runs without its role persona.
+
+### Changed
+
+- Upgrade `@deepseek-ai/dsh-*` peer dependencies to `^0.2.1-rc.1` (corridor `dsh-v0.2.1-alpha.5` → `dsh-v0.2.1-rc.1`, rolled up from `0.2.0-rc.2`) and refresh the lockfile, pnpm-workspace exemptions/patches, docs pins, and README dsh badge for the new cohort.
+- Upgrade `@deepseek-ai/dsh-*` peer dependencies to `^0.2.1-rc.2` (corridor `dsh-v0.2.1-rc.1` → `dsh-v0.2.1-rc.2`: DeepSeek Search/Fetch web-search settings UI; Flash-1017 temporary model-label badge; cohort pin) and refresh the lockfile and README dsh badge.
+<!-- CN -->
+- 将 `@deepseek-ai/dsh-*` peer 依赖升级到 `^0.2.1-rc.2`（走廊 `dsh-v0.2.1-rc.1` → `dsh-v0.2.1-rc.2`：DeepSeek Search/Fetch Web Search 设置 UI；Flash-1017 临时候选标徽章；RC 钉死），并刷新 lockfile 与 README dsh 徽章。
+
 ## [0.6.5] - 2026-09-29
 
 ### Changed
