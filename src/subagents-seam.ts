@@ -54,8 +54,12 @@
  * as a scoped `deployment:persona-prefix` section on the CHILD's own context
  * by `./role-persona.ts`, over the SAME ROOT-shared record map this module
  * writes. That listener owns the `personaNotApplied` verdict the notice row
- * reads; this module writes no request field, reads no provider persona
- * capability, and injects no agent preset.
+ * reads — EXCEPT when a reservation failure means it can never see the child
+ * (the runtime mints its own child id and `agent/created` has already run), in
+ * which case this module resolves the same question against the live roles
+ * source and carries the verdict onto the record keyed off the RESOLVED id,
+ * before the child's first pre-step. This module writes no request field,
+ * reads no provider persona capability, and injects no agent preset.
  *
  * In-session notice row (plan Task 3): the SAME install point registers the
  * `agent/pre-step` emitter (`./role-notice.ts`) over the record map it owns, so
@@ -162,12 +166,16 @@ export interface SubagentSeamRecord {
   /**
    * `true` when the role DECLARES a persona and that persona was NOT delivered
    * onto the child. Written by the `agent/created` role-persona listener
-   * (`./role-persona.ts`) over this same map — the seam itself never touches a
-   * persona. Absent when there was nothing to report: the section was
-   * registered, the descriptor channel already delivered it, the listener never
-   * saw the child (an EXTERNAL backend creates no local agent), the role
-   * declares none, or no persona source is wired. Task 3 appends
-   * ` (persona not applied)` on `true` only.
+   * (`./role-persona.ts`) over this same map — except when a reservation
+   * failure means that listener can never see the child (the runtime mints its
+   * own child id), where the seam itself carries the verdict onto the record
+   * keyed off the RESOLVED id. The seam never delivers or reads a persona
+   * other than for that one question. Absent when there was nothing to report:
+   * the section was registered, a same-name section was already on the child's
+   * scope (whoever registered it), the listener never saw the child (an
+   * EXTERNAL backend creates no local agent), the role declares none, or no
+   * persona source is wired. Task 3 appends ` (persona not applied)` on `true`
+   * only.
    *
    * STICKY (Task 3 review Minor 4): a record rewrite — a resume reusing the
    * reserved `childId`, or the resolved activation re-keying the same child
@@ -242,6 +250,14 @@ export interface SubagentSeamOptions {
    * activation so a settings change is observed without a re-install.
    */
   roleIds: () => ReadonlyMap<string, string>
+  /**
+   * Live declared roles (`roles.list`) — the SAME source `./role-persona.ts`
+   * reads. Consulted ONLY when a reservation failure means that listener can
+   * never see the child: the seam is then the only place left that can carry
+   * the persona verdict to the child's notice row. Absent (no persona source is
+   * wired) ⇒ no verdict, exactly like a listener that never saw the child.
+   */
+  roles?: () => readonly FallbacksRole[]
   /** Contained debug sink (at most one line per contained degrade). */
   debug?: (message: string) => void
 }
@@ -603,17 +619,18 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
   }
 
   /** Write one per-child record; a repeat write for the same child keeps a cleared notice marker. */
-  const recordChild = (childId: string, role: string, at: number): void => {
+  const recordChild = (childId: string, role: string, at: number, personaMissed?: boolean): void => {
     const existing = records.get(childId)
     records.set(childId, {
       role,
       at,
       firstNoticePending: existing?.firstNoticePending ?? true,
       // The persona verdict belongs to the role-persona listener, which may
-      // already have written it while the child was being created: a rewrite
-      // (the resume fallback, or the resolved activation re-keying the same
-      // child) can only ADD it, never clear it (see `SubagentSeamRecord`).
-      ...(existing?.personaNotApplied === true ? { personaNotApplied: true } : {}),
+      // already have written it while the child was being created — or be
+      // unable to see the child at all, in which case the caller carries it
+      // here: a rewrite can only ADD the verdict, never clear it (see
+      // `SubagentSeamRecord`).
+      ...(existing?.personaNotApplied === true || personaMissed === true ? { personaNotApplied: true } : {}),
     })
   }
 
@@ -763,6 +780,13 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
       // own child id, so its record is keyed below off the resolved activation.
       let effectiveSpec: SubagentActivationSpecView = spec
       let reservedId: string | undefined
+      /**
+       * Carried out of a reservation failure: whether the resolved role
+       * declares a persona the child can now never receive, so `true` must
+       * reach the record `recordChild` keys off the RESOLVED id below.
+       * `undefined` = no verdict.
+       */
+      let reservationPersonaMissed: boolean | undefined
       try {
         if (isLocalBackend(service, spec.provider)) {
           reservedId = spec.childId ?? randomUUID()
@@ -782,6 +806,18 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
         effectiveSpec = spec
         reservedId = undefined
         reportDegrade(error)
+        // The native runtime now mints its OWN child id, so `agent/created`
+        // fires before the record exists and `./role-persona.ts` can never
+        // report this child: the verdict has to come from here and land on the
+        // record `recordChild` writes the moment the resolved id is known —
+        // before the child's first pre-step, the only point the notice reads.
+        try {
+          reservationPersonaMissed = personaForRole(options.roles?.() ?? [], role) !== undefined
+        } catch (personaError) {
+          // An unreadable declaration is NOT a verdict — nothing was proven
+          // skipped — so none is invented and the containment holds.
+          reportDegrade(personaError)
+        }
       }
       let pendingKey: string | undefined
       try {
@@ -810,7 +846,7 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
           result,
           (childId) => {
             endCorrelation(pendingKey)
-            recordChild(childId, role, at)
+            recordChild(childId, role, at, reservationPersonaMissed)
           },
           // No child id in the result (a job id is not one): keep the claim and
           // let the parent-owned `subagent/catalog` event supply the child id.

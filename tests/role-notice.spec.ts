@@ -701,7 +701,7 @@ describe('role notice — per-apply lifetime through apply()', () => {
     const claimed = claimedMessage()
     const decision = admittedMessages(await drivePreStep(ctx, childAgent('child-apply'), [claimed], 1))
     // Dropping the `installRoleNotice(...)` registration from the seam install
-    // (or the seam's `roles` wiring) fails here.
+    // fails here.
     expect(decision).toHaveLength(2)
     expect(textOf(decision[1]!)).toBe('[role: coder]')
   })

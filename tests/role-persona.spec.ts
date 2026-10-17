@@ -25,9 +25,13 @@ import { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import SystemPrompt, { PERSONA_PREFIX_SECTION, renderPrompt } from '@deepseek-ai/dsh-system-prompt'
 import { createScope } from '@deepseek-ai/dsh-scope'
+import { apply } from '../src/index.ts'
+import { FALLBACKS_PROFILE_ENTRY } from '../src/gateway.ts'
 import { installRolePersona } from '../src/role-persona.ts'
 import type { SubagentSeamRecord } from '../src/subagents-seam.ts'
 import type { FallbacksRole } from '../src/config.ts'
+import { MemorySettings } from './support/memory-settings.ts'
+import { cfg } from './support/harness.ts'
 import { settle } from './support/settle.ts'
 
 /** Declared taxonomy: `coder` and `scout` declare a persona, `reviewer` only whitespace. */
@@ -153,7 +157,7 @@ describe('role persona — the agent/created listener', () => {
     expect(debug).not.toHaveBeenCalled()
   })
 
-  it('treats the same-name scoped duplicate as descriptor-delivered (logged skip, no verdict)', async () => {
+  it('treats the same-name scoped duplicate as already delivered (logged skip, no verdict)', async () => {
     ctx = new Context()
     // The descriptor channel already put `deployment:persona-prefix` on this
     // child's scope: the registry's exact scoped duplicate is the signal.
@@ -166,9 +170,12 @@ describe('role persona — the agent/created listener', () => {
     await created(delivered.agent)
 
     expect(delivered.sections).toEqual([])
-    // Observable, not silent: the one line names the channel that delivered it.
+    // Observable, not silent: exactly ONE line, naming the child it is about.
+    // It must NOT attribute the existing section to a source — the registry
+    // cannot say who registered it, so that would report more than is known.
     expect(debug).toHaveBeenCalledTimes(1)
-    expect(debug.mock.calls[0][0]).toContain('descriptor channel')
+    expect(debug.mock.calls[0][0]).toContain('child-delivered')
+    expect(debug.mock.calls[0][0]).not.toContain('descriptor')
     expect(records.get('child-delivered')?.personaNotApplied).toBeUndefined()
   })
 
@@ -309,15 +316,15 @@ describe('role persona — real cordis + real dsh-system-prompt', () => {
     expect(renderPrompt(assembly)).not.toContain(DEPLOYMENT_PERSONA)
   })
 
-  it('treats the registry’s exact scoped duplicate as descriptor-delivered (real registry)', async () => {
+  it('treats the registry’s exact scoped duplicate as already delivered (real registry)', async () => {
     ctx = new Context()
     const { agent, scopeKey } = await realChild('child-descriptor', 'coder')
     // The persisted descriptor channel already put this section on the child's OWN
     // scope (a resumed continuable child): register it the way that channel does —
     // through an injected fiber on the child ctx — BEFORE the listener sees the
     // child. The registry's exact scoped duplicate is then the ONLY available
-    // signal that the persona IS delivered, so the listener must skip silently
-    // instead of reporting a skip.
+    // signal that the persona IS delivered, so the listener must skip — one
+    // attribution-free debug line, no verdict — instead of reporting it missing.
     await agent.ctx.inject(['systemPrompt'], (scope) => {
       scope.systemPrompt.section({ name: PERSONA_PREFIX_SECTION, order: 0, text: 'Descriptor persona' })
     })
@@ -484,5 +491,76 @@ describe('role persona — real cordis + real dsh-system-prompt', () => {
     installRolePersona(ctx.extend(), { records, roles: () => ROLES_RELOADED })
     await ctx.serial('agent/created', { agent, source: 'startup' })
     expect(await assembledPersona(scopeKey)).toBe('Coder persona v2')
+  })
+
+  /**
+   * F-A: the consumer-level protection the channel migration dropped. Nothing
+   * below installs the listener itself — `apply()` is the ONLY installation
+   * point — so dropping `installRolePersona(...)` from `src/index.ts`, or
+   * capturing its `roles: () => source().roles.list` binding once instead of
+   * reading it live per child, fails here.
+   */
+  it('delivers the dispatched role persona through the real apply() composition, live across a settings edit', async () => {
+    ctx = new Context()
+    ctx.plugin(MemorySettings)
+    await ctx.plugin(SystemPrompt, { personaPrefix: DEPLOYMENT_PERSONA })
+    // The children this composition creates, in dispatch order. The fake
+    // `subagents` runtime behaves like `manager.startLocal`: the seam's
+    // caller-reserved id IS the child id, and the created child's serial
+    // `agent/created` is awaited before the native start resolves.
+    const children: Array<{ scopeKey: object }> = []
+    ctx.provide('subagents', {
+      tag: 'raw-subagents',
+      getProvider: () => ({ prepareContinuable: () => undefined }),
+      startActivation: async (spec: { childId?: string; label?: string }) => {
+        const id = spec.childId ?? spec.label ?? ''
+        const scopeKey = {}
+        children.push({ scopeKey })
+        // The runtime's child: `Agent.id` IS the child session id here, and the
+        // persona listener registers its section through `agent.ctx`.
+        const agent = { id, ctx: createScope(ctx, scopeKey).ctx } as unknown as Agent
+        await ctx.serial('agent/created', { agent, source: 'startup' })
+        return { childId: id }
+      },
+    })
+    apply(ctx, cfg({ roles: { list: [{ id: 'coder', persona: 'Coder persona', chain: [] }], rules: [] } }))
+    await settle()
+
+    // Read `subagents` the way the host does — from a CONSUMER fiber (a
+    // same-fiber read is short-circuited by cordis and bypasses the wrapper).
+    let consumer: Context | undefined
+    ctx.plugin({
+      name: 'role-persona-apply-consumer',
+      inject: ['subagents'],
+      apply(consumerCtx: Context) {
+        consumer = consumerCtx
+      },
+    })
+    await settle()
+    if (consumer === undefined) throw new Error('the consumer fiber did not apply')
+    // cordis's `Context` type declares no service index signature, so the value
+    // the consumer resolved — the seam's wrapper — is asserted once, here.
+    const wrapper = consumer as unknown as {
+      subagents: { startActivation(spec: unknown): Promise<unknown> }
+    }
+
+    const childPrompt = ['## Assignment', '', '- **Execute as**: coder', '', '## Task 1 — something', ''].join('\n')
+    const request = { prompt: [{ type: 'text', text: childPrompt }] }
+    await wrapper.subagents.startActivation({ provider: 'spawn', label: 'child-apply-1', request })
+    // The persona this production composition delivered, assembled from the
+    // child's OWN scope: with no `installRolePersona` the deployment persona
+    // stands here instead.
+    expect(await assembledPersona(children[0]!.scopeKey)).toBe('Coder persona')
+
+    // A REAL settings write: the plugin's settings child re-derives the
+    // composition in place and `roles: () => source().roles.list` is read LIVE
+    // per `agent/created`. Nothing is re-installed here — a roles list captured
+    // once at install time assembles the FIRST text below.
+    await ctx.settings.update(FALLBACKS_PROFILE_ENTRY, {
+      roles: { list: [{ id: 'coder', persona: 'Coder persona v2', chain: [] }], rules: [] },
+    })
+
+    await wrapper.subagents.startActivation({ provider: 'spawn', label: 'child-apply-2', request })
+    expect(await assembledPersona(children[1]!.scopeKey)).toBe('Coder persona v2')
   })
 })

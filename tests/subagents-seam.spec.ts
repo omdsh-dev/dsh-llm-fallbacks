@@ -33,8 +33,11 @@ import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, resolve } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
+import type { Agent } from '@deepseek-ai/dsh-agent'
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { apply } from '../src/index.ts'
 import { FALLBACKS_PROFILE_ENTRY } from '../src/gateway.ts'
+import { installRolePersona } from '../src/role-persona.ts'
 import {
   installSubagentSeam,
   PENDING_CORRELATION_LIMIT,
@@ -262,9 +265,12 @@ interface FakeSubagents {
   /**
    * Test hook run INSIDE the native call, before it resolves — the only place
    * from which a case can observe the seam's record state at call time (the
-   * synchronous pre-write).
+   * synchronous pre-write). A returned promise is AWAITED before the native
+   * call resolves, which is how a case reproduces the production order: the
+   * real `manager.startLocal` awaits the child's serial `agent/created` inside
+   * its own start, i.e. BEFORE the wrapper ever sees the result.
    */
-  onActivation?: (spec: SubagentActivationSpecView) => void
+  onActivation?: (spec: SubagentActivationSpecView) => void | Promise<void>
 }
 
 /**
@@ -280,13 +286,13 @@ function fakeSubagents(value: Record<string, unknown> = {}, provider?: Record<st
   fake.service = {
     tag: 'raw-subagents',
     getProvider: () => fake.provider(),
-    startActivation: (spec: SubagentActivationSpecView) => {
+    startActivation: async (spec: SubagentActivationSpecView) => {
       activations.push(spec)
-      fake.onActivation?.(spec)
-      return Promise.resolve({
+      await fake.onActivation?.(spec)
+      return {
         ...fake.value,
         ...(spec.childId !== undefined ? { childId: spec.childId } : {}),
-      })
+      }
     },
   }
   return fake
@@ -764,12 +770,30 @@ describe('subagent seam — behavioural (public call path)', () => {
     expect(atCall?.role).toBe('coder')
   })
 
-  it('contains a throwing spec spread: the caller’s own spec still reaches the native path', async () => {
+  it('contains a throwing spec spread: the caller’s own spec takes the native path, and the miss still reaches the notice row', async () => {
     ctx = new Context()
     const debug = vi.fn()
     const fake = fakeSubagents({ childId: 'child-spread-boom' }, LOCAL_PROVIDER)
     ctx.provide('subagents', fake.service)
-    const seam = installSubagentSeam(ctx, { roleIds: () => ROLE_IDS, debug })
+    // `roles` is the ONE extra input this path needs — the SAME live source
+    // `src/index.ts` wires. The runtime mints its OWN child id below, so no
+    // `agent/created` listener can report this child: the seam has to carry the
+    // verdict itself, or the notice reports a persona that never arrived.
+    const seam = installSubagentSeam(ctx, { roleIds: () => ROLE_IDS, roles: () => ROLES, debug })
+    // The persona listener is installed exactly as the production composition
+    // installs it. IF it could see this child it would register the section and
+    // leave the verdict absent, so the empty journal below is the control that
+    // it really missed.
+    const journal: Array<{ name: string; order: number; text: unknown }> = []
+    const childScope = ctx.isolate('systemPrompt')
+    childScope.provide('systemPrompt', {
+      getSectionOrder: () => 0,
+      section: (section: { name: string; order: number; text: unknown }) => {
+        journal.push(section)
+        return () => {}
+      },
+    })
+    installRolePersona(ctx, { records: seam.records, roles: () => ROLES, debug })
     // A LOCAL role dispatch whose spec cannot be copied: an UNRELATED enumerable
     // accessor throws while the wrapper builds the reserved spec. The seam never
     // consumes that field, so the native runtime would have accepted the object
@@ -782,9 +806,17 @@ describe('subagent seam — behavioural (public call path)', () => {
         throw new Error('spread boom')
       },
     })
+    // The child the runtime creates for the forwarded spec: its id is the one
+    // the fake reports back, and it is the id the record must land under.
+    const childAgent = makeAgent('child-spread-boom', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent' }).agent
+    Object.assign(childAgent, { ctx: childScope })
     let atCall: number | undefined
-    fake.onActivation = () => {
+    fake.onActivation = async () => {
       atCall = seam.records.size
+      // The rc.1 native local start AWAITS the created child's serial
+      // `agent/created` before the start resolves — i.e. before the wrapper can
+      // key any record off the resolved id, which is why the listener misses.
+      await ctx.serial('agent/created', { agent: childAgent, source: 'startup' })
     }
 
     const { value } = await injectSubagents(ctx)
@@ -801,6 +833,25 @@ describe('subagent seam — behavioural (public call path)', () => {
     // it created off the resolved activation.
     expect(result).toMatchObject({ childId: 'child-spread-boom' })
     expect(seam.records.get('child-spread-boom')?.role).toBe('coder')
+    // `agent/created` already ran, so the persona listener could neither deliver
+    // NOR report: the verdict must ride the record the notice reads instead.
+    expect(journal).toEqual([])
+    expect(seam.records.get('child-spread-boom')?.personaNotApplied).toBe(true)
+
+    // End to end: the child's own first step admits the row WITH the suffix.
+    // Pre-fix this reads `[role: coder]` — a persona the child never received.
+    const claimed = createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } })
+    const decision = await ctx.waterfall(
+      'agent/pre-step',
+      { agent: childAgent, messages: [claimed], turn: 1, step: 1, signal: new AbortController().signal },
+      () => Promise.resolve({ kind: 'enter' as const, messages: [claimed] }),
+    )
+    if (decision.kind !== 'enter') throw new Error(`expected an enter decision, got '${decision.kind}'`)
+    expect(decision.messages).toHaveLength(2)
+    expect(decision.messages[1]!.content[0]).toMatchObject({
+      type: 'text',
+      text: '[role: coder] (persona not applied)',
+    })
   })
 })
 

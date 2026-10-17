@@ -997,6 +997,11 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
     // Live binding read: the settings onChange below re-derives `roleIds` in
     // place, so the seam sees role edits without a re-install.
     roleIds: () => roleIds,
+    // The SAME live roles source `installRolePersona` below reads. Only a
+    // reservation failure consults it: the persona listener cannot see the
+    // child the runtime then mints, so the seam is what carries that child's
+    // persona verdict onto the record the notice row reads.
+    roles: () => source().roles.list,
     debug: (message) => logger.debug(message),
   })
   if (!subagentSeam.ownsWrapper) {

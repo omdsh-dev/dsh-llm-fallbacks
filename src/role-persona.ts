@@ -32,9 +32,10 @@
  * because a throwing serial `agent/created` listener fails agent creation):
  * only an agent whose id hits the shared record map is touched (a miss is a
  * silent no-op), the registry's exact same-name SCOPED section duplicate means
- * the descriptor channel already delivered the persona (logged skip), and every
- * other throw — including a failed fiber activation — is contained to ONE debug
- * line plus the record's sticky `personaNotApplied`.
+ * a persona section is already on that scope (one attribution-free debug line,
+ * no verdict — the registry cannot say who registered it), and every other
+ * throw — including a failed fiber activation — is contained to ONE debug line
+ * plus the record's sticky `personaNotApplied`.
  *
  * @module dsh-llm-fallbacks/role-persona
  */
@@ -198,8 +199,10 @@ export function installRolePersona(ctx: Context, options: RolePersonaOptions): R
           // a duplicate of any OTHER registry entry (context, variable, or the
           // unscoped global section, each with its own wording) and every other
           // registration failure still reach the contained verdict below. It
-          // cannot tell WHO registered the name, so any same-name section this
-          // scope already carries is skipped, whoever put it there.
+          // cannot tell WHO registered the name, so the debug line below states
+          // only what is known: a same-name section already exists in this
+          // scope, so THIS listener did not install the persona. Any same-name
+          // section the scope already carries is skipped, whoever put it there.
           // simplify: message-coupled — an upstream reword downgrades this skip
           // to a contained degrade (a false "persona not applied" for a persona
           // the descriptor did deliver). Upgrade path: a typed error/code from
@@ -209,7 +212,7 @@ export function installRolePersona(ctx: Context, options: RolePersonaOptions): R
             error.message === `prompt section "${PERSONA_PREFIX_SECTION}" is already registered in this scope`
           ) {
             debug(
-              `llm-fallbacks: role persona for agent "${agent.id}" already delivered by the descriptor channel on its own scope — keeping it: ${errorMessage(error)}`,
+              `llm-fallbacks: role persona for agent "${agent.id}" not installed — a section named "${PERSONA_PREFIX_SECTION}" already exists in its scope: ${errorMessage(error)}`,
             )
             return
           }
