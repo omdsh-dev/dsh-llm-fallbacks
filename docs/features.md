@@ -12,8 +12,18 @@ switches down its chain to the next available provider/model, and the failing
 request is retried on the target model so the current step/turn continues. The
 configuration is two blocks: `rootChain` for the root agent, and declared role
 entities (`roles.list`) referenced by `roles.rules` (or the built-in `inherit`)
-for subagents. Nothing is configured by default — content presence is the gate
-(see [No configuration, no behavior](#no-configuration-no-behavior)).
+for subagents.
+
+**Neither block is configured by default** — there is no `rootChain` and there
+are no `timeSlots` rows until you write them. The one thing `apply` declares on
+its own is the five bundled preset roles (`presets: 'bundled'`, the default —
+see [Preset roles](#preset-roles)): those rows seed a `persona` and nothing
+else, never a chain. With no root chain, no slot rows and no role chain matched,
+requests pass through unchanged and the `fallbacks/switch` path writes nothing
+(see [No configuration, no behavior](#no-configuration-no-behavior) and
+[docs/configuration.md](configuration.md#no-op-invariant)). A seeded role
+becomes routing-relevant only once a dispatch header, a rule or the LLM
+auto-match selects a role that does carry a chain.
 
 ### Fallback triggers (`triggerCodes`)
 
@@ -88,17 +98,31 @@ Row shape, save rules and the frozen-window table → [docs/configuration.md](co
 
 A subagent's role is declared in its dispatch prompt, not in configuration: the
 `**Execute as**: <id>` Assignment header is the role source (dsh role binding is
-prompt-only), and it is matched against the declared `roles.list` ids. A
-resolved role then owns the child — its `persona` is installed on the child, its
-chain head becomes the child's model (injected at the first request), and the
-child's own session shows one `[role: <id>]` notice row plus a role badge in the
-web session header. The same seam serves an ordinary subagent dispatch and an
-Agent Team teammate (`spawn_teammate`): both are children dispatched with the
-same Assignment header, so nothing Agent-Team-specific is required.
+prompt-only), and it is matched against the declared `roles.list` ids. Two
+mechanisms share that header, and they are not the same thing:
+
+- **Identity delivery** is header-only. That declared header, and nothing else,
+  makes the child a role child: the role's `persona` is installed on it, its own
+  session shows one `[role: <id>]` notice row, and the web session header shows
+  a role badge.
+- **Routing resolution** runs on the child's first request in the four ordered
+  stages below, where the same header is stage 2. A role resolved by any other
+  stage routes the child exactly as a declared one does, but delivers **no
+  persona, no notice row and no badge** — none of those carriers reports a role
+  inferred after the fact.
+
+Injection is conditional too: the resolved role's chain head replaces the
+child's model only when it is plugin-originated *and* the host lets it through —
+an authorized route is preserved and the allowlist bounds the head (see
+[Host subagent model selection policy](#host-subagent-model-selection-policy-dsh-012)).
+
+The same seam serves an ordinary subagent dispatch and an Agent Team teammate
+(`spawn_teammate`): both are children dispatched with the same Assignment
+header, so nothing Agent-Team-specific is required.
 
 ### Dispatch-time role resolution
 
-On a subagent's first request its role is resolved in three stages — explicit (`agentPreset` matches a declared role id) → deterministic rules (matching either the recorded pair or the served head — see [FallbacksChain in the model picker](#fallbackschain-in-the-model-picker)) → LLM auto-match from the declared role taxonomy (`fallbacks.roleAutoMatch`, default `true`). The resolved role's chain-head model is injected into the first request and recorded via an explicit `role → model` log line (no durable `fallbacks/switch` event is written — issue #52 stop-write); set `roleAutoMatch: false` to disable the LLM auto-match stage (the explicit `agentPreset` stage still applies — with no explicit role this reproduces the previous rules-only behavior). The settings card always renders an **Enable role auto-match** switch (default `true`) to toggle it — the schema default applies even to legacy configs that never declared the key.
+On a subagent's first request its role is resolved in **four ordered stages** (first hit wins) — explicit (`agentPreset` matches a declared role id) → **dispatch-declared role** (the role the dispatch seam resolved from the child's prompt header `**Execute as**: <id>` — a normally delegated Assignment or an Agent Team teammate's initial prompt — trimmed and looked up in the live declared-role set, so an absent header, the reserved `inherit` and a since-removed id all fall through silently) → deterministic rules (matching either the recorded pair or the served head — see [FallbacksChain in the model picker](#fallbackschain-in-the-model-picker)) → LLM auto-match from the declared role taxonomy (`fallbacks.roleAutoMatch`, default `true`). The resolved role's chain-head model is then injected into the first request — as far as the host policy lets it through: an explicit authorized route skips the inject, an injected head must be on the effective allowlist, and an empty intersection injects nothing (see [Host subagent model selection policy](#host-subagent-model-selection-policy-dsh-012)) — and recorded via an explicit `role → model` log line (no durable `fallbacks/switch` event is written — issue #52 stop-write); `inherit` never injects. Set `roleAutoMatch: false` to disable the LLM auto-match stage (the explicit `agentPreset` and dispatch-declared stages still resolve and inject under `false`; with neither declared this reproduces the previous rules-only behavior). The settings card always renders an **Enable role auto-match** switch (default `true`) to toggle it — the schema default applies even to legacy configs that never declared the key.
 
 ### Role persona on the child
 
@@ -114,13 +138,29 @@ When a subagent is **dispatched with a declared role** — the `**Execute as**: 
 
 ### Agent Team teammates
 
-Role declaration rides the **dispatch prompt**, and the model writes that
-prompt — including the `**Execute as**: <id>` header. The plugin resolves the
-header on the child, whoever created it: an ordinary dispatching agent or an
-Agent Team teammate spawned with the same header gets the same persona
-installation, the same routing-role resolution, the same `[role: <id>]` notice
-row and the same badge. No per-mechanism configuration exists, and the role
-still has to be declared in `roles.list` to resolve.
+With the experimental Agent Team bundle enabled, ordinary delegation is replaced
+by `spawn_teammate` / `send_message`, and role declaration rides the **dispatch
+prompt** — which the model writes, including the `**Execute as**: <id>` header,
+because the spawn request carries no role or persona field. `roster.spawn`
+creates the member through `ctx.subagents.startActivation`, the same seam the
+plugin already wraps, so the teammate flows through the resolution above
+unchanged: an ordinary dispatching agent and a teammate spawned with the same
+header get the same persona installation, the same routing-role resolution, the
+same `[role: <id>]` notice row and the same badge, and the role still has to be
+declared in `roles.list` to resolve. No per-mechanism configuration exists.
+
+- **The header is the only role carrier.** A teammate whose prompt omits it, or
+  names an id that is not currently declared, falls through to rules →
+  auto-match → `inherit`, exactly like a normally delegated child without one.
+- **Names stay arbitrary (but unique inside one Team).** Any number of
+  differently named teammates can carry the same role; there is **no
+  name→role mapping**.
+- **Non-local provider — two outcomes.** An external (acp) provider creates no
+  local agent: a normally delegated external child resolves its role but gets
+  **no persona, no notice row and no badge**, while a teammate cannot use one at
+  all — `roster.spawn` always reserves a child id and the runtime rejects a
+  reserved id for a non-local provider (`UNSUPPORTED_CAPABILITY`), so member
+  creation fails and no role is delivered.
 
 Full resolution/injection reference (stages, bounds, no-commit semantics) → [docs/configuration.md](configuration.md#dispatch-time-role-resolution-and-injection-roleautomatch).
 
@@ -149,7 +189,7 @@ dsh 0.1.2 adds host-side child-model selection for subagents: a `subagent-model-
 When the policy is **enabled**:
 
 - **Authorized head preserved (skip inject)**: a subagent spawned with an explicit `provider`+`model` (spawn options, durable `request/header`, or a `model/selection` selection) keeps that route as its chain head — role-inject is skipped and the authorized route is never overwritten at the first request; the plugin chain applies only from failure time onward. Pure inheritance (no explicit selection fields) is **not** an authorized route.
-- **Allowlist-constrained inject**: pure inheritance still resolves a role in the three stages above, but the injected chain head is plugin-originated and must be on the effective allowlist — the first resolved in-allowlist candidate wins. Empty intersection → inject is skipped and the host seed stands (warn log).
+- **Allowlist-constrained inject**: pure inheritance still resolves a role in the four stages above, but the injected chain head is plugin-originated and must be on the effective allowlist — the first resolved in-allowlist candidate wins. Empty intersection → inject is skipped and the host seed stands (warn log).
 - **Allowlist-constrained failure switching**: after a triggering failure, the resolved candidates (wildcards already expanded; cooldown / step-failed / same-as-current filters already applied) are intersected with the allowlist in walk order. Empty intersection → **no switch**, no out-of-allowlist request, a warn log plus an in-memory blocked-attempt record (no durable session write — issue #52 stands).
 - **Fail-closed**: a present-but-malformed policy event, or enabled settings with an unreadable route list, disables plugin-originated injects and switches for that session (warn log); the host seed and non-switch behavior are untouched.
 - **Card status area (read-only)**: the Fallbacks card Subagents section shows the effective allowlist, the effective chain head with its source (`authorized` / `injected`), and an empty-intersection warning when a switch was blocked — the same numbers the runtime uses, never a second write-face.

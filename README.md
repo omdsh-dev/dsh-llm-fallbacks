@@ -48,7 +48,9 @@ GLM Peak and GLM Valley are offered in the card picker only when `zai-coding-cn`
 
 ### Role-based subagents
 
-A subagent's role is declared in its dispatch prompt — the Assignment header `**Execute as**: <id>` — and a role you declared in `roles.list` then owns that child: its `persona` is installed on the child as a system-prompt section, the resolved role's chain head becomes the child's model (role-inject at the first request), the child's own session gets exactly one `[role: <id>]` notice row, and its session header shows a role badge.
+A subagent's role is declared in its dispatch prompt — the Assignment header `**Execute as**: <id>` — and it is resolved against the role ids declared in `roles.list`. Only that **declared header** delivers the child's identity: the role's `persona` is installed on the child as a system-prompt section, the child's own session gets exactly one `[role: <id>]` notice row, and its session header shows a role badge.
+
+Role **routing** is resolved separately, in four ordered stages, first hit winning — explicit `agentPreset` → **dispatch-declared** `**Execute as**: <id>` header → rules → LLM auto-match. A child routed as a role by any other stage is routed as that role, but gets **no persona, no notice row and no badge**. Making the resolved role's chain head the child's model is plugin-originated and conditional: with the host `subagent-model-selection` policy enabled, an explicit authorized route is preserved (inject skipped) and an injected head must be inside the effective allowlist — an empty intersection injects nothing ([host policy](docs/features.md#host-subagent-model-selection-policy-dsh-012)).
 
 This covers an **ordinary subagent dispatch and an Agent Team teammate** (`spawn_teammate`) alike: both are children dispatched with the same header, which the model writes — the same dispatch seam, no mechanism-specific configuration.
 
@@ -117,7 +119,7 @@ Save the config and restart the session, then type `/fallbacks` — the read-onl
 - **Automatic failover** for root and subagents — any agent walks its chain on a listed failure code and the step continues. → [details](docs/features.md#automatic-model-failover)
 - **Context-window-aware fallback** — `CONTEXT_WINDOW_EXCEEDED` fails over to a larger-context candidate; the switch is request-scoped (no cooldown). → [details](docs/features.md#context-window-aware-fallback)
 - **Peak/valley time slots** — four frozen UTC+8 presets or custom windows rotate the effective root chain. → [details](docs/features.md#time-slots)
-- **Role-based subagents** — a declared role brings persona, chain head, notice row and badge to the child. → [details](docs/features.md#role-based-subagents)
+- **Role-based subagents** — a dispatch-declared role brings persona, notice row and badge to the child; its chain head is injected subject to host policy. → [details](docs/features.md#role-based-subagents)
 - **FallbacksChain in the picker** — select `FallbacksChain / Auto` to make the chain the root primary; any real model stays fallback-only. → [details](docs/features.md#fallbackschain-in-the-model-picker)
 - **Host subagent model policy** — the dsh 0.1.2 allowlist is a hard constraint on every plugin-originated subagent route. → [details](docs/features.md#host-subagent-model-selection-policy-dsh-012)
 - **Five bundled preset roles** — `reviewer` / `scout` / `security-reviewer` / `sonic` / `task`, declared on apply. → [details](docs/features.md#preset-roles)

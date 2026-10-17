@@ -48,7 +48,9 @@ GLM Peak / GLM Valley 仅在配置了 `zai-coding-cn` 时才会出现在卡片�
 
 ### 角色化 subagent
 
-subagent 的角色由分发提示词声明——Assignment 头部字段 `**Execute as**: <id>`；在 `roles.list` 中声明过的角色随即接管该子代理：`persona` 以 system-prompt 分区安装到子代理，解析到的角色链头成为其模型（首个请求执行 role-inject），子会话恰好写入一行 `[role: <id>]` 通知行，会话头部显示角色徽章。
+subagent 的角色由分发提示词声明——Assignment 头部字段 `**Execute as**: <id>`；它与 `roles.list` 中已声明的角色 id 匹配。只有这个**已声明头部**才投递子代理的身份：`persona` 以 system-prompt 分区安装到子代理，子会话恰好写入一行 `[role: <id>]` 通知行，会话头部显示角色徽章。
+
+角色**路由**是另一套解析，按四个有序阶段、先命中者生效——显式 `agentPreset` → **派发声明** `**Execute as**: <id>` 头部 → 规则 → LLM 自动匹配。由其他阶段解析出角色的子代理一样按该角色路由，但**不会**获得 persona、通知行与徽章。把解析到的角色链头作为子代理模型由插件发起、且带条件：宿主 `subagent-model-selection` 策略启用时，显式授权路由会被保留（跳过注入），注入的链头必须落在生效 allowlist 内——交集为空则不注入任何内容（[宿主策略](docs/features.md#host-subagent-model-selection-policy-dsh-012)）。
 
 这一套同时覆盖**普通 subagent 分发与 Agent Team 队友**（`spawn_teammate`）：两者都是带着同一头部（由模型写入）经同一分发 seam 创建的子代理，不需要任何按机制区分的配置。
 
@@ -117,7 +119,7 @@ fallbacks:
 - **自动降级**（root 与 subagent 通用）——命中触发码的 agent 沿链切换，step 继续运行。 → [详情](docs/features.md#automatic-model-failover)
 - **上下文窗口感知降级**——`CONTEXT_WINDOW_EXCEEDED` 会切到窗口更大的候选；该切换是请求级的（不消耗冷却）。 → [详情](docs/features.md#context-window-aware-fallback)
 - **峰谷无忧（分时槽）**——四个冻结的 UTC+8 预设或自定义窗口轮换生效 root 链。 → [详情](docs/features.md#time-slots)
-- **角色化 subagent**——已声明角色为子代理带来 persona、链头模型、通知行与徽章。 → [详情](docs/features.md#role-based-subagents)
+- **角色化 subagent**——派发声明的角色为子代理带来 persona、通知行与徽章；链头注入受宿主策略约束。 → [详情](docs/features.md#role-based-subagents)
 - **模型选择器中的 FallbacksChain**——选择 `FallbacksChain / Auto` 即把配置链作为 root 主模型；选择真实模型仍是仅降级。 → [详情](docs/features.md#fallbackschain-in-the-model-picker)
 - **宿主子代理模型策略**——dsh 0.1.2 的 allowlist 是插件发起的所有 subagent 路由的硬约束。 → [详情](docs/features.md#host-subagent-model-selection-policy-dsh-012)
 - **五个内置预设角色**——`reviewer` / `scout` / `security-reviewer` / `sonic` / `task`，随 apply 自动声明。 → [详情](docs/features.md#preset-roles)
