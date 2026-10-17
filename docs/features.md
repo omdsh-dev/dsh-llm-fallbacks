@@ -106,10 +106,13 @@ mechanisms share that header, and they are not the same thing:
   session shows one `[role: <id>]` notice row, and the web session header shows
   a role badge.
 - **Routing resolution** runs on the child's first request in the four ordered
-  stages below, where the same header is stage 2. A role resolved by any other
-  stage routes the child exactly as a declared one does, but delivers **no
-  persona, no notice row and no badge** — none of those carriers reports a role
-  inferred after the fact.
+  stages below, where the same header is stage 2. Routing and identity are
+  independent: a child that declares `**Execute as**: <id>` keeps that role's
+  delivered persona, notice row and badge **regardless of which routing stage
+  wins** — an earlier explicit `agentPreset` can route it as another role while
+  the carriers remain the declared role's. A child with **no declared dispatch
+  header** gets none of the three, even when a rule or auto-match resolves a
+  role for routing; no carrier reports a role inferred after the fact.
 
 Injection is conditional too: the resolved role's chain head replaces the
 child's model only when it is plugin-originated *and* the host lets it through —

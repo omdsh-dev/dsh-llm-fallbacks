@@ -50,7 +50,7 @@ GLM Peak / GLM Valley 仅在配置了 `zai-coding-cn` 时才会出现在卡片�
 
 subagent 的角色由分发提示词声明——Assignment 头部字段 `**Execute as**: <id>`；它与 `roles.list` 中已声明的角色 id 匹配。只有这个**已声明头部**才投递子代理的身份：`persona` 以 system-prompt 分区安装到子代理，子会话恰好写入一行 `[role: <id>]` 通知行，会话头部显示角色徽章。
 
-角色**路由**是另一套解析，按四个有序阶段、先命中者生效——显式 `agentPreset` → **派发声明** `**Execute as**: <id>` 头部 → 规则 → LLM 自动匹配。由其他阶段解析出角色的子代理一样按该角色路由，但**不会**获得 persona、通知行与徽章。把解析到的角色链头作为子代理模型由插件发起、且带条件：宿主 `subagent-model-selection` 策略启用时，显式授权路由会被保留（跳过注入），注入的链头必须落在生效 allowlist 内——交集为空则不注入任何内容（[宿主策略](docs/features.md#host-subagent-model-selection-policy-dsh-012)）。
+角色**路由**是另一套解析，按四个有序阶段、先命中者生效——显式 `agentPreset` → **派发声明** `**Execute as**: <id>` 头部 → 规则 → LLM 自动匹配。只要子代理的分发提示词声明了 `**Execute as**: <id>`，该角色的 persona、`[role: <id>]` 通知行与徽章就会投递，**无论哪个路由阶段胜出**——更早的显式 `agentPreset` 可以把子代理路由成另一个角色，而身份载体仍属已声明头部。完全没有声明分发头部的子代理不会获得 persona、通知行与徽章，即使规则或自动匹配为路由解析出了角色。把解析到的角色链头作为子代理模型由插件发起、且带条件：宿主 `subagent-model-selection` 策略启用时，显式授权路由会被保留（跳过注入），注入的链头必须落在生效 allowlist 内——交集为空则不注入任何内容（[宿主策略](docs/features.md#host-subagent-model-selection-policy-dsh-012)）。
 
 这一套同时覆盖**普通 subagent 分发与 Agent Team 队友**（`spawn_teammate`）：两者都是带着同一头部（由模型写入）经同一分发 seam 创建的子代理，不需要任何按机制区分的配置。
 
