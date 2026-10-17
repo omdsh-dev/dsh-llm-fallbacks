@@ -7,7 +7,7 @@
  *    id → that role's DECLARED RAW id (via the `roleIds` trimmed-id map, the
  *    same canonicalization the rules path uses); the reserved `'inherit'`
  *    and undeclared presets are NEVER dispatchable explicit roles and fall
- *    through to rules;
+ *    through to the next stage;
  * 2. dispatch — `opts.dispatchRole`: the role the dispatch seam resolved from
  *    the Assignment/teammate prompt (`**Execute as**: <id>`, the single
  *    parser in `src/subagents-seam.ts`), canonicalized by the same trim +

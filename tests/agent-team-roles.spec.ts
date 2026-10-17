@@ -18,18 +18,22 @@
  *     signal,
  *   })
  *
- * Every case below drives exactly that call through the real `apply()`
- * composition and asserts the three effects a teammate's declared role must
+ * Every case below drives an activation through the real `apply()`
+ * composition and asserts what a teammate's declared role must (or must not)
  * produce: (a) the per-child seam record, (b) the child's scoped persona
- * section, (c) the role's chain head on the child's FIRST `agent/request`.
+ * section, (c) the role's chain head on the child's FIRST `agent/request`. The
+ * two non-local cases assert the documented external outcomes instead — the
+ * record keyed from the resolved id, or a refusal with no delivery at all.
  *
  * The fake runtime mirrors the rc.1 local/external split the seam routes on:
  * `spawn` exposes `prepareContinuable` (a LOCAL backend — the caller-reserved
  * `childId` IS the child's id, and the child's serial `agent/created` fires
- * INSIDE the native call), every other provider is external and allocates its
- * own child id. Each provisioned child carries an ISOLATED `systemPrompt`
- * double, so a section recorded there is evidence the persona went through THAT
- * child's own `agent.ctx` scope.
+ * INSIDE the native call); every other provider is external, so it REJECTS a
+ * caller-reserved `childId` with `UNSUPPORTED_CAPABILITY` (and the roster
+ * always reserves one, so a non-local teammate is refused upstream) and
+ * otherwise allocates its own child id. Each provisioned child carries an
+ * ISOLATED `systemPrompt` double, so a section recorded there is evidence the
+ * persona went through THAT child's own `agent.ctx` scope.
  */
 
 import { randomUUID } from 'node:crypto'
@@ -84,16 +88,22 @@ interface RosterActivation extends SubagentActivationSpecView {
   readonly signal: AbortSignal
 }
 
-/** One activation exactly as `roster.spawn` hands it to the seam. */
+/**
+ * One activation as `roster.spawn` hands it to the seam. `childId` is optional
+ * on purpose: the roster always reserves one, and the generic external case
+ * below is the caller that reserves none.
+ */
 function rosterActivation(
-  childId: string,
+  childId: string | undefined,
   prompt: string,
   description = 'teammate',
   provider = 'spawn',
 ): RosterActivation {
   return {
     delivery: 'parent',
-    childId,
+    // Spread only when reserved — a present-but-undefined `childId` would be a
+    // different spec shape than the caller's real one.
+    ...(childId === undefined ? {} : { childId }),
     provider,
     label: description,
     request: {
@@ -131,8 +141,9 @@ interface FakeSubagents {
 
 /**
  * The fake rc.1 `subagents` runtime, driven the way `roster.spawn` drives it.
- * `spawn` is the local backend; any other provider is external and resolves
- * with ITS OWN child id.
+ * `spawn` is the local backend; any other provider is external — it refuses a
+ * caller-reserved `childId` the way rc.1 does (`UNSUPPORTED_CAPABILITY`) and
+ * otherwise resolves with ITS OWN child id.
  */
 function fakeSubagents(ctx: Context): FakeSubagents {
   const activations: SubagentActivationSpecView[] = []
@@ -144,7 +155,14 @@ function fakeSubagents(ctx: Context): FakeSubagents {
     getProvider,
     startActivation: async (spec: SubagentActivationSpecView) => {
       activations.push(spec)
-      if (getProvider(spec.provider) === undefined) return { childId: EXTERNAL_CHILD_ID }
+      if (getProvider(spec.provider) === undefined) {
+        if (spec.childId !== undefined) {
+          throw Object.assign(new Error('reserved child ids require a local backend'), {
+            code: 'UNSUPPORTED_CAPABILITY',
+          })
+        }
+        return { childId: EXTERNAL_CHILD_ID }
+      }
       const childId = spec.childId ?? ''
       // The runtime's child stand-in: `Agent.id` IS the child session id here,
       // and its `ctx` carries an isolated `systemPrompt` double so a recorded
@@ -342,26 +360,48 @@ describe('Agent Team teammate role delivery (roster-shaped activation)', () => {
     expect(await firstRequest(childId)).toEqual({ provider: 'mock', model: 'gpt-4o' })
   })
 
-  it('keys a non-local teammate record off the resolved id, with no persona delivery', async () => {
+  it('keys a generic external child record off the id the backend resolved', async () => {
     const { fake, activate } = await mount()
 
-    const childId = randomUUID()
-    // The external shape: the same roster activation against a backend whose
-    // provider exposes no `prepareContinuable`, so it allocates its own child
-    // id (the reserved one would be rejected with UNSUPPORTED_CAPABILITY).
-    const spec = rosterActivation(childId, teammatePrompt('coder'), 'external teammate', 'acp')
+    // The seam's generic external shape: a caller that reserves NO `childId`.
+    // This is the shape an external backend accepts.
+    const spec = rosterActivation(undefined, teammatePrompt('coder'), 'external teammate', 'acp')
     await expect(activate(spec)).resolves.toMatchObject({ childId: EXTERNAL_CHILD_ID })
     expect(fake.activations[0]).toBe(spec)
 
     // The role IS recorded — keyed from the id the ACTIVATION resolved, never
-    // from the one its caller reserved.
+    // from an id its caller never reserved.
     expect(records().get(EXTERNAL_CHILD_ID)?.role).toBe('coder')
-    expect(records().has(childId)).toBe(false)
     expect(records().size).toBe(1)
     // No local agent was created, so no persona section was ever attempted…
     expect(fake.children).toEqual([])
     // …and that is the documented outcome, not a failure: no persona verdict is
     // invented for a child this host cannot reach.
     expect(records().get(EXTERNAL_CHILD_ID)?.personaNotApplied).toBeUndefined()
+  })
+
+  it('refuses a roster-shaped teammate on a non-local provider, delivering no role', async () => {
+    const { fake, activate } = await mount()
+
+    const childId = randomUUID()
+    // The REAL roster shape — `roster.spawn` always reserves a `childId` —
+    // against a provider whose backend is not local. rc.1 rejects the reserved
+    // id, so member creation fails and no role can be delivered.
+    const spec = rosterActivation(childId, teammatePrompt('coder'), 'external teammate', 'acp')
+    await expect(activate(spec)).rejects.toMatchObject({
+      code: 'UNSUPPORTED_CAPABILITY',
+      message: 'reserved child ids require a local backend',
+    })
+    // The seam forwarded the caller's OWN spec object — an external backend
+    // cannot take a reserved id, so there is nothing to copy it for.
+    expect(fake.activations[0]).toBe(spec)
+
+    // No delivery was invented for a member that was never created: neither the
+    // reserved id nor the external one carries a record, and no local agent
+    // exists to have got a persona.
+    expect(records().has(childId)).toBe(false)
+    expect(records().has(EXTERNAL_CHILD_ID)).toBe(false)
+    expect(records().size).toBe(0)
+    expect(fake.children).toEqual([])
   })
 })
