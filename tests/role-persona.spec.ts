@@ -37,6 +37,11 @@ const ROLES: FallbacksRole[] = [
   { id: 'reviewer', persona: '   ' },
 ]
 
+/** The same taxonomy after a reload changed `coder`'s persona text. */
+const ROLES_RELOADED: FallbacksRole[] = ROLES.map((role) =>
+  role.id === 'coder' ? { ...role, persona: 'Coder persona v2' } : role,
+)
+
 /**
  * The registry's placement names the listener resolves, at their real values
  * (`@deepseek-ai/dsh-system-prompt` `SECTION_ORDERS.DEPLOYMENT_PERSONA_PREFIX`
@@ -341,5 +346,69 @@ describe('role persona — real cordis + real dsh-system-prompt', () => {
     await settle()
 
     expect(await assembledPersona(scopeKey)).toBe(DEPLOYMENT_PERSONA)
+  })
+
+  it("releases only its own claims: one installer's teardown leaves the owner's section and claim intact", async () => {
+    ctx = new Context()
+    const { agent, scopeKey } = await realChild('child-sibling', 'coder')
+    const records = new Map([['child-sibling', seamRecord('coder')]])
+    const debug = vi.fn()
+    const owner = installRolePersona(ctx, { records, roles: () => ROLES, debug })
+    // A second fiber of the SAME root: it never registers this child (the claim
+    // is ROOT-shared), so ITS teardown must release nothing of the owner's.
+    const sibling = installRolePersona(ctx.extend(), { records, roles: () => ROLES })
+
+    await ctx.serial('agent/created', { agent, source: 'startup' })
+    expect(await assembledPersona(scopeKey)).toBe('Coder persona')
+
+    sibling.dispose()
+    await settle()
+    // The sibling owned no fiber for this child: its teardown must not withdraw
+    // the owner's section.
+    expect(await assembledPersona(scopeKey)).toBe('Coder persona')
+
+    // Cross-fiber dedupe survives the sibling's teardown: the repeated
+    // notification is answered by the owner's claim, so no second registration
+    // is even attempted. (A dropped claim would re-inject, hit the registry's
+    // duplicate, and leave the owner holding an empty fiber.)
+    await ctx.serial('agent/created', { agent, source: 'startup' })
+    expect(await assembledPersona(scopeKey)).toBe('Coder persona')
+    expect(debug).not.toHaveBeenCalled()
+
+    // The owner still tears down cleanly: ITS teardown withdraws the section.
+    owner.dispose()
+    await settle()
+    expect(await assembledPersona(scopeKey)).toBe(DEPLOYMENT_PERSONA)
+  })
+
+  it('a repeated notification does not orphan the owning fiber: a reload assembles the CHANGED persona', async () => {
+    ctx = new Context()
+    const { agent, scopeKey } = await realChild('child-repeat', 'coder')
+    const records = new Map([['child-repeat', seamRecord('coder')]])
+    const owner = installRolePersona(ctx, { records, roles: () => ROLES })
+    const sibling = installRolePersona(ctx.extend(), { records, roles: () => ROLES })
+
+    await ctx.serial('agent/created', { agent, source: 'startup' })
+    expect(await assembledPersona(scopeKey)).toBe('Coder persona')
+
+    // The sibling owns no fiber for this child, so its teardown must not drop
+    // the owner's claim...
+    sibling.dispose()
+    await settle()
+    // ...which makes the repeated notification a no-op instead of a
+    // re-injection whose duplicate reply would replace the handle that owns the
+    // live section.
+    await ctx.serial('agent/created', { agent, source: 'startup' })
+    expect(await assembledPersona(scopeKey)).toBe('Coder persona')
+
+    owner.dispose()
+    await settle()
+
+    // The reload declares CHANGED persona text: the new text is observable only
+    // if the owner's teardown really withdrew the first section — a section that
+    // outlived its handle would survive and be kept as descriptor-delivered.
+    installRolePersona(ctx.extend(), { records, roles: () => ROLES_RELOADED })
+    await ctx.serial('agent/created', { agent, source: 'startup' })
+    expect(await assembledPersona(scopeKey)).toBe('Coder persona v2')
   })
 })

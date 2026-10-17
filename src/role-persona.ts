@@ -21,8 +21,12 @@
  * keeps the ` (persona not applied)` suffix truthful.
  *
  * Ownership: the injected fiber belongs to the CHILD's scope, so it does not
- * die with this listener's fiber — this module holds it per agent and releases
- * it on `agent/disposed`, on plugin-fiber teardown, and on explicit `dispose()`.
+ * die with this listener's fiber — each listener holds ITS OWN fibers per agent
+ * and releases them on `agent/disposed`, on plugin-fiber teardown, and on
+ * explicit `dispose()`. The root-shared claim that dedupes sibling listeners
+ * records which listener owns it, so one installer's teardown never releases
+ * another's fibers or claims, and a repeated notification never replaces the
+ * handle to the fiber that holds the live registration.
  *
  * Containment (the seam's degrade-never-crash invariant, and required here
  * because a throwing serial `agent/created` listener fails agent creation):
@@ -66,20 +70,22 @@ function errorMessage(error: unknown): string {
 }
 
 /**
- * Context ROOTS that already carry this module's persona-listener state. The
+ * Context ROOTS that already carry this module's persona-listener claims. The
  * `agent/created` listener is registered per APPLIED FIBER (like the notice
- * emitter), so the marker must be ROOT-shared: a per-fiber copy would let the
- * second fiber of one root register the section a second time. Weak, so the
- * state dies with the root; keyed by root, so two hosts in one process (and
- * two test roots) never share claims.
+ * emitter), so the claim must be ROOT-shared: a per-fiber copy would let the
+ * second fiber of one root register the section a second time. The value is the
+ * LISTENER that owns the registration, so an installer's teardown releases
+ * exactly its own claims and never a sibling's live one. Weak, so the state
+ * dies with the root; keyed by root, so two hosts in one process (and two test
+ * roots) never share claims.
  */
-const rolePersonaStates = new WeakMap<Context, Set<string>>()
+const rolePersonaStates = new WeakMap<Context, Map<string, object>>()
 
-/** The root's shared marker set, created when the root has none yet. */
-function rolePersonaStateFor(root: Context): Set<string> {
+/** The root's shared claim map, created when the root has none yet. */
+function rolePersonaStateFor(root: Context): Map<string, object> {
   const existing = rolePersonaStates.get(root)
   if (existing !== undefined) return existing
-  const created = new Set<string>()
+  const created = new Map<string, object>()
   rolePersonaStates.set(root, created)
   return created
 }
@@ -90,12 +96,17 @@ function rolePersonaStateFor(root: Context): Set<string> {
  * agent whose id hits the shared record map, plus a `agents.list()` backfill
  * for children that already exist at install time.
  *
- * Returns the installed listener (its `dispose` withdraws this fiber's
+ * Returns the installed listener (its `dispose` withdraws this listener's OWN
  * registrations; a fiber teardown stops it as well).
  */
 export function installRolePersona(ctx: Context, options: RolePersonaOptions): RolePersona {
   const root = ctx.root
   const registered = rolePersonaStateFor(root)
+  /**
+   * This listener's identity in `registered`: it owns every claim it makes, and
+   * is therefore the only listener that may release them.
+   */
+  const owner: object = {}
   /** This listener's OWN injected section fibers, by agent id. */
   const fibers = new Map<string, Fiber>()
   const debug = (message: string): void => {
@@ -141,9 +152,11 @@ export function installRolePersona(ctx: Context, options: RolePersonaOptions): R
     // never saw): nothing to deliver, nothing to report.
     const record = options.records.get(agent.id)
     if (record === undefined) return
-    // This root already attempted the child (a sibling fiber's listener, or a
-    // repeated `agent/disposed`-less notification): the section is registered
-    // once per child id.
+    // The section is registered once per child id on this root, by exactly one
+    // listener: a sibling fiber's listener owns it, or THIS listener already
+    // does (a repeated notification). Re-injecting would only hit the registry's
+    // duplicate and replace the handle to the fiber that owns the live
+    // registration, so a repeat is answered without injecting at all.
     if (registered.has(agent.id)) return
     let persona: string | undefined
     try {
@@ -161,7 +174,8 @@ export function installRolePersona(ctx: Context, options: RolePersonaOptions): R
     const text = persona
     // Claim BEFORE the fiber applies: a sibling fiber's listener must not
     // register the same name on the same scope while this one is in flight.
-    registered.add(agent.id)
+    // The claim records THIS listener as its owner.
+    registered.set(agent.id, owner)
     try {
       const fiber = agent.ctx.inject(['systemPrompt'], (scope) => {
         try {
@@ -227,7 +241,9 @@ export function installRolePersona(ctx: Context, options: RolePersonaOptions): R
   }))
   disposers.push(ctx.on('agent/disposed', ({ agent }) => {
     // The child is gone: withdraw the section this listener installed for it,
-    // then free its id for a re-created agent.
+    // then free its id — whoever holds the claim, since a disposed child's scope
+    // takes the section down with it — so a re-created agent is delivered to
+    // again.
     release(agent.id)
     registered.delete(agent.id)
   }))
@@ -245,13 +261,14 @@ export function installRolePersona(ctx: Context, options: RolePersonaOptions): R
 
   const dispose = (): void => {
     for (const off of disposers.splice(0)) off()
-    // Withdraw every section this listener installed, then drop the root's
-    // claims so a reloaded fiber can attempt the children again. A sibling
-    // fiber's surviving section is deliberately not withdrawn here — it is not
-    // ours — and a re-registration against it is the descriptor-delivered
-    // duplicate skipped above.
+    // Withdraw every section this listener installed, then release exactly THIS
+    // listener's claims so a reloaded fiber can attempt the children again. A
+    // sibling fiber's surviving claim backs its own section — it is not ours to
+    // release, and dropping it would make that section look unclaimed to the
+    // next listener (which would re-inject, hit the duplicate, and lose the
+    // handle to the fiber that owns the registration).
     for (const id of [...fibers.keys()]) release(id)
-    registered.clear()
+    for (const [id, holder] of [...registered]) if (holder === owner) registered.delete(id)
   }
   // The injected fibers belong to the CHILD scopes, so they outlive THIS fiber:
   // a plugin unload/reload must run the same teardown (the peer
