@@ -1,13 +1,14 @@
 /**
  * Dispatch-seam role resolution + per-child record (plan
- * role-based-subagent-adoption Task 1).
+ * role-based-subagent-adoption Task 1; rc.1 `startActivation` migration, plan
+ * dsh-021-subagent-seam-repair Task 2).
  *
  * The seam is the documented cordis service-read waterfall
  * (`Events['internal/get']`, `@deepseek-ai/cordis`
  * `lib/types/events.d.ts`): a listener wraps the `subagents` service VALUE on
- * read and returns a prototype-delegating wrapper whose `start` /
- * `startContinuable` resolve the dispatch role from the incoming request
- * BEFORE delegating. The real service object is never mutated; readers of the
+ * read and returns a prototype-delegating wrapper whose `startActivation`
+ * resolves the dispatch role from the incoming activation spec BEFORE
+ * delegating. The real service object is never mutated; readers of the
  * `subagents` service transparently receive the wrapper.
  *
  * Role source (plan Global Constraints): the child request's prompt carries
@@ -29,34 +30,32 @@
  * ambiguity rule stands unchanged: the DISTINCT DECLARED ids must collapse to
  * exactly one, else the dispatch is a no-op — never a first-occurrence pick.
  *
- * Per-child record: the wrapped start's RESULT carries the child session id —
- * `start` resolves to a `SubagentRun` (`id` IS the published child session id
- * for a local run) and `startContinuable` to a `ContinuableStart` (`childId`).
- * The record `{ role, at, firstNoticePending }` is keyed by that id (Task 3
- * reads it to emit the one role notice row). A result carrying only a
- * `jobId` — a registry job id, NOT a session id — is never keyed: the child is
- * correlated instead through the parent-owned `subagent/catalog` session event
- * `{ childId, label }` joined on the delegating parent + request label.
+ * Per-child record + the timing rule (rc.1 `startActivation`): the record
+ * `{ role, at, firstNoticePending }` is keyed by the child id (Task 3 reads it
+ * to emit the one role notice row). The child is created INSIDE the native
+ * call — `manager.startLocal` mints/uses `spec.childId` and only then resolves
+ * the activation — so `agent/created` fires BEFORE any `.then` on this side
+ * could key a record off the resolved `SubagentActivation.childId`. The
+ * wrapper therefore reserves the child id itself for a LOCAL backend (the
+ * provider exposes `prepareContinuable`; a reserved id on any other backend is
+ * rejected with `UNSUPPORTED_CAPABILITY`) and writes the record SYNCHRONOUSLY
+ * before delegating, deleting it when the native call fails. An EXTERNAL
+ * backend allocates its own child id, receives the caller's OWN spec object
+ * untouched, and has its record keyed off the resolved activation's `childId`.
  *
- * Persona delivery (plan Task 2): the SAME single resolution point merges the
- * declared role's `roles.list[].persona` (trimmed, non-empty) into the
- * request's NATIVE `persona` slot — the slot the runtime composes as the
- * scoped `deployment:persona-prefix` system-prompt section on the child. The
- * source is the RESOLVED ROLE only, so delivery is chain-independent: a
- * `chain: []` role gets its persona exactly like a chained one (no routing
- * state is read). Both native start surfaces are covered, with the gate each
- * one's fail-loud contract needs (measured on the installed
- * `@deepseek-ai/dsh-subagent`): the one-shot `start` REJECTS a
- * request carrying `persona` for a provider whose
- * `getProvider(name).capabilities.persona` is not `true` (`lib/index.js:3284,3340-3363`,
- * `assertCapabilities`), so the merge pre-checks that flag; the continuable
- * surface is composed by the continuation manager, which applies
- * `request.persona` unconditionally (`lib/index.js:1691`) and is gated by
- * the provider's `prepareContinuable` presence instead (`lib/index.js:3316-3319`).
- * A gate miss skips the persona with ONE contained debug log — never a failed
- * start. An explicit caller `persona` WINS (the slot is filled only when it is
- * absent), and every skip path returns the caller's OWN request object, so the
- * native call stays byte-identical.
+ * A result carrying no child id — a `jobId` is a registry id, NOT a session id
+ * — is never keyed: the child is correlated instead through the parent-owned
+ * `subagent/catalog` session event `{ childId, label }` joined on the
+ * delegating parent + the activation `label` (the same string the cataloged
+ * child membership carries).
+ *
+ * Persona delivery is NO LONGER this module's job (plan Task 1): rc.1 removed
+ * `SubagentStartRequest.persona`, so the resolved role's persona is registered
+ * as a scoped `deployment:persona-prefix` section on the CHILD's own context
+ * by `./role-persona.ts`, over the SAME ROOT-shared record map this module
+ * writes. That listener owns the `personaNotApplied` verdict the notice row
+ * reads; this module writes no request field, reads no provider persona
+ * capability, and injects no agent preset.
  *
  * In-session notice row (plan Task 3): the SAME install point registers the
  * `agent/pre-step` emitter (`./role-notice.ts`) over the record map it owns, so
@@ -86,6 +85,7 @@
  * @module dsh-llm-fallbacks/subagents-seam
  */
 
+import { randomUUID } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import { INHERIT_ROLE_ID, type FallbacksRole } from './config.ts'
 import { installRoleNotice } from './role-notice.ts'
@@ -138,14 +138,14 @@ export interface SubagentSeamRecord {
    * The DECLARED RAW role id resolved at the dispatch seam.
    *
    * Authoritative-role precedence (CF-10, documented rather than resolved by
-   * re-branding): a `startContinuable` resume re-keys the child and may resolve
-   * a DIFFERENT declared role, and this field is then rewritten while the
+   * re-branding): a resume that reuses a reserved `childId` may resolve a
+   * DIFFERENT declared role, and this field is then rewritten while the
    * durable notice row the child's session already carries keeps the FIRST role.
    * The projection deliberately reads the notice row, so the durable role is the
    * child's announced identity and this record is only the LIVE dispatch hint
-   * (what the next start / the resume fallback would use). The two can therefore
-   * disagree after a re-dispatch until the child is disposed; no consumer may
-   * treat the record as the durable role.
+   * (what the next activation / the resume fallback would use). The two can
+   * therefore disagree after a re-dispatch until the child is disposed; no
+   * consumer may treat the record as the durable role.
    */
   role: string
   /** When the record was written (epoch ms). */
@@ -161,20 +161,20 @@ export interface SubagentSeamRecord {
   firstNoticePending: boolean
   /**
    * `true` when the role DECLARES a persona and that persona was NOT delivered
-   * (Task 2's capability gate declined it, or no provider was registered to
-   * carry it). Absent when there was nothing to report: the persona was
-   * delivered, the caller set one (explicit intent wins), the role declares
-   * none, or no persona source is wired. Task 3 appends
+   * onto the child. Written by the `agent/created` role-persona listener
+   * (`./role-persona.ts`) over this same map — the seam itself never touches a
+   * persona. Absent when there was nothing to report: the section was
+   * registered, the descriptor channel already delivered it, the listener never
+   * saw the child (an EXTERNAL backend creates no local agent), the role
+   * declares none, or no persona source is wired. Task 3 appends
    * ` (persona not applied)` on `true` only.
    *
-   * STICKY (Task 3 review Minor 4): a record rewrite (a `startContinuable`
-   * resume re-keys the child) can only ADD this verdict, never clear it. A
-   * resume recomputes the merge outcome on its own surface — and that surface
-   * legitimately returns `false` when it delivers the CALLER's persona or when
-   * its own merge degrades — but neither retroactively installs the role's
-   * DECLARED persona on the dispatch that already reported it missing. The
-   * child's one notice row is a claim about that dispatch, so the first `true`
-   * survives; a later `false` is simply not recorded.
+   * STICKY (Task 3 review Minor 4): a record rewrite — a resume reusing the
+   * reserved `childId`, or the resolved activation re-keying the same child
+   * after `agent/created` already ran — can only ADD this verdict, never clear
+   * it. A rewrite carries no verdict of its own, and the child's one notice row
+   * is a claim about the dispatch that already reported it missing, so the first
+   * `true` survives.
    */
   personaNotApplied?: boolean
 }
@@ -186,26 +186,26 @@ export interface SubagentPromptBlockView {
 }
 
 /**
- * Structural view of the one-shot start request (consumed fields only): the
- * `prompt` is the role-extraction source, `label` + `parent` are the
- * catalog-correlation join key, and `persona` is the NATIVE per-child persona
- * slot the role persona is merged into (plan Global Constraints: an explicit
- * caller value wins). The wrapper forwards the request object itself, so every
- * other field reaches the service unchanged.
+ * Structural view of the activation request (consumed fields only): `prompt` is
+ * the role-extraction source and `parent` is the catalog-correlation join half.
+ * The wrapper forwards the request OBJECT itself, so every other field (cwd,
+ * agentOptions, outputSchema, maxDepth, the signal) reaches the service
+ * unchanged.
  */
 export interface SubagentStartRequestView {
   readonly prompt?: readonly SubagentPromptBlockView[]
-  readonly label?: string
   readonly parent?: { readonly session?: { readonly id?: string } }
-  readonly persona?: string
 }
 
 /**
- * Structural view of the continuable start spec (consumed fields only):
- * `childId` is the caller-reserved identity a resume already carries, used as
- * the record fallback when the resume request has no Assignment header.
+ * Structural view of the activation spec (rc.1 `SubagentActivationSpec`,
+ * consumed fields only): `childId` is the caller-reserved identity a resume
+ * already carries — also the record fallback when the request carries no
+ * Assignment header — and `label` is the catalog join's other half (the
+ * cataloged child membership carries this exact string). `signal`, `delivery`
+ * and every future field travel with the caller's spec object.
  */
-export interface ContinuableStartSpecView {
+export interface SubagentActivationSpecView {
   readonly provider: string
   readonly label?: string
   readonly childId?: string
@@ -214,45 +214,34 @@ export interface ContinuableStartSpecView {
 
 /**
  * Structural view of ONE registered provider's consumed surface
- * (`@deepseek-ai/dsh-subagent` `SubagentProvider`): `capabilities.persona` is
- * the ONE-SHOT capability flag `SubagentRuntime.assertCapabilities` enforces
- * (a request carrying a persona for a provider without it is REJECTED), while
- * `prepareContinuable` is the NATIVE continuable gate — method presence IS the
- * continuable capability (upstream: `SubagentCapabilities` describes the
- * ONE-SHOT path only).
+ * (`@deepseek-ai/dsh-subagent` `SubagentProvider`): `prepareContinuable` is the
+ * NATIVE local-backend gate — method presence is what routes a start through
+ * `manager.startLocal` instead of `manager.startExternal`, and it is therefore
+ * also what makes a CALLER-reserved `childId` legal (upstream rejects a reserved
+ * id on any other backend with `UNSUPPORTED_CAPABILITY`).
  */
 interface SubagentProviderView {
-  readonly capabilities?: { readonly persona?: boolean }
   readonly prepareContinuable?: unknown
 }
 
 /**
  * Structural view of the `subagents` runtime the wrapper delegates to
- * (consumed surface only; start results are opaque and forwarded untouched).
+ * (consumed surface only; activation results are opaque and forwarded
+ * untouched).
  */
 interface SubagentsServiceView {
-  start(name: string, request: SubagentStartRequestView): unknown
-  startContinuable?(spec: ContinuableStartSpecView): unknown
-  /** Provider lookup — the persona-capability gate read (absent on a reshaped runtime). */
+  startActivation(spec: SubagentActivationSpecView): unknown
+  /** Provider lookup — the local-backend probe (absent on a reshaped runtime). */
   getProvider?(name: string): SubagentProviderView | undefined
 }
-
-/** One start surface the persona merge runs on (the gate differs per surface). */
-type PersonaSurface = 'one-shot' | 'continuable'
 
 /** Options for {@link installSubagentSeam}. */
 export interface SubagentSeamOptions {
   /**
-   * Live declared-role id map (trimmed id → DECLARED RAW id), read per start
-   * so a settings change is observed without a re-install.
+   * Live declared-role id map (trimmed id → DECLARED RAW id), read per
+   * activation so a settings change is observed without a re-install.
    */
   roleIds: () => ReadonlyMap<string, string>
-  /**
-   * Live declared roles (`roles.list`) — the persona source, read per start so
-   * a settings/persona edit is observed without a re-install. Absent ⇒ the
-   * seam only records roles (no persona delivery).
-   */
-  roles?: () => readonly FallbacksRole[]
   /** Contained debug sink (at most one line per contained degrade). */
   debug?: (message: string) => void
 }
@@ -260,10 +249,12 @@ export interface SubagentSeamOptions {
 /** The installed seam (Task 3 surface + explicit teardown). */
 export interface SubagentSeam {
   /**
-   * Per-child records keyed by the child SESSION id (the wrapped start's
-   * result id). ROOT-shared (CF-5): every fiber applied over the same root reads
+   * Per-child records keyed by the child id — the reserved id this wrapper
+   * wrote before a local activation, or the `childId` a resolved activation
+   * reported. ROOT-shared (CF-5): every fiber applied over the same root reads
    * the same map. Mutable by design: Task 3 clears `firstNoticePending` after
-   * emitting the notice.
+   * emitting the notice, and the role-persona listener writes
+   * `personaNotApplied`.
    */
   readonly records: Map<string, SubagentSeamRecord>
   /**
@@ -290,22 +281,10 @@ export interface SubagentSeam {
   dispose(): void
 }
 
-/** One label-keyed correlation claim for a start whose result carried no session id. */
+/** One label-keyed correlation claim for an activation whose result carried no child id. */
 interface PendingCorrelation {
   role: string
   at: number
-  personaNotApplied: boolean
-}
-
-/**
- * Outcome of one persona decision: the request to forward (`request` ITSELF on
- * every skip path, so the native call stays byte-identical) plus whether a
- * DECLARED persona was left undelivered — the one bit Task 3's notice row needs
- * to say ` (persona not applied)`.
- */
-interface PersonaMergeOutcome {
-  readonly request: SubagentStartRequestView
-  readonly personaNotApplied: boolean
 }
 
 /**
@@ -453,7 +432,9 @@ function promptTextOf(blocks: readonly SubagentPromptBlockView[] | undefined): s
 }
 
 /**
- * PURE, chain-independent persona lookup (plan Task 2 / Global Constraints):
+ * PURE, chain-independent persona lookup for the `agent/created` role-persona
+ * listener (`./role-persona.ts`; rc.1 delivers the persona as a scoped prompt
+ * section on the child, never as a request field):
  * the DECLARED `persona` of `roleId`, trimmed, and only when it is still
  * non-empty after the trim — a blank persona is NO persona. `roleId` is the
  * DECLARED RAW id the seam already resolved, so this is an exact id match, not
@@ -475,10 +456,10 @@ export function personaForRole(roles: readonly FallbacksRole[], roleId: string):
 }
 
 /**
- * The child session id carried by a start result, or `undefined`.
+ * The child id carried by a resolved activation, or `undefined`.
  *
- * Covers the wrapped-runtime shapes (`SubagentRun.id`,
- * `ContinuableStart.childId`) AND the tool-result vocabulary
+ * Covers the rc.1 activation shape (`SubagentActivation.childId`) AND the
+ * tool-result vocabulary that still reaches a reshaped runtime
  * (`{ kind: 'continuable', subagentId }`, `{ kind: 'foreground', runId }`).
  * A `{ kind: 'background', jobId }` result deliberately yields `undefined`:
  * a job id is a registry id, never a session id.
@@ -499,7 +480,7 @@ function parentSessionIdOf(request: SubagentStartRequestView | undefined): strin
   return typeof id === 'string' && id !== '' ? id : undefined
 }
 
-/** The label-keyed correlation claim key (parent session + request label). */
+/** The label-keyed correlation claim key (parent session + activation label). */
 function correlationKey(parentSessionId: string, label: string): string {
   return `${parentSessionId}\u0000${label}`
 }
@@ -622,33 +603,28 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
   }
 
   /** Write one per-child record; a repeat write for the same child keeps a cleared notice marker. */
-  const recordChild = (
-    childSessionId: string,
-    role: string,
-    at: number,
-    personaNotApplied: boolean,
-  ): void => {
-    const existing = records.get(childSessionId)
-    records.set(childSessionId, {
+  const recordChild = (childId: string, role: string, at: number): void => {
+    const existing = records.get(childId)
+    records.set(childId, {
       role,
       at,
       firstNoticePending: existing?.firstNoticePending ?? true,
-      // Absent (never `false`) when there is nothing to report, so the field
-      // reads as "a declared persona was skipped" and nothing else. Sticky:
-      // once a rewrite reported the declared persona undelivered, a later
-      // surface's `false` cannot clear it (see `SubagentSeamRecord`).
-      ...(personaNotApplied || existing?.personaNotApplied === true ? { personaNotApplied: true } : {}),
+      // The persona verdict belongs to the role-persona listener, which may
+      // already have written it while the child was being created: a rewrite
+      // (the resume fallback, or the resolved activation re-keying the same
+      // child) can only ADD it, never clear it (see `SubagentSeamRecord`).
+      ...(existing?.personaNotApplied === true ? { personaNotApplied: true } : {}),
     })
   }
 
-  /** Claim the label-keyed catalog correlation for a resolved start (bounded, recency-ordered eviction). */
+  /** Claim the label-keyed catalog correlation for a resolved activation (bounded, recency-ordered eviction). */
   const beginCorrelation = (
-    request: SubagentStartRequestView | undefined,
+    spec: SubagentActivationSpecView | undefined,
     role: string,
-    personaNotApplied: boolean,
+    at: number,
   ): string | undefined => {
-    const parentSessionId = parentSessionIdOf(request)
-    const label = typeof request?.label === 'string' ? request.label : undefined
+    const parentSessionId = parentSessionIdOf(spec?.request)
+    const label = typeof spec?.label === 'string' ? spec.label : undefined
     if (parentSessionId === undefined || label === undefined || label === '') return undefined
     const key = correlationKey(parentSessionId, label)
     if (!pending.has(key) && pending.size >= PENDING_CORRELATION_LIMIT) {
@@ -659,9 +635,7 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
     // its original position, so without the delete a re-claimed hot key would
     // still be the first eviction candidate while staler claims survive.
     pending.delete(key)
-    // The persona verdict is decided BEFORE the child id exists, so it rides the
-    // claim: the catalog-correlated record reports it exactly like a direct one.
-    pending.set(key, { role, at: Date.now(), personaNotApplied })
+    pending.set(key, { role, at })
     return key
   }
 
@@ -732,113 +706,20 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
   }
 
   /**
-   * The persona-capability gate verdict for one surface (plan Global
-   * Constraints: merge ONLY when the target provider advertises the persona
-   * capability). `'unknown'` (no provider registered) does not shadow the
-   * native contract — the start still runs and fails loud its own way
-   * (`NO_PROVIDER`) — but the declared persona IS undelivered, so it is
-   * reported like every other skip (plan Errata: ONE debug line per skip reason,
-   * naming the surface; QA's live discrimination depends on those signals).
-   * `'unavailable'` (a reshaped runtime without `getProvider`) cannot verify the
-   * capability, so the persona is skipped.
+   * `true` when the named provider is a LOCAL backend — the test the runtime
+   * itself routes on (`manager.startLocal` vs `manager.startExternal`), and the
+   * only case in which a CALLER-reserved `childId` is accepted. A reshaped
+   * runtime without `getProvider` exposes no local backend to reserve for, and a
+   * throwing lookup is contained HERE: the dispatch then proceeds with the
+   * caller's own spec, exactly like every other seam failure.
    */
-  const personaGate = (
-    service: SubagentsServiceView,
-    providerName: string,
-    surface: PersonaSurface,
-  ): 'ok' | 'unknown' | 'unavailable' | 'unsupported' => {
-    if (typeof service.getProvider !== 'function') return 'unavailable'
-    const provider = service.getProvider(providerName)
-    if (provider === undefined) return 'unknown'
-    // One-shot: the flag the runtime's `assertCapabilities` enforces (a persona
-    // request for a provider without it is REJECTED, never ignored).
-    if (surface === 'one-shot') return provider.capabilities?.persona === true ? 'ok' : 'unsupported'
-    // Continuable: the manager composes the child itself and applies
-    // `request.persona` unconditionally — method presence IS the gate.
-    return typeof provider.prepareContinuable === 'function' ? 'ok' : 'unsupported'
-  }
-
-  /**
-   * Merge the declared role persona into the request's NATIVE `persona` slot,
-   * or return `request` ITSELF (same object) on every skip path — a skip leaves
-   * the native call byte-identical. Order (plan Global Constraints):
-   *
-   * 1. an explicit caller `persona` WINS (`tool-subagent` `Config.persona`, or
-   *    `@mstar-harness/dsh`'s own merge): the slot is filled only when absent —
-   *    silent, caller intent is not a skip (`personaNotApplied: false`: the
-   *    persona IS applied, just not by us).
-   * 2. no persona source wired → nothing to deliver, and the declaration cannot
-   *    even be read (silent, `false`).
-   * 3. the role declares no persona (or a blank one) → nothing to deliver
-   *    (silent, `false`).
-   * 4. provider unknown → ONE contained debug log naming the surface (the
-   *    native start fails loud its own way, so the request is untouched), and
-   *    the declared persona really is undelivered → `true`.
-   * 5. gate miss (capability absent / unverifiable) → ONE contained debug log,
-   *    request unchanged — merging what the runtime would reject is never
-   *    acceptable → `true`.
-   * 6. hit → a shallow copy carrying the persona (the caller's object is never
-   *    mutated) + ONE debug log naming the role, the provider, and the surface
-   *    → `false`.
-   *
-   * Task 3's notice row is the only consumer of `personaNotApplied`.
-   */
-  const withRolePersona = (
-    service: SubagentsServiceView,
-    providerName: string,
-    request: SubagentStartRequestView,
-    role: string,
-    surface: PersonaSurface,
-  ): PersonaMergeOutcome => {
-    if (request.persona !== undefined) return { request, personaNotApplied: false }
-    const readRoles = options.roles
-    if (readRoles === undefined) return { request, personaNotApplied: false }
-    const persona = personaForRole(readRoles(), role)
-    if (persona === undefined) return { request, personaNotApplied: false }
-    const gate = personaGate(service, providerName, surface)
-    if (gate === 'unknown') {
-      debug(
-        `llm-fallbacks: no subagent provider '${providerName}' is registered on the ${surface} start — role persona for '${role}' not delivered (the native start fails loud its own way)`,
-      )
-      return { request, personaNotApplied: true }
-    }
-    if (gate === 'unavailable') {
-      debug(
-        `llm-fallbacks: role persona for '${role}' skipped on the ${surface} start — the '${SUBAGENT_SEAM_SERVICE}' runtime exposes no provider lookup, so the persona capability cannot be verified (the start proceeds unchanged)`,
-      )
-      return { request, personaNotApplied: true }
-    }
-    if (gate === 'unsupported') {
-      debug(
-        surface === 'one-shot'
-          ? `llm-fallbacks: subagent provider '${providerName}' lacks the persona capability on the ${surface} start — role persona for '${role}' skipped (the start proceeds unchanged)`
-          : `llm-fallbacks: subagent provider '${providerName}' does not support continuable children on the ${surface} surface — role persona for '${role}' skipped (the native continuable start fails loud its own way)`,
-      )
-      return { request, personaNotApplied: true }
-    }
-    debug(
-      `llm-fallbacks: role persona delivered via the native subagent persona channel for role '${role}' (${surface} start on provider '${providerName}')`,
-    )
-    return { request: { ...request, persona }, personaNotApplied: false }
-  }
-
-  /**
-   * Contained wrapper around {@link withRolePersona}: a throwing live persona
-   * source / provider read degrades to the CALLER's request object with no
-   * persona verdict — the merge aborts, the start is never affected.
-   */
-  const mergePersonaAtSeam = (
-    service: SubagentsServiceView,
-    providerName: string,
-    request: SubagentStartRequestView,
-    role: string,
-    surface: PersonaSurface,
-  ): PersonaMergeOutcome => {
+  const isLocalBackend = (service: SubagentsServiceView, providerName: string): boolean => {
     try {
-      return withRolePersona(service, providerName, request, role, surface)
+      if (typeof service.getProvider !== 'function') return false
+      return typeof service.getProvider(providerName)?.prepareContinuable === 'function'
     } catch (error) {
       reportDegrade(error)
-      return { request, personaNotApplied: false }
+      return false
     }
   }
 
@@ -852,99 +733,90 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
       return value
     }
     const service = value as SubagentsServiceView
-    if (typeof service.start !== 'function') {
+    if (typeof service.startActivation !== 'function') {
       if (!unreadableServiceLogged) {
         unreadableServiceLogged = true
-        debug(`llm-fallbacks: subagent role seam skipped — '${SUBAGENT_SEAM_SERVICE}' is not a start-capable runtime`)
+        debug(`llm-fallbacks: subagent role seam skipped — '${SUBAGENT_SEAM_SERVICE}' is not an activation-capable runtime`)
       }
       return value
     }
     const cached = wrappers.get(value)
     if (cached !== undefined) return cached
     const wrapper: SubagentsServiceView = Object.create(value)
-    wrapper.start = (name: string, request: SubagentStartRequestView): unknown => {
-      const role = resolveRoleAtSeam(request)
-      // No declared role → the native path, byte-identical (same request object).
-      if (role === undefined) return service.start(name, request)
-      // Task 2 merge point: the ONE place the resolved role is available before
-      // the request reaches the service (`role` above + `name` here is
-      // everything the persona decision needs — no second resolution). A skip
-      // returns the caller's OWN request object; a hit a shallow copy carrying
-      // the persona. The verdict rides the record Task 3 reads.
-      const persona = mergePersonaAtSeam(service, name, request, role, 'one-shot')
+    wrapper.startActivation = (spec: SubagentActivationSpecView): unknown => {
+      const role =
+        resolveRoleAtSeam(spec?.request)
+        // Resume fallback (plan Global Constraints): a resume request may carry
+        // no Assignment header — reuse the record of the child the caller
+        // already reserved, else no-op.
+        ?? (typeof spec?.childId === 'string' ? records.get(spec.childId)?.role : undefined)
+      // No declared role → the native path, byte-identical (the caller's OWN spec object).
+      if (role === undefined) return service.startActivation(spec)
+      const at = Date.now()
+      // Timing core (plan Global Constraints): a LOCAL child is created INSIDE
+      // the native call, so `agent/created` fires before it returns. Reserve the
+      // identity here and write the record SYNCHRONOUSLY — no later point exists
+      // at which the child could still be recorded before its own listeners read
+      // the map. Only a local backend accepts a reserved id, and only a resolved
+      // role justifies constructing a spec at all: every other dispatch hands
+      // the service the caller's own object. An EXTERNAL backend allocates its
+      // own child id, so its record is keyed below off the resolved activation.
+      let effectiveSpec: SubagentActivationSpecView = spec
+      let reservedId: string | undefined
+      if (isLocalBackend(service, spec.provider)) {
+        reservedId = spec.childId ?? randomUUID()
+        if (reservedId !== spec.childId) effectiveSpec = { ...spec, childId: reservedId }
+        try {
+          recordChild(reservedId, role, at)
+        } catch (error) {
+          reportDegrade(error)
+        }
+      }
       let pendingKey: string | undefined
       try {
-        pendingKey = beginCorrelation(request, role, persona.personaNotApplied)
+        pendingKey = beginCorrelation(spec, role, at)
       } catch (error) {
         reportDegrade(error)
       }
       let result: unknown
       try {
-        result = service.start(name, persona.request)
+        result = service.startActivation(effectiveSpec)
       } catch (error) {
         endCorrelation(pendingKey)
+        // Rollback: the native call threw, so no child reached the reserved id.
+        if (reservedId !== undefined) records.delete(reservedId)
         throw error
       }
       // CF-4: `observeStartResult` reads the RESULT SHAPE (`result.then`), and
-      // the native start has ALREADY run by this point — a result object whose
-      // `.then` accessor throws (or a hostile thenable) would otherwise escape
-      // `wrapper.start` as a failed dispatch for a child that exists. Contain it
-      // like every other shape surprise: drop the catalog claim, report ONE
-      // contained debug line, and still return the caller's own result.
+      // the native activation has ALREADY run by this point — a result object
+      // whose `.then` accessor throws (or a hostile thenable) would otherwise
+      // escape `wrapper.startActivation` as a failed dispatch for a child that
+      // exists. Contain it like every other shape surprise: drop the catalog
+      // claim, report ONE contained debug line, and still return the caller's
+      // own result.
       try {
         observeStartResult(
           result,
-          (childSessionId) => {
+          (childId) => {
             endCorrelation(pendingKey)
-            recordChild(childSessionId, role, Date.now(), persona.personaNotApplied)
+            recordChild(childId, role, at)
           },
-          // No session id in the result (a job id is not one): keep the claim and
+          // No child id in the result (a job id is not one): keep the claim and
           // let the parent-owned `subagent/catalog` event supply the child id.
           () => {},
-          // A rejected start created no child: drop the claim so it cannot be
-          // consumed later by a same-label sibling's catalog event.
-          () => endCorrelation(pendingKey),
+          // A rejected native call established no child either: drop the claim
+          // (it cannot be consumed later by a same-label sibling's catalog
+          // event) together with the reservation it was pre-written under.
+          () => {
+            endCorrelation(pendingKey)
+            if (reservedId !== undefined) records.delete(reservedId)
+          },
         )
       } catch (error) {
         endCorrelation(pendingKey)
         reportDegrade(error)
       }
       return result
-    }
-    const startContinuable = service.startContinuable
-    if (typeof startContinuable === 'function') {
-      wrapper.startContinuable = (spec: ContinuableStartSpecView): unknown => {
-        const role = resolveRoleAtSeam(spec?.request)
-          // Resume fallback (plan Global Constraints): a resume request may
-          // carry no Assignment header — reuse the record of the child the
-          // caller already reserved, else no-op.
-          ?? (typeof spec?.childId === 'string' ? records.get(spec.childId)?.role : undefined)
-        if (role === undefined) return startContinuable.call(service, spec)
-        // Task 2: the continuable surface merges into `spec.request` — the SAME
-        // native persona slot (`ContinuableStartSpec.request` is a
-        // `SubagentStartRequest`) — gated by the NATIVE continuable capability.
-        // A skip leaves the caller's spec object untouched (same identity). The
-        // containment is `mergePersonaAtSeam`'s, which both surfaces share, so a
-        // throwing live persona source cannot escape on this path either.
-        const outcome = mergePersonaAtSeam(service, spec.provider, spec.request, role, 'continuable')
-        const effectiveSpec = outcome.request === spec.request ? spec : { ...spec, request: outcome.request }
-        const result: unknown = startContinuable.call(service, effectiveSpec)
-        // CF-4, same containment as the one-shot site: the probe reads the
-        // result's shape after the native start ran, so a throwing `.then`
-        // accessor must degrade instead of failing a started resume. The
-        // continuable path holds no catalog claim to drop.
-        try {
-          observeStartResult(
-            result,
-            (childSessionId) => recordChild(childSessionId, role, Date.now(), outcome.personaNotApplied),
-            () => {},
-            () => {},
-          )
-        } catch (error) {
-          reportDegrade(error)
-        }
-        return result
-      }
     }
     wrappers.set(value, wrapper)
     return wrapper
@@ -967,12 +839,13 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
 
     // Background correlation fallback: the parent-owned catalog event carries
     // the child session id a `jobId`-only result never does. Join on the
-    // delegating parent session + the request label (the catalog `label` IS the
-    // delegation `description`). The join key is NOT unique: two children of one
-    // parent dispatched concurrently under the SAME label share it, and the
-    // first catalog event consumes whichever role was claimed last — so this
-    // fallback can key a sibling's role in that corner (bounded: reachable only
-    // when a `jobId`-only result reaches the seam; recorded as a residual).
+    // delegating parent session + the activation label (the catalog `label` IS
+    // the `SubagentActivationSpec.label` the child membership carries). The join
+    // key is NOT unique: two children of one parent dispatched concurrently
+    // under the SAME label share it, and the first catalog event consumes
+    // whichever role was claimed last — so this fallback can key a sibling's
+    // role in that corner (bounded: reachable only when a result carrying no
+    // child id reaches the seam; recorded as a residual).
     disposers.push(ctx.on('session/event', (session, event) => {
       try {
         if ((event.type as string) !== SUBAGENT_CATALOG_EVENT) return
@@ -985,7 +858,7 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
         const claim = pending.get(key)
         if (claim === undefined) return
         pending.delete(key)
-        recordChild(childSessionId, claim.role, claim.at, claim.personaNotApplied)
+        recordChild(childSessionId, claim.role, claim.at)
       } catch (error) {
         reportDegrade(error)
       }

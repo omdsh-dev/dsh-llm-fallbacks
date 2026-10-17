@@ -997,13 +997,6 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
     // Live binding read: the settings onChange below re-derives `roleIds` in
     // place, so the seam sees role edits without a re-install.
     roleIds: () => roleIds,
-    // Task 2: the persona source — the same live settings read (`source()`,
-    // reassigned by `setSource` above and by the settings onChange, which the
-    // fail-loud single settings registration keeps on THIS fiber) that the
-    // runtime itself uses, so a `roles.list[].persona` edit applies to the
-    // NEXT dispatch without a re-install. `source()` is read per start, never
-    // captured at install.
-    roles: () => source().roles.list,
     debug: (message) => logger.debug(message),
   })
   if (!subagentSeam.ownsWrapper) {
