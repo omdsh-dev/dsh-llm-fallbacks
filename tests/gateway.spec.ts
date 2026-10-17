@@ -45,6 +45,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context, Service } from '@deepseek-ai/cordis'
 import TypertGatewayService from '@deepseek-ai/dsh-api-gateway'
 import { TypertRegistry } from '@deepseek-ai/dsh-typert-registry'
+import type { PeerScope } from '@deepseek-ai/dsh-typert-protocol'
 import { apply } from '../src/index.ts'
 import { Config } from '../src/schema.ts'
 import { defaultFallbacksConfig, type FallbacksConfig } from '../src/config.ts'
@@ -1044,6 +1045,9 @@ type FakeRpcResult =
 
 type FakeRpcHandler = (endpoint: string, payload: unknown, signal: AbortSignal) => Promise<FakeRpcResult>
 
+/** The gateway's wire mount; 0.2.1 passes the calling Peer as its 4th argument. */
+type FakeRpcMount = (endpoint: string, payload: unknown, signal: AbortSignal, peer: PeerScope) => Promise<FakeRpcResult>
+
 /** Records the `/api` interceptor the typertGateway mounts (advisor gateway.spec.ts pattern). */
 class FakeConnectionService extends Service {
   channel: string | undefined
@@ -1057,11 +1061,13 @@ class FakeConnectionService extends Service {
   get rpc() {
     const owner = this.ctx
     return {
-      intercept: (channel: string, matches: (endpoint: string) => boolean, handler: FakeRpcHandler) =>
+      // This stand-in carrier speaks as the harness's owner Peer, the way the
+      // real host carrier binds the Peer it admitted to the wire call.
+      intercept: (channel: string, matches: (endpoint: string) => boolean, mount: FakeRpcMount) =>
         owner.effect(() => {
           this.channel = channel
           this.matches = matches
-          this.handler = handler
+          this.handler = (endpoint, payload, signal) => mount(endpoint, payload, signal, ownerPeer(owner))
           return () => {
             this.channel = undefined
             this.matches = undefined
@@ -1071,6 +1077,32 @@ class FakeConnectionService extends Service {
     }
   }
 }
+
+/**
+ * Minimal stand-in for the host-supplied `remoteAccess` service the gateway
+ * declares in its `static inject` (0.2.1). `decide` is consulted only for
+ * non-owner peers, and every direct call in this suite speaks as the owner,
+ * so the allow verdict is never reached.
+ */
+class FakeRemoteAccessService extends Service {
+  constructor(ctx: Context) {
+    super(ctx, 'remoteAccess')
+  }
+
+  decide(_request: unknown): { kind: 'allow' } {
+    return { kind: 'allow' }
+  }
+}
+
+/** Owner PeerScope for direct `ctx.typertGateway.invoke` calls (`peer` is required since 0.2.1). */
+const ownerPeer = (ctx: Context): PeerScope => ({
+  id: 'peer-1' as PeerScope['id'],
+  ctx,
+  principal: { kind: 'owner' },
+  signal: new AbortController().signal,
+  interactions: 'answer',
+  dispose: async () => {},
+})
 
 /**
  * Compose the full endpoint harness (settings + typert registry + fake
@@ -1090,6 +1122,7 @@ async function composeGatewayHarness(
   }
   await ctx.plugin(TypertRegistry)
   await ctx.plugin(FakeConnectionService)
+  await ctx.plugin(FakeRemoteAccessService)
   await ctx.plugin(TypertGatewayService)
   const bridge = installFallbacksBridge(ctx, entryConfig({ cooldownMs: 120_000, maxSwitchesPerStep: 5 }))
   new FallbacksConfigGateway(ctx, bridge, makeSeeds(), undefined)
@@ -1213,7 +1246,12 @@ describe('typertGateway endpoint claims + payload contract', () => {
 
   it('invokes directly through ctx.typertGateway (same strict descriptor path)', async () => {
     const { ctx } = await composeGatewayHarness()
-    const result = await ctx.typertGateway.invoke({ namespace: 'fallbacks', method: 'get', args: {} })
+    const result = await ctx.typertGateway.invoke({
+      namespace: 'fallbacks',
+      method: 'get',
+      args: {},
+      peer: ownerPeer(ctx),
+    })
     expect(result).toMatchObject({ config: { cooldownMs: 120_000 } })
   })
 
@@ -1241,6 +1279,7 @@ describe('composed plugin (apply wires the gateway)', () => {
     const ctx = track(new Context())
     await ctx.plugin(MemorySettings)
     await ctx.plugin(TypertRegistry)
+    await ctx.plugin(FakeRemoteAccessService)
     await ctx.plugin(TypertGatewayService)
     // Pin the entry to `presets: 'none'` (fallbacks-preset-roles T3): the
     // bundled preset self-declaration would otherwise materialize 5 preset
@@ -1253,7 +1292,8 @@ describe('composed plugin (apply wires the gateway)', () => {
     })
     await waitRegistered(ctx)
 
-    const before = await ctx.typertGateway.invoke({ namespace: 'fallbacks', method: 'get', args: {} })
+    const peer = ownerPeer(ctx)
+    const before = await ctx.typertGateway.invoke({ namespace: 'fallbacks', method: 'get', args: {}, peer })
     expect(invokeConfig(before)).toEqual(entry)
 
     // The set child may activate a tick after the namespace registers; the
@@ -1263,19 +1303,20 @@ describe('composed plugin (apply wires the gateway)', () => {
         namespace: 'fallbacks',
         method: 'set',
         args: { patch: { cooldownMs: 120_000, rootChain: [OFFICIAL_FLASH] } },
+        peer,
       })
       expect(invokeConfig(result).cooldownMs).toBe(120_000)
       expect(invokeConfig(result).rootChain).toEqual([OFFICIAL_FLASH])
     })
 
-    const after = await ctx.typertGateway.invoke({ namespace: 'fallbacks', method: 'get', args: {} })
+    const after = await ctx.typertGateway.invoke({ namespace: 'fallbacks', method: 'get', args: {}, peer })
     expect(invokeConfig(after)).toEqual({ ...entry, rootChain: [OFFICIAL_FLASH] })
     // describe shows the user layer written through the gateway.
     const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_PROFILE_ENTRY)!
     expect(descriptor.user).toEqual({ cooldownMs: 120_000, rootChain: [OFFICIAL_FLASH] })
 
     // reset through the gateway returns the composition base (entry).
-    const reset = await ctx.typertGateway.invoke({ namespace: 'fallbacks', method: 'reset', args: {} })
+    const reset = await ctx.typertGateway.invoke({ namespace: 'fallbacks', method: 'reset', args: {}, peer })
     expect(invokeConfig(reset)).toEqual(entry)
     const afterReset = ctx.settings.describe().find((d) => d.ns === FALLBACKS_PROFILE_ENTRY)!
     expect(afterReset.user).toEqual({})
