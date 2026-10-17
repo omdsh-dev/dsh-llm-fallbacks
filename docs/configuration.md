@@ -66,7 +66,7 @@ Since iter-20260813 the configuration follows a **two-block model** — you only
 
 - **Writing them in YAML does not change this round's fallback behavior** — there is no runtime consumer this round;
 - **The UI does not show them this round** — the Fallbacks card does not render these two fields;
-- **Persona injection has since shipped — but from `persona`, not from these two fields**: a declared role's `persona` is installed on the child at the subagent dispatch seam, independent of routing, so a role with an empty `chain` gets its persona exactly like a chained one (see [README.md](../README.md) → Role persona on the child (chain-independent)). `prompt` and `permissions` themselves still have no runtime consumer, so the tool filtering they were reserved for (`permissions.allow` / `deny`) remains the planned `fallbacks-explicit-role-tool` (roadmap item — no plan file yet).
+- **Persona injection has since shipped — but from `persona`, not from these two fields**: a declared role's `persona` is installed on the child as a scoped system-prompt section at the `deployment:persona-prefix` slot, independent of routing, so a role with an empty `chain` gets its persona exactly like a chained one (see [README.md](../README.md) → Role persona on the child (chain-independent)). Being a section on the child's own context, it does not survive a host restart: a role child resumed afterwards runs without its role persona. `prompt` and `permissions` themselves still have no runtime consumer, so the tool filtering they were reserved for (`permissions.allow` / `deny`) remains the planned `fallbacks-explicit-role-tool` (roadmap item — no plan file yet).
 
 ## Preset roles (`presets` key)
 

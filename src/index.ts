@@ -58,6 +58,7 @@ import { detectAuthorizedRoute, type AuthorizedRouteSession } from './authorized
 import { firstAllowedCandidate, resolvedRoutes } from './route-allowlist.ts'
 import { effectivePolicy, readSessionPolicyEvent, type PolicySettings } from './subagent-policy.ts'
 import { installSubagentSeam, type SubagentSeam } from './subagents-seam.ts'
+import { installRolePersona } from './role-persona.ts'
 import { FallbackStateStore, type AgentFallbackState, type BlockedSwitchAttempt, type EffectiveChainHead, type PendingSwitch, type SwitchScope } from './state.ts'
 import { escalatedCooldownMs } from './recovery.ts'
 import { overrideConfigWithRouteRule, type LlmReasoningEffort } from './override.ts'
@@ -996,12 +997,10 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
     // Live binding read: the settings onChange below re-derives `roleIds` in
     // place, so the seam sees role edits without a re-install.
     roleIds: () => roleIds,
-    // Task 2: the persona source — the same live settings read (`source()`,
-    // reassigned by `setSource` above and by the settings onChange, which the
-    // fail-loud single settings registration keeps on THIS fiber) that the
-    // runtime itself uses, so a `roles.list[].persona` edit applies to the
-    // NEXT dispatch without a re-install. `source()` is read per start, never
-    // captured at install.
+    // The SAME live roles source `installRolePersona` below reads. Only a
+    // reservation failure consults it: the persona listener cannot see the
+    // child the runtime then mints, so the seam is what carries that child's
+    // persona verdict onto the record the notice row reads.
     roles: () => source().roles.list,
     debug: (message) => logger.debug(message),
   })
@@ -1010,6 +1009,18 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
       'subagent role seam wrapper already installed on this context root — this fiber registers the notice emitter and the projection unit only (multi-fiber dedupe)',
     )
   }
+  // Plan dsh-021 Task 1: rc.1's activation spec carries no persona slot, so the
+  // role persona is delivered as a scoped `deployment:persona-prefix` section on
+  // the CHILD's own context (the shipped `file-reference-local` pattern) —
+  // registered over the SAME ROOT-shared record map and read live from the same
+  // roles source the seam uses, so a persona edit reaches the next dispatch
+  // without a re-install. The section's contained failure verdict
+  // (`personaNotApplied`) rides those records into the notice row below.
+  installRolePersona(ctx, {
+    records: subagentSeam.records,
+    roles: () => source().roles.list,
+    debug: (message) => logger.debug(message),
+  })
 
   try {
     // T3 (plan fallbacks-role-seeds): the gateway receives the SAME per-apply
