@@ -63,6 +63,13 @@ has no slot left to write and no method left to wrap.
   'team:identity', …, text: () => \`You are teammate "${name}"…\` })`. Neither
   package uses an Agent Preset or an `agentPreset` request field to deliver
   identity.
+- These are precedents for the **mechanism** — scoped prompt contributions on the
+  agent's own context — **not** for a lifecycle contract, and not a claim that
+  Agent Team is a drop-in per-role persona mechanism. `tool-agent-team` gates its
+  `agent/created` install on team membership and contributes team policy plus a
+  dynamic team identity; a role-persona channel gates on its own per-child record
+  and contributes the persona text. Copy the mechanism; choose your own gate and
+  your own content.
 - No provider capability participates. The removed `capabilities.persona` gate
   belonged to the request slot, not to this channel, so spawn, fork and acp
   children are all reachable as long as they create a local agent.
