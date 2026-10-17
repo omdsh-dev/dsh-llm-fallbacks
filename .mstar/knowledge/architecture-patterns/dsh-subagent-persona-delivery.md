@@ -165,15 +165,20 @@ writes into the teammate's initial prompt.
   with an id the live declaration set does not hold, resolves to no role and
   takes the ordinary rules → auto-match → `inherit` path; the teammate still
   runs.
-- **Names are arbitrary and repeatable.** The role comes from the header, never
-  from `name`, so several differently named teammates can carry one role; there
-  is deliberately no name→role mapping.
-- **External providers deliver nothing.** A provider that creates no local agent
-  (external / acp) gets no `agent/created`, so the role resolves and is recorded
-  but no persona, notice row or badge can be delivered — the same limit already
-  documented above for a normally delegated external child. Persona delivery
-  stays non-durable: it is a section on the child's own context, so a teammate
-  resumed after a host restart carries none.
+- **Names are arbitrary; roles are repeatable.** The role comes from the header,
+  never from `name`; teammate names stay unique inside one Team (the roster
+  rejects a duplicate name), so several differently named teammates can carry
+  one role. There is deliberately no name→role mapping.
+- **External providers deliver two outcomes.** A **generic** external (acp)
+  child creates no local agent (`agent/created` never fires), so the role
+  resolves and is recorded but no persona, notice row or badge is delivered. A
+  **roster-shaped teammate** cannot use a non-local provider at all:
+  `roster.spawn` always passes a reserved `childId`, and the runtime rejects it
+  with `UNSUPPORTED_CAPABILITY`
+  (`packages/subagent/subagent/src/index.ts:270-272`), so member creation fails
+  and no role is delivered. Persona delivery stays non-durable: it is a section
+  on the child's own context, so a teammate resumed after a host restart carries
+  none.
 
 ## Verification that actually proves the channel
 

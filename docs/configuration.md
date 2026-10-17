@@ -153,9 +153,9 @@ Key semantics:
 With the experimental Agent Team bundle enabled, ordinary delegation is replaced by `spawn_teammate` / `send_message`; a teammate's role is carried by the **same** `**Execute as**: <id>` prompt header — written by the model into its initial spawn prompt, because the spawn request has no role or persona field. `roster.spawn` creates the member through `ctx.subagents.startActivation`, so the teammate flows through the resolution above unchanged:
 
 - **The header is the only role carrier.** A teammate whose prompt omits it, or names an id that is not currently declared, falls through to rules → auto-match → `inherit`, exactly like a normally delegated child without a header.
-- **Names stay arbitrary.** Any number of differently named teammates can carry the same role; there is **no name→role mapping**.
+- **Names stay arbitrary (but unique inside one Team).** Any number of differently named teammates can carry the same role; there is **no name→role mapping**.
 - **Persona, role notice, badge and chain head follow the normal child contract** — the teammate's first request is routed to its role's chain head (stage 2 above). As on the normal path, the persona is a scoped `deployment:persona-prefix` section on the child's own context and does not survive a host restart.
-- **Non-local provider.** An external (acp) provider creates no local agent, so the role resolves but **no persona, role notice or badge** is delivered — the same boundary as a normally delegated external child.
+- **Non-local provider — two outcomes.** An external (acp) provider creates no local agent, so a normally delegated external child resolves its role but gets **no persona, role notice or badge**. A **teammate cannot use one**: roster.spawn always reserves a childId, and the runtime rejects a reserved id for a non-local provider (UNSUPPORTED_CAPABILITY), so member creation fails and no role is delivered.
 
 ## Host subagent model selection (dsh 0.1.2)
 
