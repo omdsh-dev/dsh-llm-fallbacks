@@ -361,7 +361,19 @@ describe('subagent seam — behavioural (public call path)', () => {
     // arrive after the child's own listeners read the map.
     let atCall: SubagentSeamRecord | undefined
     fake.onActivation = (spec) => {
-      atCall = spec.childId === undefined ? undefined : seam.records.get(spec.childId)
+      const reserved = spec.childId === undefined ? undefined : seam.records.get(spec.childId)
+      // Snapshot the pre-write BEFORE the listener writes below: the seam's own
+      // reservation carries NO persona verdict of its own (it synthesizes none —
+      // the verdict is Task 1's, written over this same map).
+      atCall = reserved === undefined ? undefined : { ...reserved }
+      // Lifecycle inside the native call: the role-persona listener verdicts the
+      // child DURING its creation, and Task 3 emits the session's one notice row
+      // before the call returns. Both writes must survive the rewrite the
+      // resolved activation performs below (review I: the sticky verdict).
+      if (reserved !== undefined) {
+        reserved.personaNotApplied = true
+        reserved.firstNoticePending = false
+      }
     }
 
     const { value } = await injectSubagents(ctx)
@@ -379,10 +391,16 @@ describe('subagent seam — behavioural (public call path)', () => {
     expect(spec).not.toHaveProperty('childId')
     // …and the record was there BEFORE the call, keyed by that reserved id.
     expect(atCall).toEqual({ role: 'coder', at: expect.any(Number), firstNoticePending: true })
-    // The resolved activation reports the same child, and its rewrite keeps the
-    // record (and any marker the listeners already set).
+    // The resolved activation reports the same child; its rewrite re-records
+    // from the EXISTING entry, so the verdict written during creation and the
+    // cleared notice marker both survive it (a rewrite carries neither).
     expect(result).toMatchObject({ childId: received.childId })
-    expect(seam.records.get(received.childId!)?.role).toBe('coder')
+    expect(seam.records.get(received.childId!)).toEqual({
+      role: 'coder',
+      at: expect.any(Number),
+      firstNoticePending: false,
+      personaNotApplied: true,
+    })
   })
 
   it('a throwing native call still propagates and rolls the reservation back', async () => {
@@ -443,10 +461,15 @@ describe('subagent seam — behavioural (public call path)', () => {
     const result = await startActivationOf(value)(spec)
 
     // The SAME spec object travelled to the native path (byte-identical), and
-    // the record was keyed off the child the activation reported.
+    // the record was keyed off the child the activation reported — with NO
+    // persona verdict: the resolved-activation write synthesizes none.
     expect(fake.activations[0]).toBe(spec)
     expect(result).toMatchObject({ childId: 'child-external' })
-    expect(seam.records.get('child-external')?.role).toBe('coder')
+    expect(seam.records.get('child-external')).toEqual({
+      role: 'coder',
+      at: expect.any(Number),
+      firstNoticePending: true,
+    })
   })
 
   it('falls back to the per-child record for a resume without an Assignment header', async () => {
@@ -454,8 +477,15 @@ describe('subagent seam — behavioural (public call path)', () => {
     const fake = fakeSubagents({}, LOCAL_PROVIDER)
     ctx.provide('subagents', fake.service)
     const seam = installSubagentSeam(ctx, { roleIds: () => ROLE_IDS })
-    // The child was recorded by an earlier dispatch (durable id reused on resume).
-    seam.records.set('child-resumed', { role: 'reviewer', at: 1, firstNoticePending: false })
+    // The child was recorded by an earlier dispatch (durable id reused on
+    // resume), already verdict'd by the persona listener (`personaNotApplied`)
+    // and already announced (cleared notice marker).
+    seam.records.set('child-resumed', {
+      role: 'reviewer',
+      at: 1,
+      firstNoticePending: false,
+      personaNotApplied: true,
+    })
 
     const { value } = await injectSubagents(ctx)
     const spec = { provider: 'spawn', label: 'resume', childId: 'child-resumed', request: { prompt: [] } }
@@ -468,9 +498,16 @@ describe('subagent seam — behavioural (public call path)', () => {
     // interception is broken, which the role/marker assertions cannot detect
     // (they all hold against the raw service).
     const resumed = seam.records.get('child-resumed')
-    expect(resumed?.role).toBe('reviewer')
-    expect(resumed?.firstNoticePending).toBe(false)
     expect(resumed?.at).toBeGreaterThan(1)
+    // The rewrite carries NO verdict of its own: the listener's sticky `true` is
+    // the whole handoff of Task 1's failure signal across this rewrite, so it
+    // must survive — and nothing may synthesize a verdict where there was none.
+    expect(resumed).toEqual({
+      role: 'reviewer',
+      at: expect.any(Number),
+      firstNoticePending: false,
+      personaNotApplied: true,
+    })
     // A caller that already reserved the id keeps its OWN spec object: no copy.
     expect(fake.activations[0]).toBe(spec)
   })
@@ -717,6 +754,45 @@ describe('subagent seam — behavioural (public call path)', () => {
     await start(activationSpec('healed', assignment('coder')))
     expect(fake.activations[1]!.childId).toEqual(expect.any(String))
     expect(atCall?.role).toBe('coder')
+  })
+
+  it('contains a throwing spec spread: the caller’s own spec still reaches the native path', async () => {
+    ctx = new Context()
+    const debug = vi.fn()
+    const fake = fakeSubagents({ childId: 'child-spread-boom' }, LOCAL_PROVIDER)
+    ctx.provide('subagents', fake.service)
+    const seam = installSubagentSeam(ctx, { roleIds: () => ROLE_IDS, debug })
+    // A LOCAL role dispatch whose spec cannot be copied: an UNRELATED enumerable
+    // accessor throws while the wrapper builds the reserved spec. The seam never
+    // consumes that field, so the native runtime would have accepted the object
+    // — the reservation (pure seam bookkeeping) must degrade instead of failing
+    // the dispatch, exactly like every other seam failure.
+    const spec = activationSpec('unverifiable', assignment('coder'))
+    Object.defineProperty(spec, 'hostile', {
+      enumerable: true,
+      get() {
+        throw new Error('spread boom')
+      },
+    })
+    let atCall: number | undefined
+    fake.onActivation = () => {
+      atCall = seam.records.size
+    }
+
+    const { value } = await injectSubagents(ctx)
+    const result = await startActivationOf(value)(spec)
+
+    // The native call still happened, ONCE, with the caller's OWN object, and
+    // nothing was pre-written for a child the seam never reserved.
+    expect(fake.activations[0]).toBe(spec)
+    expect(fake.activations).toHaveLength(1)
+    expect(atCall).toBe(0)
+    expect(debug).toHaveBeenCalledTimes(1)
+    expect(String(debug.mock.calls[0]![0])).toContain('spread boom')
+    // The caller keeps its own result and the native path still keys the child
+    // it created off the resolved activation.
+    expect(result).toMatchObject({ childId: 'child-spread-boom' })
+    expect(seam.records.get('child-spread-boom')?.role).toBe('coder')
   })
 })
 

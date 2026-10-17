@@ -763,14 +763,25 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
       // own child id, so its record is keyed below off the resolved activation.
       let effectiveSpec: SubagentActivationSpecView = spec
       let reservedId: string | undefined
-      if (isLocalBackend(service, spec.provider)) {
-        reservedId = spec.childId ?? randomUUID()
-        if (reservedId !== spec.childId) effectiveSpec = { ...spec, childId: reservedId }
-        try {
+      try {
+        if (isLocalBackend(service, spec.provider)) {
+          reservedId = spec.childId ?? randomUUID()
+          if (reservedId !== spec.childId) effectiveSpec = { ...spec, childId: reservedId }
           recordChild(reservedId, role, at)
-        } catch (error) {
-          reportDegrade(error)
         }
+      } catch (error) {
+        // The reservation is seam BOOKKEEPING, never part of the dispatch: the
+        // spread above enumerates EVERY spec property (the caller's own exotic
+        // or hostile object included), and a throw there must not fail a
+        // dispatch the native runtime would still accept. Drop the half-built
+        // reservation — nothing stays written for a child the seam never
+        // reserved — report ONE contained line, and delegate once with the
+        // caller's OWN spec (Global Constraints: any seam failure forwards the
+        // caller's own spec object unchanged).
+        if (reservedId !== undefined) records.delete(reservedId)
+        effectiveSpec = spec
+        reservedId = undefined
+        reportDegrade(error)
       }
       let pendingKey: string | undefined
       try {
