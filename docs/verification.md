@@ -40,7 +40,7 @@ This document records the installation / runtime-contract verification already c
 
 Result: **as of `main`'s session-log-repair records refresh — 55 files / 1335 tests passed** (`corepack pnpm@11.21.0 test`, vitest run); `pnpm build` (`tsc -p tsconfig.build.json` emits JS first (standard decorator downgrade `__esDecorate`) → tsdown host bundle →
 `pnpm run build-client` → `tsc` declarations → `node scripts/verify-dist.mjs` artifact-parsing guard) all green — `tsc` is
-driven by the real host type surface (registry peer `@deepseek-ai/*@0.2.1-rc.1`, no in-repo type shims). The no-op regression
+driven by the real host type surface (registry peer `@deepseek-ai/*` at the `package.json` versions, no in-repo type shims). The no-op regression
 invariants (empty chains / no match / chain exhausted / safety-valve cap exceeded → pass through without producing
 `fallbacks/switch` events) are persistently asserted by T3/T4 tests.
 
@@ -79,11 +79,11 @@ order section of [docs/install.md](docs/install.md); the real web profile's laye
 - **No residue on unload**: `agent/disposed` removes state, `agent/status` idle is defensively cleaned, `ctx.effect`
   dispose clears everything (T3 assertions).
 - **Real-type contract**: the type layer does not use hand-written `peer-stubs/` — the real
-  `@deepseek-ai/*@0.2.1-rc.1` packages drive `tsc` and the integration tests (`tests/support/harness.ts` +
+  `@deepseek-ai/*` packages (the versions declared in `package.json`) drive `tsc` and the integration tests (`tests/support/harness.ts` +
   llm-retry-stub + model-selection-stub): in registry mode `autoInstallPeers` resolves them from npm (user-level
   `~/.npmrc` auth, no local link farm); the local-link alternative (a sibling dsh checkout linked into
   `node_modules`) remains available for pre-publish lines (see docs/install.md). Runtime seams run the real
-  implementations: the settings section is the Loader entry Config itself (0.1.7-rc.1 form-service model — the
+  implementations: the settings section is the Loader entry Config itself (form-service model — the
   volatile `Config` schema is what makes the entry describable/writable), exercised through the real
   `SettingsForms` face over the in-memory double `tests/support/memory-settings.ts` (the 0.1.5-era
   `SettingsProvider` base class is gone), and the client store VALUE import runs the real `@deepseek-ai/dsh-client-store`
@@ -155,7 +155,7 @@ Then restart the dsh web session so the host half and the client half load.
 #### 4.1 Environment preparation (new snapshot baseline)
 
 1. **Preflight check**: record `dsh --version` (snapshot); the plugin-side peer dependencies resolve from the npm registry
-   (`@deepseek-ai/*@0.2.1-rc.1`, no source tree needed).
+   (`@deepseek-ai/*` at the `package.json` versions, no source tree needed).
 2. **Plugin build**: `cd <plugin-repo> && pnpm build` (host bundle + client bundle + tsc
    declarations) green — pure-mount semantics: no dsh source-tree modification, no patch step; settings read/write go through the plugin
    gateway channel (`/api/fallbacks/get|set|reset`), usable right after installation.
