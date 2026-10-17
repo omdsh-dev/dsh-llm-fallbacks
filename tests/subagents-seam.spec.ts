@@ -21,9 +21,17 @@
  * It is labelled as a canary tied to that cordis event name and is never the
  * only guard — a peer-version rename can only degrade role delivery (plan Risk:
  * `internal/get` wrapper is version-sensitive), never a dispatch.
+ *
+ * The drift probe pins the INSTALLED peer's declared surface (`startActivation`
+ * present; `start` / `startContinuable` absent) — the guard for the regression
+ * class that kept this suite green against a runtime that had already moved on
+ * (plan Risk: local drift blindness).
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
+import { dirname, resolve } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import { apply } from '../src/index.ts'
 import { FALLBACKS_PROFILE_ENTRY } from '../src/gateway.ts'
@@ -832,6 +840,53 @@ describe('subagent seam — wrapper identity + install topology', () => {
 
     await injectSubagents(ctx)
     expect(seen).toContain('subagents')
+  })
+})
+
+/**
+ * The guard for the regression class that hid the rc.1 migration: this seam
+ * consumes `ctx.subagents` through LOCAL structural views (no `dsh-subagent`
+ * peer), so a self-shaped test fake plus `tsc` both stayed green while the
+ * installed runtime had already replaced `start`/`startContinuable` with
+ * `startActivation` — the planted fakes and the seam's views agreed with each
+ * other and with nothing else.
+ *
+ * The probe pins the DECLARED surface the install gate and the wrapper are
+ * written against, resolved from the installed package itself (its own `types`
+ * entry — no hard-coded version, path or dist layout). Only that entry file is
+ * read: it declares the service the seam wraps, whereas sibling files mention
+ * `start(` for unrelated internals (an `ActivationObserver`, a doc comment), so
+ * scanning the directory would fail on shapes that are not this contract.
+ */
+function assertActivationSurface(surface: string): void {
+  expect(surface).toMatch(/startActivation\s*\(/)
+  expect(surface).not.toContain('startContinuable')
+  expect(surface).not.toMatch(/\bstart\s*\(/)
+}
+
+/** One installed package's declared type surface, from that package's own manifest. */
+function installedSubagentSurface(): string {
+  const manifestPath = createRequire(import.meta.url).resolve('@deepseek-ai/dsh-subagent/package.json')
+  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as { types?: string }
+  if (typeof manifest.types !== 'string') throw new Error('@deepseek-ai/dsh-subagent declares no `types` entry')
+  return readFileSync(resolve(dirname(manifestPath), manifest.types), 'utf8')
+}
+
+describe('subagent seam — installed peer surface (drift probe)', () => {
+  it('the installed @deepseek-ai/dsh-subagent service surface is startActivation-shaped', () => {
+    assertActivationSurface(installedSubagentSurface())
+  })
+
+  it('rejects the pre-rc.1 surface shape (the guard\u2019s own negative control)', () => {
+    // The surface this plugin was originally written against: the probe must
+    // REJECT it, or it pins nothing.
+    const legacy = [
+      'start(name: string, request: SubagentStartRequest): Promise<SubagentResult>;',
+      'startContinuable(spec: SubagentActivationSpec): Promise<SubagentActivation>;',
+    ].join('\n')
+    expect(() => assertActivationSurface(legacy)).toThrow()
+    // Positive control on the SAME helper: an activation-shaped surface passes.
+    expect(() => assertActivationSurface('startActivation(spec: SubagentActivationSpec): Promise<SubagentActivation>')).not.toThrow()
   })
 })
 

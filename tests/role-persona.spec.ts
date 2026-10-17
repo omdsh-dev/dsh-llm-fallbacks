@@ -23,7 +23,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import SystemPrompt, { PERSONA_PREFIX_SECTION } from '@deepseek-ai/dsh-system-prompt'
+import SystemPrompt, { PERSONA_PREFIX_SECTION, renderPrompt } from '@deepseek-ai/dsh-system-prompt'
 import { createScope } from '@deepseek-ai/dsh-scope'
 import { installRolePersona } from '../src/role-persona.ts'
 import type { SubagentSeamRecord } from '../src/subagents-seam.ts'
@@ -290,6 +290,53 @@ describe('role persona — real cordis + real dsh-system-prompt', () => {
     // the same-named global deployment persona (the scoped section shadows it).
     expect(await assembledPersona(scopeKey)).toBe('Coder persona')
     expect(records.get('child-first-prompt')?.personaNotApplied).toBeUndefined()
+  })
+
+  it('REPLACES the deployment persona instead of concatenating it (same-name scoped shadow)', async () => {
+    ctx = new Context()
+    const { agent, scopeKey } = await realChild('child-shadow', 'coder')
+    installRolePersona(ctx, { records: new Map([['child-shadow', seamRecord('coder')]]), roles: () => ROLES })
+    await ctx.serial('agent/created', { agent, source: 'startup' })
+
+    const assembly = await ctx.systemPrompt.assemble({ scope: scopeKey })
+    const personaSections = assembly.sections.filter((section) => section.name === PERSONA_PREFIX_SECTION)
+    // ONE section, carrying the SCOPED text — the contract the role persona's
+    // replacement semantics rest on (the `file-reference-local` pattern uses a
+    // DISTINCT name, so only this same-name case proves it). A concatenating
+    // registry would leave the mounted `personaPrefix` beside it.
+    expect(personaSections.map((section) => section.text)).toEqual(['Coder persona'])
+    expect(renderPrompt(assembly)).toContain('Coder persona')
+    expect(renderPrompt(assembly)).not.toContain(DEPLOYMENT_PERSONA)
+  })
+
+  it('a GENUINE registration failure still reports the persona as not applied', async () => {
+    ctx = new Context()
+    await ctx.plugin(SystemPrompt, { personaPrefix: DEPLOYMENT_PERSONA })
+    const scopeKey = {}
+    // The REAL registry seen from the child scope, except that the persona
+    // placement resolves to a non-finite order — the registry's own
+    // NON-duplicate throw site. The descriptor-delivered skip is message-coupled
+    // to the duplicate wording, so this case is what proves that check has not
+    // swallowed every registration failure as "already delivered".
+    const registry = ctx.systemPrompt
+    const isolated = ctx.isolate('systemPrompt')
+    isolated.provide('systemPrompt', {
+      getSectionOrder: () => Number.NaN,
+      section: (section: unknown) => registry.section(section as never),
+    })
+    const agent = { id: 'child-genuine-failure', ctx: createScope(isolated, scopeKey).ctx } as unknown as Agent
+    const records = new Map([['child-genuine-failure', seamRecord('coder')]])
+    const debug = vi.fn()
+    installRolePersona(ctx, { records, roles: () => ROLES, debug })
+
+    await ctx.serial('agent/created', { agent, source: 'startup' })
+
+    expect(records.get('child-genuine-failure')?.personaNotApplied).toBe(true)
+    // The verdict quotes the registry's OWN refusal, so the probe fails if the
+    // duplicate match ever widens (`simplify:` in `src/role-persona.ts`).
+    expect(String(debug.mock.calls[0]?.[0])).toContain('order must be a finite number')
+    // No section landed: the assembled prompt keeps the deployment persona.
+    expect(await assembledPersona(scopeKey)).toBe(DEPLOYMENT_PERSONA)
   })
 
   it('releases the injected fiber on agent/disposed, withdrawing the section', async () => {
