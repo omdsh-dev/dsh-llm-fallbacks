@@ -2,8 +2,8 @@
  * Vitest configuration.
  *
  * Type-level access flows through the REAL `@deepseek-ai/*` packages (the
- * `peerDependencies`, resolved from the npm registry at 0.1.7-rc.1 on this
- * branch — registry mode, see docs/install.md). The local-link alternative
+ * `peerDependencies` declared in `package.json`, resolved from the npm
+ * registry — registry mode, see docs/install.md). The local-link alternative
  * (a sibling dsh checkout linked into `node_modules`) is documented below:
  * linked packages are tsc-built into `lib/types/` only — the tsdown bundle
  * step that would produce the exports-mapped `lib/index.js` entries has not
@@ -51,7 +51,7 @@ import { defaultExclude, defineConfig } from 'vitest/config'
 // worktree when vitest is invoked there) is the honest anchor.
 const here = process.cwd()
 // Mode probe (qc3 F-002): the config serves TWO install modes — LINKED,
-// this dev tree's node_modules pointing at the local 0.1.7-rc.1 sources,
+// this dev tree's node_modules pointing at the local `@deepseek-ai/*` sources,
 // and REGISTRY (docs/install.md — the current mode on this branch), where
 // the peers come from npm and carry only the exports-mapped `lib/index.js`.
 // The compiled store entry is the anchor: when it is absent, every
@@ -63,7 +63,7 @@ const linkedMode = existsSync(
   resolve(here, 'node_modules/@deepseek-ai/dsh-client-store/lib/types/index.js'),
 )
 // A linked peer's compiled implementation: `<pkg>/lib/types/index.js` — the
-// tsc emit a linked 0.1.7-rc.1 tree ships instead of the exports-mapped
+// tsc emit a linked peer tree ships instead of the exports-mapped
 // `lib/index.js`. realpathSync walks the node_modules symlink out to the
 // upstream tree so the resolved id no longer sits under this checkout's
 // node_modules.
@@ -109,8 +109,8 @@ const stripInlinedDepSourceMaps = {
   },
 }
 
-// REGISTRY MODE ONLY: the published `dsh-client-ui-primitives` 0.1.7-rc.1
-// bundle value-imports two of its own devDependencies at runtime (`diff`,
+// REGISTRY MODE ONLY: the published `dsh-client-ui-primitives` bundle
+// value-imports two of its own devDependencies at runtime (`diff`,
 // `simple-icons` — upstream packaging gap), so a registry install can never
 // resolve them (devDependencies of a dependency are not installed, and the
 // lockfile rightly has no record). The client specs value-import the barrel
@@ -146,7 +146,7 @@ const stubPrimitivesDevDeps = {
         // Virtual module — plain JS (no TS annotations); loud on use: nothing
         // in this repo's test graph diffs text.
         'export function structuredPatch() {',
-        '  throw new Error(\'vitest: "diff" is stubbed in the test graph (dsh-client-ui-primitives 0.1.7-rc.1 imports it as a devDependency); a call here means the stub got too narrow\')',
+        '  throw new Error(\'vitest: "diff" is stubbed in the test graph (the published dsh-client-ui-primitives package imports it as a devDependency); a call here means the stub got too narrow\')',
         '}',
         'export default { structuredPatch }',
       ].join('\n')
