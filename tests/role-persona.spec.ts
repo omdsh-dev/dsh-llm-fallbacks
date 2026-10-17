@@ -309,6 +309,33 @@ describe('role persona — real cordis + real dsh-system-prompt', () => {
     expect(renderPrompt(assembly)).not.toContain(DEPLOYMENT_PERSONA)
   })
 
+  it('treats the registry’s exact scoped duplicate as descriptor-delivered (real registry)', async () => {
+    ctx = new Context()
+    const { agent, scopeKey } = await realChild('child-descriptor', 'coder')
+    // The persisted descriptor channel already put this section on the child's OWN
+    // scope (a resumed continuable child): register it the way that channel does —
+    // through an injected fiber on the child ctx — BEFORE the listener sees the
+    // child. The registry's exact scoped duplicate is then the ONLY available
+    // signal that the persona IS delivered, so the listener must skip silently
+    // instead of reporting a skip.
+    await agent.ctx.inject(['systemPrompt'], (scope) => {
+      scope.systemPrompt.section({ name: PERSONA_PREFIX_SECTION, order: 0, text: 'Descriptor persona' })
+    })
+    const records = new Map([['child-descriptor', seamRecord('coder')]])
+    const debug = vi.fn()
+    installRolePersona(ctx, { records, roles: () => ROLES, debug })
+
+    await ctx.serial('agent/created', { agent, source: 'startup' })
+
+    expect(records.get('child-descriptor')?.personaNotApplied).toBeUndefined()
+    // Exactly ONE section of that name, and it is the descriptor's: the skip is a
+    // decision, not a double registration.
+    const assembly = await ctx.systemPrompt.assemble({ scope: scopeKey })
+    expect(assembly.sections.filter((section) => section.name === PERSONA_PREFIX_SECTION).map((section) => section.text))
+      .toEqual(['Descriptor persona'])
+    expect(renderPrompt(assembly)).not.toContain('Coder persona')
+  })
+
   it('a GENUINE registration failure still reports the persona as not applied', async () => {
     ctx = new Context()
     await ctx.plugin(SystemPrompt, { personaPrefix: DEPLOYMENT_PERSONA })

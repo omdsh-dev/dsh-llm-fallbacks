@@ -877,7 +877,7 @@ describe('subagent seam — installed peer surface (drift probe)', () => {
     assertActivationSurface(installedSubagentSurface())
   })
 
-  it('rejects the pre-rc.1 surface shape (the guard\u2019s own negative control)', () => {
+  it('rejects the pre-rc.1 surface shape (the guard’s own negative control)', () => {
     // The surface this plugin was originally written against: the probe must
     // REJECT it, or it pins nothing.
     const legacy = [
