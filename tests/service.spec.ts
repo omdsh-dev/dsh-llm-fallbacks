@@ -14,8 +14,8 @@
  *   re-exports (single point of truth — no copied logic),
  * - `version` matches the package.json manifest,
  * - the surface is the six-key pure function face + `name`/`version` metadata
- *   plus the three additive role-seed methods (exactly nine keys — no
- *   stateStore / event / filter helpers),
+ *   plus the three additive role-seed methods and the additive dispatch-role
+ *   getter (exactly ten keys — no stateStore / event / filter helpers),
  * - dispose unregisters it: `ctx.get('llm-fallbacks')` is `undefined`
  *   afterwards (cordis 4.0.1 strict `get` on a missing impl — never throws;
  *   the provide disposer runs on the settings child's unload),
@@ -46,6 +46,7 @@ import {
   type FallbacksService,
 } from '../src/index.ts'
 import { FALLBACKS_PROFILE_ENTRY } from '../src/gateway.ts'
+import { subagentSeamOf } from '../src/subagents-seam.ts'
 import { MemorySettings } from './support/memory-settings.ts'
 import { settle } from './support/settle.ts'
 
@@ -105,12 +106,13 @@ describe('llm-fallbacks named cordis service', () => {
     expect(fb.version).toBe(packageVersion)
   })
 
-  it('exposes exactly the pure function surface + name/version metadata + the three additive seed methods (no state fields)', async () => {
+  it('exposes exactly the pure function surface + name/version metadata + the three additive seed methods + the dispatch-role getter (no state fields)', async () => {
     const fb = await appliedService()
-    // The nine-key shape pins both the full surface AND the absence of any
+    // The ten-key shape pins both the full surface AND the absence of any
     // state-bearing FIELD (stateStore / event emitters / filter helpers).
-    // The seed methods are closures over the per-apply manager — state stays
-    // behind the closure, never a property on the service object (spec §9.5).
+    // The seed methods are closures over the per-apply manager and the getter
+    // is a closure over the fiber's own seam — state stays behind the
+    // closures, never a property on the service object (spec §9.5).
     expect(Object.keys(fb)).toEqual([
       'name',
       'version',
@@ -121,6 +123,7 @@ describe('llm-fallbacks named cordis service', () => {
       'declareSeeds',
       'getEffectiveRoles',
       'revertSeededPersona',
+      'getAgentRole',
     ])
   })
 
@@ -315,5 +318,33 @@ describe('llm-fallbacks named cordis service', () => {
     } finally {
       await bareCtx.fiber.dispose()
     }
+  })
+
+  describe('getAgentRole — dispatch role getter', () => {
+    it('returns the DECLARED RAW role of the child’s seam record, trimming preserved', async () => {
+      const fb = await appliedService()
+      const seam = subagentSeamOf(ctx)!
+      seam.records.set('child-raw', { role: 'coder', at: 1, firstNoticePending: true })
+      seam.records.set('child-padded', { role: ' coder ', at: 1, firstNoticePending: true })
+
+      expect(fb.getAgentRole('child-raw')).toBe('coder')
+      // The record carries the DECLARED RAW id (` coder ` is declared padded):
+      // the getter reports it as declared, it never trims.
+      expect(fb.getAgentRole('child-padded')).toBe(' coder ')
+    })
+
+    it('returns null (never undefined) with no record for the id', async () => {
+      // A fresh apply has an EMPTY record map — no child carries a role yet.
+      const fb = await appliedService()
+      expect(fb.getAgentRole('unknown-child')).toBeNull()
+
+      // `agent/disposed` cleanup is the only lifecycle bound: a recorded child
+      // reads its role until then, and `null` afterwards (no stale value).
+      const seam = subagentSeamOf(ctx)!
+      seam.records.set('child-live', { role: 'reviewer', at: 1, firstNoticePending: true })
+      expect(fb.getAgentRole('child-live')).toBe('reviewer')
+      seam.records.delete('child-live')
+      expect(fb.getAgentRole('child-live')).toBeNull()
+    })
   })
 })

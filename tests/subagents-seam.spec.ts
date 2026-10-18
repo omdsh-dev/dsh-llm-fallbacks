@@ -1114,4 +1114,26 @@ describe('subagent seam — per-apply lifetime through apply()', () => {
     const reserved = fake.activations[1]!.childId
     expect(subagentSeamOf(ctx)!.records.get(String(reserved))?.role).toBe('rookie')
   })
+
+  it('the service getter reads the dispatch role before the child’s first step (plan agent-role-getter)', async () => {
+    const fake = fakeSubagents({ childId: 'child-role' })
+    ctx.provide('subagents', fake.service)
+    apply(ctx, cfg({ roles: { list: [{ id: 'coder', persona: '', chain: [] }], rules: [] } }))
+    // The service lives inside the settings inject child (seeds-declare-window):
+    // wait for visibility, then read the getter through the REAL service face.
+    await vi.waitFor(() => {
+      expect(ctx.get('llm-fallbacks')).toBeDefined()
+    })
+    const fb = ctx.get('llm-fallbacks')!
+
+    const { value } = await injectSubagents(ctx)
+    await startActivationOf(value)(activationSpec('task one', assignment('coder'), 'parent-session'))
+
+    // The notice row's precondition still holds — nothing has emitted the
+    // durable `[role: coder]` row yet, so this is the pre-first-step read.
+    expect(subagentSeamOf(ctx)!.records.get('child-role')?.firstNoticePending).toBe(true)
+    expect(fb.getAgentRole('child-role')).toBe('coder')
+    // A non-role child reads as `null`, never `undefined`.
+    expect(fb.getAgentRole('no-such-child')).toBeNull()
+  })
 })
