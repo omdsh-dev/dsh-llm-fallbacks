@@ -57,7 +57,7 @@ import {
   type CliOptions,
   type RunResult,
 } from '../scripts/repair-session-logs.ts'
-import { resolveCatalog, type CatalogHandle } from '../scripts/session-logs/catalog.ts'
+import { REQUIRED_CATALOG_VERSION, resolveCatalog, type CatalogHandle } from '../scripts/session-logs/catalog.ts'
 import { REFUSAL_CLASSES } from '../scripts/session-logs/rules.ts'
 import { decodeZstdFrames, encodeZstdFrames, successorFilename } from '../scripts/session-logs/publish.ts'
 
@@ -318,15 +318,52 @@ const FAKE_MUTATING_CATALOG_BODY = FAKE_CATALOG_BODY.replace(
         }`,
 )
 
-/** Read one published generation back through a catalog with the current policy. */
+/**
+ * The v3 floor behavior above, exposed by a build that declares currentVersion 4
+ * the way the released dsh 0.2.1-rc.2 catalog does: the CURRENT catalog refuses a
+ * pre-V3 restore outright (the V3→V4 edge needs historical child facts), and only
+ * the historicalSessionFormatCatalog export is usable as the repair floor. A CLI
+ * that restored or encoded through the current catalog would fail every fixture
+ * below; one that uses the floor passes them unchanged.
+ */
+const FAKE_NEWER_CATALOG_BODY = FAKE_CATALOG_BODY.replace(
+  'export const sessionFormatCatalog = {',
+  'export const historicalSessionFormatCatalog = {',
+) + `
+export const sessionFormatCatalog = {
+  currentVersion: 4,
+  createRestore() {
+    throw new Error('V3 catalog migration requires explicit historical child facts, including an empty array for a parent without children')
+  },
+  encodeCurrentHeader() {
+    throw new Error('the current encoder must not be the repair target')
+  },
+  encodeCurrentEvent() {
+    throw new Error('the current encoder must not be the repair target')
+  },
+}
+`
+
+/** A build newer than the floor that exposes NO historical catalog export. */
+const FAKE_NEWER_CATALOG_WITHOUT_FLOOR_BODY = FAKE_CATALOG_BODY.replace('currentVersion: 3', 'currentVersion: 4')
+
+/**
+ * Read one published successor back through the catalog's REPAIR FLOOR (the
+ * generation the successor is published at, and the same historical reader the
+ * host uses for a pre-current generation). A newer build's current catalog cannot
+ * restore a floor generation on its own: the V3→V4 edge needs historical child
+ * evidence that only the host's corpus-level migration preparation supplies.
+ */
 function readBackGeneration(
   catalog: CatalogHandle,
   path: string,
 ): { version: number; events: readonly unknown[] } {
+  const floor = catalog.floor
+  if (floor === null) throw new Error('the resolved released catalog exposes no repair floor')
   const frames = decodeZstdFrames(readFileSync(path))
   const headerFrame = frames[0] as string
   expect(headerFrame.indexOf('\n')).toBe(headerFrame.length - 1)
-  const restore = catalog.catalog.createRestore(JSON.parse(headerFrame.slice(0, -1)), {
+  const restore = floor.createRestore(JSON.parse(headerFrame.slice(0, -1)), {
     recovery: 'strict',
     validation: 'current',
   })
@@ -465,7 +502,7 @@ describe('successor naming agreement (CLI ↔ publisher)', () => {
     expect(applySink.out()).toContain('published session.v3.jsonl.zstd')
     expect(listing(log.dir)).toEqual(['session.jsonl.zstd', 'session.v3.jsonl.zstd'])
 
-    // The probe resolves its name from the catalog's `currentVersion`; it only
+    // The probe resolves its name from the handle's REPAIR FLOOR version; it only
     // finds (and proves) that file when the CLI's resolved name IS the publisher's
     // name for the same generation. A private CLI copy that drifted would report
     // "run with --apply" / `alreadyPublished: false` here instead.
@@ -2591,6 +2628,57 @@ describe('catalog release pin (C-3)', () => {
     expect(Object.keys(document.summary.byClass).sort()).toEqual([...REFUSAL_CLASSES].sort())
     expect(Object.values(document.summary.byClass).every((count) => Number.isFinite(count))).toBe(true)
     expect(Object.values(document.summary.byClass).reduce((sum, count) => sum + count, 0)).toBe(document.summary.total)
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/* catalog repair floor (release newer than the floor)                 */
+/* ------------------------------------------------------------------ */
+
+describe('catalog repair floor (release newer than the floor)', () => {
+  it('repairs and publishes the v3 floor through a newer build historical catalog', async () => {
+    const root = tempDir('rsl-newer-floor-apply-')
+    const catalogPath = writeFakeCatalog(undefined, FAKE_NEWER_CATALOG_BODY)
+    const log = writeGeneration(
+      root,
+      'example-ns',
+      'session-newer-floor',
+      'session.jsonl.zstd',
+      V0_HEADER,
+      [DESCRIPTOR_V2],
+    )
+    const sink = captureIO()
+
+    expect(await execute(optionsFor({ root, catalogPath, apply: true }), sink.io, bareEnv())).toBe(0)
+    expect(sink.out()).toContain('published session.v3.jsonl.zstd')
+    // The header names both the installed build and the generation repaired to.
+    expect(sink.out()).toContain('(v4, repair target v3, package 0.1.5-rc.1, resolved by option)')
+    expect(listing(log.dir)).toEqual(['session.jsonl.zstd', 'session.v3.jsonl.zstd'])
+    const handle = (await resolveCatalog({ catalogPath, env: bareEnv() })) as CatalogHandle
+    expect(readBackGeneration(handle, join(log.dir, 'session.v3.jsonl.zstd')).version).toBe(3)
+
+    // A second report run proves the successor through the floor and reports the
+    // repair target in --json as well.
+    const report = await runRepair(optionsFor({ root, catalogPath }), bareEnv())
+    expect(report.catalog).toMatchObject({ resolved: true, currentVersion: 4, repairVersion: 3 })
+    expect(outcomeFor(report, 'session-newer-floor')).toMatchObject({
+      status: 'repairable',
+      alreadyPublished: true,
+    })
+  })
+
+  it('refuses a newer catalog with no usable floor with a fatal (exit 2)', async () => {
+    const root = tempDir('rsl-newer-no-floor-')
+    writeGeneration(root, 'example-ns', 'session-x', 'session.jsonl.zstd', V0_HEADER, [{ ...PLAIN_ROW, seq: 0 }])
+    const catalogPath = writeFakeCatalog(undefined, FAKE_NEWER_CATALOG_WITHOUT_FLOOR_BODY)
+    const sink = captureIO()
+
+    expect(await execute(optionsFor({ root, catalogPath }), sink.io, bareEnv())).toBe(2)
+    expect(sink.err()).toContain('no usable historicalSessionFormatCatalog')
+    expect(sink.err()).toContain(`repair floor (v${REQUIRED_CATALOG_VERSION})`)
+    expect(sink.out()).toBe('')
+
+    await expect(runRepair(optionsFor({ root, catalogPath }), bareEnv())).rejects.toBeInstanceOf(FatalError)
   })
 })
 

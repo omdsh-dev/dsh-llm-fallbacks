@@ -101,6 +101,49 @@ function writeFakeCatalog(root: string, body = FAKE_CATALOG_BODY): string {
  */
 type FixtureRow = ParsedRow & Record<string, unknown>
 
+/**
+ * Body of a fake catalog package from a build NEWER than the repair floor: its
+ * current (v4) catalog refuses exactly the pre-V3 restore the tool must perform
+ * (the released build demands historical child facts), while its historical V3
+ * catalog is the floor the tool repairs through. Both encode/decode failures are
+ * loud, so a caller that used the current catalog instead of the floor would fail
+ * the test rather than silently publish a wrong generation.
+ */
+const FAKE_NEWER_CATALOG_BODY = `export const sessionFormatCatalog = {
+  currentVersion: 4,
+  createRestore() {
+    throw new Error('V3 catalog migration requires explicit historical child facts, including an empty array for a parent without children')
+  },
+  encodeCurrentHeader() {
+    throw new Error('the current encoder must not be the repair target')
+  },
+  encodeCurrentEvent() {
+    throw new Error('the current encoder must not be the repair target')
+  },
+}
+export const historicalSessionFormatCatalog = {
+  currentVersion: 3,
+  createRestore: () => ({
+    header: { version: 3 },
+    decodeRow() {},
+    finish: () => ({ header: { version: 3 }, inheritedEventCount: 0, events: [{ type: 'turn/start', seq: 3, time: 1, data: { turn: 1 } }] }),
+  }),
+  encodeCurrentHeader: (header) => ({ ...header }),
+  encodeCurrentEvent: (event) => ({ ...event }),
+}
+`
+
+/** The same newer build without any historical catalog: no usable repair floor. */
+const FAKE_NEWER_CATALOG_WITHOUT_FLOOR_BODY = `export const sessionFormatCatalog = {
+  currentVersion: 4,
+  createRestore() {
+    throw new Error('V3 catalog migration requires explicit historical child facts, including an empty array for a parent without children')
+  },
+  encodeCurrentHeader: (header) => ({ ...header }),
+  encodeCurrentEvent: (event) => ({ ...event }),
+}
+`
+
 /** An environment that cannot resolve a catalog: no PATH, an empty home. */
 function bareEnv(home = tempDir('slr-empty-home-')): NodeJS.ProcessEnv {
   return { PATH: '', HOME: home }
@@ -228,6 +271,56 @@ describe('resolveCatalog', () => {
     const packageDir = writeFakeCatalog(root, 'export const somethingElse = 1\n')
 
     await expect(resolveCatalog({ catalogPath: packageDir, env: bareEnv() })).resolves.toBeNull()
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/* repair-floor selection (catalog newer than the floor)               */
+/* ------------------------------------------------------------------ */
+
+describe('repair-floor selection', () => {
+  it('resolves a newer build historical catalog as the floor', async () => {
+    const root = tempDir('slr-newer-floor-')
+    const packageDir = writeFakeCatalog(root, FAKE_NEWER_CATALOG_BODY)
+
+    const handle = await resolveCatalog({ catalogPath: packageDir, env: bareEnv() })
+
+    expect(handle?.catalog.currentVersion).toBe(4)
+    expect(handle?.floor?.currentVersion).toBe(REQUIRED_CATALOG_VERSION)
+    expect(handle === null ? null : catalogVersionRefusal(handle)).toBeNull()
+  })
+
+  it('reports a newer build without a usable floor as an unusable oracle', async () => {
+    const root = tempDir('slr-newer-no-floor-')
+    const packageDir = writeFakeCatalog(root, FAKE_NEWER_CATALOG_WITHOUT_FLOOR_BODY)
+
+    const handle = await resolveCatalog({ catalogPath: packageDir, env: bareEnv() })
+
+    expect(handle).not.toBeNull()
+    expect(handle?.floor).toBeNull()
+    const refusal = handle === null ? null : catalogVersionRefusal(handle)
+    expect(refusal).toContain('no usable historicalSessionFormatCatalog')
+    expect(refusal).toContain(`repair floor (v${REQUIRED_CATALOG_VERSION})`)
+  })
+
+  it('classifies and publishes through the floor, never through the current catalog', async () => {
+    const root = tempDir('slr-newer-publish-')
+    const handle = await resolveCatalog({
+      catalogPath: writeFakeCatalog(root, FAKE_NEWER_CATALOG_BODY),
+      env: bareEnv(),
+    }) as CatalogHandle
+    const dir = tempDir('slr-newer-publish-session-')
+    const logPath = join(dir, 'session.jsonl.zstd')
+    writeFileSync(logPath, encodeZstdFrames(HEADER_ROW, [EVENT_ROW]))
+
+    // Both steps would throw the current catalog's child-facts refusal if the
+    // handle's floor were ignored.
+    expect(classifyWithCatalog([HEADER_ROW, EVENT_ROW], handle)).toBe('ok')
+    const result = await publishSuccessor(logPath, [HEADER_ROW, EVENT_ROW], handle, sha256(logPath))
+
+    expect(result.generation).toBe(REQUIRED_CATALOG_VERSION)
+    expect(result.targetPath).toBe(join(dir, `session.v${REQUIRED_CATALOG_VERSION}.jsonl.zstd`))
+    expect(existsSync(result.targetPath)).toBe(true)
   })
 })
 
@@ -373,8 +466,14 @@ function refusingCatalog(
 }
 
 /** Wrap one raw catalog in a handle, as `resolveCatalog` would. */
-function handleOf(catalog: ReleasedCatalog): CatalogHandle {
-  return { modulePath: '/fake/catalog/lib/index.js', resolvedBy: 'option', packageVersion: '0.1.5-rc.1', catalog }
+function handleOf(catalog: ReleasedCatalog, floor: ReleasedCatalog | null = catalog): CatalogHandle {
+  return {
+    modulePath: '/fake/catalog/lib/index.js',
+    resolvedBy: 'option',
+    packageVersion: '0.1.5-rc.1',
+    catalog,
+    floor,
+  }
 }
 
 const HEADER_ROW: FixtureRow = {
@@ -713,14 +812,17 @@ releaseOnly('publishSuccessor (released catalog)', () => {
     expect(readdirSync(dir).filter((name) => name.endsWith('.tmp'))).toEqual([])
 
     // Independent read-back: decode the published container and restore it
-    // through the same catalog with the host's current-generation policy.
+    // through the repair floor — the generation the successor is published at and
+    // the catalog the host itself uses to read a pre-current generation.
     const frames = decodeZstdFrames(readFileSync(targetPath))
     expect(frames).toHaveLength(2)
     const headerFrame = frames[0] as string
     expect(headerFrame.indexOf('\n')).toBe(headerFrame.length - 1)
     const publishedHeader = JSON.parse(headerFrame.slice(0, -1)) as { version: number }
     expect(publishedHeader.version).toBe(3)
-    const restore = oracle.catalog.createRestore(JSON.parse(headerFrame.slice(0, -1)), {
+    const floor = oracle.floor
+    if (floor === null) throw new Error('the resolved released catalog exposes no repair floor')
+    const restore = floor.createRestore(JSON.parse(headerFrame.slice(0, -1)), {
       recovery: 'strict',
       validation: 'current',
     })
@@ -847,20 +949,38 @@ describe('stale-publication settlement (seat 3 N-1)', () => {
 })
 
 describe('catalog release pin (C-3)', () => {
-  it('accepts a catalog at or above the required version and refuses one below it', () => {
-    const handle = (currentVersion: number): CatalogHandle => ({
-      modulePath: '/fake/catalog/lib/index.js',
-      resolvedBy: 'option',
-      packageVersion: '0.1.4',
-      catalog: { ...refusingCatalog(new Error('unused')), currentVersion },
-    })
+  /** One structural catalog declaring `currentVersion` (behavior is irrelevant to the pin). */
+  function catalogDeclaring(currentVersion: number): ReleasedCatalog {
+    return { ...refusingCatalog(new Error('unused')), currentVersion }
+  }
 
-    expect(catalogVersionRefusal(handle(REQUIRED_CATALOG_VERSION))).toBeNull()
-    expect(catalogVersionRefusal(handle(REQUIRED_CATALOG_VERSION + 1))).toBeNull()
-    const refusal = catalogVersionRefusal(handle(REQUIRED_CATALOG_VERSION - 1))
+  it('accepts a catalog at the required version and a newer one with a usable floor', () => {
+    expect(catalogVersionRefusal(handleOf(catalogDeclaring(REQUIRED_CATALOG_VERSION)))).toBeNull()
+    expect(catalogVersionRefusal(handleOf(
+      catalogDeclaring(REQUIRED_CATALOG_VERSION + 1),
+      catalogDeclaring(REQUIRED_CATALOG_VERSION),
+    ))).toBeNull()
+  })
+
+  it('refuses a catalog below the required version', () => {
+    const refusal = catalogVersionRefusal(handleOf(catalogDeclaring(REQUIRED_CATALOG_VERSION - 1)))
     expect(refusal).toContain('declares currentVersion 2')
     expect(refusal).toContain('requires at least 3')
-    expect(refusal).toContain('package version 0.1.4')
+    expect(refusal).toContain('package version 0.1.5-rc.1')
+  })
+
+  it('refuses a newer catalog that exposes no usable repair floor', () => {
+    const refusal = catalogVersionRefusal(handleOf(catalogDeclaring(REQUIRED_CATALOG_VERSION + 1), null))
+    expect(refusal).toContain('no usable historicalSessionFormatCatalog')
+    expect(refusal).toContain(`repair floor (v${REQUIRED_CATALOG_VERSION})`)
+  })
+
+  it('refuses a repair floor below the required version or above the declared one', () => {
+    const newer = REQUIRED_CATALOG_VERSION + 1
+    expect(catalogVersionRefusal(handleOf(catalogDeclaring(newer), catalogDeclaring(REQUIRED_CATALOG_VERSION - 1))))
+      .toContain('requires a floor of at least')
+    expect(catalogVersionRefusal(handleOf(catalogDeclaring(newer), catalogDeclaring(newer + 1))))
+      .toContain('no greater than the declared currentVersion')
   })
 })
 

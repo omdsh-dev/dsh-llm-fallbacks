@@ -14,7 +14,11 @@
  *     (`ZSTD_c_checksumFlag`), exactly like the released writer.
  * The successor's records come from the RELEASED encoder
  * (`encodeCurrentHeader` / `encodeCurrentEvent`), not from the input rows, so
- * the written generation is whatever the catalog considers current.
+ * the written generation is whatever the catalog's REPAIR FLOOR considers
+ * current — v3 when the installed build is newer (see `CatalogHandle.floor`).
+ * The host then migrates that v3 generation onward to the installed current
+ * format with its own historical child evidence; this module never paints a
+ * generation whose migration needs corpus-level facts a single log lacks.
  *
  * COMPRESSION — Node's `node:zlib` zstd API, no `zstd` CLI (measured on
  * v24.18.0: `zstdCompress`/`zstdDecompress` exist and are used here):
@@ -66,7 +70,7 @@ import { link, readFile, rm, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { constants, zstdCompressSync, zstdDecompressSync } from 'node:zlib'
 import type { CatalogHandle, ReleasedArtifact, ReleasedCatalog } from './catalog.ts'
-import { restoreRows } from './catalog.ts'
+import { repairCatalog, restoreRows } from './catalog.ts'
 import type { ParsedRow } from './rules.ts'
 
 /** Zstandard frame magic (little-endian `0xFD2FB528`). */
@@ -333,8 +337,9 @@ function sizeToNumber(buffer: Buffer, offset: number, width: number): number | n
  * function, which it receives from `runRepair`'s dynamic import of this module
  * (a static import would defeat the `node:zlib` zstd runtime probe that must run
  * first). `publishSuccessor` derives its target from the RESTORED header's
- * version, the CLI's probe from the resolved catalog's declared
- * `currentVersion` — see the probe's comment in `repair-session-logs.ts`.
+ * version (the repair floor), and the CLI's probe resolves the floor's
+ * `currentVersion` through the catalog handle — the two agree for every released
+ * catalog, whose restore settles at the floor it was chosen for.
  */
 export function successorFilename(version: number): string {
   return version === 0 ? 'session.jsonl.zstd' : `session.v${version}.jsonl.zstd`
@@ -382,6 +387,13 @@ export async function publishSuccessor(
   sourceDigest: string,
 ): Promise<PublishedSuccessor> {
   const handle = assertCatalog(catalog)
+  // The generation this tool repairs TO: the declared catalog itself on a build
+  // at the floor, the build's own historical V0–V3 catalog on a newer one. A
+  // restore through the newer build's current catalog would demand historical
+  // child evidence this single-log tool cannot produce; the floor restore has no
+  // such requirement, and the host migrates the published floor generation
+  // onward with its own child facts.
+  const floor = repairCatalog(handle)
   const originalBytes = await readFile(logPath)
   const originalDigest = sha256(originalBytes)
   if (originalDigest !== sourceDigest) {
@@ -394,7 +406,7 @@ export async function publishSuccessor(
   // Defensive copy: the caller's rows alias `form` / `summary` / `sections`
   // objects, and the released restore may normalize the artifact in place.
   const rows = structuredClone(normalizedRows)
-  const artifact = restoreRows(handle.catalog, rows, { recovery: 'strict', validation: 'transformed' })
+  const artifact = restoreRows(floor, rows, { recovery: 'strict', validation: 'transformed' })
   const generation = artifact.header.version
   const targetPath = join(dirname(logPath), successorFilename(generation))
   if (resolve(targetPath) === resolve(logPath)) {
@@ -405,10 +417,10 @@ export async function publishSuccessor(
   // (lazily): materializing them all first would hold a second copy of the session
   // alongside the restored artifact it was built from.
   const encodedEvents = function* (): Generator<Record<string, unknown>> {
-    for (const event of artifact.events) yield handle.catalog.encodeCurrentEvent(event)
+    for (const event of artifact.events) yield floor.encodeCurrentEvent(event)
   }
   const bytes = encodeZstdFrames(
-    handle.catalog.encodeCurrentHeader(artifact.header, artifact.inheritedEventCount),
+    floor.encodeCurrentHeader(artifact.header, artifact.inheritedEventCount),
     encodedEvents(),
   )
 
@@ -422,8 +434,10 @@ export async function publishSuccessor(
     // names instead of ignoring them.
     await writeFile(temporaryPath, bytes, { flag: 'wx', mode: 0o600 })
     // Read the staged generation back with the host's current-generation policy
-    // BEFORE it becomes visible under its canonical name.
-    verifyGeneration(handle.catalog, await readFile(temporaryPath), generation)
+    // BEFORE it becomes visible under its canonical name. The floor catalog is
+    // the one that must read it: it is the build whose encoder wrote it and the
+    // same historical reader the host uses for a pre-current generation.
+    verifyGeneration(floor, await readFile(temporaryPath), generation)
     outcome = await publishExclusive(temporaryPath, targetPath, sha256(bytes))
   } catch (error) {
     try {
