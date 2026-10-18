@@ -67,12 +67,20 @@ const CATALOG_PACKAGE_DIR = 'dsh-session-format-catalog'
 export const CATALOG_ENV_VAR = 'DSH_SESSION_FORMAT_CATALOG'
 
 /**
- * The oldest released catalog this tool accepts as its oracle: the format
+ * The oldest released catalog this tool accepts as its oracle AND the format
  * generation it repairs TO (`CURRENT_VERSION_FLOOR`, the pre-V3 scope). A catalog
  * below it cannot read a successor this tool would write, so `--apply` must
  * refuse rather than verify its own output against a build the GUI does not run.
  * One constant for both the selection scope and the oracle floor: they are the
  * same number and must not drift.
+ *
+ * The repair target stays at this floor even when the installed build is newer:
+ * the tool only repairs logs BELOW the floor, and the next released edge
+ * (V3→V4) requires historical child evidence (one parent's complete child
+ * descriptors) that a single-log repair cannot produce. The successor is
+ * therefore encoded through the newer build's own `historicalSessionFormatCatalog`
+ * (see {@link CatalogHandle.floor}) and the host migrates it onward, with its own
+ * child facts, exactly like any other readable pre-V3 session it opens.
  */
 export const REQUIRED_CATALOG_VERSION = 3
 
@@ -131,24 +139,77 @@ export interface CatalogHandle {
   readonly packageVersion: string | null
   /** The released catalog module's `sessionFormatCatalog` export. */
   readonly catalog: ReleasedCatalog
+  /**
+   * The catalog generation this tool REPAIRS TO — the format floor
+   * ({@link REQUIRED_CATALOG_VERSION}): the declared catalog itself when the
+   * resolved build is AT the floor, otherwise that build's
+   * `historicalSessionFormatCatalog` export (the V0–V3 reader/encoder).
+   *
+   * Every restore, classification and published successor goes through this
+   * catalog, so the successor's header version (and the `N` in its canonical
+   * filename) is the floor, never a generation whose migration needs evidence a
+   * single-log repair cannot supply. `null` when the resolved build is newer than
+   * the floor but exposes no usable historical catalog: the caller refuses the
+   * whole run through {@link catalogVersionRefusal} (fatal, exit 2) instead of
+   * publishing a generation it cannot restore, verify or hand to the host.
+   */
+  readonly floor: ReleasedCatalog | null
 }
 
 /**
  * Why a resolved catalog may not be used as this run's oracle, or `null` when it
  * may. The caller turns a non-`null` reason into a fatal (exit 2) refusal: a
  * below-floor catalog would encode a successor this tool's own read-back cannot
- * vouch for, and the GUI would not run it either.
+ * vouch for, and the GUI would not run it either; a newer build without a usable
+ * repair floor could not be restored or encoded at all.
  */
 export function catalogVersionRefusal(handle: CatalogHandle): string | null {
   const version = handle.catalog.currentVersion
-  if (typeof version === 'number' && Number.isSafeInteger(version) && version >= REQUIRED_CATALOG_VERSION) {
-    return null
+  if (!(typeof version === 'number' && Number.isSafeInteger(version) && version >= REQUIRED_CATALOG_VERSION)) {
+    return `the resolved released catalog at ${handle.modulePath}`
+      + `${handle.packageVersion === null ? '' : ` (package version ${handle.packageVersion})`}`
+      + ` declares currentVersion ${JSON.stringify(version)}, but this tool requires at least `
+      + `${REQUIRED_CATALOG_VERSION}: it would publish a successor that build cannot read. `
+      + 'Point --catalog (or DSH_SESSION_FORMAT_CATALOG) at the catalog of the release the GUI runs.'
   }
-  return `the resolved released catalog at ${handle.modulePath}`
-    + `${handle.packageVersion === null ? '' : ` (package version ${handle.packageVersion})`}`
-    + ` declares currentVersion ${JSON.stringify(version)}, but this tool requires at least `
-    + `${REQUIRED_CATALOG_VERSION}: it would publish a successor that build cannot read. `
-    + 'Point --catalog (or DSH_SESSION_FORMAT_CATALOG) at the catalog of the release the GUI runs.'
+  if (handle.floor === null) {
+    return `the resolved released catalog at ${handle.modulePath}`
+      + `${handle.packageVersion === null ? '' : ` (package version ${handle.packageVersion})`}`
+      + ` declares currentVersion ${version}, but it exposes no usable historicalSessionFormatCatalog at the `
+      + `repair floor (v${REQUIRED_CATALOG_VERSION}). This tool repairs pre-V3 logs by publishing a v`
+      + `${REQUIRED_CATALOG_VERSION} successor: the V3→V4 edge needs historical child evidence that a single-log `
+      + 'repair cannot supply, so the floor reader/encoder is what restores and verifies the successor and the '
+      + 'host migrates it onward when it opens the session. Point --catalog (or DSH_SESSION_FORMAT_CATALOG) at '
+      + `a build that declares currentVersion >= ${REQUIRED_CATALOG_VERSION} and still exports `
+      + 'historicalSessionFormatCatalog.'
+  }
+  const floorVersion = handle.floor.currentVersion
+  if (!(typeof floorVersion === 'number' && Number.isSafeInteger(floorVersion)
+    && floorVersion >= REQUIRED_CATALOG_VERSION && floorVersion <= version)) {
+    return `the resolved released catalog at ${handle.modulePath} exposes a repair-floor catalog that declares `
+      + `currentVersion ${JSON.stringify(floorVersion)}, but this tool requires a floor of at least `
+      + `${REQUIRED_CATALOG_VERSION} no greater than the declared currentVersion ${version}. `
+      + 'Point --catalog (or DSH_SESSION_FORMAT_CATALOG) at the catalog of the release the GUI runs.'
+  }
+  return null
+}
+
+/**
+ * The catalog generation this tool repairs TO (see {@link CatalogHandle.floor}).
+ *
+ * Callers reach this only after {@link catalogVersionRefusal} accepted the handle;
+ * the throw is the fail-closed backstop for a caller that skipped that gate (a
+ * restore or encode through a missing floor must never degrade to "nothing was
+ * published").
+ */
+export function repairCatalog(handle: CatalogHandle): ReleasedCatalog {
+  if (handle.floor === null) {
+    throw new Error(
+      `the resolved session-format catalog exposes no usable repair-floor catalog (v${REQUIRED_CATALOG_VERSION}): `
+      + 'refusing to restore or encode a successor with it',
+    )
+  }
+  return handle.floor
 }
 
 /** Inputs for {@link resolveCatalog}. */
@@ -195,17 +256,42 @@ async function loadCatalog(
   const modulePath = resolveCatalogEntry(candidate, env)
   if (modulePath === null) return null
   try {
-    const loaded = (await import(pathToFileURL(modulePath).href)) as { sessionFormatCatalog?: unknown }
+    const loaded = (await import(pathToFileURL(modulePath).href)) as {
+      sessionFormatCatalog?: unknown
+      historicalSessionFormatCatalog?: unknown
+    }
     if (!isReleasedCatalog(loaded.sessionFormatCatalog)) return null
     return {
       modulePath,
       resolvedBy,
       packageVersion: catalogPackageVersion(modulePath),
       catalog: loaded.sessionFormatCatalog,
+      floor: floorCatalogOf(loaded.sessionFormatCatalog, loaded.historicalSessionFormatCatalog),
     }
   } catch {
     return null
   }
+}
+
+/**
+ * The catalog generation this tool repairs TO: the declared catalog itself when
+ * the resolved build is at or below the floor, otherwise that build's
+ * `historicalSessionFormatCatalog` export.
+ *
+ * A build newer than the floor publishes nothing but its own current generation,
+ * and the released V3→V4 edge needs historical child evidence no single-log
+ * repair can produce; the historical export is that build's own V0–V3
+ * reader/encoder, so restoring through it and encoding the floor generation is
+ * the only successor the tool can both verify and hand to the host.
+ *
+ * @param catalog the module's declared `sessionFormatCatalog`.
+ * @param historical the module's `historicalSessionFormatCatalog`, unknown.
+ * @returns the floor catalog, or `null` when a newer build exposes none.
+ */
+function floorCatalogOf(catalog: ReleasedCatalog, historical: unknown): ReleasedCatalog | null {
+  if (catalog.currentVersion <= REQUIRED_CATALOG_VERSION) return catalog
+  if (isReleasedCatalog(historical) && historical.currentVersion === REQUIRED_CATALOG_VERSION) return historical
+  return null
 }
 
 /**
@@ -526,7 +612,12 @@ function refusalClass(error: unknown): RefusalClass {
  * The restore runs under the pinned policy
  * `createRestore(header, { recovery: 'recoverable', validation: 'transformed' })`
  * and every row is decoded before `finish()`, so the class is the one the
- * released chain raises first for this log.
+ * released chain raises first for this log on its way to the REPAIR FLOOR
+ * ({@link CatalogHandle.floor}) — the pre-V3 chain this tool repairs along and
+ * the generation it publishes. With a newer installed build the floor is that
+ * build's `historicalSessionFormatCatalog`; the host's forward migration from
+ * the floor to current (which needs corpus-level child evidence) is outside a
+ * single log's verdict.
  *
  * Returned classes: `'ok'` when the restore completes, `'source-kind'`,
  * `'subagent-descriptor-version'`, `'unknown-event-type'` for the three released
@@ -539,7 +630,7 @@ function refusalClass(error: unknown): RefusalClass {
  */
 export function classifyWithCatalog(rows: readonly ParsedRow[], catalog: CatalogHandle): RefusalClass {
   try {
-    restoreRows(catalog.catalog, rows, { recovery: 'recoverable', validation: 'transformed' })
+    restoreRows(repairCatalog(catalog), rows, { recovery: 'recoverable', validation: 'transformed' })
     return 'ok'
   } catch (error) {
     return refusalClass(error)

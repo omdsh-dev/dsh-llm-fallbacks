@@ -9,8 +9,12 @@
  * and — only for the classes whose normalization is provably shape-preserving
  * (the rule registry in `./session-logs/rules.ts`) and only with a resolved
  * released catalog as the oracle (`./session-logs/catalog.ts`) — publishes a
- * current-generation successor beside the original
- * (`./session-logs/publish.ts`). The original generation is never modified.
+ * REPAIR-FLOOR (v3) successor beside the original (`./session-logs/publish.ts`).
+ * The original generation is never modified. A newer installed catalog supplies
+ * that floor through its own `historicalSessionFormatCatalog`; the host migrates
+ * the published v3 generation onward when it opens the session, with its own
+ * historical child evidence (the V3→V4 edge needs evidence no single-log repair
+ * can produce — see `CatalogHandle.floor`).
  *
  * This module CONSUMES the frozen Task 1/2 modules; it re-implements none of
  * them. The refusal vocabulary, the rule registry, the oracle resolution and
@@ -134,8 +138,8 @@
  * at all (`skipped`), or a stale `session.repair.*.jsonl.zstd.tmp` was found under
  * the root; 2 = fatal (bad arguments, missing/unreadable
  * `--root`, `--apply` without a resolved catalog, a catalog below the required
- * format version, `--apply --drop-legacy-events` without `--backup`, or a runtime
- * without zstd).
+ * format version or a newer catalog without a usable repair floor,
+ * `--apply --drop-legacy-events` without `--backup`, or a runtime without zstd).
  */
 import { createHash } from 'node:crypto'
 import { constants as fsConstants } from 'node:fs'
@@ -149,6 +153,7 @@ import {
   REQUIRED_CATALOG_VERSION,
   catalogVersionRefusal,
   classifyWithCatalog,
+  repairCatalog,
   resolveCatalog,
   restoreRows,
 } from './session-logs/catalog.ts'
@@ -733,6 +738,12 @@ export interface RunResult {
       packageVersion: string | null
       /** The format version that catalog declares as current. */
       currentVersion: number
+      /**
+       * The format version this tool REPAIRS TO (the floor): the declared
+       * `currentVersion` on a build at the floor, otherwise that build's
+       * historical V0–V3 catalog. Successors are published at this version.
+       */
+      repairVersion: number
     }
     | { resolved: false }
   logs: LogOutcome[]
@@ -801,8 +812,11 @@ function strictRefusalOf(rows: readonly ParsedRow[], catalog: CatalogHandle | nu
     // differs from this one exactly by `recovery`, so a refusal found here can only
     // mean the rows after it are dropped — not merely that the session is not
     // current-shaped. Using the publisher's `validation: 'current'` axis here would
-    // over-claim truncation for a log that loses no rows at all.
-    restoreRows(catalog.catalog, structuredClone(rows), { recovery: 'strict', validation: 'transformed' })
+    // over-claim truncation for a log that loses no rows at all. The restore goes
+    // through the REPAIR FLOOR (the pre-V3 chain this tool repairs along and the
+    // generation it publishes); the host's floor→current migration needs
+    // corpus-level child evidence and is outside a single log's verdict.
+    restoreRows(repairCatalog(catalog), structuredClone(rows), { recovery: 'strict', validation: 'transformed' })
     return null
   } catch (error) {
     const cause = error instanceof Error ? error.cause : undefined
@@ -1004,7 +1018,10 @@ function lossyDropRefusal(
   try {
     // A defensive copy: the released restore normalizes a packed Assistant run's
     // stream IN PLACE, and `repaired` is what the publisher is about to write.
-    restoreRows(catalog.catalog, structuredClone(repaired), { recovery: 'strict', validation: 'transformed' })
+    restoreRows(repairCatalog(catalog), structuredClone(repaired), {
+      recovery: 'strict',
+      validation: 'transformed',
+    })
   } catch (error) {
     return {
       ok: false,
@@ -1228,23 +1245,25 @@ async function analyzeLog(candidate: LogGeneration, context: InspectContext): Pr
   }
   const renumbered = verdict === null ? 0 : verdict.renumberedEventCount
 
-  // The successor NAME needs the catalog's current version, so it is only known
-  // with a resolved oracle: in report mode without one nothing is probed (the log
-  // is still reported `repairable` from the rule registry alone), and `--apply`
-  // was already refused as fatal by the caller — which is why the null case is
-  // checked here rather than assumed away.
+  // The successor NAME needs the repair floor's version, so it is only known with
+  // a resolved oracle: in report mode without one nothing is probed (the log is
+  // still reported `repairable` from the rule registry alone), and `--apply` was
+  // already refused as fatal by the caller — which is why the null case is checked
+  // here rather than assumed away.
   //
   // The name comes from the publisher's own exported rule (no local copy). Note
-  // the two INPUTS differ: this probe uses the resolved catalog's declared
-  // `currentVersion`, while `publishSuccessor` derives its target from the version
-  // the RESTORED header settles on. They agree for every catalog whose restore
-  // settles at the version it declares (the released one does — its successor is
-  // read back and pinned to that version before publication); a catalog that
-  // declared one version and settled at another would leave this probe looking for
-  // a name the publication never used, so report mode alone could call such a log
-  // unpublished while `--apply` accepts the existing successor as byte-identical.
+  // the two INPUTS differ: this probe uses the handle's REPAIR FLOOR version,
+  // while `publishSuccessor` derives its target from the version the RESTORED
+  // header settles on. They agree for every released catalog (the floor catalog's
+  // restore settles at the floor it declares, and the publisher pins the
+  // successor to it before publication); a catalog whose restore settled at a
+  // different version would leave this probe looking for a name the publication
+  // never used, so report mode alone could call such a log unpublished while
+  // `--apply` accepts the existing successor as byte-identical.
   const catalog = context.catalog
-  const expected = catalog === null ? null : context.successorFilename(catalog.catalog.currentVersion)
+  const expected = catalog === null
+    ? null
+    : context.successorFilename(repairCatalog(catalog).currentVersion)
   const successorPath = expected === null ? null : join(candidate.sessionDir, expected)
   const existingSuccessor =
     successorPath !== null && (await fileExists(successorPath)) ? successorPath : null
@@ -1493,10 +1512,11 @@ export async function runRepair(
       throw new FatalError(messageOf(error))
     }
   }
-  // The oracle is pinned to a RELEASE, in every mode: the same module encodes the
-  // successor and reads it back, so "it accepts its own output" is only evidence
-  // when the module is the build that will read the session. A catalog below the
-  // floor is a fatal (exit 2), not a quieter classification.
+  // The oracle is pinned to a RELEASE, in every mode: the floor catalog encodes
+  // the successor and reads it back, so "it accepts its own output" is only
+  // evidence when the floor comes from the build that will read the session. A
+  // catalog below the floor, or a newer build with no usable floor, is a fatal
+  // (exit 2), not a quieter classification.
   const catalogProblem = catalog === null ? null : catalogVersionRefusal(catalog)
   if (catalogProblem !== null) throw new FatalError(catalogProblem)
 
@@ -1510,6 +1530,7 @@ export async function runRepair(
       resolvedBy: catalog.resolvedBy,
       packageVersion: catalog.packageVersion,
       currentVersion: catalog.catalog.currentVersion,
+      repairVersion: repairCatalog(catalog).currentVersion,
     }
 
   const reportRules = policyRules(options.dropLegacyEvents)
@@ -1741,6 +1762,9 @@ function reportHead(head: ReportHead, io: CliIO): void {
   io.out(
     head.catalog.resolved
       ? `catalog: ${head.catalog.modulePath} (v${head.catalog.currentVersion},`
+        + `${head.catalog.repairVersion === head.catalog.currentVersion
+          ? ''
+          : ` repair target v${head.catalog.repairVersion},`}`
         + ` package ${head.catalog.packageVersion ?? 'version unknown'}, resolved by ${head.catalog.resolvedBy})`
       : `catalog: none resolved — classification is STRUCTURAL ONLY and --apply would refuse `
         + `(no --catalog, no ${CATALOG_ENV_VAR}, no dsh on PATH, no npx install)`,
@@ -1884,15 +1908,19 @@ export function usage(): string {
 Triage (default, read-only) and repair (--apply) pre-V3 dsh session logs. A log is
 refused when the FROZEN released migration chain cannot classify it; this tool names
 the refusal class and, for the classes whose normalization is provably
-shape-preserving, publishes a current-generation successor beside the original. The
-original generation is never modified and never truncated.
+shape-preserving, publishes a REPAIR-FLOOR (v${CURRENT_VERSION_FLOOR}) successor generation
+beside the original. The original generation is never modified and never truncated.
+The floor stays v${CURRENT_VERSION_FLOOR} even when the installed catalog is newer: the next
+released edge (v${CURRENT_VERSION_FLOOR}->v${CURRENT_VERSION_FLOOR + 1}) needs historical child evidence a
+single-log repair cannot produce, so the host migrates the published v${CURRENT_VERSION_FLOOR}
+generation onward when it opens the session.
 
   --root DIR     session root to walk (default: $DSH_HOME or ~/.dsh, then /sessions).
                  Every <namespace>/<session>/ directory's newest canonical generation
                  below format v${CURRENT_VERSION_FLOOR} is considered; noncanonical names (staged
-                 .tmp files, .bak copies) are ignored, and a current generation already
-                 present beside it is reported as an already published successor (proven
-                 by a read-back) instead of being a repair target.
+                 .tmp files, .bak copies) are ignored, and a repair-floor generation
+                 already present beside it is reported as an already published
+                 successor (proven by a read-back) instead of being a repair target.
                  A namespace/session directory that cannot be read, a canonical
                  generation BELOW the format floor that is a symlink or not a regular
                  file, and a stale session.repair.*.jsonl.zstd.tmp are REPORTED (a
@@ -1903,7 +1931,8 @@ original generation is never modified and never truncated.
                  Symlinks are reported, never followed: a repair writes beside the
                  generation it repairs, which must stay inside --root.
   --apply        run the rules' proofs and publish a successor generation per repaired
-                 log. Requires a resolved catalog. Default: read-only report.
+                 log, at the repair floor (v${CURRENT_VERSION_FLOOR}). Requires a resolved catalog.
+                 Default: read-only report.
                  The revision this run DECODED is digest-checked against the file before
                  anything is staged, so a concurrent append is refused before the first
                  write; if the source moves after a publication this run CREATED, that
@@ -1924,9 +1953,14 @@ original generation is never modified and never truncated.
                  resolves, then the newest ~/.npm/_npx install. The resolved module is
                  EXECUTED, not parsed (the same privilege as running this tool), and it
                  must declare currentVersion >= ${CURRENT_VERSION_FLOOR}: a below-floor catalog is
-                 refused with exit 2 rather than trusted to verify its own output. A file
-                 candidate whose owning package.json names a different package is
-                 refused too. The report names the module path, its format version and
+                 refused with exit 2 rather than trusted to verify its own output. When
+                 currentVersion is ABOVE the floor, the module must also export
+                 historicalSessionFormatCatalog (that build's V0-V${CURRENT_VERSION_FLOOR} reader/encoder):
+                 the floor catalog restores and verifies the published v${CURRENT_VERSION_FLOOR} successor
+                 and the host migrates it onward with its own child evidence; a build
+                 without a usable floor is refused with exit 2. A file candidate whose
+                 owning package.json names a different package is refused too. The
+                 report names the module path, its format version, the repair target and
                  its package version.
   --backup       copy the original generation to <name>.bak before publishing. A run
                  that ends up publishing nothing removes the copy IT created again,
