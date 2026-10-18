@@ -1,6 +1,6 @@
 # Consumer Contract (Consumer API)
 
-This document defines the **consumer surface** `dsh-llm-fallbacks` exposes: (1) the package-root library API (`import { … } from 'dsh-llm-fallbacks'`); (2) the named cordis service (`ctx.get('llm-fallbacks')`). No logic is copied between the two: the service's four legacy callables are the same function references as the library re-exports, and its three role-seed methods are per-apply closures over the same `FallbacksSeedManager` the gateway uses (single point of truth — see [Lifecycle](#lifecycle)). Installation → [docs/install.md](install.md); release process → [docs/release.md](release.md).
+This document defines the **consumer surface** `dsh-llm-fallbacks` exposes: (1) the package-root library API (`import { … } from 'dsh-llm-fallbacks'`); (2) the named cordis service (`ctx.get('llm-fallbacks')`). No logic is copied between the two: the service's four legacy callables are the same function references as the library re-exports, its three role-seed methods are per-apply closures over the same `FallbacksSeedManager` the gateway uses, and `getAgentRole` reads the dispatch seam's own per-child record (single point of truth — see [Lifecycle](#lifecycle) and [Dispatch role getter](#dispatch-role-getter)). Installation → [docs/install.md](install.md); release process → [docs/release.md](release.md).
 
 > **Contract boundary**: this document describes **this package's** export surface and lifecycle. **A valid package contract ≠ an integrated downstream repository** — whether integration is complete must be judged by the actual wiring in the target repository.
 
@@ -38,6 +38,7 @@ validateFallbacksConfig(config, logger)
 | `validateFallbacksConfig(config, logger)` | Validates config legality (undeclared role references, illegal chains, etc.); problems are warned via `logger.warn` (never throws). |
 | `detectLegacyKeys(source)` | Detects removed legacy keys (e.g. `chains`) in the config, returning the list of keys hit. |
 | `parseSelector(input)` | Parses a `provider/model` or `provider/*` selector; throws `SelectorError` on invalid input. |
+| `readRoleProjectionValue(value)` | Defensive read of a `ROLE_PROJECTION_KEY` projection value: returns it only when it is a non-blank string, otherwise `undefined` — a missing key / no frame yet / a foreign value all read as "no role" so the role pill collapses instead of naming something wrong. |
 
 ### Value exports
 
@@ -49,6 +50,7 @@ validateFallbacksConfig(config, logger)
 | `provide` | Declarative service metadata `['llm-fallbacks'] as const` (for loader/tool recognition; actual registration happens inside the plugin's settings inject child — see the named service section below). |
 | `SelectorError` | The catchable error class thrown by `parseSelector` — catch-side type safety depends on it. |
 | `presetRoles` | The 5 bundled omp-style preset role declarations — `readonly SeedDeclaration[]`, pure data module, the exact payload the plugin self-declares on apply. Derivation: omp bundled agent prompts `packages/coding-agent/src/prompts/agents/`, snapshot 2026-08-16; persona text frozen per the plugin spec §9.2. See [Preset roles](#preset-roles). |
+| `ROLE_PROJECTION_KEY` | The host session-projection key `'fallbacksSubagentRole'` the role pill reads (`useProjection(ROLE_PROJECTION_KEY)`) — the DURABLE declared-raw-role read, published after the child's first `agent/pre-step`; read it through `readRoleProjectionValue`. |
 
 ### Preset roles
 
@@ -84,7 +86,7 @@ Operator-facing behavior of the automatic declaration (config key `presets: 'bun
 
 ## Named service (`ctx.get('llm-fallbacks')`)
 
-Once the plugin's settings write channel is bound, a service is registered on the cordis `Context` under the name `'llm-fallbacks'` (provided from inside the plugin's settings inject child — see [Lifecycle](#lifecycle)). **It is a small face over the library logic — not a second library API**: the four legacy callables are reference-identical to the library re-exports, and the three role-seed methods are per-apply closures over the seed manager (state stays behind the closure, spec §9.5) — no copied logic on either side. Runtime state (cooldown, recent switches, etc.) is not part of the contract — cross-plugin state reads should listen to `fallbacks/switch` events instead of reading service object internals. Caveat: the plugin writes **no** durable `fallbacks/switch` events (issue #52 — the apply()-time event-type registration was proven ineffective), so events cannot serve as a live state channel: new switches are recorded in the info logs, and in-session recent-switch surfaces (`/fallbacks`, settings card) reflect only events already in the session history. Sessions written by older plugin versions that contain such events are triaged by the plugin repo's `pnpm repair:session-logs` tool: the released migration chain refuses the event type even with `ignorable: true`, so the default run is a read-only report and only the explicit lossy `--drop-legacy-events` opt-in can recover such a log (see [Repair existing sessions](repair.md#repair-existing-sessions) / [install.md](install.md) notes). For state that must stay current in-process, prefer in-process reads over the persisted events.
+Once the plugin's settings write channel is bound, a service is registered on the cordis `Context` under the name `'llm-fallbacks'` (provided from inside the plugin's settings inject child — see [Lifecycle](#lifecycle)). **It is a small face over the library logic — not a second library API**: the four legacy callables are reference-identical to the library re-exports, the three role-seed methods are per-apply closures over the seed manager, and `getAgentRole` closes over the dispatch seam the persona/notice path writes (state stays behind the closures, spec §9.5) — no copied logic on either side. Runtime state (cooldown, recent switches, etc.) is not part of the contract — cross-plugin state reads should listen to `fallbacks/switch` events instead of reading service object internals. Caveat: the plugin writes **no** durable `fallbacks/switch` events (issue #52 — the apply()-time event-type registration was proven ineffective), so events cannot serve as a live state channel: new switches are recorded in the info logs, and in-session recent-switch surfaces (`/fallbacks`, settings card) reflect only events already in the session history. Sessions written by older plugin versions that contain such events are triaged by the plugin repo's `pnpm repair:session-logs` tool: the released migration chain refuses the event type even with `ignorable: true`, so the default run is a read-only report and only the explicit lossy `--drop-legacy-events` opt-in can recover such a log (see [Repair existing sessions](repair.md#repair-existing-sessions) / [install.md](install.md) notes). For state that must stay current in-process, prefer in-process reads over the persisted events.
 
 ### Shape
 
@@ -99,10 +101,29 @@ Once the plugin's settings write channel is bound, a service is registered on th
   declareSeeds: (seeds: readonly SeedDeclaration[], options?: SeedsDeclareOptions) => Promise<SeedDeclareOutcome>
   getEffectiveRoles: () => EffectiveRolesReadback
   revertSeededPersona: (id: string) => Promise<SeedRevertOutcome>
+  getAgentRole: (agentId: string) => string | null
 }
 ```
 
-The service surface **deliberately excludes** runtime state (no `stateStore` / event emitter) and the filtering helpers — those go through library imports only. The static export `provide = ['llm-fallbacks'] as const` is declarative metadata (for loader/tool recognition); the actual registration happens inside the plugin's settings inject child, which settles just after `apply()` returns (see [Lifecycle](#lifecycle)). The three role-seeds keys (a)(b)(c) are strictly additive — see [Role seeds](#role-seeds-service-seeding-api) below.
+The service surface **deliberately excludes** runtime state (no `stateStore` / event emitter) and the filtering helpers — those go through library imports only. The static export `provide = ['llm-fallbacks'] as const` is declarative metadata (for loader/tool recognition); the actual registration happens inside the plugin's settings inject child, which settles just after `apply()` returns (see [Lifecycle](#lifecycle)). The three role-seeds keys (a)(b)(c) are strictly additive — see [Role seeds](#role-seeds-service-seeding-api) below; `getAgentRole` is additive too — see [Dispatch role getter](#dispatch-role-getter).
+
+### Dispatch role getter
+
+`getAgentRole(agentId)` reports the dispatch role of a **live agent**, keyed by child session id (`Agent.id`) — the immediate in-memory read a companion needs at dispatch time (attribute work, label UI, gate behaviour) without waiting for the child's first step.
+
+```ts
+getAgentRole(agentId: string): string | null
+```
+
+- **Timing**: a LOCAL backend creates the child INSIDE the native activation call, so the seam reserves the child id and writes the record at dispatch, before that call — the getter answers as soon as the child is dispatched, earlier than the durable notice row / projection, which are readable only after the child's first non-empty `agent/pre-step`. An EXTERNAL/ACP backend allocates its OWN child id, so its record is keyed only once the resolved activation (or the parent-owned `subagent/catalog` correlation) reports that id — never before the native call returns. A LOCAL child's record is removed on `agent/disposed`, so it lives exactly for that child's activation lifetime; an external/ACP record has no local agent lifecycle to observe and remains until the plugin itself disposes (which clears the map).
+- **Value**: the **DECLARED RAW** role id the seam resolved (as declared — trimming preserved), i.e. the same id the persona delivery and the chain-head model selection resolved. `null` (never `undefined`) whenever no dispatch role resolved for that id: no header, an undeclared role id, `inherit`, or an unknown id.
+- **Not a durable surface**: the notice row and the `ROLE_PROJECTION_KEY` projection stay the durable read; this getter adds no write path and no new state. It reports the record's **live dispatch hint** — a resume that reuses the child id may rewrite it, while the durable notice row keeps the child's FIRST announced role, so the two can disagree after a re-dispatch and no consumer may treat the getter as the durable role.
+- **Non-local providers**: an external/ACP provider creates no local agent, so nothing is recorded at dispatch — but a record still appears once the resolved activation (or the parent-owned `subagent/catalog` correlation) supplies its child id, and the getter then reports the same declared raw role. `null` until then, and whenever no dispatch role resolved for that id.
+
+```ts
+const fb = ctx.get('llm-fallbacks')
+const role = fb === undefined ? null : fb.getAgentRole(childSessionId)
+```
 
 ### Probe example
 
@@ -117,7 +138,7 @@ if (fb !== undefined) {
 
 ### Lifecycle
 
-- **Available once the settings write channel is bound**: the plugin provides the service from inside its `ctx.inject(['settings'], …)` child — the child's callback binds the seed write channel first, then provides the service in the same synchronous body — so `ctx.get('llm-fallbacks')` starts returning the service object only once that child settles. Service visibility therefore implies `declareSeeds` can write: the probe-then-call minimal pattern is race-free, and declaring the moment the service first probes non-`undefined` persists roles on the first attempt (no retry, no delay, no buffering). The service never probes non-`undefined` synchronously during `apply()` — cordis keeps the owner child fiber invisible to strict `get` until its callback body completes — so there is no apply-time window either. While visible: the four legacy callables are the same function references as the library re-exports, the three seed methods are per-apply closures over a `FallbacksSeedManager` (seed state lives behind the closure, spec §9.5 — not on the service object), and `version` equals the package.json version.
+- **Available once the settings write channel is bound**: the plugin provides the service from inside its `ctx.inject(['settings'], …)` child — the child's callback binds the seed write channel first, then provides the service in the same synchronous body — so `ctx.get('llm-fallbacks')` starts returning the service object only once that child settles. Service visibility therefore implies `declareSeeds` can write: the probe-then-call minimal pattern is race-free, and declaring the moment the service first probes non-`undefined` persists roles on the first attempt (no retry, no delay, no buffering). The service never probes non-`undefined` synchronously during `apply()` — cordis keeps the owner child fiber invisible to strict `get` until its callback body completes — so there is no apply-time window either. While visible: the four legacy callables are the same function references as the library re-exports, the three seed methods are per-apply closures over a `FallbacksSeedManager` (seed state lives behind the closure, spec §9.5 — not on the service object), `getAgentRole` reads the fiber's own seam record map (no role state on the service object), and `version` equals the package.json version.
 - **Withdrawn with the settings channel or the plugin**: the registration is owned by the settings inject child, so the service unregisters when the settings service goes away (settings teardown or plugin dispose) and is provided again when settings re-appear (the bundled preset self-declaration re-fires idempotently on that re-appearance). After withdrawal, `ctx.get('llm-fallbacks')` is `undefined` — the strict `get` returns `undefined` for a missing implementation, never throwing. A composition without any settings service never sees the service at all (its seed surface would be unwritable, so there is nothing to expose). Probe per use rather than caching the service reference across a settings teardown — a cached reference can outlive the registration.
 
 ### Type merging

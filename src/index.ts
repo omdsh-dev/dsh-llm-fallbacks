@@ -57,7 +57,7 @@ import { firstExactCandidate, resolveRoleAtDispatch } from './role-resolution.ts
 import { detectAuthorizedRoute, type AuthorizedRouteSession } from './authorized-route.ts'
 import { firstAllowedCandidate, resolvedRoutes } from './route-allowlist.ts'
 import { effectivePolicy, readSessionPolicyEvent, type PolicySettings } from './subagent-policy.ts'
-import { installSubagentSeam, type SubagentSeam } from './subagents-seam.ts'
+import { installSubagentSeam, subagentSeamOf, type SubagentSeam } from './subagents-seam.ts'
 import { installRolePersona } from './role-persona.ts'
 import { FallbackStateStore, type AgentFallbackState, type BlockedSwitchAttempt, type EffectiveChainHead, type PendingSwitch, type SwitchScope } from './state.ts'
 import { escalatedCooldownMs } from './recovery.ts'
@@ -127,10 +127,12 @@ const { version } = createRequire(import.meta.url)('../package.json')
  * The named cordis service `ctx.get('llm-fallbacks')` exposes while the
  * plugin is applied: the pure-function library surface + `name`/`version`
  * metadata, plus the three ADDITIVE role-seed methods (spec §9.1, plan
- * fallbacks-role-seeds T2). Deliberately no state BEARING FIELDS (no
+ * fallbacks-role-seeds T2) and the ADDITIVE dispatch-role getter (plan
+ * agent-role-getter). Deliberately no state BEARING FIELDS (no
  * stateStore, no event emitters, no filter helpers) — the seed methods are
- * closures over the per-apply `FallbacksSeedManager`, so state stays behind
- * the closure and dies with the fiber (spec §9.5).
+ * closures over the per-apply `FallbacksSeedManager` and the getter is a
+ * closure over the fiber's own seam, so state stays behind the closures and
+ * dies with the fiber (spec §9.5).
  */
 export interface FallbacksService {
   /** Matches the plugin `name`. */
@@ -153,6 +155,23 @@ export interface FallbacksService {
   getEffectiveRoles(): EffectiveRolesReadback
   /** (c) Revert one id to the CURRENT declared seed default. */
   revertSeededPersona(id: string): Promise<SeedRevertOutcome>
+  /**
+   * (d) The dispatch role the seam resolved for a live agent, keyed by child
+   * session id (= `Agent.id`).
+   *
+   * Reads the seam's ROOT-shared per-child record, which the install writes at
+   * dispatch BEFORE the native activation call — so the role is readable
+   * before the child's first step and for the whole activation lifetime (the
+   * existing `agent/disposed` cleanup bounds it, unchanged). The durable
+   * surface stays the notice row / `fallbacksSubagentRole` projection; this is
+   * the immediate in-memory read over the same single record, with no write
+   * path of its own.
+   *
+   * @returns the DECLARED RAW role id, or `null` when the agent carries no
+   *          resolved dispatch role (no header / undeclared / `inherit` /
+   *          unknown id).
+   */
+  getAgentRole(agentId: string): string | null
 }
 
 // Consumers importing this package get the typed `ctx.get('llm-fallbacks')`
@@ -247,6 +266,12 @@ export {
 // the preset child; the service face accepts the public
 // `SeedsDeclareOptions` — `set` only, reserved labels unreachable).
 export { presetRoles } from './presets.ts'
+// --- Session-projection key + guard (plan agent-role-getter) ---
+// The role pill's public contract re-exported from the package root, so a
+// companion stops hard-coding the `'fallbacksSubagentRole'` literal or
+// re-implementing the blank-string guard. The client half imports the same
+// module (one literal, no drift).
+export { ROLE_PROJECTION_KEY, readRoleProjectionValue } from './role-projection-key.ts'
 
 /**
  * dsh core's canonical failure code for a request larger than the model's
@@ -788,6 +813,13 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
           seeds.declare(declarations, seedsIo, options?.set === undefined ? undefined : { set: options.set }),
         getEffectiveRoles: () => seeds.effectiveRoles(seedsIo),
         revertSeededPersona: (id: string) => seeds.revert(id, seedsIo),
+        // (d) — plan agent-role-getter: a read-only closure over the seam THIS
+        // apply installed (`subagentSeamOf` is keyed by the apply context, not
+        // by the settings child). The record is pre-written at dispatch, so
+        // the read works before the child's first step; `?? null` maps the
+        // absent seam / unknown id / no resolved role onto the documented
+        // `null` (never `undefined`) contract. No new state, no write path.
+        getAgentRole: (agentId: string) => subagentSeamOf(ctx)?.records.get(agentId)?.role ?? null,
       })
       serviceOwned = true
     } catch (error) {

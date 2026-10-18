@@ -58,6 +58,11 @@ const LIBRARY_EXPORT_KEYS = [
   // Bundled preset roles (plan fallbacks-preset-roles T3) — the 5 preset
   // declarations re-exported from the package root (pure data module).
   'presetRoles',
+  // Session-projection key + value guard (plan agent-role-getter) — the role
+  // pill's public contract, re-exported so consumers stop hard-coding the
+  // literal or re-implementing the blank-string guard.
+  'ROLE_PROJECTION_KEY',
+  'readRoleProjectionValue',
 ] as const
 
 describe('export surface: runtime values', () => {
@@ -88,6 +93,8 @@ describe('export surface: runtime values', () => {
     SelectorError: 'function',
     FallbacksSeedManager: 'function',
     presetRoles: 'object',
+    ROLE_PROJECTION_KEY: 'string',
+    readRoleProjectionValue: 'function',
   }
 
   // The type map and the docs-inventory SSOT must cover EXACTLY the same
@@ -200,10 +207,10 @@ describe('export surface: type exports (compile-time only)', () => {
     // Service contract (plan fallbacks-consumer-api T2 + fallbacks-role-seeds
     // T2 + seed-source-provenance T2): the static `provide` metadata value and
     // the `FallbacksService` interface (the typed `ctx.get('llm-fallbacks')`
-    // surface via the cordis Context merge). Nine keys — the six-key face plus
-    // the three additive seed methods (D7); `declareSeeds` takes the PUBLIC
-    // options face (`set` only — no `bundled`, reserved for the plugin's own
-    // preset self-declare).
+    // surface via the cordis Context merge). Ten keys — the six-key face plus
+    // the three additive seed methods and the additive `getAgentRole` (D7);
+    // `declareSeeds` takes the PUBLIC options face (`set` only — no
+    // `bundled`, reserved for the plugin's own preset self-declare).
     expectTypeOf(index.provide).toEqualTypeOf<readonly ['llm-fallbacks']>()
     expectTypeOf<index.FallbacksService>().toEqualTypeOf<{
       name: 'llm-fallbacks'
@@ -218,7 +225,13 @@ describe('export surface: type exports (compile-time only)', () => {
       ) => Promise<index.SeedDeclareOutcome>
       getEffectiveRoles: () => index.EffectiveRolesReadback
       revertSeededPersona: (id: string) => Promise<index.SeedRevertOutcome>
+      getAgentRole: (agentId: string) => string | null
     }>()
+    // Session-projection key + guard (plan agent-role-getter): the two
+    // package-root re-exports, pinned to their exact literal/signature
+    // (`typeof` — value inference would widen the string literal to `string`).
+    expectTypeOf<typeof index.ROLE_PROJECTION_KEY>().toEqualTypeOf<'fallbacksSubagentRole'>()
+    expectTypeOf<typeof index.readRoleProjectionValue>().toEqualTypeOf<(value: unknown) => string | undefined>()
     // Role-seeds surface (plan fallbacks-role-seeds T2): the §9.1 types
     // re-exported from the package root.
     expectTypeOf<index.SeedDeclaration>().toEqualTypeOf<{ id: string; persona: string }>()

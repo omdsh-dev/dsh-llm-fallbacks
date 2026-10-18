@@ -1114,4 +1114,49 @@ describe('subagent seam — per-apply lifetime through apply()', () => {
     const reserved = fake.activations[1]!.childId
     expect(subagentSeamOf(ctx)!.records.get(String(reserved))?.role).toBe('rookie')
   })
+
+  it('the service getter reads the dispatch role before the child’s first step (plan agent-role-getter)', async () => {
+    // LOCAL backend: this is the only path on which the record can exist BEFORE
+    // the native call — `manager.startLocal` creates the child inside it, so the
+    // caller-reserved id and its record are the seam's creation-time guarantee.
+    const fake = fakeSubagents({}, LOCAL_PROVIDER)
+    ctx.provide('subagents', fake.service)
+    apply(ctx, cfg({ roles: { list: [{ id: 'coder', persona: '', chain: [] }], rules: [] } }))
+    // The service lives inside the settings inject child (seeds-declare-window):
+    // wait for visibility, then read the getter through the REAL service face.
+    await vi.waitFor(() => {
+      expect(ctx.get('llm-fallbacks')).toBeDefined()
+    })
+    const fb = ctx.get('llm-fallbacks')!
+    const seam = subagentSeamOf(ctx)!
+    // Read the map INSIDE the native call — the instant the child is created.
+    let atCall: SubagentSeamRecord | undefined
+    fake.onActivation = (spec) => {
+      atCall = spec.childId === undefined ? undefined : seam.records.get(spec.childId)
+    }
+
+    const { value } = await injectSubagents(ctx)
+    await startActivationOf(value)(activationSpec('task one', assignment('coder'), 'parent-session'))
+    const reserved = String(fake.activations[0]!.childId)
+
+    // The record was already written when the native activation ran…
+    expect(atCall?.role).toBe('coder')
+    // …and the real service face answers the DECLARED RAW role immediately after
+    // it returns: the notice row's precondition still holds — nothing has
+    // emitted the durable `[role: coder]` row yet, so this is the pre-first-step
+    // read, not a projection read.
+    expect(seam.records.get(reserved)?.firstNoticePending).toBe(true)
+    expect(fb.getAgentRole(reserved)).toBe('coder')
+    // A non-role child reads as `null`, never `undefined`.
+    expect(fb.getAgentRole('no-such-child')).toBeNull()
+
+    // The EXTERNAL path shares the same map with a later timing: its id is
+    // allocated by the provider, so the record can only appear once the resolved
+    // activation reports it — nothing is readable before (S-001).
+    fake.value = { childId: 'child-external' }
+    fake.provider = () => undefined
+    expect(seam.records.has('child-external')).toBe(false)
+    await startActivationOf(value)(activationSpec('task two', assignment('coder'), 'parent-session'))
+    expect(fb.getAgentRole('child-external')).toBe('coder')
+  })
 })

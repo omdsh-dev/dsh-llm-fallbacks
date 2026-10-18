@@ -136,6 +136,33 @@ carried to the **resolved** activation id, or the notice reports a delivered
 persona for a child that never received one. A resume that already carries a
 caller-reserved `childId` rides the same record fallback.
 
+### Reading the dispatch role from another plugin
+
+The seam's ROOT-shared per-child record is also the immediate read surface for
+companions in the same host process: `ctx.get('llm-fallbacks').getAgentRole(childId)`
+returns the DECLARED RAW role the seam resolved, or `null` when no record exists.
+
+- **Local timing is dispatch-time.** A local backend's record is written
+  synchronously before the native activation call, so the getter answers before
+  the child's first step — earlier than the durable notice row / projection,
+  which are readable only after the first non-empty `agent/pre-step`.
+- **External timing is resolution-time.** A non-local provider allocates its own
+  child id, so its record appears only once the resolved activation (or the
+  parent-owned `subagent/catalog` correlation) supplies that id; before then the
+  same id reads `null`.
+- **Lifetime.** A local child's record is removed on `agent/disposed`, so the
+  value lives exactly for that child's activation lifetime. An external/ACP
+  dispatch has no local agent lifecycle to observe, so its record is not removed
+  by a child disposal — it remains in the map until the plugin itself disposes
+  (which clears the whole map).
+- **Read the seam keyed by the APPLY context.** `subagentSeamOf(ctx)` is keyed by
+  the context that installed the seam, not by the settings-inject child context
+  that provides the service — a getter must close over the installing context.
+- **Durable half.** `ROLE_PROJECTION_KEY` (`'fallbacksSubagentRole'`) and
+  `readRoleProjectionValue` are re-exported from the package root, so a companion
+  reads the projection without hard-coding the literal or duplicating the
+  blank-string guard.
+
 ## Agent Team members
 
 The experimental Agent Team bundle replaces ordinary delegation with
