@@ -60,12 +60,16 @@ This covers an **ordinary subagent dispatch and an Agent Team teammate** (`spawn
 
 ### Install
 
+**Desktop / Web plugin page** — in DeepSeek Harness (the Desktop app, or a `dsh web` session) open **Settings → Plugins**, click **Add plugin**, enter the package name `dsh-llm-fallbacks`, and click **Install**; then follow the host's restart prompt. The wizard accepts a package name (= npm package name), a GitHub repo, or a local directory — a registry install needs only the package name. The GUI writes into the `web` profile, the same profile the `--profile web` flag below targets.
+
+**CLI** — for scripted setups, or the terminal front end:
+
 ```sh
 dsh plugin --profile web add dsh-llm-fallbacks      # web profile (Settings → Fallbacks card)
 dsh plugin --profile dsh-tui add dsh-llm-fallbacks  # dsh-tui terminal profile
 ```
 
-Same plugin, either front end — the only difference is the `--profile` flag. Pin a version with `@<version>`. A registry install fetches the **built package** (`dist/`), nothing builds on the target machine. Registry / git / local-directory variants, uninstall, and `--dump-config` verification → [docs/install.md](docs/install.md). The plugin ships **localized metadata** (title/description for the Plugins-page detail view, English + Simplified Chinese) and an **icon** — both declared in the package (`locale/*.json` + `icon.svg`) and picked up by the host automatically.
+`dsh-tui` has no plugin page of its own, so it stays CLI-only. Pin a version with `@<version>`. A registry install fetches the **built package** (`dist/`), so nothing builds on the target machine. Registry / git / local-directory variants, uninstall, and `--dump-config` verification → [docs/install.md](docs/install.md). The plugin ships **localized metadata** (title/description for the Plugins-page detail view, English + Simplified Chinese) and an **icon** — both declared in the package (`locale/*.json` + `icon.svg`) and picked up by the host automatically.
 
 ### Configure
 
