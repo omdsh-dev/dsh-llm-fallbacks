@@ -901,9 +901,10 @@ select.input {
    `select.input { max-width: 240px }` cap belongs to the short enum fields,
    but here the cell grows while the field stopped at 240px, so the row hint
    and the remove control sat in the cell's dead tail (plan QC round G,
-   QC-S3). Scoped to THIS cell and declared after the global rule (equal
-   specificity, later source order wins) — every other enum keeps the cap. */
-.selectorModelCell > select {
+   QC-S3). Scoped to THIS cell as `select.input` so the override wins on
+   specificity (0,2,1 against the global (0,1,1)) instead of relying on
+   source order — every other enum keeps the cap. */
+.selectorModelCell > select.input {
   max-width: 100%;
 }
 
