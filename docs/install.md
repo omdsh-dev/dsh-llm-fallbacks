@@ -24,7 +24,7 @@ This document explains how to load `dsh-llm-fallbacks` into a dsh profile, verif
 
 The dsh Desktop app and a `dsh web` session expose the same plugin manager, and it is the shortest path — no shell, no profile flags:
 
-1. Open **Settings → Plugins**.
+1. Open the **Plugins** page in the sidebar.
 2. Click **Add plugin**.
 3. Enter `dsh-llm-fallbacks` as the package name and click **Install**.
 
