@@ -1,7 +1,7 @@
 ---
 module: dsh-llm-fallbacks client UI
 date: 2026-08-12
-last_updated: 2026-08-12
+last_updated: 2026-10-20
 problem_type: best_practice
 category: best-practices
 severity: low
@@ -154,6 +154,46 @@ padding-bottom 8px、footer gap 8 padding 12 0 4 border-top。折叠态 `aria-ex
 - 参照实现：`src/client/FallbacksCard.module.css` / `src/client/FallbacksCard.tsx`（插件侧；2026-08-12 起取代
   整页 `FallbacksSection`）；本体 `{HOST}/ModelsSection.module.css`、`{HOST}/GeneralSection.module.css`
   （dsh-private）。
+
+## Compact row controls + read-only gating (plan fallbacks-chain-row-compact, 2026-10-20)
+
+A repeated editor row (provider + model pair per chain entry) is ONE line, not a stacked block:
+index column (`aria-hidden`, tabular-nums, 1..N) → first select (fixed basis, e.g.
+`flex: 0 1 clamp(140px, 20%, 220px)`) → second select (`flex: 1 1 auto; min-width: 0`) → optional
+inline hint strip → trailing icon action. No repeated field labels: move the accessible name to
+`aria-label` with the 1-based ordinal so parallel rows stay distinguishable to assistive tech, and
+keep the ordinal span `aria-hidden`. Wrap rows + the add affordance in one block container
+(`gap: 6px`); the add button gets a scoped override (`.chainBlock > .addButton`) instead of a new
+class when the shared `.addButton`/`.outlineButton` must keep their other-section size.
+
+Three traps this shape hits, each with a distinct fix:
+
+1. **Read-only card + hover-revealed destructive action.** The whole form body sits in one
+   `<fieldset disabled={!writable}>`, so a descendant button is *inert* without ever carrying its own
+   `disabled` attribute — and a hover reveal rule (0,3,0) outranks `.iconButton:disabled` (0,2,0),
+   painting a full-opacity control that cannot act. Fix: pass the editor's own `disabled` prop to the
+   button, hide it in that state (`.selectorRemove:disabled { display: none }`), and restrict every
+   reveal rule with `:not(:disabled)` (including the `@media (hover: none)` fallback). Fieldset
+   propagation is *not* a gating mechanism — it only prevents the click.
+2. **Truncation vs an inline badge.** `text-overflow: ellipsis` on the hint container clips any
+   sibling badge (and its `::after` tooltip bubble) at narrow widths. Pure CSS cannot both truncate
+   and never clip: split the surface — a non-clipping flex strip holds the badge with `flex: none`,
+   and a child `*Text` span owns `white-space: nowrap; overflow: hidden; text-overflow: ellipsis`
+   plus the full copy in `title`. Any `aria-describedby` target id belongs on that inner text holder.
+3. **Equal-specificity overrides are source-order fragile.** Scoping a field's width cap with
+   `.cell > select` ties the global `select.input` rule (0,1,1) and wins only by emission order; a
+   later insertion silently restores the cap. Write `.cell > select.input` (0,2,1) and pin it with a
+   comment. (A later equal/higher-specificity rule can still win — that is ordinary cascade risk,
+   not the fragility being removed.)
+
+**Evidence boundary** (this repo): vitest stubs CSS modules to empty modules, so class names and
+layout are NOT assertable in jsdom. A CSS-only task's honest evidence is (a) `pnpm build` exit 0,
+(b) the emitted `dist/client/index.js` CSS with the hashed locals and their declarations quoted,
+(c) DOM-structure/containment/`aria` assertions in the spec. Painted geometry, hover reveal and
+ellipsis clipping have **no** gate here — they stay a maintainer GUI pass, recorded as user-side
+follow-up rather than claimed as verified.
+
+*Source: plan fallbacks-chain-row-compact (PR feat/fallbacks-chain-row-compact), 2026-10-20 compound.*
 
 *Source: iteration iter-20260811-fallbacks-mount-only `.mstar/iterations/iter-20260811-fallbacks-mount-only/guides/ui-fidelity-checklist.md` +
 iter-20260812-fallbacks-plugin-config `.mstar/iterations/iter-20260812-fallbacks-plugin-config/guides/card-fidelity-checklist.md`，2026-08-12
