@@ -84,6 +84,20 @@ const interpolatingT: FallbacksCardProps['t'] = (key, params) => {
 const zhT: FallbacksCardProps['t'] = key => zh[key as keyof typeof zh]
 
 /**
+ * Chain-row accessible names (plan fallbacks-chain-row-compact T3): the two
+ * selects and the remove button carry the field AND the 1-based row position
+ * (`Selector {index} provider` / `… model` / `Remove selector {index}`); the
+ * visible ordinal span is `aria-hidden`. The module `t` seat does not
+ * interpolate, so a card mounted with it renders the raw template — these
+ * constants are that template, which is enough to prove every chain row moved
+ * off the shared `roles.rule.*` names (those stay on the role-RULE rows). The
+ * concrete per-index strings and their mutual distinctness are pinned in the
+ * compact-row describe, which rerenders with {@link interpolatingT}.
+ */
+const CHAIN_PROVIDER_LABEL = en['chains.selector.providerAria']
+const CHAIN_MODEL_LABEL = en['chains.selector.modelAria']
+
+/**
  * Full card props the renderer would bind: the registrant's business inject
  * face (controller + useSnapshot), the framework-synthesized `t` seat, and
  * the runtime's global seat (session-list / workspace-list selector hooks —
@@ -911,7 +925,7 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     expect(within(chainGroup).getByRole('button', { name: en['timeSlots.selector.add'] })).toBeTruthy()
     // TWO_BLOCK_CONFIG's conforming head is consumed by the 默认模型 panel →
     // the chain editor starts with no trailing selectors.
-    expect(within(chainGroup).queryByLabelText(en['roles.rule.provider'])).toBeNull()
+    expect(within(chainGroup).queryByLabelText(CHAIN_PROVIDER_LABEL)).toBeNull()
     // Exactly the two official radios in the default-model panel; the
     // accepted conforming head is pre-selected (Flash) and no
     // nonconforming notice shows. Both tails are selectable — 0.1.7-rc.1's
@@ -938,7 +952,7 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     // PR #62 feedback round: the legacy entry rides the 默认降级链 editor
     // (its head is not official → not consumed by the 默认模型 panel).
     const chainGroup = screen.getByText(en['rootChain.label']).closest('[role="group"]') as HTMLElement
-    expect(within(chainGroup).getByLabelText(en['roles.rule.provider'])).toBeTruthy()
+    expect(within(chainGroup).getByLabelText(CHAIN_PROVIDER_LABEL)).toBeTruthy()
     const flash = flashRadio()
     const pro = proRadio()
     // The legacy head is not one of the two official ids → nothing is
@@ -977,7 +991,7 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     // (and selectable — the id is catalog-served); no nonconforming notice
     // shows.
     const chainGroup = screen.getByText(en['rootChain.label']).closest('[role="group"]') as HTMLElement
-    expect(within(chainGroup).queryByLabelText(en['roles.rule.provider'])).toBeNull()
+    expect(within(chainGroup).queryByLabelText(CHAIN_PROVIDER_LABEL)).toBeNull()
     const modelGroup = screen.getByText(en['defaultModel.label']).closest('[role="group"]') as HTMLElement
     expect(within(modelGroup).getAllByRole('radio')).toHaveLength(2)
     const flash = flashRadio()
@@ -1088,7 +1102,7 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     // The wildcard rides the chain editor with its conversion hint and an
     // enabled model select (openai is on the catalog).
     expect(within(chainGroup).getByText(en['chains.selector.wildcardLegacy'])).toBeTruthy()
-    expect(within(chainGroup).getByLabelText(en['roles.rule.model'])).toBeTruthy()
+    expect(within(chainGroup).getByLabelText(CHAIN_MODEL_LABEL)).toBeTruthy()
     // The nonconforming notice lives in the 默认模型 panel.
     const modelGroup = screen.getByText(en['defaultModel.label']).closest('[role="group"]') as HTMLElement
     expect(within(modelGroup).getByText(en['allDay.nonconforming'])).toBeTruthy()
@@ -1136,7 +1150,7 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     // the row can convert to an exact entry.
     const rolesGroup = screen.getByText(en['roles.list.label']).closest('[role="group"]') as HTMLElement
     expect(within(rolesGroup).getByText(en['chains.selector.wildcardLegacy'])).toBeTruthy()
-    const model = within(rolesGroup).getByLabelText(en['roles.rule.model']) as HTMLSelectElement
+    const model = within(rolesGroup).getByLabelText(CHAIN_MODEL_LABEL) as HTMLSelectElement
     expect(model.disabled).toBe(false)
     // Picking a concrete model converts the wildcard row → the 子代理 save
     // patch carries the exact entry, never a `provider/*` line — and the
@@ -1170,12 +1184,23 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     expandAllRoles()
     view.rerender(<FallbacksCard {...props} />)
     const rolesGroup = screen.getByText(en['roles.list.label']).closest('[role="group"]') as HTMLElement
-    // The strict hint renders inside the model's wrapping label, so the
-    // label text is "model" + the hint — match the label by its leading text.
-    const model = within(rolesGroup).getByLabelText(new RegExp(`^${en['roles.rule.model']}`)) as HTMLSelectElement
+    // The strict hint is a sibling span of the compact line (never part of the
+    // model select's accessible name), so the select keeps the
+    // index-parameterised name and names its reason through
+    // `aria-describedby` (Task 1 review Minor, repaired in T3).
+    const model = within(rolesGroup).getByLabelText(CHAIN_MODEL_LABEL) as HTMLSelectElement
     expect(model.disabled).toBe(true)
-    expect(within(rolesGroup).getByText(en['chains.selector.noModelsStrict'])).toBeTruthy()
+    const strictHint = within(rolesGroup).getByText(en['chains.selector.noModelsStrict'])
     expect(within(rolesGroup).queryByText(en['chains.selector.wildcardLegacy'])).toBeNull()
+    // The hint renders INSIDE the row (inline on the line), not as a
+    // group-level block row.
+    expect(strictHint.closest('[data-selector-row]')).not.toBeNull()
+    // The association resolves to THIS row's hint node, and the id is unique
+    // in the document (the 1-based index repeats across the card's chains).
+    const describedBy = model.getAttribute('aria-describedby')
+    expect(describedBy).toBeTruthy()
+    expect(document.getElementById(describedBy!)).toBe(strictHint)
+    expect(document.querySelectorAll(`[id="${describedBy!}"]`)).toHaveLength(1)
   })
 
   it('offers no wildcard on a freshly added role chain row: no checkbox, no legacy hint', async () => {
@@ -1606,10 +1631,10 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     const rolesGroup = screen.getByText(en['roles.list.label']).closest('[role="group"]') as HTMLElement
     fireEvent.click(within(rolesGroup).getByRole('button', { name: en['roles.selector.add'] }))
     view.rerender(<FallbacksCard {...props} />)
-    const providerSelect = within(rolesGroup).getByLabelText(en['roles.rule.provider']) as HTMLSelectElement
+    const providerSelect = within(rolesGroup).getByLabelText(CHAIN_PROVIDER_LABEL) as HTMLSelectElement
     fireEvent.change(providerSelect, { target: { value: 'openai' } })
     view.rerender(<FallbacksCard {...props} />)
-    const modelSelect = within(rolesGroup).getByLabelText(en['roles.rule.model']) as HTMLSelectElement
+    const modelSelect = within(rolesGroup).getByLabelText(CHAIN_MODEL_LABEL) as HTMLSelectElement
     fireEvent.change(modelSelect, { target: { value: 'gpt-4o' } })
     view.rerender(<FallbacksCard {...props} />)
     // The inline hint clears once the chain area has a selector, and the
@@ -1661,6 +1686,263 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
     const alert = subError()
     expect(alert.textContent).toContain(en['validation.blocked'])
     expect(alert.textContent).toContain(en['validation.roleChainRequired'])
+  })
+})
+
+/**
+ * Compact chain selector rows (plan fallbacks-chain-row-compact T1 + T3): one
+ * chain entry is ONE line — order index, provider select, model select, inline
+ * hints, trailing remove — and the selectors + their add affordance share one
+ * block wrapper. T3 adds the bilingual regression half: every select/remove
+ * name carries its 1-based row position (the visible ordinal is aria-hidden),
+ * so the rows stay distinguishable to assistive tech, and the strict
+ * "no models" hint stays bound to the disabled model select.
+ *
+ * Tests stub CSS modules to empty modules (`vitest.config.ts`), so class names
+ * and layout are not assertable here: the structural contract is asserted on
+ * the DOM markers the editor emits (`data-selector-row`, `data-selector-index`,
+ * `data-chain-block`) plus the accessible names and visible text. Every mount
+ * in this describe rerenders with the interpolating `t` seat (the real
+ * runtime substitutes `{index}`; the module `t` seat returns the raw template)
+ * so the concrete per-index names are pinned here.
+ */
+describe('FallbacksCard compact chain rows (plan fallbacks-chain-row-compact T1/T3)', () => {
+  /** The 默认降级链 group (its label anchors the role="group" field). */
+  function chainGroup(): HTMLElement {
+    return screen.getByText(en['rootChain.label']).closest('[role="group"]') as HTMLElement
+  }
+
+  /** Every chain selector row inside `group`, in DOM order. */
+  function selectorRows(group: HTMLElement): HTMLElement[] {
+    return Array.from(group.querySelectorAll<HTMLElement>('[data-selector-row]'))
+  }
+
+  /** One chain-row label with `index` interpolated (`Selector 1 provider`). */
+  function chainRowLabel(
+    key: 'chains.selector.providerAria' | 'chains.selector.modelAria' | 'chains.selector.remove',
+    index: number,
+  ): string {
+    return interpolatingT(key, { index: String(index) })
+  }
+
+  /** The single line element of `row` (the row wraps one line — no marker yet). */
+  function selectorLine(row: HTMLElement): HTMLElement {
+    return row.querySelector('select')!.closest('div')!.parentElement as HTMLElement
+  }
+
+  /**
+   * Assert one compact line for `row`: the visible 1-based order index, both
+   * selects named by their row position, the remove button on the SAME row
+   * element, and no repeated visible provider/model field label.
+   */
+  function expectCompactRow(row: HTMLElement, index: number): void {
+    const expectedIndex = String(index)
+    const indexSpan = row.querySelector('[data-selector-index]')
+    expect(indexSpan?.getAttribute('data-selector-index')).toBe(expectedIndex)
+    // The visible ordinal is the 1-based render position, rendered as text.
+    expect(indexSpan?.textContent).toBe(expectedIndex)
+    const provider = within(row).getByLabelText(chainRowLabel('chains.selector.providerAria', index))
+    const model = within(row).getByLabelText(chainRowLabel('chains.selector.modelAria', index))
+    expect(provider.closest('[data-selector-row]')).toBe(row)
+    expect(model.closest('[data-selector-row]')).toBe(row)
+    const remove = within(row).getByRole('button', { name: chainRowLabel('chains.selector.remove', index) })
+    expect(remove.closest('[data-selector-row]')).toBe(row)
+    expect(within(row).queryByText(en['roles.rule.provider'], { exact: true })).toBeNull()
+    expect(within(row).queryByText(en['roles.rule.model'], { exact: true })).toBeNull()
+  }
+
+  it('renders a two-entry chain as ordered single lines without field labels', async () => {
+    const config: typeof defaultFallbacksConfig = {
+      ...BASE_CONFIG,
+      rootChain: ['openai/gpt-4o', 'anthropic/claude-3-5-sonnet'],
+    }
+    const { view, props } = await mountCard({ config })
+    view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
+    const group = chainGroup()
+    const rows = selectorRows(group)
+    expect(rows).toHaveLength(2)
+    expectCompactRow(rows[0]!, 1)
+    expectCompactRow(rows[1]!, 2)
+    // No visible provider/model field labels remain anywhere in the chain
+    // group (they moved to the selects' index-parameterised aria-labels).
+    expect(within(group).queryByText(en['roles.rule.provider'], { exact: true })).toBeNull()
+    expect(within(group).queryByText(en['roles.rule.model'], { exact: true })).toBeNull()
+    // T3: the four controls of the two rows carry four DIFFERENT accessible
+    // names — the pre-T3 shared `roles.rule.*` names matched every row, so an
+    // AT user could not tell entry 1 from entry 2.
+    const names = Array.from(group.querySelectorAll('select'))
+      .map(select => select.getAttribute('aria-label'))
+    expect(names).toHaveLength(4)
+    expect(new Set(names).size).toBe(names.length)
+    expect(within(group).queryAllByLabelText(en['roles.rule.provider'])).toHaveLength(0)
+    expect(within(group).queryAllByLabelText(en['roles.rule.model'])).toHaveLength(0)
+  })
+
+  it('groups every chain editor with its add affordance in one block wrapper', async () => {
+    const config: typeof defaultFallbacksConfig = {
+      ...BASE_CONFIG,
+      rootChain: ['openai/gpt-4o', 'anthropic/claude-3-5-sonnet'],
+      timeSlots: [{
+        kind: 'custom',
+        start: '09:00',
+        end: '10:00',
+        days: [],
+        chain: ['openai/gpt-4o', 'anthropic/claude-3-5-sonnet'],
+      }],
+      roles: {
+        list: [{
+          id: 'coder',
+          persona: '',
+          chain: ['openai/gpt-4o', 'anthropic/claude-3-5-sonnet'],
+          fallback: 'none',
+        }],
+        rules: [],
+      },
+    }
+    const { view, props } = await mountCard({ config })
+    expandAllRoles()
+    expandAllSlots()
+    view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
+    // All three shared-editor sites: the 默认降级链, a time-slot chain and a
+    // role chain — each selectors list + its own add button in one block.
+    const sites: Array<[string, HTMLElement, string]> = [
+      ['default chain', chainGroup(), en['timeSlots.selector.add']],
+      ['time-slot chain', screen.getByText(en['timeSlots.label']).closest('[role="group"]') as HTMLElement, en['timeSlots.selector.add']],
+      ['role chain', screen.getByText(en['roles.list.label']).closest('[role="group"]') as HTMLElement, en['roles.selector.add']],
+    ]
+    for (const [site, group, addName] of sites) {
+      const rows = selectorRows(group)
+      expect(rows, site).toHaveLength(2)
+      // T3: the same two ordinal names in EVERY chain — the numbering is
+      // per chain, so a role row 1 and a time-slot row 1 share a name but
+      // never collide inside one chain.
+      expectCompactRow(rows[0]!, 1)
+      expectCompactRow(rows[1]!, 2)
+      const add = within(group).getByRole('button', { name: addName })
+      const block = add.closest('[data-chain-block]')
+      expect(block, site).not.toBeNull()
+      for (const row of rows) expect(block!.contains(row), site).toBe(true)
+      // The add affordance is the chain tail of its own block.
+      expect(block!.lastElementChild, site).toBe(add)
+      expect(within(group).queryByText(en['roles.rule.provider'], { exact: true }), site).toBeNull()
+    }
+    // The tail add affordance is functional: it appends one more row at the
+    // next ordinal (the compact row is also the add target).
+    fireEvent.click(within(chainGroup()).getByRole('button', { name: en['timeSlots.selector.add'] }))
+    view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
+    const grown = selectorRows(chainGroup())
+    expect(grown).toHaveLength(3)
+    expectCompactRow(grown[2]!, 3)
+  })
+
+  it('renders a row hint inline on the row line, never as a block that re-opens it', async () => {
+    // A legacy wildcard read-back with the provider on the catalog: the row
+    // shows its conversion hint while the model select stays enabled.
+    const config: typeof defaultFallbacksConfig = { ...BASE_CONFIG, rootChain: ['openai/*'] }
+    const { view, props, controller } = await mountCard({ config, catalog: CHAIN_CATALOG })
+    await controller.loadCatalog()
+    view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
+    const group = chainGroup()
+    const rows = selectorRows(group)
+    expect(rows).toHaveLength(1)
+    const row = rows[0]!
+    const hint = within(row).getByText(en['chains.selector.wildcardLegacy'])
+    // Scoped to the row (a group-level block would be findable from `group`
+    // while outside every row).
+    expect(hint.closest('[data-selector-row]')).toBe(row)
+    // …and it sits on the same line element as the two selects, so the row
+    // height is not re-opened by a second block. The visible text is the
+    // hint's inner TEXT holder (T2-F2), which rides the hint strip on the
+    // line; the badge's non-clipping structure is pinned in the
+    // outside-catalog test below.
+    const hintStrip = hint.parentElement as HTMLElement
+    expect(hintStrip.parentElement).toBe(selectorLine(row))
+    expect(selectorRows(group)).toHaveLength(1)
+    // The strict hint is absent on this row, so the model select carries NO
+    // `aria-describedby` (the association exists only when a hint renders).
+    const model = within(row).getByLabelText(chainRowLabel('chains.selector.modelAria', 1))
+    expect(model.getAttribute('aria-describedby')).toBeNull()
+  })
+
+  it('keeps the outside-catalog info badge outside the truncating text holder', async () => {
+    // A value that is outside the catalog gets the outside-catalog hint: the
+    // short copy plus the "!" badge that carries the long explanation. The
+    // hint's TEXT holder is the element CSS truncates with an ellipsis
+    // (`overflow: hidden`), so the badge must not be one of its descendants —
+    // as a sibling strip item (`flex: none`) the clip can never reach it
+    // (T2-F2). jsdom cannot see layout, so the structural contract is what
+    // this pins.
+    const config: typeof defaultFallbacksConfig = { ...BASE_CONFIG, rootChain: ['mystery/gpt-9'] }
+    const { view, props, controller } = await mountCard({ config, catalog: CHAIN_CATALOG })
+    await controller.loadCatalog()
+    view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
+    const row = selectorRows(chainGroup())[0]!
+    const hintText = within(row).getByText(en['catalog.outside.hint'])
+    // The text holder carries the full copy on its own `title`…
+    expect(hintText.getAttribute('title')).toBe(en['catalog.outside.hint'])
+    // …and the badge (the bridge to the longer explanation) is NOT inside it,
+    // nor inside any node under it: the truncation surface stops at the text.
+    const badge = within(row).getByRole('img', { name: en['catalog.outside.tooltip'] })
+    expect(hintText.contains(badge)).toBe(false)
+    // Both are children of the hint strip, which rides the row line.
+    const hintStrip = hintText.parentElement!
+    expect(badge.parentElement).toBe(hintStrip)
+    expect(hintStrip).not.toBe(hintText)
+    expect(hintStrip.parentElement).toBe(selectorLine(row))
+    // The badge keeps its own accessible name and tooltip copy (the wiring
+    // the split must not disturb).
+    expect(badge.getAttribute('data-tip')).toBe(en['catalog.outside.tooltip'])
+  })
+
+  it('exposes no actionable remove control on a read-only row (plan QC round G, QC-W1)', async () => {
+    // The trailing remove is a hover/focus-revealed DESTRUCTIVE action, and the
+    // plan's acceptance line is "remove … hidden when read-only". CSS modules
+    // are stubbed in jsdom, so the `display: none` that hides it is proven by
+    // the emitted CSS; what this pins is the contract BEHIND that rule — every
+    // row's remove button carries its own `disabled`, so it is unclickable,
+    // unfocusable and out of the tab order even before any CSS applies.
+    const config: typeof defaultFallbacksConfig = {
+      ...BASE_CONFIG,
+      rootChain: ['openai/gpt-4o', 'anthropic/claude-3-5-sonnet'],
+    }
+    const { view, props } = await mountCard({ config, writable: false })
+    view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
+    const rows = selectorRows(chainGroup())
+    expect(rows).toHaveLength(2)
+    for (const [offset, row] of rows.entries()) {
+      const index = offset + 1
+      const remove = within(row).getByRole('button', { name: chainRowLabel('chains.selector.remove', index) })
+      // The row's OWN gate, not merely the ancestor `fieldset[disabled]`
+      // (the pre-fix button had no `disabled` attribute at all).
+      expect(remove.hasAttribute('disabled'), `remove ${index}`).toBe(true)
+      expect((remove as HTMLButtonElement).disabled).toBe(true)
+      // ...which is what removes it from the focus order: `focus()` is a no-op.
+      remove.focus()
+      expect(document.activeElement).not.toBe(remove)
+      // The row's selects are gated by the same `disabled` prop — parity, no
+      // new read-only behaviour invented here.
+      const provider = within(row).getByLabelText(chainRowLabel('chains.selector.providerAria', index))
+      expect((provider as HTMLSelectElement).disabled).toBe(true)
+    }
+  })
+
+  it('keeps the remove control actionable on a writable row (the read-only gate does not leak)', async () => {
+    // The other side of the same contract, and the only functional coverage of
+    // the remove action in the compact row: an editable row removes its entry.
+    const config: typeof defaultFallbacksConfig = {
+      ...BASE_CONFIG,
+      rootChain: ['openai/gpt-4o', 'anthropic/claude-3-5-sonnet'],
+    }
+    const { view, props } = await mountCard({ config })
+    view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
+    expect(selectorRows(chainGroup())).toHaveLength(2)
+    const remove = within(chainGroup()).getByRole('button', { name: chainRowLabel('chains.selector.remove', 2) })
+    expect((remove as HTMLButtonElement).disabled).toBe(false)
+    fireEvent.click(remove)
+    const remaining = selectorRows(chainGroup())
+    expect(remaining).toHaveLength(1)
+    // The survivor re-numbers to 1 — the ordinal is the render position.
+    expectCompactRow(remaining[0]!, 1)
   })
 })
 
@@ -1718,10 +2000,10 @@ describe('FallbacksCard time-slot rows (plan fallbacks-timeslots Task 3)', () =>
     // preset row with ONLY kind/preset/days/chain — no stored windows.
     fireEvent.click(within(group).getByRole('button', { name: en['timeSlots.selector.add'] }))
     view.rerender(<FallbacksCard {...props} />)
-    const providerSelect = within(group).getByLabelText(en['roles.rule.provider']) as HTMLSelectElement
+    const providerSelect = within(group).getByLabelText(CHAIN_PROVIDER_LABEL) as HTMLSelectElement
     fireEvent.change(providerSelect, { target: { value: 'openai' } })
     view.rerender(<FallbacksCard {...props} />)
-    const modelSelect = within(group).getByLabelText(en['roles.rule.model']) as HTMLSelectElement
+    const modelSelect = within(group).getByLabelText(CHAIN_MODEL_LABEL) as HTMLSelectElement
     fireEvent.change(modelSelect, { target: { value: 'gpt-4o' } })
     view.rerender(<FallbacksCard {...props} />)
     expect(screen.queryByRole('alert')).toBeNull()
@@ -1766,10 +2048,10 @@ describe('FallbacksCard time-slot rows (plan fallbacks-timeslots Task 3)', () =>
     fireEvent.change(end, { target: { value: '02:00' } })
     fireEvent.click(within(group).getByRole('button', { name: en['timeSlots.selector.add'] }))
     view.rerender(<FallbacksCard {...props} />)
-    const providerSelect = within(group).getByLabelText(en['roles.rule.provider']) as HTMLSelectElement
+    const providerSelect = within(group).getByLabelText(CHAIN_PROVIDER_LABEL) as HTMLSelectElement
     fireEvent.change(providerSelect, { target: { value: 'openai' } })
     view.rerender(<FallbacksCard {...props} />)
-    const modelSelect = within(group).getByLabelText(en['roles.rule.model']) as HTMLSelectElement
+    const modelSelect = within(group).getByLabelText(CHAIN_MODEL_LABEL) as HTMLSelectElement
     fireEvent.change(modelSelect, { target: { value: 'gpt-4o' } })
     fireEvent.click(dayCells[1]!) // Monday
     view.rerender(<FallbacksCard {...props} />)
@@ -2622,13 +2904,15 @@ describe('FallbacksCard seeded-role read-only UX (plan role-card-seeded-ux T3)',
     view.rerender(<FallbacksCard {...props} />)
     expect(saveButton('sub').disabled).toBe(true)
     // A chain edit on the seeded row (append + fill a second entry on
-    // architect — the first row card, so its new selector owns index 1 of
-    // the provider/model selects) still dirties and saves.
+    // architect — the first row card, so its appended selector is the SECOND
+    // provider/model select in DOM order; the non-interpolating `t` seat gives
+    // every chain row the same label template, hence the positional pick)
+    // still dirties and saves.
     fireEvent.click(within(rolesGroup).getAllByRole('button', { name: en['roles.selector.add'] })[0]!)
     view.rerender(<FallbacksCard {...props} />)
-    fireEvent.change(within(rolesGroup).getAllByLabelText(en['roles.rule.provider'])[1]!, { target: { value: 'openai' } })
+    fireEvent.change(within(rolesGroup).getAllByLabelText(CHAIN_PROVIDER_LABEL)[1]!, { target: { value: 'openai' } })
     view.rerender(<FallbacksCard {...props} />)
-    fireEvent.change(within(rolesGroup).getAllByLabelText(en['roles.rule.model'])[1]!, { target: { value: 'gpt-4o' } })
+    fireEvent.change(within(rolesGroup).getAllByLabelText(CHAIN_MODEL_LABEL)[1]!, { target: { value: 'gpt-4o' } })
     view.rerender(<FallbacksCard {...props} />)
     expect(saveButton('sub').disabled).toBe(false)
     fireEvent.click(saveButton('sub'))

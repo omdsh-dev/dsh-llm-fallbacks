@@ -51,7 +51,13 @@ export const zh = {
   'rootChain.label': '默认降级链',
   'rootChain.tooltip': '未命中任何分时槽时先走这条降级链；全部失败后落到下面的默认模型。',
   'defaultModel.label': '默认模型',
-  'chains.selector.remove': '删除该选择器',
+  // Compact chain rows (plan fallbacks-chain-row-compact T3): the visible
+  // field labels are gone, so the two selects carry the field AND the
+  // 1-based row position in their accessible names ({index}); the remove
+  // button names the row it deletes instead of "this selector".
+  'chains.selector.remove': '删除第 {index} 个选择器',
+  'chains.selector.providerAria': '第 {index} 个选择器的 provider',
+  'chains.selector.modelAria': '第 {index} 个选择器的 model',
   'chains.selector.providerPlaceholder': '选择 provider',
   'chains.selector.modelPlaceholder': '选择 model',
   'chains.selector.wildcardLegacy': '该条目为通配（provider/*）：选择具体模型后将转为精确条目',
@@ -298,7 +304,11 @@ export const en = {
   'rootChain.label': 'Default fallback chain',
   'rootChain.tooltip': 'Walked first whenever no time slot matches; if every entry fails, the default model below is the last fallback.',
   'defaultModel.label': 'Default model',
-  'chains.selector.remove': 'Remove this selector',
+  // Compact chain rows (plan fallbacks-chain-row-compact T3) — see the zh
+  // comment: the selects carry the field plus the 1-based row position.
+  'chains.selector.remove': 'Remove selector {index}',
+  'chains.selector.providerAria': 'Selector {index} provider',
+  'chains.selector.modelAria': 'Selector {index} model',
   'chains.selector.providerPlaceholder': 'Select provider',
   'chains.selector.modelPlaceholder': 'Select model',
   'chains.selector.wildcardLegacy': 'This entry is a wildcard (provider/*): picking a model converts it to an exact entry',

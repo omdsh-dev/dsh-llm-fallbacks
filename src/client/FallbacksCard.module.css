@@ -834,19 +834,148 @@ select.input {
   outline-offset: 2px;
 }
 
-/* Chain selector rows (provider select + model select): each row is its own
-   edit surface inside the chain card — the same grid rhythm as the role
-   rules. */
-.chainSelectors {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.selectorRow {
+/* Chain editor block (plan fallbacks-chain-row-compact T2): the selector rows
+   and their add affordance travel together, and the block owns its own 6px
+   pace — the editor card's 14px gap stays the card's, so the add button reads
+   as the chain's tail rather than as a separate field. */
+.chainBlock {
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+/* Chain selector rows (provider select + model select): each entry is ONE
+   compact line, one row apart — the line owns the internal geometry, so the
+   list only carries the 4px between entries. */
+.chainSelectors {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* One chain entry on a single line: order index, provider select, model
+   select, any row-level hint, trailing remove icon. Never wraps — the cells
+   and the hint give width back instead of re-opening the row height. The
+   wrapper above it (`.selectorRow`, the reveal surface only — see the
+   hover/focus-within rules below) holds exactly this child, so it carries no
+   layout of its own: the line fills the row as a block-level flex container,
+   which is what the removed column-flex declarations already produced (T2-F1
+   cleanup, no geometry change). */
+.selectorLine {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: nowrap;
+  /* Floor for a row whose selects cannot render; the real height comes from
+     the 34px inputs. */
+  min-height: 32px;
+}
+
+/* The chain is ordered, and this aria-hidden ordinal is the only place the
+   order is expressed — right-aligned tabular digits keep 1…10 in one column. */
+.selectorIndex {
+  flex: none;
+  width: 1.5em;
+  text-align: right;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--dsw-alias-label-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Provider holds short enum values, so it keeps a fixed-ish cell; the model
+   cell takes the remaining width and is the first to give it back. Both carry
+   `min-width: 0` so the nowrap line is always satisfied by shrinking the
+   selects instead of overflowing the card. */
+.selectorProviderCell {
+  flex: 0 1 clamp(140px, 20%, 220px);
+  min-width: 0;
+}
+
+.selectorModelCell {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* The model picker is the one enum that should take its cell: the global
+   `select.input { max-width: 240px }` cap belongs to the short enum fields,
+   but here the cell grows while the field stopped at 240px, so the row hint
+   and the remove control sat in the cell's dead tail (plan QC round G,
+   QC-S3). Scoped to THIS cell as `select.input` so the override wins on
+   specificity (0,2,1 against the global (0,1,1)) instead of relying on
+   source order — every other enum keeps the cap. */
+.selectorModelCell > select.input {
+  max-width: 100%;
+}
+
+/* Row-level hints ride the line instead of re-opening the row height. A hint
+   is a small flex strip, never a clipping box: the strip only positions the
+   trailing InfoHint badge next to the text, so nothing the badge needs is
+   ever clipped (T2-F2 — the badge used to sit inside the truncating span and
+   lost its trailing pixels at narrow widths). */
+.selectorHint {
+  display: flex;
+  align-items: center;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+/* The truncating TEXT holder of one row hint: one nowrap line, clipped with
+   an ellipsis, full copy on its own `title`. Keeping the clip here — and the
+   badge outside this element — is the whole contract: `overflow: hidden`
+   applies to the text alone, the sibling badge keeps its box. `min-width: 0`
+   lets the text give width back inside the row's nowrap line. */
+.selectorHintText {
+  flex: 0 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+/* The badge is a strip item that never shrinks: `flex: none` (re-declared
+   here so the hint strip's non-clipping contract does not depend on the
+   shared `.infoHint` base rule). */
+.selectorHint > .infoHint {
+  flex: none;
+  margin-left: 4px;
+}
+
+/* Row removal is a hover/focus affordance: the 28×28 `.iconButton` keeps its
+   own chrome and only gains the reveal, so the trash icon never competes with
+   the selects at rest. Touch devices have no hover, so the icon stays faintly
+   visible there. `flex: none` pins the fixed 28×28 box on the nowrap line (the
+   hint badge carries the same pin) so it cannot compress at narrow widths. */
+.selectorRemove {
+  flex: none;
+  opacity: 0;
+  transition: opacity .12s;
+}
+
+/* A non-writable row hides the remove affordance outright — the plan's
+   acceptance line ("remove … hidden when read-only"), not a dimmed control
+   that still looks actionable in a view that cannot save. The editor passes
+   `disabled` to the button, so this rule holds on the button's own attribute
+   instead of leaning on the ancestor `fieldset[disabled]`. */
+.selectorRemove:disabled {
+  display: none;
+}
+
+/* The reveal is restricted to an ENABLED control: it outranks
+   `.iconButton:disabled` on opacity, so without the `:not()` it would paint a
+   disabled button at full strength (the pre-fix read-only view). */
+.selectorRow:hover .selectorRemove:not(:disabled),
+.selectorRow:focus-within .selectorRemove:not(:disabled) {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .selectorRemove:not(:disabled) {
+    opacity: 0.7;
+  }
 }
 
 /* Icon-only actions: a 28×28 square with 6px radius on the Models
@@ -952,6 +1081,36 @@ select.input {
    stretching across it. */
 .addButton {
   align-self: flex-start;
+}
+
+/* The chain's add affordance is a ghost row at the chain tail (plan
+   fallbacks-chain-row-compact T2). `.outlineButton` / `.addButton` keep their
+   declarations for the other sections, so the override is scoped to the chain
+   block: 26px tall on the same 1px border the bordered variant carries (kept
+   transparent), so the box does not jump when the hover fill appears. */
+.chainBlock > .addButton {
+  box-sizing: border-box;
+  align-self: flex-start;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  gap: 4px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.chainBlock > .addButton:hover:not(:disabled) {
+  border-color: transparent;
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+}
+
+/* The ghost keeps the quiet ring of `.iconButton` rather than the bordered
+   button's brand outline. */
+.chainBlock > .addButton:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--dsw-alias-border-l3);
 }
 
 /* The time-slot add row (preset picker + Add preset + Add custom): the
