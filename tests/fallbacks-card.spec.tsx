@@ -1664,6 +1664,110 @@ describe('FallbacksCard two-block editing surface (plan fallbacks-role-config-mo
   })
 })
 
+/**
+ * Compact chain selector rows (plan fallbacks-chain-row-compact T1): one chain
+ * entry is ONE line — order index, provider select, model select, trailing
+ * remove — and the selectors + their add affordance share one block wrapper.
+ * Tests stub CSS modules to empty modules (`vitest.config.ts`), so class names
+ * and layout are not assertable here: the structural contract is asserted on
+ * the DOM markers the editor emits (`data-selector-row`, `data-selector-index`,
+ * `data-chain-block`) plus the accessible names and visible text.
+ */
+describe('FallbacksCard compact chain rows (plan fallbacks-chain-row-compact Task 1)', () => {
+  /** The 默认降级链 group (its label anchors the role="group" field). */
+  function chainGroup(): HTMLElement {
+    return screen.getByText(en['rootChain.label']).closest('[role="group"]') as HTMLElement
+  }
+
+  /** Every chain selector row inside `group`, in DOM order. */
+  function selectorRows(group: HTMLElement): HTMLElement[] {
+    return Array.from(group.querySelectorAll<HTMLElement>('[data-selector-row]'))
+  }
+
+  /**
+   * Assert one compact line for `row`: the visible 1-based order index, both
+   * labelled selects, the remove button on the SAME row element, and no
+   * repeated visible provider/model field label.
+   */
+  function expectCompactRow(row: HTMLElement, expectedIndex: string): void {
+    const indexSpan = row.querySelector('[data-selector-index]')
+    expect(indexSpan?.getAttribute('data-selector-index')).toBe(expectedIndex)
+    // The visible ordinal is the 1-based render position, rendered as text.
+    expect(indexSpan?.textContent).toBe(expectedIndex)
+    const provider = within(row).getByLabelText(en['roles.rule.provider'])
+    const model = within(row).getByLabelText(en['roles.rule.model'])
+    expect(provider.closest('[data-selector-row]')).toBe(row)
+    expect(model.closest('[data-selector-row]')).toBe(row)
+    const remove = within(row).getByRole('button', { name: en['chains.selector.remove'] })
+    expect(remove.closest('[data-selector-row]')).toBe(row)
+    expect(within(row).queryByText(en['roles.rule.provider'], { exact: true })).toBeNull()
+    expect(within(row).queryByText(en['roles.rule.model'], { exact: true })).toBeNull()
+  }
+
+  it('renders a two-entry chain as ordered single lines without field labels', async () => {
+    const config: typeof defaultFallbacksConfig = {
+      ...BASE_CONFIG,
+      rootChain: ['openai/gpt-4o', 'anthropic/claude-3-5-sonnet'],
+    }
+    const { view, props } = await mountCard({ config })
+    view.rerender(<FallbacksCard {...props} />)
+    const group = chainGroup()
+    const rows = selectorRows(group)
+    expect(rows).toHaveLength(2)
+    expectCompactRow(rows[0]!, '1')
+    expectCompactRow(rows[1]!, '2')
+    // No visible provider/model field labels remain anywhere in the chain
+    // group (they moved to the selects' aria-label).
+    expect(within(group).queryByText(en['roles.rule.provider'], { exact: true })).toBeNull()
+    expect(within(group).queryByText(en['roles.rule.model'], { exact: true })).toBeNull()
+  })
+
+  it('groups every chain editor with its add affordance in one block wrapper', async () => {
+    const config: typeof defaultFallbacksConfig = {
+      ...BASE_CONFIG,
+      rootChain: ['openai/gpt-4o', 'anthropic/claude-3-5-sonnet'],
+      timeSlots: [{
+        kind: 'custom',
+        start: '09:00',
+        end: '10:00',
+        days: [],
+        chain: ['openai/gpt-4o', 'anthropic/claude-3-5-sonnet'],
+      }],
+      roles: {
+        list: [{
+          id: 'coder',
+          persona: '',
+          chain: ['openai/gpt-4o', 'anthropic/claude-3-5-sonnet'],
+          fallback: 'none',
+        }],
+        rules: [],
+      },
+    }
+    const { view, props } = await mountCard({ config })
+    expandAllRoles()
+    expandAllSlots()
+    view.rerender(<FallbacksCard {...props} />)
+    // All three shared-editor sites: the 默认降级链, a time-slot chain and a
+    // role chain — each selectors list + its own add button in one block.
+    const sites: Array<[string, HTMLElement, string]> = [
+      ['default chain', chainGroup(), en['timeSlots.selector.add']],
+      ['time-slot chain', screen.getByText(en['timeSlots.label']).closest('[role="group"]') as HTMLElement, en['timeSlots.selector.add']],
+      ['role chain', screen.getByText(en['roles.list.label']).closest('[role="group"]') as HTMLElement, en['roles.selector.add']],
+    ]
+    for (const [site, group, addName] of sites) {
+      const rows = selectorRows(group)
+      expect(rows, site).toHaveLength(2)
+      const add = within(group).getByRole('button', { name: addName })
+      const block = add.closest('[data-chain-block]')
+      expect(block, site).not.toBeNull()
+      for (const row of rows) expect(block!.contains(row), site).toBe(true)
+      // The add affordance is the chain tail of its own block.
+      expect(block!.lastElementChild, site).toBe(add)
+      expect(within(group).queryByText(en['roles.rule.provider'], { exact: true }), site).toBeNull()
+    }
+  })
+})
+
 describe('FallbacksCard time-slot rows (plan fallbacks-timeslots Task 3)', () => {
   // A conforming enabled config with no extra rows: the card starts clean
   // and every row below is a user action. No `timeSlots.enabled` master

@@ -600,6 +600,12 @@ function InfoHint({ label, disabled = false }: { label: string; disabled?: boole
 
 /**
  * One chain entry selector row: provider select + model select (cascade).
+ * The row is ONE compact line (plan fallbacks-chain-row-compact T1): the
+ * 1-based order index, the provider select, the model select, any row-level
+ * hint (inline, so it never re-opens the row height) and the trailing remove
+ * icon. The visible provider/model field labels are gone — the two selects
+ * carry their accessible name on `aria-label` (the visible labels repeated on
+ * every row and cost a whole line).
  * The GUI never offers a `provider/*` wildcard (root agent and role chains
  * alike; provider-any matching lives in the role rules) — but `provider/*`
  * stays a legal YAML entry, so a wildcard row read back from the server
@@ -617,9 +623,11 @@ function InfoHint({ label, disabled = false }: { label: string; disabled?: boole
  * options.
  */
 function ChainSelectorEditor({
-  selector, catalog, configuredProviders, disabled, t, onChange, onRemove,
+  selector, index, catalog, configuredProviders, disabled, t, onChange, onRemove,
 }: {
   selector: ChainSelectorRow
+  /** 1-based render position of this row inside its chain (the visible order index). */
+  index: number
   catalog: CatalogLookup | undefined
   configuredProviders: readonly LlmConfigurableProvider[]
   disabled: boolean
@@ -647,13 +655,16 @@ function ChainSelectorEditor({
   const modelDisabled = disabled || providerRaw === '' || groupMissing || (providerOutside && modelRaw === '')
 
   return (
-    <div className={css.selectorRow}>
-      <div className={css.ruleGrid}>
-        <label className={css.ruleCell}>
-          <span className={css.ruleCellLabel}>{t('roles.rule.provider')}</span>
+    <div className={css.selectorRow} data-selector-row="">
+      <div className={css.selectorLine}>
+        {/* The chain is ordered; this aria-hidden ordinal is the only place
+            the order is expressed (the labelled selects carry the meaning). */}
+        <span className={css.selectorIndex} aria-hidden="true" data-selector-index={index}>{index}</span>
+        <div className={css.selectorProviderCell}>
           <select
             className={`${css.input} ${css.selectInput}`}
             value={providerRaw}
+            aria-label={t('roles.rule.provider')}
             disabled={disabled}
             onChange={event => {
               // Cascade: a DIFFERENT provider clears the model choice (D-3);
@@ -678,12 +689,12 @@ function ChainSelectorEditor({
               <option value={providerRaw}>{`${providerRaw}${t('catalog.outside.short')}`}</option>
             )}
           </select>
-        </label>
-        <label className={css.ruleCell}>
-          <span className={css.ruleCellLabel}>{t('roles.rule.model')}</span>
+        </div>
+        <div className={css.selectorModelCell}>
           <select
             className={`${css.input} ${css.selectInput}`}
             value={modelRaw}
+            aria-label={t('roles.rule.model')}
             disabled={modelDisabled}
             onChange={event => {
               onChange({
@@ -705,28 +716,34 @@ function ChainSelectorEditor({
               <option value={modelRaw}>{`${modelRaw}${t('catalog.outside.short')}`}</option>
             )}
           </select>
-          {groupMissing && (
-            <span className={css.hint}>{t('chains.selector.noModelsStrict')}</span>
-          )}
-        </label>
-      </div>
-      {(providerOutside || modelOutside) && (
-        <span className={css.hint}>
-          {t('catalog.outside.hint')}
-          <InfoHint label={t('catalog.outside.tooltip')} disabled={disabled} />
-        </span>
-      )}
-      {/* The legacy-conversion hint only renders when a conversion is
-          actually possible: with the model select disabled (no catalog group
-          / empty provider / outside provider without an outside model) there
-          is nothing to pick, so the hint stays off (N-003/N-004). */}
-      {selector.wildcard && !modelDisabled && (
-        <span className={css.hint}>{t('chains.selector.wildcardLegacy')}</span>
-      )}
-      <div className={css.cardFoot}>
+        </div>
+        {/* Row-level hints ride the line (inline, ellipsised by CSS) instead
+            of a block sibling that would re-open the row height; the full
+            text stays reachable through the span's `title`. */}
+        {groupMissing && (
+          <span className={css.selectorHint} title={t('chains.selector.noModelsStrict')}>
+            {t('chains.selector.noModelsStrict')}
+          </span>
+        )}
+        {(providerOutside || modelOutside) && (
+          <span className={css.selectorHint} title={t('catalog.outside.hint')}>
+            {t('catalog.outside.hint')}
+            <InfoHint label={t('catalog.outside.tooltip')} disabled={disabled} />
+          </span>
+        )}
+        {/* The legacy-conversion hint only renders when a conversion is
+            actually possible: with the model select disabled (no catalog
+            group / empty provider / outside provider without an outside
+            model) there is nothing to pick, so the hint stays off
+            (N-003/N-004). */}
+        {selector.wildcard && !modelDisabled && (
+          <span className={css.selectorHint} title={t('chains.selector.wildcardLegacy')}>
+            {t('chains.selector.wildcardLegacy')}
+          </span>
+        )}
         <button
           type="button"
-          className={`${css.iconButton} ${css.iconButtonDanger}`}
+          className={`${css.iconButton} ${css.iconButtonDanger} ${css.selectorRemove}`}
           data-tip={t('chains.selector.remove')}
           aria-label={t('chains.selector.remove')}
           onClick={onRemove}
@@ -1586,29 +1603,35 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                 {chainEmpty && (
                   <span className={css.hint}>{t('validation.slotChainRequired')}</span>
                 )}
-                <div className={css.chainSelectors}>
-                  {row.selectors.map((selector, selectorIndex) => (
-                    <ChainSelectorEditor
-                      key={selectorIndex}
-                      selector={selector}
-                      catalog={catalogOf(state)}
-                      configuredProviders={state.configuredProviders}
-                      disabled={!writable}
-                      t={t}
-                      onChange={patch => { updateTimeSlotSelector(index, selectorIndex, patch) }}
-                      onRemove={() => { removeTimeSlotSelector(index, selectorIndex) }}
-                    />
-                  ))}
+                {/* Chain block (plan fallbacks-chain-row-compact T1): the
+                    selector rows and their add affordance travel together, so
+                    the add button stays at the chain tail in every editor. */}
+                <div className={css.chainBlock} data-chain-block="">
+                  <div className={css.chainSelectors}>
+                    {row.selectors.map((selector, selectorIndex) => (
+                      <ChainSelectorEditor
+                        key={selectorIndex}
+                        index={selectorIndex + 1}
+                        selector={selector}
+                        catalog={catalogOf(state)}
+                        configuredProviders={state.configuredProviders}
+                        disabled={!writable}
+                        t={t}
+                        onChange={patch => { updateTimeSlotSelector(index, selectorIndex, patch) }}
+                        onRemove={() => { removeTimeSlotSelector(index, selectorIndex) }}
+                      />
+                    ))}
+                  </div>
+                  <button
+                    type="button"
+                    className={`${css.outlineButton} ${css.addButton}`}
+                    disabled={!writable}
+                    onClick={() => { addTimeSlotSelector(index) }}
+                  >
+                    <PlusIcon />
+                    {t('timeSlots.selector.add')}
+                  </button>
                 </div>
-                <button
-                  type="button"
-                  className={`${css.outlineButton} ${css.addButton}`}
-                  disabled={!writable}
-                  onClick={() => { addTimeSlotSelector(index) }}
-                >
-                  <PlusIcon />
-                  {t('timeSlots.selector.add')}
-                </button>
                 <div className={css.cardFoot}>
                   <div className={css.rowActions}>
                     <button
@@ -1717,29 +1740,32 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
           )}
           <div className={css.list}>
             <div className={css.editorCard}>
-              <div className={css.chainSelectors}>
-                {allDayChainRow.selectors.map((selector, selectorIndex) => (
-                  <ChainSelectorEditor
-                    key={selectorIndex}
-                    selector={selector}
-                    catalog={catalogOf(state)}
-                    configuredProviders={state.configuredProviders}
-                    disabled={!writable}
-                    t={t}
-                    onChange={patch => { updateAllDayChainSelector(selectorIndex, patch) }}
-                    onRemove={() => { removeAllDayChainSelector(selectorIndex) }}
-                  />
-                ))}
+              <div className={css.chainBlock} data-chain-block="">
+                <div className={css.chainSelectors}>
+                  {allDayChainRow.selectors.map((selector, selectorIndex) => (
+                    <ChainSelectorEditor
+                      key={selectorIndex}
+                      index={selectorIndex + 1}
+                      selector={selector}
+                      catalog={catalogOf(state)}
+                      configuredProviders={state.configuredProviders}
+                      disabled={!writable}
+                      t={t}
+                      onChange={patch => { updateAllDayChainSelector(selectorIndex, patch) }}
+                      onRemove={() => { removeAllDayChainSelector(selectorIndex) }}
+                    />
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  className={`${css.outlineButton} ${css.addButton}`}
+                  disabled={!writable}
+                  onClick={addAllDayChainSelector}
+                >
+                  <PlusIcon />
+                  {t('timeSlots.selector.add')}
+                </button>
               </div>
-              <button
-                type="button"
-                className={`${css.outlineButton} ${css.addButton}`}
-                disabled={!writable}
-                onClick={addAllDayChainSelector}
-              >
-                <PlusIcon />
-                {t('timeSlots.selector.add')}
-              </button>
             </div>
           </div>
         </div>
@@ -2040,38 +2066,57 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                     )}
                   </div>
                 </div>
-                <div className={css.chainSelectors}>
-                  {row.selectors.map((selector, selectorIndex) => (
-                    <ChainSelectorEditor
-                      key={selectorIndex}
-                      selector={selector}
-                      catalog={catalogOf(state)}
-                      configuredProviders={state.configuredProviders}
-                      disabled={!writable}
-                      t={t}
-                      onChange={patch => { updateRoleSelector(index, selectorIndex, patch) }}
-                      onRemove={() => { removeRoleSelector(index, selectorIndex) }}
-                    />
-                  ))}
-                  {row.selectors.every(selector => selectorRowToRaw(selector) === '') && (
-                    // A role whose chain area is empty — no selector
-                    // rows, or only blank placeholder rows — has no
-                    // model config. Non-seeded: save is blocked
-                    // (roleChainRequired) and the inline hint explains
-                    // why (plan fallbacks-feedback-round T2),
-                    // unconditional while no row serializes to a usable
-                    // chain entry. Seeded: the chain is legitimately
-                    // empty by design (R4 — seeds never invent one), so
-                    // the hint turns non-blocking (seedChainOptional)
-                    // and the Save relax lets the seeded row ride the
-                    // whole-form save instead of blocking it (spec §9.6
-                    // / AC-3).
-                    <span className={css.hint}>
-                      {seed !== undefined
-                        ? t('roles.seedChainOptional', { id: row.id })
-                        : t('validation.roleChainRequired', { id: row.id })}
-                    </span>
-                  )}
+                {/*
+                  * Chain block (plan fallbacks-chain-row-compact T1): the
+                  * selector rows and their add affordance travel together, so
+                  * the add button stays at the chain tail of every editor. The
+                  * fallback strategy select (its own rule grid, NOT part of
+                  * the chain) follows the block.
+                  */}
+                <div className={css.chainBlock} data-chain-block="">
+                  <div className={css.chainSelectors}>
+                    {row.selectors.map((selector, selectorIndex) => (
+                      <ChainSelectorEditor
+                        key={selectorIndex}
+                        index={selectorIndex + 1}
+                        selector={selector}
+                        catalog={catalogOf(state)}
+                        configuredProviders={state.configuredProviders}
+                        disabled={!writable}
+                        t={t}
+                        onChange={patch => { updateRoleSelector(index, selectorIndex, patch) }}
+                        onRemove={() => { removeRoleSelector(index, selectorIndex) }}
+                      />
+                    ))}
+                    {row.selectors.every(selector => selectorRowToRaw(selector) === '') && (
+                      // A role whose chain area is empty — no selector
+                      // rows, or only blank placeholder rows — has no
+                      // model config. Non-seeded: save is blocked
+                      // (roleChainRequired) and the inline hint explains
+                      // why (plan fallbacks-feedback-round T2),
+                      // unconditional while no row serializes to a usable
+                      // chain entry. Seeded: the chain is legitimately
+                      // empty by design (R4 — seeds never invent one), so
+                      // the hint turns non-blocking (seedChainOptional)
+                      // and the Save relax lets the seeded row ride the
+                      // whole-form save instead of blocking it (spec §9.6
+                      // / AC-3).
+                      <span className={css.hint}>
+                        {seed !== undefined
+                          ? t('roles.seedChainOptional', { id: row.id })
+                          : t('validation.roleChainRequired', { id: row.id })}
+                      </span>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    className={`${css.outlineButton} ${css.addButton}`}
+                    disabled={!writable}
+                    onClick={() => { addRoleSelector(index) }}
+                  >
+                    <PlusIcon />
+                    {t('roles.selector.add')}
+                  </button>
                 </div>
                 <div className={css.ruleGrid}>
                   <div className={css.ruleCell}>
@@ -2088,15 +2133,6 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                     </select>
                   </div>
                 </div>
-                <button
-                  type="button"
-                  className={`${css.outlineButton} ${css.addButton}`}
-                  disabled={!writable}
-                  onClick={() => { addRoleSelector(index) }}
-                >
-                  <PlusIcon />
-                  {t('roles.selector.add')}
-                </button>
                 <div className={css.cardFoot}>
                   <button
                     type="button"
