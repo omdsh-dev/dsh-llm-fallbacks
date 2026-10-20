@@ -30,7 +30,7 @@ The dsh Desktop app and a `dsh web` session expose the same plugin manager, and 
 
 The **Add plugin** wizard accepts a package name (the npm package name), a GitHub repo, or a local directory; a registry install needs only the package name. When the install finishes, **follow the host's own restart prompt** — the plugin's host half and client half load on the next start.
 
-The GUI installs into the **`web` profile** — exactly the profile `dsh plugin --profile web add …` targets (§3) — so the GUI path and the registry CLI install are the same installation. The terminal profile `dsh-tui` has no plugin page: it keeps the CLI path (§6). A registry install ships the built `dist/`, so neither the GUI path (registry package) nor the registry CLI path builds anything on the target machine. A local-directory install is the exception: it builds first (§2).
+The GUI installs into the **`web` profile** — exactly the profile `dsh plugin --profile web add …` targets (§3) — so the GUI path and the registry CLI install are the same installation. The terminal profile `dsh-tui` has no plugin page: it keeps the CLI path (§6). A registry install ships the built `dist/`, so neither the GUI path (registry package) nor the registry CLI path builds anything on the target machine. Local-directory and GitHub-repo installs build first (§2, §5).
 
 ## 2. Local directory install (recommended)
 
