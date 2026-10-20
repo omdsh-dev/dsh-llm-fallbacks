@@ -735,16 +735,26 @@ function ChainSelectorEditor({
           </select>
         </div>
         {/* Row-level hints ride the line (inline, ellipsised by CSS) instead
-            of a block sibling that would re-open the row height; the full
-            text stays reachable through the span's `title`. */}
+            of a block sibling that would re-open the row height. Each hint is
+            a strip whose TEXT holder carries the truncation (`title` keeps the
+            full copy); a trailing InfoHint badge sits OUTSIDE that holder, so
+            the clip can never eat into it (T2-F2). */}
         {groupMissing && (
-          <span id={strictHintId} className={css.selectorHint} title={t('chains.selector.noModelsStrict')}>
-            {t('chains.selector.noModelsStrict')}
+          <span className={css.selectorHint}>
+            <span
+              id={strictHintId}
+              className={css.selectorHintText}
+              title={t('chains.selector.noModelsStrict')}
+            >
+              {t('chains.selector.noModelsStrict')}
+            </span>
           </span>
         )}
         {(providerOutside || modelOutside) && (
-          <span className={css.selectorHint} title={t('catalog.outside.hint')}>
-            {t('catalog.outside.hint')}
+          <span className={css.selectorHint}>
+            <span className={css.selectorHintText} title={t('catalog.outside.hint')}>
+              {t('catalog.outside.hint')}
+            </span>
             <InfoHint label={t('catalog.outside.tooltip')} disabled={disabled} />
           </span>
         )}
@@ -754,8 +764,10 @@ function ChainSelectorEditor({
             model) there is nothing to pick, so the hint stays off
             (N-003/N-004). */}
         {selector.wildcard && !modelDisabled && (
-          <span className={css.selectorHint} title={t('chains.selector.wildcardLegacy')}>
-            {t('chains.selector.wildcardLegacy')}
+          <span className={css.selectorHint}>
+            <span className={css.selectorHintText} title={t('chains.selector.wildcardLegacy')}>
+              {t('chains.selector.wildcardLegacy')}
+            </span>
           </span>
         )}
         <button

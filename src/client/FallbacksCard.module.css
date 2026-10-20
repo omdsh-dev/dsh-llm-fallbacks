@@ -853,17 +853,14 @@ select.input {
   gap: 4px;
 }
 
-/* The row is the reveal surface only (`.selectorRow:hover` /
-   `:focus-within`): it holds the single line, so it carries no pacing of its
-   own. */
-.selectorRow {
-  display: flex;
-  flex-direction: column;
-}
-
 /* One chain entry on a single line: order index, provider select, model
    select, any row-level hint, trailing remove icon. Never wraps — the cells
-   and the hint give width back instead of re-opening the row height. */
+   and the hint give width back instead of re-opening the row height. The
+   wrapper above it (`.selectorRow`, the reveal surface only — see the
+   hover/focus-within rules below) holds exactly this child, so it carries no
+   layout of its own: the line fills the row as a block-level flex container,
+   which is what the removed column-flex declarations already produced (T2-F1
+   cleanup, no geometry change). */
 .selectorLine {
   display: flex;
   align-items: center;
@@ -900,13 +897,24 @@ select.input {
   min-width: 0;
 }
 
-/* Row-level hints ride the line instead of re-opening the row height: one
-   nowrap line, clipped with an ellipsis, full copy on the span's `title`.
-   The outside-catalog hint also carries the InfoHint badge after its text —
-   with the badge inside the truncating span it cannot be fully protected from
-   the clip without a DOM wrapper, so it is centred on the line box and the
-   span's `title` keeps the explanation reachable if the copy truncates. */
+/* Row-level hints ride the line instead of re-opening the row height. A hint
+   is a small flex strip, never a clipping box: the strip only positions the
+   trailing InfoHint badge next to the text, so nothing the badge needs is
+   ever clipped (T2-F2 — the badge used to sit inside the truncating span and
+   lost its trailing pixels at narrow widths). */
 .selectorHint {
+  display: flex;
+  align-items: center;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+/* The truncating TEXT holder of one row hint: one nowrap line, clipped with
+   an ellipsis, full copy on its own `title`. Keeping the clip here — and the
+   badge outside this element — is the whole contract: `overflow: hidden`
+   applies to the text alone, the sibling badge keeps its box. `min-width: 0`
+   lets the text give width back inside the row's nowrap line. */
+.selectorHintText {
   flex: 0 1 auto;
   min-width: 0;
   white-space: nowrap;
@@ -917,9 +925,12 @@ select.input {
   color: var(--dsw-alias-label-secondary);
 }
 
+/* The badge is a strip item that never shrinks: `flex: none` (re-declared
+   here so the hint strip's non-clipping contract does not depend on the
+   shared `.infoHint` base rule). */
 .selectorHint > .infoHint {
+  flex: none;
   margin-left: 4px;
-  vertical-align: middle;
 }
 
 /* Row removal is a hover/focus affordance: the 28×28 `.iconButton` keeps its

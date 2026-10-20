@@ -1851,13 +1851,47 @@ describe('FallbacksCard compact chain rows (plan fallbacks-chain-row-compact T1/
     // while outside every row).
     expect(hint.closest('[data-selector-row]')).toBe(row)
     // …and it sits on the same line element as the two selects, so the row
-    // height is not re-opened by a second block.
-    expect(hint.parentElement).toBe(selectorLine(row))
+    // height is not re-opened by a second block. The visible text is the
+    // hint's inner TEXT holder (T2-F2), which rides the hint strip on the
+    // line; the badge's non-clipping structure is pinned in the
+    // outside-catalog test below.
+    const hintStrip = hint.parentElement as HTMLElement
+    expect(hintStrip.parentElement).toBe(selectorLine(row))
     expect(selectorRows(group)).toHaveLength(1)
     // The strict hint is absent on this row, so the model select carries NO
     // `aria-describedby` (the association exists only when a hint renders).
     const model = within(row).getByLabelText(chainRowLabel('chains.selector.modelAria', 1))
     expect(model.getAttribute('aria-describedby')).toBeNull()
+  })
+
+  it('keeps the outside-catalog info badge outside the truncating text holder', async () => {
+    // A value that is outside the catalog gets the outside-catalog hint: the
+    // short copy plus the "!" badge that carries the long explanation. The
+    // hint's TEXT holder is the element CSS truncates with an ellipsis
+    // (`overflow: hidden`), so the badge must not be one of its descendants —
+    // as a sibling strip item (`flex: none`) the clip can never reach it
+    // (T2-F2). jsdom cannot see layout, so the structural contract is what
+    // this pins.
+    const config: typeof defaultFallbacksConfig = { ...BASE_CONFIG, rootChain: ['mystery/gpt-9'] }
+    const { view, props, controller } = await mountCard({ config, catalog: CHAIN_CATALOG })
+    await controller.loadCatalog()
+    view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
+    const row = selectorRows(chainGroup())[0]!
+    const hintText = within(row).getByText(en['catalog.outside.hint'])
+    // The text holder carries the full copy on its own `title`…
+    expect(hintText.getAttribute('title')).toBe(en['catalog.outside.hint'])
+    // …and the badge (the bridge to the longer explanation) is NOT inside it,
+    // nor inside any node under it: the truncation surface stops at the text.
+    const badge = within(row).getByRole('img', { name: en['catalog.outside.tooltip'] })
+    expect(hintText.contains(badge)).toBe(false)
+    // Both are children of the hint strip, which rides the row line.
+    const hintStrip = hintText.parentElement!
+    expect(badge.parentElement).toBe(hintStrip)
+    expect(hintStrip).not.toBe(hintText)
+    expect(hintStrip.parentElement).toBe(selectorLine(row))
+    // The badge keeps its own accessible name and tooltip copy (the wiring
+    // the split must not disturb).
+    expect(badge.getAttribute('data-tip')).toBe(en['catalog.outside.tooltip'])
   })
 })
 
