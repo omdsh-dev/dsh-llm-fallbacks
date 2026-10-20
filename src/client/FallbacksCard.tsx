@@ -80,7 +80,7 @@
  * token so the card adapts to the light/dark theme.
  */
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { LlmConfigurableProvider } from '@deepseek-ai/dsh-api-remotes/client'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
@@ -653,6 +653,17 @@ function ChainSelectorEditor({
   const groupMissing = providerRaw !== '' && !providerOutside && group === undefined
   // Nothing selectable: outside provider with no outside model to keep.
   const modelDisabled = disabled || providerRaw === '' || groupMissing || (providerOutside && modelRaw === '')
+  // Id of THIS row's strict hint (only rendered when `groupMissing`). The
+  // hint became a sibling span in the compact row (plan
+  // fallbacks-chain-row-compact T1), so it no longer contributes to the model
+  // select's accessible name: the select points at it with `aria-describedby`
+  // instead. The instance id keeps the hint id unique across the card — the
+  // 1-based row index repeats in every chain (all-day + each time slot /
+  // role), and a duplicate id would resolve `aria-describedby` to another
+  // row's hint. `useId` stays unconditional: the id is only USED when the hint
+  // renders.
+  const hintInstanceId = useId().replace(/:/g, '')
+  const strictHintId = groupMissing ? `fallbacks-selector-hint-${index}-${hintInstanceId}` : undefined
 
   return (
     <div className={css.selectorRow} data-selector-row="">
@@ -664,7 +675,10 @@ function ChainSelectorEditor({
           <select
             className={`${css.input} ${css.selectInput}`}
             value={providerRaw}
-            aria-label={t('roles.rule.provider')}
+            // The row's position is part of the name: every chain row would
+            // otherwise be announced identically (the visible ordinal is
+            // aria-hidden).
+            aria-label={t('chains.selector.providerAria', { index: String(index) })}
             disabled={disabled}
             onChange={event => {
               // Cascade: a DIFFERENT provider clears the model choice (D-3);
@@ -694,7 +708,10 @@ function ChainSelectorEditor({
           <select
             className={`${css.input} ${css.selectInput}`}
             value={modelRaw}
-            aria-label={t('roles.rule.model')}
+            aria-label={t('chains.selector.modelAria', { index: String(index) })}
+            // A disabled select still needs to SAY why: the strict "no models"
+            // hint is a sibling span now, so bind it explicitly.
+            aria-describedby={strictHintId}
             disabled={modelDisabled}
             onChange={event => {
               onChange({
@@ -721,7 +738,7 @@ function ChainSelectorEditor({
             of a block sibling that would re-open the row height; the full
             text stays reachable through the span's `title`. */}
         {groupMissing && (
-          <span className={css.selectorHint} title={t('chains.selector.noModelsStrict')}>
+          <span id={strictHintId} className={css.selectorHint} title={t('chains.selector.noModelsStrict')}>
             {t('chains.selector.noModelsStrict')}
           </span>
         )}
@@ -744,8 +761,8 @@ function ChainSelectorEditor({
         <button
           type="button"
           className={`${css.iconButton} ${css.iconButtonDanger} ${css.selectorRemove}`}
-          data-tip={t('chains.selector.remove')}
-          aria-label={t('chains.selector.remove')}
+          data-tip={t('chains.selector.remove', { index: String(index) })}
+          aria-label={t('chains.selector.remove', { index: String(index) })}
           onClick={onRemove}
         >
           <TrashIcon />
