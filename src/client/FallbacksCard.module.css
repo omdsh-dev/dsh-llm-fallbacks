@@ -897,6 +897,16 @@ select.input {
   min-width: 0;
 }
 
+/* The model picker is the one enum that should take its cell: the global
+   `select.input { max-width: 240px }` cap belongs to the short enum fields,
+   but here the cell grows while the field stopped at 240px, so the row hint
+   and the remove control sat in the cell's dead tail (plan QC round G,
+   QC-S3). Scoped to THIS cell and declared after the global rule (equal
+   specificity, later source order wins) — every other enum keeps the cap. */
+.selectorModelCell > select {
+  max-width: 100%;
+}
+
 /* Row-level hints ride the line instead of re-opening the row height. A hint
    is a small flex strip, never a clipping box: the strip only positions the
    trailing InfoHint badge next to the text, so nothing the badge needs is
@@ -936,19 +946,33 @@ select.input {
 /* Row removal is a hover/focus affordance: the 28×28 `.iconButton` keeps its
    own chrome and only gains the reveal, so the trash icon never competes with
    the selects at rest. Touch devices have no hover, so the icon stays faintly
-   visible there. */
+   visible there. `flex: none` pins the fixed 28×28 box on the nowrap line (the
+   hint badge carries the same pin) so it cannot compress at narrow widths. */
 .selectorRemove {
+  flex: none;
   opacity: 0;
   transition: opacity .12s;
 }
 
-.selectorRow:hover .selectorRemove,
-.selectorRow:focus-within .selectorRemove {
+/* A non-writable row hides the remove affordance outright — the plan's
+   acceptance line ("remove … hidden when read-only"), not a dimmed control
+   that still looks actionable in a view that cannot save. The editor passes
+   `disabled` to the button, so this rule holds on the button's own attribute
+   instead of leaning on the ancestor `fieldset[disabled]`. */
+.selectorRemove:disabled {
+  display: none;
+}
+
+/* The reveal is restricted to an ENABLED control: it outranks
+   `.iconButton:disabled` on opacity, so without the `:not()` it would paint a
+   disabled button at full strength (the pre-fix read-only view). */
+.selectorRow:hover .selectorRemove:not(:disabled),
+.selectorRow:focus-within .selectorRemove:not(:disabled) {
   opacity: 1;
 }
 
 @media (hover: none) {
-  .selectorRemove {
+  .selectorRemove:not(:disabled) {
     opacity: 0.7;
   }
 }

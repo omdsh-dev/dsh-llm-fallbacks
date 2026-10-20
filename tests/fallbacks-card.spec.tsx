@@ -1893,6 +1893,57 @@ describe('FallbacksCard compact chain rows (plan fallbacks-chain-row-compact T1/
     // the split must not disturb).
     expect(badge.getAttribute('data-tip')).toBe(en['catalog.outside.tooltip'])
   })
+
+  it('exposes no actionable remove control on a read-only row (plan QC round G, QC-W1)', async () => {
+    // The trailing remove is a hover/focus-revealed DESTRUCTIVE action, and the
+    // plan's acceptance line is "remove … hidden when read-only". CSS modules
+    // are stubbed in jsdom, so the `display: none` that hides it is proven by
+    // the emitted CSS; what this pins is the contract BEHIND that rule — every
+    // row's remove button carries its own `disabled`, so it is unclickable,
+    // unfocusable and out of the tab order even before any CSS applies.
+    const config: typeof defaultFallbacksConfig = {
+      ...BASE_CONFIG,
+      rootChain: ['openai/gpt-4o', 'anthropic/claude-3-5-sonnet'],
+    }
+    const { view, props } = await mountCard({ config, writable: false })
+    view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
+    const rows = selectorRows(chainGroup())
+    expect(rows).toHaveLength(2)
+    for (const [offset, row] of rows.entries()) {
+      const index = offset + 1
+      const remove = within(row).getByRole('button', { name: chainRowLabel('chains.selector.remove', index) })
+      // The row's OWN gate, not merely the ancestor `fieldset[disabled]`
+      // (the pre-fix button had no `disabled` attribute at all).
+      expect(remove.hasAttribute('disabled'), `remove ${index}`).toBe(true)
+      expect((remove as HTMLButtonElement).disabled).toBe(true)
+      // ...which is what removes it from the focus order: `focus()` is a no-op.
+      remove.focus()
+      expect(document.activeElement).not.toBe(remove)
+      // The row's selects are gated by the same `disabled` prop — parity, no
+      // new read-only behaviour invented here.
+      const provider = within(row).getByLabelText(chainRowLabel('chains.selector.providerAria', index))
+      expect((provider as HTMLSelectElement).disabled).toBe(true)
+    }
+  })
+
+  it('keeps the remove control actionable on a writable row (the read-only gate does not leak)', async () => {
+    // The other side of the same contract, and the only functional coverage of
+    // the remove action in the compact row: an editable row removes its entry.
+    const config: typeof defaultFallbacksConfig = {
+      ...BASE_CONFIG,
+      rootChain: ['openai/gpt-4o', 'anthropic/claude-3-5-sonnet'],
+    }
+    const { view, props } = await mountCard({ config })
+    view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
+    expect(selectorRows(chainGroup())).toHaveLength(2)
+    const remove = within(chainGroup()).getByRole('button', { name: chainRowLabel('chains.selector.remove', 2) })
+    expect((remove as HTMLButtonElement).disabled).toBe(false)
+    fireEvent.click(remove)
+    const remaining = selectorRows(chainGroup())
+    expect(remaining).toHaveLength(1)
+    // The survivor re-numbers to 1 — the ordinal is the render position.
+    expectCompactRow(remaining[0]!, 1)
+  })
 })
 
 describe('FallbacksCard time-slot rows (plan fallbacks-timeslots Task 3)', () => {

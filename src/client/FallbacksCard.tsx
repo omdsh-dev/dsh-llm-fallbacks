@@ -775,6 +775,11 @@ function ChainSelectorEditor({
           className={`${css.iconButton} ${css.iconButtonDanger} ${css.selectorRemove}`}
           data-tip={t('chains.selector.remove', { index: String(index) })}
           aria-label={t('chains.selector.remove', { index: String(index) })}
+          // The row's OWN gate, not just the ancestor `fieldset[disabled]`:
+          // the plan's acceptance line is "remove … hidden when read-only", and
+          // a real `disabled` button is the thing CSS can hide, AT can skip and
+          // the browser cannot click (plan QC round G, QC-W1).
+          disabled={disabled}
           onClick={onRemove}
         >
           <TrashIcon />
