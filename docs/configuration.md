@@ -379,7 +379,7 @@ In a terminal (`dsh-tui`) profile the plugin's write surface is the **`/settings
 - **Action command**: `/fallbacks config revert-seed <role-id>` restores a seeded role's persona to its declared seed default and prints the outcome — the web settings card presents seeded personas read-only (no revert affordance), so the command is this action's only surface.
 - **Menu + completion**: `/fallbacks`, `/fallbacks config` and the `config` → `revert-seed` leaf appear in the TUI `/` menu with subcommand completion when the profile carries the `tuiCommandTrees` service (the `dsh-tui-command-trees` bundle row; the shipped dsh-tui bundle has it).
 
-Installation for the dsh-tui profile → [docs/install.md](install.md) §5.
+Installation for the dsh-tui profile → [docs/install.md](install.md) §6.
 
 ## Behavior notes
 

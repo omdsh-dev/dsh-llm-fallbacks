@@ -60,12 +60,16 @@ subagent 的角色由分发提示词声明——Assignment 头部字段 `**Execu
 
 ### 安装
 
+**Desktop / Web 插件页**——在 DeepSeek Harness（Desktop 应用或 `dsh web` 会话）中打开侧边栏的**插件（Plugins）**页，点击**添加插件**，输入包名 `dsh-llm-fallbacks`，点击**安装**，然后按宿主的重启提示操作。该向导接受包名（即 npm 包名）、GitHub repo 或本地目录——registry 安装只需填包名。GUI 安装写入 `web` profile，与下方 `--profile web` 指向同一个 profile。
+
+**CLI**——适用于脚本化环境或终端前端：
+
 ```sh
 dsh plugin --profile web add dsh-llm-fallbacks      # web profile（设置 → Fallbacks 卡片）
 dsh plugin --profile dsh-tui add dsh-llm-fallbacks  # dsh-tui 终端 profile
 ```
 
-同一个插件、两种前端——唯一区别是 `--profile`。可用 `@<version>` 固定版本。registry 安装拉取**已构建包**（`dist/`），目标机器不执行构建。registry / git / 本地目录三种安装方式、卸载与 `--dump-config` 校验 → [docs/install.md](docs/install.md)。插件同时提供**本地化元数据**（Plugins 详情页的标题/描述，英文 + 简体中文）与**图标**——两者都在包内声明（`locale/*.json` + `icon.svg`），由宿主自动识别。
+`dsh-tui` 没有自己的插件页，只能走 CLI。可用 `@<version>` 固定版本。registry 安装拉取**已构建包**（`dist/`），目标机器不执行构建。registry / git / 本地目录三种安装方式、卸载与 `--dump-config` 校验 → [docs/install.md](docs/install.md)。插件同时提供**本地化元数据**（Plugins 详情页的标题/描述，英文 + 简体中文）与**图标**——两者都在包内声明（`locale/*.json` + `icon.svg`），由宿主自动识别。
 
 ### 配置
 
@@ -133,7 +137,7 @@ fallbacks:
 
 | 文档 | 内容 |
 |---|---|
-| [docs/install.md](docs/install.md) | profile 安装（web + dsh-tui）/ registry / git / 本地目录 / 卸载 / `--dump-config` 校验 |
+| [docs/install.md](docs/install.md) | 桌面/Web 插件页 / profile 安装（web + dsh-tui）/ registry / git / 本地目录 / 卸载 / `--dump-config` 校验 |
 | [docs/configuration.md](docs/configuration.md) | `fallbacks` 命名空间完整参考、选择器语法、示例 YAML、插件配置卡片用法、TUI 回读、行为说明、预设角色 |
 | [docs/features.md](docs/features.md) | 能力参考：降级、上下文窗口降级、分时槽、角色化 subagent、选择器、宿主策略、预设角色、agent 预设、dsh-tui |
 | [docs/repair.md](docs/repair.md) | 会话日志修复：拒载类别、`--apply` 发布、参数、退出码、有损 `--drop-legacy-events` |

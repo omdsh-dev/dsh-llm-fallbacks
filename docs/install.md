@@ -20,7 +20,19 @@ This document explains how to load `dsh-llm-fallbacks` into a dsh profile, verif
 - **Client store seam**: the client half's one runtime VALUE import is `@deepseek-ai/dsh-client-store` (the snapshot-store engine — a frozen loader-table platform module, so the client bundle stays external on it). The published package (the peer version declared in `package.json`) ships `lib/index.js` + `lib/types/*.d.ts`, so the PR worktree's vitest graph runs in **registry mode**: the store VALUE import resolves through the package's exports map and no alias is needed. The local-link alternative (a sibling dsh checkout linked into `node_modules`, tsc-built into `lib/types/` only) is still supported — in that mode `vitest.config.ts`'s probe detects the missing `lib/types/index.js` and aliases the VALUE-imported packages to the linked tree.
 - **Upstream manifest gap**: the published `@deepseek-ai/dsh-client-ui-primitives` (the peer version declared in `package.json`) bare-imports `@deepseek-ai/dsh-util-code-language` at runtime (its markdown code highlighting) without declaring it in the published manifest — the source tree declares it only as a devDependency, and the host box resolves it from its own full package set, so only npm-registry dev installs hit the gap. The `packageExtensions` block in `pnpm-workspace.yaml` patches the manifest so the vitest/dev graph resolves the import; remove the block once an upstream release declares the dependency.
 
-## 1. Local directory install (recommended)
+## 1. Desktop / Web plugin page
+
+The dsh Desktop app and a `dsh web` session expose the same plugin manager, and it is the shortest path — no shell, no profile flags:
+
+1. Open the **Plugins** page in the sidebar.
+2. Click **Add plugin**.
+3. Enter `dsh-llm-fallbacks` as the package name and click **Install**.
+
+The **Add plugin** wizard accepts a package name (the npm package name), a GitHub repo, or a local directory; a registry install needs only the package name. When the install finishes, **follow the host's own restart prompt** — the plugin's host half and client half load on the next start.
+
+The GUI installs into the **`web` profile** — exactly the profile `dsh plugin --profile web add …` targets (§3) — so the GUI path and the registry CLI install are the same installation. The terminal profile `dsh-tui` has no plugin page: it keeps the CLI path (§6). A registry install ships the built `dist/`, so neither the GUI path (registry package) nor the registry CLI path builds anything on the target machine. Local-directory and GitHub-repo installs build first (§2, §5).
+
+## 2. Local directory install (recommended)
 
 ```sh
 # 1) Build in the plugin repo directory (prepare self-build, produces dist/)
@@ -39,7 +51,7 @@ A dsh profile is composed of ordered bundle layers: `@deepseek-ai/dsh-base` (con
 
 `add` appends to the end of the list by default, which satisfies this order — no manual change needed; if you edit the `dsh.profile.bundles` of `$DSH_HOME/profiles/web/package.json` by hand, keep `@deepseek-ai/dsh-base` before this plugin.
 
-## 2. Registry install
+## 3. Registry install
 
 ```sh
 dsh plugin --profile web add dsh-llm-fallbacks   # pin an exact version: add @<version>
@@ -54,7 +66,7 @@ Registry install notes:
 
 > **Release channels**: stable releases publish under the `latest` dist-tag (the default for `npm i dsh-llm-fallbacks`); prereleases publish under their channel dist-tag — install a prerelease line via its channel, e.g. `npm i dsh-llm-fallbacks@alpha`. npm authentication is tokenless Trusted Publishing. Release process → [docs/release.md](docs/release.md).
 
-## 3. npm / pnpm package install
+## 4. npm / pnpm package install
 
 ```sh
 npm install dsh-llm-fallbacks   # or: pnpm add dsh-llm-fallbacks
@@ -62,7 +74,7 @@ npm install dsh-llm-fallbacks   # or: pnpm add dsh-llm-fallbacks
 
 > The package ships built artifacts (`dist/`); the consumer surface (library function imports, named service) is documented in [docs/consumer-api.md](docs/consumer-api.md).
 
-## 4. Git install (currently available)
+## 5. Git install (currently available)
 
 ```sh
 dsh plugin --profile web add github:omdsh-dev/dsh-llm-fallbacks   # pin a commit: add #<sha>
@@ -84,13 +96,13 @@ Git install notes:
   Then re-run `add`; alternatively allow it interactively with `dsh plugin --profile web approve-builds`. The approval means that package's code is allowed to execute on your machine at install time — pinning a commit (`github:omdsh-dev/dsh-llm-fallbacks#<sha>`) is recommended to prevent a later push from silently changing the code that actually runs. Exact behavior follows the policy of the pnpm version you use.
 - **Mount-only, no patch steps**: a git install executes `prepare` (build) and is done — the plugin makes zero modifications to the dsh source tree (bundle row insert + client inject + its own gateway), no apply/revert scripts, and nothing to re-patch after a dsh upgrade.
 
-## 5. dsh-tui profile (terminal TUI)
+## 6. dsh-tui profile (terminal TUI)
 
 A terminal (`dsh-tui`) profile loads the plugin with the same `add` mechanics — pass `--profile dsh-tui` instead of `--profile web`:
 
 ```sh
 dsh plugin --profile dsh-tui add dsh-llm-fallbacks   # registry; pin an exact version: add @<version>
-# or a source install (local directory, build first — see §1; git, see §4):
+# or a source install (local directory, build first — see §2; git, see §5):
 dsh plugin --profile dsh-tui add .
 dsh plugin --profile dsh-tui add github:omdsh-dev/dsh-llm-fallbacks
 ```
@@ -105,7 +117,7 @@ If no dsh-tui profile exists yet, create it first: `dsh plugin --profile dsh-tui
 - **Editing**: the TUI's write surface is the **`/settings`** screen — with **dsh-tui ≥ v0.8.5** (commit `c51661f` or later; the settings seam shipped in v0.8.0, the groups shape in v0.8.5) `/settings` shows a **fallbacks** section with full parity to the web Settings → 插件配置 → Fallbacks card (see [docs/configuration.md](docs/configuration.md) § TUI readback). On an older dsh-tui the section is absent and file editing remains the only TUI surface. File editing still works everywhere: the shared `$DSH_HOME/settings.yaml` (`fallbacks:` section, the same file the web card writes) for global settings, or the profile patch `~/.dsh/profiles/dsh-tui/cordis.patch.yml` (an `- id: llm-fallbacks` row with `config:` overrides) for dsh-tui-specific values. Note: a patch row **replaces** the targeted row's whole `config` — restate every field you want to keep (schema defaults fill the rest).
 - Read the composed result back with `/fallbacks config` (config namespace + TUI readback → [docs/configuration.md](docs/configuration.md)); verify the layer with `dsh --profile dsh-tui --dump-config` (the `llm-fallbacks` row appears over the profile bundle stack).
 
-## 6. Verify the installation
+## 7. Verify the installation
 
 ```sh
 dsh --profile web --dump-config
@@ -128,7 +140,7 @@ Then **restart the dsh web session** (`dsh web`, or restart the running session)
 - The card is readable, editable, and saveable; it renders as the flat always-open form (no feature switch — the config-level `enabled` key was removed) with one Save/Discard footer; with nothing configured the behavior is a no-op (see [docs/configuration.md](docs/configuration.md)).
 - In-session, type `/fallbacks` directly to inspect the current session's diagnostics (role → chain → recent switches → cooldown); see the README's `/fallbacks` section.
 
-## 7. Uninstall
+## 8. Uninstall
 
 ```sh
 dsh plugin --profile web remove dsh-llm-fallbacks
