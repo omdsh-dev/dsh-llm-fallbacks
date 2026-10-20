@@ -834,19 +834,112 @@ select.input {
   outline-offset: 2px;
 }
 
-/* Chain selector rows (provider select + model select): each row is its own
-   edit surface inside the chain card — the same grid rhythm as the role
-   rules. */
-.chainSelectors {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.selectorRow {
+/* Chain editor block (plan fallbacks-chain-row-compact T2): the selector rows
+   and their add affordance travel together, and the block owns its own 6px
+   pace — the editor card's 14px gap stays the card's, so the add button reads
+   as the chain's tail rather than as a separate field. */
+.chainBlock {
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+/* Chain selector rows (provider select + model select): each entry is ONE
+   compact line, one row apart — the line owns the internal geometry, so the
+   list only carries the 4px between entries. */
+.chainSelectors {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* The row is the reveal surface only (`.selectorRow:hover` /
+   `:focus-within`): it holds the single line, so it carries no pacing of its
+   own. */
+.selectorRow {
+  display: flex;
+  flex-direction: column;
+}
+
+/* One chain entry on a single line: order index, provider select, model
+   select, any row-level hint, trailing remove icon. Never wraps — the cells
+   and the hint give width back instead of re-opening the row height. */
+.selectorLine {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: nowrap;
+  /* Floor for a row whose selects cannot render; the real height comes from
+     the 34px inputs. */
+  min-height: 32px;
+}
+
+/* The chain is ordered, and this aria-hidden ordinal is the only place the
+   order is expressed — right-aligned tabular digits keep 1…10 in one column. */
+.selectorIndex {
+  flex: none;
+  width: 1.5em;
+  text-align: right;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--dsw-alias-label-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Provider holds short enum values, so it keeps a fixed-ish cell; the model
+   cell takes the remaining width and is the first to give it back. Both carry
+   `min-width: 0` so the nowrap line is always satisfied by shrinking the
+   selects instead of overflowing the card. */
+.selectorProviderCell {
+  flex: 0 1 clamp(140px, 20%, 220px);
+  min-width: 0;
+}
+
+.selectorModelCell {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* Row-level hints ride the line instead of re-opening the row height: one
+   nowrap line, clipped with an ellipsis, full copy on the span's `title`.
+   The outside-catalog hint also carries the InfoHint badge after its text —
+   with the badge inside the truncating span it cannot be fully protected from
+   the clip without a DOM wrapper, so it is centred on the line box and the
+   span's `title` keeps the explanation reachable if the copy truncates. */
+.selectorHint {
+  flex: 0 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.selectorHint > .infoHint {
+  margin-left: 4px;
+  vertical-align: middle;
+}
+
+/* Row removal is a hover/focus affordance: the 28×28 `.iconButton` keeps its
+   own chrome and only gains the reveal, so the trash icon never competes with
+   the selects at rest. Touch devices have no hover, so the icon stays faintly
+   visible there. */
+.selectorRemove {
+  opacity: 0;
+  transition: opacity .12s;
+}
+
+.selectorRow:hover .selectorRemove,
+.selectorRow:focus-within .selectorRemove {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .selectorRemove {
+    opacity: 0.7;
+  }
 }
 
 /* Icon-only actions: a 28×28 square with 6px radius on the Models
@@ -952,6 +1045,36 @@ select.input {
    stretching across it. */
 .addButton {
   align-self: flex-start;
+}
+
+/* The chain's add affordance is a ghost row at the chain tail (plan
+   fallbacks-chain-row-compact T2). `.outlineButton` / `.addButton` keep their
+   declarations for the other sections, so the override is scoped to the chain
+   block: 26px tall on the same 1px border the bordered variant carries (kept
+   transparent), so the box does not jump when the hover fill appears. */
+.chainBlock > .addButton {
+  box-sizing: border-box;
+  align-self: flex-start;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  gap: 4px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.chainBlock > .addButton:hover:not(:disabled) {
+  border-color: transparent;
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+}
+
+/* The ghost keeps the quiet ring of `.iconButton` rather than the bordered
+   button's brand outline. */
+.chainBlock > .addButton:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--dsw-alias-border-l3);
 }
 
 /* The time-slot add row (preset picker + Add preset + Add custom): the
