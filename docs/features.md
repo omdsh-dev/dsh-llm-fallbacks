@@ -111,8 +111,10 @@ mechanisms share that header, and they are not the same thing:
   delivered persona, notice row and badge **regardless of which routing stage
   wins** — an earlier explicit `agentPreset` can route it as another role while
   the carriers remain the declared role's. A child with **no declared dispatch
-  header** gets none of the three, even when a rule or auto-match resolves a
-  role for routing; no carrier reports a role inferred after the fact.
+  header** gets no persona, no notice row and no role half of the badge (the
+  model half still renders when the child has a recorded route), even when a
+  rule or auto-match resolves a role for routing; no carrier reports a role
+  inferred after the fact.
 
 Injection is conditional too: the resolved role's chain head replaces the
 child's model only when it is plugin-originated *and* the host lets it through —

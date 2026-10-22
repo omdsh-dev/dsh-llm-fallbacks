@@ -74,8 +74,14 @@ export type SubagentRoleBadgeProps =
 function selectionRoute(value: unknown): string | undefined {
   if (typeof value !== 'object' || value === null) return undefined
   const { provider, model } = value as { provider?: unknown; model?: unknown }
-  if (typeof provider !== 'string' || provider === '' || typeof model !== 'string' || model === '') return undefined
-  return `${provider}/${model}`
+  if (typeof provider !== 'string' || typeof model !== 'string') return undefined
+  // Trim like the role half does; a hostile id must not reach the title raw.
+  const trimmedProvider = provider.trim()
+  const trimmedModel = model.trim()
+  if (trimmedProvider === '' || trimmedModel === '') return undefined
+  const route = `${trimmedProvider}/${trimmedModel}`
+  // shortcut: fixed 120-char display cap (ellipsis included); widen if real ids outgrow it.
+  return route.length > 120 ? `${route.slice(0, 119)}…` : route
 }
 
 /**
