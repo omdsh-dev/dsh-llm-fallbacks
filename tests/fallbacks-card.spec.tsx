@@ -3681,3 +3681,52 @@ describe('FallbacksCard chain row reorder (plan fallbacks-chain-reorder T1)', ()
     expect(ordinals(rowsOf(rootChainGroup()))).toEqual(['1', '2', '3'])
   })
 })
+
+/**
+ * Role-card header summary (plan fallbacks-chain-reorder T2, user request
+ * 2026-10-22): the collapsed role header shows the WHOLE fallback chain —
+ * every non-blank entry joined with `>` — instead of only the first model, and
+ * the same full string rides the meta span's `title` so a truncated summary
+ * still exposes every entry. An empty chain keeps the raw strategy token. The
+ * time-slot row header keeps its first-model meta (recorded out of scope).
+ */
+describe('FallbacksCard role header chain summary (plan fallbacks-chain-reorder T2)', () => {
+  /** A three-entry role chain plus an empty-chain sibling (strategy token). */
+  const SUMMARY_CONFIG: typeof defaultFallbacksConfig = {
+    ...BASE_CONFIG,
+    rootChain: [OFFICIAL_FLASH],
+    roles: {
+      list: [
+        { id: 'coder', persona: '', chain: ['openai/gpt-4o', 'anthropic/claude-3-5-sonnet', 'zai/glm-4'], fallback: 'inherit-root' },
+        { id: 'empty', persona: '', chain: [], fallback: 'none' },
+      ],
+      rules: [],
+    },
+  }
+
+  /** The roles group (its label anchors the role="group" field). */
+  function rolesGroup(): HTMLElement {
+    return screen.getByText(en['roles.list.label']).closest('[role="group"]') as HTMLElement
+  }
+
+  /** The collapsed role-card headers, in declared order (whole row = toggle). */
+  function roleHeaders(): HTMLElement[] {
+    return within(rolesGroup()).getAllByRole('button', { name: en['roles.expand'] })
+  }
+
+  it('renders the whole chain joined with ">" in the header, title carrying the full string', async () => {
+    const { view, props } = await mountCard({ config: SUMMARY_CONFIG })
+    view.rerender(<FallbacksCard {...props} />)
+    const headers = roleHeaders()
+    expect(headers).toHaveLength(2)
+    // Role cards start collapsed: the header meta IS the summary.
+    const joined = 'openai/gpt-4o > anthropic/claude-3-5-sonnet > zai/glm-4'
+    const meta = within(headers[0]!).getByText(joined)
+    // A truncated summary still exposes every entry on hover.
+    expect(meta.getAttribute('title')).toBe(joined)
+    // The first-model-only summary is gone (no single-entry meta remains).
+    expect(within(headers[0]!).queryByText('openai/gpt-4o')).toBeNull()
+    // An empty chain still shows its strategy token.
+    expect(within(headers[1]!).getByText('none')).toBeTruthy()
+  })
+})

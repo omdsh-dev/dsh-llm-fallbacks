@@ -711,9 +711,16 @@ select.input {
 }
 
 .collapseMeta {
-  /* PR #62 UX round 4 part B: the first-model meta sits at the FAR RIGHT
-     of the row (the tags no longer push it — they hug the name). */
-  flex: none;
+  /* PR #62 UX round 4 part B: the meta sits at the FAR RIGHT of the row (the
+     tags no longer push it — they hug the name). Plan fallbacks-chain-reorder
+     T2: the role header carries the WHOLE chain now, so the meta must give
+     width back instead of holding it — `flex: none` overflowed the row and
+     `text-overflow` never engaged. The cap leaves the 55%-capped title its
+     room; a single short string (the time-slot first-model meta, which shares
+     this class) is unaffected. */
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 40%;
   margin-left: auto;
   font-size: 12px;
   line-height: 18px;

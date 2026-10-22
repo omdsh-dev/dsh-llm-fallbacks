@@ -599,6 +599,17 @@ function InfoHint({ label, disabled = false }: { label: string; disabled?: boole
 }
 
 /**
+ * The whole chain as one line (plan fallbacks-chain-reorder T2, user request):
+ * every non-blank entry in walk order joined with `>`, or `undefined` for an
+ * empty/blank chain so the caller keeps its own summary (a role's raw strategy
+ * token). The card ellipsizes long summaries; the full string rides `title`.
+ */
+function chainSummary(selectors: readonly ChainSelectorRow[]): string | undefined {
+  const entries = selectors.map(selectorRowToRaw).filter(entry => entry !== '')
+  return entries.length === 0 ? undefined : entries.join(' > ')
+}
+
+/**
  * Pure chain reorder (plan fallbacks-chain-reorder T1): a copy of `list` with
  * the entry at `from` re-inserted at `to`; an out-of-range or same-position
  * move returns `list` untouched (the end-clamping the keyboard and the drop
@@ -2128,12 +2139,14 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
               // brief text and NO disclosure chevron (there is nothing
               // to disclose).
               const personaBlank = row.persona.trim() === ''
-              // Collapse summary (PR #62 feedback round): the first
-              // chain model, or the raw strategy token when the chain
-              // is empty (inherit-root = the role rides the root
-              // chain).
-              const roleFirstModel = row.selectors.map(selectorRowToRaw).find(entry => entry !== '')
-              const roleSummary = roleFirstModel ?? row.fallback
+              // Collapse summary (PR #62 feedback round; plan
+              // fallbacks-chain-reorder T2): the WHOLE chain joined with
+              // `>`, or the raw strategy token when the chain is empty
+              // (inherit-root = the role rides the root chain). The full
+              // string also rides the span's `title`, so a truncated
+              // summary still exposes every entry on hover.
+              const roleChainSummary = chainSummary(row.selectors)
+              const roleSummary = roleChainSummary ?? row.fallback
               // PR #62 UX round 2: role cards default collapsed, but a
               // read-only view FORCES them open (same rule as the slot
               // rows) — the collapse toggle is disabled when
@@ -2167,7 +2180,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                       // ellipsizes instead of wrapping).
                       <span className={css.seedBadge} title={seedBadge}>{seedBadge}</span>
                     )}
-                    <span className={css.collapseMeta}>{roleSummary}</span>
+                    <span className={css.collapseMeta} title={roleChainSummary}>{roleSummary}</span>
                   </button>
                 </div>
                 {roleExpanded && (
