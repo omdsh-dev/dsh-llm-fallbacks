@@ -599,6 +599,38 @@ function InfoHint({ label, disabled = false }: { label: string; disabled?: boole
 }
 
 /**
+ * Pure chain reorder (plan fallbacks-chain-reorder T1): a copy of `list` with
+ * the entry at `from` re-inserted at `to`; an out-of-range or same-position
+ * move returns `list` untouched (the end-clamping the keyboard and the drop
+ * handler both rely on).
+ */
+function moveItem<T>(list: T[], from: number, to: number): T[] {
+  if (from === to || from < 0 || to < 0 || from >= list.length || to >= list.length) return list
+  const next = [...list]
+  const [moved] = next.splice(from, 1)
+  next.splice(to, 0, moved!)
+  return next
+}
+
+/**
+ * Reorder affordances a chain row receives from its list (plan
+ * fallbacks-chain-reorder T1): the row is the DROP target, the trailing grip
+ * is the only drag source, and the grip's ArrowUp/ArrowDown route through the
+ * same `onMove`. State lives in {@link ChainSelectorList}, so one chain's drag
+ * never touches a sibling list.
+ */
+interface ChainSelectorReorder {
+  dragging: boolean
+  dropTarget: boolean
+  onDragStart: () => void
+  onDragOver: () => void
+  onDrop: () => void
+  onDragEnd: () => void
+  /** Move the entry at 0-based `from` to 0-based `to` (the callback bounds-checks). */
+  onMove: (from: number, to: number) => void
+}
+
+/**
  * One chain entry selector row: provider select + model select (cascade).
  * The row is ONE compact line (plan fallbacks-chain-row-compact T1): the
  * 1-based order index, the provider select, the model select, any row-level
@@ -623,7 +655,7 @@ function InfoHint({ label, disabled = false }: { label: string; disabled?: boole
  * options.
  */
 function ChainSelectorEditor({
-  selector, index, catalog, configuredProviders, disabled, t, onChange, onRemove,
+  selector, index, catalog, configuredProviders, disabled, t, onChange, onRemove, reorder,
 }: {
   selector: ChainSelectorRow
   /** 1-based render position of this row inside its chain (the visible order index). */
@@ -634,6 +666,7 @@ function ChainSelectorEditor({
   t: FallbacksCardProps['t']
   onChange: (patch: Partial<ChainSelectorRow>) => void
   onRemove: () => void
+  reorder: ChainSelectorReorder
 }): ReactNode {
   const providerRaw = selectionToRaw(selector.provider)
   const providerOutside = selector.provider?.kind === 'outside'
@@ -666,7 +699,22 @@ function ChainSelectorEditor({
   const strictHintId = groupMissing ? `fallbacks-selector-hint-${index}-${hintInstanceId}` : undefined
 
   return (
-    <div className={css.selectorRow} data-selector-row="">
+    <div
+      className={`${css.selectorRow}${reorder.dragging ? ` ${css.selectorRowDragging}` : ''}${reorder.dropTarget ? ` ${css.selectorRowOver}` : ''}`}
+      data-selector-row=""
+      // The row is the drop target (slot-card precedent): the drag starts on
+      // the trailing grip, so a drag that begins on a select never reorders.
+      onDragOver={event => {
+        if (disabled) return
+        event.preventDefault()
+        reorder.onDragOver()
+      }}
+      onDrop={event => {
+        if (disabled) return
+        event.preventDefault()
+        reorder.onDrop()
+      }}
+    >
       <div className={css.selectorLine}>
         {/* The chain is ordered; this aria-hidden ordinal is the only place
             the order is expressed (the labelled selects carry the meaning). */}
@@ -784,7 +832,91 @@ function ChainSelectorEditor({
         >
           <TrashIcon />
         </button>
+        {/* Trailing reorder grip (plan fallbacks-chain-reorder T1): the far
+            right of the line, the row's ONLY drag source, and the keyboard
+            affordance — ArrowUp/ArrowDown move this entry one position. The
+            read-only gate mirrors the remove control (disabled → hidden), so
+            a view that cannot save offers no reorder. */}
+        <button
+          type="button"
+          className={`${css.dragHandle} ${css.selectorGrip}`}
+          draggable={!disabled}
+          data-tip={t('chains.selector.reorder', { index: String(index) })}
+          aria-label={t('chains.selector.reorder', { index: String(index) })}
+          disabled={disabled}
+          onDragStart={() => {
+            if (disabled) return
+            reorder.onDragStart()
+          }}
+          onDragEnd={reorder.onDragEnd}
+          onKeyDown={event => {
+            const step = event.key === 'ArrowUp' ? -1 : event.key === 'ArrowDown' ? 1 : 0
+            if (step === 0) return
+            event.preventDefault()
+            reorder.onMove(index - 1, index - 1 + step)
+          }}
+        >
+          <GripIcon />
+        </button>
       </div>
+    </div>
+  )
+}
+
+/**
+ * One chain's selector rows plus their drag state (plan
+ * fallbacks-chain-reorder T1). The list owns the dragged/over index pair —
+ * card-local state, no DataTransfer payload (the jsdom-testable slot-card
+ * pattern), one instance per rendered chain, so hooks are never called inside
+ * a loop and no two lists share a drag. All three chain editors (default
+ * chain, time-slot chains, role chains) render through this component.
+ */
+function ChainSelectorList({
+  selectors, catalog, configuredProviders, disabled, t, onChange, onRemove, onMove,
+}: {
+  selectors: readonly ChainSelectorRow[]
+  catalog: CatalogLookup | undefined
+  configuredProviders: readonly LlmConfigurableProvider[]
+  disabled: boolean
+  t: FallbacksCardProps['t']
+  onChange: (index: number, patch: Partial<ChainSelectorRow>) => void
+  onRemove: (index: number) => void
+  onMove: (from: number, to: number) => void
+}): ReactNode {
+  const [draggedIndex, setDraggedIndex] = useState<number | null>(null)
+  const [overIndex, setOverIndex] = useState<number | null>(null)
+  const settle = (): void => { setDraggedIndex(null); setOverIndex(null) }
+  return (
+    <div className={css.chainSelectors}>
+      {selectors.map((selector, index) => (
+        <ChainSelectorEditor
+          key={index}
+          index={index + 1}
+          selector={selector}
+          catalog={catalog}
+          configuredProviders={configuredProviders}
+          disabled={disabled}
+          t={t}
+          onChange={patch => { onChange(index, patch) }}
+          onRemove={() => { onRemove(index) }}
+          reorder={{
+            dragging: draggedIndex === index,
+            dropTarget: draggedIndex !== null && draggedIndex !== index && overIndex === index,
+            onDragStart: () => { setDraggedIndex(index); setOverIndex(index) },
+            onDragOver: () => {
+              if (draggedIndex === null || overIndex === index) return
+              setOverIndex(index)
+            },
+            onDrop: () => {
+              const from = draggedIndex
+              settle()
+              if (from !== null && from !== index) onMove(from, index)
+            },
+            onDragEnd: settle,
+            onMove,
+          }}
+        />
+      ))}
     </div>
   )
 }
@@ -1041,6 +1173,25 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
       ...row,
       selectors: row.selectors.filter((_, index) => index !== selectorIndex),
     }))
+  }
+
+  // Chain-row reorder (plan fallbacks-chain-reorder T1): one spread copy of
+  // the touched selectors array; the chain order IS the walk/serialized order,
+  // so no encoder changes ride these.
+  const reorderAllDayChainSelector = (from: number, to: number): void => {
+    setAllDayChainRow(row => ({ ...row, selectors: moveItem(row.selectors, from, to) }))
+  }
+
+  const reorderTimeSlotSelector = (slotIndex: number, from: number, to: number): void => {
+    setTimeSlotRows(rows => rows.map((row, index) => index === slotIndex
+      ? { ...row, selectors: moveItem(row.selectors, from, to) }
+      : row))
+  }
+
+  const reorderRoleSelector = (roleIndex: number, from: number, to: number): void => {
+    setRoleRows(rows => rows.map((row, index) => index === roleIndex
+      ? { ...row, selectors: moveItem(row.selectors, from, to) }
+      : row))
   }
 
   const updateRoleRow = (index: number, patch: Partial<RoleRow>): void => {
@@ -1641,21 +1792,16 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                     selector rows and their add affordance travel together, so
                     the add button stays at the chain tail in every editor. */}
                 <div className={css.chainBlock} data-chain-block="">
-                  <div className={css.chainSelectors}>
-                    {row.selectors.map((selector, selectorIndex) => (
-                      <ChainSelectorEditor
-                        key={selectorIndex}
-                        index={selectorIndex + 1}
-                        selector={selector}
-                        catalog={catalogOf(state)}
-                        configuredProviders={state.configuredProviders}
-                        disabled={!writable}
-                        t={t}
-                        onChange={patch => { updateTimeSlotSelector(index, selectorIndex, patch) }}
-                        onRemove={() => { removeTimeSlotSelector(index, selectorIndex) }}
-                      />
-                    ))}
-                  </div>
+                  <ChainSelectorList
+                    selectors={row.selectors}
+                    catalog={catalogOf(state)}
+                    configuredProviders={state.configuredProviders}
+                    disabled={!writable}
+                    t={t}
+                    onChange={(selectorIndex, patch) => { updateTimeSlotSelector(index, selectorIndex, patch) }}
+                    onRemove={selectorIndex => { removeTimeSlotSelector(index, selectorIndex) }}
+                    onMove={(from, to) => { reorderTimeSlotSelector(index, from, to) }}
+                  />
                   <button
                     type="button"
                     className={`${css.outlineButton} ${css.addButton}`}
@@ -1775,21 +1921,16 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
           <div className={css.list}>
             <div className={css.editorCard}>
               <div className={css.chainBlock} data-chain-block="">
-                <div className={css.chainSelectors}>
-                  {allDayChainRow.selectors.map((selector, selectorIndex) => (
-                    <ChainSelectorEditor
-                      key={selectorIndex}
-                      index={selectorIndex + 1}
-                      selector={selector}
-                      catalog={catalogOf(state)}
-                      configuredProviders={state.configuredProviders}
-                      disabled={!writable}
-                      t={t}
-                      onChange={patch => { updateAllDayChainSelector(selectorIndex, patch) }}
-                      onRemove={() => { removeAllDayChainSelector(selectorIndex) }}
-                    />
-                  ))}
-                </div>
+                <ChainSelectorList
+                  selectors={allDayChainRow.selectors}
+                  catalog={catalogOf(state)}
+                  configuredProviders={state.configuredProviders}
+                  disabled={!writable}
+                  t={t}
+                  onChange={(selectorIndex, patch) => { updateAllDayChainSelector(selectorIndex, patch) }}
+                  onRemove={selectorIndex => { removeAllDayChainSelector(selectorIndex) }}
+                  onMove={reorderAllDayChainSelector}
+                />
                 <button
                   type="button"
                   className={`${css.outlineButton} ${css.addButton}`}
@@ -2108,40 +2249,35 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                   * the chain) follows the block.
                   */}
                 <div className={css.chainBlock} data-chain-block="">
-                  <div className={css.chainSelectors}>
-                    {row.selectors.map((selector, selectorIndex) => (
-                      <ChainSelectorEditor
-                        key={selectorIndex}
-                        index={selectorIndex + 1}
-                        selector={selector}
-                        catalog={catalogOf(state)}
-                        configuredProviders={state.configuredProviders}
-                        disabled={!writable}
-                        t={t}
-                        onChange={patch => { updateRoleSelector(index, selectorIndex, patch) }}
-                        onRemove={() => { removeRoleSelector(index, selectorIndex) }}
-                      />
-                    ))}
-                    {row.selectors.every(selector => selectorRowToRaw(selector) === '') && (
-                      // A role whose chain area is empty — no selector
-                      // rows, or only blank placeholder rows — has no
-                      // model config. Non-seeded: save is blocked
-                      // (roleChainRequired) and the inline hint explains
-                      // why (plan fallbacks-feedback-round T2),
-                      // unconditional while no row serializes to a usable
-                      // chain entry. Seeded: the chain is legitimately
-                      // empty by design (R4 — seeds never invent one), so
-                      // the hint turns non-blocking (seedChainOptional)
-                      // and the Save relax lets the seeded row ride the
-                      // whole-form save instead of blocking it (spec §9.6
-                      // / AC-3).
-                      <span className={css.hint}>
-                        {seed !== undefined
-                          ? t('roles.seedChainOptional', { id: row.id })
-                          : t('validation.roleChainRequired', { id: row.id })}
-                      </span>
-                    )}
-                  </div>
+                  <ChainSelectorList
+                    selectors={row.selectors}
+                    catalog={catalogOf(state)}
+                    configuredProviders={state.configuredProviders}
+                    disabled={!writable}
+                    t={t}
+                    onChange={(selectorIndex, patch) => { updateRoleSelector(index, selectorIndex, patch) }}
+                    onRemove={selectorIndex => { removeRoleSelector(index, selectorIndex) }}
+                    onMove={(from, to) => { reorderRoleSelector(index, from, to) }}
+                  />
+                  {row.selectors.every(selector => selectorRowToRaw(selector) === '') && (
+                    // A role whose chain area is empty — no selector
+                    // rows, or only blank placeholder rows — has no
+                    // model config. Non-seeded: save is blocked
+                    // (roleChainRequired) and the inline hint explains
+                    // why (plan fallbacks-feedback-round T2),
+                    // unconditional while no row serializes to a usable
+                    // chain entry. Seeded: the chain is legitimately
+                    // empty by design (R4 — seeds never invent one), so
+                    // the hint turns non-blocking (seedChainOptional)
+                    // and the Save relax lets the seeded row ride the
+                    // whole-form save instead of blocking it (spec §9.6
+                    // / AC-3).
+                    <span className={css.hint}>
+                      {seed !== undefined
+                        ? t('roles.seedChainOptional', { id: row.id })
+                        : t('validation.roleChainRequired', { id: row.id })}
+                    </span>
+                  )}
                   <button
                     type="button"
                     className={`${css.outlineButton} ${css.addButton}`}

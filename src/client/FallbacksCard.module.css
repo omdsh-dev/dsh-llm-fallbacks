@@ -834,6 +834,30 @@ select.input {
   outline-offset: 2px;
 }
 
+/* Chain-row reorder (plan fallbacks-chain-reorder T1): the same slot-card
+   visual language on a one-line row — the dragged row dims, the row under the
+   pointer takes the dashed brand outline. */
+.selectorRowDragging {
+  opacity: 0.45;
+}
+
+.selectorRowOver {
+  outline: 1px dashed var(--dsw-alias-brand-primary);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+/* The chain row's trailing grip is pinned to the nowrap line (`flex: none`)
+   and follows the remove control's read-only gate: a hidden control, not a
+   dimmed one, in a view that cannot save. */
+.selectorGrip {
+  flex: none;
+}
+
+.selectorGrip:disabled {
+  display: none;
+}
+
 /* Chain editor block (plan fallbacks-chain-row-compact T2): the selector rows
    and their add affordance travel together, and the block owns its own 6px
    pace — the editor card's 14px gap stays the card's, so the add button reads

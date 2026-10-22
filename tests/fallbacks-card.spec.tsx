@@ -3481,3 +3481,146 @@ describe('FallbacksCard host-policy status (plan dsh-012-subagent-routing T5 / s
   })
 })
 
+
+/**
+ * Chain-row reorder (plan fallbacks-chain-reorder T1): every chain row in all
+ * three chain editors (默认降级链, time-slot chains, role chains) carries a
+ * trailing grip handle at the far right of the line. The handle is the row's
+ * ONLY drag source and the row itself is the drop target (the slot-card DnD
+ * precedent: card-local index state, no DataTransfer payload), and the same
+ * handle carries ArrowUp/ArrowDown while focused. jsdom has no pointer
+ * sequence, so the specs drive HTML5 DnD through fireEvent — the same
+ * approach the slot-row drag specs use — and read the resulting order off the
+ * rows' own select values plus the `data-selector-index` ordinals.
+ */
+describe('FallbacksCard chain row reorder (plan fallbacks-chain-reorder T1)', () => {
+  /** Three entries per editor: one per chain list the feature must reach. */
+  const REORDER_CONFIG: typeof defaultFallbacksConfig = {
+    ...BASE_CONFIG,
+    rootChain: ['openai/gpt-4o', 'anthropic/claude-3-5-sonnet', 'zai/glm-4'],
+    timeSlots: [{ kind: 'custom', start: '09:00', end: '18:00', days: [1], chain: ['openai/gpt-4o', 'anthropic/claude-3-5-sonnet'] }],
+    roles: {
+      list: [{ id: 'coder', persona: '', chain: ['openai/gpt-4o', 'anthropic/claude-3-5-sonnet'], fallback: 'inherit-root' }],
+      rules: [],
+    },
+  }
+
+  /** The 默认降级链 group (its label anchors the role="group" field). */
+  function rootChainGroup(): HTMLElement {
+    return screen.getByText(en['rootChain.label']).closest('[role="group"]') as HTMLElement
+  }
+
+  /** Every chain selector row inside `group`, in DOM order. */
+  function rowsOf(group: HTMLElement): HTMLElement[] {
+    return Array.from(group.querySelectorAll<HTMLElement>('[data-selector-row]'))
+  }
+
+  /** Per-row `[provider, model]` select values in DOM order. */
+  function entryValues(rows: HTMLElement[]): string[][] {
+    return rows.map(row => Array.from(row.querySelectorAll('select')).map(select => select.value))
+  }
+
+  /** The visible 1-based ordinals in DOM order. */
+  function ordinals(rows: HTMLElement[]): (string | null)[] {
+    return rows.map(row => row.querySelector('[data-selector-index]')?.getAttribute('data-selector-index') ?? null)
+  }
+
+  /** The trailing grip handle of the row currently at `index` (1-based). */
+  function handleOf(row: HTMLElement, index: number): HTMLButtonElement {
+    return within(row).getByRole('button', {
+      name: interpolatingT('chains.selector.reorder', { index: String(index) }),
+    }) as HTMLButtonElement
+  }
+
+  it('reorders a chain by dragging its grip handle; the entry lands at the dropped position', async () => {
+    const { view, props } = await mountCard({ config: REORDER_CONFIG })
+    view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
+    expect(entryValues(rowsOf(rootChainGroup()))).toEqual([
+      ['openai', 'gpt-4o'],
+      ['anthropic', 'claude-3-5-sonnet'],
+      ['zai', 'glm-4'],
+    ])
+    // The handle is the ONLY draggable element of the row; the row is the
+    // drop target (a click on a select never starts a drag).
+    const firstRows = rowsOf(rootChainGroup())
+    expect(handleOf(firstRows[0]!, 1).getAttribute('draggable')).toBe('true')
+    expect(firstRows[0]!.getAttribute('draggable')).toBeNull()
+    // Drag entry 1's handle onto entry 3's row: it lands at position 3.
+    fireEvent.dragStart(handleOf(firstRows[0]!, 1))
+    fireEvent.dragOver(firstRows[2]!)
+    fireEvent.drop(firstRows[2]!)
+    let rows = rowsOf(rootChainGroup())
+    expect(entryValues(rows)).toEqual([
+      ['anthropic', 'claude-3-5-sonnet'],
+      ['zai', 'glm-4'],
+      ['openai', 'gpt-4o'],
+    ])
+    // Ordinals renumber to the new DOM order (the entry's selects and its
+    // ordinal travel together — one row object per position).
+    expect(ordinals(rows)).toEqual(['1', '2', '3'])
+    fireEvent.dragStart(handleOf(rows[2]!, 3))
+    fireEvent.dragOver(rows[0]!)
+    fireEvent.drop(rows[0]!)
+    rows = rowsOf(rootChainGroup())
+    expect(entryValues(rows)).toEqual([
+      ['openai', 'gpt-4o'],
+      ['anthropic', 'claude-3-5-sonnet'],
+      ['zai', 'glm-4'],
+    ])
+    expect(ordinals(rows)).toEqual(['1', '2', '3'])
+  })
+
+  it('moves a chain entry with ArrowUp/ArrowDown on the focused handle, clamped at both ends', async () => {
+    const { view, props } = await mountCard({ config: REORDER_CONFIG })
+    view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
+    const models = (): string[] => rowsOf(rootChainGroup()).map(row => (row.querySelectorAll('select')[1] as HTMLSelectElement).value)
+    const handles = (): HTMLButtonElement[] => rowsOf(rootChainGroup()).map((row, index) => handleOf(row, index + 1))
+    // ArrowUp on the first row is a no-op (nothing above it).
+    fireEvent.keyDown(handles()[0]!, { key: 'ArrowUp' })
+    expect(models()).toEqual(['gpt-4o', 'claude-3-5-sonnet', 'glm-4'])
+    // ArrowDown on the first row's handle moves that entry to position 2.
+    fireEvent.keyDown(handles()[0]!, { key: 'ArrowDown' })
+    expect(models()).toEqual(['claude-3-5-sonnet', 'gpt-4o', 'glm-4'])
+    expect(ordinals(rowsOf(rootChainGroup()))).toEqual(['1', '2', '3'])
+    // ArrowDown on the last row is a no-op too, and ArrowUp walks back up.
+    fireEvent.keyDown(handles()[2]!, { key: 'ArrowDown' })
+    expect(models()).toEqual(['claude-3-5-sonnet', 'gpt-4o', 'glm-4'])
+    fireEvent.keyDown(handles()[1]!, { key: 'ArrowUp' })
+    expect(models()).toEqual(['gpt-4o', 'claude-3-5-sonnet', 'glm-4'])
+  })
+
+  it('renders the grip handle inert in the read-only view (no drag source, no keyboard move)', async () => {
+    const { view, props } = await mountCard({ config: REORDER_CONFIG, writable: false })
+    view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
+    const rows = rowsOf(rootChainGroup())
+    expect(rows).toHaveLength(3)
+    rows.forEach((row, index) => {
+      const handle = handleOf(row, index + 1)
+      // Same gate as the remove control: `disabled` on the control itself
+      // (hidden by CSS in the read-only view).
+      expect(handle.disabled).toBe(true)
+      expect(handle.getAttribute('draggable')).toBe('false')
+    })
+  })
+
+  it('exposes a grip handle on every chain row of all three chain editors', async () => {
+    const { view, props } = await mountCard({ config: REORDER_CONFIG })
+    expandAllSlots()
+    expandAllRoles()
+    view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
+    const expectHandles = (group: HTMLElement, count: number): void => {
+      const rows = rowsOf(group)
+      expect(rows).toHaveLength(count)
+      rows.forEach((row, index) => {
+        const handle = handleOf(row, index + 1)
+        expect(handle.getAttribute('draggable')).toBe('true')
+      })
+    }
+    // 默认降级链 (3 entries).
+    expectHandles(rootChainGroup(), 3)
+    // Time-slot window chain (2 entries; rows default collapsed).
+    expectHandles(screen.getByText(en['timeSlots.label']).closest('[role="group"]') as HTMLElement, 2)
+    // Role chain (2 entries; role cards default collapsed).
+    expectHandles(screen.getByText(en['roles.list.label']).closest('[role="group"]') as HTMLElement, 2)
+  })
+})
