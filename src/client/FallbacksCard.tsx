@@ -2192,7 +2192,10 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                * guard stops a second click), so its described-by reason is
                * reachable. Both live regions below are rendered ALWAYS with
                * empty text when idle: a `role="status"` element inserted
-               * together with its text is not announced. */}
+               * together with its text is not announced. Idle regions are
+               * visually hidden by `css.policyStatusLive` (absolute 1px clip),
+               * NEVER `display: none` — that would drop them from the AX tree
+               * and recreate the same inserted-with-text case. */}
               <button
                 type="button"
                 className={css.outlineButton}

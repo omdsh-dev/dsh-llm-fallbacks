@@ -1274,10 +1274,19 @@ select.input {
   gap: 6px;
 }
 
-/* The always-rendered live regions are empty when idle; keep them out of the
-   flex gap so the clean-state spacing is unchanged. */
+/* The always-rendered live regions are empty when idle. Visually hide them
+   WITHOUT `display: none`: that removes the node from the accessibility tree,
+   so the empty→filled transition would be a node entering the tree with text —
+   the exact non-announcement case the always-rendered regions exist to avoid.
+   Absolute positioning takes the 1px clipped box out of the flex gap while the
+   node (and its role) stay in the tree. */
 .policyStatusLive:empty {
-  display: none;
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 .policyStatusLabel {

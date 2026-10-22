@@ -3362,7 +3362,10 @@ describe('FallbacksCard host-policy status (plan dsh-012-subagent-routing T5 / s
   // T2): the trigger and its two ALWAYS-rendered live regions (dirty reason,
   // sync outcome) live in the sync group; each region is empty when idle
   // because a `role="status"` element inserted together with its text is not
-  // announced.
+  // announced. The idle regions are visually hidden by CSS (absolute 1px clip,
+  // NOT `display: none`, which would drop them from the AX tree). That
+  // visibility/AX half is CSS and cannot be pinned in jsdom — these specs only
+  // pin the DOM contract (region pre-exists, text, `role`, `aria-describedby`).
   const syncButton = (): HTMLButtonElement =>
     screen.getByRole('button', { name: en['subagents.policy.sync'] }) as HTMLButtonElement
   const syncGroup = (): HTMLElement =>
