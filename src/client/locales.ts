@@ -58,6 +58,9 @@ export const zh = {
   'chains.selector.remove': '删除第 {index} 个选择器',
   'chains.selector.providerAria': '第 {index} 个选择器的 provider',
   'chains.selector.modelAria': '第 {index} 个选择器的 model',
+  // Plan fallbacks-chain-reorder T1: the trailing grip names its row, so a
+  // screen reader can tell the reorder handles apart.
+  'chains.selector.reorder': '拖拽排序第 {index} 个选择器，或聚焦后按 ↑/↓ 调整',
   'chains.selector.providerPlaceholder': '选择 provider',
   'chains.selector.modelPlaceholder': '选择 model',
   'chains.selector.wildcardLegacy': '该条目为通配（provider/*）：选择具体模型后将转为精确条目',
@@ -309,6 +312,7 @@ export const en = {
   'chains.selector.remove': 'Remove selector {index}',
   'chains.selector.providerAria': 'Selector {index} provider',
   'chains.selector.modelAria': 'Selector {index} model',
+  'chains.selector.reorder': 'Drag to reorder selector {index}, or focus and press ↑/↓',
   'chains.selector.providerPlaceholder': 'Select provider',
   'chains.selector.modelPlaceholder': 'Select model',
   'chains.selector.wildcardLegacy': 'This entry is a wildcard (provider/*): picking a model converts it to an exact entry',

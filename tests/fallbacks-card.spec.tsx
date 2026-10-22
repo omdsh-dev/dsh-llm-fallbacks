@@ -3481,3 +3481,271 @@ describe('FallbacksCard host-policy status (plan dsh-012-subagent-routing T5 / s
   })
 })
 
+
+/**
+ * Chain-row reorder (plan fallbacks-chain-reorder T1): every chain row in all
+ * three chain editors (默认降级链, time-slot chains, role chains) carries a
+ * trailing grip handle at the far right of the line. The handle is the row's
+ * ONLY drag source and the row itself is the drop target (the slot-card DnD
+ * precedent: card-local index state, no DataTransfer payload), and the same
+ * handle carries ArrowUp/ArrowDown while focused. jsdom has no pointer
+ * sequence, so the specs drive HTML5 DnD through fireEvent — the same
+ * approach the slot-row drag specs use — and read the resulting order off the
+ * rows' own select values plus the `data-selector-index` ordinals.
+ */
+describe('FallbacksCard chain row reorder (plan fallbacks-chain-reorder T1)', () => {
+  /** Three entries per editor: one per chain list the feature must reach. */
+  const REORDER_CONFIG: typeof defaultFallbacksConfig = {
+    ...BASE_CONFIG,
+    rootChain: ['openai/gpt-4o', 'anthropic/claude-3-5-sonnet', 'zai/glm-4'],
+    timeSlots: [{ kind: 'custom', start: '09:00', end: '18:00', days: [1], chain: ['openai/gpt-4o', 'anthropic/claude-3-5-sonnet'] }],
+    roles: {
+      list: [{ id: 'coder', persona: '', chain: ['openai/gpt-4o', 'anthropic/claude-3-5-sonnet'], fallback: 'inherit-root' }],
+      rules: [],
+    },
+  }
+
+  /** The 默认降级链 group (its label anchors the role="group" field). */
+  function rootChainGroup(): HTMLElement {
+    return screen.getByText(en['rootChain.label']).closest('[role="group"]') as HTMLElement
+  }
+
+  /** Every chain selector row inside `group`, in DOM order. */
+  function rowsOf(group: HTMLElement): HTMLElement[] {
+    return Array.from(group.querySelectorAll<HTMLElement>('[data-selector-row]'))
+  }
+
+  /** Per-row `[provider, model]` select values in DOM order. */
+  function entryValues(rows: HTMLElement[]): string[][] {
+    return rows.map(row => Array.from(row.querySelectorAll('select')).map(select => select.value))
+  }
+
+  /** The visible 1-based ordinals in DOM order. */
+  function ordinals(rows: HTMLElement[]): (string | null)[] {
+    return rows.map(row => row.querySelector('[data-selector-index]')?.getAttribute('data-selector-index') ?? null)
+  }
+
+  /** The trailing grip handle of the row currently at `index` (1-based). */
+  function handleOf(row: HTMLElement, index: number): HTMLButtonElement {
+    return within(row).getByRole('button', {
+      name: interpolatingT('chains.selector.reorder', { index: String(index) }),
+    }) as HTMLButtonElement
+  }
+
+  it('reorders a chain by dragging its grip handle; the entry lands at the dropped position', async () => {
+    const { view, props } = await mountCard({ config: REORDER_CONFIG })
+    view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
+    expect(entryValues(rowsOf(rootChainGroup()))).toEqual([
+      ['openai', 'gpt-4o'],
+      ['anthropic', 'claude-3-5-sonnet'],
+      ['zai', 'glm-4'],
+    ])
+    // Only the GRIP starts a reorder: a drag begun on the row itself (a
+    // select drag, a text/file drag) leaves the order untouched after the
+    // drop — no attribute pinning, the product behaviour is the contract.
+    const firstRows = rowsOf(rootChainGroup())
+    fireEvent.dragStart(firstRows[0]!)
+    fireEvent.dragOver(firstRows[2]!)
+    fireEvent.drop(firstRows[2]!)
+    expect(entryValues(rowsOf(rootChainGroup()))).toEqual([
+      ['openai', 'gpt-4o'],
+      ['anthropic', 'claude-3-5-sonnet'],
+      ['zai', 'glm-4'],
+    ])
+    // Drag entry 1's handle onto entry 3's row: it lands at position 3.
+    fireEvent.dragStart(handleOf(firstRows[0]!, 1))
+    fireEvent.dragOver(firstRows[2]!)
+    fireEvent.drop(firstRows[2]!)
+    let rows = rowsOf(rootChainGroup())
+    expect(entryValues(rows)).toEqual([
+      ['anthropic', 'claude-3-5-sonnet'],
+      ['zai', 'glm-4'],
+      ['openai', 'gpt-4o'],
+    ])
+    // Ordinals renumber to the new DOM order (the entry's selects and its
+    // ordinal travel together — one row object per position).
+    expect(ordinals(rows)).toEqual(['1', '2', '3'])
+    fireEvent.dragStart(handleOf(rows[2]!, 3))
+    fireEvent.dragOver(rows[0]!)
+    fireEvent.drop(rows[0]!)
+    rows = rowsOf(rootChainGroup())
+    expect(entryValues(rows)).toEqual([
+      ['openai', 'gpt-4o'],
+      ['anthropic', 'claude-3-5-sonnet'],
+      ['zai', 'glm-4'],
+    ])
+    expect(ordinals(rows)).toEqual(['1', '2', '3'])
+  })
+
+  it('moves a chain entry with ArrowUp/ArrowDown on the focused handle, clamped at both ends', async () => {
+    const { view, props } = await mountCard({ config: REORDER_CONFIG })
+    view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
+    const models = (): string[] => rowsOf(rootChainGroup()).map(row => (row.querySelectorAll('select')[1] as HTMLSelectElement).value)
+    const handles = (): HTMLButtonElement[] => rowsOf(rootChainGroup()).map((row, index) => handleOf(row, index + 1))
+    // ArrowUp on the first row is a no-op (nothing above it).
+    fireEvent.keyDown(handles()[0]!, { key: 'ArrowUp' })
+    expect(models()).toEqual(['gpt-4o', 'claude-3-5-sonnet', 'glm-4'])
+    // ArrowDown on the first row's handle moves that entry to position 2.
+    fireEvent.keyDown(handles()[0]!, { key: 'ArrowDown' })
+    expect(models()).toEqual(['claude-3-5-sonnet', 'gpt-4o', 'glm-4'])
+    expect(ordinals(rowsOf(rootChainGroup()))).toEqual(['1', '2', '3'])
+    // ArrowDown on the last row is a no-op too, and ArrowUp walks back up.
+    fireEvent.keyDown(handles()[2]!, { key: 'ArrowDown' })
+    expect(models()).toEqual(['claude-3-5-sonnet', 'gpt-4o', 'glm-4'])
+    fireEvent.keyDown(handles()[1]!, { key: 'ArrowUp' })
+    expect(models()).toEqual(['gpt-4o', 'claude-3-5-sonnet', 'glm-4'])
+  })
+
+  it('leaves a read-only chain untouched when its grip receives a reorder key', async () => {
+    const { view, props } = await mountCard({ config: REORDER_CONFIG, writable: false })
+    view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
+    const rows = rowsOf(rootChainGroup())
+    expect(rows).toHaveLength(3)
+    const before = entryValues(rows)
+    // Behaviour, not attributes: a read-only grip is behind the same gate as
+    // the remove control, so the reorder keys do nothing (top and bottom).
+    fireEvent.keyDown(handleOf(rows[0]!, 1), { key: 'ArrowDown' })
+    fireEvent.keyDown(handleOf(rows[2]!, 3), { key: 'ArrowUp' })
+    expect(entryValues(rowsOf(rootChainGroup()))).toEqual(before)
+    expect(ordinals(rowsOf(rootChainGroup()))).toEqual(['1', '2', '3'])
+  })
+
+  it('reorders a time-slot chain through its grip (ArrowDown moves the entry down)', async () => {
+    const { view, props } = await mountCard({ config: REORDER_CONFIG })
+    expandAllSlots()
+    view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
+    const slotsGroup = (): HTMLElement => screen.getByText(en['timeSlots.label']).closest('[role="group"]') as HTMLElement
+    // One grip per row (existence), then the real contract: the shared
+    // editor's keyboard move must reach reorderTimeSlotSelector.
+    let rows = rowsOf(slotsGroup())
+    expect(rows).toHaveLength(2)
+    expect(entryValues(rows)).toEqual([['openai', 'gpt-4o'], ['anthropic', 'claude-3-5-sonnet']])
+    handleOf(rows[0]!, 1).focus()
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'ArrowDown' })
+    rows = rowsOf(slotsGroup())
+    expect(entryValues(rows)).toEqual([['anthropic', 'claude-3-5-sonnet'], ['openai', 'gpt-4o']])
+    expect(ordinals(rows)).toEqual(['1', '2'])
+  })
+
+  it('reorders a role chain through its grip (ArrowDown moves the entry down)', async () => {
+    const { view, props } = await mountCard({ config: REORDER_CONFIG })
+    expandAllRoles()
+    view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
+    const rolesGroup = (): HTMLElement => screen.getByText(en['roles.list.label']).closest('[role="group"]') as HTMLElement
+    let rows = rowsOf(rolesGroup())
+    expect(rows).toHaveLength(2)
+    expect(entryValues(rows)).toEqual([['openai', 'gpt-4o'], ['anthropic', 'claude-3-5-sonnet']])
+    handleOf(rows[0]!, 1).focus()
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'ArrowDown' })
+    rows = rowsOf(rolesGroup())
+    expect(entryValues(rows)).toEqual([['anthropic', 'claude-3-5-sonnet'], ['openai', 'gpt-4o']])
+    expect(ordinals(rows)).toEqual(['1', '2'])
+  })
+
+  it('keeps the focused grip on the moved entry across repeated presses (focus hand-off)', async () => {
+    // F-001: the rows are keyed by position, so a keypress must follow the
+    // ENTRY, not the position. A browser dispatches the next keydown to
+    // `document.activeElement`, so the specs press whatever has focus instead
+    // of re-querying the list (which is what hid the bounce-back).
+    const { view, props } = await mountCard({ config: REORDER_CONFIG })
+    view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
+    const models = (): string[] => rowsOf(rootChainGroup())
+      .map(row => (row.querySelectorAll('select')[1] as HTMLSelectElement).value)
+    const gripLabel = (index: number): string => interpolatingT('chains.selector.reorder', { index: String(index) })
+    const focusedLabel = (): string | null => document.activeElement?.getAttribute('aria-label') ?? null
+    // Focus the first entry's grip and press ArrowDown twice.
+    handleOf(rowsOf(rootChainGroup())[0]!, 1).focus()
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'ArrowDown' })
+    expect(models()).toEqual(['claude-3-5-sonnet', 'gpt-4o', 'glm-4'])
+    // The focus travelled with the entry: the grip now at position 2.
+    expect(focusedLabel()).toBe(gripLabel(2))
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'ArrowDown' })
+    // Second press walks the SAME entry to position 3 (not back to the head).
+    expect(models()).toEqual(['claude-3-5-sonnet', 'glm-4', 'gpt-4o'])
+    expect(focusedLabel()).toBe(gripLabel(3))
+    // ArrowUp walks it back the same way.
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'ArrowUp' })
+    expect(models()).toEqual(['claude-3-5-sonnet', 'gpt-4o', 'glm-4'])
+    expect(focusedLabel()).toBe(gripLabel(2))
+  })
+
+  it('rejects a drag that started on another chain: a foreign list neither accepts nor moves', async () => {
+    // F-002/F-003: only a grip drag of the SAME list is a chain drop; a grip
+    // from the default chain released over a time-slot chain row is foreign
+    // to that list (and the source list never sees a drop).
+    const { view, props } = await mountCard({ config: REORDER_CONFIG })
+    expandAllSlots()
+    view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
+    const slotsGroup = screen.getByText(en['timeSlots.label']).closest('[role="group"]') as HTMLElement
+    const before = { root: entryValues(rowsOf(rootChainGroup())), slot: entryValues(rowsOf(slotsGroup)) }
+    fireEvent.dragStart(handleOf(rowsOf(rootChainGroup())[0]!, 1))
+    fireEvent.dragOver(rowsOf(slotsGroup)[1]!)
+    fireEvent.drop(rowsOf(slotsGroup)[1]!)
+    fireEvent.dragEnd(handleOf(rowsOf(rootChainGroup())[0]!, 1))
+    expect(entryValues(rowsOf(rootChainGroup()))).toEqual(before.root)
+    expect(entryValues(rowsOf(slotsGroup))).toEqual(before.slot)
+  })
+
+  it('treats a drop on the dragged row itself as a no-op', async () => {
+    // F-003: dropping a grip back onto its own row keeps the order.
+    const { view, props } = await mountCard({ config: REORDER_CONFIG })
+    view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
+    const rows = rowsOf(rootChainGroup())
+    const before = entryValues(rows)
+    fireEvent.dragStart(handleOf(rows[1]!, 2))
+    fireEvent.dragOver(rows[1]!)
+    fireEvent.drop(rows[1]!)
+    fireEvent.dragEnd(handleOf(rows[1]!, 2))
+    expect(entryValues(rowsOf(rootChainGroup()))).toEqual(before)
+    expect(ordinals(rowsOf(rootChainGroup()))).toEqual(['1', '2', '3'])
+  })
+})
+
+/**
+ * Role-card header summary (plan fallbacks-chain-reorder T2, user request
+ * 2026-10-22): the collapsed role header shows the WHOLE fallback chain —
+ * every non-blank entry joined with `>` — instead of only the first model, and
+ * the same full string rides the meta span's `title` so a truncated summary
+ * still exposes every entry. An empty chain keeps the raw strategy token. The
+ * time-slot row header keeps its first-model meta (recorded out of scope).
+ */
+describe('FallbacksCard role header chain summary (plan fallbacks-chain-reorder T2)', () => {
+  /** A three-entry role chain plus an empty-chain sibling (strategy token). */
+  const SUMMARY_CONFIG: typeof defaultFallbacksConfig = {
+    ...BASE_CONFIG,
+    rootChain: [OFFICIAL_FLASH],
+    roles: {
+      list: [
+        { id: 'coder', persona: '', chain: ['openai/gpt-4o', 'anthropic/claude-3-5-sonnet', 'zai/glm-4'], fallback: 'inherit-root' },
+        { id: 'empty', persona: '', chain: [], fallback: 'none' },
+      ],
+      rules: [],
+    },
+  }
+
+  /** The roles group (its label anchors the role="group" field). */
+  function rolesGroup(): HTMLElement {
+    return screen.getByText(en['roles.list.label']).closest('[role="group"]') as HTMLElement
+  }
+
+  /** The collapsed role-card headers, in declared order (whole row = toggle). */
+  function roleHeaders(): HTMLElement[] {
+    return within(rolesGroup()).getAllByRole('button', { name: en['roles.expand'] })
+  }
+
+  it('renders the whole chain joined with ">" in the header, title carrying the full string', async () => {
+    const { view, props } = await mountCard({ config: SUMMARY_CONFIG })
+    view.rerender(<FallbacksCard {...props} />)
+    const headers = roleHeaders()
+    expect(headers).toHaveLength(2)
+    // Role cards start collapsed: the header meta IS the summary.
+    const joined = 'openai/gpt-4o > anthropic/claude-3-5-sonnet > zai/glm-4'
+    const meta = within(headers[0]!).getByText(joined)
+    // A truncated summary still exposes every entry on hover.
+    expect(meta.getAttribute('title')).toBe(joined)
+    // The first-model-only summary is gone (no single-entry meta remains).
+    expect(within(headers[0]!).queryByText('openai/gpt-4o')).toBeNull()
+    // An empty chain still shows its strategy token.
+    expect(within(headers[1]!).getByText('none')).toBeTruthy()
+  })
+})
