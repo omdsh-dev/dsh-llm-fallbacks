@@ -249,12 +249,13 @@ export const zh = {
   // the summary carries only the reason — `{to}` does not appear twice.
   'chat.switch.summary.roleInject': '（{reason}）',
   'chat.switch.roleMap': '{role} → {model}',
-  // Session-header subagent role badge (plan subagent-role-badge T3): the
-  // badge body renders the raw role id (locale-neutral, like the transcript
-  // role badge); the hover title carries the role → route mapping. The route is
-  // the LATEST recorded request's (the host `modelSelection` projection) — not
-  // the dispatch-time route — and the label says so (plan Task 3b).
-  'subagentRole.hover': '{role} → {model}（最近一次请求的路由）',
+  // Session-header subagent role/model badge (plan subagent-role-badge T3;
+  // plan subagent-role-model): the badge body renders the raw role id
+  // (locale-neutral, like the transcript role badge) plus the model route; the
+  // hover repeats the mapping. The route is the host `modelSelection`
+  // projection read as `next ?? lastUsed` — the next request's route, falling
+  // back to the last used one — so the label stays neutral ("request route").
+  'subagentRole.hover': '{role} → {model}（请求路由）',
   'defaults.prefix': '默认值',
   'save': '保存',
   'save.saving': '保存中…',
@@ -492,9 +493,10 @@ export const en = {
   // the summary carries only the reason — `{to}` does not appear twice.
   'chat.switch.summary.roleInject': '({reason})',
   'chat.switch.roleMap': '{role} → {model}',
-  // Session-header subagent role badge (plan subagent-role-badge T3; the route
-  // label is plan Task 3b's "latest request route" semantics).
-  'subagentRole.hover': '{role} → {model} (latest request route)',
+  // Session-header subagent role/model badge (plan subagent-role-badge T3;
+  // plan subagent-role-model): neutral "request route" wording because the route
+  // is `modelSelection.next ?? lastUsed`.
+  'subagentRole.hover': '{role} → {model} (request route)',
   'defaults.prefix': 'Default',
   'save': 'Save',
   'save.saving': 'Saving…',

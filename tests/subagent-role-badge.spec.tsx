@@ -1,32 +1,29 @@
 // @vitest-environment jsdom
 /**
- * Session-header subagent role badge (plan subagent-role-badge T3 + T4 case f;
- * durable channel plan role-based-subagent-adoption Task 3b).
+ * Session-header subagent role/model badge (plan subagent-role-badge T3 + T4
+ * case f; plan subagent-role-model extends it with the model half).
  *
- * The badge is rendered over the REAL session-kit seat shape: a scripted
- * `useProjection(key)` reader, i.e. exactly what the ui-session binding hands a
- * `scope: 'session'` occupant (`binding.session.projections.faceOf(key)`). Pins:
+ * The badge is rendered over the REAL session-kit seat shapes: a scripted
+ * `useProjection(key)` reader plus a scripted `useSessions(selector)` store, i.e.
+ * exactly what the ui-session binding hands a `scope: 'session'` occupant. Pins:
  *
- * - a present `fallbacksSubagentRole` value renders the role pill; the hover is
- *   `role → provider/model (latest request route)`, taken from the host's
- *   EXISTING `modelSelection` projection (`lastUsed`) — NOT from the role
- *   projection, which carries no route.
- * - the pill renders ROLE-ONLY (title = the role) when no route is known.
- * - an absent/foreign/blank value, a `null` wire value and an `inherit` value
- *   render NOTHING — degrade-never-crash.
+ * - the badge belongs to the viewed CHILD session: a root session renders
+ *   nothing even when its own `modelSelection` carries a route (its composer
+ *   owns that control);
+ * - a child with a role and a route renders `role · provider/model`; the hover
+ *   is `role → provider/model (request route)`;
+ * - the route is `modelSelection.next` (the route the next request uses),
+ *   falling back to `lastUsed`; either half alone still renders, and a malformed
+ *   route is dropped instead of rendered wrong;
+ * - an absent/foreign/blank role, a `null` wire value and an `inherit` value
+ *   simply omit the role half — degrade-never-crash, never a placeholder;
  * - a version-skewed host without the session standard kit renders nothing and
- *   reads no projection at all.
- * - the seat is a REAL hook, so the two projection reads are unconditional and
- *   the hook count is constant across re-renders: a role that APPEARS on an
- *   in-place re-render (the running child whose notice row just landed) and one
- *   that disappears must both render without React's
- *   "Rendered more hooks than during the previous render" invariant (Task 3b L2
- *   review C-1 — the seat's React store hook is what makes this observable).
- *
- * The probe loop, the gateway round-trip and the `sessionId` plumbing are GONE
- * (Task 3b): the host pushes the value into the session's projection store, so
- * there is nothing left to poll and no rpc to script. The live half (a settled
- * child's opening frame really carrying the key) is QA's item.
+ *   reads no projection at all;
+ * - the seats are REAL hooks, so the projection reads are unconditional and the
+ *   hook count is constant across re-renders: a role that APPEARS on an in-place
+ *   re-render (the running child whose notice row just landed) and one that
+ *   disappears must both render without React's "Rendered more hooks than
+ *   during the previous render" invariant (Task 3b L2 review C-1).
  */
 
 import { useSyncExternalStore } from 'react'
@@ -52,32 +49,65 @@ const t = ((key: string, params?: Record<string, unknown>) => {
   return text
 }) as SubagentRoleBadgeProps['t']
 
-/** The host's model-selection projection value carrying a latest request route. */
-function selection(provider: string, model: string): unknown {
-  return { lastUsed: { provider, model }, next: null }
+/** The host's model-selection projection value carrying a route. */
+function selection(provider: string, model: string, lastUsed: string | null = null): unknown {
+  return {
+    next: { provider, model },
+    lastUsed: lastUsed === null ? null : { provider, model: lastUsed },
+  }
+}
+
+/**
+ * The viewed session's store row, as the shared Session store publishes it:
+ * `origin` is `'subagent'` only for a subagent row, root rows simply omit the
+ * key (`SessionSummary.origin?: 'subagent'`), and `empty` is the
+ * pre-materialization window.
+ */
+function sessionsStore(kind: 'subagent' | 'root' | 'empty'): unknown {
+  if (kind === 'empty') return { byId: {} }
+  if (kind === 'root') return { byId: { 'viewed-session': {} } }
+  return { byId: { 'viewed-session': { origin: 'subagent' } } }
+}
+
+/** The scripted `useSessions` seat: a selector over one fixed store row. */
+function sessionsSeat(kind: 'subagent' | 'root' | 'empty'): SubagentRoleBadgeProps['useSessions'] {
+  return ((selector: (state: unknown) => unknown) => selector(sessionsStore(kind))) as never
 }
 
 /**
  * The props the actions-slot outlet would bind: runtime share (the
  * conversation-merged standard-kit members are `as never` — the card/row spec
- * pattern; `useProjection` is the ui-session merge NOT carried by this program's
- * peer types, so the real seat crosses the same structural cast the component
- * reads it through) plus the locale seat.
+ * pattern; `useProjection` / `useSessions` are the ui-session merge NOT carried by
+ * this program's peer types, so the real seats cross the same structural cast the
+ * component reads them through) plus the locale seat.
  */
-function propsWithSeat(useProjection: (key: string) => unknown): SubagentRoleBadgeProps {
+function propsWithSeat(
+  useProjection: (key: string) => unknown,
+  origin: 'subagent' | 'root' | 'empty' = 'subagent',
+): SubagentRoleBadgeProps {
   return {
     t,
+    sessionId: 'viewed-session',
     useProjection: useProjection as never,
+    useSessions: sessionsSeat(origin),
     useWorkspaces: undefined as never,
     useConversation: undefined as never,
     useInput: undefined as never,
     inputActions: undefined as never,
-  }
+  } as never as SubagentRoleBadgeProps
 }
 
 /** The scripted seat: a `key → value` map lookup, no React hook involved. */
-function badgeProps(projections: Record<string, unknown>): SubagentRoleBadgeProps {
-  return propsWithSeat(vi.fn((key: string) => projections[key]))
+function badgeProps(
+  projections: Record<string, unknown>,
+  origin: 'subagent' | 'root' | 'empty' = 'subagent',
+): SubagentRoleBadgeProps {
+  return propsWithSeat(vi.fn((key: string) => projections[key]), origin)
+}
+
+/** The rendered pill (the outer span; the route is its only child span). */
+function pillOf(container: HTMLElement): HTMLElement | null {
+  return container.querySelector('span')
 }
 
 /** A subscription that never fires: the transitions under test are re-renders. */
@@ -97,22 +127,72 @@ function hookSeat(store: { values: Record<string, unknown> }): (key: string) => 
 }
 
 describe('SubagentRoleBadge — projection value', () => {
-  it('renders the role pill with the role → latest request route hover', () => {
-    render(<SubagentRoleBadge {...badgeProps({
+  it('renders role · route with the role → request route hover', () => {
+    const { container } = render(<SubagentRoleBadge {...badgeProps({
       [ROLE_PROJECTION_KEY]: 'coder',
       modelSelection: selection('anthropic', 'claude-sonnet-4'),
     })} />)
 
-    const pill = screen.getByText('coder')
-    expect(pill.getAttribute('title')).toBe('coder → anthropic/claude-sonnet-4 (latest request route)')
+    const pill = pillOf(container)
+    expect(pill?.textContent).toBe('coder · anthropic/claude-sonnet-4')
+    expect(pill?.getAttribute('title')).toBe('coder → anthropic/claude-sonnet-4 (request route)')
+  })
+
+  it('prefers the next route over a DIFFERENT last used route', () => {
+    // The one semantic this change introduces: `next ?? lastUsed`, never the
+    // reverse. A flipped implementation must fail here.
+    const { container } = render(<SubagentRoleBadge {...badgeProps({
+      [ROLE_PROJECTION_KEY]: 'coder',
+      modelSelection: {
+        next: { provider: 'next-provider', model: 'next-model' },
+        lastUsed: { provider: 'used-provider', model: 'used-model' },
+      },
+    })} />)
+
+    expect(pillOf(container)?.textContent).toBe('coder · next-provider/next-model')
+  })
+
+  it('falls through a malformed next route to the last used one', () => {
+    const { container } = render(<SubagentRoleBadge {...badgeProps({
+      [ROLE_PROJECTION_KEY]: 'coder',
+      modelSelection: {
+        next: { provider: '', model: 'broken' },
+        lastUsed: { provider: 'used-provider', model: 'used-model' },
+      },
+    })} />)
+
+    expect(pillOf(container)?.textContent).toBe('coder · used-provider/used-model')
+  })
+
+  it('falls back to the last used route when no next route is recorded', () => {
+    const { container } = render(<SubagentRoleBadge {...badgeProps({
+      [ROLE_PROJECTION_KEY]: 'coder',
+      modelSelection: { next: null, lastUsed: { provider: 'anthropic', model: 'claude-sonnet-4' } },
+    })} />)
+
+    expect(pillOf(container)?.textContent).toBe('coder · anthropic/claude-sonnet-4')
   })
 
   it('renders role-only (title = the role) when no route is known', () => {
     const { container } = render(<SubagentRoleBadge {...badgeProps({ [ROLE_PROJECTION_KEY]: 'scout' })} />)
 
-    const pill = container.querySelector('span')
+    const pill = pillOf(container)
     expect(pill?.textContent).toBe('scout')
     expect(pill?.getAttribute('title')).toBe('scout')
+  })
+
+  it('renders route-only when the role is absent, null or inherit', () => {
+    for (const role of [undefined, null, 'inherit']) {
+      cleanup()
+      const { container } = render(<SubagentRoleBadge {...badgeProps({
+        [ROLE_PROJECTION_KEY]: role,
+        modelSelection: selection('anthropic', 'claude-sonnet-4'),
+      })} />)
+
+      const pill = pillOf(container)
+      expect(pill?.textContent).toBe('anthropic/claude-sonnet-4')
+      expect(pill?.getAttribute('title')).toBe('anthropic/claude-sonnet-4')
+    }
   })
 
   it('drops a malformed route instead of rendering a wrong one', () => {
@@ -120,20 +200,22 @@ describe('SubagentRoleBadge — projection value', () => {
       null,
       42,
       {},
-      { lastUsed: null },
-      { lastUsed: {} },
-      { lastUsed: { provider: 'anthropic' } },
-      { lastUsed: { provider: '', model: 'claude-sonnet-4' } },
-      { lastUsed: { provider: 'anthropic', model: 7 } },
+      { next: null, lastUsed: null },
+      { next: {} },
+      { next: { provider: 'anthropic' } },
+      { next: { provider: '', model: 'claude-sonnet-4' } },
+      { next: { provider: 'anthropic', model: 7 } },
     ]
     for (const modelSelection of cases) {
       cleanup()
-      render(<SubagentRoleBadge {...badgeProps({ [ROLE_PROJECTION_KEY]: 'coder', modelSelection })} />)
-      expect(screen.getByText('coder').getAttribute('title')).toBe('coder')
+      const { container } = render(<SubagentRoleBadge {...badgeProps({ [ROLE_PROJECTION_KEY]: 'coder', modelSelection })} />)
+      const pill = pillOf(container)
+      expect(pill?.textContent).toBe('coder')
+      expect(pill?.getAttribute('title')).toBe('coder')
     }
   })
 
-  it('renders nothing for an absent, null, blank or foreign projection value', () => {
+  it('renders nothing for an absent, null, blank or foreign role with no route', () => {
     const cases: Record<string, unknown>[] = [
       {},
       { [ROLE_PROJECTION_KEY]: undefined },
@@ -143,7 +225,7 @@ describe('SubagentRoleBadge — projection value', () => {
       { [ROLE_PROJECTION_KEY]: 42 },
       { [ROLE_PROJECTION_KEY]: { role: 'coder' } },
       // The writer never records `inherit` (Task 1 resolves it to no role), so a
-      // wire value claiming it is skew — never badge it.
+      // wire value claiming it is skew — never badge it as a role.
       { [ROLE_PROJECTION_KEY]: 'inherit' },
     ]
     for (const projections of cases) {
@@ -153,9 +235,21 @@ describe('SubagentRoleBadge — projection value', () => {
     }
   })
 
+  it('renders nothing on a ROOT session, even when its own model route is known', () => {
+    // Root rows OMIT `origin` (the host type is `origin?: 'subagent'`), and the
+    // pre-materialization window has no row at all: neither may show the badge.
+    for (const origin of ['root', 'empty'] as const) {
+      cleanup()
+      const { container } = render(<SubagentRoleBadge {...badgeProps({
+        modelSelection: selection('anthropic', 'claude-sonnet-4'),
+      }, origin)} />)
+      expect(container.firstChild).toBeNull()
+    }
+  })
+
   it('renders a padded DECLARED role id verbatim (the projection carries the raw id)', () => {
     const { container } = render(<SubagentRoleBadge {...badgeProps({ [ROLE_PROJECTION_KEY]: ' padded ' })} />)
-    expect(container.querySelector('span')?.textContent).toBe(' padded ')
+    expect(pillOf(container)?.textContent).toBe(' padded ')
   })
 })
 
@@ -192,7 +286,7 @@ describe('SubagentRoleBadge — hook order across re-renders (C-1)', () => {
     expect(container.firstChild).toBeNull()
   })
 
-  it('reads BOTH seats on every render, even when the role is absent or inherit', () => {
+  it('reads BOTH projection seats on every render, even when the role is absent or inherit', () => {
     // Unconditional read, in a fixed order, BEFORE any value guard — the hook
     // count may not depend on this render's projection value.
     const readKeys = (projections: Record<string, unknown>): string[] => {
@@ -213,16 +307,17 @@ describe('SubagentRoleBadge — hook order across re-renders (C-1)', () => {
 })
 
 describe('SubagentRoleBadge — version-skewed host', () => {
-  it('renders nothing and reads no projection without the session-kit seat', () => {
-    // A host whose slot machinery does not bind `useProjection` at all: the
-    // component must not throw and must not fabricate a value.
+  it('renders nothing and reads no projection without the session-kit seats', () => {
+    // A host whose slot machinery does not bind `useProjection` / `useSessions`:
+    // the component must not throw and must not fabricate a value.
     const props = {
       t,
+      sessionId: 'viewed-session',
       useWorkspaces: undefined as never,
       useConversation: undefined as never,
       useInput: undefined as never,
       inputActions: undefined as never,
-    } as SubagentRoleBadgeProps
+    } as never as SubagentRoleBadgeProps
     const { container } = render(<SubagentRoleBadge {...props} />)
     expect(container.firstChild).toBeNull()
   })
