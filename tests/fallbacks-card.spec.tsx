@@ -3540,11 +3540,18 @@ describe('FallbacksCard chain row reorder (plan fallbacks-chain-reorder T1)', ()
       ['anthropic', 'claude-3-5-sonnet'],
       ['zai', 'glm-4'],
     ])
-    // The handle is the ONLY draggable element of the row; the row is the
-    // drop target (a click on a select never starts a drag).
+    // Only the GRIP starts a reorder: a drag begun on the row itself (a
+    // select drag, a text/file drag) leaves the order untouched after the
+    // drop — no attribute pinning, the product behaviour is the contract.
     const firstRows = rowsOf(rootChainGroup())
-    expect(handleOf(firstRows[0]!, 1).getAttribute('draggable')).toBe('true')
-    expect(firstRows[0]!.getAttribute('draggable')).toBeNull()
+    fireEvent.dragStart(firstRows[0]!)
+    fireEvent.dragOver(firstRows[2]!)
+    fireEvent.drop(firstRows[2]!)
+    expect(entryValues(rowsOf(rootChainGroup()))).toEqual([
+      ['openai', 'gpt-4o'],
+      ['anthropic', 'claude-3-5-sonnet'],
+      ['zai', 'glm-4'],
+    ])
     // Drag entry 1's handle onto entry 3's row: it lands at position 3.
     fireEvent.dragStart(handleOf(firstRows[0]!, 1))
     fireEvent.dragOver(firstRows[2]!)
@@ -3589,40 +3596,52 @@ describe('FallbacksCard chain row reorder (plan fallbacks-chain-reorder T1)', ()
     expect(models()).toEqual(['gpt-4o', 'claude-3-5-sonnet', 'glm-4'])
   })
 
-  it('renders the grip handle inert in the read-only view (no drag source, no keyboard move)', async () => {
+  it('leaves a read-only chain untouched when its grip receives a reorder key', async () => {
     const { view, props } = await mountCard({ config: REORDER_CONFIG, writable: false })
     view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
     const rows = rowsOf(rootChainGroup())
     expect(rows).toHaveLength(3)
-    rows.forEach((row, index) => {
-      const handle = handleOf(row, index + 1)
-      // Same gate as the remove control: `disabled` on the control itself
-      // (hidden by CSS in the read-only view).
-      expect(handle.disabled).toBe(true)
-      expect(handle.getAttribute('draggable')).toBe('false')
-    })
+    const before = entryValues(rows)
+    // Behaviour, not attributes: a read-only grip is behind the same gate as
+    // the remove control, so the reorder keys do nothing (top and bottom).
+    fireEvent.keyDown(handleOf(rows[0]!, 1), { key: 'ArrowDown' })
+    fireEvent.keyDown(handleOf(rows[2]!, 3), { key: 'ArrowUp' })
+    expect(entryValues(rowsOf(rootChainGroup()))).toEqual(before)
+    expect(ordinals(rowsOf(rootChainGroup()))).toEqual(['1', '2', '3'])
   })
 
-  it('exposes a grip handle on every chain row of all three chain editors', async () => {
+  it('reorders a time-slot chain through its grip (ArrowDown moves the entry down)', async () => {
     const { view, props } = await mountCard({ config: REORDER_CONFIG })
     expandAllSlots()
+    view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
+    const slotsGroup = (): HTMLElement => screen.getByText(en['timeSlots.label']).closest('[role="group"]') as HTMLElement
+    // One grip per row (existence), then the real contract: the shared
+    // editor's keyboard move must reach reorderTimeSlotSelector.
+    let rows = rowsOf(slotsGroup())
+    expect(rows).toHaveLength(2)
+    expect(entryValues(rows)).toEqual([['openai', 'gpt-4o'], ['anthropic', 'claude-3-5-sonnet']])
+    handleOf(rows[0]!, 1).focus()
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'ArrowDown' })
+    rows = rowsOf(slotsGroup())
+    expect(entryValues(rows)).toEqual([['anthropic', 'claude-3-5-sonnet'], ['openai', 'gpt-4o']])
+    expect(ordinals(rows)).toEqual(['1', '2'])
+  })
+
+  it('reorders a role chain through its grip (ArrowDown moves the entry down)', async () => {
+    const { view, props } = await mountCard({ config: REORDER_CONFIG })
     expandAllRoles()
     view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
-    const expectHandles = (group: HTMLElement, count: number): void => {
-      const rows = rowsOf(group)
-      expect(rows).toHaveLength(count)
-      rows.forEach((row, index) => {
-        const handle = handleOf(row, index + 1)
-        expect(handle.getAttribute('draggable')).toBe('true')
-      })
-    }
-    // 默认降级链 (3 entries).
-    expectHandles(rootChainGroup(), 3)
-    // Time-slot window chain (2 entries; rows default collapsed).
-    expectHandles(screen.getByText(en['timeSlots.label']).closest('[role="group"]') as HTMLElement, 2)
-    // Role chain (2 entries; role cards default collapsed).
-    expectHandles(screen.getByText(en['roles.list.label']).closest('[role="group"]') as HTMLElement, 2)
+    const rolesGroup = (): HTMLElement => screen.getByText(en['roles.list.label']).closest('[role="group"]') as HTMLElement
+    let rows = rowsOf(rolesGroup())
+    expect(rows).toHaveLength(2)
+    expect(entryValues(rows)).toEqual([['openai', 'gpt-4o'], ['anthropic', 'claude-3-5-sonnet']])
+    handleOf(rows[0]!, 1).focus()
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'ArrowDown' })
+    rows = rowsOf(rolesGroup())
+    expect(entryValues(rows)).toEqual([['anthropic', 'claude-3-5-sonnet'], ['openai', 'gpt-4o']])
+    expect(ordinals(rows)).toEqual(['1', '2'])
   })
+
   it('keeps the focused grip on the moved entry across repeated presses (focus hand-off)', async () => {
     // F-001: the rows are keyed by position, so a keypress must follow the
     // ENTRY, not the position. A browser dispatches the next keydown to
