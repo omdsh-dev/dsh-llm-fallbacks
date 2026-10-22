@@ -263,10 +263,6 @@ export const zh = {
   // the LATEST recorded request's (the host `modelSelection` projection) — not
   // the dispatch-time route — and the label says so (plan Task 3b).
   'subagentRole.hover': '{role} → {model}（最近一次请求的路由）',
-  // Session-header subagent role/model list (plan subagent-role-model T1): the
-  // summary carries only the count — each row names one child plus whatever
-  // facts (role / model) its projection carries.
-  'subagentRoles.summary': '角色 / 模型（{count}）',
   'defaults.prefix': '默认值',
   'save': '保存',
   'save.saving': '保存中…',
@@ -515,8 +511,6 @@ export const en = {
   // Session-header subagent role badge (plan subagent-role-badge T3; the route
   // label is plan Task 3b's "latest request route" semantics).
   'subagentRole.hover': '{role} → {model} (latest request route)',
-  // Session-header subagent role/model list (plan subagent-role-model T1).
-  'subagentRoles.summary': 'Roles / models ({count})',
   'defaults.prefix': 'Default',
   'save': 'Save',
   'save.saving': 'Saving…',
