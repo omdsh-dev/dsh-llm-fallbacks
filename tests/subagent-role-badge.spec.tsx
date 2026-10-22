@@ -241,6 +241,27 @@ describe('SubagentRoleBadge — projection value', () => {
     expect(pill?.getAttribute('title')).toBe(`coder → ${route} (request route)`)
   })
 
+  it('keeps a route of exactly the 120-char cap whole and truncates one char more', () => {
+    // The cap is inclusive (`>` not `>=`), so 120 renders as-is and 121 renders
+    // 119 chars + `…` (still 120 wide). A `>=` mutation must fail here.
+    const atCap = `p/${'m'.repeat(118)}` // 'p/' takes two of the 120
+    const overCap = `p/${'m'.repeat(119)}`
+    expect(atCap).toHaveLength(120)
+    expect(overCap).toHaveLength(121)
+
+    for (const [route, expected] of [
+      [atCap, atCap],
+      [overCap, `${overCap.slice(0, 119)}…`],
+    ] as const) {
+      cleanup()
+      const { container } = render(<SubagentRoleBadge {...badgeProps({
+        modelSelection: { next: { provider: 'p', model: route.slice(2) } },
+      })} />)
+
+      expect(pillOf(container)?.textContent).toBe(expected)
+    }
+  })
+
   it('renders nothing for an absent, null, blank or foreign role with no route', () => {
     const cases: Record<string, unknown>[] = [
       {},
