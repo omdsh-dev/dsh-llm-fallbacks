@@ -3623,4 +3623,61 @@ describe('FallbacksCard chain row reorder (plan fallbacks-chain-reorder T1)', ()
     // Role chain (2 entries; role cards default collapsed).
     expectHandles(screen.getByText(en['roles.list.label']).closest('[role="group"]') as HTMLElement, 2)
   })
+  it('keeps the focused grip on the moved entry across repeated presses (focus hand-off)', async () => {
+    // F-001: the rows are keyed by position, so a keypress must follow the
+    // ENTRY, not the position. A browser dispatches the next keydown to
+    // `document.activeElement`, so the specs press whatever has focus instead
+    // of re-querying the list (which is what hid the bounce-back).
+    const { view, props } = await mountCard({ config: REORDER_CONFIG })
+    view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
+    const models = (): string[] => rowsOf(rootChainGroup())
+      .map(row => (row.querySelectorAll('select')[1] as HTMLSelectElement).value)
+    const gripLabel = (index: number): string => interpolatingT('chains.selector.reorder', { index: String(index) })
+    const focusedLabel = (): string | null => document.activeElement?.getAttribute('aria-label') ?? null
+    // Focus the first entry's grip and press ArrowDown twice.
+    handleOf(rowsOf(rootChainGroup())[0]!, 1).focus()
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'ArrowDown' })
+    expect(models()).toEqual(['claude-3-5-sonnet', 'gpt-4o', 'glm-4'])
+    // The focus travelled with the entry: the grip now at position 2.
+    expect(focusedLabel()).toBe(gripLabel(2))
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'ArrowDown' })
+    // Second press walks the SAME entry to position 3 (not back to the head).
+    expect(models()).toEqual(['claude-3-5-sonnet', 'glm-4', 'gpt-4o'])
+    expect(focusedLabel()).toBe(gripLabel(3))
+    // ArrowUp walks it back the same way.
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'ArrowUp' })
+    expect(models()).toEqual(['claude-3-5-sonnet', 'gpt-4o', 'glm-4'])
+    expect(focusedLabel()).toBe(gripLabel(2))
+  })
+
+  it('rejects a drag that started on another chain: a foreign list neither accepts nor moves', async () => {
+    // F-002/F-003: only a grip drag of the SAME list is a chain drop; a grip
+    // from the default chain released over a time-slot chain row is foreign
+    // to that list (and the source list never sees a drop).
+    const { view, props } = await mountCard({ config: REORDER_CONFIG })
+    expandAllSlots()
+    view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
+    const slotsGroup = screen.getByText(en['timeSlots.label']).closest('[role="group"]') as HTMLElement
+    const before = { root: entryValues(rowsOf(rootChainGroup())), slot: entryValues(rowsOf(slotsGroup)) }
+    fireEvent.dragStart(handleOf(rowsOf(rootChainGroup())[0]!, 1))
+    fireEvent.dragOver(rowsOf(slotsGroup)[1]!)
+    fireEvent.drop(rowsOf(slotsGroup)[1]!)
+    fireEvent.dragEnd(handleOf(rowsOf(rootChainGroup())[0]!, 1))
+    expect(entryValues(rowsOf(rootChainGroup()))).toEqual(before.root)
+    expect(entryValues(rowsOf(slotsGroup))).toEqual(before.slot)
+  })
+
+  it('treats a drop on the dragged row itself as a no-op', async () => {
+    // F-003: dropping a grip back onto its own row keeps the order.
+    const { view, props } = await mountCard({ config: REORDER_CONFIG })
+    view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
+    const rows = rowsOf(rootChainGroup())
+    const before = entryValues(rows)
+    fireEvent.dragStart(handleOf(rows[1]!, 2))
+    fireEvent.dragOver(rows[1]!)
+    fireEvent.drop(rows[1]!)
+    fireEvent.dragEnd(handleOf(rows[1]!, 2))
+    expect(entryValues(rowsOf(rootChainGroup()))).toEqual(before)
+    expect(ordinals(rowsOf(rootChainGroup()))).toEqual(['1', '2', '3'])
+  })
 })

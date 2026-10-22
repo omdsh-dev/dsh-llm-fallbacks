@@ -616,18 +616,27 @@ function moveItem<T>(list: T[], from: number, to: number): T[] {
  * Reorder affordances a chain row receives from its list (plan
  * fallbacks-chain-reorder T1): the row is the DROP target, the trailing grip
  * is the only drag source, and the grip's ArrowUp/ArrowDown route through the
- * same `onMove`. State lives in {@link ChainSelectorList}, so one chain's drag
+ * same `onKeyMove`. State lives in {@link ChainSelectorList}, so one chain's drag
  * never touches a sibling list.
  */
 interface ChainSelectorReorder {
   dragging: boolean
   dropTarget: boolean
+  /** A grip drag of THIS list is in progress — the only drops the row accepts. */
+  active: boolean
   onDragStart: () => void
   onDragOver: () => void
   onDrop: () => void
   onDragEnd: () => void
-  /** Move the entry at 0-based `from` to 0-based `to` (the callback bounds-checks). */
-  onMove: (from: number, to: number) => void
+  /**
+   * Keyboard move of the entry at 0-based `from` to `to`, plus the focus
+   * hand-off: the list moves focus to the grip at `to` after the reorder
+   * render, so the next press walks the SAME entry instead of whatever
+   * position it left behind.
+   */
+  onKeyMove: (from: number, to: number) => void
+  /** Registers this row's grip so the list can hand focus over after a move. */
+  gripRef: (node: HTMLButtonElement | null) => void
 }
 
 /**
@@ -704,13 +713,15 @@ function ChainSelectorEditor({
       data-selector-row=""
       // The row is the drop target (slot-card precedent): the drag starts on
       // the trailing grip, so a drag that begins on a select never reorders.
+      // A FOREIGN drag (text, files, another chain's grip) is not ours to
+      // intercept: no `preventDefault`, so the drop is not swallowed.
       onDragOver={event => {
-        if (disabled) return
+        if (disabled || !reorder.active) return
         event.preventDefault()
         reorder.onDragOver()
       }}
       onDrop={event => {
-        if (disabled) return
+        if (disabled || !reorder.active) return
         event.preventDefault()
         reorder.onDrop()
       }}
@@ -839,6 +850,7 @@ function ChainSelectorEditor({
             a view that cannot save offers no reorder. */}
         <button
           type="button"
+          ref={reorder.gripRef}
           className={`${css.dragHandle} ${css.selectorGrip}`}
           draggable={!disabled}
           data-tip={t('chains.selector.reorder', { index: String(index) })}
@@ -850,10 +862,11 @@ function ChainSelectorEditor({
           }}
           onDragEnd={reorder.onDragEnd}
           onKeyDown={event => {
+            if (disabled) return
             const step = event.key === 'ArrowUp' ? -1 : event.key === 'ArrowDown' ? 1 : 0
             if (step === 0) return
             event.preventDefault()
-            reorder.onMove(index - 1, index - 1 + step)
+            reorder.onKeyMove(index - 1, index - 1 + step)
           }}
         >
           <GripIcon />
@@ -886,6 +899,18 @@ function ChainSelectorList({
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null)
   const [overIndex, setOverIndex] = useState<number | null>(null)
   const settle = (): void => { setDraggedIndex(null); setOverIndex(null) }
+  // Focus hand-off (QC F-001): the rows are keyed by POSITION, so a moved
+  // entry's grip is re-rendered from the node that used to belong to another
+  // position and browser focus stays behind. The keyboard path records the
+  // destination here, and the effect below focuses that grip once the reorder
+  // has rendered — so consecutive presses keep walking the same entry.
+  const gripRefs = useRef<(HTMLButtonElement | null)[]>([])
+  const [pendingFocus, setPendingFocus] = useState<number | null>(null)
+  useEffect(() => {
+    if (pendingFocus === null) return
+    gripRefs.current[pendingFocus]?.focus()
+    setPendingFocus(null)
+  }, [pendingFocus])
   return (
     <div className={css.chainSelectors}>
       {selectors.map((selector, index) => (
@@ -902,6 +927,8 @@ function ChainSelectorList({
           reorder={{
             dragging: draggedIndex === index,
             dropTarget: draggedIndex !== null && draggedIndex !== index && overIndex === index,
+            active: draggedIndex !== null,
+            gripRef: node => { gripRefs.current[index] = node },
             onDragStart: () => { setDraggedIndex(index); setOverIndex(index) },
             onDragOver: () => {
               if (draggedIndex === null || overIndex === index) return
@@ -913,7 +940,13 @@ function ChainSelectorList({
               if (from !== null && from !== index) onMove(from, index)
             },
             onDragEnd: settle,
-            onMove,
+            onKeyMove: (from, to) => {
+              // Out-of-range / same-position moves are the clamped no-ops —
+              // no reorder, and no focus hand-off to a nonexistent grip.
+              if (from === to || from < 0 || to < 0 || from >= selectors.length || to >= selectors.length) return
+              setPendingFocus(to)
+              onMove(from, to)
+            },
           }}
         />
       ))}
