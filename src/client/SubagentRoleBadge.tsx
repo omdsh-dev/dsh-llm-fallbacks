@@ -75,11 +75,17 @@ function selectionRoute(value: unknown): string | undefined {
   if (typeof value !== 'object' || value === null) return undefined
   const { provider, model } = value as { provider?: unknown; model?: unknown }
   if (typeof provider !== 'string' || typeof model !== 'string') return undefined
-  // Trim like the role half does; a hostile id must not reach the title raw.
+  // Trim the wire values here; the role id is kept verbatim by contract
+  // (`role-projection-key.ts`, docs/consumer-api.md).
   const trimmedProvider = provider.trim()
   const trimmedModel = model.trim()
   if (trimmedProvider === '' || trimmedModel === '') return undefined
-  const route = `${trimmedProvider}/${trimmedModel}`
+  // Never capped: the pill BODY truncates for display, the title keeps this whole.
+  return `${trimmedProvider}/${trimmedModel}`
+}
+
+/** Display form of a route in the pill body; the title keeps the full route. */
+function displayRoute(route: string): string {
   // shortcut: fixed 120-char display cap (ellipsis included); widen if real ids outgrow it.
   return route.length > 120 ? `${route.slice(0, 119)}…` : route
 }
@@ -155,7 +161,7 @@ export function SubagentRoleBadge(props: SubagentRoleBadgeProps): ReactNode {
     <span className={css.badge} title={title}>
       {role}
       {role !== undefined && model !== undefined && ' · '}
-      {model !== undefined && <span className={css.route}>{model}</span>}
+      {model !== undefined && <span className={css.route}>{displayRoute(model)}</span>}
     </span>
   )
 }

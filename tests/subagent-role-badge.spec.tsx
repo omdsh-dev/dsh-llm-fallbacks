@@ -218,20 +218,27 @@ describe('SubagentRoleBadge — projection value', () => {
     }
   })
 
-  it('trims a padded route and caps it at 120 characters', () => {
+  it('trims a padded route, leaving the display cap to the pill body', () => {
     const { container } = render(<SubagentRoleBadge {...badgeProps({
       [ROLE_PROJECTION_KEY]: 'coder',
       modelSelection: { next: { provider: ' anthropic ', model: ' claude-sonnet-4 ' } },
     })} />)
     expect(pillOf(container)?.textContent).toBe('coder · anthropic/claude-sonnet-4')
+  })
 
-    cleanup()
-    const longRoute = render(<SubagentRoleBadge {...badgeProps({
-      modelSelection: { next: { provider: 'p', model: 'm'.repeat(300) } },
+  it('truncates a >120-char route in the pill body but keeps the whole route in the title', () => {
+    // The body is display-capped; the native title is the hover recovery path, so
+    // it must carry the full `provider/model` even beside a role half.
+    const route = `anthropic/${'m'.repeat(200)}`
+    const { container } = render(<SubagentRoleBadge {...badgeProps({
+      [ROLE_PROJECTION_KEY]: 'coder',
+      modelSelection: { next: { provider: 'anthropic', model: 'm'.repeat(200) } },
     })} />)
-    const title = pillOf(longRoute.container)?.getAttribute('title') ?? ''
-    expect(title.length).toBe(120)
-    expect(title.endsWith('…')).toBe(true)
+
+    const pill = pillOf(container)
+    expect(pill?.textContent).toBe(`coder · ${route.slice(0, 119)}…`)
+    expect(pill?.textContent?.endsWith('…')).toBe(true)
+    expect(pill?.getAttribute('title')).toBe(`coder → ${route} (request route)`)
   })
 
   it('renders nothing for an absent, null, blank or foreign role with no route', () => {
