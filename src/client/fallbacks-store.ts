@@ -1229,18 +1229,19 @@ export class FallbacksSettingsController {
    * CURRENT allowlist with this plugin's exact chain routes plus the virtual
    * `FallbacksChain/Auto` route and writes only `allowedModels`. The button
    * click is the ONLY trigger — the store never syncs on its own.
-   * @returns true when the refresh landed (the card then reads the fresh
+   * @returns true when the write landed (the card then reads the fresh
    *   snapshot from the store); false on a refused/failed call, leaving the
-   *   last accepted state untouched.
+   *   last accepted state untouched. A response discarded by the write
+   *   generation guard is still a landed write — dispose() is the only
+   *   invalidator, so it must not report failure.
    */
   async syncAllowlist(): Promise<boolean> {
     if (!this.store.getSnapshot().writable) return false
     const generation = ++this.writeGeneration
     try {
       const result = await this.rpc.call('/api', 'fallbacks/sync-allowlist', { args: {} })
-      if (generation !== this.writeGeneration) return false
       if (!result.ok) return false
-      this.acceptWire(result.value)
+      if (generation === this.writeGeneration) this.acceptWire(result.value)
       return true
     } catch {
       return false

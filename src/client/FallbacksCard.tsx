@@ -2134,55 +2134,62 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
          * an empty-intersection warning. Roles/rules editors below
          * stay untouched. */}
         {state.subagentPolicy?.state === 'enabled' && (
-          <div className={css.policyStatus} role="status">
-            <span className={css.policyStatusLabel}>{t('subagents.policy.label')}</span>
-            <span className={css.policyStatusLine}>
-              {`${t('subagents.policy.allowlist')}: ${state.subagentPolicy.allowedModels
-                .map((route) => `${route.provider}/${route.model}`)
-                .join(', ')}`}
-            </span>
-            {state.subagentPolicy.head !== undefined && (
+          <div className={css.policyStatus}>
+            {/* The live region covers the TEXT lines only: the interactive
+             * sync control sits outside it, so a refreshed status does not
+             * re-announce a focusable button. */}
+            <div className={css.policyStatusText} role="status">
+              <span className={css.policyStatusLabel}>{t('subagents.policy.label')}</span>
               <span className={css.policyStatusLine}>
-                {`${t('subagents.policy.head')}: ${state.subagentPolicy.head.route.provider}/${state.subagentPolicy.head.route.model} (${t(
-                  state.subagentPolicy.head.source === 'authorized'
-                    ? 'subagents.policy.source.authorized'
-                    : 'subagents.policy.source.injected',
-                )})`}
+                {`${t('subagents.policy.allowlist')}: ${state.subagentPolicy.allowedModels
+                  .map((route) => `${route.provider}/${route.model}`)
+                  .join(', ')}`}
               </span>
-            )}
-            {state.subagentPolicy.blockedAttempt !== undefined && (
-              <span className={css.policyStatusWarn} role="alert">
-                {t('subagents.policy.blocked')}
-              </span>
-            )}
-            {/* Allowlist visibility + the one explicit write face (plan
-             * role-chain-allowlist-visibility T2). Everything here renders
-             * only while the policy is proven enabled; the button is the
-             * ONLY allowlist write trigger — nothing syncs silently. */}
-            {offAllowlistCount > 0 && (
-              <span className={css.policyStatusWarn}>
-                {t('subagents.policy.offAllowlist', { count: String(offAllowlistCount) })}
-              </span>
-            )}
-            {!virtualRouteAllowed && (
-              <span className={css.policyStatusLine}>
-                {t('subagents.policy.recommend')}
-              </span>
-            )}
-            <button
-              type="button"
-              className={css.outlineButton}
-              disabled={!writable || syncStatus === 'pending'}
-              onClick={syncAllowlist}
-            >
-              {t('subagents.policy.sync')}
-            </button>
-            {syncStatus === 'ok' && (
-              <span className={css.policyStatusLine}>{t('subagents.policy.sync.done')}</span>
-            )}
-            {syncStatus === 'error' && (
-              <span className={css.policyStatusWarn}>{t('subagents.policy.sync.failed')}</span>
-            )}
+              {state.subagentPolicy.head !== undefined && (
+                <span className={css.policyStatusLine}>
+                  {`${t('subagents.policy.head')}: ${state.subagentPolicy.head.route.provider}/${state.subagentPolicy.head.route.model} (${t(
+                    state.subagentPolicy.head.source === 'authorized'
+                      ? 'subagents.policy.source.authorized'
+                      : 'subagents.policy.source.injected',
+                  )})`}
+                </span>
+              )}
+              {state.subagentPolicy.blockedAttempt !== undefined && (
+                <span className={css.policyStatusWarn} role="alert">
+                  {t('subagents.policy.blocked')}
+                </span>
+              )}
+              {/* Allowlist visibility (plan role-chain-allowlist-visibility
+               * T2). Everything here renders only while the policy is proven
+               * enabled; the button below is the ONLY allowlist write
+               * trigger — nothing syncs silently. */}
+              {offAllowlistCount > 0 && (
+                <span className={css.policyStatusWarn}>
+                  {t('subagents.policy.offAllowlist', { count: String(offAllowlistCount) })}
+                </span>
+              )}
+              {!virtualRouteAllowed && (
+                <span className={css.policyStatusLine}>
+                  {t('subagents.policy.recommend')}
+                </span>
+              )}
+            </div>
+            <div className={css.policyStatusSync} role="group" aria-label={t('subagents.policy.sync')}>
+              <button
+                type="button"
+                className={css.outlineButton}
+                disabled={!writable || syncStatus === 'pending'}
+                onClick={syncAllowlist}
+              >
+                {t('subagents.policy.sync')}
+              </button>
+              {syncStatus === 'ok' && (
+                <span className={css.policyStatusLine}>{t('subagents.policy.sync.done')}</span>
+              )}
+              {syncStatus === 'error' && (
+                <span className={css.policyStatusWarn}>{t('subagents.policy.sync.failed')}</span>
+              )}
+            </div>
           </div>
         )}
         {state.subagentPolicy?.state === 'unprovable' && (

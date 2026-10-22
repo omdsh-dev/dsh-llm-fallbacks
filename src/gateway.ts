@@ -534,7 +534,9 @@ function mergedAllowlist(
   const merged: SubagentPolicyRoute[] = []
   const seen = new Set<string>()
   const push = (route: SubagentPolicyRoute): void => {
-    const key = `${route.provider}/${route.model}`
+    // The host's route identity key shape (upstream `modelRouteKey`): a NUL
+    // separator keeps `a/b/c` + `d` distinct from `a/b` + `c/d`.
+    const key = `${route.provider}\0${route.model}`
     if (seen.has(key)) return
     seen.add(key)
     merged.push({ provider: route.provider, model: route.model })

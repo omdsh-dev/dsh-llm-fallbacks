@@ -1413,7 +1413,8 @@ describe('syncAllowlist (explicit host-allowlist write)', () => {
     rootChain: ['openai/gpt-4o', OFFICIAL_FLASH],
     roles: {
       list: [
-        { id: 'reviewer', persona: '', chain: ['openai/gpt-4o', 'anthropic/claude-3-5-sonnet', 'zai/*'], fallback: 'none' },
+        // `not-a-selector` is unparseable — the merge must skip it, never throw.
+        { id: 'reviewer', persona: '', chain: ['openai/gpt-4o', 'anthropic/claude-3-5-sonnet', 'zai/*', 'not-a-selector'], fallback: 'none' },
         { id: 'coder', persona: '', chain: ['zai/glm-4'], fallback: 'inherit-root' },
       ],
       rules: [],
@@ -1455,8 +1456,11 @@ describe('syncAllowlist (explicit host-allowlist write)', () => {
     // Only `allowedModels` is written — never `enabled`.
     expect(Object.keys(stored)).toEqual(['allowedModels'])
     expect(stored.allowedModels).toEqual(expected)
-    // The wildcard `zai/*` was skipped and the duplicate `openai/gpt-4o`
-    // appears once. The response carries the fresh post-write snapshot.
+    // The wildcard `zai/*` and the unparseable `not-a-selector` were skipped
+    // and the duplicate `openai/gpt-4o` appears once. The response carries
+    // the fresh post-write snapshot.
+    expect((stored.allowedModels as { provider: string }[]).map(route => route.provider))
+      .not.toContain('not-a-selector')
     expect(result.subagentPolicy).toEqual({ state: 'enabled', allowedModels: expected })
   })
 
