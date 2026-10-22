@@ -6,6 +6,13 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.6.9] - 2026-10-22
+
+### Added
+
+- Fallback chain entries can be reordered: every chain row (default fallback chain, time-slot chains, role chains) has a trailing grip handle — drag it onto another row, or focus it and press ↑/↓.
+- A role's collapsed header now shows its whole fallback chain separated by `>`, truncated with an ellipsis when it is too long (the full chain stays available on hover).
+
 ## [0.6.8] - 2026-10-20
 
 ### Changed
