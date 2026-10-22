@@ -324,18 +324,19 @@ export function apply(ctx: ClientContext): void {
     }, ConversationFallbackSwitch)
   })
 
-  // Session-header subagent role badge (plan subagent-role-badge T3; durable
-  // channel plan Task 3b): a compact read-only pill in the
-  // `conversation.session.header.actions` list slot (scope 'session') showing
-  // which Subagent role the viewed session's dispatch resolved — hover
-  // `role → latest request route`. Render-only (C4 pattern): a view
-  // contribution, no message construction, no model-context injection. Its data
-  // is the host's `fallbacksSubagentRole` session projection, read through the
-  // session-kit `useProjection` seat the component takes structurally (the
+  // Session-header subagent role/model badge (plan subagent-role-badge T3 +
+  // plan subagent-role-model): a compact read-only pill in the
+  // `conversation.session.header.actions` list slot (scope 'session') showing a
+  // CHILD session's dispatch role and its model route — `role · provider/model`,
+  // hover `role → provider/model (request route)`. Render-only (C4 pattern): a
+  // view contribution, no message construction, no model-context injection. Its
+  // data are two host session projections — `fallbacksSubagentRole` and
+  // `modelSelection` (`next ?? lastUsed`) — read through the session-kit
+  // `useProjection` / `useSessions` seats the component takes structurally (the
   // compiled peer types do not carry the ui-session merge into this program; see
-  // the component docblock) — NO inject face and no rpc: the plugin gateway and
-  // the badge's polling probe are gone (Task 3b). Degrade-never-crash: an absent
-  // key / a foreign value / `inherit` / a skewed host render `null`.
+  // the component docblock) — NO inject face and no rpc. Degrade-never-crash: a
+  // root session, a seat-less host, or a child with neither half renders `null`;
+  // a missing/foreign/`inherit` role omits only the role half.
   // Placement (user decision 2026-09-11; verified against the installed
   // `@deepseek-ai/dsh-client-ui-*` on 2026-09-11 — a host-side
   // reorder can shift this placement): the actions row hosts the agent-preset
