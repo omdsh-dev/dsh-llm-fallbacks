@@ -3609,7 +3609,10 @@ describe('FallbacksCard host-policy status (plan dsh-012-subagent-routing T5 / s
       subagentPolicy: { state: 'enabled', allowedModels: [ALLOWED_ROUTE] },
     })
     view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
-    expect((screen.getByRole('button', { name: en['subagents.policy.sync'] }) as HTMLButtonElement).disabled).toBe(false)
+    const syncButton = (): HTMLButtonElement =>
+      screen.getByRole('button', { name: en['subagents.policy.sync'] }) as HTMLButtonElement
+    expect(syncButton().disabled).toBe(false)
+    expect(syncButton().hasAttribute('aria-describedby')).toBe(false)
     expect(screen.queryByText(en['subagents.policy.sync.dirty'])).toBeNull()
 
     // A chain edit: clearing the first role selector's provider drops that
@@ -3620,14 +3623,22 @@ describe('FallbacksCard host-policy status (plan dsh-012-subagent-routing T5 / s
     const provider = rolesGroup.querySelector('[data-selector-row] select') as HTMLSelectElement
     fireEvent.change(provider, { target: { value: '' } })
     view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
-    expect((screen.getByRole('button', { name: en['subagents.policy.sync'] }) as HTMLButtonElement).disabled).toBe(true)
-    expect(screen.getByText(en['subagents.policy.sync.dirty'])).toBeTruthy()
+    expect(syncButton().disabled).toBe(true)
+    // A disabled button is skipped in keyboard navigation: the reason is
+    // announced through the hint's live region and bound as its description.
+    const hintedBy = syncButton().getAttribute('aria-describedby')
+    expect(hintedBy).toBe('fallbacks-policy-sync-dirty')
+    const hint = document.getElementById(hintedBy!)
+    expect(hint).not.toBeNull()
+    expect(hint!.getAttribute('role')).toBe('status')
+    expect(hint!.textContent).toBe(en['subagents.policy.sync.dirty'])
 
     // The sub save persists the draft; the reseed makes the button usable again.
     fireEvent.click(saveButton('sub'))
     await waitFor(() => {
-      expect((screen.getByRole('button', { name: en['subagents.policy.sync'] }) as HTMLButtonElement).disabled).toBe(false)
+      expect(syncButton().disabled).toBe(false)
     })
+    expect(syncButton().hasAttribute('aria-describedby')).toBe(false)
     expect(screen.queryByText(en['subagents.policy.sync.dirty'])).toBeNull()
   })
 
@@ -3637,16 +3648,22 @@ describe('FallbacksCard host-policy status (plan dsh-012-subagent-routing T5 / s
       subagentPolicy: { state: 'enabled', allowedModels: [ALLOWED_ROUTE] },
     })
     view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
+    const syncButton = (): HTMLButtonElement =>
+      screen.getByRole('button', { name: en['subagents.policy.sync'] }) as HTMLButtonElement
+    expect(syncButton().hasAttribute('aria-describedby')).toBe(false)
     // Switching the all-day tail Flash → Pro rewrites the root chain (mainDirty).
     fireEvent.click(proRadio())
     view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
-    expect((screen.getByRole('button', { name: en['subagents.policy.sync'] }) as HTMLButtonElement).disabled).toBe(true)
-    expect(screen.getByText(en['subagents.policy.sync.dirty'])).toBeTruthy()
+    expect(syncButton().disabled).toBe(true)
+    expect(syncButton().getAttribute('aria-describedby')).toBe('fallbacks-policy-sync-dirty')
+    expect(document.getElementById('fallbacks-policy-sync-dirty')!.textContent)
+      .toBe(en['subagents.policy.sync.dirty'])
 
     fireEvent.click(saveButton('main'))
     await waitFor(() => {
-      expect((screen.getByRole('button', { name: en['subagents.policy.sync'] }) as HTMLButtonElement).disabled).toBe(false)
+      expect(syncButton().disabled).toBe(false)
     })
+    expect(syncButton().hasAttribute('aria-describedby')).toBe(false)
     expect(screen.queryByText(en['subagents.policy.sync.dirty'])).toBeNull()
   })
 })

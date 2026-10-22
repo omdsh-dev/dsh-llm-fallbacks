@@ -2177,17 +2177,23 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
             <div className={css.policyStatusSync} role="group" aria-label={t('subagents.policy.sync')}>
               {/* Why dirty blocks the sync: the gateway merges the PERSISTED
                * config (`bridge.source()`), never this card's draft — so the
-               * title filter above and the written allowlist would disagree. */}
+               * title filter above and the written allowlist would disagree.
+               * A disabled button is skipped in keyboard navigation, so the
+               * hint is a polite live region AND the button's described-by
+               * target: the reason is reachable without tabbing to the hint. */}
               <button
                 type="button"
                 className={css.outlineButton}
                 disabled={!writable || syncStatus === 'pending' || subDirty || mainDirty}
+                aria-describedby={subDirty || mainDirty ? 'fallbacks-policy-sync-dirty' : undefined}
                 onClick={syncAllowlist}
               >
                 {t('subagents.policy.sync')}
               </button>
               {(subDirty || mainDirty) && (
-                <span className={css.policyStatusWarn}>{t('subagents.policy.sync.dirty')}</span>
+                <span id="fallbacks-policy-sync-dirty" role="status" className={css.policyStatusWarn}>
+                  {t('subagents.policy.sync.dirty')}
+                </span>
               )}
               {syncStatus === 'ok' && (
                 <span className={css.policyStatusLine}>{t('subagents.policy.sync.done')}</span>
