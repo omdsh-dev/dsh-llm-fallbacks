@@ -3599,6 +3599,56 @@ describe('FallbacksCard host-policy status (plan dsh-012-subagent-routing T5 / s
     expect(screen.queryByText(en['subagents.policy.recommend'])).toBeNull()
     expect(screen.getByText(en['subagents.policy.sync.done'])).toBeTruthy()
   })
+
+  // The gateway merges the PERSISTED config (`bridge.source()`), never the
+  // card draft: with unsaved chain edits the title filter and the written
+  // allowlist would disagree, so the button is dirty-gated.
+  it('disables the sync button while role-chain edits are unsaved, and re-enables it after the sub save', async () => {
+    const { view, props } = await mountCard({
+      config: SYNC_CONFIG,
+      subagentPolicy: { state: 'enabled', allowedModels: [ALLOWED_ROUTE] },
+    })
+    view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
+    expect((screen.getByRole('button', { name: en['subagents.policy.sync'] }) as HTMLButtonElement).disabled).toBe(false)
+    expect(screen.queryByText(en['subagents.policy.sync.dirty'])).toBeNull()
+
+    // A chain edit: clearing the first role selector's provider drops that
+    // entry from the draft, so the draft no longer equals the accepted roles.
+    expandAllRoles()
+    view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
+    const rolesGroup = screen.getByText(en['roles.list.label']).closest('[role="group"]') as HTMLElement
+    const provider = rolesGroup.querySelector('[data-selector-row] select') as HTMLSelectElement
+    fireEvent.change(provider, { target: { value: '' } })
+    view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
+    expect((screen.getByRole('button', { name: en['subagents.policy.sync'] }) as HTMLButtonElement).disabled).toBe(true)
+    expect(screen.getByText(en['subagents.policy.sync.dirty'])).toBeTruthy()
+
+    // The sub save persists the draft; the reseed makes the button usable again.
+    fireEvent.click(saveButton('sub'))
+    await waitFor(() => {
+      expect((screen.getByRole('button', { name: en['subagents.policy.sync'] }) as HTMLButtonElement).disabled).toBe(false)
+    })
+    expect(screen.queryByText(en['subagents.policy.sync.dirty'])).toBeNull()
+  })
+
+  it('disables the sync button while the root chain is edited, and re-enables it after the main save', async () => {
+    const { view, props } = await mountCard({
+      config: SYNC_CONFIG,
+      subagentPolicy: { state: 'enabled', allowedModels: [ALLOWED_ROUTE] },
+    })
+    view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
+    // Switching the all-day tail Flash → Pro rewrites the root chain (mainDirty).
+    fireEvent.click(proRadio())
+    view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
+    expect((screen.getByRole('button', { name: en['subagents.policy.sync'] }) as HTMLButtonElement).disabled).toBe(true)
+    expect(screen.getByText(en['subagents.policy.sync.dirty'])).toBeTruthy()
+
+    fireEvent.click(saveButton('main'))
+    await waitFor(() => {
+      expect((screen.getByRole('button', { name: en['subagents.policy.sync'] }) as HTMLButtonElement).disabled).toBe(false)
+    })
+    expect(screen.queryByText(en['subagents.policy.sync.dirty'])).toBeNull()
+  })
 })
 
 

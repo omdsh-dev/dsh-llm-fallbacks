@@ -2175,14 +2175,20 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
               )}
             </div>
             <div className={css.policyStatusSync} role="group" aria-label={t('subagents.policy.sync')}>
+              {/* Why dirty blocks the sync: the gateway merges the PERSISTED
+               * config (`bridge.source()`), never this card's draft — so the
+               * title filter above and the written allowlist would disagree. */}
               <button
                 type="button"
                 className={css.outlineButton}
-                disabled={!writable || syncStatus === 'pending'}
+                disabled={!writable || syncStatus === 'pending' || subDirty || mainDirty}
                 onClick={syncAllowlist}
               >
                 {t('subagents.policy.sync')}
               </button>
+              {(subDirty || mainDirty) && (
+                <span className={css.policyStatusWarn}>{t('subagents.policy.sync.dirty')}</span>
+              )}
               {syncStatus === 'ok' && (
                 <span className={css.policyStatusLine}>{t('subagents.policy.sync.done')}</span>
               )}

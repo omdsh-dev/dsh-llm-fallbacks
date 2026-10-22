@@ -86,6 +86,7 @@ export const zh = {
   'subagents.policy.sync': '同步到宿主允许列表',
   'subagents.policy.sync.done': '已同步：精确条目（角色链、默认降级链与 FallbacksChain/Auto）已写入允许列表；通配条目不展开、不同步',
   'subagents.policy.sync.failed': '同步失败：宿主设置未写入（策略未启用、条目不可配置或版本冲突等宿主拒绝），请检查宿主设置',
+  'subagents.policy.sync.dirty': '角色链或默认降级链有未保存的修改 — 请先保存再同步（同步只写入已保存的配置）',
   // Time-slot rows (plan fallbacks-timeslots Task 3; PR #62 feedback
   // round): the extra-row list sits under the 主代理 section; preset
   // Timezone picker lives inside expanded custom rows only; preset
@@ -262,6 +263,10 @@ export const zh = {
   // the LATEST recorded request's (the host `modelSelection` projection) — not
   // the dispatch-time route — and the label says so (plan Task 3b).
   'subagentRole.hover': '{role} → {model}（最近一次请求的路由）',
+  // Session-header subagent role/model list (plan subagent-role-model T1): the
+  // summary carries only the count — each row names one child plus whatever
+  // facts (role / model) its projection carries.
+  'subagentRoles.summary': '角色 / 模型（{count}）',
   'defaults.prefix': '默认值',
   'save': '保存',
   'save.saving': '保存中…',
@@ -344,6 +349,7 @@ export const en = {
   'subagents.policy.sync': 'Sync to host allowlist',
   'subagents.policy.sync.done': 'Synced: exact entries (role chains, default fallback chain and FallbacksChain/Auto) are now allowed; wildcard entries are not expanded or synced',
   'subagents.policy.sync.failed': 'Sync failed: the host settings were not written (policy off, entry not configurable, revision conflict or another host refusal) — check the host settings',
+  'subagents.policy.sync.dirty': 'Unsaved role-chain or default-chain edits — save first, then sync (the sync writes the saved configuration only)',
   // Time-slot rows: extra-row list under Main agent. Timezone picker
   // lives inside expanded custom rows only; preset windows stay UTC+8.
   'timeSlots.label': 'Time slots',
@@ -509,6 +515,8 @@ export const en = {
   // Session-header subagent role badge (plan subagent-role-badge T3; the route
   // label is plan Task 3b's "latest request route" semantics).
   'subagentRole.hover': '{role} → {model} (latest request route)',
+  // Session-header subagent role/model list (plan subagent-role-model T1).
+  'subagentRoles.summary': 'Roles / models ({count})',
   'defaults.prefix': 'Default',
   'save': 'Save',
   'save.saving': 'Saving…',
