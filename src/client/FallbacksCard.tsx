@@ -1134,6 +1134,12 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
   // silent); its feedback is card-local, so a refused call never turns into
   // the card-top load-error banner.
   const [syncStatus, setSyncStatus] = useState<'idle' | 'pending' | 'ok' | 'error'>('idle')
+  // The dirty hint's live region: rendered ALWAYS (clean = empty text) so the
+  // region pre-exists the clean→dirty mutation — a `role="status"` element
+  // inserted together with its text is not announced. Same instance-id
+  // pattern as the row hint (`useId` + colon strip — the colons are not valid
+  // in a CSS/DOM id reference on every platform).
+  const syncDirtyHintId = `fallbacks-policy-sync-dirty-${useId().replace(/:/g, '')}`
   const syncAllowlist = (): void => {
     setSyncStatus('pending')
     void controller.syncAllowlist().then(ok => { setSyncStatus(ok ? 'ok' : 'error') })
@@ -2180,21 +2186,20 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                * title filter above and the written allowlist would disagree.
                * A disabled button is skipped in keyboard navigation, so the
                * hint is a polite live region AND the button's described-by
-               * target: the reason is reachable without tabbing to the hint. */}
+               * target. The region is rendered ALWAYS (clean = empty text):
+               * inserting it together with its text would not announce. */}
               <button
                 type="button"
                 className={css.outlineButton}
                 disabled={!writable || syncStatus === 'pending' || subDirty || mainDirty}
-                aria-describedby={subDirty || mainDirty ? 'fallbacks-policy-sync-dirty' : undefined}
+                aria-describedby={subDirty || mainDirty ? syncDirtyHintId : undefined}
                 onClick={syncAllowlist}
               >
                 {t('subagents.policy.sync')}
               </button>
-              {(subDirty || mainDirty) && (
-                <span id="fallbacks-policy-sync-dirty" role="status" className={css.policyStatusWarn}>
-                  {t('subagents.policy.sync.dirty')}
-                </span>
-              )}
+              <span id={syncDirtyHintId} role="status" className={css.policyStatusWarn}>
+                {subDirty || mainDirty ? t('subagents.policy.sync.dirty') : ''}
+              </span>
               {syncStatus === 'ok' && (
                 <span className={css.policyStatusLine}>{t('subagents.policy.sync.done')}</span>
               )}

@@ -3603,17 +3603,28 @@ describe('FallbacksCard host-policy status (plan dsh-012-subagent-routing T5 / s
   // The gateway merges the PERSISTED config (`bridge.source()`), never the
   // card draft: with unsaved chain edits the title filter and the written
   // allowlist would disagree, so the button is dirty-gated.
+  //
+  // The reason rides an ALWAYS-rendered `role="status"` region (clean = empty
+  // text): a live region inserted together with its text is not announced, and
+  // a disabled button is skipped in keyboard navigation, so the region — not
+  // just `aria-describedby` — has to carry the reason.
+  const syncButton = (): HTMLButtonElement =>
+    screen.getByRole('button', { name: en['subagents.policy.sync'] }) as HTMLButtonElement
+  const syncGroup = (): HTMLElement =>
+    screen.getByRole('group', { name: en['subagents.policy.sync'] })
+  const dirtyHint = (): HTMLElement => within(syncGroup()).getByRole('status')
+
   it('disables the sync button while role-chain edits are unsaved, and re-enables it after the sub save', async () => {
     const { view, props } = await mountCard({
       config: SYNC_CONFIG,
       subagentPolicy: { state: 'enabled', allowedModels: [ALLOWED_ROUTE] },
     })
     view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
-    const syncButton = (): HTMLButtonElement =>
-      screen.getByRole('button', { name: en['subagents.policy.sync'] }) as HTMLButtonElement
     expect(syncButton().disabled).toBe(false)
+    // Clean: the live region pre-exists with empty text, and the button
+    // carries no description.
+    expect(dirtyHint().textContent).toBe('')
     expect(syncButton().hasAttribute('aria-describedby')).toBe(false)
-    expect(screen.queryByText(en['subagents.policy.sync.dirty'])).toBeNull()
 
     // A chain edit: clearing the first role selector's provider drops that
     // entry from the draft, so the draft no longer equals the accepted roles.
@@ -3624,22 +3635,19 @@ describe('FallbacksCard host-policy status (plan dsh-012-subagent-routing T5 / s
     fireEvent.change(provider, { target: { value: '' } })
     view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
     expect(syncButton().disabled).toBe(true)
-    // A disabled button is skipped in keyboard navigation: the reason is
-    // announced through the hint's live region and bound as its description.
-    const hintedBy = syncButton().getAttribute('aria-describedby')
-    expect(hintedBy).toBe('fallbacks-policy-sync-dirty')
-    const hint = document.getElementById(hintedBy!)
-    expect(hint).not.toBeNull()
-    expect(hint!.getAttribute('role')).toBe('status')
-    expect(hint!.textContent).toBe(en['subagents.policy.sync.dirty'])
+    // Dirty: the SAME region gets the text and the button points at it.
+    const hintId = dirtyHint().id
+    expect(hintId).not.toBe('')
+    expect(dirtyHint().textContent).toBe(en['subagents.policy.sync.dirty'])
+    expect(syncButton().getAttribute('aria-describedby')).toBe(hintId)
 
     // The sub save persists the draft; the reseed makes the button usable again.
     fireEvent.click(saveButton('sub'))
     await waitFor(() => {
       expect(syncButton().disabled).toBe(false)
     })
+    expect(dirtyHint().textContent).toBe('')
     expect(syncButton().hasAttribute('aria-describedby')).toBe(false)
-    expect(screen.queryByText(en['subagents.policy.sync.dirty'])).toBeNull()
   })
 
   it('disables the sync button while the root chain is edited, and re-enables it after the main save', async () => {
@@ -3648,23 +3656,21 @@ describe('FallbacksCard host-policy status (plan dsh-012-subagent-routing T5 / s
       subagentPolicy: { state: 'enabled', allowedModels: [ALLOWED_ROUTE] },
     })
     view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
-    const syncButton = (): HTMLButtonElement =>
-      screen.getByRole('button', { name: en['subagents.policy.sync'] }) as HTMLButtonElement
+    expect(dirtyHint().textContent).toBe('')
     expect(syncButton().hasAttribute('aria-describedby')).toBe(false)
     // Switching the all-day tail Flash → Pro rewrites the root chain (mainDirty).
     fireEvent.click(proRadio())
     view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
     expect(syncButton().disabled).toBe(true)
-    expect(syncButton().getAttribute('aria-describedby')).toBe('fallbacks-policy-sync-dirty')
-    expect(document.getElementById('fallbacks-policy-sync-dirty')!.textContent)
-      .toBe(en['subagents.policy.sync.dirty'])
+    expect(dirtyHint().textContent).toBe(en['subagents.policy.sync.dirty'])
+    expect(syncButton().getAttribute('aria-describedby')).toBe(dirtyHint().id)
 
     fireEvent.click(saveButton('main'))
     await waitFor(() => {
       expect(syncButton().disabled).toBe(false)
     })
+    expect(dirtyHint().textContent).toBe('')
     expect(syncButton().hasAttribute('aria-describedby')).toBe(false)
-    expect(screen.queryByText(en['subagents.policy.sync.dirty'])).toBeNull()
   })
 })
 
