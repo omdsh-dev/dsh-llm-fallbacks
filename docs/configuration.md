@@ -194,15 +194,22 @@ Inject and failure-switch **selection** are unchanged from 0.3.5: no allowlist f
 
 This rule applies whether the host policy is on or off (adoption, not policy-gated).
 
-### Card status area (read-only)
+### Card: filtered titles, policy hint and the explicit sync button
 
-The Fallbacks card Subagents section (`#fallbacks-subagents`) gains a **read-only** host-policy status area fed by the same runtime reader the override paths use (gateway `/api/fallbacks/get`, additive `subagentPolicy` field — old readers tolerate its absence; `set`/`reset` reject it as a config key):
+The Fallbacks card Subagents section (`#fallbacks-subagents`) gains a host-policy status area fed by the same runtime reader the override paths use (gateway `/api/fallbacks/get`, additive `subagentPolicy` field — old readers tolerate its absence; `set`/`reset` reject it as a config key):
 
 - **enabled**: the allowlist routes (each `provider/model`), the effective chain head with its source label (`authorized` / `injected`) once one is recorded, and — when a switch was blocked — the empty-intersection warning (`No in-allowlist fallback candidate — switch skipped`). Enabled without a recorded head yet → allowlist shown, head line omitted.
 - **unprovable**: a distinct warning line (`Policy present but unreadable — plugin switches disabled`), never an active allowlist.
-- **disabled / absent**: the status area is hidden — never an active allowlist.
+- **disabled / absent**: the status area and every allowlist-visibility addition are hidden — never an active allowlist.
 
-Roles/rules editors stay editable; the status area is never a second write-face. zh is the locale key-set source of truth with en twins (`subagents.policy.*`).
+While enabled, the card also makes the allowlist's effect visible and actionable:
+
+- **Filtered role-card titles**: the collapsed role header's chain summary drops exact entries that are not on the allowlist; wildcard entries stay (their resolved routes are unknown client-side). The visible summary and its `title` tooltip both use the filtered string.
+- **Cut-count hint**: a line reports how many selected exact role-chain entries are outside the allowlist.
+- **Virtual-route recommendation**: `FallbacksChain/Auto` is recommended only while the allowlist does not already carry that exact route.
+- **Sync button**: "sync to host allowlist" — disabled when the store is not writable — merges the CURRENT allowlist with every exact `provider/model` route in `roles.list[].chain` and `rootChain` plus `FallbacksChain/Auto`, de-duplicated by exact provider+model (the current allowlist first, first-seen order), and writes **only** `allowedModels` (never `enabled`) through the host settings service (`settings.mutate`). Wildcard entries are never expanded or written. The card shows success/failure and the refreshed post-write snapshot. **The button click is the only trigger: nothing writes the host allowlist silently or automatically.**
+
+Roles/rules editors stay editable. zh is the locale key-set source of truth with en twins (`subagents.policy.*`).
 
 ## FallbacksChain in the model picker (root primary)
 

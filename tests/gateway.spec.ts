@@ -1388,3 +1388,137 @@ describe('subagentPolicy wire projection (plan dsh-012 T5 fix round 1)', () => {
     expect(ctx.settings.describe().find((d) => d.ns === FALLBACKS_PROFILE_ENTRY)?.user).toBeUndefined()
   })
 })
+
+// ---------------------------------------------------------------------------
+// syncAllowlist (plan role-chain-allowlist-visibility T1)
+// ---------------------------------------------------------------------------
+
+describe('syncAllowlist (explicit host-allowlist write)', () => {
+  const POLICY_NS = 'subagent-model-selection-settings'
+
+  /** A snapshot reading the allowlist the gateway writes (fresh post-write). */
+  function policySnapshotOf(
+    ctx: Context,
+    state: 'enabled' | 'disabled' | 'unprovable' = 'enabled',
+  ): SubagentPolicySnapshotFn {
+    return () => {
+      if (state !== 'enabled') return { policy: { state } }
+      const stored = (ctx.settings as unknown as MemorySettings).get(POLICY_NS as never)
+      const allowed = Array.isArray(stored?.allowedModels) ? stored.allowedModels : []
+      return { policy: { state: 'enabled', allowedModels: allowed as { provider: string; model: string }[] } }
+    }
+  }
+
+  const SYNC_ENTRY = entryConfig({
+    rootChain: ['openai/gpt-4o', OFFICIAL_FLASH],
+    roles: {
+      list: [
+        { id: 'reviewer', persona: '', chain: ['openai/gpt-4o', 'anthropic/claude-3-5-sonnet', 'zai/*'], fallback: 'none' },
+        { id: 'coder', persona: '', chain: ['zai/glm-4'], fallback: 'inherit-root' },
+      ],
+      rules: [],
+    },
+  })
+
+  /** Wire the gateway with a settings double pre-seeded with one allowed route. */
+  async function mountEnabled(ctx: Context): Promise<FallbacksConfigGateway> {
+    await ctx.plugin(MemorySettings)
+    ;(ctx.settings as unknown as MemorySettings).seed(POLICY_NS as never, {
+      allowedModels: [{ provider: 'policy-test', model: 'alpha' }],
+    })
+    const gateway = new FallbacksConfigGateway(
+      ctx,
+      installFallbacksBridge(ctx, SYNC_ENTRY),
+      makeSeeds(),
+      policySnapshotOf(ctx),
+    )
+    await waitRegistered(ctx)
+    await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
+    return gateway
+  }
+
+  it('merges the current allowlist with exact role/root routes plus the virtual route (deduped, first-seen order)', async () => {
+    const ctx = track(new Context())
+    const gateway = await mountEnabled(ctx)
+
+    const result = await gateway.syncAllowlist()
+
+    const expected = [
+      { provider: 'policy-test', model: 'alpha' },
+      { provider: 'openai', model: 'gpt-4o' },
+      { provider: 'anthropic', model: 'claude-3-5-sonnet' },
+      { provider: 'zai', model: 'glm-4' },
+      { provider: 'deepseek-official', model: 'deepseek-flash' },
+      { provider: 'FallbacksChain', model: 'Auto' },
+    ]
+    const stored = (ctx.settings as unknown as MemorySettings).get(POLICY_NS as never)!
+    // Only `allowedModels` is written — never `enabled`.
+    expect(Object.keys(stored)).toEqual(['allowedModels'])
+    expect(stored.allowedModels).toEqual(expected)
+    // The wildcard `zai/*` was skipped and the duplicate `openai/gpt-4o`
+    // appears once. The response carries the fresh post-write snapshot.
+    expect(result.subagentPolicy).toEqual({ state: 'enabled', allowedModels: expected })
+  })
+
+  it('refuses when the policy is disabled — and writes nothing', async () => {
+    const ctx = track(new Context())
+    await ctx.plugin(MemorySettings)
+    const gateway = new FallbacksConfigGateway(
+      ctx,
+      installFallbacksBridge(ctx, SYNC_ENTRY),
+      makeSeeds(),
+      policySnapshotOf(ctx, 'disabled'),
+    )
+    await waitRegistered(ctx)
+    await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
+
+    await expect(gateway.syncAllowlist()).rejects.toThrow(/disabled/)
+    expect((ctx.settings as unknown as MemorySettings).get(POLICY_NS as never)).toBeUndefined()
+  })
+
+  it('refuses when the policy is unprovable — and writes nothing', async () => {
+    const ctx = track(new Context())
+    await ctx.plugin(MemorySettings)
+    const gateway = new FallbacksConfigGateway(
+      ctx,
+      installFallbacksBridge(ctx, SYNC_ENTRY),
+      makeSeeds(),
+      policySnapshotOf(ctx, 'unprovable'),
+    )
+    await waitRegistered(ctx)
+    await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
+
+    await expect(gateway.syncAllowlist()).rejects.toThrow(/unprovable/)
+    expect((ctx.settings as unknown as MemorySettings).get(POLICY_NS as never)).toBeUndefined()
+  })
+
+  it('refuses when no live policy snapshot is wired', async () => {
+    const ctx = track(new Context())
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, SYNC_ENTRY), makeSeeds())
+    await expect(gateway.syncAllowlist()).rejects.toThrow(/subagent policy is unavailable/)
+  })
+
+  it('throws the KD-G5 settings-unavailable error when no settings service is composed', async () => {
+    const ctx = track(new Context())
+    const gateway = new FallbacksConfigGateway(
+      ctx,
+      installFallbacksBridge(ctx, SYNC_ENTRY),
+      makeSeeds(),
+      () => ({ policy: { state: 'enabled', allowedModels: [] } }),
+    )
+    await expect(gateway.syncAllowlist()).rejects.toThrow(/settings service is unavailable/)
+  })
+
+  it('registers the fallbacks/sync-allowlist typert invocation (no parameters, src-json result)', () => {
+    const invocation = fallbacksTypertContribution().invocations
+      .find(entry => entry.method === 'sync-allowlist')
+    expect(invocation).toMatchObject({
+      id: 'dsh-llm-fallbacks#fallbacks/sync-allowlist',
+      service: 'fallbacks',
+      namespace: 'fallbacks',
+      implementation: 'syncAllowlist',
+      parameters: [],
+      result: { mode: 'src-json' },
+    })
+  })
+})

@@ -74,6 +74,7 @@ import { Config } from './schema'
 import { detectLegacyKeys } from './config'
 import type { FallbacksConfig } from './config'
 import { PRESETS, isAllDayConforming } from './time-slots'
+import { parseSelector } from './selectors'
 import type { FallbacksSeedManager, SeedRevertOutcome, SeedsIo, SeedsWireStatus } from './seeds'
 
 /**
@@ -100,6 +101,16 @@ export const FALLBACKS_PROFILE_ENTRY = 'llm-fallbacks'
 
 /** One exact child LLM route on the additive `subagentPolicy` wire field (T5). */
 export type SubagentPolicyRoute = { provider: string; model: string }
+
+/** Settings namespace of the host's subagent-model-selection policy. */
+const SUBAGENT_POLICY_SETTINGS_NS = 'subagent-model-selection-settings'
+
+/**
+ * The virtual all-fallbacks route the host carve-out recognizes
+ * (`docs/features.md`): a subagent explicitly spawned on it is not
+ * allowlist-filtered internally, so the sync always includes it.
+ */
+const VIRTUAL_ALL_ROUTE: SubagentPolicyRoute = { provider: 'FallbacksChain', model: 'Auto' }
 
 /**
  * Additive `/api/fallbacks/get` host-policy snapshot (spec D4 / T5).
@@ -407,6 +418,41 @@ export class FallbacksConfigGateway extends TypertRemoteService {
   }
 
   /**
+   * Merge the CURRENT host allowlist with the exact routes configured in this
+   * plugin's chains (every `roles.list[].chain` entry plus `rootChain`), plus
+   * the virtual `FallbacksChain/Auto` route. De-duplicated by exact
+   * provider+model with first-seen order kept (the current allowlist first).
+   * Wildcard (`provider/*`) and unparseable entries are skipped — never
+   * expanded into routes. This is the only allowlist write face; it runs
+   * exclusively from the explicit card button (never silently) and writes
+   * ONLY `allowedModels` — never `enabled`.
+   * @returns the post-write read result (the fresh `subagentPolicy` snapshot
+   *   reflects the new allowlist).
+   * @throws when no live policy snapshot is wired, the policy is not proven
+   *   enabled (`disabled` / `unprovable`), or no settings service is composed
+   *   (KD-G5: no allowlist write without a proven-enabled policy).
+   */
+  async syncAllowlist(): Promise<FallbacksReadResult> {
+    const snapshot = this.subagentPolicy
+    if (snapshot === undefined) {
+      throw new Error('fallbacks: subagent policy is unavailable — allowlist cannot be synced')
+    }
+    const { policy } = snapshot()
+    if (policy.state !== 'enabled') {
+      throw new Error(`fallbacks: subagent policy is ${policy.state} — allowlist cannot be synced`)
+    }
+    const settings = this.settings
+    if (settings === undefined) {
+      throw new Error('fallbacks: settings service is unavailable — configuration cannot be written')
+    }
+    const merged = mergedAllowlist(policy.allowedModels, this.bridge.source())
+    await settings.mutate(SUBAGENT_POLICY_SETTINGS_NS, [
+      { op: 'set', path: ['allowedModels'], value: merged },
+    ])
+    return this.readResult()
+  }
+
+  /**
    * Read the live composed config and normalize it to the typertGateway JSON
    * wire boundary. Containment (guide §10): a malformed stored patch section
    * that the non-strict settings schema let through (e.g. an unknown key)
@@ -473,6 +519,43 @@ export class FallbacksConfigGateway extends TypertRemoteService {
       },
     }
   }
+}
+
+/**
+ * Build the synced allowlist: the current allowlist first, then every exact
+ * route from the configured role chains and `rootChain`, then the virtual
+ * `FallbacksChain/Auto` route. Wildcards are not routes and unparseable
+ * entries are skipped (the selector parser is the single grammar authority).
+ */
+function mergedAllowlist(
+  allowedModels: readonly SubagentPolicyRoute[],
+  source: FallbacksConfig,
+): SubagentPolicyRoute[] {
+  const merged: SubagentPolicyRoute[] = []
+  const seen = new Set<string>()
+  const push = (route: SubagentPolicyRoute): void => {
+    const key = `${route.provider}/${route.model}`
+    if (seen.has(key)) return
+    seen.add(key)
+    merged.push({ provider: route.provider, model: route.model })
+  }
+  for (const route of allowedModels) push(route)
+  const entries = [
+    ...source.roles.list.flatMap((role) => role.chain ?? []),
+    ...source.rootChain,
+  ]
+  for (const entry of entries) {
+    let parsed
+    try {
+      parsed = parseSelector(entry)
+    } catch {
+      continue
+    }
+    if (parsed.model === undefined) continue
+    push({ provider: parsed.provider, model: parsed.model })
+  }
+  push(VIRTUAL_ALL_ROUTE)
+  return merged
 }
 
 /**
@@ -752,6 +835,19 @@ export function fallbacksTypertContribution(): TypertContribution {
         parameters: [
           { name: 'id', wire: 'id', source: 'json', codec: { mode: 'src-json' } },
         ],
+        result: { mode: 'src-json' },
+      },
+      {
+        // Explicit allowlist sync (plan role-chain-allowlist-visibility T1):
+        // the only allowlist write face — user-clicked, never silent. Same
+        // hyphenated-method / implementation-alias shape as revert-seed.
+        id: 'dsh-llm-fallbacks#fallbacks/sync-allowlist',
+        service: 'fallbacks',
+        namespace: 'fallbacks',
+        method: 'sync-allowlist',
+        implementation: 'syncAllowlist',
+        invocation: { kind: 'direct' },
+        parameters: [],
         result: { mode: 'src-json' },
       },
     ],

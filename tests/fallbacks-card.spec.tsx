@@ -161,6 +161,7 @@ interface Scripted {
   get: Mock
   set: Mock
   reset: Mock
+  sync: Mock
   describe: Mock
 }
 
@@ -233,11 +234,19 @@ function scriptedApi(options: {
     current = defaultFallbacksConfig
     return Promise.resolve(okResult({ config: current }))
   })
+  // The explicit allowlist sync (plan role-chain-allowlist-visibility T2):
+  // the fixture default is a no-op read-back; a spec rewrites the mock to
+  // serve the refreshed post-write snapshot.
+  const sync = vi.fn(() => Promise.resolve(okResult({
+    config: current,
+    ...(options.subagentPolicy === undefined ? {} : { subagentPolicy: options.subagentPolicy }),
+  })))
   const call = vi.fn((channel: string, endpoint: string, payload: unknown) => {
     if (channel !== '/api') throw new Error(`test: unexpected channel ${channel}`)
     if (endpoint === 'fallbacks/get') return get()
     if (endpoint === 'fallbacks/set') return set(payload as { args: { patch: typeof defaultFallbacksConfig } })
     if (endpoint === 'fallbacks/reset') return reset()
+    if (endpoint === 'fallbacks/sync-allowlist') return sync()
     throw new Error(`test: unexpected endpoint ${endpoint}`)
   })
   return {
@@ -247,7 +256,7 @@ function scriptedApi(options: {
       session: { modelCatalog: models, follow: history },
     } as unknown as FallbacksRemote,
     rpc: { call } as unknown as ClientConnectionRpc,
-    call, get, set, reset, describe,
+    call, get, set, reset, sync, describe,
   }
 }
 
@@ -3478,6 +3487,117 @@ describe('FallbacksCard host-policy status (plan dsh-012-subagent-routing T5 / s
     view.rerender(<FallbacksCard {...props} />)
     expect(screen.getByText(`${en['subagents.policy.allowlist']}: policy-test/alpha`)).toBeTruthy()
     expect(screen.queryByText(en['subagents.policy.head'], { exact: false })).toBeNull()
+  })
+
+  // Allowlist visibility + explicit sync (plan role-chain-allowlist-visibility
+  // T2): the role title hides exact entries the policy cannot use, the
+  // subagents block reports the cut count, recommends the virtual carve-out
+  // route when absent, and offers the one explicit write button.
+  const VIRTUAL_ROUTE = { provider: 'FallbacksChain', model: 'Auto' }
+  const ALLOWED_ROUTE = { provider: 'openai', model: 'gpt-4o' }
+  const CUT_ROUTE = { provider: 'anthropic', model: 'claude-3-5-sonnet' }
+
+  /** Two role chains: one exact pair plus a wildcard sibling (never expanded). */
+  const SYNC_CONFIG: typeof defaultFallbacksConfig = {
+    ...BASE_CONFIG,
+    rootChain: [OFFICIAL_FLASH],
+    roles: {
+      list: [
+        { id: 'coder', persona: '', chain: ['openai/gpt-4o', 'anthropic/claude-3-5-sonnet'], fallback: 'inherit-root' },
+        { id: 'wild', persona: '', chain: ['zai/*'], fallback: 'none' },
+      ],
+      rules: [],
+    },
+  }
+
+  /** The collapsed role-card headers, in declared order. */
+  function roleHeaders(): HTMLElement[] {
+    const group = screen.getByText(en['roles.list.label']).closest('[role="group"]') as HTMLElement
+    return within(group).getAllByRole('button', { name: en['roles.expand'] })
+  }
+
+  it('policy-on filters the role title, keeps wildcards, and reports the cut count', async () => {
+    const { view, props } = await mountCard({
+      config: SYNC_CONFIG,
+      subagentPolicy: { state: 'enabled', allowedModels: [ALLOWED_ROUTE] },
+    })
+    view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
+    // The cut exact entry is gone from both the visible meta and its title.
+    const meta = within(roleHeaders()[0]!).getByText('openai/gpt-4o')
+    expect(meta.getAttribute('title')).toBe('openai/gpt-4o')
+    expect(within(roleHeaders()[0]!).queryByText(/anthropic\/claude-3-5-sonnet/)).toBeNull()
+    // A wildcard entry is not an exact route: it survives filtering.
+    expect(within(roleHeaders()[1]!).getByText('zai/*')).toBeTruthy()
+    // Exactly one selected exact role entry is outside the allowlist.
+    expect(screen.getByText(interpolatingT('subagents.policy.offAllowlist', { count: '1' }))).toBeTruthy()
+    // The virtual carve-out route is absent → it is recommended.
+    expect(screen.getByText(en['subagents.policy.recommend'])).toBeTruthy()
+    expect(screen.getByRole('button', { name: en['subagents.policy.sync'] })).toBeTruthy()
+  })
+
+  it('policy-off / absent keeps the unfiltered title and renders none of the new UI', async () => {
+    const { view, props } = await mountCard({ config: SYNC_CONFIG })
+    view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
+    const meta = within(roleHeaders()[0]!).getByText('openai/gpt-4o > anthropic/claude-3-5-sonnet')
+    expect(meta.getAttribute('title')).toBe('openai/gpt-4o > anthropic/claude-3-5-sonnet')
+    expect(screen.queryByText(interpolatingT('subagents.policy.offAllowlist', { count: '1' }))).toBeNull()
+    expect(screen.queryByText(en['subagents.policy.recommend'])).toBeNull()
+    expect(screen.queryByRole('button', { name: en['subagents.policy.sync'] })).toBeNull()
+    cleanup()
+
+    const disabled = await mountCard({ config: SYNC_CONFIG, subagentPolicy: { state: 'disabled' } })
+    disabled.view.rerender(<FallbacksCard {...disabled.props} t={interpolatingT} />)
+    expect(within(roleHeaders()[0]!).getByText('openai/gpt-4o > anthropic/claude-3-5-sonnet')).toBeTruthy()
+    expect(screen.queryByText(interpolatingT('subagents.policy.offAllowlist', { count: '1' }))).toBeNull()
+    expect(screen.queryByText(en['subagents.policy.recommend'])).toBeNull()
+    expect(screen.queryByRole('button', { name: en['subagents.policy.sync'] })).toBeNull()
+  })
+
+  it('recommends FallbacksChain/Auto only while the allowlist lacks that exact route', async () => {
+    const { view, props } = await mountCard({
+      config: SYNC_CONFIG,
+      subagentPolicy: { state: 'enabled', allowedModels: [ALLOWED_ROUTE, VIRTUAL_ROUTE] },
+    })
+    view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
+    expect(screen.queryByText(en['subagents.policy.recommend'])).toBeNull()
+    // The cut count still reports the exact entry the policy drops.
+    expect(screen.getByText(interpolatingT('subagents.policy.offAllowlist', { count: '1' }))).toBeTruthy()
+  })
+
+  it('the sync button is disabled in a read-only store', async () => {
+    const { view, props } = await mountCard({
+      config: SYNC_CONFIG,
+      writable: false,
+      subagentPolicy: { state: 'enabled', allowedModels: [ALLOWED_ROUTE] },
+    })
+    view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
+    expect((screen.getByRole('button', { name: en['subagents.policy.sync'] }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('the sync button calls the endpoint and the card shows the refreshed allowlist', async () => {
+    const { view, props, scripted } = await mountCard({
+      config: SYNC_CONFIG,
+      subagentPolicy: { state: 'enabled', allowedModels: [ALLOWED_ROUTE] },
+    })
+    view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
+    expect(screen.getByText(en['subagents.policy.recommend'])).toBeTruthy()
+    // The refreshed post-write snapshot: the union the gateway returns.
+    scripted.sync.mockImplementation(() => Promise.resolve(okResult({
+      config: SYNC_CONFIG,
+      subagentPolicy: { state: 'enabled', allowedModels: [ALLOWED_ROUTE, CUT_ROUTE, VIRTUAL_ROUTE] },
+    })))
+    fireEvent.click(screen.getByRole('button', { name: en['subagents.policy.sync'] }))
+    await waitFor(() => {
+      expect(screen.getByText(
+        `${en['subagents.policy.allowlist']}: openai/gpt-4o, anthropic/claude-3-5-sonnet, FallbacksChain/Auto`,
+      )).toBeTruthy()
+    })
+    expect(scripted.call).toHaveBeenCalledWith('/api', 'fallbacks/sync-allowlist', { args: {} })
+    // Post-sync: nothing is cut, the virtual route is on the list, and the
+    // card reports success.
+    expect(screen.queryByText(interpolatingT('subagents.policy.offAllowlist', { count: '1' }))).toBeNull()
+    expect(screen.queryByText(en['subagents.policy.recommend'])).toBeNull()
+    expect(screen.getByText(en['subagents.policy.sync.done'])).toBeTruthy()
   })
 })
 
