@@ -3358,6 +3358,18 @@ describe('FallbacksCard host-policy status (plan dsh-012-subagent-routing T5 / s
     blockedAttempt: { at: 1, route: BETA, reason: 'empty-intersection' },
   }
 
+  // The allowlist-visibility + sync controls (plan role-chain-allowlist-visibility
+  // T2): the trigger and its two ALWAYS-rendered live regions (dirty reason,
+  // sync outcome) live in the sync group; each region is empty when idle
+  // because a `role="status"` element inserted together with its text is not
+  // announced.
+  const syncButton = (): HTMLButtonElement =>
+    screen.getByRole('button', { name: en['subagents.policy.sync'] }) as HTMLButtonElement
+  const syncGroup = (): HTMLElement =>
+    screen.getByRole('group', { name: en['subagents.policy.sync'] })
+  const syncHint = (which: 'dirty' | 'outcome'): HTMLElement =>
+    syncGroup().querySelector(`[data-sync-hint="${which}"]`) as HTMLElement
+
   it('policy-on renders the allowlist, head/source, and empty-intersection warning', async () => {
     const { view, props } = await mountCard({
       config: BASE_CONFIG,
@@ -3581,12 +3593,26 @@ describe('FallbacksCard host-policy status (plan dsh-012-subagent-routing T5 / s
     })
     view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
     expect(screen.getByText(en['subagents.policy.recommend'])).toBeTruthy()
+    // The outcome live region pre-exists empty; the click fills it.
+    expect(syncHint('outcome').textContent).toBe('')
+    // A held promise keeps the click `pending`, proving the trigger stays
+    // focusable: disabling it would drop focus to the body mid-write.
+    let resolveSync: (value: RpcResult<unknown>) => void = () => {}
+    scripted.sync.mockImplementation(() => new Promise<RpcResult<unknown>>(resolve => { resolveSync = resolve }))
+    const button = syncButton()
+    button.focus()
+    fireEvent.click(button)
+    await waitFor(() => {
+      expect(button.getAttribute('aria-busy')).toBe('true')
+    })
+    expect(button.disabled).toBe(false)
+    expect(document.activeElement).toBe(button)
+    expect(syncHint('outcome').textContent).toBe('')
     // The refreshed post-write snapshot: the union the gateway returns.
-    scripted.sync.mockImplementation(() => Promise.resolve(okResult({
+    resolveSync(okResult({
       config: SYNC_CONFIG,
       subagentPolicy: { state: 'enabled', allowedModels: [ALLOWED_ROUTE, CUT_ROUTE, VIRTUAL_ROUTE] },
-    })))
-    fireEvent.click(screen.getByRole('button', { name: en['subagents.policy.sync'] }))
+    }))
     await waitFor(() => {
       expect(screen.getByText(
         `${en['subagents.policy.allowlist']}: openai/gpt-4o, anthropic/claude-3-5-sonnet, FallbacksChain/Auto`,
@@ -3594,26 +3620,37 @@ describe('FallbacksCard host-policy status (plan dsh-012-subagent-routing T5 / s
     })
     expect(scripted.call).toHaveBeenCalledWith('/api', 'fallbacks/sync-allowlist', { args: {} })
     // Post-sync: nothing is cut, the virtual route is on the list, and the
-    // card reports success.
+    // outcome region reports success.
     expect(screen.queryByText(interpolatingT('subagents.policy.offAllowlist', { count: '1' }))).toBeNull()
     expect(screen.queryByText(en['subagents.policy.recommend'])).toBeNull()
-    expect(screen.getByText(en['subagents.policy.sync.done'])).toBeTruthy()
+    expect(syncHint('outcome').textContent).toBe(en['subagents.policy.sync.done'])
+    expect(button.getAttribute('aria-busy')).toBeNull()
+  })
+
+  it('announces a refused sync and leaves the trigger usable', async () => {
+    const { view, props, scripted } = await mountCard({
+      config: SYNC_CONFIG,
+      subagentPolicy: { state: 'enabled', allowedModels: [ALLOWED_ROUTE] },
+    })
+    view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
+    expect(syncHint('outcome').textContent).toBe('')
+    scripted.sync.mockImplementation(() => Promise.resolve(failResult('host refused the write')))
+    fireEvent.click(syncButton())
+    await waitFor(() => {
+      expect(syncHint('outcome').textContent).toBe(en['subagents.policy.sync.failed'])
+    })
+    // A refused write must not look like a click that did nothing: the outcome
+    // region carries the failure and the trigger stays enabled.
+    expect(syncButton().disabled).toBe(false)
+    expect(syncButton().getAttribute('aria-busy')).toBeNull()
   })
 
   // The gateway merges the PERSISTED config (`bridge.source()`), never the
   // card draft: with unsaved chain edits the title filter and the written
-  // allowlist would disagree, so the button is dirty-gated.
-  //
-  // The reason rides an ALWAYS-rendered `role="status"` region (clean = empty
-  // text): a live region inserted together with its text is not announced, and
-  // a disabled button is skipped in keyboard navigation, so the region — not
-  // just `aria-describedby` — has to carry the reason.
-  const syncButton = (): HTMLButtonElement =>
-    screen.getByRole('button', { name: en['subagents.policy.sync'] }) as HTMLButtonElement
-  const syncGroup = (): HTMLElement =>
-    screen.getByRole('group', { name: en['subagents.policy.sync'] })
-  const dirtyHint = (): HTMLElement => within(syncGroup()).getByRole('status')
-
+  // allowlist would disagree, so the button is dirty-gated. The reason rides
+  // the always-rendered dirty live region; a disabled button is skipped in
+  // keyboard navigation, so the region — not just `aria-describedby` — has to
+  // carry it.
   it('disables the sync button while role-chain edits are unsaved, and re-enables it after the sub save', async () => {
     const { view, props } = await mountCard({
       config: SYNC_CONFIG,
@@ -3623,7 +3660,7 @@ describe('FallbacksCard host-policy status (plan dsh-012-subagent-routing T5 / s
     expect(syncButton().disabled).toBe(false)
     // Clean: the live region pre-exists with empty text, and the button
     // carries no description.
-    expect(dirtyHint().textContent).toBe('')
+    expect(syncHint('dirty').textContent).toBe('')
     expect(syncButton().hasAttribute('aria-describedby')).toBe(false)
 
     // A chain edit: clearing the first role selector's provider drops that
@@ -3636,9 +3673,9 @@ describe('FallbacksCard host-policy status (plan dsh-012-subagent-routing T5 / s
     view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
     expect(syncButton().disabled).toBe(true)
     // Dirty: the SAME region gets the text and the button points at it.
-    const hintId = dirtyHint().id
+    const hintId = syncHint('dirty').id
     expect(hintId).not.toBe('')
-    expect(dirtyHint().textContent).toBe(en['subagents.policy.sync.dirty'])
+    expect(syncHint('dirty').textContent).toBe(en['subagents.policy.sync.dirty'])
     expect(syncButton().getAttribute('aria-describedby')).toBe(hintId)
 
     // The sub save persists the draft; the reseed makes the button usable again.
@@ -3646,7 +3683,7 @@ describe('FallbacksCard host-policy status (plan dsh-012-subagent-routing T5 / s
     await waitFor(() => {
       expect(syncButton().disabled).toBe(false)
     })
-    expect(dirtyHint().textContent).toBe('')
+    expect(syncHint('dirty').textContent).toBe('')
     expect(syncButton().hasAttribute('aria-describedby')).toBe(false)
   })
 
@@ -3656,20 +3693,20 @@ describe('FallbacksCard host-policy status (plan dsh-012-subagent-routing T5 / s
       subagentPolicy: { state: 'enabled', allowedModels: [ALLOWED_ROUTE] },
     })
     view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
-    expect(dirtyHint().textContent).toBe('')
+    expect(syncHint('dirty').textContent).toBe('')
     expect(syncButton().hasAttribute('aria-describedby')).toBe(false)
     // Switching the all-day tail Flash → Pro rewrites the root chain (mainDirty).
     fireEvent.click(proRadio())
     view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
     expect(syncButton().disabled).toBe(true)
-    expect(dirtyHint().textContent).toBe(en['subagents.policy.sync.dirty'])
-    expect(syncButton().getAttribute('aria-describedby')).toBe(dirtyHint().id)
+    expect(syncHint('dirty').textContent).toBe(en['subagents.policy.sync.dirty'])
+    expect(syncButton().getAttribute('aria-describedby')).toBe(syncHint('dirty').id)
 
     fireEvent.click(saveButton('main'))
     await waitFor(() => {
       expect(syncButton().disabled).toBe(false)
     })
-    expect(dirtyHint().textContent).toBe('')
+    expect(syncHint('dirty').textContent).toBe('')
     expect(syncButton().hasAttribute('aria-describedby')).toBe(false)
   })
 })

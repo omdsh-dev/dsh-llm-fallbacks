@@ -1274,6 +1274,12 @@ select.input {
   gap: 6px;
 }
 
+/* The always-rendered live regions are empty when idle; keep them out of the
+   flex gap so the clean-state spacing is unchanged. */
+.policyStatusLive:empty {
+  display: none;
+}
+
 .policyStatusLabel {
   font-size: 12px;
   font-weight: 600;

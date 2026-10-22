@@ -1141,6 +1141,10 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
   // in a CSS/DOM id reference on every platform).
   const syncDirtyHintId = `fallbacks-policy-sync-dirty-${useId().replace(/:/g, '')}`
   const syncAllowlist = (): void => {
+    // Re-entry guard instead of disabling while pending: the focused trigger
+    // must stay focusable (a self-disabling button drops focus to the body,
+    // and a refused write would then look like a no-op click).
+    if (syncStatus === 'pending') return
     setSyncStatus('pending')
     void controller.syncAllowlist().then(ok => { setSyncStatus(ok ? 'ok' : 'error') })
   }
@@ -2184,28 +2188,38 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
               {/* Why dirty blocks the sync: the gateway merges the PERSISTED
                * config (`bridge.source()`), never this card's draft — so the
                * title filter above and the written allowlist would disagree.
-               * A disabled button is skipped in keyboard navigation, so the
-               * hint is a polite live region AND the button's described-by
-               * target. The region is rendered ALWAYS (clean = empty text):
-               * inserting it together with its text would not announce. */}
+               * The trigger stays focusable while pending (only a re-entry
+               * guard stops a second click), so its described-by reason is
+               * reachable. Both live regions below are rendered ALWAYS with
+               * empty text when idle: a `role="status"` element inserted
+               * together with its text is not announced. */}
               <button
                 type="button"
                 className={css.outlineButton}
-                disabled={!writable || syncStatus === 'pending' || subDirty || mainDirty}
+                disabled={!writable || subDirty || mainDirty}
+                aria-busy={syncStatus === 'pending' || undefined}
                 aria-describedby={subDirty || mainDirty ? syncDirtyHintId : undefined}
                 onClick={syncAllowlist}
               >
                 {t('subagents.policy.sync')}
               </button>
-              <span id={syncDirtyHintId} role="status" className={css.policyStatusWarn}>
+              <span
+                id={syncDirtyHintId}
+                role="status"
+                data-sync-hint="dirty"
+                className={`${css.policyStatusWarn} ${css.policyStatusLive}`}
+              >
                 {subDirty || mainDirty ? t('subagents.policy.sync.dirty') : ''}
               </span>
-              {syncStatus === 'ok' && (
-                <span className={css.policyStatusLine}>{t('subagents.policy.sync.done')}</span>
-              )}
-              {syncStatus === 'error' && (
-                <span className={css.policyStatusWarn}>{t('subagents.policy.sync.failed')}</span>
-              )}
+              <span
+                role="status"
+                data-sync-hint="outcome"
+                className={`${syncStatus === 'error' ? css.policyStatusWarn : css.policyStatusLine} ${css.policyStatusLive}`}
+              >
+                {syncStatus === 'ok'
+                  ? t('subagents.policy.sync.done')
+                  : syncStatus === 'error' ? t('subagents.policy.sync.failed') : ''}
+              </span>
             </div>
           </div>
         )}
