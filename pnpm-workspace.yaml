@@ -9,6 +9,16 @@ nodeLinker: hoisted
 allowBuilds:
   esbuild: true
 
+# Dependabot advisories (2026-10): micromark-extension-math@3.1.0 still declares
+# `katex: ^0.16.0` (the vulnerable transitive copy) and vitest floats `vite`
+# below the patched release, so both are forced to patched versions here.
+# Exact pins on purpose: the caret floors resolve to katex 0.18.11 — deprecated
+# upstream ("Accidentally published with breaking changes. Use 0.19.0") — and
+# vite 8.3.x. pnpm 11+ no longer reads the `pnpm` field of package.json.
+overrides:
+  katex: 0.18.2
+  vite: 8.2.4
+
 # Upstream packaging fix: the published dsh-client-ui-primitives manifest does
 # not declare @deepseek-ai/dsh-util-code-language, while its built lib/index.js
 # bare-imports it at runtime (markdown code highlighting; the source tree
