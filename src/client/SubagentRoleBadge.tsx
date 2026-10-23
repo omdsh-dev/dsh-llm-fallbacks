@@ -1,39 +1,44 @@
 /**
- * Session-header subagent role badge (plan subagent-role-badge T3; durable
- * channel plan role-based-subagent-adoption Task 3b): a compact read-only pill
- * in `conversation.session.header.actions` showing which Subagent role the
- * viewed session's dispatch resolved, hovering as `role → latest request route`.
+ * Session-header subagent role/model badge (plan subagent-role-badge T3 +
+ * plan subagent-role-model): a compact read-only pill in
+ * `conversation.session.header.actions` showing the viewed CHILD session's
+ * dispatch role and the model route it runs on, hovering as
+ * `role → provider/model (request route)`.
  *
- * Contract notes (verified 2026-09-09 against the harness checkout):
+ * Contract notes (re-verified 2026-10-23 against the installed dsh 0.2.1-rc.2):
  * - The slot is `kind: 'list'`, `scope: 'session'`, owner props an empty marker
  *   (`ConversationHeaderActionOwnerProps`, `children?: never`) — the header
  *   renders occupants with `renderSlot(..., {})`, so ALL data flows through the
  *   session standard kit.
- * - Every `scope: 'session'` occupant receives the session standard kit
- *   (`useSession` + `useProjection`; ui-session `src/client/index.ts:112-119`,
- *   merged into the runtime share by ui-slots' `PropsRuntime`). The compiled
- *   peer types do not carry that merge into this plugin's typecheck program
- *   (ui-session is deliberately not a plugin peer), so both seats are read
- *   STRUCTURALLY and guarded — a version-skewed host without them renders
- *   nothing, never throws.
- * - Data: the host's `fallbacksSubagentRole` projection (Task 3b), folded
+ * - Every `scope: 'session'` occupant receives the session standard kit, whose
+ *   members this component uses are `sessionId`, `useSessions` (the shared
+ *   Session store) and `useProjection` (the viewed session's projection cut).
+ *   The compiled peer types do not carry that merge into this plugin's
+ *   typecheck program (ui-session is deliberately not a plugin peer), so the
+ *   seats are read STRUCTURALLY and guarded — a version-skewed host without them
+ *   renders nothing, never throws.
+ * - The badge belongs to a CHILD session: `byId[sessionId].origin === 'subagent'`
+ *   is the host's own child-session idiom (`dsh-client-ui-subagent`
+ *   `SubagentCatalogAction`). Root rows omit `origin`, so a root session renders
+ *   nothing even though its own `modelSelection` carries a route — the composer
+ *   owns that control.
+ * - Role data: the host's `fallbacksSubagentRole` projection (Task 3b), folded
  *   server-side out of the child's own durable log — the ONE role source. The
- *   session kit binds the hook to the VIEWED session (`binding.session.
- *   projections.faceOf(key)`), so no `sessionId` plumbing, no effect, no state,
- *   and no polling: a settled child's follow opening snapshot already carries
- *   the value, and a running child's change frame updates the pill. An absent
- *   key (host without the unit, or no notice row) reads as "no pill".
- * - Hook order is render-independent (Task 3b L2 review C-1): the seat is a real
- *   hook, so BOTH projection reads are unconditional and only their derived
- *   values are guarded — a conditional second read would change the hook count
- *   on the very re-render that publishes a running child's role.
- * - The hover route comes from the host's EXISTING `modelSelection` projection
- *   (`lastUsed` — the route of the LATEST recorded request), NOT from the
- *   dispatch-time route: it is a separate, richer fact, and the label says so.
+ *   session kit binds the hook to the VIEWED session, so no `sessionId`
+ *   plumbing, no effect, no state, and no polling. An absent key (host without
+ *   the unit, or no notice row) omits the role half; `inherit` omits it too.
+ * - Route data: the host's EXISTING `modelSelection` projection, read as
+ *   `next ?? lastUsed` — the route the child's next request will use, falling
+ *   back to the one its latest recorded request ran on. The two halves are
+ *   INDEPENDENT: either alone still renders, and both missing renders nothing.
+ * - Hook order is render-independent (Task 3b L2 review C-1): the seats are real
+ *   hooks, so the three reads are unconditional and only their derived values
+ *   are guarded — a conditional read would change the hook count on the very
+ *   re-render that publishes a running child's role.
  * - Render-only discipline (C4 pattern, same as `ConversationFallbackSwitch`):
  *   the badge contributes a view; no message construction, no model-context
- *   injection. Degrade-never-crash: a missing/foreign projection value or an
- *   `inherit` role renders `null` — the actions row collapses cleanly.
+ *   injection. Degrade-never-crash: a missing/foreign projection value renders
+ *   `null` — the actions row collapses cleanly.
  */
 import type { ReactNode } from 'react'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
@@ -49,8 +54,9 @@ import css from './SubagentRoleBadge.module.css'
 /**
  * The host's own durable model-selection projection key (`dsh-api-session-
  * controller`, merged into `SessionProjectionMap`): its client value carries
- * `lastUsed` — the route the LATEST recorded request ran on. Read through the
- * same structural seat as the role key.
+ * `next` (the route the next request will use) and `lastUsed` (the route the
+ * latest recorded request ran on). Read through the same structural seat as the
+ * role key.
  */
 const MODEL_SELECTION_PROJECTION_KEY = 'modelSelection'
 
@@ -62,37 +68,70 @@ export type SubagentRoleBadgeProps =
   PropsRuntime<'conversation.session.header.actions'> & PropsLocale<'fallbacks'>
 
 /**
- * `provider/model` of the model-selection projection's `lastUsed`, or
- * `undefined` when the value/key/fields are absent or foreign — the badge then
- * hovers the role alone instead of rendering a wrong route.
+ * `provider/model` of one model selection, or `undefined` when the value's
+ * fields are absent or foreign.
  */
-function latestRequestRoute(value: unknown): string | undefined {
+function selectionRoute(value: unknown): string | undefined {
   if (typeof value !== 'object' || value === null) return undefined
-  const { lastUsed } = value as { lastUsed?: unknown }
-  if (typeof lastUsed !== 'object' || lastUsed === null) return undefined
-  const { provider, model } = lastUsed as { provider?: unknown; model?: unknown }
-  if (typeof provider !== 'string' || provider === '' || typeof model !== 'string' || model === '') return undefined
-  return `${provider}/${model}`
+  const { provider, model } = value as { provider?: unknown; model?: unknown }
+  if (typeof provider !== 'string' || typeof model !== 'string') return undefined
+  // Trim the wire values here; the role id is kept verbatim by contract
+  // (`role-projection-key.ts`, docs/consumer-api.md).
+  const trimmedProvider = provider.trim()
+  const trimmedModel = model.trim()
+  if (trimmedProvider === '' || trimmedModel === '') return undefined
+  // Never capped: the pill BODY truncates for display, the title keeps this whole.
+  return `${trimmedProvider}/${trimmedModel}`
+}
+
+/** Display form of a route in the pill body; the title keeps the full route. */
+function displayRoute(route: string): string {
+  // shortcut: fixed 120-char display cap (ellipsis included); widen if real ids outgrow it.
+  return route.length > 120 ? `${route.slice(0, 119)}…` : route
 }
 
 /**
- * Render the viewed session's dispatch-resolved role badge.
- * @param props - composed slot props (the session-kit `useProjection` seat is
- *   read structurally — see the module docblock).
+ * `provider/model` the child's NEXT request will use, falling back to the route
+ * its latest recorded request ran on (`modelSelection.next` → `lastUsed`), or
+ * `undefined` when neither carries a route — the badge then renders the role
+ * alone instead of a wrong route.
+ */
+function modelSelectionRoute(value: unknown): string | undefined {
+  if (typeof value !== 'object' || value === null) return undefined
+  const { next, lastUsed } = value as { next?: unknown; lastUsed?: unknown }
+  return selectionRoute(next) ?? selectionRoute(lastUsed)
+}
+
+/** The keyed store hook the host binds for `scope: 'session'` slots. */
+type SessionsHook = <T>(
+  selector: (state: { byId?: Record<string, { origin?: string } | undefined> }) => T,
+) => T
+
+/**
+ * Render the viewed SUBAGENT session's role and model.
+ * @param props - composed slot props (the session-kit `useProjection` /
+ *   `useSessions` seats are read structurally — see the module docblock).
  * @returns the badge element, or `null` when there is nothing to show.
  */
 export function SubagentRoleBadge(props: SubagentRoleBadgeProps): ReactNode {
   const { t } = props
-  // Session standard kit seat (see docblock): runtime-guaranteed for
+  // Session standard kit seats (see docblock): runtime-guaranteed for
   // `scope: 'session'` slots, absent from this program's peer types — read
-  // structurally and guarded. The seat is a capability of the HOST composition,
-  // never render-varying state, so its presence (and therefore the hook order)
-  // is constant for every render of this component; a seat-less host renders
-  // nothing and calls no hook at all.
+  // structurally and guarded. The seats are capabilities of the HOST
+  // composition, never render-varying state, so their presence (and therefore
+  // the hook order) is constant for every render of this component; a seat-less
+  // host renders nothing and calls no hook at all.
   const readProjection: ProjectionReader | undefined = (
     props as { useProjection?: ProjectionReader }
   ).useProjection
-  if (typeof readProjection !== 'function') return null
+  const useSessions: SessionsHook | undefined = (props as { useSessions?: SessionsHook }).useSessions
+  const sessionId = (props as { sessionId?: unknown }).sessionId
+  if (typeof readProjection !== 'function' || typeof useSessions !== 'function') return null
+  if (typeof sessionId !== 'string') return null
+
+  // A root session has its own composer model control and no dispatch role:
+  // this badge is the CHILD session's identity, shown when the child is opened.
+  const isChild = useSessions((state) => state.byId?.[sessionId]?.origin === 'subagent')
 
   // BOTH seats are read UNCONDITIONALLY, in a fixed order, on every render —
   // `useProjection` is a real hook (`keyedObservableHook` → `observableHook` →
@@ -105,20 +144,24 @@ export function SubagentRoleBadge(props: SubagentRoleBadgeProps): ReactNode {
   const rawRole = readProjection(ROLE_PROJECTION_KEY)
   const rawModelSelection = readProjection(MODEL_SELECTION_PROJECTION_KEY)
 
-  // The role id the host folded out of this session's own log; only a non-blank
-  // string is a role (a foreign value, a missing key and `null` all read as
-  // "no pill").
-  const role = readRoleProjectionValue(rawRole)
-  if (role === undefined || role === INHERIT_ROLE_ID) return null
+  if (!isChild) return null
 
-  // Route is a SECOND, best-effort fact: absent → the pill still shows the role.
-  const model = latestRequestRoute(rawModelSelection)
+  // The role id the host folded out of this session's own log; only a non-blank
+  // string is a role, and `inherit` means the child runs the parent's role.
+  const declared = readRoleProjectionValue(rawRole)
+  const role = declared === INHERIT_ROLE_ID ? undefined : declared
+  // Route is a SECOND, independent fact: either one alone still renders.
+  const model = modelSelectionRoute(rawModelSelection)
+  if (role === undefined && model === undefined) return null
+
+  const title = role !== undefined && model !== undefined
+    ? t('subagentRole.hover', { role, model })
+    : role ?? model
   return (
-    <span
-      className={css.badge}
-      title={model === undefined ? role : t('subagentRole.hover', { role, model })}
-    >
+    <span className={css.badge} title={title}>
       {role}
+      {role !== undefined && model !== undefined && ' · '}
+      {model !== undefined && <span className={css.route}>{displayRoute(model)}</span>}
     </span>
   )
 }

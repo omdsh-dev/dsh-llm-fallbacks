@@ -111,8 +111,10 @@ mechanisms share that header, and they are not the same thing:
   delivered persona, notice row and badge **regardless of which routing stage
   wins** — an earlier explicit `agentPreset` can route it as another role while
   the carriers remain the declared role's. A child with **no declared dispatch
-  header** gets none of the three, even when a rule or auto-match resolves a
-  role for routing; no carrier reports a role inferred after the fact.
+  header** gets no persona, no notice row and no role half of the badge (the
+  model half still renders when the child has a recorded route), even when a
+  rule or auto-match resolves a role for routing; no carrier reports a role
+  inferred after the fact.
 
 Injection is conditional too: the resolved role's chain head replaces the
 child's model only when it is plugin-originated *and* the host lets it through —
@@ -137,7 +139,12 @@ A child dispatched with a declared role gets exactly one plugin notice row in it
 
 ### Role badge
 
-When a subagent is **dispatched with a declared role** — the `**Execute as**: <id>` field of its Assignment, the same declaration that carries the persona, and the badge's ONLY source (policy on or off) — its session shows a compact role badge next to the session's agent-preset (mode) chip in the web session header; hover shows `role → latest request route` (the route of the newest recorded request, not the dispatch-time route). Only the DECLARED header is read, so a child whose role came from another stage (`agentPreset` match, a role rule, or the LLM auto-match) but which declares no Assignment header is still routed as that role yet shows **no** badge — the badge never reports a role inferred after the fact. `inherit`/unresolved sessions render no badge. The badge is durable: it is read from the child's own session record, so it is still shown for a **settled** subagent session and **after a host restart**.
+A subagent **session** shows a compact badge next to the session's agent-preset (mode) chip in the web session header, reading `role · provider/model`; hover shows `role → provider/model (request route)`. The two halves are independent facts and each is omitted when its own source is absent:
+
+- **Role**: shown only for a child **dispatched with a declared role** — the `**Execute as**: <id>` field of its Assignment, the same declaration that carries the persona, and the badge's ONLY role source (policy on or off). Only the DECLARED header is read, so a child whose role came from another stage (`agentPreset` match, a role rule, or the LLM auto-match) but which declares no Assignment header is still routed as that role yet shows **no role** — the badge never reports a role inferred after the fact. An `inherit`/unresolved dispatch omits the role half; it does not hide the badge.
+- **Model**: the host's own `modelSelection` projection, read as `next ?? lastUsed` — the route the child's next request will use, falling back to the route its latest recorded request ran on. It renders for any subagent session that has a recorded route, declared role or not.
+
+A **root** session never shows the badge (its composer owns the model control). The badge is durable: both halves are read from the child's own session record, so it is still shown for a **settled** subagent session and **after a host restart**.
 
 ### Agent Team teammates
 
