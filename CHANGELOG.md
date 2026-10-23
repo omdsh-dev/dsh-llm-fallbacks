@@ -6,6 +6,17 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.6.10] - 2026-10-23
+
+### Added
+
+- Fallbacks card: filter role-chain titles by the host subagent allowlist, report how many selected entries it cuts, recommend `FallbacksChain/Auto`, and offer an explicit "sync to host allowlist" button that merges the saved exact chain routes into `allowedModels` (never `enabled`, never silently; disabled while role/root-chain edits are unsaved).
+
+### Changed
+
+- Bump the dev toolchain past its open Dependabot advisories: `vitest` 4.1.12, `vite` 8.2.4 (transitive, forced by a pnpm override) and `katex` 0.18.2, whose vulnerable 0.16 copy pulled in by `micromark-extension-math` is overridden to the same patched release.
+- Show a subagent session's model beside its role in the conversation-header badge, silently omitting whichever half the session projection does not carry.
+
 ## [0.6.9] - 2026-10-22
 
 ### Added
