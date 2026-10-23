@@ -88,6 +88,7 @@ import type { SnapshotSelectorHook } from '@deepseek-ai/dsh-client-ui-slots'
 import type { FallbacksConfig, FallbacksRole, FallbackStrategy, RevertPolicy } from '../config.ts'
 import { defaultFallbacksConfig, INHERIT_ROLE_ID, ROLE_ID_PATTERN } from '../config.ts'
 import { parseSelector } from '../selectors.ts'
+import { routeOnAllowlist } from '../route-allowlist.ts'
 import { isOfficialAllDayId, OFFICIAL_ALL_DAY_IDS, resolveSlotState } from '../time-slots.ts'
 import {
   FallbacksSettingsController,
@@ -599,14 +600,63 @@ function InfoHint({ label, disabled = false }: { label: string; disabled?: boole
 }
 
 /**
+ * The virtual all-fallbacks route the host carve-out recognizes (features.md):
+ * a subagent spawned on it is not allowlist-filtered, so it is the
+ * recommendation when the allowlist does not already carry it.
+ */
+const VIRTUAL_ALL_ROUTE = { provider: 'FallbacksChain', model: 'Auto' } as const
+
+/**
+ * Parse one raw selector into an exact route; wildcard and unparseable
+ * entries resolve to `undefined` (they are not exact routes — never expanded,
+ * never counted). The selector parser is the single grammar authority.
+ */
+function exactRouteOf(raw: string): { provider: string; model: string } | undefined {
+  let parsed
+  try {
+    parsed = parseSelector(raw)
+  } catch {
+    return undefined
+  }
+  return parsed.model === undefined ? undefined : { provider: parsed.provider, model: parsed.model }
+}
+
+/**
  * The whole chain as one line (plan fallbacks-chain-reorder T2, user request):
  * every non-blank entry in walk order joined with `>`, or `undefined` for an
  * empty/blank chain so the caller keeps its own summary (a role's raw strategy
  * token). The card ellipsizes long summaries; the full string rides `title`.
+ *
+ * With `allowedModels` (host policy enabled) exact entries the policy cannot
+ * use are dropped, so the title tells the truth about what will run; wildcard
+ * entries stay (their resolved routes are unknown client-side) and an
+ * unparseable entry is kept rather than hidden.
  */
-function chainSummary(selectors: readonly ChainSelectorRow[]): string | undefined {
+function chainSummary(
+  selectors: readonly ChainSelectorRow[],
+  allowedModels?: readonly { provider: string; model: string }[],
+): string | undefined {
   const entries = selectors.map(selectorRowToRaw).filter(entry => entry !== '')
-  return entries.length === 0 ? undefined : entries.join(' > ')
+  const visible = allowedModels === undefined ? entries : entries.filter((entry) => {
+    const route = exactRouteOf(entry)
+    return route === undefined || routeOnAllowlist(route, allowedModels)
+  })
+  return visible.length === 0 ? undefined : visible.join(' > ')
+}
+
+/** How many selected role-chain exact entries the host allowlist does not carry. */
+function offAllowlistEntryCount(
+  roles: readonly FallbacksRole[],
+  allowedModels: readonly { provider: string; model: string }[],
+): number {
+  let count = 0
+  for (const role of roles) {
+    for (const entry of role.chain ?? []) {
+      const route = exactRouteOf(entry)
+      if (route !== undefined && !routeOnAllowlist(route, allowedModels)) count += 1
+    }
+  }
+  return count
 }
 
 /**
@@ -1068,6 +1118,36 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
     state.config.triggerCodes, state.config.cooldownMs, state.config.revertPolicy,
     state.config.maxSwitchesPerStep, state.config.alwaysModeRetryCap, state.config.roleAutoMatch,
   ])
+
+  // Host-policy visibility (plan role-chain-allowlist-visibility T2): only a
+  // PROVEN-enabled policy filters or annotates anything. Policy off/unprovable
+  // leaves every title, the hint, the recommendation and the button absent —
+  // byte-identical to the pre-feature card.
+  const enabledPolicy = state.subagentPolicy?.state === 'enabled' ? state.subagentPolicy : undefined
+  const allowedModels = enabledPolicy?.allowedModels
+  const offAllowlistCount = enabledPolicy === undefined
+    ? 0
+    : offAllowlistEntryCount(draft.roles.list, enabledPolicy.allowedModels)
+  const virtualRouteAllowed = enabledPolicy !== undefined
+    && routeOnAllowlist(VIRTUAL_ALL_ROUTE, enabledPolicy.allowedModels)
+  // The explicit sync button is the ONLY allowlist write trigger (never
+  // silent); its feedback is card-local, so a refused call never turns into
+  // the card-top load-error banner.
+  const [syncStatus, setSyncStatus] = useState<'idle' | 'pending' | 'ok' | 'error'>('idle')
+  // The dirty hint's live region: rendered ALWAYS (clean = empty text) so the
+  // region pre-exists the clean→dirty mutation — a `role="status"` element
+  // inserted together with its text is not announced. Same instance-id
+  // pattern as the row hint (`useId` + colon strip — the colons are not valid
+  // in a CSS/DOM id reference on every platform).
+  const syncDirtyHintId = `fallbacks-policy-sync-dirty-${useId().replace(/:/g, '')}`
+  const syncAllowlist = (): void => {
+    // Re-entry guard instead of disabling while pending: the focused trigger
+    // must stay focusable (a self-disabling button drops focus to the body,
+    // and a refused write would then look like a no-op click).
+    if (syncStatus === 'pending') return
+    setSyncStatus('pending')
+    void controller.syncAllowlist().then(ok => { setSyncStatus(ok ? 'ok' : 'error') })
+  }
 
   // Editors seed from the accepted config on every content-changing ready
   // (PR #62 UX round 3): the reseed is PER-SECTION — only CLEAN sections
@@ -2064,27 +2144,86 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
          * an empty-intersection warning. Roles/rules editors below
          * stay untouched. */}
         {state.subagentPolicy?.state === 'enabled' && (
-          <div className={css.policyStatus} role="status">
-            <span className={css.policyStatusLabel}>{t('subagents.policy.label')}</span>
-            <span className={css.policyStatusLine}>
-              {`${t('subagents.policy.allowlist')}: ${state.subagentPolicy.allowedModels
-                .map((route) => `${route.provider}/${route.model}`)
-                .join(', ')}`}
-            </span>
-            {state.subagentPolicy.head !== undefined && (
+          <div className={css.policyStatus}>
+            {/* The live region covers the TEXT lines only: the interactive
+             * sync control sits outside it, so a refreshed status does not
+             * re-announce a focusable button. */}
+            <div className={css.policyStatusText} role="status">
+              <span className={css.policyStatusLabel}>{t('subagents.policy.label')}</span>
               <span className={css.policyStatusLine}>
-                {`${t('subagents.policy.head')}: ${state.subagentPolicy.head.route.provider}/${state.subagentPolicy.head.route.model} (${t(
-                  state.subagentPolicy.head.source === 'authorized'
-                    ? 'subagents.policy.source.authorized'
-                    : 'subagents.policy.source.injected',
-                )})`}
+                {`${t('subagents.policy.allowlist')}: ${state.subagentPolicy.allowedModels
+                  .map((route) => `${route.provider}/${route.model}`)
+                  .join(', ')}`}
               </span>
-            )}
-            {state.subagentPolicy.blockedAttempt !== undefined && (
-              <span className={css.policyStatusWarn} role="alert">
-                {t('subagents.policy.blocked')}
+              {state.subagentPolicy.head !== undefined && (
+                <span className={css.policyStatusLine}>
+                  {`${t('subagents.policy.head')}: ${state.subagentPolicy.head.route.provider}/${state.subagentPolicy.head.route.model} (${t(
+                    state.subagentPolicy.head.source === 'authorized'
+                      ? 'subagents.policy.source.authorized'
+                      : 'subagents.policy.source.injected',
+                  )})`}
+                </span>
+              )}
+              {state.subagentPolicy.blockedAttempt !== undefined && (
+                <span className={css.policyStatusWarn} role="alert">
+                  {t('subagents.policy.blocked')}
+                </span>
+              )}
+              {/* Allowlist visibility (plan role-chain-allowlist-visibility
+               * T2). Everything here renders only while the policy is proven
+               * enabled; the button below is the ONLY allowlist write
+               * trigger — nothing syncs silently. */}
+              {offAllowlistCount > 0 && (
+                <span className={css.policyStatusWarn}>
+                  {t('subagents.policy.offAllowlist', { count: String(offAllowlistCount) })}
+                </span>
+              )}
+              {!virtualRouteAllowed && (
+                <span className={css.policyStatusLine}>
+                  {t('subagents.policy.recommend')}
+                </span>
+              )}
+            </div>
+            <div className={css.policyStatusSync} role="group" aria-label={t('subagents.policy.sync')}>
+              {/* Why dirty blocks the sync: the gateway merges the PERSISTED
+               * config (`bridge.source()`), never this card's draft — so the
+               * title filter above and the written allowlist would disagree.
+               * The trigger stays focusable while pending (only a re-entry
+               * guard stops a second click), so its described-by reason is
+               * reachable. Both live regions below are rendered ALWAYS with
+               * empty text when idle: a `role="status"` element inserted
+               * together with its text is not announced. Idle regions are
+               * visually hidden by `css.policyStatusLive` (absolute 1px clip),
+               * NEVER `display: none` — that would drop them from the AX tree
+               * and recreate the same inserted-with-text case. */}
+              <button
+                type="button"
+                className={css.outlineButton}
+                disabled={!writable || subDirty || mainDirty}
+                aria-busy={syncStatus === 'pending' || undefined}
+                aria-describedby={subDirty || mainDirty ? syncDirtyHintId : undefined}
+                onClick={syncAllowlist}
+              >
+                {t('subagents.policy.sync')}
+              </button>
+              <span
+                id={syncDirtyHintId}
+                role="status"
+                data-sync-hint="dirty"
+                className={`${css.policyStatusWarn} ${css.policyStatusLive}`}
+              >
+                {subDirty || mainDirty ? t('subagents.policy.sync.dirty') : ''}
               </span>
-            )}
+              <span
+                role="status"
+                data-sync-hint="outcome"
+                className={`${syncStatus === 'error' ? css.policyStatusWarn : css.policyStatusLine} ${css.policyStatusLive}`}
+              >
+                {syncStatus === 'ok'
+                  ? t('subagents.policy.sync.done')
+                  : syncStatus === 'error' ? t('subagents.policy.sync.failed') : ''}
+              </span>
+            </div>
           </div>
         )}
         {state.subagentPolicy?.state === 'unprovable' && (
@@ -2145,7 +2284,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
               // (inherit-root = the role rides the root chain). The full
               // string also rides the span's `title`, so a truncated
               // summary still exposes every entry on hover.
-              const roleChainSummary = chainSummary(row.selectors)
+              const roleChainSummary = chainSummary(row.selectors, allowedModels)
               const roleSummary = roleChainSummary ?? row.fallback
               // PR #62 UX round 2: role cards default collapsed, but a
               // read-only view FORCES them open (same rule as the slot

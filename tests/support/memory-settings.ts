@@ -27,7 +27,7 @@
  */
 
 import { Context, Service } from '@deepseek-ai/cordis'
-import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
+import type { SettingsNamespace, SettingsPathOp } from '@deepseek-ai/dsh-settings'
 
 /** One stored section plus its monotonic revision. */
 interface StoredSection {
@@ -84,6 +84,31 @@ export class MemorySettings extends Service {
   /** Reset a section, then set the supplied fields (the `SettingsForms` face). */
   async replace(ns: SettingsNamespace, section: object): Promise<void> {
     await this.persist(ns, structuredClone(section))
+    this.emitCommitted(ns)
+  }
+
+  /**
+   * Apply ordered field edits without restating the whole section (the
+   * `SettingsForms.mutate` face): a `set` op writes the value at `path`, an
+   * `unset` op deletes it. Only the depth the plugin actually uses is
+   * modeled (plain-object paths); the real service additionally handles
+   * redacted secrets and revisions.
+   */
+  async mutate(ns: SettingsNamespace, ops: readonly SettingsPathOp[]): Promise<void> {
+    const raw = structuredClone(this.sections.get(ns)?.raw ?? {})
+    for (const op of ops) {
+      if (op.path.length === 0) continue
+      let cursor: Record<string, unknown> = raw
+      for (const key of op.path.slice(0, -1)) {
+        const next = cursor[key]
+        if (typeof next !== 'object' || next === null || Array.isArray(next)) cursor[key] = {}
+        cursor = cursor[key] as Record<string, unknown>
+      }
+      const leaf = op.path[op.path.length - 1]!
+      if (op.op === 'set') cursor[leaf] = structuredClone(op.value)
+      else delete cursor[leaf]
+    }
+    await this.persist(ns, raw)
     this.emitCommitted(ns)
   }
 

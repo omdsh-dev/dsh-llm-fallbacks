@@ -1216,37 +1216,35 @@ export class FallbacksSettingsController {
       const result = await this.rpc.call('/api', 'fallbacks/set', { args: { patch: next } })
       if (generation !== this.writeGeneration) return
       if (!result.ok) throw result.error
-      const value: unknown = result.value
-      const config = value !== null && typeof value === 'object' && 'config' in value
-        ? value.config
-        : undefined
-      // The write response carries the post-write legacyKeys (W-1/F-1). When
-      // the field is ABSENT (an older gateway), keep the last accepted value
-      // — never clear the banner on a save the server cannot vouch for; only
-      // a `get` may settle legacy truth.
-      let legacyKeys: string[] = this.store.getSnapshot().legacyKeys
-      if (value !== null && typeof value === 'object' && 'legacyKeys' in value) {
-        const wireLegacyKeys: unknown = value.legacyKeys
-        if (Array.isArray(wireLegacyKeys)) {
-          legacyKeys = wireLegacyKeys.filter((key): key is string => typeof key === 'string')
-        }
-      }
-      // The write response carries the post-write seeds badge (spec §9.4,
-      // same W-1/F-1 rule as legacyKeys): when the field is ABSENT (an
-      // older gateway), keep the last accepted value — only a `get` may
-      // settle seed truth.
-      let seeds: SeedsWireStatus[] = this.store.getSnapshot().seeds
-      if (value !== null && typeof value === 'object' && 'seeds' in value) {
-        const wireSeeds: unknown = value.seeds
-        if (Array.isArray(wireSeeds)) {
-          seeds = parseSeedsWire(wireSeeds)
-        }
-      }
-      const subagentPolicy = subagentPolicyFromWire(value, this.store.getSnapshot().subagentPolicy)
-      this.accept(config, true, legacyKeys, seeds, subagentPolicy)
+      this.acceptWire(result.value)
     } catch (error) {
       if (generation !== this.writeGeneration) return
       this.fail(error)
+    }
+  }
+
+  /**
+   * Explicit "sync to host allowlist" write (plan
+   * role-chain-allowlist-visibility T2): the gateway endpoint merges the
+   * CURRENT allowlist with this plugin's exact chain routes plus the virtual
+   * `FallbacksChain/Auto` route and writes only `allowedModels`. The button
+   * click is the ONLY trigger — the store never syncs on its own.
+   * @returns true when the write landed (the card then reads the fresh
+   *   snapshot from the store); false on a refused/failed call, leaving the
+   *   last accepted state untouched. A response discarded by the write
+   *   generation guard is still a landed write — dispose() is the only
+   *   invalidator, so it must not report failure.
+   */
+  async syncAllowlist(): Promise<boolean> {
+    if (!this.store.getSnapshot().writable) return false
+    const generation = ++this.writeGeneration
+    try {
+      const result = await this.rpc.call('/api', 'fallbacks/sync-allowlist', { args: {} })
+      if (!result.ok) return false
+      if (generation === this.writeGeneration) this.acceptWire(result.value)
+      return true
+    } catch {
+      return false
     }
   }
 
@@ -1268,33 +1266,7 @@ export class FallbacksSettingsController {
       const result = await this.rpc.call('/api', 'fallbacks/reset', { args: {} })
       if (generation !== this.writeGeneration) return
       if (!result.ok) throw result.error
-      const value: unknown = result.value
-      const config = value !== null && typeof value === 'object' && 'config' in value
-        ? value.config
-        : undefined
-      // Same keep-last rule as {@link save}: the reset response carries
-      // post-write legacyKeys (entry-base leftovers are re-reported); when
-      // absent, never clear the banner on the server's silence (W-1/F-1).
-      let legacyKeys: string[] = this.store.getSnapshot().legacyKeys
-      if (value !== null && typeof value === 'object' && 'legacyKeys' in value) {
-        const wireLegacyKeys: unknown = value.legacyKeys
-        if (Array.isArray(wireLegacyKeys)) {
-          legacyKeys = wireLegacyKeys.filter((key): key is string => typeof key === 'string')
-        }
-      }
-      // Same keep-last rule as {@link save}: the reset response carries the
-      // post-write seeds badge (clearing the user layer also clears the
-      // materialized rows — the honest response reports the emptied state);
-      // when absent, keep the last accepted value (W-1/F-1).
-      let seeds: SeedsWireStatus[] = this.store.getSnapshot().seeds
-      if (value !== null && typeof value === 'object' && 'seeds' in value) {
-        const wireSeeds: unknown = value.seeds
-        if (Array.isArray(wireSeeds)) {
-          seeds = parseSeedsWire(wireSeeds)
-        }
-      }
-      const subagentPolicy = subagentPolicyFromWire(value, this.store.getSnapshot().subagentPolicy)
-      this.accept(config, true, legacyKeys, seeds, subagentPolicy)
+      this.acceptWire(result.value)
     } catch (error) {
       if (generation !== this.writeGeneration) return
       this.fail(error)
@@ -1313,6 +1285,34 @@ export class FallbacksSettingsController {
     // has not settled (the `iterator.return()` in loadSwitches is
     // unreachable mid-await).
     this.followAbort.abort()
+  }
+
+  /**
+   * Unpack one write response (set / reset / sync-allowlist) into the store
+   * snapshot. The additive fields (legacyKeys §9, seeds §9.4, subagentPolicy
+   * D4) follow the W-1/F-1 rule: absent on the wire keeps the last accepted
+   * value — only a `get` may settle server truth.
+   */
+  private acceptWire(value: unknown): void {
+    const config = value !== null && typeof value === 'object' && 'config' in value
+      ? value.config
+      : undefined
+    let legacyKeys: string[] = this.store.getSnapshot().legacyKeys
+    if (value !== null && typeof value === 'object' && 'legacyKeys' in value) {
+      const wireLegacyKeys: unknown = value.legacyKeys
+      if (Array.isArray(wireLegacyKeys)) {
+        legacyKeys = wireLegacyKeys.filter((key): key is string => typeof key === 'string')
+      }
+    }
+    let seeds: SeedsWireStatus[] = this.store.getSnapshot().seeds
+    if (value !== null && typeof value === 'object' && 'seeds' in value) {
+      const wireSeeds: unknown = value.seeds
+      if (Array.isArray(wireSeeds)) {
+        seeds = parseSeedsWire(wireSeeds)
+      }
+    }
+    const subagentPolicy = subagentPolicyFromWire(value, this.store.getSnapshot().subagentPolicy)
+    this.accept(config, true, legacyKeys, seeds, subagentPolicy)
   }
 
   /**

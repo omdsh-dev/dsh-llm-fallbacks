@@ -161,6 +161,7 @@ interface Scripted {
   get: Mock
   set: Mock
   reset: Mock
+  sync: Mock
   describe: Mock
 }
 
@@ -233,11 +234,19 @@ function scriptedApi(options: {
     current = defaultFallbacksConfig
     return Promise.resolve(okResult({ config: current }))
   })
+  // The explicit allowlist sync (plan role-chain-allowlist-visibility T2):
+  // the fixture default is a no-op read-back; a spec rewrites the mock to
+  // serve the refreshed post-write snapshot.
+  const sync = vi.fn(() => Promise.resolve(okResult({
+    config: current,
+    ...(options.subagentPolicy === undefined ? {} : { subagentPolicy: options.subagentPolicy }),
+  })))
   const call = vi.fn((channel: string, endpoint: string, payload: unknown) => {
     if (channel !== '/api') throw new Error(`test: unexpected channel ${channel}`)
     if (endpoint === 'fallbacks/get') return get()
     if (endpoint === 'fallbacks/set') return set(payload as { args: { patch: typeof defaultFallbacksConfig } })
     if (endpoint === 'fallbacks/reset') return reset()
+    if (endpoint === 'fallbacks/sync-allowlist') return sync()
     throw new Error(`test: unexpected endpoint ${endpoint}`)
   })
   return {
@@ -247,7 +256,7 @@ function scriptedApi(options: {
       session: { modelCatalog: models, follow: history },
     } as unknown as FallbacksRemote,
     rpc: { call } as unknown as ClientConnectionRpc,
-    call, get, set, reset, describe,
+    call, get, set, reset, sync, describe,
   }
 }
 
@@ -3349,6 +3358,21 @@ describe('FallbacksCard host-policy status (plan dsh-012-subagent-routing T5 / s
     blockedAttempt: { at: 1, route: BETA, reason: 'empty-intersection' },
   }
 
+  // The allowlist-visibility + sync controls (plan role-chain-allowlist-visibility
+  // T2): the trigger and its two ALWAYS-rendered live regions (dirty reason,
+  // sync outcome) live in the sync group; each region is empty when idle
+  // because a `role="status"` element inserted together with its text is not
+  // announced. The idle regions are visually hidden by CSS (absolute 1px clip,
+  // NOT `display: none`, which would drop them from the AX tree). That
+  // visibility/AX half is CSS and cannot be pinned in jsdom — these specs only
+  // pin the DOM contract (region pre-exists, text, `role`, `aria-describedby`).
+  const syncButton = (): HTMLButtonElement =>
+    screen.getByRole('button', { name: en['subagents.policy.sync'] }) as HTMLButtonElement
+  const syncGroup = (): HTMLElement =>
+    screen.getByRole('group', { name: en['subagents.policy.sync'] })
+  const syncHint = (which: 'dirty' | 'outcome'): HTMLElement =>
+    syncGroup().querySelector(`[data-sync-hint="${which}"]`) as HTMLElement
+
   it('policy-on renders the allowlist, head/source, and empty-intersection warning', async () => {
     const { view, props } = await mountCard({
       config: BASE_CONFIG,
@@ -3478,6 +3502,215 @@ describe('FallbacksCard host-policy status (plan dsh-012-subagent-routing T5 / s
     view.rerender(<FallbacksCard {...props} />)
     expect(screen.getByText(`${en['subagents.policy.allowlist']}: policy-test/alpha`)).toBeTruthy()
     expect(screen.queryByText(en['subagents.policy.head'], { exact: false })).toBeNull()
+  })
+
+  // Allowlist visibility + explicit sync (plan role-chain-allowlist-visibility
+  // T2): the role title hides exact entries the policy cannot use, the
+  // subagents block reports the cut count, recommends the virtual carve-out
+  // route when absent, and offers the one explicit write button.
+  const VIRTUAL_ROUTE = { provider: 'FallbacksChain', model: 'Auto' }
+  const ALLOWED_ROUTE = { provider: 'openai', model: 'gpt-4o' }
+  const CUT_ROUTE = { provider: 'anthropic', model: 'claude-3-5-sonnet' }
+
+  /** Two role chains: one exact pair plus a wildcard sibling (never expanded). */
+  const SYNC_CONFIG: typeof defaultFallbacksConfig = {
+    ...BASE_CONFIG,
+    rootChain: [OFFICIAL_FLASH],
+    roles: {
+      list: [
+        { id: 'coder', persona: '', chain: ['openai/gpt-4o', 'anthropic/claude-3-5-sonnet'], fallback: 'inherit-root' },
+        { id: 'wild', persona: '', chain: ['zai/*'], fallback: 'none' },
+      ],
+      rules: [],
+    },
+  }
+
+  /** The collapsed role-card headers, in declared order. */
+  function roleHeaders(): HTMLElement[] {
+    const group = screen.getByText(en['roles.list.label']).closest('[role="group"]') as HTMLElement
+    return within(group).getAllByRole('button', { name: en['roles.expand'] })
+  }
+
+  it('policy-on filters the role title, keeps wildcards, and reports the cut count', async () => {
+    const { view, props } = await mountCard({
+      config: SYNC_CONFIG,
+      subagentPolicy: { state: 'enabled', allowedModels: [ALLOWED_ROUTE] },
+    })
+    view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
+    // The cut exact entry is gone from both the visible meta and its title.
+    const meta = within(roleHeaders()[0]!).getByText('openai/gpt-4o')
+    expect(meta.getAttribute('title')).toBe('openai/gpt-4o')
+    expect(within(roleHeaders()[0]!).queryByText(/anthropic\/claude-3-5-sonnet/)).toBeNull()
+    // A wildcard entry is not an exact route: it survives filtering.
+    expect(within(roleHeaders()[1]!).getByText('zai/*')).toBeTruthy()
+    // Exactly one selected exact role entry is outside the allowlist.
+    expect(screen.getByText(interpolatingT('subagents.policy.offAllowlist', { count: '1' }))).toBeTruthy()
+    // The virtual carve-out route is absent → it is recommended.
+    expect(screen.getByText(en['subagents.policy.recommend'])).toBeTruthy()
+    expect(screen.getByRole('button', { name: en['subagents.policy.sync'] })).toBeTruthy()
+  })
+
+  it('policy-off / absent keeps the unfiltered title and renders none of the new UI', async () => {
+    const { view, props } = await mountCard({ config: SYNC_CONFIG })
+    view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
+    const meta = within(roleHeaders()[0]!).getByText('openai/gpt-4o > anthropic/claude-3-5-sonnet')
+    expect(meta.getAttribute('title')).toBe('openai/gpt-4o > anthropic/claude-3-5-sonnet')
+    expect(screen.queryByText(interpolatingT('subagents.policy.offAllowlist', { count: '1' }))).toBeNull()
+    expect(screen.queryByText(en['subagents.policy.recommend'])).toBeNull()
+    expect(screen.queryByRole('button', { name: en['subagents.policy.sync'] })).toBeNull()
+    cleanup()
+
+    const disabled = await mountCard({ config: SYNC_CONFIG, subagentPolicy: { state: 'disabled' } })
+    disabled.view.rerender(<FallbacksCard {...disabled.props} t={interpolatingT} />)
+    expect(within(roleHeaders()[0]!).getByText('openai/gpt-4o > anthropic/claude-3-5-sonnet')).toBeTruthy()
+    expect(screen.queryByText(interpolatingT('subagents.policy.offAllowlist', { count: '1' }))).toBeNull()
+    expect(screen.queryByText(en['subagents.policy.recommend'])).toBeNull()
+    expect(screen.queryByRole('button', { name: en['subagents.policy.sync'] })).toBeNull()
+  })
+
+  it('recommends FallbacksChain/Auto only while the allowlist lacks that exact route', async () => {
+    const { view, props } = await mountCard({
+      config: SYNC_CONFIG,
+      subagentPolicy: { state: 'enabled', allowedModels: [ALLOWED_ROUTE, VIRTUAL_ROUTE] },
+    })
+    view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
+    expect(screen.queryByText(en['subagents.policy.recommend'])).toBeNull()
+    // The cut count still reports the exact entry the policy drops.
+    expect(screen.getByText(interpolatingT('subagents.policy.offAllowlist', { count: '1' }))).toBeTruthy()
+  })
+
+  it('the sync button is disabled in a read-only store', async () => {
+    const { view, props } = await mountCard({
+      config: SYNC_CONFIG,
+      writable: false,
+      subagentPolicy: { state: 'enabled', allowedModels: [ALLOWED_ROUTE] },
+    })
+    view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
+    expect((screen.getByRole('button', { name: en['subagents.policy.sync'] }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('the sync button calls the endpoint and the card shows the refreshed allowlist', async () => {
+    const { view, props, scripted } = await mountCard({
+      config: SYNC_CONFIG,
+      subagentPolicy: { state: 'enabled', allowedModels: [ALLOWED_ROUTE] },
+    })
+    view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
+    expect(screen.getByText(en['subagents.policy.recommend'])).toBeTruthy()
+    // The outcome live region pre-exists empty; the click fills it.
+    expect(syncHint('outcome').textContent).toBe('')
+    // A held promise keeps the click `pending`, proving the trigger stays
+    // focusable: disabling it would drop focus to the body mid-write.
+    let resolveSync: (value: RpcResult<unknown>) => void = () => {}
+    scripted.sync.mockImplementation(() => new Promise<RpcResult<unknown>>(resolve => { resolveSync = resolve }))
+    const button = syncButton()
+    button.focus()
+    fireEvent.click(button)
+    await waitFor(() => {
+      expect(button.getAttribute('aria-busy')).toBe('true')
+    })
+    expect(button.disabled).toBe(false)
+    expect(document.activeElement).toBe(button)
+    expect(syncHint('outcome').textContent).toBe('')
+    // The refreshed post-write snapshot: the union the gateway returns.
+    resolveSync(okResult({
+      config: SYNC_CONFIG,
+      subagentPolicy: { state: 'enabled', allowedModels: [ALLOWED_ROUTE, CUT_ROUTE, VIRTUAL_ROUTE] },
+    }))
+    await waitFor(() => {
+      expect(screen.getByText(
+        `${en['subagents.policy.allowlist']}: openai/gpt-4o, anthropic/claude-3-5-sonnet, FallbacksChain/Auto`,
+      )).toBeTruthy()
+    })
+    expect(scripted.call).toHaveBeenCalledWith('/api', 'fallbacks/sync-allowlist', { args: {} })
+    // Post-sync: nothing is cut, the virtual route is on the list, and the
+    // outcome region reports success.
+    expect(screen.queryByText(interpolatingT('subagents.policy.offAllowlist', { count: '1' }))).toBeNull()
+    expect(screen.queryByText(en['subagents.policy.recommend'])).toBeNull()
+    expect(syncHint('outcome').textContent).toBe(en['subagents.policy.sync.done'])
+    expect(button.getAttribute('aria-busy')).toBeNull()
+  })
+
+  it('announces a refused sync and leaves the trigger usable', async () => {
+    const { view, props, scripted } = await mountCard({
+      config: SYNC_CONFIG,
+      subagentPolicy: { state: 'enabled', allowedModels: [ALLOWED_ROUTE] },
+    })
+    view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
+    expect(syncHint('outcome').textContent).toBe('')
+    scripted.sync.mockImplementation(() => Promise.resolve(failResult('host refused the write')))
+    fireEvent.click(syncButton())
+    await waitFor(() => {
+      expect(syncHint('outcome').textContent).toBe(en['subagents.policy.sync.failed'])
+    })
+    // A refused write must not look like a click that did nothing: the outcome
+    // region carries the failure and the trigger stays enabled.
+    expect(syncButton().disabled).toBe(false)
+    expect(syncButton().getAttribute('aria-busy')).toBeNull()
+  })
+
+  // The gateway merges the PERSISTED config (`bridge.source()`), never the
+  // card draft: with unsaved chain edits the title filter and the written
+  // allowlist would disagree, so the button is dirty-gated. The reason rides
+  // the always-rendered dirty live region; a disabled button is skipped in
+  // keyboard navigation, so the region — not just `aria-describedby` — has to
+  // carry it.
+  it('disables the sync button while role-chain edits are unsaved, and re-enables it after the sub save', async () => {
+    const { view, props } = await mountCard({
+      config: SYNC_CONFIG,
+      subagentPolicy: { state: 'enabled', allowedModels: [ALLOWED_ROUTE] },
+    })
+    view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
+    expect(syncButton().disabled).toBe(false)
+    // Clean: the live region pre-exists with empty text, and the button
+    // carries no description.
+    expect(syncHint('dirty').textContent).toBe('')
+    expect(syncButton().hasAttribute('aria-describedby')).toBe(false)
+
+    // A chain edit: clearing the first role selector's provider drops that
+    // entry from the draft, so the draft no longer equals the accepted roles.
+    expandAllRoles()
+    view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
+    const rolesGroup = screen.getByText(en['roles.list.label']).closest('[role="group"]') as HTMLElement
+    const provider = rolesGroup.querySelector('[data-selector-row] select') as HTMLSelectElement
+    fireEvent.change(provider, { target: { value: '' } })
+    view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
+    expect(syncButton().disabled).toBe(true)
+    // Dirty: the SAME region gets the text and the button points at it.
+    const hintId = syncHint('dirty').id
+    expect(hintId).not.toBe('')
+    expect(syncHint('dirty').textContent).toBe(en['subagents.policy.sync.dirty'])
+    expect(syncButton().getAttribute('aria-describedby')).toBe(hintId)
+
+    // The sub save persists the draft; the reseed makes the button usable again.
+    fireEvent.click(saveButton('sub'))
+    await waitFor(() => {
+      expect(syncButton().disabled).toBe(false)
+    })
+    expect(syncHint('dirty').textContent).toBe('')
+    expect(syncButton().hasAttribute('aria-describedby')).toBe(false)
+  })
+
+  it('disables the sync button while the root chain is edited, and re-enables it after the main save', async () => {
+    const { view, props } = await mountCard({
+      config: SYNC_CONFIG,
+      subagentPolicy: { state: 'enabled', allowedModels: [ALLOWED_ROUTE] },
+    })
+    view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
+    expect(syncHint('dirty').textContent).toBe('')
+    expect(syncButton().hasAttribute('aria-describedby')).toBe(false)
+    // Switching the all-day tail Flash → Pro rewrites the root chain (mainDirty).
+    fireEvent.click(proRadio())
+    view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
+    expect(syncButton().disabled).toBe(true)
+    expect(syncHint('dirty').textContent).toBe(en['subagents.policy.sync.dirty'])
+    expect(syncButton().getAttribute('aria-describedby')).toBe(syncHint('dirty').id)
+
+    fireEvent.click(saveButton('main'))
+    await waitFor(() => {
+      expect(syncButton().disabled).toBe(false)
+    })
+    expect(syncHint('dirty').textContent).toBe('')
+    expect(syncButton().hasAttribute('aria-describedby')).toBe(false)
   })
 })
 

@@ -79,6 +79,14 @@ export const zh = {
   'subagents.policy.source.injected': '插件注入',
   'subagents.policy.blocked': '降级候选均不在允许列表中 — 未切换',
   'subagents.policy.unprovable': '策略存在但无法读取 — 插件切换已禁用',
+  // Allowlist visibility + explicit sync (plan role-chain-allowlist-visibility
+  // T2): shown only while the policy is proven enabled.
+  'subagents.policy.offAllowlist': '角色链中有 {count} 个精确条目不在允许列表 — 这些条目不会生效',
+  'subagents.policy.recommend': '建议将 FallbacksChain/Auto 加入允许列表（该虚拟路由不受宿主策略过滤）',
+  'subagents.policy.sync': '同步到宿主允许列表',
+  'subagents.policy.sync.done': '已同步：精确条目（角色链、默认降级链与 FallbacksChain/Auto）已写入允许列表；通配条目不展开、不同步',
+  'subagents.policy.sync.failed': '同步失败：宿主设置未写入（策略未启用、条目不可配置或版本冲突等宿主拒绝），请检查宿主设置',
+  'subagents.policy.sync.dirty': '角色链或默认降级链有未保存的修改 — 请先保存再同步（同步只写入已保存的配置）',
   // Time-slot rows (plan fallbacks-timeslots Task 3; PR #62 feedback
   // round): the extra-row list sits under the 主代理 section; preset
   // Timezone picker lives inside expanded custom rows only; preset
@@ -331,6 +339,14 @@ export const en = {
   'subagents.policy.source.injected': 'injected',
   'subagents.policy.blocked': 'No in-allowlist fallback candidate — switch skipped',
   'subagents.policy.unprovable': 'Policy present but unreadable — plugin switches disabled',
+  // Allowlist visibility + explicit sync (plan role-chain-allowlist-visibility
+  // T2): shown only while the policy is proven enabled.
+  'subagents.policy.offAllowlist': '{count} exact role-chain entries are outside the allowlist — they will not run',
+  'subagents.policy.recommend': 'Add FallbacksChain/Auto to the allowlist (this virtual route is not filtered by the host policy)',
+  'subagents.policy.sync': 'Sync to host allowlist',
+  'subagents.policy.sync.done': 'Synced: exact entries (role chains, default fallback chain and FallbacksChain/Auto) are now allowed; wildcard entries are not expanded or synced',
+  'subagents.policy.sync.failed': 'Sync failed: the host settings were not written (policy off, entry not configurable, revision conflict or another host refusal) — check the host settings',
+  'subagents.policy.sync.dirty': 'Unsaved role-chain or default-chain edits — save first, then sync (the sync writes the saved configuration only)',
   // Time-slot rows: extra-row list under Main agent. Timezone picker
   // lives inside expanded custom rows only; preset windows stay UTC+8.
   'timeSlots.label': 'Time slots',
