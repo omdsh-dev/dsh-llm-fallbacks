@@ -6,6 +6,12 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.6.11] - 2026-10-24
+
+### Changed
+
+- Bump the `@deepseek-ai/dsh-*` peer cohort to `^0.2.1-rc.3` (corridor `dsh-v0.2.1-rc.2` → `dsh-v0.2.1-rc.3`: More menus for browsing/creating plugins; New Session draft fix after switching sessions; DeepSeek API-key adapter model-list updates aligned with account sign-in).
+
 ## [0.6.10] - 2026-10-23
 
 ### Added
