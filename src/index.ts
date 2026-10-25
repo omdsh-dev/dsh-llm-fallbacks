@@ -1114,6 +1114,16 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
   // role injection. Survives across the agent's request lifecycle; cleaned on
   // agent/disposed + plugin dispose (mirrors `states`).
   const dispatchInjected = new Set<string>()
+  // Dispatch-resolved role per agent (I-000078): `decide()` re-resolves the
+  // role rules-only, which loses the dispatch stage — remember it here.
+  const dispatchRoles = new Map<string, string>()
+  // A remembered id wins only while it is still declared (BUG-01): a role
+  // edited or deleted mid-session falls through to resolveRole instead of
+  // walking rootChain under a role that no longer exists.
+  const rememberedRole = (agentId: string): string | undefined => {
+    const role = dispatchRoles.get(agentId)
+    return role !== undefined && roleIds.has(role.trim()) ? role : undefined
+  }
   // P7 分时切换 marker (plan fallbacks-timeslots Task 2): per-root-agent
   // LAST slot winner (identity key + display label), in-process only. A
   // winner change between root requests logs 分时切换 — a routing seed, NOT
@@ -1165,7 +1175,10 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
       states.syncStep(state, turn, step)
       if (state.stepFailures.switchCount >= config.maxSwitchesPerStep) return null
     }
-    const role = resolveRole(agent, config.roles.rules, roleIds, logger.warn, servedRouteFor(agent, config))
+    // Remembered dispatch role wins: the rules-only resolve below never sees
+    // the dispatch stage.
+    const role = rememberedRole(agent.id)
+      ?? resolveRole(agent, config.roles.rules, roleIds, logger.warn, servedRouteFor(agent, config))
     // P7 (plan fallbacks-timeslots Task 2): slot rotation applies to
     // ROOT-origin agents only, in BOTH primary and fallback-only modes —
     // the effective chain (first matching extra row, else the all-day
@@ -1584,6 +1597,9 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
               servedRoute: servedRouteFor(agent, config),
             })
             if (role !== INHERIT_ROLE_ID) {
+              // Recorded before the inject decision: a failed injected route
+              // must still walk this role's chain (I-000078).
+              dispatchRoles.set(agent.id, role)
               const { all, wildcard } = resolveChainViews(
                 config.roles.list,
                 config.rootChain,
@@ -1695,6 +1711,7 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
   ctx.on('agent/disposed', ({ agent }) => {
     states.delete(agent.id)
     dispatchInjected.delete(agent.id)
+    dispatchRoles.delete(agent.id)
     slotWinners.delete(agent.id)
     blockedAttemptMap.delete(agent.id)
     chainHeadMap.delete(agent.id)
@@ -1748,6 +1765,7 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
   ctx.effect(() => () => {
     states.clear()
     dispatchInjected.clear()
+    dispatchRoles.clear()
     slotWinners.clear()
     blockedAttemptMap.clear()
     chainHeadMap.clear()
@@ -1771,7 +1789,9 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
   const fallbacksCommandController: FallbacksCommandController = {
     getSnapshot(agent): FallbacksCommandSnapshot {
       const config = source()
-      const role = resolveRole(agent, config.roles.rules, roleIds, logger.warn, servedRouteFor(agent, config))
+      // Same preference as decide(): a remembered dispatch role wins.
+      const role = rememberedRole(agent.id)
+        ?? resolveRole(agent, config.roles.rules, roleIds, logger.warn, servedRouteFor(agent, config))
       const state = states.peek(agent.id)
       // P4 (plan fallbacks-half-open-recovery Task 4): under half-open mode
       // the expired cooldown entries transition AT the diagnostic read (so
