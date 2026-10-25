@@ -1782,7 +1782,9 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
   const fallbacksCommandController: FallbacksCommandController = {
     getSnapshot(agent): FallbacksCommandSnapshot {
       const config = source()
-      const role = resolveRole(agent, config.roles.rules, roleIds, logger.warn, servedRouteFor(agent, config))
+      // Same preference as decide(): a remembered dispatch role wins.
+      const role = dispatchRoles.get(agent.id)
+        ?? resolveRole(agent, config.roles.rules, roleIds, logger.warn, servedRouteFor(agent, config))
       const state = states.peek(agent.id)
       // P4 (plan fallbacks-half-open-recovery Task 4): under half-open mode
       // the expired cooldown entries transition AT the diagnostic read (so

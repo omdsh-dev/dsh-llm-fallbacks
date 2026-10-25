@@ -17,12 +17,13 @@
  *   invoked when an earlier stage resolves);
  * - `roleAutoMatch: false` reproduces today's behavior (no auto-match, no
  *   injection, no event), even when the llm would answer;
- * - dedicated regression assertions that the failure-time fallback path
- *   (trigger-code / always-cap) stays intact AFTER a dispatch injection
- *   has occurred on the same agent: the dispatch path writes no pending /
- *   cooldown / failure bookkeeping, never re-evaluates (once-marker), and so
- *   failure decisions keep their exact pre-feature override semantics (no
- *   durable event, issue #52).
+ * - dedicated regression assertions on the failure-time fallback path
+ *   (trigger-code / always-cap) AFTER a dispatch injection on the same agent:
+ *   the dispatch path writes no pending / cooldown / failure bookkeeping and
+ *   never re-evaluates (once-marker); root/inherit children keep their
+ *   pre-feature `rootChain` shape, while an injected child follows the
+ *   dispatch-resolved role's chain (I-000078). No durable event either way
+ *   (issue #52).
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -143,7 +144,7 @@ describe('roleAutoMatch:false reproduces today (regression)', () => {
   })
 })
 
-describe('failure-time fallback path byte-identical after dispatch injection (regression)', () => {
+describe('failure-time fallback path after dispatch injection (regression + I-000078)', () => {
   it('trigger-code closed loop keeps its exact pre-feature shape after a role-inject', async () => {
     const { agent } = makeAgent('t6-trigger', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent', agentPreset: 'coder' })
     apply(ctx, cfg({ rootChain: ['other/gpt-4o'], roles: coderRoles() }))
