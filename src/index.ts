@@ -974,9 +974,6 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
       // re-baseline the 分时切换 markers so the next root request starts
       // from the new config instead of logging a spurious switch.
       slotWinners.clear()
-      // BUG-01: remembered dispatch roles are config-derived — a role edit or
-      // deletion must not survive the reopen of the next decision.
-      dispatchRoles.clear()
     })
     return () => {
       disposeDocumentUpdated()

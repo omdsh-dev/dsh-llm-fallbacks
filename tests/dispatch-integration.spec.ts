@@ -30,6 +30,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import type { StreamChunk } from '@deepseek-ai/dsh-llm'
 import { apply } from '../src/index.ts'
+import { FALLBACKS_PROFILE_ENTRY } from '../src/gateway.ts'
 import { subagentSeamOf } from '../src/subagents-seam.ts'
 import { MemorySettings } from './support/memory-settings.ts'
 import {
@@ -58,6 +59,13 @@ function asyncIter(chunks: StreamChunk[]): AsyncIterable<StreamChunk> {
       for (const chunk of chunks) yield chunk
     },
   }
+}
+
+/** Capture every ctx.logger export (mirrors `dispatch-injection.spec.ts`; DEBUG lets warn through). */
+function captureLogs(): Array<{ type: string; args: unknown[] }> {
+  const logs: Array<{ type: string; args: unknown[] }> = []
+  ctx.logger.exporter({ levels: { default: 3 }, export: (message) => logs.push(message) })
+  return logs
 }
 
 /** Declared taxonomy under test: role `coder` with chain head `anthropic/claude-sonnet-4`. */
@@ -228,5 +236,39 @@ describe('failure-time fallback path after dispatch injection (regression + I-00
     expect(action).toEqual({ kind: 'retry' })
     const switched = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
     expect(switched).toEqual({ provider: 'root', model: 'zero' })
+  })
+
+  it('falls back to rules-only resolution once the settings edit removes the remembered role (BUG-01 guard)', async () => {
+    const logs = captureLogs()
+    const { agent } = makeAgent('t6-role-removed', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent' })
+    apply(ctx, cfg({
+      rootChain: ['root/zero'],
+      roles: {
+        list: [{ id: 'coder', persona: '', chain: ['first/one', 'second/two'], fallback: 'none' }],
+        rules: [],
+      },
+    }))
+    const seam = subagentSeamOf(ctx)
+    if (seam === undefined) throw new Error('subagent seam not installed — cannot seed a dispatch role')
+    seam.records.set(agent.id, { role: 'coder', at: Date.now(), firstNoticePending: true })
+
+    // First request records the dispatch role and injects its chain head.
+    const injected = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
+    expect(injected).toEqual({ provider: 'first', model: 'one' })
+
+    // The role disappears mid-session (the real settings write path). The
+    // remembered id must stop resolving: no rule matches, so the decision is
+    // `inherit` → the bare rootChain target, not the removed role's chain.
+    await ctx.settings.update(FALLBACKS_PROFILE_ENTRY, { roles: { list: [], rules: [] } })
+    const action = await dispatchRequestError(ctx, agent, { provider: 'first' })
+    expect(action).toEqual({ kind: 'retry' })
+    const switched = await dispatchRequest(ctx, agent, { provider: 'first', model: 'one' })
+    expect(switched).toEqual({ provider: 'root', model: 'zero' })
+
+    // The stale id is not handed to resolveChainViews any more. (An undeclared
+    // role ALSO resolves to rootChain, so the routing above cannot separate the
+    // two paths — this warn is the observable difference.)
+    const unknownRole = logs.filter((message) => String(message.args[0]).includes('unknown role'))
+    expect(unknownRole).toHaveLength(0)
   })
 })
