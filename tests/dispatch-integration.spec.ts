@@ -29,6 +29,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import type { StreamChunk } from '@deepseek-ai/dsh-llm'
 import { apply } from '../src/index.ts'
+import { subagentSeamOf } from '../src/subagents-seam.ts'
 import { MemorySettings } from './support/memory-settings.ts'
 import {
   appendLlmRetry,
@@ -179,5 +180,44 @@ describe('failure-time fallback path byte-identical after dispatch injection (re
     expect(switched).toEqual({ provider: 'other', model: 'gpt-4o' })
     // Stop-write: the always-cap switch applies with no durable event.
     expect(switchEvents(agent)).toHaveLength(0)
+  })
+
+  it('walks the dispatch-resolved role chain on the failure path, never the bare rootChain (I-000078)', async () => {
+    // `fallback: 'none'` role: its chain alone, concatenation order preserved.
+    // The second entry deliberately differs from `rootChain[0]`.
+    const { agent } = makeAgent('t6-role-chain', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent' })
+    apply(ctx, cfg({
+      rootChain: ['root/zero'],
+      roles: {
+        list: [{ id: 'coder', persona: '', chain: ['first/one', 'second/two'], fallback: 'none' }],
+        rules: [],
+      },
+    }))
+    const seam = subagentSeamOf(ctx)
+    if (seam === undefined) throw new Error('subagent seam not installed — cannot seed a dispatch role')
+    seam.records.set(agent.id, { role: 'coder', at: Date.now(), firstNoticePending: true })
+
+    // First request: injected with the role's chain head.
+    const injected = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
+    expect(injected).toEqual({ provider: 'first', model: 'one' })
+
+    // The injected route fails: the switch must stay on the role's chain.
+    const action = await dispatchRequestError(ctx, agent, { provider: 'first' })
+    expect(action).toEqual({ kind: 'retry' })
+    const switched = await dispatchRequest(ctx, agent, { provider: 'first', model: 'one' })
+    expect(switched).toEqual({ provider: 'second', model: 'two' })
+  })
+
+  it('keeps the bare rootChain for a root-origin agent (unchanged)', async () => {
+    const { agent } = makeAgent('t6-root-chain', { provider: 'mock', model: 'gpt-4o' }, { origin: 'root' })
+    apply(ctx, cfg({
+      rootChain: ['root/zero'],
+      roles: { list: [{ id: 'coder', persona: '', chain: ['first/one', 'second/two'], fallback: 'none' }], rules: [] },
+    }))
+
+    const action = await dispatchRequestError(ctx, agent, { provider: 'mock' })
+    expect(action).toEqual({ kind: 'retry' })
+    const switched = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
+    expect(switched).toEqual({ provider: 'root', model: 'zero' })
   })
 })
