@@ -255,6 +255,9 @@ describe('failure-time fallback path after dispatch injection (regression + I-00
     // First request records the dispatch role and injects its chain head.
     const injected = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
     expect(injected).toEqual({ provider: 'first', model: 'one' })
+    // Positive control: capture is live, so the absence assertion below cannot
+    // pass vacuously (the inject path logs the role→model line).
+    expect(logs.length).toBeGreaterThan(0)
 
     // The role disappears mid-session (the real settings write path). The
     // remembered id must stop resolving: no rule matches, so the decision is
@@ -268,6 +271,38 @@ describe('failure-time fallback path after dispatch injection (regression + I-00
     // The stale id is not handed to resolveChainViews any more. (An undeclared
     // role ALSO resolves to rootChain, so the routing above cannot separate the
     // two paths — this warn is the observable difference.)
+    const unknownRole = logs.filter((message) => String(message.args[0]).includes('unknown role'))
+    expect(unknownRole).toHaveLength(0)
+  })
+
+  it('keeps the remembered dispatch role across an unrelated settings write (RET-01)', async () => {
+    const logs = captureLogs()
+    const { agent } = makeAgent('t6-role-kept', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent' })
+    apply(ctx, cfg({
+      rootChain: ['root/zero'],
+      roles: {
+        list: [{ id: 'coder', persona: '', chain: ['first/one', 'second/two'], fallback: 'none' }],
+        rules: [],
+      },
+    }))
+    const seam = subagentSeamOf(ctx)
+    if (seam === undefined) throw new Error('subagent seam not installed — cannot seed a dispatch role')
+    seam.records.set(agent.id, { role: 'coder', at: Date.now(), firstNoticePending: true })
+
+    // First request records the dispatch role and injects its chain head.
+    const injected = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
+    expect(injected).toEqual({ provider: 'first', model: 'one' })
+    expect(logs.length).toBeGreaterThan(0)
+
+    // An UNRELATED write: `roles` stays declared, only rootChain moves. The
+    // role is recorded once per agent (never re-recorded), so a blanket map
+    // clear here would drop this child to `inherit` → the NEW rootChain entry.
+    await ctx.settings.update(FALLBACKS_PROFILE_ENTRY, { rootChain: ['other/root'] })
+    const action = await dispatchRequestError(ctx, agent, { provider: 'first' })
+    expect(action).toEqual({ kind: 'retry' })
+    const switched = await dispatchRequest(ctx, agent, { provider: 'first', model: 'one' })
+    expect(switched).toEqual({ provider: 'second', model: 'two' })
+
     const unknownRole = logs.filter((message) => String(message.args[0]).includes('unknown role'))
     expect(unknownRole).toHaveLength(0)
   })
