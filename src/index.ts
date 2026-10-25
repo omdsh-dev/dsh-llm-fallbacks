@@ -974,6 +974,9 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
       // re-baseline the 分时切换 markers so the next root request starts
       // from the new config instead of logging a spurious switch.
       slotWinners.clear()
+      // BUG-01: remembered dispatch roles are config-derived — a role edit or
+      // deletion must not survive the reopen of the next decision.
+      dispatchRoles.clear()
     })
     return () => {
       disposeDocumentUpdated()
@@ -1117,6 +1120,13 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
   // Dispatch-resolved role per agent (I-000078): `decide()` re-resolves the
   // role rules-only, which loses the dispatch stage — remember it here.
   const dispatchRoles = new Map<string, string>()
+  // A remembered id wins only while it is still declared (BUG-01): a role
+  // edited or deleted mid-session falls through to resolveRole instead of
+  // walking rootChain under a role that no longer exists.
+  const rememberedRole = (agentId: string): string | undefined => {
+    const role = dispatchRoles.get(agentId)
+    return role !== undefined && roleIds.has(role.trim()) ? role : undefined
+  }
   // P7 分时切换 marker (plan fallbacks-timeslots Task 2): per-root-agent
   // LAST slot winner (identity key + display label), in-process only. A
   // winner change between root requests logs 分时切换 — a routing seed, NOT
@@ -1170,7 +1180,7 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
     }
     // Remembered dispatch role wins: the rules-only resolve below never sees
     // the dispatch stage.
-    const role = dispatchRoles.get(agent.id)
+    const role = rememberedRole(agent.id)
       ?? resolveRole(agent, config.roles.rules, roleIds, logger.warn, servedRouteFor(agent, config))
     // P7 (plan fallbacks-timeslots Task 2): slot rotation applies to
     // ROOT-origin agents only, in BOTH primary and fallback-only modes —
@@ -1783,7 +1793,7 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
     getSnapshot(agent): FallbacksCommandSnapshot {
       const config = source()
       // Same preference as decide(): a remembered dispatch role wins.
-      const role = dispatchRoles.get(agent.id)
+      const role = rememberedRole(agent.id)
         ?? resolveRole(agent, config.roles.rules, roleIds, logger.warn, servedRouteFor(agent, config))
       const state = states.peek(agent.id)
       // P4 (plan fallbacks-half-open-recovery Task 4): under half-open mode

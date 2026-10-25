@@ -207,6 +207,14 @@ describe('failure-time fallback path after dispatch injection (regression + I-00
     expect(action).toEqual({ kind: 'retry' })
     const switched = await dispatchRequest(ctx, agent, { provider: 'first', model: 'one' })
     expect(switched).toEqual({ provider: 'second', model: 'two' })
+
+    // The chain's LAST entry fails too: `fallback: 'none'` appends no
+    // rootChain tail, so there is no switch target left — `root/zero` must
+    // never leak into this role's walk.
+    const exhausted = await dispatchRequestError(ctx, agent, { provider: 'second' })
+    expect(exhausted).toBeUndefined()
+    const still = await dispatchRequest(ctx, agent, { provider: 'second', model: 'two' })
+    expect(still).toEqual({ provider: 'second', model: 'two' })
   })
 
   it('keeps the bare rootChain for a root-origin agent (unchanged)', async () => {
