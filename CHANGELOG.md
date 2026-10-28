@@ -6,6 +6,12 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.6.13] - 2026-10-28
+
+### Changed
+
+Upgrade `@deepseek-ai/dsh-*` peers to `^0.2.1-rc.4`.
+
 ## [0.6.12] - 2026-10-25
 
 ### Fixed
