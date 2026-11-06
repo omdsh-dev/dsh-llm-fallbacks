@@ -10,9 +10,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import type { CommandDefinition, CommandInvocation } from '@deepseek-ai/dsh-commands'
-import { apply } from '../src/index.ts'
+import { apply, stateStore } from '../src/index.ts'
 import { FALLBACKS_PROFILE_ENTRY } from '../src/gateway.ts'
-import { cfg, dispatchRequestError, makeAgent } from './support/harness.ts'
+import { cfg, makeAgent } from './support/harness.ts'
 import { MemorySettings } from './support/memory-settings.ts'
 import {
   FALLBACKS_COMMAND_LOCALES,
@@ -843,6 +843,18 @@ describe('apply() wiring — conditional commands child', () => {
     await ctx.fiber.dispose()
   })
 
+  /**
+   * Seed the cooldown the chain walk writes for the head it attempted
+   * (direction C). The walk owns cooldown now — no `agent/request-error`
+   * listener exists to drive — so the seed goes through the plugin's own
+   * state store, the same `states` seam the command readback reads.
+   */
+  function seedCooldown(agent: { id: string }, key: string, untilEpochMs: number): void {
+    const states = stateStore(ctx)
+    if (states === undefined) throw new Error('llm-fallbacks state store missing')
+    states.suppress(states.get(agent.id), key, untilEpochMs)
+  }
+
   it('registers /fallbacks only when a commands service is composed', async () => {
     const registered: CommandDefinition[] = []
     ctx.provide('commands', {
@@ -868,9 +880,10 @@ describe('apply() wiring — conditional commands child', () => {
     await vi.waitFor(() => expect(registered).toHaveLength(1))
 
     const { agent } = makeAgent('cmd-agent', { provider: 'mock', model: 'gpt-4o' })
-    // A real switch: cooldown on the source model (no durable event, issue #52).
-    const action = await dispatchRequestError(ctx, agent)
-    expect(action).toEqual({ kind: 'retry' })
+    // Direction C: the walk cools the chain entry it ATTEMPTED — here the
+    // chain head, not the session's source model — and writes no durable
+    // event (issue #52).
+    seedCooldown(agent, 'other/gpt-4o', Date.now() + 300_000)
 
     const result = registered[0]!.handler({
       commandId: 'x',
@@ -891,10 +904,12 @@ describe('apply() wiring — conditional commands child', () => {
     // recent-switch section is empty, while the cooldown readback still works.
     expect(text).toContain('最近降级切换: 本会话暂无 fallback 切换')
     expect(text).toContain('冷却 (1):')
-    expect(text).toContain('mock/gpt-4o 冷却至')
+    expect(text).toContain('other/gpt-4o 冷却至')
     expect(text).not.toContain('无活跃冷却')
 
-    // Read-only: the invocation must not have grown the store or replayed events.
+    // Read-only: the invocation must not have created another agent's state
+    // nor replayed events.
+    expect(stateStore(ctx)?.size).toBe(1)
     expect(agent.session.snapshotEvents()).toHaveLength(0)
   })
 
@@ -1208,29 +1223,24 @@ describe('apply() wiring — conditional commands child', () => {
     await vi.waitFor(() => expect(registered).toHaveLength(1))
 
     const { agent } = makeAgent('cmd-half-open', { provider: 'mock', model: 'gpt-4o' })
-    // A real switch: mock is suppressed flat (n=1).
-    const action = await dispatchRequestError(ctx, agent)
-    expect(action).toEqual({ kind: 'retry' })
-    vi.useFakeTimers()
-    try {
-      // The cooldown lapses: the diagnostic read transitions the expired
-      // entry to half-open, so the marker appears at expiry without waiting
-      // for a failure walk.
-      vi.setSystemTime(Date.now() + 301_000)
-      const result = registered[0]!.handler({
-        commandId: 'x',
-        agent,
-        rawInput: '',
-        signal: new AbortController().signal,
-      } as unknown as CommandInvocation)
-      expect(result.kind).toBe('success')
-      const text = (result as { text?: string }).text ?? ''
-      expect(text).toContain('冷却 (1):')
-      expect(text).toContain('mock/gpt-4o half-open（等待恢复探针）')
-      expect(text).not.toContain('冷却至')
-    } finally {
-      vi.useRealTimers()
-    }
+    // Direction C: the walk cooled the head it attempted (mock/gpt-4o here),
+    // and that entry has already lapsed.
+    seedCooldown(agent, 'mock/gpt-4o', Date.now() - 1)
+
+    // The cooldown lapses: the diagnostic read transitions the expired
+    // entry to half-open, so the marker appears at expiry without waiting
+    // for a failure walk.
+    const result = registered[0]!.handler({
+      commandId: 'x',
+      agent,
+      rawInput: '',
+      signal: new AbortController().signal,
+    } as unknown as CommandInvocation)
+    expect(result.kind).toBe('success')
+    const text = (result as { text?: string }).text ?? ''
+    expect(text).toContain('冷却 (1):')
+    expect(text).toContain('mock/gpt-4o half-open（等待恢复探针）')
+    expect(text).not.toContain('冷却至')
   })
 
   it('default timer mode keeps the bare diagnostic byte-identical (no half-open marker, no recovery line)', async () => {
@@ -1245,8 +1255,8 @@ describe('apply() wiring — conditional commands child', () => {
     await vi.waitFor(() => expect(registered).toHaveLength(1))
 
     const { agent } = makeAgent('cmd-timer', { provider: 'mock', model: 'gpt-4o' })
-    const action = await dispatchRequestError(ctx, agent)
-    expect(action).toEqual({ kind: 'retry' })
+    // Direction C: the walk cools the head it attempted (mock/gpt-4o here).
+    seedCooldown(agent, 'mock/gpt-4o', Date.now() + 300_000)
     const result = registered[0]!.handler({
       commandId: 'x',
       agent,
