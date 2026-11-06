@@ -352,8 +352,8 @@ export function buildFallbacksTuiSection(): TuiSettingsSection {
       },
       {
         path: ['maxSwitchesPerStep'],
-        label: 'Max switches per step',
-        descriptions: { zh: '单步最大切换次数', en: 'Max switches per step' },
+        label: 'Max switches per request walk',
+        descriptions: { zh: '单次请求行走最大切换', en: 'Max switches per request walk' },
         group: 'advanced',
         kind: 'number',
       },
