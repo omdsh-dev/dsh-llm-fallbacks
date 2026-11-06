@@ -16,6 +16,9 @@
  * 3. The locale files carry the `{ meta: { title, description } }` shape the
  *    host parses (non-empty strings), and both paths are inside the `files`
  *    publish whitelist.
+ * 4. A locale's `meta.detail` points at an existing Markdown document whose
+ *    local preview image ships too — a missing file is a hard `invalid` on the
+ *    Plugins page (never a silent README fallback).
  */
 
 import { createRequire } from 'node:module'
@@ -70,6 +73,25 @@ describe('plugin meta + icon (readPluginMeta contract)', () => {
     expect(resolve(iconPath).startsWith(REPO_ROOT + '/')).toBe(true)
     expect(real!.size).toBeLessThanOrEqual(ICON_MAX_BYTES)
     expect(iconPath.endsWith('.svg')).toBe(true)
+  })
+
+  it('points meta.detail at an existing document whose local preview ships', () => {
+    for (const locale of ['en', 'zh']) {
+      const data = JSON.parse(readFileSync(join(REPO_ROOT, 'locale', `${locale}.json`), 'utf8')) as {
+        meta?: { detail?: unknown }
+      }
+      const detail = data.meta?.detail
+      expect(typeof detail).toBe('string')
+      expect((detail as string).endsWith('.md')).toBe(true)
+      const docPath = join(REPO_ROOT, detail as string)
+      expect(statSync(docPath, { throwIfNoEntry: false })?.isFile()).toBe(true)
+      expect(manifest.files).toContain(detail)
+      // Relative preview paths resolve against the document; each image must
+      // ship, or the detail page renders a broken image.
+      for (const [, src] of readFileSync(docPath, 'utf8').matchAll(/!\[[^\]]*\]\(([^)]+)\)/g)) {
+        expect(manifest.files).toContain(join(detail as string, '..', src))
+      }
+    }
   })
 
   it('whitelists locale/ and icon.svg in the publish files list', () => {

@@ -28,7 +28,11 @@
     "bundle",
     "locale",
     "icon.svg",
-    "scripts"
+    "scripts",
+    "docs/DETAIL.md",
+    "docs/DETAIL.zh.md",
+    "docs/preview.svg",
+    "docs/preview.zh.svg"
   ],
   "dsh": {
     "bundle": {

@@ -1,3 +1,5 @@
+![preview](https://raw.githubusercontent.com/omdsh-dev/dsh-llm-fallbacks/main/docs/preview.png)
+
 # dsh-llm-fallbacks
 
 [English](README.md) | [Chinese](README.zh-CN.md)
