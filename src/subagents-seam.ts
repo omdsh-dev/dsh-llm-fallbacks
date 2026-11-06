@@ -655,7 +655,6 @@ export function subagentSeamOf(ctx: Context): SubagentSeam | undefined {
 export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions): SubagentSeam {
   const root = ctx.root
   const state = seamStateFor(root)
-  state.fibers += 1
   const records = state.records
   /**
    * Task 3's per-agent once-marker (mirrors the runtime's `dispatchInjected`):
@@ -1045,10 +1044,26 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
     return wrapper
   }
 
+  /**
+   * Register one THROW-capable surface. A throw withdraws every registration
+   * this install already made and releases the root claim: the caller never
+   * receives a seam (so no `dispose` will ever run for it), and the fiber
+   * counter must not outlive that failed install either.
+   */
+  const installSurface = (register: () => () => void): void => {
+    try {
+      disposers.push(register())
+    } catch (error) {
+      for (const dispose of disposers.splice(0)) dispose()
+      if (ownsWrapper) subagentSeamRoots.delete(root)
+      throw error
+    }
+  }
+
   // The ROOT-scoped part, owned by the FIRST fiber only (CF-5 dedupe): the
   // service-read wrapper plus the catalog-correlation listener it feeds.
   if (ownsWrapper) {
-    disposers.push(ctx.on(SUBAGENT_SEAM_EVENT, (_readCtx, name, _error, next) => {
+    installSurface(() => ctx.on(SUBAGENT_SEAM_EVENT, (_readCtx, name, _error, next) => {
       const value: unknown = next()
       if (name !== SUBAGENT_SEAM_SERVICE) return value
       try {
@@ -1069,7 +1084,7 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
     // whichever role was claimed last — so this fallback can key a sibling's
     // role in that corner (bounded: reachable only when a result carrying no
     // child id reaches the seam; recorded as a residual).
-    disposers.push(ctx.on('session/event', (session, event) => {
+    installSurface(() => ctx.on('session/event', (session, event) => {
       try {
         if ((event.type as string) !== SUBAGENT_CATALOG_EVENT) return
         const data = (event as unknown as { data?: { childId?: unknown; label?: unknown } }).data
@@ -1094,7 +1109,7 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
   // is a pure read of the shared marker + record, so a second fiber's copy is
   // inert for a child the first already announced and stays live when another
   // fiber of the same root disposes.
-  disposers.push(installRoleNotice(ctx, { records, emitted: noticeEmitted, debug }))
+  installSurface(() => installRoleNotice(ctx, { records, emitted: noticeEmitted, debug }))
 
   // Task 3b: the durable READ of that same row — one host session projection
   // unit folding the notice out of the child's own log, so the header badge
@@ -1103,7 +1118,12 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
   // ref-counts a shared key, so a second registration is one unit, not a
   // conflict), and that is what keeps the badge alive when another fiber of the
   // same root — including the wrapper owner — disposes.
-  disposers.push(installRoleProjection(ctx, { debug }))
+  installSurface(() => installRoleProjection(ctx, { debug }))
+
+  // Every throw-capable registration is behind us, so this fiber is counted
+  // only once its install is complete: a failed install can never leave the
+  // root-shared state pinned above zero (no seam exists to be disposed).
+  state.fibers += 1
 
   const seam: SubagentSeam = {
     records,
@@ -1116,15 +1136,20 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
       // Release the root claim so a later apply (fiber reload) can own the
       // wrapper again; the shared state stays for any surviving fiber.
       if (ownsWrapper) subagentSeamRoots.delete(root)
-      for (const dispose of disposers.splice(0)) dispose()
-      // The record map and the notice marker are ROOT-shared, and the walk's
-      // allowlist gate reads `virtualRouteInjected` from them: only the LAST
-      // fiber of this root may drop them, never a fiber whose siblings' children
-      // are still alive.
-      state.fibers -= 1
-      if (state.fibers === 0) {
-        state.records.clear()
-        state.noticeEmitted.clear()
+      try {
+        for (const dispose of disposers.splice(0)) dispose()
+      } finally {
+        // The record map and the notice marker are ROOT-shared, and the walk's
+        // allowlist gate reads `virtualRouteInjected` from them: only the LAST
+        // fiber of this root may drop them, never a fiber whose siblings'
+        // children are still alive. Exactly one decrement per install, even
+        // when a disposer throws — a leaked count would survive a full teardown
+        // and let a re-apply reuse the stale markers.
+        state.fibers -= 1
+        if (state.fibers === 0) {
+          state.records.clear()
+          state.noticeEmitted.clear()
+        }
       }
     },
   }

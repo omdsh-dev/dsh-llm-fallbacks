@@ -47,12 +47,13 @@ import {
   resolveChainViews,
   roleChainEntries,
   selectCandidates,
+  type AnnotatedCandidate,
   type FailingModel,
 } from './chains.ts'
 import type { FallbacksConfig } from './config.ts'
 import type { FallbackSwitchReason } from './events.ts'
 import { escalatedCooldownMs } from './recovery.ts'
-import { firstAllowedCandidate, resolvedRoutes } from './route-allowlist.ts'
+import { firstAllowedCandidate, resolvedRoutes, routeOnAllowlist } from './route-allowlist.ts'
 import { resolveDeclaredRole } from './role-resolution.ts'
 import type { AgentLike } from './roles.ts'
 import { selectorKey, type Selector } from './selectors.ts'
@@ -490,8 +491,17 @@ export function walkChain(deps: ChainWalkDeps, options: GenerateOptions): AsyncI
 
 /** One expansion's outcome: the next attempt target plus the annotated candidate log. */
 interface Advance {
-  target: EffectiveHead
+  /** The next attempt target; absent when no candidate survives. */
+  target?: EffectiveHead
   candidates: string[]
+  /**
+   * Injected walks only, from the SAME fresh policy read this expansion used:
+   * does it still admit the route the expansion started from? A cooled-head
+   * re-entry was admitted at resolve time, BEFORE this expansion's catalog
+   * awaits, so it must not resume at a route the policy has since revoked.
+   * `undefined` = no policy proof (not injected, or policy off).
+   */
+  currentAdmitted?: boolean
 }
 
 /**
@@ -599,11 +609,12 @@ async function* walk(
     const filter = createCandidateFilter({ current: from, cooldown, failed, minContextWindow, contextWindowOf })
     const surviving = selectCandidates(candidates, wildcards, filter, exists)
     // §2 行为可见性: the log shows the attempt order AND why each candidate was
-    // skipped; survivors (including the target) are unlabelled.
+    // skipped; survivors (including the target) are unlabelled. A survivor the
+    // host allowlist excludes gets that label in the policy branch below.
     const annotated = annotateCandidates(candidates, surviving, { current: from, cooldown, failed, minContextWindow, contextWindowOf })
-      .map(({ candidate, skip }) => skip === undefined
-        ? `${candidate.provider}/${candidate.model}`
-        : `${candidate.provider}/${candidate.model} (skipped: ${skip})`)
+    const describeCandidates = (list: readonly AnnotatedCandidate[]): string[] => list.map(({ candidate, skip }) => skip === undefined
+      ? `${candidate.provider}/${candidate.model}`
+      : `${candidate.provider}/${candidate.model} (skipped: ${skip})`)
 
     // §3.1 step 2 / spec D1: a seam-injected child is a PLUGIN-originated
     // route, so its switches are intersected with the host allowlist in
@@ -616,9 +627,20 @@ async function* walk(
           'llm-fallbacks: agent "%s" subagent model-selection policy is on but unreadable — skipping fallback switch',
           owner,
         )
-        return undefined
+        return { candidates: describeCandidates(annotated), currentAdmitted: false }
       }
       if (policy.state === 'enabled') {
+        const currentAdmitted = routeOnAllowlist(from, policy.allowedModels)
+        const permitted = new Set(
+          surviving
+            .filter((candidate) => candidate.model !== undefined
+              && routeOnAllowlist({ provider: candidate.provider, model: candidate.model }, policy.allowedModels))
+            .map((candidate) => selectorKey(candidate.provider, candidate.model)),
+        )
+        const labelled = annotated.map((entry) => entry.skip === undefined
+          && !permitted.has(selectorKey(entry.candidate.provider, entry.candidate.model))
+          ? { candidate: entry.candidate, skip: 'allowlist' as const }
+          : entry)
         const allowed = firstAllowedCandidate(resolvedRoutes(surviving), policy.allowedModels)
         if (allowed === undefined) {
           const wouldBe = surviving[0]
@@ -631,26 +653,40 @@ async function* walk(
             )
             deps.recordBlocked?.(owner, { provider: wouldBe.provider, model: wouldBe.model }, 'trigger-code')
           }
-          return undefined
+          return { candidates: describeCandidates(labelled), currentAdmitted }
         }
-        return { target: allowed, candidates: annotated }
+        return { target: allowed, candidates: describeCandidates(labelled), currentAdmitted }
       }
     }
     const first: Selector | undefined = surviving[0]
-    if (first?.model === undefined) return undefined
-    return { target: { provider: first.provider, model: first.model }, candidates: annotated }
+    if (first?.model === undefined) return { candidates: describeCandidates(annotated) }
+    return { target: { provider: first.provider, model: first.model }, candidates: describeCandidates(annotated) }
   }
 
   // Attempt 1 is the chain head — unless cross-call memory already cooled it,
   // in which case the walk resumes at the next surviving candidate (the
   // llm-retry re-entry contract). A chain whose every candidate is cooled has
   // no replacement: the head is still attempted, so a request is never left
-  // without an answer. That fallback is safe for a plugin-originated walk
-  // because the head resolved above is already allowlist-admitted, so a
-  // rejected route can never be re-entered here.
-  let target: EffectiveHead = head
+  // without an answer. For a plugin-originated walk that fallback holds only
+  // while the FRESH policy still admits the head: it was admitted at resolve
+  // time, but `advanceFrom` awaits the catalog BEFORE it re-reads the policy,
+  // so an allowlist that narrowed (or turned unprovable) inside that window
+  // must refuse — never re-dispatch a route the operator has since revoked.
+  let target: EffectiveHead
   if (isCooled(selectorKey(head.provider, head.model))) {
-    target = (await advanceFrom(head))?.target ?? head
+    const advance = await advanceFrom(head)
+    if (advance?.target !== undefined) {
+      target = advance.target
+    } else if (advance?.currentAdmitted === false) {
+      throw new LlmError(
+        'llm-fallbacks: the subagent model-selection policy no longer admits the chain head — refusing to delegate the FallbacksChain call',
+        UNDISPATCHABLE_HEAD_CODE,
+      )
+    } else {
+      target = head
+    }
+  } else {
+    target = head
   }
   let switches = 0
 
@@ -714,7 +750,7 @@ async function* walk(
     // §3.1 step 4: no surviving candidate, or the switch cap reached — the
     // last attempt's terminal failure is re-emitted verbatim.
     const next = switches < config.maxSwitchesPerStep ? await advanceFrom(target, swallowed.code) : undefined
-    if (next === undefined) {
+    if (next === undefined || next.target === undefined) {
       yield swallowed.chunk
       return
     }

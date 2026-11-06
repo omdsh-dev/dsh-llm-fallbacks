@@ -314,8 +314,11 @@ export function createCandidateFilter(options: CandidateFilterOptions): (candida
  * 行为可见性). `context-window` is the `CONTEXT_WINDOW_EXCEEDED` walk's
  * exclusion: the candidate's disclosed window is not larger than the failing
  * model's, so the request that just overflowed cannot fit there either.
+ * `allowlist` is the subagent-policy exclusion: the candidate survived every
+ * filter but sits outside the host allowlist, so a plugin-originated walk may
+ * not switch to it. The walk owns that label — the policy read lives there.
  */
-export type CandidateSkipReason = 'same-as-current' | 'cooldown' | 'step-failed' | 'context-window' | 'missing-id'
+export type CandidateSkipReason = 'same-as-current' | 'cooldown' | 'step-failed' | 'context-window' | 'missing-id' | 'allowlist'
 
 /** One entry of the ordered, per-candidate annotation (T3 review Minor 1). */
 export interface AnnotatedCandidate {

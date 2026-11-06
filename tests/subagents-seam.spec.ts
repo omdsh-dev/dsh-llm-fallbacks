@@ -855,6 +855,72 @@ describe('subagent seam — behavioural (public call path)', () => {
   })
 })
 
+describe('subagent seam — install/dispose exception safety', () => {
+  let ctx: Context
+
+  beforeEach(() => {
+    ctx = new Context()
+  })
+
+  afterEach(async () => {
+    await ctx.fiber.dispose()
+  })
+
+  /**
+   * Make ONE `ctx.on` call throw (install) or hand back a throwing disposer
+   * (dispose). `installRoleNotice` registers through `ctx.on`, so that is the
+   * seam's throw-capable install step.
+   */
+  function stubContextOn(options: { install?: number; dispose?: number }): void {
+    const real = ctx.on.bind(ctx) as (...args: unknown[]) => () => void
+    // cordis types `on` per event key; a counting stub cannot type through that.
+    const host = ctx as unknown as { on: (...args: unknown[]) => () => void }
+    let calls = 0
+    host.on = (...args: unknown[]) => {
+      calls += 1
+      if (calls === options.install) throw new Error('install boom')
+      const dispose = real(...args)
+      if (calls !== options.dispose) return dispose
+      return () => {
+        throw new Error('dispose boom')
+      }
+    }
+  }
+
+  it('rolls back the root claim and the fiber count when a registration throws', () => {
+    ctx.provide('subagents', fakeSubagents({ childId: 'child-install' }).service)
+    // The third registration is `installRoleNotice`, after the two wrapper-owner
+    // listeners: the install is then PARTIAL.
+    stubContextOn({ install: 3 })
+    expect(() => installSubagentSeam(ctx, { roleIds: () => ROLE_IDS })).toThrow('install boom')
+
+    // The claim came back with the partial install: a later apply over the same
+    // root still owns the wrapper instead of silently installing none.
+    const seam = installSubagentSeam(ctx, { roleIds: () => ROLE_IDS })
+    expect(seam.ownsWrapper).toBe(true)
+
+    // …and the failed install left no fiber behind: ONE install means this
+    // dispose is the LAST fiber's, so the root-shared maps are zeroed.
+    seam.records.set('child-install', { role: 'coder', at: 1, firstNoticePending: true })
+    seam.dispose()
+    expect(seam.records.size).toBe(0)
+  })
+
+  it('decrements the fiber counter exactly once when a disposer throws', () => {
+    ctx.provide('subagents', fakeSubagents({ childId: 'child-dispose' }).service)
+    stubContextOn({ dispose: 1 })
+    const seam = installSubagentSeam(ctx, { roleIds: () => ROLE_IDS })
+    seam.records.set('child-dispose', { role: 'coder', at: 1, firstNoticePending: true })
+
+    expect(() => seam.dispose()).toThrow('dispose boom')
+    // The counter dropped in the `finally`, so the LAST fiber still zeroes the
+    // shared maps even though its first disposer threw.
+    expect(seam.records.size).toBe(0)
+    // Idempotent: the second call neither throws nor decrements again.
+    expect(() => seam.dispose()).not.toThrow()
+  })
+})
+
 describe('subagent seam — wrapper identity + install topology', () => {
   let ctx: Context
 

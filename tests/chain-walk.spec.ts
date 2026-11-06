@@ -420,6 +420,81 @@ describe('candidate order and filters (design §3.1 step 2)', () => {
     expect(finishes(chunks)).toHaveLength(1)
   })
 
+  it('refuses a cooled-head re-entry the fresh policy no longer admits, before any request', async () => {
+    adapter.respond = () => ({ chunks: [STOP] })
+    const ALLOWED = [{ provider: 'a', model: '1' }, { provider: 'b', model: '2' }]
+    /** Policy reads in order: the resolveWalk admission, then the expansion's re-read. */
+    let reads: EffectivePolicy[] = []
+
+    const plan = (): Partial<ChainWalkDeps> => {
+      const states = new FallbackStateStore()
+      states.suppress(states.get('s1'), 'a/1', Date.now() + 60_000)
+      return {
+        readConfig: config({
+          roles: { list: [{ id: 'coder', persona: '', chain: ['a/1', 'b/2'], fallback: 'none' as const }], rules: [] },
+        }),
+        resolveAgentView: () => ({ origin: 'subagent', sessionId: 's1' }),
+        seamRecord: () => ({ role: 'coder', virtualRouteInjected: true }),
+        roleIds: () => CODER_ROLE_IDS,
+        states,
+        policyFor: () => reads.shift() ?? { state: 'disabled' },
+      }
+    }
+    const options = { provider: FALLBACKS_PROVIDER, model: FALLBACKS_CHAIN_MODEL, messages: [], sessionId: SessionId('s1') }
+    /** The code a refused walk rejected with (the throw surfaces on the first pull). */
+    const refusedWith = async (): Promise<string | undefined> => {
+      try {
+        await collect(walkChain(walkDeps({ getLlm: () => ctx.llm, ...plan() }), options))
+        return undefined
+      } catch (error) {
+        return error instanceof Error && 'code' in error && typeof error.code === 'string' ? error.code : undefined
+      }
+    }
+
+    // The head was admitted under `enabled`; the re-read after the expansion's
+    // catalog awaits cannot prove anything, so the walk must not resume at it.
+    reads = [{ state: 'enabled', allowedModels: ALLOWED }, { state: 'unprovable' }]
+    await expect(refusedWith()).resolves.toBe(UNDISPATCHABLE_HEAD_CODE)
+    expect(adapter.calls).toHaveLength(0)
+
+    // The allowlist narrowed to a route the chain does not carry: the cooled
+    // head is revoked with nothing legal left to switch to.
+    reads = [{ state: 'enabled', allowedModels: ALLOWED }, { state: 'enabled', allowedModels: [{ provider: 'c', model: '3' }] }]
+    await expect(refusedWith()).resolves.toBe(UNDISPATCHABLE_HEAD_CODE)
+    expect(adapter.calls).toHaveLength(0)
+
+    // Control: a policy that still admits the head resumes at the next
+    // candidate — the refusal is the revocation, never "the head was cooled".
+    reads = [{ state: 'enabled', allowedModels: ALLOWED }, { state: 'enabled', allowedModels: ALLOWED }]
+    await collect(walkChain(walkDeps({ getLlm: () => ctx.llm, ...plan() }), options))
+    expect(dispatched()).toEqual(['b/2'])
+  })
+
+  it('labels an allowlist-rejected candidate as skipped in the switch log', async () => {
+    adapter.respond = (options) => (options.model === '1' ? { failure: { code: 'AUTH' } } : { chunks: [STOP] })
+    const info = vi.fn()
+
+    await walk({
+      readConfig: config({
+        roles: { list: [{ id: 'coder', persona: '', chain: ['a/1', 'c/3', 'b/2'], fallback: 'none' as const }], rules: [] },
+      }),
+      resolveAgentView: () => ({ origin: 'subagent', sessionId: 's1' }),
+      seamRecord: () => ({ role: 'coder', virtualRouteInjected: true }),
+      roleIds: () => CODER_ROLE_IDS,
+      policyFor: () => ({ state: 'enabled', allowedModels: [{ provider: 'a', model: '1' }, { provider: 'b', model: '2' }] }),
+      log: { info, warn: () => {} },
+    }, { sessionId: SessionId('s1') })
+
+    expect(dispatched()).toEqual(['a/1', 'b/2'])
+    const switchLog = info.mock.calls.find((call) => String(call[0]).includes('降级切换'))
+    // `c/3` survived every filter and is skipped for the allowlist alone.
+    expect(switchLog?.[8]).toEqual([
+      'a/1 (skipped: same-as-current)',
+      'c/3 (skipped: allowlist)',
+      'b/2',
+    ])
+  })
+
   it('leaves a non-injected session unfiltered by the allowlist', async () => {
     adapter.respond = (options) => (options.model === '1' ? { failure: { code: 'AUTH' } } : { chunks: [STOP] })
 
