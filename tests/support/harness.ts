@@ -24,7 +24,9 @@ import type {
   LlmCallConfig, LlmFailure, ReasoningEffortId, ResolvedNormalRetryPolicy, ResolvedRetryPolicy,
 } from '@deepseek-ai/dsh-llm'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
+import type { ChainWalkDeps } from '../../src/chain-walk.ts'
 import { defaultFallbacksConfig, type FallbacksConfig } from '../../src/config.ts'
+import { FallbackStateStore } from '../../src/state.ts'
 
 /**
  * Config helper: spec defaults + overrides (the plugin re-resolves through
@@ -41,6 +43,25 @@ export function cfg(overrides: Partial<FallbacksConfig> = {}): FallbacksConfig {
   // bundled behavior expand the default config explicitly
   // (`{ ...defaultFallbacksConfig, presets: 'bundled' }`).
   return { ...defaultFallbacksConfig, presets: 'none', ...overrides }
+}
+
+/**
+ * Chain-walk dependency bundle (design §6.1) for suites that exercise the walk
+ * without the full `apply()` wiring: no runtime, no agent view, no seam record,
+ * a policy-off reader and a silent log, each overridable per scenario.
+ */
+export function walkDeps(overrides: Partial<ChainWalkDeps> = {}): ChainWalkDeps {
+  return {
+    readConfig: () => cfg(),
+    getLlm: () => undefined,
+    resolveAgentView: () => undefined,
+    states: new FallbackStateStore(),
+    roleIds: () => new Map(),
+    seamRecord: () => undefined,
+    policyFor: () => ({ state: 'disabled' }),
+    log: { info: () => {}, warn: () => {} },
+    ...overrides,
+  }
 }
 
 /** Fake agent + session; `setRoute` simulates the loop logging a new request header after a switch. */

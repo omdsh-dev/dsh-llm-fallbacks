@@ -42,14 +42,28 @@ import type { Selector } from './selectors.ts'
 
 export type { FallbacksRoleRule } from './config.ts'
 
-/** Options for {@link resolveRoleAtDispatch}. */
-export interface ResolveRoleAtDispatchOptions {
+/** Options for the sync stages 1–3 ({@link resolveDeclaredRole}). */
+export interface DeclaredRoleOptions {
   /**
    * Dispatch-declared role: the DECLARED RAW id the seam resolved from the
    * Assignment/teammate prompt (`**Execute as**: <id>`). Validated against the
    * live `roleIds` map; absent, `inherit`, or no-longer-declared → skipped.
    */
   dispatchRole?: string
+  /** Warning sink — the decision path injects the plugin logger. */
+  warn: (message: string) => void
+  /**
+   * The route the agent's request was actually SERVED by, when that differs
+   * from the pair recorded on the agent (the virtual `FallbacksChain/Auto`
+   * row). Rule matching accepts either, so a rule keyed on the real chain head
+   * keeps matching a child whose recorded route is the virtual pair (QC1 I-1).
+   * `undefined` for every real route.
+   */
+  servedRoute?: { provider: string; model: string }
+}
+
+/** Options for {@link resolveRoleAtDispatch}. */
+export interface ResolveRoleAtDispatchOptions extends DeclaredRoleOptions {
   /**
    * Whether the auto-match stage may run (the `roleAutoMatch` config switch).
    * When `false`, stage 4 never runs and the outcome is identical to the
@@ -64,24 +78,13 @@ export interface ResolveRoleAtDispatchOptions {
    * `'inherit'`, never an undeclared role. Skipped when undefined.
    */
   automatch?: (agent: AgentLike) => Promise<string | null>
-  /** Warning sink — the decision path injects the plugin logger. */
-  warn: (message: string) => void
-  /**
-   * The route the agent's request was actually SERVED by, when that differs
-   * from the pair recorded on the agent (the virtual `FallbacksChain/Auto`
-   * row). Rule matching accepts either, so a rule keyed on the real chain head
-   * keeps matching a child whose recorded route is the virtual pair (QC1 I-1).
-   * `undefined` for every real route.
-   */
-  servedRoute?: { provider: string; model: string }
 }
 
 /**
- * Resolve the dispatch-time role for an agent across four ordered stages
- * (explicit → dispatch → rules → auto-match hook). Never throws on its own
- * inputs; the hook's own rejection is deliberately NOT caught here (the
- * Task-3/4 wiring bounds the LLM call so it never throws out of the request
- * path).
+ * Stages 1–3 of the dispatch resolver — explicit → dispatch → rules — without
+ * the async auto-match hook. The chain walk resolves its role with this:
+ * `stream()` is synchronous until its first chunk, and an LLM role pick has no
+ * host point there (design dsh-022-rc1-upgrade §2.2).
  *
  * `roleIds` is the canonical trimmed-id map (`trimmed id → declared raw id`,
  * built in `src/index.ts` apply()): every stage canonicalizes its reference
@@ -89,12 +92,12 @@ export interface ResolveRoleAtDispatchOptions {
  * `chains.ts` / `commands.ts` find the stored `roles.list[]` entry exactly
  * (qc2 F-001 — no silent role inertness on padded YAML ids).
  */
-export async function resolveRoleAtDispatch(
+export function resolveDeclaredRole(
   agent: AgentLike,
   rules: FallbacksRoleRule[],
   roleIds: ReadonlyMap<string, string>,
-  opts: ResolveRoleAtDispatchOptions,
-): Promise<string> {
+  opts: DeclaredRoleOptions,
+): string {
   // Stage 1 — explicit (architect-locked semantics). 'inherit' and undeclared
   // presets fall through to the later stages; a declared preset wins with its
   // RAW id.
@@ -115,7 +118,23 @@ export async function resolveRoleAtDispatch(
   }
 
   // Stage 3 — rules (existing resolveRole passthrough, unchanged).
-  const role = resolveRole(agent, rules, roleIds, opts.warn, opts.servedRoute)
+  return resolveRole(agent, rules, roleIds, opts.warn, opts.servedRoute)
+}
+
+/**
+ * Resolve the dispatch-time role for an agent across four ordered stages
+ * (explicit → dispatch → rules → auto-match hook) — {@link resolveDeclaredRole}
+ * followed by the hook. Never throws on its own inputs; the hook's own
+ * rejection is deliberately NOT caught here (the wiring bounds the LLM call so
+ * it never throws out of the request path).
+ */
+export async function resolveRoleAtDispatch(
+  agent: AgentLike,
+  rules: FallbacksRoleRule[],
+  roleIds: ReadonlyMap<string, string>,
+  opts: ResolveRoleAtDispatchOptions,
+): Promise<string> {
+  const role = resolveDeclaredRole(agent, rules, roleIds, opts)
   if (role !== INHERIT_ROLE_ID) return role
 
   // Stage 4 — auto-match hook, only when stage 3 → 'inherit' AND enabled.

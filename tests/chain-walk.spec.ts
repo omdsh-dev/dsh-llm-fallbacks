@@ -1,0 +1,528 @@
+/**
+ * Chain walk (design dsh-022-rc1-upgrade §2/§3/§6.1): the committed rule,
+ * candidate order and filters, the effort rule, exactly-one-terminal-finish,
+ * chain exhaustion, the pre-attempt throws, the recursion guard and the
+ * attempt-level success observation.
+ *
+ * Drives `walkChain` against the REAL `LlmRuntime` with one scripted adapter,
+ * so attempts compose with the runtime's own failure normalization
+ * (`adapterStream` turns an adapter throw into a terminal `finish` chunk) —
+ * the exact shape the walk sees in production.
+ *
+ * @module tests/chain-walk
+ */
+
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { Context } from '@deepseek-ai/cordis'
+import {
+  LlmAdapter,
+  LlmError,
+  LlmRuntime,
+  type GenerateOptions,
+  type LlmModelInfo,
+  type LlmResolvedModelInfo,
+  type StreamChunk,
+} from '@deepseek-ai/dsh-llm'
+import { SessionId } from '@deepseek-ai/dsh-session/types'
+import type { FallbacksConfig } from '../src/config.ts'
+import { FallbackStateStore } from '../src/state.ts'
+import {
+  CONTEXT_WINDOW_EXCEEDED_CODE,
+  walkChain,
+  type AgentChainView,
+  type ChainWalkDeps,
+} from '../src/chain-walk.ts'
+import {
+  EMPTY_EFFECTIVE_CHAIN_CODE,
+  FALLBACKS_CHAIN_MODEL,
+  FALLBACKS_PROVIDER,
+  LLM_UNAVAILABLE_CODE,
+  UNDISPATCHABLE_HEAD_CODE,
+} from '../src/virtual-adapter.ts'
+import { cfg, walkDeps } from './support/harness.ts'
+
+const TEXT: StreamChunk = { type: 'text-delta', index: 0, text: 'ok' }
+const STOP: StreamChunk = { type: 'finish', reason: { kind: 'stop' } }
+
+/** One scripted attempt: the chunks it emits, then either a throw or a clean end. */
+interface ScriptedAttempt {
+  chunks?: StreamChunk[]
+  /** The attempt ends by throwing; the runtime normalizes it into a `finish` chunk. */
+  failure?: { code: string; message?: string }
+}
+
+/** Scripted adapter for every route the scenarios use — records each dispatch. */
+class ScriptedAdapter extends LlmAdapter {
+  readonly calls: GenerateOptions[] = []
+  /** Advisory catalog per provider (the wildcard / context-window probes read it). */
+  catalog: (provider: string) => Array<{ id: string; contextWindow?: number }> = () => []
+  /** Whether every model advertises a `high` reasoning effort (the effort rule's route shape). */
+  reasoning = false
+  /**
+   * Disclosed context window per route. The walk's probe reads this through
+   * `resolveModelInfo` — the runtime REBUILDS `listModels` rows from a known
+   * field set, so a catalog-row window never survives that boundary.
+   */
+  windows: (provider: string, model: string) => number | undefined = () => undefined
+  respond: (options: GenerateOptions, attempt: number) => ScriptedAttempt = () => ({ chunks: [TEXT, STOP] })
+
+  override providerInfo(provider: string) {
+    return { id: provider, name: provider }
+  }
+
+  override listModels(provider: string): Promise<readonly LlmModelInfo[]> {
+    // `contextWindow` is a host-disclosed extra the structural probe reads
+    // (`LlmModelInfo` itself does not type it).
+    return Promise.resolve(this.catalog(provider).map((row) => ({ provider, name: row.id, ...row })))
+  }
+
+  override resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
+    const window = this.windows(provider, model)
+    return Promise.resolve({
+      provider,
+      id: model,
+      name: model,
+      ...(window === undefined ? {} : { context: { contextWindow: window } }),
+      ...(this.reasoning ? { reasoning: { efforts: [{ id: 'high', name: 'High' }] } } : {}),
+    })
+  }
+
+  override async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+    this.calls.push(options)
+    const attempt = this.respond(options, this.calls.length - 1)
+    for (const chunk of attempt.chunks ?? []) yield chunk
+    if (attempt.failure !== undefined) throw new LlmError(attempt.failure.message ?? attempt.failure.code, attempt.failure.code)
+  }
+}
+
+let ctx: Context
+let adapter: ScriptedAdapter
+
+const ROUTES = ['a', 'b', 'c', 'w', 'other']
+
+beforeEach(() => {
+  ctx = new Context()
+  new LlmRuntime(ctx)
+  adapter = new ScriptedAdapter()
+  ctx.llm.registerAdapter(ROUTES, adapter)
+})
+
+afterEach(async () => {
+  await ctx.fiber.dispose()
+})
+
+/** A frozen config reader for one scenario. */
+function config(overrides: Partial<FallbacksConfig>): () => FallbacksConfig {
+  const value = cfg(overrides)
+  return () => value
+}
+
+/** The `trimmed id → declared raw id` map `apply()` derives from `config.roles.list`. */
+const CODER_ROLE_IDS = new Map([['coder', 'coder']])
+
+/** Drain a chunk stream. */
+async function collect(stream: AsyncIterable<StreamChunk>): Promise<StreamChunk[]> {
+  const chunks: StreamChunk[] = []
+  for await (const chunk of stream) chunks.push(chunk)
+  return chunks
+}
+
+/** Walk one virtual call; returns the emitted chunks. */
+function walk(
+  deps: Partial<ChainWalkDeps>,
+  options: Partial<GenerateOptions> = {},
+): Promise<StreamChunk[]> {
+  const bundle = walkDeps({ getLlm: () => ctx.llm, ...deps })
+  return collect(walkChain(bundle, {
+    provider: FALLBACKS_PROVIDER,
+    model: FALLBACKS_CHAIN_MODEL,
+    messages: [],
+    ...options,
+  }))
+}
+
+/** The `provider/model` pairs the walk dispatched, in order. */
+function dispatched(): string[] {
+  return adapter.calls.map((call) => `${call.provider}/${call.model}`)
+}
+
+/** Run `fn` and report the `LlmError` code it threw (synchronously). */
+function thrownCode(fn: () => unknown): string | undefined {
+  try {
+    fn()
+    return undefined
+  } catch (error) {
+    return error instanceof Error && 'code' in error && typeof error.code === 'string'
+      ? error.code
+      : undefined
+  }
+}
+
+/** Count terminal chunks in one walk's output. */
+function finishes(chunks: StreamChunk[]): StreamChunk[] {
+  return chunks.filter((chunk) => chunk.type === 'finish')
+}
+
+describe('committed rule (design §3.1/§6.1.4)', () => {
+  it('switches silently after a pre-output trigger failure', async () => {
+    adapter.respond = (options) => options.model === '1'
+      ? { failure: { code: 'AUTH', message: 'head down' } }
+      : { chunks: [TEXT, STOP] }
+
+    const chunks = await walk({ readConfig: config({ rootChain: ['a/1', 'b/2'] }) })
+
+    expect(dispatched()).toEqual(['a/1', 'b/2'])
+    // The swallowed attempt contributes nothing — not even its finish.
+    expect(chunks).toEqual([TEXT, STOP])
+  })
+
+  it('forwards a post-output failure verbatim and never starts another attempt', async () => {
+    adapter.respond = () => ({
+      chunks: [TEXT],
+      failure: { code: 'AUTH', message: 'head down' },
+    })
+
+    const chunks = await walk({ readConfig: config({ rootChain: ['a/1', 'b/2'] }) })
+
+    expect(dispatched()).toEqual(['a/1'])
+    expect(chunks).toHaveLength(2)
+    expect(chunks[0]).toEqual(TEXT)
+    expect(chunks[1]).toMatchObject({
+      type: 'finish',
+      reason: { kind: 'error', failure: { code: 'AUTH', message: 'head down' } },
+    })
+  })
+
+  it('forwards a non-trigger failure instead of switching', async () => {
+    adapter.respond = () => ({ failure: { code: 'TRANSPORT', message: 'socket' } })
+
+    const chunks = await walk({ readConfig: config({ rootChain: ['a/1', 'b/2'] }) })
+
+    expect(dispatched()).toEqual(['a/1'])
+    expect(finishes(chunks)).toHaveLength(1)
+    expect(chunks.at(-1)).toMatchObject({ reason: { kind: 'error', failure: { code: 'TRANSPORT' } } })
+  })
+
+  it('emits exactly one terminal finish across a switched walk', async () => {
+    adapter.respond = (options) => options.model === '1'
+      ? { failure: { code: 'AUTH' } }
+      : { chunks: [TEXT, STOP] }
+
+    const chunks = await walk({ readConfig: config({ rootChain: ['a/1', 'b/2'] }) })
+
+    expect(finishes(chunks)).toEqual([STOP])
+  })
+})
+
+describe('candidate order and filters (design §3.1 step 2)', () => {
+  it('caps the walk at maxSwitchesPerStep switches (attempts ≤ cap + 1)', async () => {
+    adapter.respond = (options) => ({ failure: { code: 'AUTH', message: `${options.model} down` } })
+
+    const chunks = await walk({
+      readConfig: config({ rootChain: ['a/1', 'b/2', 'c/3'], maxSwitchesPerStep: 1 }),
+    })
+
+    expect(dispatched()).toEqual(['a/1', 'b/2'])
+    expect(finishes(chunks)).toHaveLength(1)
+    // The LAST attempt's failure is the one re-emitted.
+    expect(chunks.at(-1)).toMatchObject({ reason: { failure: { message: '2 down' } } })
+  })
+
+  it('skips a cooled candidate and the route that already failed in this walk', async () => {
+    adapter.respond = () => ({ failure: { code: 'AUTH', message: 'down' } })
+    const states = new FallbackStateStore()
+    states.suppress(states.get('s1'), 'b/2', Date.now() + 60_000)
+
+    await walk({
+      readConfig: config({ rootChain: ['a/1', 'b/2', 'b/2', 'c/3'] }),
+      states,
+    }, { sessionId: SessionId('s1') })
+
+    // b/2 is cooled → never dispatched; c/3 fails and is not revisited.
+    expect(dispatched()).toEqual(['a/1', 'c/3'])
+  })
+
+  it('starts past a cooled head on a re-entry (cross-call memory)', async () => {
+    const states = new FallbackStateStore()
+    states.suppress(states.get('s1'), 'a/1', Date.now() + 60_000)
+
+    await walk({
+      readConfig: config({ rootChain: ['a/1', 'b/2'] }),
+      states,
+    }, { sessionId: SessionId('s1') })
+
+    expect(dispatched()).toEqual(['b/2'])
+  })
+
+  it('filters candidates by context window for a CONTEXT_WINDOW_EXCEEDED trigger', async () => {
+    adapter.respond = (options) => options.model === '1'
+      ? { failure: { code: CONTEXT_WINDOW_EXCEEDED_CODE, message: 'too big' } }
+      : { failure: { code: 'AUTH' } }
+    adapter.windows = () => 1_000
+
+    const skipped = await walk({
+      readConfig: config({ rootChain: ['a/1', 'b/2'], triggerCodes: [CONTEXT_WINDOW_EXCEEDED_CODE] }),
+    })
+    expect(dispatched()).toEqual(['a/1'])
+    expect(finishes(skipped)).toHaveLength(1)
+
+    adapter.calls.length = 0
+    adapter.windows = (provider) => (provider === 'b' ? 5_000 : 1_000)
+    await walk({
+      readConfig: config({ rootChain: ['a/1', 'b/2'], triggerCodes: [CONTEXT_WINDOW_EXCEEDED_CODE] }),
+    })
+    // A larger window survives the filter.
+    expect(dispatched()).toEqual(['a/1', 'b/2'])
+  })
+
+  it('probes the catalog before dispatching a wildcard candidate', async () => {
+    adapter.respond = () => ({ failure: { code: 'AUTH' } })
+    adapter.catalog = (provider) => (provider === 'w' ? [{ id: '9' }] : [{ id: '1' }, { id: '2' }])
+
+    await walk({ readConfig: config({ rootChain: ['a/1', 'w/*'] }) })
+
+    // `w/*` resolves against the head's model id (1), which w does not list.
+    expect(dispatched()).toEqual(['a/1'])
+
+    adapter.calls.length = 0
+    adapter.catalog = (provider) => (provider === 'w' ? [{ id: '1' }] : [{ id: '1' }])
+    await walk({ readConfig: config({ rootChain: ['a/1', 'w/*'] }) })
+    expect(dispatched()).toEqual(['a/1', 'w/1'])
+  })
+
+  it('intersects candidates with the allowlist of a seam-injected subagent', async () => {
+    adapter.respond = () => ({ failure: { code: 'AUTH' } })
+    const view: AgentChainView = { origin: 'subagent', sessionId: 's1' }
+    const roleCfg = {
+      roles: { list: [{ id: 'coder', persona: '', chain: ['a/1', 'b/2'], fallback: 'none' as const }], rules: [] },
+    }
+    const blocked = vi.fn()
+
+    const refused = await walk({
+      readConfig: config(roleCfg),
+      resolveAgentView: () => view,
+      seamRecord: () => ({ role: 'coder', virtualRouteInjected: true }),
+      roleIds: () => CODER_ROLE_IDS,
+      policyFor: () => ({ state: 'enabled', allowedModels: [{ provider: 'c', model: '3' }] }),
+      recordBlocked: blocked,
+    }, { sessionId: SessionId('s1') })
+
+    expect(dispatched()).toEqual(['a/1'])
+    expect(finishes(refused)).toHaveLength(1)
+    // The unconstrained walk would have switched to b/2 — recorded, then exhausted.
+    expect(blocked).toHaveBeenCalledWith('s1', { provider: 'b', model: '2' }, 'trigger-code')
+
+    adapter.calls.length = 0
+    await walk({
+      readConfig: config(roleCfg),
+      resolveAgentView: () => view,
+      seamRecord: () => ({ role: 'coder', virtualRouteInjected: true }),
+      roleIds: () => CODER_ROLE_IDS,
+      policyFor: () => ({ state: 'enabled', allowedModels: [{ provider: 'b', model: '2' }] }),
+    }, { sessionId: SessionId('s1') })
+    expect(dispatched()).toEqual(['a/1', 'b/2'])
+  })
+
+  it('leaves a non-injected session unfiltered by the allowlist', async () => {
+    adapter.respond = (options) => (options.model === '1' ? { failure: { code: 'AUTH' } } : { chunks: [STOP] })
+
+    await walk({
+      readConfig: config({ rootChain: ['a/1', 'b/2'] }),
+      resolveAgentView: () => ({ origin: 'subagent', sessionId: 's1' }),
+      seamRecord: () => ({ role: 'inherit' }),
+      policyFor: () => ({ state: 'enabled', allowedModels: [] }),
+    }, { sessionId: SessionId('s1') })
+
+    expect(dispatched()).toEqual(['a/1', 'b/2'])
+  })
+})
+
+describe('role chain tail (design §2.2)', () => {
+  it('walks a subagent role chain and appends rootChain under inherit-root', async () => {
+    adapter.respond = () => ({ failure: { code: 'AUTH' } })
+
+    await walk({
+      readConfig: config({
+        rootChain: ['c/3'],
+        roles: { list: [{ id: 'coder', persona: '', chain: ['a/1'] }], rules: [] },
+      }),
+      resolveAgentView: () => ({ origin: 'subagent', sessionId: 's1' }),
+      seamRecord: () => ({ role: 'coder' }),
+      roleIds: () => CODER_ROLE_IDS,
+    }, { sessionId: SessionId('s1') })
+
+    expect(dispatched()).toEqual(['a/1', 'c/3'])
+  })
+
+  it('walks only the role chain when the role declares fallback: none', async () => {
+    adapter.respond = () => ({ failure: { code: 'AUTH' } })
+
+    await walk({
+      readConfig: config({
+        rootChain: ['c/3'],
+        roles: { list: [{ id: 'coder', persona: '', chain: ['a/1'], fallback: 'none' }], rules: [] },
+      }),
+      resolveAgentView: () => ({ origin: 'subagent', sessionId: 's1' }),
+      seamRecord: () => ({ role: 'coder' }),
+      roleIds: () => CODER_ROLE_IDS,
+    }, { sessionId: SessionId('s1') })
+
+    expect(dispatched()).toEqual(['a/1'])
+  })
+})
+
+describe('effort rule (design §3.2)', () => {
+  it('keeps an explicit selection effort on every attempt', async () => {
+    adapter.reasoning = true
+    adapter.respond = (options) => (options.model === '1' ? { failure: { code: 'AUTH' } } : { chunks: [STOP] })
+
+    await walk(
+      { readConfig: config({ rootChain: ['a/1', 'b/2'] }) },
+      { reasoningEffort: 'high' as GenerateOptions['reasoningEffort'] },
+    )
+
+    expect(adapter.calls.map((call) => call.reasoningEffort)).toEqual(['high', 'high'])
+  })
+
+  it('drops the effort entirely when the selection carries none', async () => {
+    adapter.respond = (options) => (options.model === '1' ? { failure: { code: 'AUTH' } } : { chunks: [STOP] })
+
+    await walk({ readConfig: config({ rootChain: ['a/1', 'b/2'] }) })
+
+    expect(adapter.calls.map((call) => 'reasoningEffort' in call)).toEqual([false, false])
+  })
+})
+
+describe('terminal behavior (design §3.1 step 4, §6.1.1/§6.1.3)', () => {
+  it('re-emits the last terminal error finish when the chain is exhausted', async () => {
+    adapter.respond = (options) => ({ failure: { code: 'AUTH', message: `${options.model} down` } })
+
+    const chunks = await walk({ readConfig: config({ rootChain: ['a/1', 'b/2'] }) })
+
+    expect(dispatched()).toEqual(['a/1', 'b/2'])
+    expect(finishes(chunks)).toHaveLength(1)
+    expect(chunks.at(-1)).toMatchObject({
+      type: 'finish',
+      reason: { kind: 'error', failure: { code: 'AUTH', message: '2 down' } },
+    })
+  })
+
+  it('throws EMPTY_EFFECTIVE_CHAIN before any chunk or dispatch', () => {
+    expect(thrownCode(() => walkChain(walkDeps({ getLlm: () => ctx.llm, readConfig: config({ rootChain: [] }) }), {
+      provider: FALLBACKS_PROVIDER,
+      model: FALLBACKS_CHAIN_MODEL,
+      messages: [],
+    }))).toBe(EMPTY_EFFECTIVE_CHAIN_CODE)
+    expect(adapter.calls).toHaveLength(0)
+  })
+
+  it('throws UNDISPATCHABLE_EFFECTIVE_HEAD for a wildcard-only or self-route chain', () => {
+    const options = { provider: FALLBACKS_PROVIDER, model: FALLBACKS_CHAIN_MODEL, messages: [] }
+    expect(thrownCode(() => walkChain(
+      walkDeps({ getLlm: () => ctx.llm, readConfig: config({ rootChain: ['a/*'] }) }),
+      options,
+    ))).toBe(UNDISPATCHABLE_HEAD_CODE)
+    expect(thrownCode(() => walkChain(
+      walkDeps({
+        getLlm: () => ctx.llm,
+        readConfig: config({ rootChain: [`${FALLBACKS_PROVIDER}/${FALLBACKS_CHAIN_MODEL}`] }),
+      }),
+      options,
+    ))).toBe(UNDISPATCHABLE_HEAD_CODE)
+    expect(adapter.calls).toHaveLength(0)
+  })
+
+  it('throws LLM_UNAVAILABLE when the runtime is gone', () => {
+    expect(thrownCode(() => walkChain(
+      walkDeps({ getLlm: () => undefined, readConfig: config({ rootChain: ['a/1'] }) }),
+      { provider: FALLBACKS_PROVIDER, model: FALLBACKS_CHAIN_MODEL, messages: [] },
+    ))).toBe(LLM_UNAVAILABLE_CODE)
+  })
+
+  it('forwards an aborted finish and starts no further attempt', async () => {
+    adapter.respond = () => ({ failure: { code: 'ABORTED', message: 'aborted' } })
+    const controller = new AbortController()
+    controller.abort()
+
+    const chunks = await walk(
+      { readConfig: config({ rootChain: ['a/1', 'b/2'] }) },
+      { signal: controller.signal },
+    )
+
+    expect(dispatched()).toEqual(['a/1'])
+    expect(finishes(chunks)).toHaveLength(1)
+    expect(chunks.at(-1)).toMatchObject({ reason: { kind: 'aborted' } })
+  })
+})
+
+describe('recursion guard (design §6.1.2)', () => {
+  it('never dispatches a chain entry under FallbacksChain/*', async () => {
+    adapter.respond = () => ({ failure: { code: 'AUTH' } })
+
+    await walk({
+      readConfig: config({
+        rootChain: ['a/1', `${FALLBACKS_PROVIDER}/${FALLBACKS_CHAIN_MODEL}`, 'b/2'],
+      }),
+    })
+
+    expect(dispatched()).toEqual(['a/1', 'b/2'])
+    expect(adapter.calls.every((call) => call.provider !== FALLBACKS_PROVIDER)).toBe(true)
+  })
+})
+
+describe('bookkeeping (design §3.3)', () => {
+  it('cools a route-scoped failure and skips it on the next walk', async () => {
+    adapter.respond = (options) => (options.model === '1' ? { failure: { code: 'AUTH' } } : { chunks: [STOP] })
+    const states = new FallbackStateStore()
+
+    await walk({ readConfig: config({ rootChain: ['a/1', 'b/2'] }), states }, { sessionId: SessionId('s1') })
+    expect(dispatched()).toEqual(['a/1', 'b/2'])
+    expect(states.peek('s1')?.cooldown.peek('a/1')).toBeTypeOf('number')
+
+    adapter.calls.length = 0
+    await walk({ readConfig: config({ rootChain: ['a/1', 'b/2'] }), states }, { sessionId: SessionId('s1') })
+    // The cooled head is skipped: the second walk resumes at the next candidate.
+    expect(dispatched()).toEqual(['b/2'])
+  })
+
+  it('writes no cooldown for a request-scoped failure', async () => {
+    adapter.respond = (options) => (options.model === '1' ? { failure: { code: CONTEXT_WINDOW_EXCEEDED_CODE } } : { chunks: [STOP] })
+    const states = new FallbackStateStore()
+
+    await walk({
+      readConfig: config({ rootChain: ['a/1', 'b/2'], triggerCodes: [CONTEXT_WINDOW_EXCEEDED_CODE] }),
+      states,
+    }, { sessionId: SessionId('s1') })
+
+    expect(states.peek('s1')?.cooldown.peek('a/1')).toBeUndefined()
+  })
+
+  it('closes a half-open episode on attempt-level success', async () => {
+    const states = new FallbackStateStore()
+    const state = states.get('s1')
+    state.recovery.markHalfOpen('a/1', Date.now())
+    expect(state.recovery.isHalfOpen('a/1')).toBe(true)
+
+    await walk({ readConfig: config({ rootChain: ['a/1'] }), states }, { sessionId: SessionId('s1') })
+
+    expect(state.recovery.isHalfOpen('a/1')).toBe(false)
+  })
+
+  it('logs the switch with the annotated candidate order', async () => {
+    adapter.respond = (options) => (options.model === '1' ? { failure: { code: 'AUTH' } } : { chunks: [STOP] })
+    const info = vi.fn()
+
+    await walk({
+      readConfig: config({ rootChain: ['a/1', 'b/2'] }),
+      log: { info, warn: () => {} },
+    })
+
+    expect(info).toHaveBeenCalledWith(
+      expect.stringContaining('降级切换'),
+      expect.anything(),
+      'a', '1', 'b', '2',
+      expect.anything(), 'trigger-code',
+      expect.anything(),
+    )
+  })
+})

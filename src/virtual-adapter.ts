@@ -24,17 +24,17 @@
  * re-narrow the condition to ignore `timeSlots`. Conformance-only chain
  * edits still never churn (conformance gates the delegate, not the row).
  *
- * Adapter behavior (P1/P3): `listModels` advertises exactly the one virtual
- * row; `stream()` is a THIN single-hop delegate to the effective chain head
- * through the host LLM runtime — no chain walk, no cooldown/caps/revert
- * bookkeeping, no state writes (a failure inside the delegate surfaces at
- * `agent/request-error`, where the existing engine walks from there).
- * `resolveModel` proxies the current effective head's metadata when
- * resolvable (modalities/context-window/reasoning follow the head) with a
- * permissive default otherwise — never throws. `providerRetryPolicy` and
+ * Adapter behavior (P1/P3, direction C): `listModels` advertises exactly the
+ * one virtual row; `stream()` keeps its three pre-attempt guards and then
+ * WALKS the session's chain (cooldown / failed-set / switch cap / recovery
+ * bookkeeping) in `src/chain-walk.ts` — the walk is injected at install, so
+ * this module stays the catalog + metadata surface. `resolveModel` proxies the
+ * current effective head's metadata when resolvable
+ * (modalities/context-window/reasoning follow the head) with a permissive
+ * default otherwise — never throws. `providerRetryPolicy` and
  * `imageRequestPricing` mirror the same head for the host-captured retry
  * policy and the token meter — also never throwing.
- *
+
  * @module dsh-llm-fallbacks/virtual-adapter
  */
 
@@ -170,84 +170,10 @@ async function resolveHeadDisplayName(llm: LlmRuntime | undefined, head: Effecti
   return head.model
 }
 
-/** One history message of a delegated request. */
-type DelegatedMessage = GenerateOptions['messages'][number]
-
 /**
- * The `provider/model` an adapter-private replay envelope names for itself, when
- * it names them in a readable shape.
- *
- * `ReplayEnvelope.response` is an untyped, adapter-private payload
- * (`@deepseek-ai/dsh-llm` `types.d.ts`), so this probe is deliberately
- * structural and total: anything it cannot read yields `undefined` and the
- * caller leaves the message untouched — never guessed, never thrown. A pair
- * naming the virtual route itself is refused, because re-stamping onto
- * `FallbacksChain` would be a self-route.
- */
-function envelopeProvenance(replayState: unknown): EffectiveHead | undefined {
-  if (typeof replayState !== 'object' || replayState === null) return undefined
-  const response: unknown = (replayState as { response?: unknown }).response
-  if (typeof response !== 'object' || response === null) return undefined
-  const { provider, model } = response as { provider?: unknown; model?: unknown }
-  if (typeof provider !== 'string' || provider === '' || provider === FALLBACKS_PROVIDER) return undefined
-  if (typeof model !== 'string' || model === '') return undefined
-  return { provider, model }
-}
-
-/**
- * Restore the provenance of history messages the durable record attributes to
- * the virtual route (R-004).
- *
- * The loop stamps every durable assistant message with the route of the REQUEST
- * that produced it — `FallbacksChain/Auto` here — while the replay envelope
- * inside it was produced by the head adapter that actually answered
- * (`@deepseek-ai/dsh-agent-loop` builds the durable source from
- * `request.provider`). The runtime's ownership gate exposes an envelope to a
- * target adapter only while that adapter instance owns the message's recorded
- * provider (`LlmRuntime.forAdapter`), so the delegate's second pass —
- * `llm.stream({ … provider: head })` — hands the head a message whose envelope
- * has been dropped, and pi-ai-backed thinking signatures silently degrade on the
- * root virtual route.
- *
- * Re-stamping the pair the envelope itself names puts the message back under the
- * adapter that produced it, so the gate keeps it. Reading the pair from the
- * envelope — never from the effective head — also keeps a rotation faithful: an
- * envelope produced by a previous head is not handed to another provider's
- * adapter. Only `source` changes; the durable record the loop writes is
- * untouched. Two readers see the delegated `source`: the runtime's ownership gate
- * (`forAdapter`), and — for a pi-ai-backed head — that adapter's own replay
- * validator, which throws `INVALID_REPLAY_STATE` unless
- * `response.provider`/`response.model` equal the message source. Re-stamping to
- * the pair the envelope names is therefore what makes the envelope *acceptable*,
- * not merely retained; re-stamping to the effective head instead would feed the
- * validator a mismatched pair on any rotation.
- *
- * @param messages - the delegated request's history, exactly as received.
- * @returns `messages` itself when nothing qualifies, so the untouched path
- *   allocates nothing and behaves precisely as before.
- */
-function restoreEnvelopeProvenance(messages: DelegatedMessage[]): DelegatedMessage[] {
-  let changed = false
-  const restored = messages.map((message): DelegatedMessage => {
-    const source = message.source
-    // `source` is optional on the request-message union (an identity-free
-    // one-shot user input carries `source?: never`), and only an assistant
-    // message's `model` source names a provider/model pair to re-stamp.
-    if (message.role !== 'assistant' || source?.kind !== 'model') return message
-    if (source.provider !== FALLBACKS_PROVIDER || source.model !== FALLBACKS_CHAIN_MODEL) return message
-    const provenance = envelopeProvenance(source.replayState)
-    if (provenance === undefined) return message
-    changed = true
-    return { ...message, source: { ...source, ...provenance } }
-  })
-  return changed ? restored : messages
-}
-
-/**
- * The virtual adapter (P1/P3). `stream()` is a thin head-delegate, never a
- * second routing engine: no chain walk, cooldown, caps, revert bookkeeping,
- * or state writes live here — those stay in the `agent/request` /
- * `agent/request-error` listeners. Exported so the defensive guard paths
+ * The virtual adapter (P1/P3). `stream()` resolves the session's chain and
+ * walks it (see `src/chain-walk.ts`) — registration metadata stays here.
+ * Exported so the defensive guard paths
  * the registration lifecycle cannot reach (a registered route whose `llm`
  * vanished mid-teardown) stay unit-testable by direct construction.
  */
@@ -255,6 +181,7 @@ export class FallbacksChainAdapter extends LlmAdapter {
   constructor(
     private readonly readConfig: () => FallbacksConfig,
     private readonly getLlm: () => LlmRuntime | undefined,
+    private readonly walk: (options: GenerateOptions) => AsyncIterable<StreamChunk>,
   ) {
     super()
   }
@@ -365,14 +292,13 @@ export class FallbacksChainAdapter extends LlmAdapter {
   }
 
   /**
-   * Thin head-delegate (P1): resolve the effective chain head and dispatch
-   * that REAL pair through the host LLM runtime. Throws an explicit
-   * `LlmError` only when there is no real pair to delegate to: an empty
-   * effective chain, an undispatchable head (wildcard / malformed /
-   * self-route — the recursion guard), or a vanished `llm` runtime. The
-   * runtime normalizes the throw into a terminal error finish chunk, so the
-   * documented listener-order degradation stays graceful instead of a hard
-   * outage.
+   * The virtual route's entry point (P1, direction C): the three pre-attempt
+   * guards stay here, then the session's chain is WALKED (`src/chain-walk.ts`)
+   * instead of delegated to the head. Throws an explicit `LlmError` only when
+   * there is no real pair to walk: an empty effective chain, an undispatchable
+   * head (wildcard / malformed / self-route — the recursion guard), or a
+   * vanished `llm` runtime. The runtime normalizes the throw into a terminal
+   * error finish chunk, so the guard stays graceful instead of a hard outage.
    */
   override stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
     const config = this.readConfig()
@@ -391,8 +317,7 @@ export class FallbacksChainAdapter extends LlmAdapter {
         UNDISPATCHABLE_HEAD_CODE,
       )
     }
-    const llm = this.getLlm()
-    if (llm === undefined) {
+    if (this.getLlm() === undefined) {
       // The route is registered on a live `llm` service; absence means the
       // fiber is tearing down. Defensive — never silently drop the call.
       throw new LlmError(
@@ -400,13 +325,7 @@ export class FallbacksChainAdapter extends LlmAdapter {
         LLM_UNAVAILABLE_CODE,
       )
     }
-    return llm.stream({
-      ...options,
-      provider: head.provider,
-      model: head.model,
-      // R-004: the head must still receive its own replay envelope.
-      messages: restoreEnvelopeProvenance(options.messages),
-    })
+    return this.walk(options)
   }
 }
 
@@ -416,17 +335,23 @@ export class FallbacksChainAdapter extends LlmAdapter {
  * @param ctx - the plugin context.
  * @param readConfig - live config reader (the same `source()` the runtime
  *   reads, so reconcile always sees COMMITTED composed snapshots).
+ * @param walk - the chain walk the adapter's `stream()` runs for one virtual
+ *   call (built by `apply()` over its live state — see `src/chain-walk.ts`).
  * @returns the reconcile thunk — call it from the settings `onChange` hook
  *   (child activation runs one reconcile on its own).
  */
-export function installFallbacksAdapter(ctx: Context, readConfig: () => FallbacksConfig): () => void {
+export function installFallbacksAdapter(
+  ctx: Context,
+  readConfig: () => FallbacksConfig,
+  walk: (options: GenerateOptions) => AsyncIterable<StreamChunk>,
+): () => void {
   let llm: LlmRuntime | undefined
   let disposeAdapter: (() => void) | undefined
   let registered = false
   const logger = ctx.logger('llm-fallbacks')
   // The adapter reads the `llm` binding at CALL time (the inject child swaps
   // it as the service appears/disappears) and the config at call time.
-  const adapter = new FallbacksChainAdapter(readConfig, () => llm)
+  const adapter = new FallbacksChainAdapter(readConfig, () => llm, walk)
 
   const reconcile = () => {
     const config = readConfig()

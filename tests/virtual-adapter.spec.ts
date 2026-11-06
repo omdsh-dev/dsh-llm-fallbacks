@@ -112,6 +112,15 @@ async function collect(stream: AsyncIterable<StreamChunk>): Promise<StreamChunk[
   return chunks
 }
 
+/**
+ * The walk the guard arms below never reach: each one stops at the adapter's
+ * own pre-flight checks (or never calls `stream()` at all), so this is a
+ * tripwire rather than a stub.
+ */
+function unusedWalk(): AsyncIterable<StreamChunk> {
+  throw new Error('the chain walk must not run in an adapter guard test')
+}
+
 /** Whether the virtual route is currently registered on the real runtime. */
 function listed(): boolean {
   return listedOn(ctx)
@@ -404,7 +413,7 @@ describe('adapter contract (P1/P3)', () => {
       rootChain: [OFFICIAL_FLASH],
       presets: 'none',
     }
-    installFallbacksAdapter(ctx, () => config)
+    installFallbacksAdapter(ctx, () => config, unusedWalk)
     await vi.waitFor(() => expect(listed()).toBe(true))
 
     // Stale registration (no reconcile ran): the live config loses its chain.
@@ -580,7 +589,7 @@ describe('imageRequestPricing (0.1.2 adoption)', () => {
       rootChain: [OFFICIAL_FLASH],
       presets: 'none',
     }
-    const adapter = new FallbacksChainAdapter(() => config, () => undefined)
+    const adapter = new FallbacksChainAdapter(() => config, () => undefined, unusedWalk)
     expect(adapter.imageRequestPricing(FALLBACKS_PROVIDER, FALLBACKS_CHAIN_MODEL)).toBeUndefined()
   })
 
@@ -700,7 +709,7 @@ describe('providerRetryPolicy (route-accurate retry attribution)', () => {
       rootChain: [OFFICIAL_FLASH],
       presets: 'none',
     }
-    const adapter = new FallbacksChainAdapter(() => config, () => undefined)
+    const adapter = new FallbacksChainAdapter(() => config, () => undefined, unusedWalk)
     expect(adapter.providerRetryPolicy(FALLBACKS_PROVIDER)).toBeUndefined()
   })
 })

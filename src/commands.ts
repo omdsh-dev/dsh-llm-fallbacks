@@ -410,7 +410,7 @@ export function recentFallbacksSwitches(events: readonly unknown[], limit: numbe
  * role resolve to `rootChain`. `inherit: true` marks the append-not-replace
  * tail — the role's `fallback` is `'inherit-root'` (the default) or the role
  * is unknown/built-in `'inherit'`, and `rootChain` is non-empty. Mirrors
- * `resolveChainViews`'s concatenation (see {@link buildRoleEntries} —
+ * `resolveChainViews`'s concatenation (see {@link roleChainEntries} —
  * `src/chains.ts`; the diagnostic keeps its display semantics: the role's
  * own chain renders in full, `rootChain` only when the role has no own
  * chain, with the inherit tail as an annotation) without a failing model to

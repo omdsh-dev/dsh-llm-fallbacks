@@ -40,7 +40,7 @@
 import { createRequire } from 'node:module'
 import type { Context, Logger } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import type { LlmCallConfig } from '@deepseek-ai/dsh-llm'
+import type { GenerateOptions, LlmCallConfig } from '@deepseek-ai/dsh-llm'
 import type { Session } from '@deepseek-ai/dsh-session'
 // Type-only: the settings seam's cordis `Events` entry
 // (`settings/document-updated(ns, revision)` — the live-config change event
@@ -51,6 +51,15 @@ import { defaultFallbacksConfig, detectLegacyKeys, INHERIT_ROLE_ID, isFallbackAc
 import { Config } from './schema.ts'
 import { pickRoleByLlm } from './automatch.ts'
 import { annotateCandidates, createCandidateFilter, hasWildcardEntry, resolveChain, resolveChainViews, selectCandidates, type FailingModel } from './chains.ts'
+import {
+  CONTEXT_WINDOW_EXCEEDED_CODE,
+  makeContextWindowOf,
+  makeModelExists,
+  REQUEST_SCOPED_CODES,
+  walkChain,
+  type AgentChainView,
+  type ChainWalkDeps,
+} from './chain-walk.ts'
 import { parseSelector, selectorKey, type Selector } from './selectors.ts'
 import { resolveRole } from './roles.ts'
 import { firstExactCandidate, resolveRoleAtDispatch } from './role-resolution.ts'
@@ -275,48 +284,6 @@ export { presetRoles } from './presets.ts'
 export { ROLE_PROJECTION_KEY, readRoleProjectionValue } from './role-projection-key.ts'
 
 /**
- * dsh core's canonical failure code for a request larger than the model's
- * context window (`@deepseek-ai/dsh-llm` `CONTEXT_WINDOW_EXCEEDED_CODE`; the
- * DeepSeek adapter's `httpErrorCode()` and llm-pi-ai's `mapStopReason()` both
- * map the provider 400 "maximum context length" to it). Declared as a literal
- * for the same reason `triggerCodes` is `string[]` — the plugin compares dsh
- * failure codes as plain strings and never imports a peer value.
- *
- * It is NOT in llm-retry's retryable set, so the plugin sees it only when the
- * operator lists it in `triggerCodes` — and once listed, this listener handles
- * the rejection BEFORE the harness's compaction plugin compacts anything
- * (measured 2026-09-09: the first overflow switches to the fallback, no
- * compaction happens). Operators who want compaction tried first leave the
- * code out of `triggerCodes`.
- */
-const CONTEXT_WINDOW_EXCEEDED_CODE = 'CONTEXT_WINDOW_EXCEEDED'
-
-/**
- * Failure codes whose switch is REQUEST-scoped (see {@link SwitchScope}): the
- * route is healthy and the request was the problem, so `commit()` must not
- * cool the from-route down or feed the half-open recovery counter. A set, so
- * a future code (`INVALID_REQUEST`) joins by one line.
- */
-const REQUEST_SCOPED_CODES: ReadonlySet<string> = new Set([CONTEXT_WINDOW_EXCEEDED_CODE])
-
-/**
- * Model-catalog service shape the wildcard existence probe reads (`ctx.llm`).
- *
- * `contextWindow` is the advisory catalog row's window when the host's
- * adapter discloses one there; `resolveModelInfo(provider, model)` is the
- * exact-route metadata the dsh host actually carries it on
- * (`LlmResolvedModelInfo.context.contextWindow`) — `LlmModelInfo`, what
- * `listModels` returns there, has no window field at all.
- * Both are optional and read structurally — a host service that offers
- * neither simply reports every window as unknown (see
- * {@link makeContextWindowOf}).
- */
-interface ModelCatalogService {
-  listModels(provider: string): Promise<readonly { id: string; contextWindow?: number }[]>
-  resolveModelInfo?(provider: string, model: string): Promise<{ context?: { contextWindow?: number } }>
-}
-
-/**
  * Per-apply state stores, keyed by context. Weak so entries die with the
  * context; the plugin's own dispose effect clears the store contents.
  * @internal
@@ -379,86 +346,6 @@ function latestByAt<T extends { at: number }>(map: ReadonlyMap<string, T>): T | 
     if (latest === undefined || value.at >= latest.at) latest = value
   }
   return latest
-}
-
-/**
- * The `provider/*`-entry existence probe (spec §2 clause 2): the target
- * provider's advertised catalog, fetched once per decision and cached per
- * provider. A missing/unknown provider or a failing catalog reads as "no such
- * model", so wildcard candidates to it are skipped; without an `llm` service
- * no filtering happens (`() => true`).
- *
- * simplify: catalog fetched per decision, never cached across decisions.
- * Decisions are failure-driven and rare; cache per provider in the plugin if
- * they ever become hot.
- */
-async function makeModelExists(
-  ctx: Context,
-  providers: readonly string[],
-): Promise<(provider: string, model: string) => boolean> {
-  const llm = ctx.get('llm') as ModelCatalogService | undefined
-  if (llm === undefined || typeof llm.listModels !== 'function') return () => true
-  const catalog = new Map<string, Set<string>>()
-  await Promise.all(providers.map(async (provider) => {
-    try {
-      const models = await llm.listModels(provider)
-      catalog.set(provider, new Set(models.map((model) => model.id)))
-    } catch {
-      catalog.set(provider, new Set())
-    }
-  }))
-  return (provider, model) => catalog.get(provider)?.has(model) ?? false
-}
-
-/**
- * The context-window lookup for a `CONTEXT_WINDOW_EXCEEDED` decision: a
- * `provider/model → contextWindow` map over the failing route plus every
- * resolved candidate route, fetched once per decision (the `makeModelExists`
- * pattern — failure-driven and rare, never cached across decisions).
- *
- * Two sources, cheapest first: the advertised catalog row when it discloses a
- * window (one `listModels` per distinct provider), then — for routes still
- * unknown — the exact-route `resolveModelInfo` metadata, which is where the
- * dsh host puts `context.contextWindow`. A missing `llm` service, a service
- * without either method, a throwing probe, or a route that discloses nothing
- * all read as UNKNOWN (`undefined`), and unknown always KEEPS the candidate:
- * an undisclosed window must never empty a chain (warn-not-crash, the same
- * permissiveness the exact-entry existence contract has).
- */
-async function makeContextWindowOf(
-  ctx: Context,
-  routes: readonly FailingModel[],
-): Promise<(provider: string, model: string) => number | undefined> {
-  const llm = ctx.get('llm') as ModelCatalogService | undefined
-  if (llm === undefined) return () => undefined
-  const windows = new Map<string, number>()
-  if (typeof llm.listModels === 'function') {
-    await Promise.all([...new Set(routes.map((route) => route.provider))].map(async (provider) => {
-      try {
-        for (const model of await llm.listModels(provider)) {
-          if (typeof model.contextWindow === 'number') {
-            windows.set(selectorKey(provider, model.id), model.contextWindow)
-          }
-        }
-      } catch {
-        // An unreachable catalog leaves its routes unknown — never a skip.
-      }
-    }))
-  }
-  const resolveModelInfo = llm.resolveModelInfo?.bind(llm)
-  if (resolveModelInfo !== undefined) {
-    await Promise.all(routes.map(async (route) => {
-      const key = selectorKey(route.provider, route.model)
-      if (windows.has(key)) return
-      try {
-        const window = (await resolveModelInfo(route.provider, route.model))?.context?.contextWindow
-        if (typeof window === 'number') windows.set(key, window)
-      } catch {
-        // Same degradation as the catalog probe: unknown, never a skip.
-      }
-    }))
-  }
-  return (provider, model) => windows.get(selectorKey(provider, model))
 }
 
 /**
@@ -555,6 +442,31 @@ function currentModel(agent: Agent, provider: string, config: FallbacksConfig, n
   const header = agent.session.requestHeader()
   const route = { provider, model: header?.config.model ?? agent.options.model ?? '' }
   return anchorServedRoute(config, route, now)
+}
+
+/**
+ * The minimal agent view one chain walk reads (design dsh-022-rc1-upgrade
+ * §2.2): `GenerateOptions` carries only `sessionId`, so the session's agent is
+ * resolved through the host `agents` registry — the opportunistic
+ * `ctx.get('agents')?.get(id)` read the authorized-route view already uses.
+ * `undefined` when the id is absent or the agent left the registry: the walk
+ * then treats the call as a root agent with no role (the effective-chain walk
+ * still runs).
+ */
+function agentChainView(ctx: Context, sessionId: GenerateOptions['sessionId']): AgentChainView | undefined {
+  if (sessionId === undefined) return undefined
+  const agent = ctx.get('agents')?.get(sessionId)
+  if (agent === undefined) return undefined
+  const header = agent.session?.header
+  const route = agent.options
+  return {
+    origin: header?.origin ?? 'root',
+    ...(header?.agentPreset === undefined ? {} : { agentPreset: header.agentPreset }),
+    ...(typeof route?.provider === 'string' && typeof route?.model === 'string'
+      ? { optionsRoute: { provider: route.provider, model: route.model } }
+      : {}),
+    sessionId,
+  }
 }
 
 /**
@@ -897,7 +809,6 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
   // reads the Loader's live config reference (or the settings-composed view —
   // same binding), and reconcile must read the LIVE composed snapshot (same
   // pattern as the settings bridge below).
-  const reconcileFallbacksAdapter = installFallbacksAdapter(ctx, () => source())
   // AC-4: warn-not-crash startup validation — the schema-resolved entry is
   // checked once (invalid ids / undeclared rule references / illegal
   // selectors / bad fallback enum); each violation warns and "does not take
@@ -1152,6 +1063,54 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
   // T3 blocked-attempt / T5 chain-head maps are constructed before the
   // gateway (so the snapshot can close over them). decide() writes the
   // blocked record below; the inject path writes the head.
+  //
+  // Virtual FallbacksChain/Auto adapter (plan fallbacks-virtual-chain Task 1,
+  // P2; direction C in plan dsh-022-rc1-upgrade): ONE conditional
+  // `ctx.inject(['llm'])` child — the picker row registers whenever the config
+  // is ACTIVE (`isFallbackActive` — content presence; conformance of the
+  // all-day chain is NOT part of registration: a legacy multi-model or empty
+  // rootChain still earns the row as long as something is configured; the
+  // walk still refuses a chain with no dispatchable head), and hides when
+  // nothing is configured. The returned reconcile thunk is wired into the
+  // settings `onChange` below: transition-reconcile over COMMITTED composed
+  // snapshots only (card drafts are client-side until gateway save), so the
+  // catalog never flickers; the gate is `isFallbackActive` content presence
+  // (`rootChain` / `timeSlots` / declared roles), so slot-row edits churn
+  // registration whenever they flip that gate — the intended content-presence
+  // contract (T2), not churn to design away; do NOT re-narrow the condition to
+  // ignore `timeSlots`. Conformance-only chain edits never churn (conformance
+  // gates the walk, not the row).
+  //
+  // The deps bundle is built HERE, over the live per-apply state: the walk
+  // reads the same `source()` / `roleIds` bindings and the same cooldown
+  // store the rest of the runtime reads, so a settings change reaches the next
+  // walk without a re-install. `readConfig` is the live binding (not the
+  // initial thunk) — reconcile and every walk must see the LIVE composed
+  // snapshot.
+  const walkDeps: ChainWalkDeps = {
+    readConfig: () => source(),
+    getLlm: () => ctx.get('llm'),
+    resolveAgentView: (sessionId) => agentChainView(ctx, sessionId),
+    states,
+    roleIds: () => roleIds,
+    seamRecord: (sessionId) => subagentSeam.records.get(sessionId),
+    policyFor: (sessionId) => {
+      const agent = ctx.get('agents')?.get(sessionId)
+      if (agent === undefined) return { state: 'disabled' }
+      // The same guarded, last-known-backed read the inject site uses: a
+      // throwing host settings read warns and resolves to `'unprovable'`
+      // (fail-closed — no plugin-originated switch the plugin cannot prove).
+      const settingsRead = readGuardedPolicySettings(ctx, sessionId, lastKnownPolicySettings, logger.warn)
+      return settingsRead.ok
+        ? effectivePolicy(readSessionPolicyEvent(agent.session.snapshotEvents()), settingsRead.settings)
+        : { state: 'unprovable' }
+    },
+    recordBlocked: (sessionId, route, reason) => {
+      blockedAttemptMap.set(sessionId, { at: Date.now(), route, reason })
+    },
+    log: logger,
+  }
+  const reconcileFallbacksAdapter = installFallbacksAdapter(ctx, () => source(), (options) => walkChain(walkDeps, options))
 
   /**
    * Shared decision path (spec §5.1 lifecycle step 1): resolve the agent's
@@ -1225,7 +1184,7 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
     // pure exact chains stay zero-probe (F-002).
     const modelExists = hasWildcardEntry(config.roles.list, rootTail, role)
       ? await makeModelExists(
-        ctx,
+        ctx.get('llm'),
         [...new Set(all.map((candidate) => candidate.provider))],
       )
       : undefined
@@ -1242,7 +1201,7 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
     // every other decision stays zero-probe (mirrors the F-002 wildcard gate
     // above). Unknown on either side keeps the candidate (chains.ts).
     const contextWindowOf = failureCode === CONTEXT_WINDOW_EXCEEDED_CODE
-      ? await makeContextWindowOf(ctx, [
+      ? await makeContextWindowOf(ctx.get('llm'), [
         current,
         ...all.flatMap((candidate) => candidate.model === undefined
           ? []

@@ -17,7 +17,7 @@
  * such model id" skip is judged by {@link resolveCandidate} (via
  * `modelExists`) or by the caller's filter.
  *
- * The concatenation itself lives in ONE helper — {@link buildRoleEntries}
+ * The concatenation itself lives in ONE helper — {@link roleChainEntries}
  * (qc1 S-3 SSOT) — shared by {@link resolveChainViews} and
  * {@link hasWildcardEntry}, so the wildcard probe is exact (qc2 F-003:
  * `fallback: 'none'` excludes `rootChain`) and can never diverge from the
@@ -87,8 +87,12 @@ export function resolveCandidate(
  * resolution (grep-verifiable: one concatenation expression). Role ids are
  * compared by trim (qc2 F-001 — the runtime canonicalizes padded declared
  * ids, and `resolveRole` returns the declared raw id).
+ *
+ * Exported for the chain walk's head anchor (`src/chain-walk.ts`): the walk
+ * resolves the FIRST DISPATCHABLE exact entry over these same entries, so the
+ * head it starts at is the head the candidate walk below it starts from.
  */
-function buildRoleEntries(
+export function roleChainEntries(
   roles: readonly FallbacksRole[],
   rootChain: readonly string[],
   role: string,
@@ -127,7 +131,7 @@ export function resolveChainViews(
   warn: (message: string) => void = console.warn,
 ): { all: Selector[]; wildcard: boolean[] } {
   const failing: FailingModel = { provider, model }
-  const entries = buildRoleEntries(roles, rootChain, role)
+  const entries = roleChainEntries(roles, rootChain, role)
   if (role.trim() !== INHERIT_ROLE_ID && !roles.some((declared) => declared.id.trim() === role.trim())) {
     warn(`llm-fallbacks: unknown role "${role}" — falling back to rootChain`)
   }
@@ -176,7 +180,7 @@ export function selectCandidates(
  * Ordered fallback candidates for the failing (provider, model).
  *
  * Candidates are the role's concatenated entries (spec §7.2, see
- * {@link buildRoleEntries} — the single concatenation SSOT): the declared
+ * {@link roleChainEntries} — the single concatenation SSOT): the declared
  * role's own `chain` followed by `rootChain` unless `fallback: 'none'`
  * (append-not-replace — role entries first, rootChain as the tail). The
  * reserved built-in `inherit` id resolves to `rootChain` silently; a truly
@@ -216,7 +220,7 @@ export function resolveChain(
  * `resolveChain` walks to decide whether the catalog existence probe is
  * needed at all.
  *
- * The probe walks {@link buildRoleEntries} — the SAME concatenation
+ * The probe walks {@link roleChainEntries} — the SAME concatenation
  * {@link resolveChainViews} resolves (qc1 S-3 single SSOT) — so it is
  * exact, never an over-approximation (qc2 F-003 / qc3 S-1): for
  * `fallback: 'none'` roles `rootChain` is excluded, and a wildcard that can
@@ -230,7 +234,7 @@ export function hasWildcardEntry(
   rootChain: readonly string[],
   role: string,
 ): boolean {
-  const entries = buildRoleEntries(roles, rootChain, role)
+  const entries = roleChainEntries(roles, rootChain, role)
   for (const entry of entries) {
     try {
       if (parseSelector(entry).model === undefined) return true
