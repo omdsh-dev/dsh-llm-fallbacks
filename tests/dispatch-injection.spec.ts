@@ -30,7 +30,7 @@ import { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { StreamChunk } from '@deepseek-ai/dsh-llm'
 import { detectAuthorizedRoute } from '../src/authorized-route.ts'
-import { FALLBACKS_PROFILE_ENTRY } from '../src/gateway.ts'
+import { FALLBACKS_PROFILE_ENTRY, SUBAGENT_POLICY_SETTINGS_NS } from '../src/gateway.ts'
 import { apply, chainHeads, stateStore } from '../src/index.ts'
 import { subagentSeamOf } from '../src/subagents-seam.ts'
 import { FALLBACKS_CHAIN_MODEL, FALLBACKS_PROVIDER } from '../src/virtual-adapter.ts'
@@ -442,11 +442,17 @@ describe('dispatch auto-match stage (wired through pickRoleByLlm)', () => {
 })
 
 
-/** Policy-on `subagentModelSelection` settings-service double (host composition stand-in). */
-function provideSubagentPolicy(allowed: readonly { provider: string; model: string }[]): void {
-  ctx.provide('subagentModelSelection', {
-    current: () => ({ enabled: true, allowedModels: allowed.map((route) => ({ ...route })) }),
+/** Policy-on host settings section (the `subagent-model-selection-settings` namespace the policy read consumes). */
+async function provideSubagentPolicy(allowed: readonly { provider: string; model: string }[]): Promise<void> {
+  await ctx.settings.replace(SUBAGENT_POLICY_SETTINGS_NS, {
+    enabled: true,
+    allowedModels: allowed.map((route) => ({ ...route })),
   })
+}
+
+/** Policy-off host settings section (0.3.5 selection). */
+async function providePolicyOff(): Promise<void> {
+  await ctx.settings.replace(SUBAGENT_POLICY_SETTINGS_NS, { enabled: false, allowedModels: [] })
 }
 
 /** `agents` registry double exposing one delegating parent agent (the lineage the child view reads). */
@@ -509,7 +515,7 @@ describe('authorized-route detection (pure module)', () => {
 describe('subagent routing policy (wiring, spec D1 ∩ D2)', () => {
   it('skips inject when the first request carries an explicit model/selection (authorized head, policy on)', async () => {
     const logs = captureLogs()
-    provideSubagentPolicy([{ provider: 'deepseek', model: 'deepseek-chat' }])
+    await provideSubagentPolicy([{ provider: 'deepseek', model: 'deepseek-chat' }])
     const { agent } = makeAgent('t2-authorized', { provider: 'deepseek', model: 'deepseek-chat' }, { origin: 'subagent', agentPreset: 'coder' })
     agent.session.append('model/selection', { provider: 'deepseek', model: 'deepseek-chat' })
     apply(ctx, cfg({ roles: coderRoles() }))
@@ -522,7 +528,7 @@ describe('subagent routing policy (wiring, spec D1 ∩ D2)', () => {
 
   it('uses the NEWEST model/selection occurrence for the authorized head (upstream newest-match, qc fix wave S-asym)', async () => {
     const logs = captureLogs()
-    provideSubagentPolicy([
+    await provideSubagentPolicy([
       { provider: 'deepseek', model: 'deepseek-chat' },
       { provider: 'anthropic', model: 'claude-sonnet-4' },
     ])
@@ -552,7 +558,7 @@ describe('subagent routing policy (wiring, spec D1 ∩ D2)', () => {
     provideParentAgent(parent)
     const { agent } = makeAgent('t2-spawn', { provider: 'deepseek', model: 'deepseek-chat' }, { origin: 'subagent', agentPreset: 'coder' })
     stampParentSession(agent, 't2-spawn-parent')
-    provideSubagentPolicy([
+    await provideSubagentPolicy([
       { provider: 'deepseek', model: 'deepseek-chat' },
       { provider: 'anthropic', model: 'claude-sonnet-4' },
     ])
@@ -569,7 +575,7 @@ describe('subagent routing policy (wiring, spec D1 ∩ D2)', () => {
     provideParentAgent(parent)
     const { agent } = makeAgent('t2-inh', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent', agentPreset: 'coder' })
     stampParentSession(agent, 't2-inh-parent')
-    provideSubagentPolicy([{ provider: 'anthropic', model: 'claude-sonnet-4' }])
+    await provideSubagentPolicy([{ provider: 'anthropic', model: 'claude-sonnet-4' }])
     apply(ctx, cfg({ roles: coderRoles() }))
 
     const config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
@@ -587,7 +593,7 @@ describe('subagent routing policy (wiring, spec D1 ∩ D2)', () => {
     provideParentAgent(parent)
     const { agent } = makeAgent('t2-empty', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent', agentPreset: 'coder' })
     stampParentSession(agent, 't2-empty-parent')
-    provideSubagentPolicy([{ provider: 'unrelated', model: 'unrelated-model' }])
+    await provideSubagentPolicy([{ provider: 'unrelated', model: 'unrelated-model' }])
     apply(ctx, cfg({ roles: coderRoles() }))
 
     const config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
@@ -601,7 +607,7 @@ describe('subagent routing policy (wiring, spec D1 ∩ D2)', () => {
     provideParentAgent(parent)
     const { agent } = makeAgent('t2-force', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent', agentPreset: 'coder' })
     stampParentSession(agent, 't2-force-parent')
-    provideSubagentPolicy([{ provider: 'deepseek', model: 'deepseek-chat' }])
+    await provideSubagentPolicy([{ provider: 'deepseek', model: 'deepseek-chat' }])
     apply(ctx, cfg({
       roles: { list: [{ id: 'coder', persona: '', chain: ['anthropic/claude-sonnet-4', 'deepseek/deepseek-chat'] }], rules: [] },
     }))
@@ -625,7 +631,7 @@ describe('subagent routing policy (wiring, spec D1 ∩ D2)', () => {
   })
 
   it('injects exactly as 0.3.5 when the policy is off (settings disabled, no event)', async () => {
-    ctx.provide('subagentModelSelection', { current: () => ({ enabled: false, allowedModels: [] }) })
+    await providePolicyOff()
     const { agent } = makeAgent('t2-policy-off', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent', agentPreset: 'coder' })
     apply(ctx, cfg({ roles: coderRoles() }))
 
@@ -639,7 +645,7 @@ describe('subagent routing policy (wiring, spec D1 ∩ D2)', () => {
 
 describe('chainHeads recording (plan dsh-012 T5 / T2 M3)', () => {
   it('records source authorized when the first request carries model/selection (policy on)', async () => {
-    provideSubagentPolicy([{ provider: 'deepseek', model: 'deepseek-chat' }])
+    await provideSubagentPolicy([{ provider: 'deepseek', model: 'deepseek-chat' }])
     const { agent } = makeAgent('t5-head-auth', { provider: 'deepseek', model: 'deepseek-chat' }, { origin: 'subagent', agentPreset: 'coder' })
     agent.session.append('model/selection', { provider: 'deepseek', model: 'deepseek-chat' })
     apply(ctx, cfg({ roles: coderRoles() }))
@@ -656,7 +662,7 @@ describe('chainHeads recording (plan dsh-012 T5 / T2 M3)', () => {
     provideParentAgent(parent)
     const { agent } = makeAgent('t5-head-inj', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent', agentPreset: 'coder' })
     stampParentSession(agent, 't5-head-inj-parent')
-    provideSubagentPolicy([{ provider: 'anthropic', model: 'claude-sonnet-4' }])
+    await provideSubagentPolicy([{ provider: 'anthropic', model: 'claude-sonnet-4' }])
     apply(ctx, cfg({ roles: coderRoles() }))
 
     await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
@@ -666,7 +672,7 @@ describe('chainHeads recording (plan dsh-012 T5 / T2 M3)', () => {
   })
 
   it('does not record an injected head when the policy is off (0.3.5 inject still happens)', async () => {
-    ctx.provide('subagentModelSelection', { current: () => ({ enabled: false, allowedModels: [] }) })
+    await providePolicyOff()
     const { agent } = makeAgent('t5-head-off', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent', agentPreset: 'coder' })
     apply(ctx, cfg({ roles: coderRoles() }))
 

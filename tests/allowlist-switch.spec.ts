@@ -18,6 +18,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { apply, blockedAttempts, stateStore } from '../src/index.ts'
+import { SUBAGENT_POLICY_SETTINGS_NS } from '../src/gateway.ts'
 import { MemorySettings } from './support/memory-settings.ts'
 import { appendLlmRetry, cfg, dispatchRequest, dispatchRequestError, makeAgent, switchEvents } from './support/harness.ts'
 
@@ -43,22 +44,23 @@ function captureLogs(): Array<{ type: string; args: unknown[] }> {
   return logs
 }
 
-/** Policy-on `subagentModelSelection` settings-service double (host composition stand-in). */
-function provideSubagentPolicy(allowed: readonly { provider: string; model: string }[]): void {
-  ctx.provide('subagentModelSelection', {
-    current: () => ({ enabled: true, allowedModels: allowed.map((route) => ({ ...route })) }),
+/** Policy-on host settings section (the `subagent-model-selection-settings` namespace the policy read consumes). */
+async function provideSubagentPolicy(allowed: readonly { provider: string; model: string }[]): Promise<void> {
+  await ctx.settings.replace(SUBAGENT_POLICY_SETTINGS_NS, {
+    enabled: true,
+    allowedModels: allowed.map((route) => ({ ...route })),
   })
 }
 
-/** Policy-off double: the service exists but is disabled (0.3.5 selection). */
-function providePolicyOff(): void {
-  ctx.provide('subagentModelSelection', { current: () => ({ enabled: false, allowedModels: [] }) })
+/** Policy-off section: the host section exists but is disabled (0.3.5 selection). */
+async function providePolicyOff(): Promise<void> {
+  await ctx.settings.replace(SUBAGENT_POLICY_SETTINGS_NS, { enabled: false, allowedModels: [] })
 }
 
 
 describe('allowlist-constrained failure switching (spec D1, plan dsh-012 T3)', () => {
   it('intersects in candidate order: the first resolved in-allowlist candidate wins the switch', async () => {
-    provideSubagentPolicy([{ provider: 'deepseek', model: 'deepseek-chat' }])
+    await provideSubagentPolicy([{ provider: 'deepseek', model: 'deepseek-chat' }])
     const { agent } = makeAgent('t3-order', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent' })
     apply(ctx, cfg({ roleAutoMatch: false, rootChain: ['anthropic/claude-sonnet-4', 'deepseek/deepseek-chat'] }))
 
@@ -77,7 +79,7 @@ describe('allowlist-constrained failure switching (spec D1, plan dsh-012 T3)', (
 
   it('blocks the switch on an empty intersection: no request, warn log, blocked-attempt record, no store growth', async () => {
     const logs = captureLogs()
-    provideSubagentPolicy([{ provider: 'unrelated', model: 'unrelated-model' }])
+    await provideSubagentPolicy([{ provider: 'unrelated', model: 'unrelated-model' }])
     const { agent } = makeAgent('t3-empty', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent' })
     apply(ctx, cfg({ roleAutoMatch: false, rootChain: ['anthropic/claude-sonnet-4'] }))
 
@@ -105,7 +107,7 @@ describe('allowlist-constrained failure switching (spec D1, plan dsh-012 T3)', (
 
   it('switches exactly as 0.3.5 when the policy is disabled (no allowlist filter, no blocked record)', async () => {
     const logs = captureLogs()
-    providePolicyOff()
+    await providePolicyOff()
     const { agent } = makeAgent('t3-off', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent' })
     apply(ctx, cfg({ roleAutoMatch: false, rootChain: ['anthropic/claude-sonnet-4'] }))
 
@@ -122,7 +124,7 @@ describe('allowlist-constrained failure switching (spec D1, plan dsh-012 T3)', (
   })
 
   it('applies cooldown/step-failed filters BEFORE the allowlist intersect: a cooled in-allowlist route is never re-entered', async () => {
-    provideSubagentPolicy([
+    await provideSubagentPolicy([
       { provider: 'mock', model: 'gpt-4o' },
       { provider: 'other', model: 'gpt-4o' },
     ])
@@ -168,7 +170,7 @@ describe('allowlist-constrained failure switching (spec D1, plan dsh-012 T3)', (
   })
 
   it('leaves ROOT-origin failure switching untouched while the policy is on (non-goal: root behavior)', async () => {
-    provideSubagentPolicy([{ provider: 'unrelated', model: 'unrelated-model' }])
+    await provideSubagentPolicy([{ provider: 'unrelated', model: 'unrelated-model' }])
     const { agent } = makeAgent('t3-root', { provider: 'mock', model: 'gpt-4o' })
     apply(ctx, cfg({ roleAutoMatch: false, rootChain: ['anthropic/claude-sonnet-4'] }))
 
@@ -183,21 +185,18 @@ describe('allowlist-constrained failure switching (spec D1, plan dsh-012 T3)', (
 
 /**
  * Guarded policy settings read (qc fix wave W-002 + S-hard): the
- * `subagentModelSelection` read is throw-safe on every request path (the
- * always-cap site had no local catch) and retains the freshest successful
- * snapshot per agent, so a mid-session service disappearance keeps a
- * proven-enabled policy constraining (fail-closed) instead of reverting to
- * unconstrained 0.3.5 switching. Agents never proven enabled stay disabled —
- * 0.3.5 selection unchanged.
+ * `subagent-model-selection-settings` read is throw-safe on every request
+ * path (the always-cap site had no local catch) and retains the freshest
+ * successful snapshot per agent, so a mid-session host settings disappearance
+ * keeps a proven-enabled policy constraining (fail-closed) instead of
+ * reverting to unconstrained 0.3.5 switching. Agents never proven enabled
+ * stay disabled — 0.3.5 selection unchanged.
  */
 describe('guarded policy settings read (qc fix wave W-002 + S-hard)', () => {
   it('W-002: a throwing settings read warns and the always-cap request listener survives (host seed stands)', async () => {
     const logs = captureLogs()
-    const unprovide = ctx.provide('subagentModelSelection', {
-      current: () => {
-        throw new Error('settings service exploded')
-      },
-    })
+    const settings = ctx.settings as unknown as MemorySettings
+    settings.hostFailure = 'throw'
     const { agent } = makeAgent('w002-throw', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent' })
     apply(ctx, cfg({ roleAutoMatch: false, rootChain: ['other/gpt-4o'], alwaysModeRetryCap: 1 }))
     // Trip the always-cap: one always-mode retry for (1, 1, mock) reaches cap 1.
@@ -213,13 +212,11 @@ describe('guarded policy settings read (qc fix wave W-002 + S-hard)', () => {
     // A read failure is not an empty intersection — no blocked record.
     expect(blockedAttempts(ctx)?.size).toBe(0)
     expect(stateStore(ctx)?.peek('w002-throw')).toBeUndefined()
-    unprovide()
   })
 
-  it('S-hard: after the service disappears mid-session the last-known enabled policy still constrains (fail-closed)', async () => {
-    const unprovide = ctx.provide('subagentModelSelection', {
-      current: () => ({ enabled: true, allowedModels: [{ provider: 'deepseek', model: 'deepseek-chat' }] }),
-    })
+  it('S-hard: after the host settings disappear mid-session the last-known enabled policy still constrains (fail-closed)', async () => {
+    const settings = ctx.settings as unknown as MemorySettings
+    await provideSubagentPolicy([{ provider: 'deepseek', model: 'deepseek-chat' }])
     const { agent } = makeAgent('s-hard-vanish', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent' })
     apply(ctx, cfg({ roleAutoMatch: false, rootChain: ['anthropic/claude-sonnet-4', 'deepseek/deepseek-chat'] }))
 
@@ -229,8 +226,8 @@ describe('guarded policy settings read (qc fix wave W-002 + S-hard)', () => {
     expect(await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' }))
       .toEqual({ provider: 'deepseek', model: 'deepseek-chat' })
 
-    // The service disappears mid-session.
-    unprovide()
+    // The host settings disappear mid-session.
+    settings.hostFailure = 'unloaded'
 
     // Step 2 — a fail-open read (settings undefined → disabled) would switch
     // 0.3.5-style to the off-allowlist head anthropic; the last-known
@@ -244,13 +241,8 @@ describe('guarded policy settings read (qc fix wave W-002 + S-hard)', () => {
   })
 
   it('S-hard: a later THROWING read falls back to the last-known enabled allowlist (still constrains)', async () => {
-    let explode = false
-    const unprovide = ctx.provide('subagentModelSelection', {
-      current: () => {
-        if (explode) throw new Error('settings service exploded')
-        return { enabled: true, allowedModels: [{ provider: 'deepseek', model: 'deepseek-chat' }] }
-      },
-    })
+    const settings = ctx.settings as unknown as MemorySettings
+    await provideSubagentPolicy([{ provider: 'deepseek', model: 'deepseek-chat' }])
     const logs = captureLogs()
     const { agent } = makeAgent('s-hard-throw', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent' })
     apply(ctx, cfg({ roleAutoMatch: false, rootChain: ['anthropic/claude-sonnet-4', 'deepseek/deepseek-chat'] }))
@@ -259,7 +251,7 @@ describe('guarded policy settings read (qc fix wave W-002 + S-hard)', () => {
     expect(await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' }))
       .toEqual({ provider: 'deepseek', model: 'deepseek-chat' })
 
-    explode = true
+    settings.hostFailure = 'throw'
     // The decision read throws, the warn fires, and the retained enabled
     // allowlist still keeps the off-allowlist head unsent.
     const second = await dispatchRequestError(ctx, agent, { step: 2, provider: 'deepseek' })
@@ -268,13 +260,11 @@ describe('guarded policy settings read (qc fix wave W-002 + S-hard)', () => {
       .toEqual({ provider: 'anthropic', model: 'claude-sonnet-4' })
     expect(logs.some((message) => message.type === 'warn'
       && String(message.args[0]).includes('settings read failed'))).toBe(true)
-    unprovide()
   })
 
-  it('S-hard: never-enabled (disabled snapshot, then service removed) stays disabled — 0.3.5 selection unchanged', async () => {
-    const unprovide = ctx.provide('subagentModelSelection', {
-      current: () => ({ enabled: false, allowedModels: [] }),
-    })
+  it('S-hard: never-enabled (disabled snapshot, then settings removed) stays disabled — 0.3.5 selection unchanged', async () => {
+    const settings = ctx.settings as unknown as MemorySettings
+    await providePolicyOff()
     const { agent } = makeAgent('s-hard-never', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent' })
     apply(ctx, cfg({ roleAutoMatch: false, rootChain: ['anthropic/claude-sonnet-4', 'deepseek/deepseek-chat'] }))
 
@@ -284,7 +274,7 @@ describe('guarded policy settings read (qc fix wave W-002 + S-hard)', () => {
     expect(await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' }))
       .toEqual({ provider: 'anthropic', model: 'claude-sonnet-4' })
 
-    unprovide()
+    settings.hostFailure = 'unloaded'
     // Step 2 — still disabled (not fail-closed): the walk takes the next
     // surviving candidate with no allowlist filter.
     expect(await dispatchRequestError(ctx, agent, { step: 2, provider: 'anthropic' })).toEqual({ kind: 'retry' })

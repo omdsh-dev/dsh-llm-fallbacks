@@ -9,8 +9,11 @@
  *    STRUCTURALLY — the upstream reader is not published from
  *    `@deepseek-ai/dsh-tool-subagent` and throws on malformed payloads,
  *    which is incompatible with the fail-closed no-throw requirement;
- * 2. the host settings service snapshot (`SubagentModelSelectionConfig`
- *    `.current()`), typed via a type-only peer import that is erased at emit.
+ * 2. the host's live subagent model-selection settings value (the
+ *    `subagent-model-selection-settings` settings namespace), typed via a
+ *    type-only peer import that is erased at emit. rc.1 made the settings
+ *    service's own snapshot reader private, so the wiring reads the settings
+ *    form value and narrows it structurally here.
  *
  * The session event wins over settings (ADR read order). Anything present but
  * unreadable yields `'unprovable'` (fail-closed): callers must not emit a
@@ -72,10 +75,10 @@ export type PolicySettings = {
 type AssertSettingsShape<T extends PolicySettings> = T
 
 /**
- * The host settings service snapshot type, re-exported from the published
- * peer subpath (type-only). Wiring reads the service's `current()` and passes
- * the result in as plain data; if upstream drifts, this alias fails typecheck
- * instead of drifting silently at runtime (plan ADR).
+ * The host settings value's shape, re-exported from the published peer
+ * subpath (type-only). Wiring passes the settings form's namespace value in as
+ * plain data; if upstream drifts, this alias fails typecheck instead of
+ * drifting silently at runtime (plan ADR).
  */
 export type PeerSettingsSnapshot = AssertSettingsShape<SubagentModelSelectionSettings>
 
@@ -101,6 +104,23 @@ function parseRoutes(value: unknown): PolicyRoute[] | undefined {
     routes.push({ provider: candidate.provider, model: candidate.model })
   }
   return routes
+}
+
+/**
+ * Narrow a host settings value into the reader's snapshot contract.
+ * Reads STRUCTURALLY like {@link readSessionPolicyEvent} — rc.1 publishes no
+ * settings value reader — so a malformed value is reported, never raised; the
+ * wiring decides its failure face (warn + fail-closed).
+ *
+ * @param value - untrusted settings-form value for the policy namespace.
+ * @returns a detached snapshot, or undefined when the value is not one.
+ */
+export function policySettingsFrom(value: unknown): PolicySettings | undefined {
+  if (typeof value !== 'object' || value === null) return undefined
+  if (!('enabled' in value) || typeof value.enabled !== 'boolean') return undefined
+  const routes = 'allowedModels' in value ? parseRoutes(value.allowedModels) : undefined
+  if (routes === undefined) return undefined
+  return { enabled: value.enabled, allowedModels: routes }
 }
 
 /**
@@ -144,8 +164,9 @@ export function readSessionPolicyEvent(
  * malformed route list, yields `'unprovable'`. Never throws.
  *
  * @param event - result of {@link readSessionPolicyEvent}.
- * @param settings - settings service snapshot, or undefined when the host
- *   does not compose the service.
+ * @param settings - host settings value narrowed by
+ *   {@link policySettingsFrom}, or undefined when the host composes no such
+ *   settings entry.
  */
 export function effectivePolicy(
   event: SessionPolicyEventRead,

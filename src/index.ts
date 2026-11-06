@@ -56,7 +56,7 @@ import { resolveRole } from './roles.ts'
 import { firstExactCandidate, resolveRoleAtDispatch } from './role-resolution.ts'
 import { detectAuthorizedRoute, type AuthorizedRouteSession } from './authorized-route.ts'
 import { firstAllowedCandidate, resolvedRoutes } from './route-allowlist.ts'
-import { effectivePolicy, readSessionPolicyEvent, type PolicySettings } from './subagent-policy.ts'
+import { effectivePolicy, policySettingsFrom, readSessionPolicyEvent, type PolicySettings } from './subagent-policy.ts'
 import { installSubagentSeam, subagentSeamOf, type SubagentSeam } from './subagents-seam.ts'
 import { installRolePersona } from './role-persona.ts'
 import { FallbackStateStore, type AgentFallbackState, type BlockedSwitchAttempt, type EffectiveChainHead, type PendingSwitch, type SwitchScope } from './state.ts'
@@ -72,6 +72,7 @@ import type { FallbackSwitchReason } from './events.ts'
 import {
   FALLBACKS_PROFILE_ENTRY,
   FallbacksConfigGateway,
+  SUBAGENT_POLICY_SETTINGS_NS,
   fallbacksTypertContribution,
   type FallbacksSettingsBridge,
 } from './gateway.ts'
@@ -587,16 +588,24 @@ function overrideConfig(
 }
 
 /**
- * Read the host `subagentModelSelection` settings snapshot as plain data (T1
- * ADR: the settings service is the policy read's second source). The service
- * is typed via the peer's type-only augmentation; its runtime presence is
- * host-composition-dependent, so absence reads as `undefined` —
- * {@link effectivePolicy} resolves that to `'disabled'` (plan Global
- * Constraints).
+ * Read the host's live subagent model-selection settings as plain data (T1
+ * ADR: the settings value is the policy read's second source). rc.1 made the
+ * settings service's own snapshot reader private, so the value is read through
+ * the settings form service's namespace row — the same live composed config
+ * (`enabled` + `allowedModels`, schema defaults applied) that reader returned.
+ * Runtime presence is host-composition-dependent, so absence reads as
+ * `undefined` — {@link effectivePolicy} resolves that to `'disabled'` (plan
+ * Global Constraints). A present-but-malformed value throws, mirroring the
+ * upstream reader's own validation.
  */
 function readSubagentSettings(ctx: Context): PolicySettings | undefined {
-  const service = ctx.get('subagentModelSelection')
-  return service === undefined ? undefined : service.current()
+  const settings = ctx.get('settings')
+  if (settings === undefined) return undefined
+  const descriptor = settings.describe().find((d) => d.ns === SUBAGENT_POLICY_SETTINGS_NS)
+  if (descriptor === undefined) return undefined
+  const policy = policySettingsFrom(descriptor.value)
+  if (policy === undefined) throw new Error('subagent model-selection settings are malformed')
+  return policy
 }
 
 /**
@@ -612,15 +621,15 @@ type GuardedPolicySettings =
   | { readonly ok: false }
 
 /**
- * Guarded per-agent read of the host `subagentModelSelection` settings
- * snapshot (qc fix wave W-002 + S-hard), wrapping {@link readSubagentSettings}:
+ * Guarded per-agent read of the host subagent model-selection settings value
+ * (qc fix wave W-002 + S-hard), wrapping {@link readSubagentSettings}:
  *
  * - the live read never propagates a throw into the request path — a throwing
- *   host `current()` warns (the plugin doctrine: any throw in the
+ *   host settings read warns (the plugin doctrine: any throw in the
  *   resolution/injection path warns and the request proceeds unchanged) and
  *   degrades like the inject path's own try/catch;
  * - the freshest successful read for the agent is retained in `lastKnown`, so
- *   a mid-session service disappearance (or a later throwing read) feeds the
+ *   a mid-session settings disappearance (or a later throwing read) feeds the
  *   last proven snapshot to {@link effectivePolicy} instead of `undefined` —
  *   an enabled policy stays enabled (fail-closed), never silently reverting
  *   to the earlier unconstrained switching;
@@ -639,13 +648,12 @@ function readGuardedPolicySettings(
   warn: (message: string, ...args: unknown[]) => void,
 ): GuardedPolicySettings {
   try {
-    const service = ctx.get('subagentModelSelection')
-    if (service === undefined) {
-      // Service absent (never composed, or it disappeared mid-session): the
+    const settings = readSubagentSettings(ctx)
+    if (settings === undefined) {
+      // Settings absent (never composed, or it disappeared mid-session): the
       // last proven snapshot stands — absent-with-nothing stays `undefined`.
       return { ok: true, settings: lastKnown.get(agentId) }
     }
-    const settings = service.current()
     // Freshest successful read wins — including `enabled: false` (the
     // operator's last known truth, still resolving to `'disabled'`).
     lastKnown.set(agentId, settings)
@@ -1132,13 +1140,14 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
   // `dispatchInjected`) and re-baselined on settings change (a config edit
   // is not a wall-clock rotation).
   const slotWinners = new Map<string, { key: string; label: string }>()
-  // S-hard (qc fix wave): per-agent last-known `subagentModelSelection`
-  // snapshots — the freshest successful settings read per agent, retained so a
-  // mid-session service disappearance (or a later throwing read) keeps a
-  // proven-enabled policy constraining (fail-closed) instead of reverting to
-  // unconstrained pre-policy behavior. Grown only by the guarded policy read
-  // (`readGuardedPolicySettings`); cleaned on agent/disposed + plugin dispose
-  // (mirrors `dispatchInjected` / `slotWinners`). In-memory only.
+  // S-hard (qc fix wave): per-agent last-known subagent model-selection
+  // settings snapshots — the freshest successful settings read per agent,
+  // retained so a mid-session settings disappearance (or a later throwing
+  // read) keeps a proven-enabled policy constraining (fail-closed) instead of
+  // reverting to unconstrained pre-policy behavior. Grown only by the guarded
+  // policy read (`readGuardedPolicySettings`); cleaned on agent/disposed +
+  // plugin dispose (mirrors `dispatchInjected` / `slotWinners`). In-memory
+  // only.
   const lastKnownPolicySettings = new Map<string, PolicySettings>()
   // T3 blocked-attempt / T5 chain-head maps are constructed before the
   // gateway (so the snapshot can close over them). decide() writes the
@@ -1256,8 +1265,8 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
     }
     if (agent.session?.header?.origin === 'subagent' && target !== undefined) {
       // W-002 + S-hard (qc fix wave): the read is guarded (a throwing host
-      // `current()` warns instead of escaping the listener) and carries the
-      // last-known snapshot, so a mid-session service disappearance keeps a
+      // settings read warns instead of escaping the listener) and carries the
+      // last-known snapshot, so a mid-session settings disappearance keeps a
       // proven-enabled policy constraining instead of failing open. A read
       // that threw with nothing retained resolves to the SAME fail-closed
       // skip as `'unprovable'` (warn + no switch, host seed stands).
@@ -1551,10 +1560,10 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
       dispatchInjected.add(agent.id)
       try {
         // W-002 + S-hard (qc fix wave): the same guarded, last-known-backed
-        // read as the decision path — a throwing host `current()` warns and
+        // read as the decision path — a throwing host settings read warns and
         // degrades to the `'unprovable'` skip (what the wrapping try/catch
         // already did), while a retained snapshot keeps a proven-enabled
-        // policy constraining after the service disappears.
+        // policy constraining after the settings disappear.
         const settingsRead = readGuardedPolicySettings(ctx, agent.id, lastKnownPolicySettings, logger.warn)
         const policy = settingsRead.ok
           ? effectivePolicy(readSessionPolicyEvent(agent.session.snapshotEvents()), settingsRead.settings)

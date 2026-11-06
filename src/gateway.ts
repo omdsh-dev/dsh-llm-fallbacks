@@ -103,7 +103,7 @@ export const FALLBACKS_PROFILE_ENTRY = 'llm-fallbacks'
 export type SubagentPolicyRoute = { provider: string; model: string }
 
 /** Settings namespace of the host's subagent-model-selection policy. */
-const SUBAGENT_POLICY_SETTINGS_NS = 'subagent-model-selection-settings'
+export const SUBAGENT_POLICY_SETTINGS_NS = 'subagent-model-selection-settings'
 
 /**
  * The virtual all-fallbacks route the host carve-out recognizes
