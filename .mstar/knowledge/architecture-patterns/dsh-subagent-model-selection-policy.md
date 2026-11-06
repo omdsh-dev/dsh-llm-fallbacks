@@ -47,10 +47,12 @@ routes will fight this policy unless reconciled.
   user-authorized for that route; the adapter's internal head delegation is the
   route's documented purpose and sits outside the allowlist's selection
   semantics. (Documented carve-out — do not "fix" by gating the adapter.)
-- **Effort rule is policy-independent** (upstream `resolveChildAgentOptions`):
-  same route → keep `reasoningEffort`; route change without explicit effort →
-  drop; explicit → keep. Apply on every override path via one pure rule; never
-  unconditionally strip.
+- **Effort rule needs no plugin logic at HEAD.** Upstream
+  `resolveChildAgentOptions` keeps `reasoningEffort` on the same route and drops
+  an inherited one on a route change; the fallbacks walk never rewrites a seed
+  config, so an explicit effort rides every attempt and an absent one stays
+  absent — a verbatim passthrough, not a re-implemented rule
+  (`src/chain-walk.ts:502-505`).
 - **Read order:** session `subagent/model-selection-policy` event first, host
   settings service second. `subagentModelSelectionPolicy(session)` is NOT
   published from `@deepseek-ai/dsh-tool-subagent` (and it throws on malformed
