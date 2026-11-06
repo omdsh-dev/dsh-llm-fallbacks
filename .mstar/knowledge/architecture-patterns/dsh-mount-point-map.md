@@ -101,8 +101,8 @@ Verdict（implement-now / gated / map-only + 理由）。
 | Seam | 契约要点 | 可行性 | 成本 | Verdict |
 |------|----------|--------|------|---------|
 | Session 生命周期（C1） | session/created / session/event / session/disposed，`{global:true}` | ✅ | S | **gated**（跨 scope 观察需双侧 dispose 纪律） |
-| Agent 事件（C2） | agent/request-error / agent/request / agent/status / created / disposed | ✅ | S | implement-now（fallback 决策本体） |
-| `SessionEventMap` merge（C3） | 类型级 merge + session.append；非 SurfaceEventType 不进 surface 投影 | ✅ | S | implement-now（fallbacks/switch） |
+| Agent 事件（C2） | agent/created / agent/disposed / agent/pre-step / agent/status；agent/request-error 与 agent/request 在 rc.1 已废弃——改捕获选择的请求被宿主拒绝，request-error 重试沿用捕获选择，二者均不再可作切换 seam | ✅ | S | implement-now（角色 persona 走 agent/created / 通知行 agent/pre-step / 状态清理 agent/disposed）；fallback 决策本体已不在事件面：虚拟适配器 `llm.registerAdapter`（stream 内链走）+ dispatch seam（`subagents` 服务 `internal/get` 包装） |
+| `SessionEventMap` merge（C3） | 类型级 merge + session.append；非 SurfaceEventType 不进 surface 投影 | ✅ | S | implement-now（fallbacks/switch 仅类型词汇与读侧渲染；插件不再写入——issue #52 stop-write） |
 | `MessageSourceMap` merge（C4） | `createUserMessage` 注入 user-role 消息 | ✅ | S–M | **gated**（改变模型上下文，需产品决策） |
 | Slash 命令（C5） | `commands` 服务注册；**条件注入子** `ctx.inject(['commands'])` | ✅ | S | implement-now（`/fallbacks`） |
 | ctx.llm 目录（C6） | listModels / listConfigurableProviders | ✅ host 半 | S | implement-now |
