@@ -346,8 +346,8 @@ export interface SubagentSeam {
    * deliberately NOT cleared on `agent/disposed` — a continuable child's durable
    * session survives the activation, so clearing the marker would let a
    * re-activation resume append a second notice row to the same log. It is
-   * bounded (`NOTICE_EMITTED_LIMIT`) and cleared only in the plugin dispose
-   * effect.
+   * bounded (`NOTICE_EMITTED_LIMIT`) and cleared only when the LAST applied
+   * fiber of its root disposes (a surviving fiber's children still need it).
    */
   readonly noticeEmitted: Set<string>
   /**
@@ -586,11 +586,14 @@ const subagentSeamStores = new WeakMap<Context, SubagentSeam>()
  * row per child (a per-fiber copy of the marker would announce the same child
  * once per fiber). Keyed by the context ROOT in a WeakMap, so it dies with the
  * root; an owner fiber's disposal deliberately does NOT drop it, so a surviving
- * fiber (and a later re-apply) keeps reading the same objects.
+ * fiber (and a later re-apply) keeps reading the same objects — only the last
+ * applied fiber's `dispose()` clears them.
  */
 interface SubagentSeamState {
   readonly records: Map<string, SubagentSeamRecord>
   readonly noticeEmitted: Set<string>
+  /** Applied fibers currently sharing this state — only the LAST one clears it. */
+  fibers: number
 }
 
 /** @internal The root's shared seam state, created on first use. */
@@ -600,7 +603,7 @@ const subagentSeamStates = new WeakMap<Context, SubagentSeamState>()
 function seamStateFor(root: Context): SubagentSeamState {
   const existing = subagentSeamStates.get(root)
   if (existing !== undefined) return existing
-  const created: SubagentSeamState = { records: new Map(), noticeEmitted: new Set() }
+  const created: SubagentSeamState = { records: new Map(), noticeEmitted: new Set(), fibers: 0 }
   subagentSeamStates.set(root, created)
   return created
 }
@@ -652,6 +655,7 @@ export function subagentSeamOf(ctx: Context): SubagentSeam | undefined {
 export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions): SubagentSeam {
   const root = ctx.root
   const state = seamStateFor(root)
+  state.fibers += 1
   const records = state.records
   /**
    * Task 3's per-agent once-marker (mirrors the runtime's `dispatchInjected`):
@@ -667,6 +671,8 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
   const pending = new Map<string, PendingCorrelation>()
   const wrappers = new WeakMap<object, object>()
   const disposers: Array<() => void> = []
+  /** One teardown per install: the explicit `dispose()` and the fiber both reach it. */
+  let disposed = false
   /** One debug per apply for a service read that is absent/not start-capable. */
   let unreadableServiceLogged = false
   /** One debug per apply for a dispatch prompt that declares no resolvable role. */
@@ -1104,10 +1110,22 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
     noticeEmitted,
     ownsWrapper,
     dispose: () => {
+      // Idempotent: the plugin's dispose effect and the fiber teardown both call this.
+      if (disposed) return
+      disposed = true
       // Release the root claim so a later apply (fiber reload) can own the
       // wrapper again; the shared state stays for any surviving fiber.
       if (ownsWrapper) subagentSeamRoots.delete(root)
       for (const dispose of disposers.splice(0)) dispose()
+      // The record map and the notice marker are ROOT-shared, and the walk's
+      // allowlist gate reads `virtualRouteInjected` from them: only the LAST
+      // fiber of this root may drop them, never a fiber whose siblings' children
+      // are still alive.
+      state.fibers -= 1
+      if (state.fibers === 0) {
+        state.records.clear()
+        state.noticeEmitted.clear()
+      }
     },
   }
   subagentSeamStores.set(ctx, seam)

@@ -773,10 +773,10 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
   // single resolution point — chain-independent (the role alone decides) and
   // gated by the provider's measured persona capability; Task 3 emits the
   // once-per-child notice row from `subagentSeam.records` (its `noticeEmitted`
-  // marker survives `agent/disposed` — CF-6 — and is cleared by the plugin
-  // dispose effect), and Task 3b registers the host session projection unit that
+  // marker survives `agent/disposed` — CF-6 — and is cleared when the last
+  // fiber of this root disposes), and Task 3b registers the host session projection unit that
   // folds that row back out of the child's log for the header badge. The record
-  // map is cleaned on agent/disposed + plugin dispose below.
+  // map is cleaned on agent/disposed + the last fiber's dispose below.
   // Multi-fiber dedupe (fix M-3, reshaped by the CF-5 fix round): ONLY the
   // seam's `internal/get` wrapper is ROOT-scoped and single-owner, so a later
   // fiber applying over a shared context root must not install a second
@@ -942,8 +942,8 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
     // activation — clearing the marker on re-activation resume let a re-dispatch
     // append a SECOND `[role: x]` row to the same session, contradicting the
     // documented "exactly one notice row per child session". The marker is
-    // bounded (`NOTICE_EMITTED_LIMIT`) and cleared by the plugin dispose effect
-    // below.
+    // bounded (`NOTICE_EMITTED_LIMIT`) and cleared when the last fiber of this
+    // root disposes (the seam's `dispose`, in the effect below).
     lastKnownPolicySettings.delete(agent.id)
   })
 
@@ -952,8 +952,11 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
     slotWinners.clear()
     blockedAttemptMap.clear()
     chainHeadMap.clear()
-    subagentSeam.records.clear()
-    subagentSeam.noticeEmitted.clear()
+    // `subagentSeam.records` / `noticeEmitted` are ROOT-scoped and shared with
+    // every fiber of this root: a per-fiber clear here would strip a surviving
+    // child's `virtualRouteInjected` (the walk's allowlist gate) and role
+    // record. `dispose()` withdraws THIS fiber's registrations and clears the
+    // shared maps only when the last fiber of the root is the one disposing.
     subagentSeam.dispose()
     lastKnownPolicySettings.clear()
   }, 'llm-fallbacks: clear per-agent state')

@@ -36,6 +36,7 @@ import {
   type ChainWalkDeps,
 } from '../src/chain-walk.ts'
 import { OFFICIAL_FLASH } from '../src/time-slots.ts'
+import type { EffectivePolicy } from '../src/subagent-policy.ts'
 import { FALLBACKS_CHAIN_MODEL, FALLBACKS_PROVIDER } from '../src/virtual-adapter.ts'
 import { cfg, walkDeps } from './support/harness.ts'
 
@@ -365,6 +366,57 @@ describe('candidate order and filters (design §3.1 step 2)', () => {
     // never dispatched, and the switch after its failure has nothing legal left.
     const chunks = await walk(injected([{ provider: 'b', model: '2' }]), { sessionId: SessionId('s1') })
     expect(dispatched()).toEqual(['b/2'])
+    expect(finishes(chunks)).toHaveLength(1)
+  })
+
+  it('refuses a seam-injected walk whose policy turns unprovable after the mount', async () => {
+    adapter.respond = () => ({ chunks: [STOP] })
+    // The mount happened under `enabled` (the record carries the injected
+    // verdict); the policy then stops proving anything (an unreadable durable
+    // event). The chain still has a route, so only the policy can refuse.
+    let policy: EffectivePolicy = { state: 'enabled', allowedModels: [{ provider: 'b', model: '2' }] }
+    const injected = (): Partial<ChainWalkDeps> => ({
+      readConfig: config({
+        roles: { list: [{ id: 'coder', persona: '', chain: ['a/1', 'b/2'], fallback: 'none' as const }], rules: [] },
+      }),
+      resolveAgentView: () => ({ origin: 'subagent', sessionId: 's1' }),
+      seamRecord: () => ({ role: 'coder', virtualRouteInjected: true }),
+      roleIds: () => CODER_ROLE_IDS,
+      policyFor: () => policy,
+    })
+
+    await walk(injected(), { sessionId: SessionId('s1') })
+    expect(dispatched()).toEqual(['b/2'])
+
+    policy = { state: 'unprovable' }
+    adapter.calls.length = 0
+    expect(thrownCode(() => walkChain(
+      walkDeps({ getLlm: () => ctx.llm, ...injected() }),
+      { provider: FALLBACKS_PROVIDER, model: FALLBACKS_CHAIN_MODEL, messages: [], sessionId: SessionId('s1') },
+    ))).toBe(UNDISPATCHABLE_HEAD_CODE)
+    // Refused BEFORE the attempt: the chain head a/1 is never dispatched.
+    expect(adapter.calls).toHaveLength(0)
+  })
+
+  it('records the allowlist-blocked switch and ends the walk on the head failure', async () => {
+    adapter.respond = () => ({ failure: { code: 'AUTH' } })
+    const recordBlocked = vi.fn()
+
+    const chunks = await walk({
+      readConfig: config({
+        roles: { list: [{ id: 'coder', persona: '', chain: ['a/1', 'c/3'], fallback: 'none' as const }], rules: [] },
+      }),
+      resolveAgentView: () => ({ origin: 'subagent', sessionId: 's1' }),
+      seamRecord: () => ({ role: 'coder', virtualRouteInjected: true }),
+      roleIds: () => CODER_ROLE_IDS,
+      policyFor: () => ({ state: 'enabled', allowedModels: [{ provider: 'a', model: '1' }] }),
+      recordBlocked,
+    }, { sessionId: SessionId('s1') })
+
+    // The allowlisted head runs; the only survivor is off-list, so the switch
+    // is blocked + recorded and the head's own failure is re-emitted.
+    expect(dispatched()).toEqual(['a/1'])
+    expect(recordBlocked).toHaveBeenCalledWith('s1', { provider: 'c', model: '3' }, 'trigger-code')
     expect(finishes(chunks)).toHaveLength(1)
   })
 

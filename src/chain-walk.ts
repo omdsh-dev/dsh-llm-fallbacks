@@ -442,11 +442,18 @@ function resolveWalk(deps: ChainWalkDeps, options: GenerateOptions): WalkStart {
   // attempt of a plugin-originated walk is a plugin-originated route just like
   // every switch, so the head is the chain's first route ON the host
   // allowlist — which is also what the cooled-head re-entry below may resume
-  // at. `unprovable` reads as no admission (the mount refused it, and an
-  // unreadable policy never proves a route illegal); an empty intersection is
-  // a pre-attempt refusal instead of an unauthorized attempt.
-  const dispatchable = firstDispatchableExactHead(entries)
+  // at. `unprovable` is a pre-attempt REFUSAL, never "no admission": the mount
+  // gate declines that state and the switch path fails closed, so a first
+  // attempt the plugin cannot prove stays undispatchable; an empty
+  // intersection is refused here too.
   const policy = owner !== undefined && seam?.virtualRouteInjected === true ? deps.policyFor(owner) : undefined
+  if (policy?.state === 'unprovable') {
+    throw new LlmError(
+      'llm-fallbacks: the subagent model-selection policy is unprovable — refusing to delegate the FallbacksChain call',
+      UNDISPATCHABLE_HEAD_CODE,
+    )
+  }
+  const dispatchable = firstDispatchableExactHead(entries)
   const allowedModels = policy?.state === 'enabled' ? policy.allowedModels : undefined
   const head = allowedModels === undefined ? dispatchable : firstDispatchableExactHead(entries, allowedModels)
   if (head === undefined) {

@@ -1057,6 +1057,53 @@ describe('subagent seam — per-apply lifetime through apply()', () => {
     await secondFiber.dispose()
   })
 
+  it('multi-fiber: a disposing fiber keeps the mount verdict a surviving child still reads', async () => {
+    const fake = fakeSubagents({}, LOCAL_PROVIDER)
+    ctx.provide('subagents', fake.service)
+    const config = () => cfg({ roles: { list: [{ id: 'coder', persona: '', chain: ['other/gpt-4o'] }], rules: [] } })
+
+    let firstCtx: Context | undefined
+    let secondCtx: Context | undefined
+    const firstFiber = ctx.plugin({
+      name: 'fallbacks-keep-first',
+      apply: (fiberCtx: Context) => {
+        firstCtx = fiberCtx
+        apply(fiberCtx, config())
+      },
+    })
+    await nextTick()
+    const secondFiber = ctx.plugin({
+      name: 'fallbacks-keep-second',
+      apply: (fiberCtx: Context) => {
+        secondCtx = fiberCtx
+        apply(fiberCtx, config())
+      },
+    })
+    await nextTick()
+
+    const first = subagentSeamOf(firstCtx!)!
+    const second = subagentSeamOf(secondCtx!)!
+    expect(second.records).toBe(first.records)
+
+    // A LOCAL dispatch mounts the child on the virtual route: the record holds
+    // the role AND the mount verdict the walk's allowlist gate reads.
+    const { value } = await injectSubagents(ctx)
+    await startActivationOf(value)(activationSpec('mounted', assignment('coder')))
+    const childId = String(fake.activations[0]!.childId)
+    expect(first.records.get(childId)).toMatchObject({ role: 'coder', virtualRouteInjected: true })
+
+    // The OWNER fiber tears down. The maps are ROOT-scoped: clearing them here
+    // would strip the surviving child's verdict + role, and its next walk would
+    // skip the allowlist and fall back to the root chain.
+    await firstFiber.dispose()
+    expect(second.records.get(childId)).toMatchObject({ role: 'coder', virtualRouteInjected: true })
+
+    // …while the LAST fiber's teardown still leaves no residual state.
+    await secondFiber.dispose()
+    expect(second.records.size).toBe(0)
+    expect(second.noticeEmitted.size).toBe(0)
+  })
+
   it('pre-writes the role record before the native call at the ONE install point (apply())', async () => {
     const fake = fakeSubagents({}, LOCAL_PROVIDER)
     ctx.provide('subagents', fake.service)
