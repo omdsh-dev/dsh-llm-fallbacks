@@ -25,6 +25,11 @@
  * the per-call failed set and the switch cap live only for this walk
  * (`maxSwitchesPerStep` = switches per walk, attempts ≤ cap + 1).
  *
+ * The pre-attempt guards (`EMPTY_EFFECTIVE_CHAIN` / `UNDISPATCHABLE_EFFECTIVE_HEAD`
+ * / `LLM_UNAVAILABLE`) and the ROOT-only all-day conformance gate are owned
+ * here, and `slotWinners` carries the 分时切换 rotation log — all of it needs the
+ * session's resolved role/origin, which the adapter does not have.
+ *
  * @module dsh-llm-fallbacks/chain-walk
  */
 
@@ -52,17 +57,31 @@ import type { AgentLike } from './roles.ts'
 import { selectorKey, type Selector } from './selectors.ts'
 import type { FallbackStateStore } from './state.ts'
 import type { EffectivePolicy } from './subagent-policy.ts'
-import { resolveEffectiveChain } from './time-slots.ts'
+import { resolveEffectiveChain, isAllDayConforming, resolveSlotState, type SlotRowConfig } from './time-slots.ts'
 import {
-  EMPTY_EFFECTIVE_CHAIN_CODE,
   FALLBACKS_CHAIN_MODEL,
   FALLBACKS_PROVIDER,
-  LLM_UNAVAILABLE_CODE,
-  UNDISPATCHABLE_HEAD_CODE,
   effectiveHeadOf,
   firstDispatchableExactHead,
   type EffectiveHead,
 } from './virtual-adapter.ts'
+
+/**
+ * `LlmError` code: the effective chain is empty — the virtual route has no
+ * head to walk (the pre-attempt guard, owned here because only the walk knows
+ * WHICH chain the calling session walks: a subagent's role chain, not the
+ * root's all-day chain).
+ */
+export const EMPTY_EFFECTIVE_CHAIN_CODE = 'EMPTY_EFFECTIVE_CHAIN'
+/**
+ * `LlmError` code: the chain head is not a dispatchable real pair — an
+ * undispatchable entry (wildcard selector, malformed selector, or a self-route
+ * back to `FallbacksChain/*` — the recursion guard), or, for a ROOT walk, a
+ * non-conforming all-day `rootChain` (the picker row's conformance gate).
+ */
+export const UNDISPATCHABLE_HEAD_CODE = 'UNDISPATCHABLE_EFFECTIVE_HEAD'
+/** `LlmError` code (defensive): the `llm` runtime disappeared mid-flight. */
+export const LLM_UNAVAILABLE_CODE = 'LLM_UNAVAILABLE'
 
 /**
  * dsh core's canonical failure code for a request larger than the model's
@@ -212,6 +231,12 @@ export interface ChainWalkDeps {
   policyFor(sessionId: SessionKey): EffectivePolicy
   /** Record a plugin-originated switch the allowlist emptied (in-memory, card-only). */
   recordBlocked?(sessionId: SessionKey, route: { provider: string; model: string }, reason: FallbackSwitchReason): void
+  /**
+   * Per-agent last time-slot winner (P7 分时切换 marker): the caller owns the
+   * map (re-baselined on a settings change, cleared on dispose), the walk reads
+   * and writes it — the log only, never a failure decision. Absent ⇒ no log.
+   */
+  slotWinners?: Map<string, { key: string; label: string }>
   log: { info(message: string, ...args: unknown[]): void; warn(message: string, ...args: unknown[]): void }
 }
 
@@ -287,6 +312,9 @@ function restoreEnvelopeProvenance(messages: DelegatedMessage[]): DelegatedMessa
 /** The walk's per-call resolution: everything that must be true before any chunk. */
 interface WalkStart {
   config: FallbacksConfig
+  /** The walk's single clock read (slot resolution + rotation log agree). */
+  now: Date
+  origin: 'root' | 'subagent'
   role: string
   rootTail: readonly string[]
   head: EffectiveHead
@@ -321,9 +349,54 @@ function servedRouteOf(
 }
 
 /**
+ * Stable identity of a slot winner for the 分时切换 marker (P7): preset rows
+ * key by their frozen id, custom rows by their window — a chain-only edit keeps
+ * the SAME logical row (no spurious rotation log), while a window/preset change
+ * or a new matching row reads as a switch. `'all-day'` is the no-extra-row
+ * winner.
+ */
+function slotWinnerKey(winner: SlotRowConfig | 'all-day'): string {
+  if (winner === 'all-day') return 'all-day'
+  return winner.kind === 'preset'
+    ? `preset:${winner.preset}`
+    : `custom:${winner.start}-${winner.end}`
+}
+
+/**
+ * P7 分时切换 detection, moved here from the deleted `agent/request` listener:
+ * ROOT-origin walks only, gated on a conforming all-day and at least one slot
+ * row (the gate every slot surface reads — `resolveSlotState` already reports
+ * `'all-day'`, but the explicit gate keeps a legacy chain completely inert). A
+ * winner different from this agent's last seen winner is a time-slot switch — a
+ * ROUTING SEED, not a failure decision: info log only, no cooldown, no switch
+ * count, no chain switch. A settings edit re-baselines the marker (the caller
+ * clears the map), so a config change never logs as a rotation.
+ */
+function logSlotRotation(deps: ChainWalkDeps, start: WalkStart): void {
+  const { config, now, origin, owner } = start
+  const markers = deps.slotWinners
+  if (markers === undefined || owner === undefined || origin !== 'root') return
+  if (!isAllDayConforming(config.rootChain) || (config.timeSlots?.length ?? 0) === 0) return
+  const slot = resolveSlotState(config, now, config.tz ?? 'Asia/Shanghai')
+  const key = slotWinnerKey(slot.winner)
+  const previous = markers.get(owner)
+  if (previous !== undefined && previous.key !== key) {
+    deps.log.info(
+      'llm-fallbacks: agent "%s" time-slot switch (分时切换): %s -> %s',
+      owner,
+      previous.label,
+      slot.label,
+    )
+  }
+  markers.set(owner, { key, label: slot.label })
+}
+
+/**
  * Resolve the walk's start state, throwing the three pre-attempt `LlmError`s
- * (design §6.1.1) — a synchronous throw, before any chunk, so the runtime's
- * adapter boundary normalizes it exactly like the adapter's own pre-checks.
+ * (design §6.1.1) — synchronously, before any chunk, so the runtime's adapter
+ * boundary normalizes them into one terminal error finish. The guards live HERE
+ * (not in the adapter) because they need the session's ROLE: a subagent walks
+ * its role chain, so root/all-day semantics would refuse a walkable child.
  */
 function resolveWalk(deps: ChainWalkDeps, options: GenerateOptions): WalkStart {
   const config = deps.readConfig()
@@ -338,14 +411,25 @@ function resolveWalk(deps: ChainWalkDeps, options: GenerateOptions): WalkStart {
   // Chain tails per origin (§2.2, unchanged from the pre-C decision path):
   // root walks the slot-effective all-day chain, a subagent the raw rootChain
   // tail its role concatenates.
-  const rootTail = (view?.origin ?? 'root') === 'subagent'
+  const origin = view?.origin ?? 'root'
+  const now = new Date()
+  const rootTail = origin === 'subagent'
     ? config.rootChain
-    : resolveEffectiveChain(config, new Date(), config.tz ?? 'Asia/Shanghai')
+    : resolveEffectiveChain(config, now, config.tz ?? 'Asia/Shanghai')
   const entries = roleChainEntries(config.roles.list, rootTail, role)
   if (entries.length === 0) {
     throw new LlmError(
       'llm-fallbacks: the effective chain is empty — the virtual FallbacksChain route has no head to delegate to',
       EMPTY_EFFECTIVE_CHAIN_CODE,
+    )
+  }
+  // Conformance gate (PR #62 feedback), ROOT walks only: a legacy non-conforming
+  // all-day chain earns no delegate even though the picker row is visible. A
+  // subagent walks its ROLE chain, so the all-day shape must never refuse it.
+  if (origin === 'root' && !isAllDayConforming(config.rootChain)) {
+    throw new LlmError(
+      'llm-fallbacks: the all-day chain is not conforming (exactly one official model required) — refusing to delegate',
+      UNDISPATCHABLE_HEAD_CODE,
     )
   }
   const head = firstDispatchableExactHead(entries)
@@ -364,7 +448,7 @@ function resolveWalk(deps: ChainWalkDeps, options: GenerateOptions): WalkStart {
       LLM_UNAVAILABLE_CODE,
     )
   }
-  return { config, role, rootTail, head, llm, owner, seam }
+  return { config, now, origin, role, rootTail, head, llm, owner, seam }
 }
 
 /**
@@ -395,6 +479,8 @@ async function* walk(
   options: GenerateOptions,
 ): AsyncIterable<StreamChunk> {
   const { config, role, rootTail, head, llm, owner } = start
+  // P7 分时切换 log — a routing seed observation, never a failure decision.
+  logSlotRotation(deps, start)
   // §3.2 effort rule: an explicit selection effort rides every attempt (the
   // spread below keeps it). The pre-C override path had to DROP an inherited
   // effort on a route change; the walk never rewrites a seed config, so the

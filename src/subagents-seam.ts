@@ -58,8 +58,21 @@
  * (the runtime mints its own child id and `agent/created` has already run), in
  * which case this module resolves the same question against the live roles
  * source and carries the verdict onto the record keyed off the RESOLVED id,
- * before the child's first pre-step. This module writes no request field,
- * reads no provider persona capability, and injects no agent preset.
+ * before the child's first pre-step. This module reads no provider persona
+ * capability and injects no agent preset.
+ *
+ * Virtual chain mount (plan dsh-022-rc1-upgrade §1.3; direction C): the SAME
+ * resolution point is where a dispatch child is mounted on the virtual
+ * `FallbacksChain/Auto` row — `request.agentOptions` is stamped (rc.1 merges
+ * it over the parent's route when `manager.startLocal` creates the child) when
+ * all five conditions hold: a resolved role, no explicit `agentOptions` route
+ * (explicit = authorized, untouched), a LOCAL backend, an active config whose
+ * resolved role chain has a dispatchable exact head, and a subagent policy that
+ * is not `unprovable`. The record carries `virtualRouteInjected` (sticky) and
+ * the effective chain head is labelled in `chainHeads` (`injected` /
+ * `authorized`). Injection is creation-time only, so it can never overwrite a
+ * resumed child's own durable selection, and a non-injectable dispatch forwards
+ * the caller's spec untouched (external backends keep pure inheritance).
  *
  * In-session notice row (plan Task 3): the SAME install point registers the
  * `agent/pre-step` emitter (`./role-notice.ts`) over the record map it owns, so
@@ -91,9 +104,18 @@
 
 import { randomUUID } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
-import { INHERIT_ROLE_ID, type FallbacksRole } from './config.ts'
+import { roleChainEntries } from './chains.ts'
+import { INHERIT_ROLE_ID, isFallbackActive, type FallbacksConfig, type FallbacksRole } from './config.ts'
 import { installRoleNotice } from './role-notice.ts'
 import { installRoleProjection } from './role-projection.ts'
+import type { EffectiveChainHead } from './state.ts'
+import type { EffectivePolicy } from './subagent-policy.ts'
+import {
+  FALLBACKS_CHAIN_MODEL,
+  FALLBACKS_PROVIDER,
+  firstDispatchableExactHead,
+  type EffectiveHead,
+} from './virtual-adapter.ts'
 
 /**
  * The cordis service-read waterfall event the seam registers on. Referenced
@@ -185,6 +207,18 @@ export interface SubagentSeamRecord {
    * `true` survives.
    */
   personaNotApplied?: boolean
+  /**
+   * `true` when this dispatch MOUNTED the child on the virtual
+   * `FallbacksChain/Auto` row (design §1.3): the plugin stamped the creation
+   * options, so the child's chain is plugin-originated and its switches are
+   * allowlist-filtered. Read by the chain walk (`ChainWalkDeps.seamRecord`)
+   * and never by a host surface.
+   *
+   * STICKY, like `personaNotApplied`: the mount happened at spawn and a record
+   * rewrite (a resume reusing the `childId`) carries no verdict of its own, so
+   * the first `true` survives.
+   */
+  virtualRouteInjected?: true
 }
 
 /** One consumed prompt content block (`@deepseek-ai/dsh-llm` `ContentBlock` text members). */
@@ -203,6 +237,15 @@ export interface SubagentPromptBlockView {
 export interface SubagentStartRequestView {
   readonly prompt?: readonly SubagentPromptBlockView[]
   readonly parent?: { readonly session?: { readonly id?: string } }
+  /**
+   * rc.1 `SubagentStartRequest.agentOptions` (design §1.1) — the route the
+   * caller (or the model, on the tool path) asked the child to run on. Read
+   * only: an explicit pair here is the AUTHORIZED route and is never touched.
+   */
+  readonly agentOptions?: {
+    readonly provider?: string
+    readonly model?: string
+  }
 }
 
 /**
@@ -258,6 +301,23 @@ export interface SubagentSeamOptions {
    * wired) ⇒ no verdict, exactly like a listener that never saw the child.
    */
   roles?: () => readonly FallbacksRole[]
+  /**
+   * Live config reader — the SAME `source()` the runtime and the adapter walk
+   * read. Absent ⇒ the seam never mounts a child on the virtual route (a
+   * partial wiring keeps the native dispatch unchanged).
+   */
+  source?: () => FallbacksConfig
+  /**
+   * The host subagent model-selection policy for one agent (guarded read,
+   * fail-closed). Absent ⇒ treated as `'disabled'` (no policy to fail closed
+   * on); an `'unprovable'` answer skips the mount.
+   */
+  policyFor?: (agentId: string) => EffectivePolicy
+  /**
+   * Per-agent effective chain head, keyed by child session id (the Subagents
+   * card's read). Absent ⇒ the seam records no head label.
+   */
+  chainHeads?: Map<string, EffectiveChainHead>
   /** Contained debug sink (at most one line per contained degrade). */
   debug?: (message: string) => void
 }
@@ -618,8 +678,18 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
     debug(`llm-fallbacks: subagent role seam degraded to the native path (start unaffected): ${errorMessage(error)}`)
   }
 
-  /** Write one per-child record; a repeat write for the same child keeps a cleared notice marker. */
-  const recordChild = (childId: string, role: string, at: number, personaMissed?: boolean): void => {
+  /**
+   * Write one per-child record; a repeat write for the same child keeps a
+   * cleared notice marker and every verdict already written (`personaNotApplied`
+   * from the persona listener, `virtualRouteInjected` from the mount) — a
+   * rewrite can only ADD a verdict, never clear one.
+   */
+  const recordChild = (
+    childId: string,
+    role: string,
+    at: number,
+    verdict: { personaMissed?: boolean; virtualRouteInjected?: boolean } = {},
+  ): void => {
     const existing = records.get(childId)
     records.set(childId, {
       role,
@@ -630,8 +700,72 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
       // unable to see the child at all, in which case the caller carries it
       // here: a rewrite can only ADD the verdict, never clear it (see
       // `SubagentSeamRecord`).
-      ...(existing?.personaNotApplied === true || personaMissed === true ? { personaNotApplied: true } : {}),
+      ...(existing?.personaNotApplied === true || verdict.personaMissed === true ? { personaNotApplied: true } : {}),
+      ...(existing?.virtualRouteInjected === true || verdict.virtualRouteInjected === true
+        ? { virtualRouteInjected: true as const }
+        : {}),
     })
+  }
+
+  /**
+   * The explicit route a spawn request carries (§1.3 condition 2): a
+   * model-authored or parent-stamped `agentOptions` pair is the AUTHORIZED
+   * route — the seam never injects over it, and the pair is what the card
+   * labels `authorized`.
+   */
+  const explicitRoute = (request: SubagentStartRequestView | undefined): EffectiveHead | undefined => {
+    const provider = request?.agentOptions?.provider
+    const model = request?.agentOptions?.model
+    return typeof provider === 'string' && provider !== '' && typeof model === 'string' && model !== ''
+      ? { provider, model }
+      : undefined
+  }
+
+  /**
+   * §1.3 injection decision for ONE local dispatch. Conditions 1 (a resolved
+   * role — this is the caller's outer gate) and 3 (`isLocalBackend` — the
+   * enclosing branch) hold by construction; checked here:
+   *
+   * 2. the request carries no explicit `agentOptions` route (explicit =
+   *    authorized, untouched);
+   * 4. the config is active and the resolved role's concatenated chain has at
+   *    least one dispatchable exact head — the SAME `roleChainEntries` +
+   *    `firstDispatchableExactHead` the walk starts from, so a mounted child
+   *    always has a first attempt;
+   * 5. the host subagent policy is not `unprovable` (fail-closed: never mount
+   *    a route whose switches the plugin could not prove).
+   *
+   * Contained: any throwing config/policy read degrades to `undefined` (the
+   * caller's spec is forwarded untouched) with one debug line.
+   */
+  const injectRoute = (
+    spec: SubagentActivationSpecView,
+    role: string,
+    agentId: string,
+  ): { request: SubagentStartRequestView; head: EffectiveHead } | undefined => {
+    try {
+      if (options.source === undefined) return undefined
+      const agentOptions = spec.request?.agentOptions
+      if (typeof agentOptions?.provider === 'string' || typeof agentOptions?.model === 'string') return undefined
+      const config = options.source()
+      if (!isFallbackActive(config)) return undefined
+      const head = firstDispatchableExactHead(roleChainEntries(config.roles.list, config.rootChain, role))
+      if (head === undefined) return undefined
+      if (options.policyFor?.(agentId)?.state === 'unprovable') {
+        debug(`llm-fallbacks: subagent seam — model-selection policy is unprovable for "${agentId}"; not mounting the virtual chain route`)
+        return undefined
+      }
+      return {
+        request: {
+          ...spec.request,
+          agentOptions: { ...agentOptions, provider: FALLBACKS_PROVIDER, model: FALLBACKS_CHAIN_MODEL },
+        },
+        head,
+      }
+    } catch (error) {
+      reportDegrade(error)
+      return undefined
+    }
   }
 
   /** Claim the label-keyed catalog correlation for a resolved activation (bounded, recency-ordered eviction). */
@@ -790,8 +924,26 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
       try {
         if (isLocalBackend(service, spec.provider)) {
           reservedId = spec.childId ?? randomUUID()
-          if (reservedId !== spec.childId) effectiveSpec = { ...spec, childId: reservedId }
-          recordChild(reservedId, role, at)
+          // §1.3 mount: an explicit spawn route is the AUTHORIZED route (label
+          // only, never overridden); otherwise the five conditions decide
+          // whether the child is mounted on the virtual `FallbacksChain/Auto`
+          // row. Either way the record is written BEFORE the native call — the
+          // child's own listeners read this map, and the walk reads the mount
+          // verdict from it.
+          const authorized = explicitRoute(spec.request)
+          const injected = injectRoute(spec, role, reservedId)
+          effectiveSpec = injected === undefined
+            ? (reservedId === spec.childId ? spec : { ...spec, childId: reservedId })
+            : { ...spec, childId: reservedId, request: injected.request }
+          recordChild(reservedId, role, at, { virtualRouteInjected: injected !== undefined })
+          const head = injected?.head ?? authorized
+          if (head !== undefined) {
+            options.chainHeads?.set(reservedId, {
+              at,
+              route: { provider: head.provider, model: head.model },
+              source: injected === undefined ? 'authorized' : 'injected',
+            })
+          }
         }
       } catch (error) {
         // The reservation is seam BOOKKEEPING, never part of the dispatch: the
@@ -846,7 +998,7 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
           result,
           (childId) => {
             endCorrelation(pendingKey)
-            recordChild(childId, role, at, reservationPersonaMissed)
+            recordChild(childId, role, at, { personaMissed: reservationPersonaMissed })
           },
           // No child id in the result (a job id is not one): keep the claim and
           // let the parent-owned `subagent/catalog` event supply the child id.

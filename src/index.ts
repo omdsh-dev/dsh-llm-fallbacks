@@ -42,6 +42,7 @@ import type { Context, Logger } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { GenerateOptions, LlmCallConfig } from '@deepseek-ai/dsh-llm'
 import type { Session } from '@deepseek-ai/dsh-session'
+import type { SessionId } from '@deepseek-ai/dsh-session/types'
 // Type-only: the settings seam's cordis `Events` entry
 // (`settings/document-updated(ns, revision)` — the live-config change event
 // the settings child below follows).
@@ -65,7 +66,7 @@ import { resolveRole } from './roles.ts'
 import { firstExactCandidate, resolveRoleAtDispatch } from './role-resolution.ts'
 import { detectAuthorizedRoute, type AuthorizedRouteSession } from './authorized-route.ts'
 import { firstAllowedCandidate, resolvedRoutes } from './route-allowlist.ts'
-import { effectivePolicy, policySettingsFrom, readSessionPolicyEvent, type PolicySettings } from './subagent-policy.ts'
+import { effectivePolicy, policySettingsFrom, readSessionPolicyEvent, type EffectivePolicy, type PolicySettings } from './subagent-policy.ts'
 import { installSubagentSeam, subagentSeamOf, type SubagentSeam } from './subagents-seam.ts'
 import { installRolePersona } from './role-persona.ts'
 import { FallbackStateStore, type AgentFallbackState, type BlockedSwitchAttempt, type EffectiveChainHead, type PendingSwitch, type SwitchScope } from './state.ts'
@@ -918,6 +919,33 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
   chainHeadStores.set(ctx, chainHeadMap)
   const blockedAttemptMap = new Map<string, BlockedSwitchAttempt>()
   blockedAttemptStores.set(ctx, blockedAttemptMap)
+  // S-hard (qc fix wave): per-agent last-known subagent model-selection
+  // settings snapshots — the freshest successful settings read per agent,
+  // retained so a mid-session settings disappearance (or a later throwing
+  // read) keeps a proven-enabled policy constraining (fail-closed) instead of
+  // reverting to unconstrained pre-policy behavior. Grown only by the guarded
+  // policy read (`readGuardedPolicySettings`); cleaned on agent/disposed +
+  // plugin dispose (mirrors `dispatchInjected` / `slotWinners`). In-memory
+  // only. Declared before the seam install: the seam's inject gate and the
+  // walk's switch filter read the SAME snapshot map.
+  const lastKnownPolicySettings = new Map<string, PolicySettings>()
+  /**
+   * The host subagent policy for one session — the ONE reader the seam's mount
+   * gate and the walk's switch filter share. Guarded and fail-closed: a
+   * throwing host settings read (with nothing retained) resolves to
+   * `'unprovable'`, so neither path takes a plugin-originated decision it
+   * cannot prove.
+   */
+  const policyFor = (sessionId: string): EffectivePolicy => {
+    // `Agent.id` IS the child session id; the seam hands that id over as a
+    // plain string, so this is the one place the brand is re-attached.
+    const agent = ctx.get('agents')?.get(sessionId as SessionId)
+    if (agent === undefined) return { state: 'disabled' }
+    const settingsRead = readGuardedPolicySettings(ctx, sessionId, lastKnownPolicySettings, logger.warn)
+    return settingsRead.ok
+      ? effectivePolicy(readSessionPolicyEvent(agent.session.snapshotEvents()), settingsRead.settings)
+      : { state: 'unprovable' }
+  }
   // Plan role-based-subagent-adoption Task 1: the dispatch-seam role record —
   // ONE cordis `internal/get` wrapper over `subagents` resolving the Assignment
   // `**Execute as**: <id>` role at `start`/`startContinuable` and keying a
@@ -953,6 +981,12 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
     // child the runtime then mints, so the seam is what carries that child's
     // persona verdict onto the record the notice row reads.
     roles: () => source().roles.list,
+    // Direction C mount (§1.3): the seam stamps the virtual route onto a
+    // dispatch child's creation options, reads the SAME live config/policy the
+    // walk reads, and labels the effective chain head for the Subagents card.
+    source: () => source(),
+    policyFor,
+    chainHeads: chainHeadMap,
     debug: (message) => logger.debug(message),
   })
   if (!subagentSeam.ownsWrapper) {
@@ -1051,15 +1085,6 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
   // `dispatchInjected`) and re-baselined on settings change (a config edit
   // is not a wall-clock rotation).
   const slotWinners = new Map<string, { key: string; label: string }>()
-  // S-hard (qc fix wave): per-agent last-known subagent model-selection
-  // settings snapshots — the freshest successful settings read per agent,
-  // retained so a mid-session settings disappearance (or a later throwing
-  // read) keeps a proven-enabled policy constraining (fail-closed) instead of
-  // reverting to unconstrained pre-policy behavior. Grown only by the guarded
-  // policy read (`readGuardedPolicySettings`); cleaned on agent/disposed +
-  // plugin dispose (mirrors `dispatchInjected` / `slotWinners`). In-memory
-  // only.
-  const lastKnownPolicySettings = new Map<string, PolicySettings>()
   // T3 blocked-attempt / T5 chain-head maps are constructed before the
   // gateway (so the snapshot can close over them). decide() writes the
   // blocked record below; the inject path writes the head.
@@ -1094,17 +1119,10 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
     states,
     roleIds: () => roleIds,
     seamRecord: (sessionId) => subagentSeam.records.get(sessionId),
-    policyFor: (sessionId) => {
-      const agent = ctx.get('agents')?.get(sessionId)
-      if (agent === undefined) return { state: 'disabled' }
-      // The same guarded, last-known-backed read the inject site uses: a
-      // throwing host settings read warns and resolves to `'unprovable'`
-      // (fail-closed — no plugin-originated switch the plugin cannot prove).
-      const settingsRead = readGuardedPolicySettings(ctx, sessionId, lastKnownPolicySettings, logger.warn)
-      return settingsRead.ok
-        ? effectivePolicy(readSessionPolicyEvent(agent.session.snapshotEvents()), settingsRead.settings)
-        : { state: 'unprovable' }
-    },
+    // The same guarded, last-known-backed reader the seam's mount gate uses:
+    // a throwing host settings read warns and resolves to `'unprovable'`
+    // (fail-closed — no plugin-originated switch the plugin cannot prove).
+    policyFor,
     recordBlocked: (sessionId, route, reason) => {
       blockedAttemptMap.set(sessionId, { at: Date.now(), route, reason })
     },

@@ -32,14 +32,13 @@ import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import { apply } from '../src/index.ts'
 import { defaultFallbacksConfig, type FallbacksConfig } from '../src/config.ts'
 import { OFFICIAL_FLASH } from '../src/time-slots.ts'
+import { UNDISPATCHABLE_HEAD_CODE } from '../src/chain-walk.ts'
 import {
-  EMPTY_EFFECTIVE_CHAIN_CODE,
   FALLBACKS_CHAIN_MODEL,
   FALLBACKS_PROVIDER,
   FallbacksChainAdapter,
   installFallbacksAdapter,
   pickerDisplayName,
-  UNDISPATCHABLE_HEAD_CODE,
 } from '../src/virtual-adapter.ts'
 import { FALLBACKS_PROFILE_ENTRY } from '../src/gateway.ts'
 import { MemorySettings } from './support/memory-settings.ts'
@@ -119,6 +118,15 @@ async function collect(stream: AsyncIterable<StreamChunk>): Promise<StreamChunk[
  */
 function unusedWalk(): AsyncIterable<StreamChunk> {
   throw new Error('the chain walk must not run in an adapter guard test')
+}
+
+/** An empty walk result — for the arm that only asserts delegation. */
+function emptyStream(): AsyncIterable<StreamChunk> {
+  return {
+    async *[Symbol.asyncIterator]() {
+      // no chunks
+    },
+  }
 }
 
 /** Whether the virtual route is currently registered on the real runtime. */
@@ -406,14 +414,21 @@ describe('adapter contract (P1/P3)', () => {
     expect(stub.calls).toHaveLength(0)
   })
 
-  it('stream() throws an explicit LlmError when the effective chain is empty', async () => {
+  it('stream() hands a stale-registered call to the walk, which owns the pre-attempt guards', async () => {
     const config: FallbacksConfig = {
       ...defaultFallbacksConfig,
       enabled: true,
       rootChain: [OFFICIAL_FLASH],
       presets: 'none',
     }
-    installFallbacksAdapter(ctx, () => config, unusedWalk)
+    // Tripwire for the OLD contract: the adapter used to refuse here itself
+    // (root/all-day semantics), which threw EMPTY_EFFECTIVE_CHAIN for a child
+    // that had a perfectly walkable role chain. The guards now live in the walk.
+    const walked: GenerateOptions[] = []
+    installFallbacksAdapter(ctx, () => config, (options) => {
+      walked.push(options)
+      return emptyStream()
+    })
     await vi.waitFor(() => expect(listed()).toBe(true))
 
     // Stale registration (no reconcile ran): the live config loses its chain.
@@ -421,10 +436,8 @@ describe('adapter contract (P1/P3)', () => {
     const chunks = await collect(
       ctx.llm.stream({ provider: FALLBACKS_PROVIDER, model: FALLBACKS_CHAIN_MODEL, messages: [] }),
     )
-    expect(chunks.at(-1)).toMatchObject({
-      type: 'finish',
-      reason: { kind: 'error', failure: { code: EMPTY_EFFECTIVE_CHAIN_CODE } },
-    })
+    expect(walked).toHaveLength(1)
+    expect(chunks).toEqual([])
     expect(stub.calls).toHaveLength(0)
   })
 

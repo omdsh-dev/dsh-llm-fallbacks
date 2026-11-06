@@ -25,23 +25,21 @@
  * edits still never churn (conformance gates the delegate, not the row).
  *
  * Adapter behavior (P1/P3, direction C): `listModels` advertises exactly the
- * one virtual row; `stream()` keeps its three pre-attempt guards and then
- * WALKS the session's chain (cooldown / failed-set / switch cap / recovery
- * bookkeeping) in `src/chain-walk.ts` — the walk is injected at install, so
- * this module stays the catalog + metadata surface. `resolveModel` proxies the
- * current effective head's metadata when resolvable
- * (modalities/context-window/reasoning follow the head) with a permissive
- * default otherwise — never throws. `providerRetryPolicy` and
- * `imageRequestPricing` mirror the same head for the host-captured retry
- * policy and the token meter — also never throwing.
-
+ * one virtual row; `stream()` WALKS the session's chain (cooldown / failed-set
+ * / switch cap / recovery bookkeeping) in `src/chain-walk.ts` — the walk is
+ * injected at install and owns the pre-attempt guards, so this module stays
+ * the catalog + metadata surface. `resolveModel` proxies the current effective
+ * head's metadata when resolvable (modalities/context-window/reasoning follow
+ * the head) with a permissive default otherwise — never throws.
+ * `providerRetryPolicy` and `imageRequestPricing` mirror the same head for the
+ * host-captured retry policy and the token meter — also never throwing.
+ *
  * @module dsh-llm-fallbacks/virtual-adapter
  */
 
 import type { Context } from '@deepseek-ai/cordis'
 import {
   LlmAdapter,
-  LlmError,
   type GenerateOptions,
   type LlmImageRequestPricing,
   type LlmModelInfo,
@@ -63,20 +61,6 @@ export const FALLBACKS_PROVIDER = 'FallbacksChain'
  * {@link pickerDisplayName} (`Auto: <model>[<slot>]`).
  */
 export const FALLBACKS_CHAIN_MODEL = 'Auto'
-
-/**
- * `LlmError` code: the effective chain is empty — the virtual route has no
- * head to delegate to (P1 guard).
- */
-export const EMPTY_EFFECTIVE_CHAIN_CODE = 'EMPTY_EFFECTIVE_CHAIN'
-/**
- * `LlmError` code: the effective chain head is not a dispatchable real pair
- * (non-conforming all-day, wildcard selector, malformed selector, or a
- * self-route back to `FallbacksChain/*` — the P1 recursion guard).
- */
-export const UNDISPATCHABLE_HEAD_CODE = 'UNDISPATCHABLE_EFFECTIVE_HEAD'
-/** `LlmError` code (defensive): the `llm` runtime disappeared mid-flight. */
-export const LLM_UNAVAILABLE_CODE = 'LLM_UNAVAILABLE'
 
 /** One dispatchable exact head: `provider/model`. Wildcards are never seeds (P3). */
 export interface EffectiveHead {
@@ -123,8 +107,9 @@ export function firstDispatchableExactHead(chain: readonly string[]): EffectiveH
  * for a successful delegate —
  * a legacy multi-model (or empty) all-day chain earns no primary
  * semantics even though the picker row is visible. `resolveModel` then
- * falls back to the permissive default and `stream()` throws
- * {@link UNDISPATCHABLE_HEAD_CODE}.
+ * falls back to the permissive default. The delegate side of that gate is the
+ * chain walk's ROOT-origin rule (`UNDISPATCHABLE_EFFECTIVE_HEAD`); a subagent
+ * walks its role chain instead, so the all-day shape never gates a child.
  */
 export function effectiveHeadOf(config: FallbacksConfig, now: Date): EffectiveHead | undefined {
   if (!isAllDayConforming(config.rootChain)) return undefined
@@ -171,11 +156,8 @@ async function resolveHeadDisplayName(llm: LlmRuntime | undefined, head: Effecti
 }
 
 /**
- * The virtual adapter (P1/P3). `stream()` resolves the session's chain and
- * walks it (see `src/chain-walk.ts`) — registration metadata stays here.
- * Exported so the defensive guard paths
- * the registration lifecycle cannot reach (a registered route whose `llm`
- * vanished mid-teardown) stay unit-testable by direct construction.
+ * The virtual adapter (P1/P3). `stream()` hands the call to the injected walk
+ * (see `src/chain-walk.ts`) — registration metadata stays here.
  */
 export class FallbacksChainAdapter extends LlmAdapter {
   constructor(
@@ -292,39 +274,16 @@ export class FallbacksChainAdapter extends LlmAdapter {
   }
 
   /**
-   * The virtual route's entry point (P1, direction C): the three pre-attempt
-   * guards stay here, then the session's chain is WALKED (`src/chain-walk.ts`)
-   * instead of delegated to the head. Throws an explicit `LlmError` only when
-   * there is no real pair to walk: an empty effective chain, an undispatchable
-   * head (wildcard / malformed / self-route — the recursion guard), or a
-   * vanished `llm` runtime. The runtime normalizes the throw into a terminal
-   * error finish chunk, so the guard stays graceful instead of a hard outage.
+   * The virtual route's entry point (P1, direction C): the session's chain is
+   * WALKED (`src/chain-walk.ts`) — the walk owns the pre-attempt guards
+   * (`EMPTY_EFFECTIVE_CHAIN` / `UNDISPATCHABLE_EFFECTIVE_HEAD` /
+   * `LLM_UNAVAILABLE`, thrown synchronously before any chunk, so the runtime
+   * normalizes them exactly like an adapter throw) because only it can resolve
+   * WHICH chain the calling session walks: a subagent's role chain is not the
+   * root's all-day chain, so a root-only gate here would refuse a child that
+   * has a perfectly walkable role chain.
    */
   override stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
-    const config = this.readConfig()
-    const now = new Date()
-    const chain = resolveEffectiveChain(config, now, config.tz ?? 'Asia/Shanghai')
-    if (chain.length === 0) {
-      throw new LlmError(
-        'llm-fallbacks: the effective chain is empty — the virtual FallbacksChain route has no head to delegate to',
-        EMPTY_EFFECTIVE_CHAIN_CODE,
-      )
-    }
-    const head = effectiveHeadOf(config, now)
-    if (head === undefined) {
-      throw new LlmError(
-        'llm-fallbacks: the effective chain head cannot be dispatched (non-conforming all-day, wildcard, malformed, or self-route) — refusing to delegate',
-        UNDISPATCHABLE_HEAD_CODE,
-      )
-    }
-    if (this.getLlm() === undefined) {
-      // The route is registered on a live `llm` service; absence means the
-      // fiber is tearing down. Defensive — never silently drop the call.
-      throw new LlmError(
-        'llm-fallbacks: the llm runtime is unavailable — cannot delegate the FallbacksChain call',
-        LLM_UNAVAILABLE_CODE,
-      )
-    }
     return this.walk(options)
   }
 }

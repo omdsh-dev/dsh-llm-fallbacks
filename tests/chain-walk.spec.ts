@@ -28,17 +28,15 @@ import type { FallbacksConfig } from '../src/config.ts'
 import { FallbackStateStore } from '../src/state.ts'
 import {
   CONTEXT_WINDOW_EXCEEDED_CODE,
+  EMPTY_EFFECTIVE_CHAIN_CODE,
+  LLM_UNAVAILABLE_CODE,
+  UNDISPATCHABLE_HEAD_CODE,
   walkChain,
   type AgentChainView,
   type ChainWalkDeps,
 } from '../src/chain-walk.ts'
-import {
-  EMPTY_EFFECTIVE_CHAIN_CODE,
-  FALLBACKS_CHAIN_MODEL,
-  FALLBACKS_PROVIDER,
-  LLM_UNAVAILABLE_CODE,
-  UNDISPATCHABLE_HEAD_CODE,
-} from '../src/virtual-adapter.ts'
+import { OFFICIAL_FLASH } from '../src/time-slots.ts'
+import { FALLBACKS_CHAIN_MODEL, FALLBACKS_PROVIDER } from '../src/virtual-adapter.ts'
 import { cfg, walkDeps } from './support/harness.ts'
 
 const TEXT: StreamChunk = { type: 'text-delta', index: 0, text: 'ok' }
@@ -117,6 +115,32 @@ function config(overrides: Partial<FallbacksConfig>): () => FallbacksConfig {
   return () => value
 }
 
+/** The three windows that tile a whole day (`end` exclusive; `23:59` wraps to `00:00`). */
+const FULL_DAY_WINDOWS = [
+  { start: '00:00', end: '12:00' },
+  { start: '12:00', end: '23:59' },
+  { start: '23:59', end: '00:00' },
+] as const
+
+/**
+ * A ROOT-scenario config reader: the chain UNDER TEST rides full-day slot rows
+ * while the all-day `rootChain` keeps a conforming tail. A root walk is refused
+ * when the all-day tail is not official (the picker row's documented
+ * conformance gate), and slot rows are how a real root session carries an
+ * arbitrary chain under that rule. The windows tile the whole day, so the
+ * effective chain is the same chain at any wall clock.
+ *
+ * Subagent scenarios keep {@link config}: a child's tail is the RAW `rootChain`,
+ * which the slot rows never touch.
+ */
+function rootConfig(chain: readonly string[], overrides: Partial<FallbacksConfig> = {}): () => FallbacksConfig {
+  return config({
+    ...overrides,
+    rootChain: [OFFICIAL_FLASH],
+    timeSlots: FULL_DAY_WINDOWS.map(({ start, end }) => ({ kind: 'custom' as const, start, end, chain: [...chain] })),
+  })
+}
+
 /** The `trimmed id → declared raw id` map `apply()` derives from `config.roles.list`. */
 const CODER_ROLE_IDS = new Map([['coder', 'coder']])
 
@@ -169,7 +193,7 @@ describe('committed rule (design §3.1/§6.1.4)', () => {
       ? { failure: { code: 'AUTH', message: 'head down' } }
       : { chunks: [TEXT, STOP] }
 
-    const chunks = await walk({ readConfig: config({ rootChain: ['a/1', 'b/2'] }) })
+    const chunks = await walk({ readConfig: rootConfig(['a/1', 'b/2']) })
 
     expect(dispatched()).toEqual(['a/1', 'b/2'])
     // The swallowed attempt contributes nothing — not even its finish.
@@ -182,7 +206,7 @@ describe('committed rule (design §3.1/§6.1.4)', () => {
       failure: { code: 'AUTH', message: 'head down' },
     })
 
-    const chunks = await walk({ readConfig: config({ rootChain: ['a/1', 'b/2'] }) })
+    const chunks = await walk({ readConfig: rootConfig(['a/1', 'b/2']) })
 
     expect(dispatched()).toEqual(['a/1'])
     expect(chunks).toHaveLength(2)
@@ -196,7 +220,7 @@ describe('committed rule (design §3.1/§6.1.4)', () => {
   it('forwards a non-trigger failure instead of switching', async () => {
     adapter.respond = () => ({ failure: { code: 'TRANSPORT', message: 'socket' } })
 
-    const chunks = await walk({ readConfig: config({ rootChain: ['a/1', 'b/2'] }) })
+    const chunks = await walk({ readConfig: rootConfig(['a/1', 'b/2']) })
 
     expect(dispatched()).toEqual(['a/1'])
     expect(finishes(chunks)).toHaveLength(1)
@@ -208,7 +232,7 @@ describe('committed rule (design §3.1/§6.1.4)', () => {
       ? { failure: { code: 'AUTH' } }
       : { chunks: [TEXT, STOP] }
 
-    const chunks = await walk({ readConfig: config({ rootChain: ['a/1', 'b/2'] }) })
+    const chunks = await walk({ readConfig: rootConfig(['a/1', 'b/2']) })
 
     expect(finishes(chunks)).toEqual([STOP])
   })
@@ -219,7 +243,7 @@ describe('candidate order and filters (design §3.1 step 2)', () => {
     adapter.respond = (options) => ({ failure: { code: 'AUTH', message: `${options.model} down` } })
 
     const chunks = await walk({
-      readConfig: config({ rootChain: ['a/1', 'b/2', 'c/3'], maxSwitchesPerStep: 1 }),
+      readConfig: rootConfig(['a/1', 'b/2', 'c/3'], { maxSwitchesPerStep: 1 }),
     })
 
     expect(dispatched()).toEqual(['a/1', 'b/2'])
@@ -234,7 +258,7 @@ describe('candidate order and filters (design §3.1 step 2)', () => {
     states.suppress(states.get('s1'), 'b/2', Date.now() + 60_000)
 
     await walk({
-      readConfig: config({ rootChain: ['a/1', 'b/2', 'b/2', 'c/3'] }),
+      readConfig: rootConfig(['a/1', 'b/2', 'b/2', 'c/3']),
       states,
     }, { sessionId: SessionId('s1') })
 
@@ -247,7 +271,7 @@ describe('candidate order and filters (design §3.1 step 2)', () => {
     states.suppress(states.get('s1'), 'a/1', Date.now() + 60_000)
 
     await walk({
-      readConfig: config({ rootChain: ['a/1', 'b/2'] }),
+      readConfig: rootConfig(['a/1', 'b/2']),
       states,
     }, { sessionId: SessionId('s1') })
 
@@ -261,7 +285,7 @@ describe('candidate order and filters (design §3.1 step 2)', () => {
     adapter.windows = () => 1_000
 
     const skipped = await walk({
-      readConfig: config({ rootChain: ['a/1', 'b/2'], triggerCodes: [CONTEXT_WINDOW_EXCEEDED_CODE] }),
+      readConfig: rootConfig(['a/1', 'b/2'], { triggerCodes: [CONTEXT_WINDOW_EXCEEDED_CODE] }),
     })
     expect(dispatched()).toEqual(['a/1'])
     expect(finishes(skipped)).toHaveLength(1)
@@ -269,7 +293,7 @@ describe('candidate order and filters (design §3.1 step 2)', () => {
     adapter.calls.length = 0
     adapter.windows = (provider) => (provider === 'b' ? 5_000 : 1_000)
     await walk({
-      readConfig: config({ rootChain: ['a/1', 'b/2'], triggerCodes: [CONTEXT_WINDOW_EXCEEDED_CODE] }),
+      readConfig: rootConfig(['a/1', 'b/2'], { triggerCodes: [CONTEXT_WINDOW_EXCEEDED_CODE] }),
     })
     // A larger window survives the filter.
     expect(dispatched()).toEqual(['a/1', 'b/2'])
@@ -279,14 +303,14 @@ describe('candidate order and filters (design §3.1 step 2)', () => {
     adapter.respond = () => ({ failure: { code: 'AUTH' } })
     adapter.catalog = (provider) => (provider === 'w' ? [{ id: '9' }] : [{ id: '1' }, { id: '2' }])
 
-    await walk({ readConfig: config({ rootChain: ['a/1', 'w/*'] }) })
+    await walk({ readConfig: rootConfig(['a/1', 'w/*']) })
 
     // `w/*` resolves against the head's model id (1), which w does not list.
     expect(dispatched()).toEqual(['a/1'])
 
     adapter.calls.length = 0
     adapter.catalog = (provider) => (provider === 'w' ? [{ id: '1' }] : [{ id: '1' }])
-    await walk({ readConfig: config({ rootChain: ['a/1', 'w/*'] }) })
+    await walk({ readConfig: rootConfig(['a/1', 'w/*']) })
     expect(dispatched()).toEqual(['a/1', 'w/1'])
   })
 
@@ -327,6 +351,7 @@ describe('candidate order and filters (design §3.1 step 2)', () => {
     adapter.respond = (options) => (options.model === '1' ? { failure: { code: 'AUTH' } } : { chunks: [STOP] })
 
     await walk({
+      // Raw tail on purpose: a SUBAGENT walk appends the raw `rootChain`.
       readConfig: config({ rootChain: ['a/1', 'b/2'] }),
       resolveAgentView: () => ({ origin: 'subagent', sessionId: 's1' }),
       seamRecord: () => ({ role: 'inherit' }),
@@ -338,6 +363,24 @@ describe('candidate order and filters (design §3.1 step 2)', () => {
 })
 
 describe('role chain tail (design §2.2)', () => {
+  it('walks a roles-only config for an injected child (R-2: empty rootChain, no EMPTY_EFFECTIVE_CHAIN)', async () => {
+    // The config's ONLY chain lives in `roles.list` — the shape a subagent
+    // deployment uses. The pre-C adapter guards read root/all-day semantics and
+    // threw EMPTY_EFFECTIVE_CHAIN before the walk could resolve the role; the
+    // guards now live in the walk, which resolves the role FIRST.
+    adapter.respond = () => ({ chunks: [TEXT, STOP] })
+
+    const chunks = await walk({
+      readConfig: () => cfg({ rootChain: [], roles: { list: [{ id: 'coder', persona: '', chain: ['a/1', 'b/2'] }], rules: [] } }),
+      resolveAgentView: () => ({ origin: 'subagent', sessionId: 's1' }),
+      seamRecord: () => ({ role: 'coder', virtualRouteInjected: true }),
+      roleIds: () => CODER_ROLE_IDS,
+    }, { sessionId: SessionId('s1') })
+
+    expect(dispatched()).toEqual(['a/1'])
+    expect(finishes(chunks)).toEqual([STOP])
+  })
+
   it('walks a subagent role chain and appends rootChain under inherit-root', async () => {
     adapter.respond = () => ({ failure: { code: 'AUTH' } })
 
@@ -377,7 +420,7 @@ describe('effort rule (design §3.2)', () => {
     adapter.respond = (options) => (options.model === '1' ? { failure: { code: 'AUTH' } } : { chunks: [STOP] })
 
     await walk(
-      { readConfig: config({ rootChain: ['a/1', 'b/2'] }) },
+      { readConfig: rootConfig(['a/1', 'b/2']) },
       { reasoningEffort: 'high' as GenerateOptions['reasoningEffort'] },
     )
 
@@ -387,7 +430,7 @@ describe('effort rule (design §3.2)', () => {
   it('drops the effort entirely when the selection carries none', async () => {
     adapter.respond = (options) => (options.model === '1' ? { failure: { code: 'AUTH' } } : { chunks: [STOP] })
 
-    await walk({ readConfig: config({ rootChain: ['a/1', 'b/2'] }) })
+    await walk({ readConfig: rootConfig(['a/1', 'b/2']) })
 
     expect(adapter.calls.map((call) => 'reasoningEffort' in call)).toEqual([false, false])
   })
@@ -397,7 +440,7 @@ describe('terminal behavior (design §3.1 step 4, §6.1.1/§6.1.3)', () => {
   it('re-emits the last terminal error finish when the chain is exhausted', async () => {
     adapter.respond = (options) => ({ failure: { code: 'AUTH', message: `${options.model} down` } })
 
-    const chunks = await walk({ readConfig: config({ rootChain: ['a/1', 'b/2'] }) })
+    const chunks = await walk({ readConfig: rootConfig(['a/1', 'b/2']) })
 
     expect(dispatched()).toEqual(['a/1', 'b/2'])
     expect(finishes(chunks)).toHaveLength(1)
@@ -419,13 +462,13 @@ describe('terminal behavior (design §3.1 step 4, §6.1.1/§6.1.3)', () => {
   it('throws UNDISPATCHABLE_EFFECTIVE_HEAD for a wildcard-only or self-route chain', () => {
     const options = { provider: FALLBACKS_PROVIDER, model: FALLBACKS_CHAIN_MODEL, messages: [] }
     expect(thrownCode(() => walkChain(
-      walkDeps({ getLlm: () => ctx.llm, readConfig: config({ rootChain: ['a/*'] }) }),
+      walkDeps({ getLlm: () => ctx.llm, readConfig: rootConfig(['a/*']) }),
       options,
     ))).toBe(UNDISPATCHABLE_HEAD_CODE)
     expect(thrownCode(() => walkChain(
       walkDeps({
         getLlm: () => ctx.llm,
-        readConfig: config({ rootChain: [`${FALLBACKS_PROVIDER}/${FALLBACKS_CHAIN_MODEL}`] }),
+        readConfig: rootConfig([`${FALLBACKS_PROVIDER}/${FALLBACKS_CHAIN_MODEL}`]),
       }),
       options,
     ))).toBe(UNDISPATCHABLE_HEAD_CODE)
@@ -434,7 +477,7 @@ describe('terminal behavior (design §3.1 step 4, §6.1.1/§6.1.3)', () => {
 
   it('throws LLM_UNAVAILABLE when the runtime is gone', () => {
     expect(thrownCode(() => walkChain(
-      walkDeps({ getLlm: () => undefined, readConfig: config({ rootChain: ['a/1'] }) }),
+      walkDeps({ getLlm: () => undefined, readConfig: rootConfig(['a/1']) }),
       { provider: FALLBACKS_PROVIDER, model: FALLBACKS_CHAIN_MODEL, messages: [] },
     ))).toBe(LLM_UNAVAILABLE_CODE)
   })
@@ -445,7 +488,7 @@ describe('terminal behavior (design §3.1 step 4, §6.1.1/§6.1.3)', () => {
     controller.abort()
 
     const chunks = await walk(
-      { readConfig: config({ rootChain: ['a/1', 'b/2'] }) },
+      { readConfig: rootConfig(['a/1', 'b/2']) },
       { signal: controller.signal },
     )
 
@@ -460,9 +503,7 @@ describe('recursion guard (design §6.1.2)', () => {
     adapter.respond = () => ({ failure: { code: 'AUTH' } })
 
     await walk({
-      readConfig: config({
-        rootChain: ['a/1', `${FALLBACKS_PROVIDER}/${FALLBACKS_CHAIN_MODEL}`, 'b/2'],
-      }),
+      readConfig: rootConfig(['a/1', `${FALLBACKS_PROVIDER}/${FALLBACKS_CHAIN_MODEL}`, 'b/2']),
     })
 
     expect(dispatched()).toEqual(['a/1', 'b/2'])
@@ -475,12 +516,12 @@ describe('bookkeeping (design §3.3)', () => {
     adapter.respond = (options) => (options.model === '1' ? { failure: { code: 'AUTH' } } : { chunks: [STOP] })
     const states = new FallbackStateStore()
 
-    await walk({ readConfig: config({ rootChain: ['a/1', 'b/2'] }), states }, { sessionId: SessionId('s1') })
+    await walk({ readConfig: rootConfig(['a/1', 'b/2']), states }, { sessionId: SessionId('s1') })
     expect(dispatched()).toEqual(['a/1', 'b/2'])
     expect(states.peek('s1')?.cooldown.peek('a/1')).toBeTypeOf('number')
 
     adapter.calls.length = 0
-    await walk({ readConfig: config({ rootChain: ['a/1', 'b/2'] }), states }, { sessionId: SessionId('s1') })
+    await walk({ readConfig: rootConfig(['a/1', 'b/2']), states }, { sessionId: SessionId('s1') })
     // The cooled head is skipped: the second walk resumes at the next candidate.
     expect(dispatched()).toEqual(['b/2'])
   })
@@ -490,7 +531,7 @@ describe('bookkeeping (design §3.3)', () => {
     const states = new FallbackStateStore()
 
     await walk({
-      readConfig: config({ rootChain: ['a/1', 'b/2'], triggerCodes: [CONTEXT_WINDOW_EXCEEDED_CODE] }),
+      readConfig: rootConfig(['a/1', 'b/2'], { triggerCodes: [CONTEXT_WINDOW_EXCEEDED_CODE] }),
       states,
     }, { sessionId: SessionId('s1') })
 
@@ -503,7 +544,7 @@ describe('bookkeeping (design §3.3)', () => {
     state.recovery.markHalfOpen('a/1', Date.now())
     expect(state.recovery.isHalfOpen('a/1')).toBe(true)
 
-    await walk({ readConfig: config({ rootChain: ['a/1'] }), states }, { sessionId: SessionId('s1') })
+    await walk({ readConfig: rootConfig(['a/1']), states }, { sessionId: SessionId('s1') })
 
     expect(state.recovery.isHalfOpen('a/1')).toBe(false)
   })
@@ -513,7 +554,7 @@ describe('bookkeeping (design §3.3)', () => {
     const info = vi.fn()
 
     await walk({
-      readConfig: config({ rootChain: ['a/1', 'b/2'] }),
+      readConfig: rootConfig(['a/1', 'b/2']),
       log: { info, warn: () => {} },
     })
 
