@@ -16,7 +16,9 @@
  *   warn (AC-4);
  * - headless (no settings service) → no service at all (D1), no fire, no
  *   seeds write, no materialized rows from any seed source, no error log, no
- *   unhandled rejection, runtime dispatches (D9.3-b headless boundary);
+ *   unhandled rejection, and the loop's dispatch passes through untouched
+ *   (direction C: the virtual-route walk is the only fallback path)
+ *   (D9.3-b headless boundary);
  * - write failure (persist rejects) → exactly one `llm-fallbacks: seeds:`
  *   logger.error, registry not committed, apply/runtime unaffected (D9.3-b);
  * - multi-fiber: same-root second apply does NOT re-fire (no second conflict
@@ -31,7 +33,7 @@ import { FALLBACKS_PROFILE_ENTRY, type FallbacksConfigGateway } from '../src/gat
 import { presetRoles } from '../src/presets.ts'
 import { MemorySettings } from './support/memory-settings.ts'
 import { settle } from './support/settle.ts'
-import { cfg, dispatchRequestError, makeAgent } from './support/harness.ts'
+import { cfg, dispatchRequest, dispatchRequestError, makeAgent } from './support/harness.ts'
 
 /** Track every test context and dispose it after the case (settings/gateway effects hygiene). */
 const contexts = new Set<Context>()
@@ -315,10 +317,15 @@ describe('bundled preset self-declaration (real apply)', () => {
     await settle()
     expect(ctx.get('llm-fallbacks')).toBeUndefined()
 
-    // The fallback runtime dispatches normally without a settings service.
+    // Direction C: the fallback path is the virtual-route walk; the plugin
+    // registers NEITHER loop waterfall, so a dispatch passes through
+    // untouched (the loop / llm-retry keep the decision) with no settings
+    // service wiring the runtime either.
     const { agent } = makeAgent('headless-agent', { provider: 'mock', model: 'gpt-4o' })
-    const action = await dispatchRequestError(ctx, agent, { failure: { message: 'denied', code: 'AUTH' } })
-    expect(action).toEqual({ kind: 'retry' })
+    expect(await dispatchRequestError(ctx, agent, { failure: { message: 'denied', code: 'AUTH' } }))
+      .toBeUndefined()
+    expect(await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' }))
+      .toEqual({ provider: 'mock', model: 'gpt-4o' })
 
     // Give any (incorrectly) scheduled fire its activation window (a tick +
     // settle, same negative-assertion style as the `presets: 'none'` case).

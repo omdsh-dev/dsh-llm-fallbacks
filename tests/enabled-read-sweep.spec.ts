@@ -105,10 +105,11 @@ const ALLOWED_ENABLED_HITS: readonly AllowlistEntry[] = [
   // boolean (the host contract), NOT the removed FallbacksConfig switch.
   { file: 'subagent-policy.ts', pattern: /state: 'enabled'/, count: 3, reason: "subagent-policy state enum ('enabled' arm)" },
   { file: 'subagent-policy.ts', pattern: /readonly enabled: boolean|settings\.enabled/, count: 2, reason: 'the dsh settings payload carries its own `enabled` boolean (host contract, not FallbacksConfig)' },
+  { file: 'subagent-policy.ts', pattern: /value\.enabled/, count: 2, reason: 'the dsh settings payload carries its own `enabled` boolean — the untrusted-value read and the snapshot rebuild (host contract, not FallbacksConfig)' },
   { file: 'gateway.ts', pattern: /state: 'enabled'/, count: 3, reason: "subagent-policy state enum ('enabled' arm) in the gateway wire types" },
   { file: 'gateway.ts', pattern: /policy\.state !== 'enabled'/, count: 1, reason: "subagent-policy state enum ('enabled' arm) — the allowlist sync write gate" },
+  { file: 'chain-walk.ts', pattern: /policy\.state === 'enabled'/, count: 1, reason: "subagent-policy state enum ('enabled' arm) — a seam-injected child's switches are intersected with the host allowlist" },
   { file: 'gateway.ts', pattern: /^\s*'enabled',\s*$/, count: 1, reason: 'LEGACY_KEYS strip set — the removed key is tolerated on read and stripped from every snapshot/write' },
-  { file: 'index.ts', pattern: /'enabled'/, count: 4, reason: "subagent-policy state enum ('enabled' arm) dispatch gates" },
   { file: 'client/fallbacks-store.ts', pattern: /'enabled'/, count: 4, reason: "subagent-policy state enum ('enabled' arm) in the client store parse/view" },
   { file: 'client/FallbacksCard.tsx', pattern: /'enabled'/, count: 2, reason: "subagent-policy state enum ('enabled' arm) render gates (status block + role-title filtering)" },
   // Locale/TUI copy — display strings, not config reads.
