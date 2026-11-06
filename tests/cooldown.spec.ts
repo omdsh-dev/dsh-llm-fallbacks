@@ -1,13 +1,12 @@
 /**
- * Cooldown store + step-failure-set unit tests (Task 2).
+ * Cooldown store unit tests (Task 2).
  *
- * Covers lazy expiry (cooldown-expiry revert), the `revertPolicy: 'never'`
- * infinite-TTL path, and the StepFailureSet add/has/reset contract. The
- * switchCount / maxSwitchesPerStep judgement belongs to the caller (Task 3).
+ * Covers lazy expiry (cooldown-expiry revert) and the `revertPolicy: 'never'`
+ * infinite-TTL path.
  */
 
 import { describe, expect, it } from 'vitest'
-import { CooldownStore, StepFailureSet } from '../src/cooldown.ts'
+import { CooldownStore } from '../src/cooldown.ts'
 
 describe('CooldownStore', () => {
   it('reports a freshly suppressed key as suppressed', () => {
@@ -115,27 +114,5 @@ describe('CooldownStore', () => {
     expect([...store.keys()]).toEqual(['openai/gpt-4o', 'anthropic/claude-3-5-sonnet'])
     // pure read: expired entries are still present
     expect(store.size).toBe(2)
-  })
-})
-
-describe('StepFailureSet', () => {
-  it('adds, reports, and resets keys', () => {
-    const set = new StepFailureSet()
-    expect(set.has('openai/gpt-4o')).toBe(false)
-    set.add('openai/gpt-4o')
-    expect(set.has('openai/gpt-4o')).toBe(true)
-    expect(set.has('anthropic/claude-3-5-sonnet')).toBe(false)
-    set.reset()
-    expect(set.has('openai/gpt-4o')).toBe(false)
-  })
-
-  it('tracks its size', () => {
-    const set = new StepFailureSet()
-    set.add('a/x')
-    set.add('b/y')
-    set.add('a/x') // duplicate is idempotent
-    expect(set.size).toBe(2)
-    set.reset()
-    expect(set.size).toBe(0)
   })
 })

@@ -37,7 +37,7 @@
  */
 
 import { INHERIT_ROLE_ID, type FallbacksRole } from './config.ts'
-import type { CooldownStore, StepFailureSet } from './cooldown.ts'
+import type { CooldownStore } from './cooldown.ts'
 import { parseSelector, resolveWildcardEntry, selectorKey, type Selector } from './selectors.ts'
 
 /** The model that just failed — the anchor for chain resolution. */
@@ -252,7 +252,7 @@ export interface CandidateFilterOptions {
   /** Cooldown store: suppressed candidates are skipped (keyed `provider/model`). */
   cooldown: Pick<CooldownStore, 'isSuppressed'>
   /** Failed-set for the current step: already-failed candidates are skipped. */
-  failed: Pick<StepFailureSet, 'has'>
+  failed: { has(key: string): boolean }
   /** Optional existence probe: candidates the target provider lacks are skipped. */
   modelExists?: (provider: string, model: string) => boolean
   /**

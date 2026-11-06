@@ -15,7 +15,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { FallbacksRole } from '../src/config.ts'
 import { INHERIT_ROLE_ID } from '../src/config.ts'
-import { CooldownStore, StepFailureSet } from '../src/cooldown.ts'
+import { CooldownStore } from '../src/cooldown.ts'
 import type { Selector } from '../src/selectors.ts'
 import {
   annotateCandidates,
@@ -231,7 +231,7 @@ describe('createCandidateFilter — caller-side candidate filtering', () => {
 
   function makeFilter(overrides: Partial<Parameters<typeof createCandidateFilter>[0]> = {}) {
     const cooldown = new CooldownStore()
-    const failed = new StepFailureSet()
+    const failed = new Set<string>()
     return createCandidateFilter({
       current: failing,
       cooldown,
@@ -262,7 +262,7 @@ describe('createCandidateFilter — caller-side candidate filtering', () => {
   })
 
   it('skips candidates already failed in this step', () => {
-    const failed = new StepFailureSet()
+    const failed = new Set<string>()
     failed.add('anthropic/claude-3-5-sonnet')
     const filter = makeFilter({ failed })
     expect(filter({ provider: 'anthropic', model: 'claude-3-5-sonnet', raw: 'anthropic/claude-3-5-sonnet' })).toBe(false)
@@ -277,7 +277,7 @@ describe('createCandidateFilter — caller-side candidate filtering', () => {
 
   it('does not require modelExists (wildcard absence decided by caller)', () => {
     const cooldown = new CooldownStore()
-    const failed = new StepFailureSet()
+    const failed = new Set<string>()
     const filter = createCandidateFilter({ current: failing, cooldown, failed })
     const candidate: Selector = { provider: 'anthropic', model: 'gpt-4o', raw: 'anthropic/gpt-4o' }
     expect(filter(candidate)).toBe(true)
@@ -300,7 +300,7 @@ describe('createCandidateFilter — context-window exclusion (CONTEXT_WINDOW_EXC
     return createCandidateFilter({
       current: failing,
       cooldown: new CooldownStore(),
-      failed: new StepFailureSet(),
+      failed: new Set<string>(),
       minContextWindow: windows['openai/gpt-4o'],
       contextWindowOf: (provider, model) => windows[`${provider}/${model}`],
       ...overrides,
@@ -345,7 +345,7 @@ describe('annotateCandidates — per-candidate skip reasons (T3 review Minor 1)'
 
   function makeBase() {
     const cooldown = new CooldownStore()
-    const failed = new StepFailureSet()
+    const failed = new Set<string>()
     return {
       options: { current: failing, cooldown, failed },
       cooldown,
