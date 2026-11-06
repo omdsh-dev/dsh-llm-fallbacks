@@ -67,12 +67,16 @@
  * it over the parent's route when `manager.startLocal` creates the child) when
  * all five conditions hold: a resolved role, no explicit `agentOptions` route
  * (explicit = authorized, untouched), a LOCAL backend, an active config whose
- * resolved role chain has a dispatchable exact head, and a subagent policy that
- * is not `unprovable`. The record carries `virtualRouteInjected` (sticky) and
- * the effective chain head is labelled in `chainHeads` (`injected` /
- * `authorized`). Injection is creation-time only, so it can never overwrite a
- * resumed child's own durable selection, and a non-injectable dispatch forwards
- * the caller's spec untouched (external backends keep pure inheritance).
+ * resolved role chain has a dispatchable exact head ON the host allowlist when
+ * the subagent policy is `enabled`, and a policy that is not `unprovable`. The
+ * record carries `virtualRouteInjected` (sticky) and the effective chain head
+ * is labelled in `chainHeads` (`injected` / `authorized`). Injection is
+ * creation-time only BY CONSTRUCTION: rc.1's `startActivation` rejects any
+ * child id that already exists (`DUPLICATE_CHILD`), so this path never attaches
+ * to an existing child and cannot overwrite its durable selection — a
+ * caller-reserved `childId` is a pre-chosen identity for a NEW child. A
+ * non-injectable dispatch forwards the caller's spec untouched (external
+ * backends keep pure inheritance).
  *
  * In-session notice row (plan Task 3): the SAME install point registers the
  * `agent/pre-step` emitter (`./role-notice.ts`) over the record map it owns, so
@@ -250,11 +254,13 @@ export interface SubagentStartRequestView {
 
 /**
  * Structural view of the activation spec (rc.1 `SubagentActivationSpec`,
- * consumed fields only): `childId` is the caller-reserved identity a resume
- * already carries — also the record fallback when the request carries no
- * Assignment header — and `label` is the catalog join's other half (the
- * cataloged child membership carries this exact string). `signal`, `delivery`
- * and every future field travel with the caller's spec object.
+ * consumed fields only): `childId` is the caller-RESERVED identity of a NEW
+ * local child (rc.1 `startLocal` rejects an id that already exists with
+ * `DUPLICATE_CHILD`, so `startActivation` never attaches to a child that
+ * outlived an earlier activation) — also the record fallback when the request
+ * carries no Assignment header — and `label` is the catalog join's other half
+ * (the cataloged child membership carries this exact string). `signal`,
+ * `delivery` and every future field travel with the caller's spec object.
  */
 export interface SubagentActivationSpecView {
   readonly provider: string
@@ -733,7 +739,10 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
    *    `firstDispatchableExactHead` the walk starts from, so a mounted child
    *    always has a first attempt;
    * 5. the host subagent policy is not `unprovable` (fail-closed: never mount
-   *    a route whose switches the plugin could not prove).
+   *    a route whose switches the plugin could not prove), and when it is
+   *    `enabled` that head is ON the allowlist (spec D1): the first attempt is
+   *    a plugin-originated route like every switch, so an empty intersection
+   *    declines the mount and the host seed stands.
    *
    * Contained: any throwing config/policy read degrades to `undefined` (the
    * caller's spec is forwarded untouched) with one debug line.
@@ -749,10 +758,19 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
       if (typeof agentOptions?.provider === 'string' || typeof agentOptions?.model === 'string') return undefined
       const config = options.source()
       if (!isFallbackActive(config)) return undefined
-      const head = firstDispatchableExactHead(roleChainEntries(config.roles.list, config.rootChain, role))
-      if (head === undefined) return undefined
-      if (options.policyFor?.(agentId)?.state === 'unprovable') {
+      const policy = options.policyFor?.(agentId)
+      if (policy?.state === 'unprovable') {
         debug(`llm-fallbacks: subagent seam — model-selection policy is unprovable for "${agentId}"; not mounting the virtual chain route`)
+        return undefined
+      }
+      const chain = roleChainEntries(config.roles.list, config.rootChain, role)
+      const allowedModels = policy?.state === 'enabled' ? policy.allowedModels : undefined
+      const dispatchable = firstDispatchableExactHead(chain)
+      const head = allowedModels === undefined ? dispatchable : firstDispatchableExactHead(chain, allowedModels)
+      if (head === undefined) {
+        if (allowedModels !== undefined && dispatchable !== undefined) {
+          debug(`llm-fallbacks: subagent seam — no route of role "${role}" is on the subagent allowlist; not mounting the virtual chain route`)
+        }
         return undefined
       }
       return {

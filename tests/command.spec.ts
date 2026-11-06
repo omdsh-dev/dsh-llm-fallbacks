@@ -29,6 +29,8 @@ import {
   type FallbacksConfigSummary,
 } from '../src/commands.ts'
 import type { FallbacksSwitchEventData } from '../src/events.ts'
+import { OFFICIAL_FLASH } from '../src/time-slots.ts'
+import { FALLBACKS_CHAIN_MODEL, FALLBACKS_PROVIDER } from '../src/virtual-adapter.ts'
 
 /** A fully-populated snapshot; `overrides` trim it to the state under test. */
 function snapshot(overrides: Partial<FallbacksCommandSnapshot> = {}): FallbacksCommandSnapshot {
@@ -911,6 +913,45 @@ describe('apply() wiring — conditional commands child', () => {
     // nor replayed events.
     expect(stateStore(ctx)?.size).toBe(1)
     expect(agent.session.snapshotEvents()).toHaveLength(0)
+  })
+
+  it('resolves the role through the served route for a child on the virtual row (same as the walk)', async () => {
+    const registered: CommandDefinition[] = []
+    ctx.provide('commands', {
+      register: (def: CommandDefinition) => {
+        registered.push(def)
+        return () => {}
+      },
+    } as never)
+    // A rule keyed on the REAL chain head — the pair the virtual row serves.
+    apply(ctx, cfg({
+      rootChain: [OFFICIAL_FLASH],
+      roles: {
+        list: [{ id: 'coder', persona: '', chain: ['other/gpt-4o'] }],
+        rules: [{ provider: 'deepseek-official', model: 'deepseek-flash', role: 'coder' }],
+      },
+    }))
+    await vi.waitFor(() => expect(registered).toHaveLength(1))
+
+    // The child records the VIRTUAL pair, so only the served route can match
+    // the head-keyed rule — exactly what the walk passes to the same resolver.
+    const { agent } = makeAgent(
+      'cmd-virtual-child',
+      { provider: FALLBACKS_PROVIDER, model: FALLBACKS_CHAIN_MODEL },
+      { origin: 'subagent' },
+    )
+
+    const result = registered[0]!.handler({
+      commandId: 'x',
+      agent,
+      rawInput: '',
+      signal: new AbortController().signal,
+    } as unknown as CommandInvocation)
+    expect(result.kind).toBe('success')
+    if (result.kind !== 'success') throw new Error(`/fallbacks failed: ${result.text}`)
+    const text = result.text ?? ''
+    expect(text).toContain('角色: coder')
+    expect(text).toContain('链: other/gpt-4o')
   })
 
   it('reports the slot as all-day when a legacy non-conforming all-day keeps the rows inert (qc1 F-001)', async () => {

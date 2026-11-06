@@ -202,7 +202,7 @@ describe('an injected child walks its role chain (roles-only config, R-2)', () =
     expect(chunks).toEqual([TEXT, STOP])
   })
 
-  it('intersects switch targets with the host allowlist when the policy is enabled', async () => {
+  it('starts the child on the only allowlisted route when the policy is enabled', async () => {
     // Policy from the settings snapshot (no session event on the fake child).
     ;(ctx.get('settings') as MemorySettings).seed(SUBAGENT_POLICY_SETTINGS_NS, {
       enabled: true,
@@ -213,8 +213,10 @@ describe('an injected child walks its role chain (roles-only config, R-2)', () =
 
     await streamChild(childId)
 
-    // `other/gpt-4o` is the only allowed switch target; the walk stops there.
-    expect(dispatched(adapter)).toEqual(['anthropic/claude-sonnet-4', 'other/gpt-4o'])
+    // The role chain head (`anthropic/claude-sonnet-4`) is outside the
+    // allowlist, so the child's first attempt is the only allowed route; the
+    // switch after its failure has nothing legal left.
+    expect(dispatched(adapter)).toEqual(['other/gpt-4o'])
   })
 
   it('skips the mount when the policy settings are unreadable (fail-closed for a fresh dispatch)', async () => {

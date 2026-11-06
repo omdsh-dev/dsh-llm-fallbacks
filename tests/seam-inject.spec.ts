@@ -242,16 +242,42 @@ describe('mount: the five conditions (§1.3)', () => {
     expect(chainHeads.size).toBe(0)
   })
 
-  it('mounts under an enabled policy too (the walk filters switches, not the mount)', async () => {
-    const { fake } = install({
+  it('declines the mount when the allowlist excludes every route of the role chain (empty intersection)', async () => {
+    const { fake, seam, chainHeads } = install({
+      policyFor: () => ({ state: 'enabled', allowedModels: [{ provider: 'b', model: '2' }] }),
+      debug: () => {},
+    })
+
+    await startThroughWrapper(ctx, activationSpec())
+
+    // The first attempt would be a plugin-originated route outside the
+    // allowlist, so the child is never mounted and the host seed stands.
+    const received = fake.activations[0]!
+    expect(received.request.agentOptions).toBeUndefined()
+    expect(seam.records.get(String(received.childId))?.virtualRouteInjected).toBeUndefined()
+    expect(chainHeads.size).toBe(0)
+  })
+
+  it('mounts on the first ALLOWLISTED route of the role chain, not necessarily its head', async () => {
+    const { fake, chainHeads } = install({
+      config: () => activeConfig({
+        roles: { list: [{ id: 'coder', persona: '', chain: [CODER_CHAIN, 'b/2'] }], rules: [] },
+      }),
       policyFor: () => ({ state: 'enabled', allowedModels: [{ provider: 'b', model: '2' }] }),
     })
 
     await startThroughWrapper(ctx, activationSpec())
 
-    expect(fake.activations[0]!.request.agentOptions).toEqual({
+    const received = fake.activations[0]!
+    expect(received.request.agentOptions).toEqual({
       provider: FALLBACKS_PROVIDER,
       model: FALLBACKS_CHAIN_MODEL,
+    })
+    // The chain head (`anthropic/claude-sonnet-4`) is rejected, so the label
+    // names the route the walk will actually start on.
+    expect(chainHeads.get(String(received.childId))).toMatchObject({
+      route: { provider: 'b', model: '2' },
+      source: 'injected',
     })
   })
 })

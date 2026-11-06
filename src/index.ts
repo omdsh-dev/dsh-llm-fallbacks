@@ -44,7 +44,7 @@ import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
 import { defaultFallbacksConfig, detectLegacyKeys, isFallbackActive, validateFallbacksConfig, type FallbacksConfig } from './config.ts'
 import { Config } from './schema.ts'
 import { resolveChain } from './chains.ts'
-import { walkChain, type AgentChainView, type ChainWalkDeps } from './chain-walk.ts'
+import { servedRouteOf, walkChain, type AgentChainView, type ChainWalkDeps } from './chain-walk.ts'
 import { resolveRole } from './roles.ts'
 import { effectivePolicy, policySettingsFrom, readSessionPolicyEvent, type EffectivePolicy, type PolicySettings } from './subagent-policy.ts'
 import { installSubagentSeam, subagentSeamOf, type SubagentSeam } from './subagents-seam.ts'
@@ -973,9 +973,11 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
     getSnapshot(agent): FallbacksCommandSnapshot {
       const config = source()
       // The dispatch seam's record IS the dispatch-role memory (`**Execute as**`
-      // resolved at spawn); the rules stage is the same fallback the walk uses.
+      // resolved at spawn); the rules stage is the same fallback the walk uses —
+      // including the served route, so a child on the virtual row matches a rule
+      // keyed on the real chain head exactly as the walk does.
       const role = subagentSeam.records.get(agent.id)?.role
-        ?? resolveRole(agent, config.roles.rules, roleIds, logger.warn)
+        ?? resolveRole(agent, config.roles.rules, roleIds, logger.warn, servedRouteOf(config, agent.options, new Date()))
       const state = states.peek(agent.id)
       // P4 (plan fallbacks-half-open-recovery Task 4): under half-open mode
       // the expired cooldown entries transition AT the diagnostic read (so

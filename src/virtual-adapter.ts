@@ -49,6 +49,8 @@ import {
   type StreamChunk,
 } from '@deepseek-ai/dsh-llm'
 import { isFallbackActive, type FallbacksConfig } from './config.ts'
+import { routeOnAllowlist } from './route-allowlist.ts'
+import type { PolicyRoute } from './subagent-policy.ts'
 import { parseSelector, type Selector } from './selectors.ts'
 import { isAllDayConforming, resolveEffectiveChain, resolveSlotState } from './time-slots.ts'
 
@@ -80,8 +82,18 @@ export interface EffectiveHead {
  * `provider/*` wildcards (no real pair), and self-routes back to
  * `FallbacksChain/*` (the P1 recursion guard). `undefined` when the chain
  * is empty or no entry is dispatchable.
+ *
+ * `allowedModels` (spec D1) additionally restricts the result to the host
+ * subagent allowlist: a PLUGIN-originated route is only ever attempted on a
+ * route the host authorizes, so the seam's mount gate and a plugin-originated
+ * walk's start pass the enabled policy's list and an entry it excludes is
+ * skipped like any other non-dispatchable entry. An empty intersection is
+ * `undefined` — the caller declines the mount / refuses the walk.
  */
-export function firstDispatchableExactHead(chain: readonly string[]): EffectiveHead | undefined {
+export function firstDispatchableExactHead(
+  chain: readonly string[],
+  allowedModels?: readonly PolicyRoute[],
+): EffectiveHead | undefined {
   for (const entry of chain) {
     let selector: Selector
     try {
@@ -91,7 +103,9 @@ export function firstDispatchableExactHead(chain: readonly string[]): EffectiveH
     }
     if (selector.model === undefined) continue // wildcard: no real pair to delegate
     if (selector.provider === FALLBACKS_PROVIDER) continue // self-route: recursion guard
-    return { provider: selector.provider, model: selector.model }
+    const head = { provider: selector.provider, model: selector.model }
+    if (allowedModels !== undefined && !routeOnAllowlist(head, allowedModels)) continue
+    return head
   }
   return undefined
 }

@@ -338,13 +338,14 @@ function agentLikeOf(view: AgentChainView | undefined): AgentLike {
  * recorded pair is the virtual row keeps matching a rule keyed on the real
  * chain head. `effectiveHeadOf` is the same head the picker row advertises, and
  * a non-conforming all-day chain yields `undefined` — no anchor, no widening.
+ * Shared by the walk (`resolveWalk`) and the `/fallbacks` snapshot, so the
+ * diagnostic surface resolves the role exactly as the run does.
  */
-function servedRouteOf(
+export function servedRouteOf(
   config: FallbacksConfig,
-  view: AgentChainView | undefined,
+  route: { readonly provider?: string; readonly model?: string } | undefined,
   now: Date,
 ): { provider: string; model: string } | undefined {
-  const route = view?.optionsRoute
   if (route?.provider !== FALLBACKS_PROVIDER || route.model !== FALLBACKS_CHAIN_MODEL) return undefined
   const head = effectiveHeadOf(config, now)
   return head === undefined ? undefined : { provider: head.provider, model: head.model }
@@ -411,7 +412,7 @@ function resolveWalk(deps: ChainWalkDeps, options: GenerateOptions): WalkStart {
   const seam = owner === undefined ? undefined : deps.seamRecord(owner)
   const role = resolveDeclaredRole(agentLikeOf(view), config.roles.rules, deps.roleIds(), {
     dispatchRole: seam?.role,
-    servedRoute: servedRouteOf(config, view, now),
+    servedRoute: servedRouteOf(config, view?.optionsRoute, now),
     warn: deps.log.warn,
   })
   // Chain tails per origin (§2.2, unchanged from the pre-C decision path):
@@ -437,10 +438,22 @@ function resolveWalk(deps: ChainWalkDeps, options: GenerateOptions): WalkStart {
       UNDISPATCHABLE_HEAD_CODE,
     )
   }
-  const head = firstDispatchableExactHead(entries)
+  // Allowlist admission (spec D1, the mount gate's counterpart): the FIRST
+  // attempt of a plugin-originated walk is a plugin-originated route just like
+  // every switch, so the head is the chain's first route ON the host
+  // allowlist — which is also what the cooled-head re-entry below may resume
+  // at. `unprovable` reads as no admission (the mount refused it, and an
+  // unreadable policy never proves a route illegal); an empty intersection is
+  // a pre-attempt refusal instead of an unauthorized attempt.
+  const dispatchable = firstDispatchableExactHead(entries)
+  const policy = owner !== undefined && seam?.virtualRouteInjected === true ? deps.policyFor(owner) : undefined
+  const allowedModels = policy?.state === 'enabled' ? policy.allowedModels : undefined
+  const head = allowedModels === undefined ? dispatchable : firstDispatchableExactHead(entries, allowedModels)
   if (head === undefined) {
     throw new LlmError(
-      'llm-fallbacks: the effective chain head cannot be dispatched (wildcard, malformed, or self-route) — refusing to delegate',
+      dispatchable === undefined
+        ? 'llm-fallbacks: the effective chain head cannot be dispatched (wildcard, malformed, or self-route) — refusing to delegate'
+        : 'llm-fallbacks: every dispatchable route of the effective chain is outside the subagent allowlist — refusing to delegate',
       UNDISPATCHABLE_HEAD_CODE,
     )
   }
@@ -625,7 +638,9 @@ async function* walk(
   // in which case the walk resumes at the next surviving candidate (the
   // llm-retry re-entry contract). A chain whose every candidate is cooled has
   // no replacement: the head is still attempted, so a request is never left
-  // without an answer.
+  // without an answer. That fallback is safe for a plugin-originated walk
+  // because the head resolved above is already allowlist-admitted, so a
+  // rejected route can never be re-entered here.
   let target: EffectiveHead = head
   if (isCooled(selectorKey(head.provider, head.model))) {
     target = (await advanceFrom(head))?.target ?? head

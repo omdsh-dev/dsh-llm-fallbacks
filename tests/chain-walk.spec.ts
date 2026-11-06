@@ -338,37 +338,34 @@ describe('candidate order and filters (design §3.1 step 2)', () => {
     expect(dispatched()).toEqual(['a/1', 'w/1'])
   })
 
-  it('intersects candidates with the allowlist of a seam-injected subagent', async () => {
+  it('starts a seam-injected walk on the first ALLOWLISTED route, never on a rejected head', async () => {
     adapter.respond = () => ({ failure: { code: 'AUTH' } })
     const view: AgentChainView = { origin: 'subagent', sessionId: 's1' }
     const roleCfg = {
       roles: { list: [{ id: 'coder', persona: '', chain: ['a/1', 'b/2'], fallback: 'none' as const }], rules: [] },
     }
-    const blocked = vi.fn()
-
-    const refused = await walk({
+    const injected = (allowedModels: { provider: string; model: string }[]): Partial<ChainWalkDeps> => ({
       readConfig: config(roleCfg),
       resolveAgentView: () => view,
       seamRecord: () => ({ role: 'coder', virtualRouteInjected: true }),
       roleIds: () => CODER_ROLE_IDS,
-      policyFor: () => ({ state: 'enabled', allowedModels: [{ provider: 'c', model: '3' }] }),
-      recordBlocked: blocked,
-    }, { sessionId: SessionId('s1') })
+      policyFor: () => ({ state: 'enabled', allowedModels }),
+    })
 
-    expect(dispatched()).toEqual(['a/1'])
-    expect(finishes(refused)).toHaveLength(1)
-    // The unconstrained walk would have switched to b/2 — recorded, then exhausted.
-    expect(blocked).toHaveBeenCalledWith('s1', { provider: 'b', model: '2' }, 'trigger-code')
+    // An allowlist that excludes every chain route: no attempt at all — the
+    // first attempt is a plugin-originated route, so the walk refuses.
+    const options = { provider: FALLBACKS_PROVIDER, model: FALLBACKS_CHAIN_MODEL, messages: [], sessionId: SessionId('s1') }
+    expect(thrownCode(() => walkChain(
+      walkDeps({ getLlm: () => ctx.llm, ...injected([{ provider: 'c', model: '3' }]) }),
+      options,
+    ))).toBe(UNDISPATCHABLE_HEAD_CODE)
+    expect(adapter.calls).toHaveLength(0)
 
-    adapter.calls.length = 0
-    await walk({
-      readConfig: config(roleCfg),
-      resolveAgentView: () => view,
-      seamRecord: () => ({ role: 'coder', virtualRouteInjected: true }),
-      roleIds: () => CODER_ROLE_IDS,
-      policyFor: () => ({ state: 'enabled', allowedModels: [{ provider: 'b', model: '2' }] }),
-    }, { sessionId: SessionId('s1') })
-    expect(dispatched()).toEqual(['a/1', 'b/2'])
+    // A later allowlisted route is where the walk STARTS: the chain head a/1 is
+    // never dispatched, and the switch after its failure has nothing legal left.
+    const chunks = await walk(injected([{ provider: 'b', model: '2' }]), { sessionId: SessionId('s1') })
+    expect(dispatched()).toEqual(['b/2'])
+    expect(finishes(chunks)).toHaveLength(1)
   })
 
   it('leaves a non-injected session unfiltered by the allowlist', async () => {
