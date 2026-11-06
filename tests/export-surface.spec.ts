@@ -29,7 +29,6 @@ const LIBRARY_EXPORT_KEYS = [
   'name',
   'Config',
   'stateStore',
-  'countRetryEvents',
   'apply',
   // Library API functions (plan fallbacks-consumer-api T1).
   'resolveRole',
@@ -73,7 +72,6 @@ describe('export surface: runtime values', () => {
     name: 'string',
     Config: 'function',
     stateStore: 'function',
-    countRetryEvents: 'function',
     apply: 'function',
     resolveRole: 'function',
     resolveCandidate: 'function',
@@ -200,9 +198,8 @@ describe('export surface: type exports (compile-time only)', () => {
     expectTypeOf<index.Config>().toEqualTypeOf<index.FallbacksConfig>()
     expectTypeOf<index.FallbackSwitchReason>().toEqualTypeOf<'trigger-code' | 'always-cap'>()
     expectTypeOf<index.FallbacksSwitchEventData>().toMatchTypeOf<{ turn: number; step: number }>()
-    expectTypeOf<index.PendingSwitch>().toMatchTypeOf<{ role: string; reason: index.FallbackSwitchReason }>()
-    expectTypeOf<index.AgentFallbackState>().toMatchTypeOf<{ pendingSwitch?: index.PendingSwitch }>()
-    expectTypeOf<index.StepFailures>().toMatchTypeOf<{ turn: number; step: number }>()
+    expectTypeOf<index.AgentFallbackState>().toMatchTypeOf<{ cooldown: object; recovery: object }>()
+    expectTypeOf<index.BlockedSwitchAttempt>().toMatchTypeOf<{ route: index.FailingModel }>()
     expectTypeOf<index.FallbackStateStore>().toMatchTypeOf<object>()
     // Service contract (plan fallbacks-consumer-api T2 + fallbacks-role-seeds
     // T2 + seed-source-provenance T2): the static `provide` metadata value and

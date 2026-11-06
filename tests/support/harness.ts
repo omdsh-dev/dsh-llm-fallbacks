@@ -1,27 +1,23 @@
 /**
- * Shared integration-test harness (plan Task 4). The drivers here are
- * extracted from Task 3's `tests/runtime.spec.ts` (real cordis waterfall
- * dispatch + fake agent/session) and extended with a mini agent-loop driver
- * that replays the loop's `buildRequest → stream → request-error → retry?`
- * semantics (mirrored from `packages/core/agent-loop/src/agent.ts`: build the
- * request through the `agent/request` waterfall, report the failure through
- * `agent/request-error` with the serving provider, re-enter `buildRequest` on
- * `{ kind: 'retry' }`, otherwise throw `new LlmError(failure.message,
- * failure.code, failure)` — spec §6).
+ * Shared test harness (direction C, plan dsh-022-rc1-upgrade).
  *
- * The Task 4 spec files (`tests/plugin.spec.ts`, `tests/coexist-llm-retry
- * .spec.ts`, `tests/always-mode.spec.ts`) drive the real plugin `apply()`
- * against this harness.
+ * Two kinds of drivers:
+ * - `cfg` / `walkDeps` / `makeAgent` — plain fixtures for the chain walk
+ *   (`tests/chain-walk.spec.ts`, `tests/runtime-recovery.spec.ts`).
+ * - `dispatchRequest` / `dispatchRequestError` — the real `agent/request` /
+ *   `agent/request-error` waterfall dispatches. Under direction C the plugin
+ *   registers NEITHER listener, so these drivers assert pass-through (they
+ *   return the caller's own seed / the downstream decision) and are how a
+ *   suite proves the plugin no longer competes on the loop's waterfalls.
  *
  * @module tests/support/harness
  */
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent, RequestErrorAction } from '@deepseek-ai/dsh-agent'
-import { ProviderRequestId, createAssistantMessage } from '@deepseek-ai/dsh-llm'
-import { RetryId } from '@deepseek-ai/dsh-llm-retry'
+import { ProviderRequestId } from '@deepseek-ai/dsh-llm'
 import type {
-  LlmCallConfig, LlmFailure, ReasoningEffortId, ResolvedNormalRetryPolicy, ResolvedRetryPolicy,
+  LlmCallConfig, LlmFailure, ResolvedNormalRetryPolicy, ResolvedRetryPolicy,
 } from '@deepseek-ai/dsh-llm'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import type { ChainWalkDeps } from '../../src/chain-walk.ts'
@@ -126,105 +122,8 @@ export function llmRetryEvents(agent: Agent): SessionEvent<'llm/retry'>[] {
 }
 
 /**
- * Append one durable `llm/retry` event in the **real** llm-retry event shape
- * (llm-retry `src/types.ts`: `retryId` / `turn` / `step` / `provider` /
- * `mode` / `policyKey` / `retry` / [`maxRetries` for normal] / `delayMs` /
- * `failure`). Task 4 uses the full shape so the always-cap counting is
- * exercised against the real bundle's event shape (T3 fix review ⚠️2 — the
- * `mode` discriminator must survive the real payload).
+ * Drive one `agent/request-error` waterfall (the loop's dispatch, spec §5 table).
  */
-export function appendLlmRetry(
-  agent: Agent,
-  data: {
-    turn: number
-    step: number
-    provider: string
-    mode: 'normal' | 'always'
-    retry?: number
-    policyKey?: string
-    maxRetries?: number
-    delayMs?: number
-    failure?: LlmFailure
-  },
-): void {
-  const { turn, step, provider, mode } = data
-  const retry = data.retry ?? 1
-  const policyKey = data.policyKey ?? (mode === 'always'
-    ? '["always",500,10000,0]'
-    : '["normal",2,["RATE_LIMIT"],500,10000,0]')
-  const delayMs = data.delayMs ?? 500
-  const failure = data.failure ?? { message: 'busy', code: mode === 'normal' ? 'RATE_LIMIT' : 'SERVER' }
-  // Real shape (llm-retry `src/types.ts`): `retryId` is a branded `RetryId`,
-  // `maxRetries` is REQUIRED on the normal variant (and must stay absent on
-  // the always variant — excess-property check). Branching on the literal
-  // `mode` lets the object literal satisfy the discriminated union.
-  if (mode === 'normal') {
-    agent.session.append('llm/retry', {
-      retryId: RetryId(`llm-retry:${provider}:${turn}:${step}:${retry}`),
-      turn,
-      step,
-      provider,
-      mode,
-      policyKey,
-      retry,
-      maxRetries: data.maxRetries ?? 2,
-      delayMs,
-      failure,
-    })
-  } else {
-    agent.session.append('llm/retry', {
-      retryId: RetryId(`llm-retry:${provider}:${turn}:${step}:${retry}`),
-      turn,
-      step,
-      provider,
-      mode,
-      policyKey,
-      retry,
-      delayMs,
-      failure,
-    })
-  }
-}
-
-/**
- * Emit one `assistant/message` `session/event` through the SAME context the
- * plugin listens on (plan fallbacks-half-open-recovery P5 driver): the
- * post-commit append firehose the P3 success-observation listener consumes.
- * The message is a real `createAssistantMessage` (dsh-llm) carrying the
- * producing route's `provider`/`model` provenance — the actual producing
- * route, so a probe served through the virtual FallbacksChain/Auto adapter
- * matches its real head's key.
- */
-export function emitAssistantMessage(
-  ctx: Context,
-  agent: Agent,
-  data: {
-    provider: string
-    model: string
-    turn?: number
-    step?: number
-    interrupted?: true
-  },
-): void {
-  const { provider, model } = data
-  const message = createAssistantMessage({
-    content: [{ type: 'text', text: 'ok' }],
-    source: { provider, model },
-  })
-  ctx.emit('session/event', agent.session, {
-    type: 'assistant/message',
-    seq: agent.session.seq,
-    time: Date.now(),
-    data: {
-      turn: data.turn ?? 1,
-      step: data.step ?? 1,
-      message,
-      ...(data.interrupted === undefined ? {} : { interrupted: data.interrupted }),
-    },
-  })
-}
-
-/** Drive one `agent/request-error` waterfall (the loop's dispatch, spec §5 table). */
 export function dispatchRequestError(
   ctx: Context,
   agent: Agent,
@@ -250,12 +149,10 @@ export function dispatchRequestError(
 /**
  * Drive one `agent/request` waterfall (the loop's buildRequest, spec §5 table).
  *
- * M-02: mirrors the real agent loop, which folds (logs) the request header
- * with the served route after buildRequest — the effective config returned by
- * the waterfall is written back into the fake session's route, so
- * `currentModel` reads the actually-served provider/model on the next
- * `agent/request-error` without the test author hand-syncing `setRoute`.
- * `setRoute` degrades to an explicit override for tests that route manually.
+ * Under direction C the plugin registers no listener here, so the returned
+ * config IS the seed (the pass-through contract the suite asserts). The fake
+ * session's route follows the returned config, mirroring the loop's own header
+ * fold.
  */
 export async function dispatchRequest(
   ctx: Context,
@@ -295,7 +192,7 @@ export function normalPolicy(overrides: Partial<Omit<ResolvedNormalRetryPolicy, 
   }
 }
 
-/** Provider retry policy with `mode: 'always'` (unbounded retries — the cap mechanism's subject). */
+/** Provider retry policy with `mode: 'always'` (unbounded retries — llm-retry owns them; the plugin has no cap). */
 export function alwaysPolicy(overrides: Partial<Omit<ResolvedRetryPolicy, 'mode'>> = {}): ResolvedRetryPolicy {
   return {
     mode: 'always',
@@ -339,64 +236,3 @@ export class LlmError extends Error {
   }
 }
 
-/** One scripted step attempt: `undefined` = the attempt succeeded. */
-export type StepAttempt = LlmFailure | undefined
-
-export interface StepResult {
-  outcome: 'success' | 'error'
-  /** Terminal `LlmError` when the step ended in error — original code/message preserved (spec §6). */
-  error?: LlmError
-  /** Request configs built per attempt (post-waterfall — reflects applied switches). */
-  requests: LlmCallConfig[]
-}
-
-export interface RunStepOptions {
-  /** Retry policy reported in every `agent/request-error` payload (the serving provider's policy). */
-  retryPolicy?: ResolvedRetryPolicy
-  /** Base config builder for each attempt; defaults to the current route. */
-  seed?: (route: { provider: string; model: string }) => LlmCallConfig
-}
-
-/**
- * Mini agent-loop driver (mirrors `agent-loop/src/agent.ts` step()): build the
- * request through `agent/request` (a pending switch applies here), report the
- * scripted failure through `agent/request-error`, re-enter the build on
- * `{ kind: 'retry' }`, and end the step with the original failure's `LlmError`
- * on passthrough. The request header is logged (via `setRoute`) before each
- * failure dispatch, as the real loop does.
- */
-export async function runAgentStep(
-  ctx: Context,
-  handle: AgentHarness,
-  script: readonly StepAttempt[],
-  options: RunStepOptions = {},
-): Promise<StepResult> {
-  const { agent, setRoute } = handle
-  const route: { provider: string; model: string } = {
-    provider: agent.options.provider ?? 'mock',
-    model: agent.options.model ?? '',
-  }
-  const requests: LlmCallConfig[] = []
-  for (const failure of script) {
-    const config = await dispatchRequest(ctx, agent, options.seed ? options.seed(route) : { ...route })
-    requests.push(config)
-    // The loop logs the request header (with the served route) before dispatch.
-    setRoute(config.provider, config.model)
-    if (failure === undefined) return { outcome: 'success', requests }
-    const action = await dispatchRequestError(ctx, agent, {
-      provider: config.provider,
-      failure,
-      retryPolicy: options.retryPolicy,
-    })
-    if (action?.kind !== 'retry') {
-      return { outcome: 'error', error: new LlmError(failure.message, failure.code, failure), requests }
-    }
-  }
-  // Script exhausted with a trailing failure and no passthrough: the step ends
-  // with that failure's original error.
-  const last = script.at(-1)
-  if (last !== undefined) {
-    return { outcome: 'error', error: new LlmError(last.message, last.code, last), requests }
-  }
-  return { outcome: 'success', requests }
-}

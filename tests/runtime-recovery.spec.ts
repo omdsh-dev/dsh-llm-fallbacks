@@ -1,411 +1,196 @@
 /**
- * P4 runtime integration tests (plan fallbacks-half-open-recovery Task 4,
- * P5): decide/commit integration, the once-per-episode probe log, and the
- * no-surviving-target probe-failure escalation (P2 rule 5b) — driven over
- * the real plugin `apply()` with the shared harness waterfalls.
+ * Half-open recovery under direction C (plan dsh-022-rc1-upgrade §3.3): the
+ * circuit is observed and written by the CHAIN WALK — success closes it at
+ * attempt level (no `session/event` observer exists any more), failures cool
+ * the route with bounded geometric escalation, and an exhausted chain on a
+ * half-open episode re-suppresses the probe (rule 5b) because the walk's single
+ * suppression write IS the escalation write.
  *
- * The observation side (close on observed completion, interrupted neutrality,
- * timer/`never` inertness at the listener) is covered by
- * `tests/success-observation.spec.ts` (Task 3). This file covers the
- * failure/admission side of the same state machine: rule 1 (escalated commit
- * write under half-open), rule 4 (one logged probe per expiry episode; both
- * admissions routed), rule 5b (both the trigger-code and always-cap
- * null-decision paths), the end-to-end probe → observed-completion close,
- * and the timer-mode flat-cooldown invariant (no escalation, recovery
- * untouched).
+ * Walk-level: real `LlmRuntime`, one scripted adapter, a shared
+ * `FallbackStateStore`.
  *
- * Step discipline: the cooldown (300_000 ms default) lapsing takes wall-clock
- * time, so the probe phase always runs on a LATER (turn, step) than the
- * suppression that created it — the step-failed set resets on (turn, step)
- * advance, exactly as in a real conversation where the next user turn arrives
- * after the cooldown window.
+ * @module tests/runtime-recovery
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
-import { apply, stateStore } from '../src/index.ts'
-import { MemorySettings } from './support/memory-settings.ts'
-import { FALLBACKS_PROFILE_ENTRY } from '../src/gateway.ts'
-import {
-  appendLlmRetry,
-  cfg,
-  dispatchRequest,
-  dispatchRequestError,
-  emitAssistantMessage,
-  makeAgent,
-  type AgentHarness,
-} from './support/harness.ts'
+import { LlmAdapter, LlmError, LlmRuntime, type GenerateOptions, type StreamChunk } from '@deepseek-ai/dsh-llm'
+import { SessionId } from '@deepseek-ai/dsh-session/types'
+import { walkChain } from '../src/chain-walk.ts'
+import { ESCALATION_CAP_MS, escalatedCooldownMs } from '../src/recovery.ts'
+import { FallbackStateStore } from '../src/state.ts'
+import { FALLBACKS_CHAIN_MODEL, FALLBACKS_PROVIDER } from '../src/virtual-adapter.ts'
+import { cfg, walkDeps } from './support/harness.ts'
+
+const COOLDOWN_MS = 60_000
+
+/** Scripted adapter: every attempt fails with a route-scoped trigger code. */
+class FailingAdapter extends LlmAdapter {
+  readonly calls: GenerateOptions[] = []
+  failure: { code: string; message?: string } | undefined = { code: 'AUTH', message: 'down' }
+
+  override providerInfo(provider: string) {
+    return { id: provider, name: provider }
+  }
+
+  override listModels() {
+    return Promise.resolve([])
+  }
+
+  override async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+    this.calls.push(options)
+    if (this.failure !== undefined) throw new LlmError(this.failure.message ?? this.failure.code, this.failure.code)
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  }
+}
+
+/** Drain a chunk stream. */
+async function collect(stream: AsyncIterable<StreamChunk>): Promise<StreamChunk[]> {
+  const chunks: StreamChunk[] = []
+  for await (const chunk of stream) chunks.push(chunk)
+  return chunks
+}
 
 let ctx: Context
+let adapter: FailingAdapter
 
 beforeEach(() => {
   ctx = new Context()
-  ctx.plugin(MemorySettings)
+  new LlmRuntime(ctx)
+  adapter = new FailingAdapter()
+  ctx.llm.registerAdapter(['a', 'b'], adapter)
 })
 
 afterEach(async () => {
-  vi.useRealTimers()
   await ctx.fiber.dispose()
 })
 
 /**
- * Capture every ctx.logger export (info/warn/...) from this point on.
- * The exporter threshold defaults to the logger level (INFO), which would
- * drop warn records — `levels.default` = DEBUG (3) lets warn (2) flow.
+ * One walk over the chain under test. The chain rides a full-day slot row so
+ * the all-day tail stays conforming (the picker row's documented gate).
  */
-function captureLogs(): Array<{ type: string; args: unknown[] }> {
-  const logs: Array<{ type: string; args: unknown[] }> = []
-  ctx.logger.exporter({ levels: { default: 3 }, export: (message) => logs.push(message) })
-  return logs
+function walkOnce(states: FallbackStateStore, chain: readonly string[], recovery: 'timer' | 'half-open', info?: (message: string, ...args: unknown[]) => void) {
+  const config = cfg({
+    rootChain: ['deepseek-official/deepseek-flash'],
+    timeSlots: [{ kind: 'custom', start: '00:00', end: '23:59', chain: [...chain] }],
+    cooldownMs: COOLDOWN_MS,
+    recovery,
+  })
+  return collect(walkChain(
+    walkDeps({
+      readConfig: () => config,
+      getLlm: () => ctx.llm,
+      states,
+      ...(info === undefined ? {} : { log: { info, warn: () => {} } }),
+    }),
+    { provider: FALLBACKS_PROVIDER, model: FALLBACKS_CHAIN_MODEL, messages: [], sessionId: SessionId('s1') },
+  ))
 }
 
-/** The pinned half-open probe log format (plan P2 rule 4). */
-const PROBE_LOG = 'llm-fallbacks: agent "%s" half-open probe %s/%s (role=%s, reason=%s)'
+describe('half-open: attempt-level success closes the circuit', () => {
+  it('closes a served route’s episode on a normal finish', async () => {
+    const states = new FallbackStateStore()
+    const state = states.get('s1')
+    state.recovery.markHalfOpen('a/1', Date.now())
+    expect(state.recovery.isHalfOpen('a/1')).toBe(true)
 
-/** All `half-open probe` info lines captured so far. */
-function probeLogs(logs: Array<{ type: string; args: unknown[] }>) {
-  return logs.filter((message) => message.type === 'info' && String(message.args[0]) === PROBE_LOG)
-}
+    adapter.failure = undefined
+    await walkOnce(states, ['a/1'], 'half-open')
 
-/**
- * Walk `mock/gpt-4o` into a half-open episode: at (1, 1) the first failure
- * suppresses it flat (n=1, `cooldownMs`) and the pending switch applies to
- * `anthropic/claude-3-5-sonnet`; the clock advances past expiry; at (2, 1)
- * the claude failure admits mock as the probe (the episode's one log line,
- * asserted here).
- */
-async function walkIntoHalfOpen(
-  handle: AgentHarness,
-  logs: Array<{ type: string; args: unknown[] }>,
-  t0: number,
-): Promise<void> {
-  const { agent, setRoute } = handle
-  let config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
-  setRoute(config.provider, config.model)
-  const action = await dispatchRequestError(ctx, agent, {
-    turn: 1,
-    step: 1,
-    failure: { message: 'boom', code: 'AUTH' },
-  })
-  expect(action).toEqual({ kind: 'retry' })
-  config = await dispatchRequest(ctx, agent, { provider: 'anthropic', model: 'claude-3-5-sonnet' }, { turn: 1, step: 1 })
-  expect(config).toEqual({ provider: 'anthropic', model: 'claude-3-5-sonnet' })
-  setRoute(config.provider, config.model)
-  // mock's cooldown lapses → half-open (lazy, at the next decision read).
-  vi.setSystemTime(t0 + 301_000)
-  const probe = await dispatchRequestError(ctx, agent, {
-    turn: 2,
-    step: 1,
-    provider: 'anthropic',
-    failure: { message: 'boom', code: 'AUTH' },
-  })
-  expect(probe).toEqual({ kind: 'retry' })
-  const logged = probeLogs(logs)
-  expect(logged).toHaveLength(1)
-  expect(String(logged[0]?.args[1])).toBe(agent.id)
-  expect(String(logged[0]?.args[2])).toBe('mock')
-  expect(String(logged[0]?.args[3])).toBe('gpt-4o')
-}
-
-describe('half-open runtime integration (plan fallbacks-half-open-recovery P4)', () => {
-  it('logs the half-open probe once per expiry episode; a second admission before resolution routes silently', async () => {
-    const logs = captureLogs()
-    const handle = makeAgent('probe-once', { provider: 'mock', model: 'gpt-4o' })
-    apply(ctx, cfg({ rootChain: ['mock/gpt-4o', 'anthropic/claude-3-5-sonnet'], recovery: 'half-open' }))
-    vi.useFakeTimers()
-    const t0 = Date.now()
-    try {
-      await walkIntoHalfOpen(handle, logs, t0)
-      // Second admission at the same (2, 1) before any resolution: the
-      // episode is still unresolved (no mock failure, no observed
-      // completion), so the walk routes to mock again — but the episode's
-      // one log line is not repeated (the marker is not a gate; both
-      // requests are admitted).
-      const { agent } = handle
-      const again = await dispatchRequestError(ctx, agent, {
-        turn: 2,
-        step: 1,
-        provider: 'anthropic',
-        failure: { message: 'boom', code: 'AUTH' },
-      })
-      expect(again).toEqual({ kind: 'retry' })
-      expect(probeLogs(logs)).toHaveLength(1)
-      // Both admissions were routed: two pending switches to mock were
-      // committed at this step.
-      const state = stateStore(ctx)!.peek('probe-once')!
-      expect(state.stepFailures.switchCount).toBe(2)
-    } finally {
-      vi.useRealTimers()
-    }
+    expect(state.recovery.isHalfOpen('a/1')).toBe(false)
   })
 
-  it('a probe failure with a surviving switch target re-suppresses escalated via commit (rule 1)', async () => {
-    const logs = captureLogs()
-    const { agent, setRoute } = makeAgent('probe-escalate', { provider: 'mock', model: 'gpt-4o' })
-    apply(ctx, cfg({
-      rootChain: ['mock/gpt-4o', 'anthropic/claude-3-5-sonnet', 'other/gpt-4o'],
+  it('logs the probe admission line on the walk’s admission', async () => {
+    const states = new FallbackStateStore()
+    // The store is only grown by a real write; a session with cross-call
+    // memory (a cooled route) is the shape an admission happens in.
+    const state = states.get('s1')
+    state.cooldown.suppress('a/1', Date.now() - 1)
+    const info = vi.fn()
+
+    adapter.failure = undefined
+    await walkOnce(states, ['a/1'], 'half-open', info)
+
+    const probes = info.mock.calls.filter((call) => String(call[0]).includes('half-open probe'))
+    // Rule 4: the marker is an admission log, not a gate — one line for the
+    // episode's first admission.
+    expect(probes).toHaveLength(1)
+  })
+})
+
+describe('half-open: failure escalation (rules 1/2/5b)', () => {
+  it('escalates the suppression by the consecutive-failure counter', async () => {
+    const states = new FallbackStateStore()
+    const before = Date.now()
+    await walkOnce(states, ['a/1'], 'half-open')
+
+    const until = states.peek('s1')?.cooldown.peek('a/1') ?? 0
+    // n = 1 is the flat cooldown; the write is bounded and future-dated.
+    expect(until - before).toBeGreaterThanOrEqual(COOLDOWN_MS)
+    expect(until).toBeLessThanOrEqual(Date.now() + escalatedCooldownMs(COOLDOWN_MS, 2))
+    expect(states.peek('s1')?.recovery.isHalfOpen('a/1')).toBe(false)
+  })
+
+  it('re-suppresses an exhausted probe with the escalated duration (rule 5b)', async () => {
+    const states = new FallbackStateStore()
+    const state = states.get('s1')
+    // Two prior failures: the next write must use the ×2 exponent.
+    state.recovery.recordFailure('a/1')
+    state.recovery.recordFailure('a/1')
+
+    await walkOnce(states, ['a/1'], 'half-open')
+
+    const until = state.cooldown.peek('a/1') ?? 0
+    const escalated = escalatedCooldownMs(COOLDOWN_MS, 3)
+    // The single-route chain has no surviving target, so the walk's write IS
+    // rule 5b's re-suppression: the escalated duration, not the flat one.
+    expect(until - Date.now()).toBeGreaterThan(COOLDOWN_MS)
+    expect(until - Date.now()).toBeLessThanOrEqual(escalated)
+  })
+
+  it('caps escalation at one hour', () => {
+    expect(escalatedCooldownMs(COOLDOWN_MS, 1)).toBe(COOLDOWN_MS)
+    expect(escalatedCooldownMs(COOLDOWN_MS, 2)).toBe(COOLDOWN_MS * 2)
+    expect(escalatedCooldownMs(COOLDOWN_MS, 99)).toBe(ESCALATION_CAP_MS)
+  })
+})
+
+describe('timer mode stays flat and inert', () => {
+  it('writes a flat cooldown and no half-open marker', async () => {
+    const states = new FallbackStateStore()
+    const before = Date.now()
+
+    await walkOnce(states, ['a/1'], 'timer')
+
+    const state = states.peek('s1')!
+    const until = state.cooldown.peek('a/1') ?? 0
+    expect(until - before).toBeGreaterThanOrEqual(COOLDOWN_MS)
+    expect(until - before).toBeLessThan(COOLDOWN_MS * 3)
+    expect(state.recovery.isHalfOpen('a/1')).toBe(false)
+  })
+
+  it('never logs a probe line', async () => {
+    const states = new FallbackStateStore()
+    const info = vi.fn()
+    await walkOnce(states, ['a/1'], 'timer', info)
+    expect(info.mock.calls.filter((call) => String(call[0]).includes('half-open probe'))).toHaveLength(0)
+  })
+})
+
+describe('revertPolicy: never is structural', () => {
+  it('writes an infinite suppression (the never short-circuit lives on the read side)', async () => {
+    const states = new FallbackStateStore()
+    const config = cfg({
+      rootChain: ['deepseek-official/deepseek-flash'],
+      timeSlots: [{ kind: 'custom', start: '00:00', end: '23:59', chain: ['a/1'] }],
+      revertPolicy: 'never',
       recovery: 'half-open',
-    }))
-    vi.useFakeTimers()
-    const t0 = Date.now()
-    try {
-      await walkIntoHalfOpen({ agent, setRoute }, logs, t0)
-      // The probe request routes to mock (pending switch applied) and fails;
-      // a surviving target exists (other/gpt-4o), so the user's request falls
-      // over per the existing switch-away path and commit re-suppresses mock
-      // with the ESCALATED duration (n=2 → 2 × cooldownMs).
-      let config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' }, { turn: 2, step: 2 })
-      setRoute(config.provider, config.model)
-      const store = stateStore(ctx)!
-      const state = store.peek('probe-escalate')!
-      // Half-open: the lapsed entry was dropped from the cooldown store.
-      expect(state.cooldown.peek('mock/gpt-4o')).toBeUndefined()
-      const action = await dispatchRequestError(ctx, agent, {
-        turn: 2,
-        step: 2,
-        failure: { message: 'boom', code: 'AUTH' },
-      })
-      expect(action).toEqual({ kind: 'retry' })
-      expect(state.cooldown.peek('mock/gpt-4o')).toBe(t0 + 301_000 + 600_000)
-      expect(state.recovery.isHalfOpen('mock/gpt-4o')).toBe(false)
-      // The surviving target was picked (pending switch mock → other).
-      expect(state.pendingSwitch).toEqual({
-        from: { provider: 'mock', model: 'gpt-4o' },
-        to: { provider: 'other', model: 'gpt-4o' },
-        role: 'inherit',
-        reason: 'trigger-code',
-      })
-    } finally {
-      vi.useRealTimers()
-    }
-  })
+    })
+    await collect(walkChain(
+      walkDeps({ readConfig: () => config, getLlm: () => ctx.llm, states }),
+      { provider: FALLBACKS_PROVIDER, model: FALLBACKS_CHAIN_MODEL, messages: [], sessionId: SessionId('s1') },
+    ))
 
-  it('a probe failure with no surviving target re-suppresses escalated without a pending switch (rule 5b, trigger-code)', async () => {
-    const logs = captureLogs()
-    const { agent, setRoute } = makeAgent('probe-5b', { provider: 'mock', model: 'gpt-4o' })
-    apply(ctx, cfg({ rootChain: ['mock/gpt-4o', 'anthropic/claude-3-5-sonnet'], recovery: 'half-open' }))
-    vi.useFakeTimers()
-    const t0 = Date.now()
-    try {
-      await walkIntoHalfOpen({ agent, setRoute }, logs, t0)
-      // The probe routes to mock and fails; claude is still suppressed, so no
-      // surviving target exists → decide returns null → rule 5b re-suppresses
-      // mock escalated WITHOUT a pending switch and WITHOUT recordSwitch.
-      let config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' }, { turn: 2, step: 2 })
-      setRoute(config.provider, config.model)
-      const store = stateStore(ctx)!
-      const state = store.peek('probe-5b')!
-      const action = await dispatchRequestError(ctx, agent, {
-        turn: 2,
-        step: 2,
-        failure: { message: 'boom', code: 'AUTH' },
-      })
-      // Null decision → the original failure passes through (the request falls over).
-      expect(action).toBeUndefined()
-      expect(state.pendingSwitch).toBeUndefined()
-      // No recordSwitch: the fresh (2, 2) step's counter stayed at 0 — the 5b
-      // write changed suppression duration only, never the switch count.
-      expect(state.stepFailures.switchCount).toBe(0)
-      expect(state.cooldown.peek('mock/gpt-4o')).toBe(t0 + 301_000 + 600_000)
-      expect(state.recovery.isHalfOpen('mock/gpt-4o')).toBe(false)
-    } finally {
-      vi.useRealTimers()
-    }
-  })
-
-  it('a probe failure with no surviving target also escalates on the always-cap null decision (rule 5b, always-cap)', async () => {
-    const logs = captureLogs()
-    const { agent, setRoute } = makeAgent('probe-5b-cap', { provider: 'mock', model: 'gpt-4o' })
-    apply(ctx, cfg({
-      rootChain: ['mock/gpt-4o', 'anthropic/claude-3-5-sonnet'],
-      recovery: 'half-open',
-      alwaysModeRetryCap: 3,
-    }))
-    vi.useFakeTimers()
-    const t0 = Date.now()
-    try {
-      await walkIntoHalfOpen({ agent, setRoute }, logs, t0)
-      // The probe routes to mock (pending switch applied). A new turn: the
-      // always-mode retries trip the cap at the request boundary; the
-      // decision finds no surviving target (mock is current, claude
-      // suppressed) → the always-cap null fall-through fires rule 5b.
-      await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' }, { turn: 2, step: 2 })
-      for (let retry = 1; retry <= 3; retry += 1) {
-        appendLlmRetry(agent, { turn: 3, step: 1, provider: 'mock', mode: 'always', retry })
-      }
-      const store = stateStore(ctx)!
-      const state = store.peek('probe-5b-cap')!
-      const config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' }, { turn: 3, step: 1 })
-      // No surviving target → no switch; the request passes unchanged.
-      expect(config).toEqual({ provider: 'mock', model: 'gpt-4o' })
-      expect(state.pendingSwitch).toBeUndefined()
-      // No recordSwitch: the fresh (3, 1) step's counter stayed at 0 — the 5b
-      // write changed suppression duration only, never the switch count.
-      expect(state.stepFailures.switchCount).toBe(0)
-      expect(state.cooldown.peek('mock/gpt-4o')).toBe(t0 + 301_000 + 600_000)
-      expect(state.recovery.isHalfOpen('mock/gpt-4o')).toBe(false)
-    } finally {
-      vi.useRealTimers()
-    }
-  })
-
-  it('a mid-session flip to revertPolicy never blocks the 5b escalation write (qc1 S-001)', async () => {
-    const logs = captureLogs()
-    const { agent, setRoute } = makeAgent('probe-5b-never', { provider: 'mock', model: 'gpt-4o' })
-    apply(ctx, cfg({ rootChain: ['mock/gpt-4o', 'anthropic/claude-3-5-sonnet'], recovery: 'half-open' }))
-    vi.useFakeTimers()
-    const t0 = Date.now()
-    try {
-      await walkIntoHalfOpen({ agent, setRoute }, logs, t0)
-      // Mid-session flip: the route is already half-open under
-      // cooldown-expiry; the operator switches to 'never' while the episode
-      // is unresolved. Under 'never' every suppression must be Infinity — the
-      // 5b write must not land a finite escalated until.
-      // The settings child registers through `ctx.inject` (a deferred callback
-      // even when the service is already mounted) — wait for its bind-time
-      // `describe()` (the double counts the calls) before flipping (vi.waitFor
-      // advances the fake timers this suite runs under).
-      await vi.waitFor(() => expect((ctx.settings as unknown as MemorySettings).describeCalls).toBeGreaterThan(0))
-      await ctx.settings.update(FALLBACKS_PROFILE_ENTRY, { revertPolicy: 'never' })
-      const store = stateStore(ctx)!
-      const state = store.peek('probe-5b-never')!
-      // The probe routes to mock (pending switch applied), then fails with
-      // no surviving target (claude still suppressed) → the null decision
-      // fires rule 5b — which the never short-circuit must skip entirely.
-      let config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' }, { turn: 2, step: 2 })
-      setRoute(config.provider, config.model)
-      const action = await dispatchRequestError(ctx, agent, {
-        turn: 2,
-        step: 2,
-        failure: { message: 'boom', code: 'AUTH' },
-      })
-      // Null decision → the original failure passes through.
-      expect(action).toBeUndefined()
-      // No finite suppression was written: the cooldown store gained no
-      // entry and the half-open episode is untouched (recordFailure never
-      // ran — the counter still escalates the NEXT episode, not this one).
-      expect(state.cooldown.peek('mock/gpt-4o')).toBeUndefined()
-      expect(state.recovery.isHalfOpen('mock/gpt-4o')).toBe(true)
-    } finally {
-      vi.useRealTimers()
-    }
-  })
-
-  it('a mid-session flip to timer silences the half-open probe log (qc1 W-001)', async () => {
-    const logs = captureLogs()
-    const { agent } = makeAgent('probe-timer-flip', { provider: 'mock', model: 'gpt-4o' })
-    apply(ctx, cfg({ rootChain: ['mock/gpt-4o', 'anthropic/claude-3-5-sonnet'], recovery: 'half-open' }))
-    vi.useFakeTimers()
-    const t0 = Date.now()
-    try {
-      // Seed an unresolved half-open episode with probeLogged still false —
-      // the lapsed suppression transitions the entry at the read (rule 3);
-      // no admission has logged yet.
-      const store = stateStore(ctx)!
-      const state = store.get('probe-timer-flip')
-      store.suppress(state, 'mock/gpt-4o', t0 + 1_000)
-      expect(store.isSuppressed(state, 'mock/gpt-4o', t0 + 2_000, 'half-open')).toBe(false)
-      expect(state.recovery.isHalfOpen('mock/gpt-4o')).toBe(true)
-      // Mid-session flip to timer while the episode is in progress.
-      // The settings child registers through `ctx.inject` (a deferred callback
-      // even when the service is already mounted) — wait for its bind-time
-      // `describe()` (the double counts the calls) before flipping (vi.waitFor
-      // advances the fake timers this suite runs under).
-      await vi.waitFor(() => expect((ctx.settings as unknown as MemorySettings).describeCalls).toBeGreaterThan(0))
-      await ctx.settings.update(FALLBACKS_PROFILE_ENTRY, { recovery: 'timer' })
-      // The next walk selects mock as the surviving target (timer drops the
-      // lapsed cooldown entry) — but the probe log is live-mode gated, so no
-      // half-open line is emitted while the plugin is in timer mode.
-      let config = await dispatchRequest(ctx, agent, { provider: 'anthropic', model: 'claude-3-5-sonnet' })
-      expect(config).toEqual({ provider: 'anthropic', model: 'claude-3-5-sonnet' })
-      const action = await dispatchRequestError(ctx, agent, {
-        turn: 1,
-        step: 1,
-        provider: 'anthropic',
-        failure: { message: 'boom', code: 'AUTH' },
-      })
-      expect(action).toEqual({ kind: 'retry' })
-      config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' }, { turn: 1, step: 1 })
-      expect(config).toEqual({ provider: 'mock', model: 'gpt-4o' })
-      expect(probeLogs(logs)).toHaveLength(0)
-    } finally {
-      vi.useRealTimers()
-    }
-  })
-
-  it('an observed completion closes the circuit after a walk-admitted probe (T3 listener × T4 decide)', async () => {
-    const logs = captureLogs()
-    const { agent, setRoute } = makeAgent('probe-close', { provider: 'mock', model: 'gpt-4o' })
-    apply(ctx, cfg({ rootChain: ['mock/gpt-4o', 'anthropic/claude-3-5-sonnet'], recovery: 'half-open' }))
-    vi.useFakeTimers()
-    const t0 = Date.now()
-    try {
-      await walkIntoHalfOpen({ agent, setRoute }, logs, t0)
-      const store = stateStore(ctx)!
-      const state = store.peek('probe-close')!
-      expect(state.recovery.isHalfOpen('mock/gpt-4o')).toBe(true)
-      // The probe request completes: an observed assistant/message from the
-      // producing route closes the circuit — entry deleted, counter reset by
-      // deletion, preference fully restored.
-      emitAssistantMessage(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
-      expect(state.recovery.isHalfOpen('mock/gpt-4o')).toBe(false)
-      expect(state.recovery.halfOpenEntries()).toEqual([])
-      // A later failure starts a fresh flat episode (the counter was reset by
-      // the close). claude's suppression has lapsed by then, so the walk has
-      // a surviving target and commit writes mock's FIRST suppression of the
-      // new episode — flat cooldownMs, not the pre-close n=2 escalation.
-      vi.setSystemTime(t0 + 602_000)
-      let config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' }, { turn: 3, step: 1 })
-      setRoute(config.provider, config.model)
-      const action = await dispatchRequestError(ctx, agent, {
-        turn: 3,
-        step: 1,
-        failure: { message: 'boom', code: 'AUTH' },
-      })
-      expect(action).toEqual({ kind: 'retry' })
-      expect(state.cooldown.peek('mock/gpt-4o')).toBe(t0 + 602_000 + 300_000)
-    } finally {
-      vi.useRealTimers()
-    }
-  })
-
-  it('timer mode keeps a flat cooldown forever (no escalation, recovery untouched)', async () => {
-    const logs = captureLogs()
-    const { agent, setRoute } = makeAgent('timer-flat', { provider: 'mock', model: 'gpt-4o' })
-    // `recovery` defaults to 'timer' — the byte-identical default.
-    apply(ctx, cfg({ rootChain: ['mock/gpt-4o', 'anthropic/claude-3-5-sonnet'] }))
-    vi.useFakeTimers()
-    const t0 = Date.now()
-    try {
-      // (1,1): mock fails → mock suppressed flat; switch to claude.
-      let config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
-      setRoute(config.provider, config.model)
-      await dispatchRequestError(ctx, agent, { turn: 1, step: 1, failure: { message: 'boom', code: 'AUTH' } })
-      config = await dispatchRequest(ctx, agent, { provider: 'anthropic', model: 'claude-3-5-sonnet' }, { turn: 1, step: 1 })
-      setRoute(config.provider, config.model)
-      // mock's cooldown lapses → restored as the preferred candidate (timer).
-      vi.setSystemTime(t0 + 301_000)
-      // (2,1): claude fails → mock restored; claude suppressed flat.
-      await dispatchRequestError(ctx, agent, {
-        turn: 2,
-        step: 1,
-        provider: 'anthropic',
-        failure: { message: 'boom', code: 'AUTH' },
-      })
-      config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' }, { turn: 2, step: 1 })
-      setRoute(config.provider, config.model)
-      // claude's cooldown lapses → mock fails again: its SECOND suppression
-      // is still FLAT (300_000), never escalated (600_000) — and no recovery
-      // entry or probe log was ever produced.
-      vi.setSystemTime(t0 + 602_000)
-      await dispatchRequestError(ctx, agent, { turn: 3, step: 1, failure: { message: 'boom', code: 'AUTH' } })
-      const state = stateStore(ctx)!.peek('timer-flat')!
-      expect(state.cooldown.peek('mock/gpt-4o')).toBe(t0 + 602_000 + 300_000)
-      expect(state.recovery.halfOpenEntries()).toEqual([])
-      expect(state.recovery.isHalfOpen('mock/gpt-4o')).toBe(false)
-      expect(probeLogs(logs)).toHaveLength(0)
-    } finally {
-      vi.useRealTimers()
-    }
+    expect(states.peek('s1')?.cooldown.peek('a/1')).toBe(Number.POSITIVE_INFINITY)
   })
 })

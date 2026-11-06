@@ -511,6 +511,63 @@ describe('recursion guard (design §6.1.2)', () => {
   })
 })
 
+describe('P7 分时切换 rotation log (moved into the walk)', () => {
+  /** Two half-day rows: 00:00–12:00 and the wrap-around 12:00–00:00. */
+  const halfDay = cfg({
+    rootChain: [OFFICIAL_FLASH],
+    timeSlots: [
+      { kind: 'custom', start: '00:00', end: '12:00', chain: ['a/1'] },
+      { kind: 'custom', start: '12:00', end: '00:00', chain: ['b/2'] },
+    ],
+  })
+
+  function at(iso: string): void {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date(iso))
+  }
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('logs a time-slot switch when the winner changes since the agent’s last walk', async () => {
+    const markers = new Map<string, { key: string; label: string }>()
+    const info = vi.fn()
+    const deps = { readConfig: () => halfDay, slotWinners: markers, log: { info, warn: () => {} } }
+
+    at('2026-08-18T02:00:00Z') // 10:00 Asia/Shanghai → the 00:00–12:00 row
+    await walk(deps, { sessionId: SessionId('s1') })
+    expect(markers.get('s1')?.key).toBe('custom:00:00-12:00')
+    expect(info.mock.calls.filter((call) => String(call[0]).includes('分时切换'))).toHaveLength(0)
+
+    at('2026-08-18T06:00:00Z') // 14:00 Asia/Shanghai → the wrap-around row
+    await walk(deps, { sessionId: SessionId('s1') })
+    const switches = info.mock.calls.filter((call) => String(call[0]).includes('分时切换'))
+    expect(switches).toHaveLength(1)
+    expect(switches[0]?.slice(2)).toEqual(['custom 00:00-12:00', 'custom 12:00-00:00'])
+    expect(markers.get('s1')?.key).toBe('custom:12:00-00:00')
+  })
+
+  it('never logs for a subagent-origin walk (rotation is a root observation)', async () => {
+    const markers = new Map<string, { key: string; label: string }>()
+    const info = vi.fn()
+    const deps = {
+      readConfig: () => halfDay,
+      resolveAgentView: () => ({ origin: 'subagent' as const, sessionId: 's1' }),
+      slotWinners: markers,
+      log: { info, warn: () => {} },
+    }
+
+    at('2026-08-18T02:00:00Z')
+    await walk(deps, { sessionId: SessionId('s1') })
+    at('2026-08-18T06:00:00Z')
+    await walk(deps, { sessionId: SessionId('s1') })
+
+    expect(info.mock.calls.filter((call) => String(call[0]).includes('分时切换'))).toHaveLength(0)
+    expect(markers.size).toBe(0)
+  })
+})
+
 describe('bookkeeping (design §3.3)', () => {
   it('cools a route-scoped failure and skips it on the next walk', async () => {
     adapter.respond = (options) => (options.model === '1' ? { failure: { code: 'AUTH' } } : { chunks: [STOP] })

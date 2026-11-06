@@ -1,6 +1,7 @@
 /**
- * dsh-llm-fallbacks host half (plan Task 3: settings + waterfall + state
- * machine + events).
+ * dsh-llm-fallbacks host half: settings, the virtual chain row, the dispatch
+ * seam, role seeds and the diagnostics surfaces (direction C, plan
+ * dsh-022-rc1-upgrade).
  *
  * Cordis function plugin mounted by the profile bundle patch row
  * `llm-fallbacks` (see `bundle/cordis.patch.yml`), composed AFTER llm-retry.
@@ -11,28 +12,21 @@
  *   `apply` reads the Loader's live config reference, and the
  *   `settings/document-updated` listener re-derives the runtime caches —
  *   the old `installSection` setSource/onChange contract, spec §4).
- * - `agent/request-error` waterfall: inactive config (`isFallbackActive`) /
- *   code ∉ `triggerCodes`
- *   (**always mode included**) → `next()`; otherwise resolve role + chain,
- *   and when a candidate survives the filter (current / cooldown /
- *   step-failed / `provider/*`-missing-id) write the pending switch +
- *   cooldown + failure bookkeeping, then return
- *   `{ kind: 'retry' }` (own recovery, no `next()`).
- * - `agent/request` waterfall: apply a pending switch after `await next()`
- *   (provider/model override; the inherited `reasoningEffort` follows the
- *   upstream routeChanged rule — dropped on a route change unless explicitly
- *   named, preserved on a same-route override; spec D3); a
- *   root-origin `FallbacksChain/Auto` seed is served UNCHANGED (plan
- *   model-change-notice-loop Task 1 — the route the loop serves and records
- *   must equal the session selection, otherwise the host `model-selection`
- *   notice is re-armed on every step; the virtual adapter's `stream()`
- *   delegate is what reaches the chain head); then the always-mode cap check
- *   (count `llm/retry` events for the current turn/step/provider; ≥
- *   `alwaysModeRetryCap` → same decision path, reason `always-cap` —
- *   ADR-2).
- * - Per-agent state (`FallbackStateStore`): `agent/disposed` removes it,
- *   `agent/status` idle prunes per-step state defensively, plugin dispose
- *   clears everything (spec §6 — no residual state).
+ * - The virtual `FallbacksChain/Auto` adapter is the ONLY fallback path: its
+ *   `stream()` WALKS the session's chain (`src/chain-walk.ts`). No
+ *   `agent/request` / `agent/request-error` listener is registered — rc.1
+ *   rejects a request that changes the captured selection, and a
+ *   request-error retry `continue`s with that captured selection, so the old
+ *   waterfall could not route a retried attempt at all. Real-model sessions
+ *   therefore have no plugin fallback; `llm-retry` owns their recovery.
+ * - Subagents: the dispatch seam (`src/subagents-seam.ts`) mounts an
+ *   inheriting child on the virtual row by stamping its creation options
+ *   (design §1.3) — creation-time only, so a resumed child's own durable
+ *   selection always wins.
+ * - Per-agent state (`FallbackStateStore`): `agent/disposed` removes it, plugin
+ *   dispose clears everything (spec §6 — no residual state). The cooldown /
+ *   recovery circuit is the cross-call memory the walk reads; per-request
+ *   bookkeeping lives inside one walk.
  *
  * @module dsh-llm-fallbacks
  */
@@ -40,45 +34,23 @@
 import { createRequire } from 'node:module'
 import type { Context, Logger } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import type { GenerateOptions, LlmCallConfig } from '@deepseek-ai/dsh-llm'
-import type { Session } from '@deepseek-ai/dsh-session'
+import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 // Type-only: the settings seam's cordis `Events` entry
 // (`settings/document-updated(ns, revision)` — the live-config change event
 // the settings child below follows).
 import type {} from '@deepseek-ai/dsh-settings/types'
 import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
-import { defaultFallbacksConfig, detectLegacyKeys, INHERIT_ROLE_ID, isFallbackActive, validateFallbacksConfig, type FallbacksConfig } from './config.ts'
+import { defaultFallbacksConfig, detectLegacyKeys, isFallbackActive, validateFallbacksConfig, type FallbacksConfig } from './config.ts'
 import { Config } from './schema.ts'
-import { pickRoleByLlm } from './automatch.ts'
-import { annotateCandidates, createCandidateFilter, hasWildcardEntry, resolveChain, resolveChainViews, selectCandidates, type FailingModel } from './chains.ts'
-import {
-  CONTEXT_WINDOW_EXCEEDED_CODE,
-  makeContextWindowOf,
-  makeModelExists,
-  REQUEST_SCOPED_CODES,
-  walkChain,
-  type AgentChainView,
-  type ChainWalkDeps,
-} from './chain-walk.ts'
-import { parseSelector, selectorKey, type Selector } from './selectors.ts'
+import { resolveChain } from './chains.ts'
+import { walkChain, type AgentChainView, type ChainWalkDeps } from './chain-walk.ts'
 import { resolveRole } from './roles.ts'
-import { firstExactCandidate, resolveRoleAtDispatch } from './role-resolution.ts'
-import { detectAuthorizedRoute, type AuthorizedRouteSession } from './authorized-route.ts'
-import { firstAllowedCandidate, resolvedRoutes } from './route-allowlist.ts'
 import { effectivePolicy, policySettingsFrom, readSessionPolicyEvent, type EffectivePolicy, type PolicySettings } from './subagent-policy.ts'
 import { installSubagentSeam, subagentSeamOf, type SubagentSeam } from './subagents-seam.ts'
 import { installRolePersona } from './role-persona.ts'
-import { FallbackStateStore, type AgentFallbackState, type BlockedSwitchAttempt, type EffectiveChainHead, type PendingSwitch, type SwitchScope } from './state.ts'
-import { escalatedCooldownMs } from './recovery.ts'
-import { overrideConfigWithRouteRule, type LlmReasoningEffort } from './override.ts'
-import {
-  isAllDayConforming,
-  resolveEffectiveChain,
-  resolveSlotState,
-  type SlotRowConfig,
-} from './time-slots.ts'
-import type { FallbackSwitchReason } from './events.ts'
+import { FallbackStateStore, type BlockedSwitchAttempt, type EffectiveChainHead } from './state.ts'
+import { resolveSlotState } from './time-slots.ts'
 import {
   FALLBACKS_PROFILE_ENTRY,
   FallbacksConfigGateway,
@@ -199,7 +171,7 @@ export { Config }
 /** The plugin's composition config — the `fallbacks` settings schema (spec §4). */
 export type Config = FallbacksConfig
 export type { FallbackSwitchReason, FallbacksSwitchEventData } from './events.ts'
-export type { AgentFallbackState, BlockedSwitchAttempt, FallbackStateStore, PendingSwitch, StepFailures, SwitchScope } from './state.ts'
+export type { AgentFallbackState, BlockedSwitchAttempt, FallbackStateStore } from './state.ts'
 /** @internal T5 test-seam types (mirrors `BlockedSwitchAttempt`; not public API). */
 export type { ChainHeadSource, EffectiveChainHead } from './state.ts'
 
@@ -350,102 +322,6 @@ function latestByAt<T extends { at: number }>(map: ReadonlyMap<string, T>): T | 
 }
 
 /**
- * Count durable `llm/retry` events for the current (turn, step, provider) in
- * **always mode** (ADR-2; spec §2 clause 5). Normal-mode retries belong to
- * llm-retry's bounded budget and must not preempt the fallback, so only
- * `mode: 'always'` events count toward `alwaysModeRetryCap` (T3 review
- * Minor 2 — the real event carries the discriminator, llm-retry types.ts).
- *
- * Fast path (T3 review Minor 4): the session log is append-ordered, so the
- * scan runs backwards and stops at the first event older than the target
- * (turn, step) — a long session's earlier turns are never scanned.
- *
- * Exported for direct unit testing of the counting + fast path.
- */
-export function countRetryEvents(session: Session, turn: number, step: number, provider: string): number {
-  let count = 0
-  const events = session.snapshotEvents()
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    const event = events[index]!
-    const data = event.data as { turn?: number; step?: number }
-    // Everything before the first event older than the target cannot match.
-    if (
-      typeof data.turn === 'number'
-      && typeof data.step === 'number'
-      && (data.turn < turn || (data.turn === turn && data.step < step))
-    ) break
-    if (event.type !== 'llm/retry') continue
-    if (data.turn === turn && data.step === step && event.data.provider === provider && event.data.mode === 'always') {
-      count += 1
-    }
-  }
-  return count
-}
-
-/**
- * Anchor a request route at the exact head the virtual picker row is served by
- * (plan model-change-notice-loop Task 2).
- *
- * A root-origin `FallbacksChain/Auto` seed is served UNCHANGED, so the loop
- * records the virtual pair while `FallbacksChainAdapter.stream()` really
- * dispatches the effective chain's first dispatchable exact head. Every
- * decision that compares the failing route against the chain must therefore
- * compare against THAT head: left on the virtual pair, the walk treats the head
- * that just failed as a fresh candidate (switching straight back into the
- * failure) and the route-scoped bookkeeping (cooldown / step-failed) lands on
- * the picker key instead of the failing route.
- *
- * The chain and the walk rule are the adapter's own (`effectiveHeadOf`:
- * `isAllDayConforming` + `resolveEffectiveChain` + `firstDispatchableExactHead`),
- * so the anchor names exactly the route the delegate dispatched. A real route —
- * and a non-conforming all-day chain, where the adapter refuses to delegate at
- * all — is returned unchanged.
- */
-function anchorServedRoute(config: FallbacksConfig, route: FailingModel, now: Date): FailingModel {
-  if (route.provider !== FALLBACKS_PROVIDER || route.model !== FALLBACKS_CHAIN_MODEL) return route
-  const head = effectiveHeadOf(config, now)
-  return head === undefined ? route : { provider: head.provider, model: head.model }
-}
-
-/**
- * The route an agent's request was actually SERVED by, when that differs from
- * the pair recorded on the agent — i.e. a `FallbacksChain/Auto` session whose
- * recorded pair is the virtual row, anchored to the effective head through the
- * same rule the delegate uses ({@link anchorServedRoute}).
- *
- * Returns `undefined` when the recorded pair IS the served pair, so every real
- * route keeps byte-identical downstream behavior. Callers that compare a route
- * against the recorded `agent.options` pair (dispatch-time role rules) accept
- * either, so a rule keyed on the real chain head keeps matching a subagent
- * whose recorded route is the virtual pair (plan `model-change-notice-loop`
- * QC1 I-1 — `parentAgentOptionsForDelegation` stamps the child's options from
- * the delegating parent's durable `request/header`).
- */
-function servedRouteFor(
-  agent: { options?: { provider?: string; model?: string } },
-  config: FallbacksConfig,
-): FailingModel | undefined {
-  const provider = agent.options?.provider
-  const model = agent.options?.model
-  if (provider === undefined || model === undefined) return undefined
-  const anchored = anchorServedRoute(config, { provider, model }, new Date())
-  return anchored.provider === provider && anchored.model === model ? undefined : anchored
-}
-
-/**
- * The model the failed/current request was routed to — anchored at the served
- * head when the route is the virtual pair ({@link anchorServedRoute}). The
- * context-window comparison reads this same pair, so the failing route's window
- * is the HEAD's window (the one the provider actually rejected), never the
- * picker row's proxy.
- */
-function currentModel(agent: Agent, provider: string, config: FallbacksConfig, now: Date): FailingModel {
-  const header = agent.session.requestHeader()
-  const route = { provider, model: header?.config.model ?? agent.options.model ?? '' }
-  return anchorServedRoute(config, route, now)
-}
-
-/**
  * The minimal agent view one chain walk reads (design dsh-022-rc1-upgrade
  * §2.2): `GenerateOptions` carries only `sessionId`, so the session's agent is
  * resolved through the host `agents` registry — the opportunistic
@@ -468,36 +344,6 @@ function agentChainView(ctx: Context, sessionId: GenerateOptions['sessionId']): 
       : {}),
     sessionId,
   }
-}
-
-/**
- * Stable identity of a slot winner for the 分时切换 marker (P7): preset
- * rows key by their frozen id, custom rows by their window — a chain-only
- * edit keeps the SAME logical row (no spurious rotation log), while a
- * window/preset change or a new matching row reads as a switch. `'all-day'`
- * is the no-extra-row winner.
- */
-function slotWinnerKey(winner: SlotRowConfig | 'all-day'): string {
-  if (winner === 'all-day') return 'all-day'
-  return winner.kind === 'preset'
-    ? `preset:${winner.preset}`
-    : `custom:${winner.start}-${winner.end}`
-}
-
-/**
- * Override a request config with a pending switch: provider/model replaced,
- * the inherited `reasoningEffort` following the upstream routeChanged rule
- * (spec D3, T4) — dropped on a route change unless an explicit effort is
- * named, preserved on a same-route override. Thin delegate: the rule lives
- * in the pure `overrideConfigWithRouteRule` (`src/override.ts`), shared by
- * every override path.
- */
-function overrideConfig(
-  seed: LlmCallConfig,
-  to: { provider: string; model: string },
-  explicitEffort?: LlmReasoningEffort,
-): LlmCallConfig {
-  return overrideConfigWithRouteRule(seed, to, explicitEffort)
 }
 
 /**
@@ -579,36 +425,6 @@ function readGuardedPolicySettings(
     )
     const known = lastKnown.get(agentId)
     return known === undefined ? { ok: false } : { ok: true, settings: known }
-  }
-}
-
-/**
- * Capture the plain-data authorized-route view for one subagent at its first
- * request (T2 detection sources): durable child state plus the
- * pure-inheritance baseline. Host objects enter only here — the pure module
- * receives plain data.
- *
- * The baseline mirrors upstream `parentAgentOptionsForDelegation`
- * (`child-agent.ts:68-85`): the delegating parent's durable header config
- * wins, its creation options fallback. The parent is read opportunistically
- * through the `agents` registry (the documented `ctx.get` pattern — runtime
- * presence is composition-dependent); an unreadable lineage leaves the
- * baseline absent.
- */
-function authorizedRouteView(ctx: Context, agent: Agent): AuthorizedRouteSession {
-  const header = agent.session?.header
-  const parentId = header?.origin === 'subagent' ? header.parentSession : undefined
-  const parent = parentId === undefined ? undefined : ctx.get('agents')?.get(parentId)
-  const parentHeader = parent?.session.requestHeader()?.config
-  const parentOptions = parent?.options
-  return {
-    requestHeader: agent.session?.requestHeader()?.config,
-    events: agent.session?.snapshotEvents(),
-    options: agent.options,
-    inherited: parentHeader
-      ?? (typeof parentOptions?.provider === 'string' && typeof parentOptions?.model === 'string'
-        ? { provider: parentOptions.provider, model: parentOptions.model }
-        : undefined),
   }
 }
 
@@ -830,14 +646,8 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
   // resolveRole returns the raw declared id so roleDef lookups match the
   // stored roles.list entry exactly). The built-in 'inherit' is always
   // legal and never listed. Re-derived on every settings change (onChange
-  // below) — both roleIds and hasChains follow source().
+  // below) — roleIds follows source().
   let roleIds = new Map(entry.roles.list.map((role) => [role.id.trim(), role.id] as const))
-  // F-001: an unconfigured install (no chains anywhere) must be truly
-  // zero-cost — the always-cap session scan is short-circuited on this flag,
-  // so a plain request never touches the event log when no chains are
-  // configured (AC-8). New-shape probe: candidates exist only via rootChain
-  // entries or a declared role's own chain (T1 review Minor 2 rewire).
-  let hasChains = entry.rootChain.length > 0 || entry.roles.list.some((role) => (role.chain?.length ?? 0) > 0)
 
   // Guide §7 (plan llm-fallbacks-settings-gateway): the gateway's
   // FallbacksSettingsBridge consumes the SAME live source the runtime reads
@@ -877,8 +687,8 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
     const disposeDocumentUpdated = ctx.on('settings/document-updated', (ns: SettingsNamespace) => {
       if (ns !== FALLBACKS_PROFILE_ENTRY) return
       if (!isLiveConfigRef(config)) refreshComposed()
-      // A settings update can change roles.list / rootChain — roleIds and
-      // hasChains re-derive from the same live source the runtime reads.
+      // A settings update can change roles.list / rootChain — roleIds
+      // re-derives from the same live source the runtime reads.
       // Validation (validateFallbacksConfig / detectLegacyKeys) is
       // intentionally STARTUP-ONLY: a live settings merge is already
       // schema-validated by the settings layer, and the defensive runtime
@@ -886,7 +696,6 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
       // values with warn-not-crash semantics (qc1 F-006).
       const current = source()
       roleIds = new Map(current.roles.list.map((role) => [role.id.trim(), role.id] as const))
-      hasChains = current.rootChain.length > 0 || current.roles.list.some((role) => (role.chain?.length ?? 0) > 0)
       // Virtual adapter registration reconcile (P2): active / all-day
       // conformance transitions only — idempotent, slot edits no-op.
       reconcileFallbacksAdapter()
@@ -1062,28 +871,12 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
 
   const states = new FallbackStateStore()
   stateStores.set(ctx, states)
-  // Dispatch-injection once-marker (plan fallbacks-role-automatch Task 4):
-  // agent ids whose FIRST request has already been evaluated for dispatch-time
-  // role injection. Survives across the agent's request lifecycle; cleaned on
-  // agent/disposed + plugin dispose (mirrors `states`).
-  const dispatchInjected = new Set<string>()
-  // Dispatch-resolved role per agent (I-000078): `decide()` re-resolves the
-  // role rules-only, which loses the dispatch stage — remember it here.
-  const dispatchRoles = new Map<string, string>()
-  // A remembered id wins only while it is still declared (BUG-01): a role
-  // edited or deleted mid-session falls through to resolveRole instead of
-  // walking rootChain under a role that no longer exists.
-  const rememberedRole = (agentId: string): string | undefined => {
-    const role = dispatchRoles.get(agentId)
-    return role !== undefined && roleIds.has(role.trim()) ? role : undefined
-  }
   // P7 分时切换 marker (plan fallbacks-timeslots Task 2): per-root-agent
-  // LAST slot winner (identity key + display label), in-process only. A
-  // winner change between root requests logs 分时切换 — a routing seed, NOT
-  // a failure decision: no cooldown, no switch count, no pending switch, no
-  // durable event. Cleaned on agent/disposed + plugin dispose (mirrors
-  // `dispatchInjected`) and re-baselined on settings change (a config edit
-  // is not a wall-clock rotation).
+  // LAST slot winner (identity key + display label), in-process only. The
+  // WALK compares it against the current winner (a routing seed observation,
+  // never a failure decision — no cooldown, no switch count, no durable
+  // event). Cleaned on agent/disposed + plugin dispose and re-baselined on a
+  // settings change (a config edit is not a wall-clock rotation).
   const slotWinners = new Map<string, { key: string; label: string }>()
   // T3 blocked-attempt / T5 chain-head maps are constructed before the
   // gateway (so the snapshot can close over them). decide() writes the
@@ -1126,585 +919,20 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
     recordBlocked: (sessionId, route, reason) => {
       blockedAttemptMap.set(sessionId, { at: Date.now(), route, reason })
     },
+    slotWinners,
     log: logger,
   }
   const reconcileFallbacksAdapter = installFallbacksAdapter(ctx, () => source(), (options) => walkChain(walkDeps, options))
 
-  /**
-   * Shared decision path (spec §5.1 lifecycle step 1): resolve the agent's
-   * role and chain, filter candidates (same-model / cooldown / step-failed /
-   * `provider/*`-missing-id), enforce the per-step safety valve, and — on a
-   * hit — return the pending switch for the caller to commit.
-   *
-   * `state` is the agent's peeked entry: `undefined` for agents with no state
-   * yet (F-004 — the store is only grown on a real switch intent, inside
-   * `commit`). With no state there is no step bookkeeping, so the valve check
-   * passes and cooldown/step-failed reads are false.
-   *
-   * `failureCode` is the dsh failure code that triggered the walk (absent for
-   * the always-cap path, which has no failure of its own): a
-   * `CONTEXT_WINDOW_EXCEEDED` trigger additionally filters candidates by
-   * context window — a model no larger than the one that just rejected the
-   * request cannot fit it either.
-   */
-  async function decide(
-    agent: Agent,
-    turn: number,
-    step: number,
-    current: FailingModel,
-    reason: FallbackSwitchReason,
-    state: AgentFallbackState | undefined,
-    failureCode?: string,
-  ): Promise<PendingSwitch | null> {
-    const config = source()
-    if (state !== undefined) {
-      states.syncStep(state, turn, step)
-      if (state.stepFailures.switchCount >= config.maxSwitchesPerStep) return null
-    }
-    // Remembered dispatch role wins: the rules-only resolve below never sees
-    // the dispatch stage.
-    const role = rememberedRole(agent.id)
-      ?? resolveRole(agent, config.roles.rules, roleIds, logger.warn, servedRouteFor(agent, config))
-    // P7 (plan fallbacks-timeslots Task 2): slot rotation applies to
-    // ROOT-origin agents only, in BOTH primary and fallback-only modes —
-    // the effective chain (first matching extra row, else the all-day
-    // `rootChain`) replaces the raw `rootChain` as the root role's
-    // resolveChainViews tail. Subagent walks are UNCHANGED (raw rootChain
-    // append). P6 (qc1 F-001 — the gate lives in `resolveSlotState`, the
-    // single source every slot surface reads): without a conforming all-day
-    // the effective chain IS the raw rootChain — slot rows stay inert and
-    // the legacy walk over the raw rootChain runs verbatim (mirror the
-    // virtual adapter registration gate).
-    const rootTail = agent.session?.header?.origin === 'subagent'
-      ? config.rootChain
-      : resolveEffectiveChain(config, new Date(), config.tz ?? 'Asia/Shanghai')
-    // T1 review Important #2: resolveChainViews walks the concatenated
-    // candidates ONCE — `all` (early-exit / annotation view) and the
-    // wildcard provenance come from the same pass, and `surviving` is the
-    // same list filtered in place via selectCandidates — so an unknown role
-    // warns at most once per decision (previously resolveChain ran twice:
-    // all + surviving). Defensive warns flow through the plugin logger
-    // (qc2 F-002 — not console).
-    const { all, wildcard } = resolveChainViews(config.roles.list, rootTail, role, current.provider, current.model, logger.warn)
-    if (all.length === 0) return null
-    // T2 review Important #1 (decision-path contract): the "missing id" skip
-    // stays scoped to `provider/*` entries (spec §2 clause 2 — exact entries
-    // are never existence-filtered; createCandidateFilter's own modelExists
-    // would over-filter them), so the probe is applied via selectCandidates
-    // to wildcard-origin candidates only while the filter deliberately does
-    // NOT receive modelExists. F-002: the probe is built only when a
-    // wildcard entry is reachable on the role's concatenated candidates —
-    // pure exact chains take zero catalog probes.
-    // The wildcard probe walks the SAME tail the candidates come from
-    // (`rootTail` — P7: the slot-effective chain for root-origin agents), so
-    // it never diverges from the resolution (qc2 F-003): a wildcard that
-    // only the winning slot row reaches still gets the existence filter, and
-    // pure exact chains stay zero-probe (F-002).
-    const modelExists = hasWildcardEntry(config.roles.list, rootTail, role)
-      ? await makeModelExists(
-        ctx.get('llm'),
-        [...new Set(all.map((candidate) => candidate.provider))],
-      )
-      : undefined
-    const cooldown = {
-      isSuppressed: (key: string) => state !== undefined && states.isSuppressed(state, key, Date.now(), source().recovery ?? 'timer'),
-    }
-    const failed = {
-      has: (key: string) => state !== undefined && state.stepFailures.failed.has(key),
-    }
-    // Context-window trigger: the request did not fit the failing model, so a
-    // candidate whose own KNOWN window is not larger cannot fit it either —
-    // switching there just fails again. The lookup spans the failing route and
-    // every resolved candidate route, and is built ONLY for this trigger, so
-    // every other decision stays zero-probe (mirrors the F-002 wildcard gate
-    // above). Unknown on either side keeps the candidate (chains.ts).
-    const contextWindowOf = failureCode === CONTEXT_WINDOW_EXCEEDED_CODE
-      ? await makeContextWindowOf(ctx.get('llm'), [
-        current,
-        ...all.flatMap((candidate) => candidate.model === undefined
-          ? []
-          : [{ provider: candidate.provider, model: candidate.model }]),
-      ])
-      : undefined
-    const minContextWindow = contextWindowOf?.(current.provider, current.model)
-    const filter = createCandidateFilter({ current, cooldown, failed, minContextWindow, contextWindowOf })
-    const surviving = selectCandidates(all, wildcard, filter, modelExists)
-    // T3 (plan dsh-012-subagent-routing): allowlist-constrained failure
-    // switching. The subagent host policy — read PER DECISION through the T1
-    // reader (same ADR path as the inject site) — intersects the RESOLVED
-    // survivors with the effective allowlist in candidate order (spec D1);
-    // the existing cooldown / step-failed / same-as-current / missing-id
-    // filters above already ran. Root-origin walks are untouched (pre-policy).
-    const first = surviving[0]
-    let target: { readonly provider: string; readonly model: string } | undefined
-    if (first !== undefined && first.model !== undefined) {
-      target = { provider: first.provider, model: first.model }
-    }
-    if (agent.session?.header?.origin === 'subagent' && target !== undefined) {
-      // W-002 + S-hard (qc fix wave): the read is guarded (a throwing host
-      // settings read warns instead of escaping the listener) and carries the
-      // last-known snapshot, so a mid-session settings disappearance keeps a
-      // proven-enabled policy constraining instead of failing open. A read
-      // that threw with nothing retained resolves to the SAME fail-closed
-      // skip as `'unprovable'` (warn + no switch, host seed stands).
-      const settingsRead = readGuardedPolicySettings(ctx, agent.id, lastKnownPolicySettings, logger.warn)
-      const policy = settingsRead.ok
-        ? effectivePolicy(readSessionPolicyEvent(agent.session.snapshotEvents()), settingsRead.settings)
-        : { state: 'unprovable' as const }
-      if (policy.state === 'unprovable') {
-        // Fail-closed (spec D1): no plugin-originated switch the plugin cannot
-        // prove is on the allowlist — stay on the current route (host seed
-        // stands). Mirrors the T2 inject-path unprovable skip; only the
-        // switch is blocked, never the non-switch behavior.
-        logger.warn(
-          'llm-fallbacks: agent "%s" subagent model-selection policy is on but unreadable — skipping fallback switch',
-          agent.id,
-        )
-        return null
-      }
-      if (policy.state === 'enabled') {
-        const allowed = firstAllowedCandidate(resolvedRoutes(surviving), policy.allowedModels)
-        if (allowed === undefined) {
-          // Empty intersection: the unconstrained walk would have switched to
-          // `target` — the allowlist emptied it. Warn + in-memory
-          // blocked-attempt record (T5 consumes; issue #52 — no session
-          // write) and stay on the current route. No request is sent.
-          logger.warn(
-            'llm-fallbacks: agent "%s" fallback switch %s/%s blocked: resolved candidates are all outside the subagent allowlist — no switch',
-            agent.id,
-            target.provider,
-            target.model,
-          )
-          blockedAttemptMap.set(agent.id, {
-            at: Date.now(),
-            route: { provider: target.provider, model: target.model },
-            reason,
-          })
-          return null
-        }
-        target = { provider: allowed.provider, model: allowed.model }
-      }
-    }
-    if (target === undefined) return null
-    // P2 rule 4 (plan fallbacks-half-open-recovery Task 4): the once-per-episode
-    // probe admission marker — the FIRST admission of a half-open episode logs
-    // one info line; later admissions while the episode is unresolved route
-    // normally and log nothing (the marker is not a gate — no admission limit).
-    // The emission is live-mode gated (qc1 W-001): a mid-session flip to timer
-    // must not log a half-open probe line, and the marker is consumed only
-    // when the log actually emits (a flip back to half-open within the same
-    // episode still logs once).
-    if (
-      (source().recovery ?? 'timer') === 'half-open' &&
-      state !== undefined &&
-      state.recovery.tryMarkProbeLogged(selectorKey(target.provider, target.model))
-    ) {
-      logger.info(
-        'llm-fallbacks: agent "%s" half-open probe %s/%s (role=%s, reason=%s)',
-        agent.id,
-        target.provider,
-        target.model,
-        role,
-        reason,
-      )
-    }
-    logger.info(
-      // Copy split (spec § Copy): the failure walk is 降级切换 / fallback
-      // switch — never 分时 (that copy belongs to the slot-rotation log in
-      // agent/request). The keep-模型已降级 conversation notice is untouched
-      // (failure path only).
-      'llm-fallbacks: agent "%s" fallback switch (降级切换) %s/%s -> %s/%s (role=%s, reason=%s, candidates=%o)',
-      agent.id,
-      current.provider,
-      current.model,
-      target.provider,
-      target.model,
-      role,
-      reason,
-      // spec §2 行为可见性: the log shows the candidate attempt order AND why
-      // each candidate was skipped (cooldown / step-failed / same-as-current /
-      // too-small context window / target-provider missing id); survivors
-      // (including the target) are unlabelled.
-      annotateCandidates(all, surviving, { current, cooldown, failed, minContextWindow, contextWindowOf })
-        .map(({ candidate, skip }) => skip === undefined
-          ? `${candidate.provider}/${candidate.model}`
-          : `${candidate.provider}/${candidate.model} (skipped: ${skip})`),
-    )
-    return {
-      from: { provider: current.provider, model: current.model },
-      to: { provider: target.provider, model: target.model },
-      role,
-      reason,
-    }
-  }
-
-  /** Commit a decision: pending switch + cooldown + failure bookkeeping (spec §5.1 step 1). */
-  function commit(state: AgentFallbackState, pending: PendingSwitch, turn: number, step: number): void {
-    const config = source()
-    const fromKey = selectorKey(pending.from.provider, pending.from.model)
-    // F-004 follow-up: a state freshly created by `states.get` at the commit
-    // site carries no (turn, step) markers — sync them here so the next
-    // decision's valve/failed-set bookkeeping sees this committed step (a
-    // no-op for states `decide` already synced at the same (turn, step)).
-    states.syncStep(state, turn, step)
-    states.writePending(state, pending)
-    // Route-scoped (the default, and every switch before request-scoped codes
-    // existed): the from-route itself is unhealthy, so it is suppressed for
-    // cooldownMs. P2 rule 1 (plan fallbacks-half-open-recovery Task 4): under
-    // half-open mode the duration escalates with the consecutive-failure
-    // counter (n = 1 is flat cooldownMs); 'never' and 'timer' run today's line
-    // verbatim.
-    //
-    // Request-scoped (`REQUEST_SCOPED_CODES`, e.g. CONTEXT_WINDOW_EXCEEDED):
-    // the route is healthy — this one request was too big — so neither the
-    // suppression nor the recovery counter is written. Cooling it down would
-    // send the next SHORT prompt to the fallback for no reason and burn a
-    // half-open probe on a route that never failed. The step-scoped
-    // bookkeeping below is deliberately kept for both scopes: recordFailure so
-    // this step does not bounce straight back to the model that just rejected
-    // it, recordSwitch so `maxSwitchesPerStep` still caps the walk.
-    if ((pending.scope ?? 'route') === 'route') {
-      const until = config.revertPolicy === 'never'
-        ? Number.POSITIVE_INFINITY
-        : config.recovery === 'half-open'
-          ? Date.now() + escalatedCooldownMs(config.cooldownMs, state.recovery.recordFailure(fromKey))
-          : Date.now() + config.cooldownMs
-      states.suppress(state, fromKey, until)
-    }
-    states.recordFailure(state, fromKey)
-    states.recordSwitch(state)
-    // issue #52: no durable `fallbacks/switch` session event is written — the
-    // registration seam was proven ineffective at runtime (the plugin's
-    // `@deepseek-ai/dsh-session` is a different module instance than the host's,
-    // so the catalog `.add()` never reached the persistence read path), so a
-    // session containing the event refused to load after a dsh restart. The
-    // switch decision is still recorded by the decide() info log; only the
-    // durable event is dropped (never poison a session log).
-  }
-
-  /**
-   * P2 rule 5b (plan fallbacks-half-open-recovery Task 4): a probe failure
-   * with no surviving switch target (`decide` → null — single-route chain
-   * or all siblings suppressed) re-suppresses the half-open route with the
-   * escalated duration. Gated on half-open mode AND an in-progress half-open
-   * episode for the failed key. This is the deliberate, documented exception
-   * to F-004 ("null decision must not grow the store"): a real probe failure
-   * justifies the entry. The write applies rule 1's escalation WITHOUT a
-   * pending switch and WITHOUT `recordSwitch` — escalation changes
-   * suppression duration only, never the per-step switch count.
-   */
-  function failHalfOpenProbe(agentId: string, current: FailingModel): void {
-    const key = selectorKey(current.provider, current.model)
-    if ((source().recovery ?? 'timer') !== 'half-open') return
-    // qc1 S-001: a mid-session flip to 'never' must not write an escalated
-    // finite suppression — under 'never' every suppression is Infinity (the
-    // commit gate), and the never short-circuit is structural on the read
-    // side (state.ts isSuppressed), so the write is skipped entirely.
-    if (source().revertPolicy === 'never') return
-    if (states.peek(agentId)?.recovery.isHalfOpen(key) !== true) return
-    const state = states.get(agentId)
-    const n = state.recovery.recordFailure(key)
-    states.suppress(state, key, Date.now() + escalatedCooldownMs(source().cooldownMs, n))
-  }
-
-  ctx.on('agent/request-error', async (
-    { agent, turn, step, provider, failure },
-    next,
-  ) => {
-    const config = source()
-    // Always mode delegates downstream first (llm-retry), so non-trigger
-    // failures must pass through here too — the cap lives at agent/request
-    // (ADR-2). Only trigger codes enter the decision path.
-    if (!isFallbackActive(config) || !config.triggerCodes.includes(failure.code)) return next()
-    const current = currentModel(agent, provider, config, new Date())
-    if (!current.model) return next()
-    // F-005: the decision path is defensive — an unexpected throw (e.g. a
-    // future refactor) must not replace the original failure semantics
-    // (spec §6); log and delegate instead.
-    try {
-      // F-004: peek, never create — a null decision must not grow the store.
-      const state = states.peek(agent.id)
-      const pending = await decide(agent, turn, step, current, 'trigger-code', state, failure.code)
-      if (pending === null) {
-        failHalfOpenProbe(agent.id, current)
-        return next()
-      }
-      // A request-scoped code describes the REQUEST, not the route: the switch
-      // still happens (and is still step-scoped bookkept), but commit() leaves
-      // the healthy from-route uncooled. Every other code keeps the scope
-      // absent — verbatim route-scoped semantics.
-      const scope: SwitchScope | undefined = REQUEST_SCOPED_CODES.has(failure.code) ? 'request' : undefined
-      commit(states.get(agent.id), scope === undefined ? pending : { ...pending, scope }, turn, step)
-      return { kind: 'retry' }
-    } catch (error) {
-      logger.warn(
-        'llm-fallbacks: decision path failed, passing the original failure through: %s',
-        (error as Error)?.message ?? String(error),
-      )
-      return next()
-    }
-  })
-
-  ctx.on('agent/request', async ({ agent, turn, step }, next) => {
-    const seed = await next()
-    // No-op purity (T3 review Minor 3): peek, never create — a plain request
-    // must not grow the per-agent map (AC-8). State is created lazily only
-    // when a real switch intent exists (a pending decision to apply, or the
-    // always-cap tripped below).
-    const state = states.peek(agent.id)
-    // Apply a pending decision first (trigger-code path); a switch for this
-    // request means the always-cap count of the previous provider is moot.
-    const applied = state === undefined ? undefined : states.applyPending(state, turn, step)
-    // The override creates a NEW spread config object (never the deep-frozen
-    // Host-native semantics (the marker coordination shipped with
-    // the local dsh-agent patch is removed — see
-    // .mstar/iterations/iter-20260811-fallbacks-mount-only/guides/
-    // role-and-model-selection-exploration.md): whether this step's routing
-    // survives a manual web model selection depends on waterfall listener
-    // order. When this plugin's listener is outer (registered first, the
-    // default web-profile composition) the switch wins; when the
-    // model-selection listener is outer (e.g. headless profile, or any agent
-    // created before the plugin registered) the selection re-applies over
-    // this step — the documented degradation. For a FallbacksChain seed the
-    // same degradation stays graceful: the re-applied selection dispatches
-    // to the virtual route, whose stream() is P1's thin delegate to the
-    // effective head — no hard outage.
-    if (applied !== undefined) {
-      return overrideConfig(seed, applied.to)
-    }
-    const config = source()
-    // P7 分时切换 detection (plan fallbacks-timeslots Task 2): ROOT-origin
-    // requests only, in BOTH primary and fallback-only modes. `resolveSlotState`
-    // reads the current slot winner; a winner different from this agent's last
-    // seen winner (in-process `slotWinners` marker, cleaned on agent/disposed
-    // and settings change) is a time-slot switch (分时切换) — a routing seed,
-    // NOT a failure decision: info log only, exempt from cooldown and
-    // `maxSwitchesPerStep`, no pending switch, no durable event. Never
-    // force-switches an in-flight step — the rotation is observed here and
-    // applies through the SAME resolver to the failure walk (decide) and to
-    // the head the virtual delegate serves (`effectiveHeadOf`). Skipped
-    // entirely when no extra
-    // slot rows exist (the winner would always be 'all-day'). P6 (qc1
-    // F-001): gated on a conforming all-day like every other slot surface —
-    // a legacy multi-model chain keeps the rows inert HERE too (the
-    // resolver already reports 'all-day', but the explicit gate also keeps
-    // the per-agent marker and the log untouched across a config change).
-    if (
-      isFallbackActive(config)
-      && isAllDayConforming(config.rootChain)
-      && (config.timeSlots?.length ?? 0) > 0
-      && agent.session?.header?.origin !== 'subagent'
-    ) {
-      const slot = resolveSlotState(config, new Date(), config.tz ?? 'Asia/Shanghai')
-      const key = slotWinnerKey(slot.winner)
-      const previous = slotWinners.get(agent.id)
-      if (previous !== undefined && previous.key !== key) {
-        logger.info(
-          'llm-fallbacks: agent "%s" time-slot switch (分时切换): %s -> %s',
-          agent.id,
-          previous.label,
-          slot.label,
-        )
-      }
-      slotWinners.set(agent.id, { key, label: slot.label })
-    }
-    // Dispatch-time role injection (plan fallbacks-role-automatch Task 4;
-    // dsh-012-subagent-routing T2): a subagent-origin agent's FIRST request
-    // only (per-agent once-marker, `dispatchInjected`, cleaned on
-    // agent/disposed + plugin dispose below). Evaluated ONLY in this branch —
-    // a failure-path pending switch always wins above.
-    //
-    // T2 policy gates (spec D1 ∩ D2), read per dispatch through the T1 pure
-    // reader (session event → settings snapshot): `'unprovable'` (policy on
-    // but unreadable) → skip inject, host seed stands (fail-closed warn). An
-    // explicit authorized route detected on the child's durable state → the
-    // authorized route IS the chain head (label `authorized`) — inject
-    // skipped, never overwritten at first request (D2). Pure inheritance →
-    // the four-stage resolution runs, but a policy-on injected head is
-    // plugin-originated and must be on the allowlist: `firstAllowedCandidate`
-    // over the resolved candidates (label `injected`); empty intersection →
-    // skip inject, host seed stands, warn. Policy off/absent → inject exactly
-    // as the pre-policy walk (first exact candidate, unchanged).
-    //
-    // This is NOT a failure decision: no commit(), no pending switch, no
-    // cooldown, no failure bookkeeping — only the override + an explicit role
-    // → model log. `'inherit'` ("no specific role") NEVER injects, so with
-    // `roleAutoMatch: false` and no explicit/dispatch-declared/rules role
-    // the outcome is identical to today. Defensive: any throw in the
-    // resolution/injection path warns and the request proceeds unchanged
-    // (mirror the `agent/request-error` defensive pattern).
-    if (isFallbackActive(config) && hasChains && agent.session?.header?.origin === 'subagent' && !dispatchInjected.has(agent.id)) {
-      dispatchInjected.add(agent.id)
-      try {
-        // W-002 + S-hard (qc fix wave): the same guarded, last-known-backed
-        // read as the decision path — a throwing host settings read warns and
-        // degrades to the `'unprovable'` skip (what the wrapping try/catch
-        // already did), while a retained snapshot keeps a proven-enabled
-        // policy constraining after the settings disappear.
-        const settingsRead = readGuardedPolicySettings(ctx, agent.id, lastKnownPolicySettings, logger.warn)
-        const policy = settingsRead.ok
-          ? effectivePolicy(readSessionPolicyEvent(agent.session.snapshotEvents()), settingsRead.settings)
-          : { state: 'unprovable' as const }
-        if (policy.state === 'unprovable') {
-          // Fail-closed: no plugin-originated route the plugin cannot prove is
-          // allowed — skip inject, host seed stands (spec D1).
-          logger.warn(
-            'llm-fallbacks: agent "%s" subagent model-selection policy is on but unreadable — skipping role-inject',
-            agent.id,
-          )
-        } else {
-          const authorized = policy.state === 'enabled'
-            ? detectAuthorizedRoute(authorizedRouteView(ctx, agent))
-            : undefined
-          if (authorized !== undefined) {
-            // D2: the authorized route is the chain head; the plugin chain
-            // applies only from failure time onward (T3). Persist the
-            // head-source label for the T5 card (T2 M3).
-            chainHeadMap.set(agent.id, {
-              at: Date.now(),
-              route: { provider: authorized.provider, model: authorized.model },
-              source: 'authorized',
-            })
-            logger.info(
-              'llm-fallbacks: agent "%s" authorized child route %s/%s is the chain head — skipping role-inject',
-              agent.id,
-              authorized.provider,
-              authorized.model,
-            )
-          } else {
-            const role = await resolveRoleAtDispatch(agent, config.roles.rules, roleIds, {
-              automatchEnabled: config.roleAutoMatch ?? true,
-              automatch: (agent) => pickRoleByLlm(ctx, config.roles, agent, { warn: logger.warn }),
-              // The dispatch seam's live hint for this child (the
-              // `**Execute as**: <id>` it resolved) — same map the notice row
-              // and `subagentSeamOf` read.
-              dispatchRole: subagentSeam.records.get(agent.id)?.role,
-              warn: logger.warn,
-              servedRoute: servedRouteFor(agent, config),
-            })
-            if (role !== INHERIT_ROLE_ID) {
-              // Recorded before the inject decision: a failed injected route
-              // must still walk this role's chain (I-000078).
-              dispatchRoles.set(agent.id, role)
-              const { all, wildcard } = resolveChainViews(
-                config.roles.list,
-                config.rootChain,
-                role,
-                seed.provider,
-                seed.model,
-                logger.warn,
-              )
-              let to: { provider: string; model: string } | undefined
-              if (policy.state === 'enabled') {
-                // The injected head is plugin-originated: intersect the
-                // RESOLVED candidates with the allowlist in order (D1 ∩ D2).
-                const routes = resolvedRoutes(all)
-                to = firstAllowedCandidate(routes, policy.allowedModels)
-                if (to === undefined && routes.length > 0) {
-                  logger.warn(
-                    'llm-fallbacks: agent "%s" role-inject candidates are all outside the subagent allowlist — skipping inject (host seed stands)',
-                    agent.id,
-                  )
-                }
-              } else {
-                // Policy off: the first exact candidate, exactly the pre-policy behavior.
-                const head = firstExactCandidate(all, wildcard)
-                if (head !== undefined && head.model !== undefined) {
-                  to = { provider: head.provider, model: head.model }
-                }
-              }
-              if (to !== undefined && !(to.provider === seed.provider && to.model === seed.model)) {
-                // issue #52: no durable `fallbacks/switch` role-inject event is
-                // written (same reason as commit() — the registration seam was
-                // ineffective, and a session containing the event would refuse to
-                // load after a dsh restart). The override still applies below and
-                // the role→model info log still fires. Persist the head-source
-                // label for the T5 card when the host policy is on (T2 M3).
-                if (policy.state === 'enabled') {
-                  chainHeadMap.set(agent.id, {
-                    at: Date.now(),
-                    route: { provider: to.provider, model: to.model },
-                    source: 'injected',
-                  })
-                }
-                logger.info(
-                  'llm-fallbacks: agent "%s" role-inject role=%s model=%s/%s',
-                  agent.id,
-                  role,
-                  to.provider,
-                  to.model,
-                )
-                return overrideConfig(seed, to)
-              }
-            }
-          }
-        }
-      } catch (error) {
-        logger.warn(
-          'llm-fallbacks: dispatch role-injection failed, proceeding with the request unchanged: %s',
-          (error as Error)?.message ?? String(error),
-        )
-      }
-    }
-    if (
-      hasChains
-      && isFallbackActive(config)
-      && config.alwaysModeRetryCap > 0
-      && countRetryEvents(agent.session, turn, step, seed.provider) >= config.alwaysModeRetryCap
-    ) {
-      // Cap tripped: a genuine switch intent — but the state is still only
-      // grown when the decision actually commits (F-004: a null decision —
-      // e.g. all candidates filtered — leaves no entry behind).
-      const decisionState = states.peek(agent.id)
-      // Same anchor as the trigger-code caller (T2): on a root-origin virtual
-      // route the loop hands this listener the picker pair while the delegate
-      // dispatched the effective chain's head, so the walk must START there —
-      // anchored on the picker pair it would commit `FallbacksChain/Auto →
-      // <head>` ("switching" back into the route the cap just kept retrying)
-      // and key the cooldown / step-failed bookkeeping on the picker key
-      // (plan Decision 3). Resolved ONCE and shared with the half-open probe
-      // below, so a slot boundary inside this branch cannot name two heads.
-      const capRoute = anchorServedRoute(config, { provider: seed.provider, model: seed.model }, new Date())
-      const pending = await decide(
-        agent,
-        turn,
-        step,
-        capRoute,
-        'always-cap',
-        decisionState,
-      )
-      if (pending !== null) {
-        const commitState = states.get(agent.id)
-        commit(commitState, pending, turn, step)
-        const appliedCap = states.applyPending(commitState, turn, step)
-        if (appliedCap !== undefined) {
-          // Same host-native routing as the trigger-code path above.
-          return overrideConfig(seed, appliedCap.to)
-        }
-      } else {
-        failHalfOpenProbe(agent.id, capRoute)
-      }
-    }
-    return seed
-  })
-
-  ctx.on('agent/status', ({ agent, status }) => {
-    if (status !== 'idle') return
-    const state = states.peek(agent.id)
-    if (state !== undefined) states.clearStepState(state)
-  })
-
   ctx.on('agent/disposed', ({ agent }) => {
     states.delete(agent.id)
-    dispatchInjected.delete(agent.id)
-    dispatchRoles.delete(agent.id)
     slotWinners.delete(agent.id)
     blockedAttemptMap.delete(agent.id)
     chainHeadMap.delete(agent.id)
     subagentSeam.records.delete(agent.id)
     // CF-6: `noticeEmitted` is deliberately NOT cleared here. `Agent.id` IS the
     // child session id, and a continuable child's durable session OUTLIVES the
-    // activation — clearing the marker on disposal let a re-activation resume
+    // activation — clearing the marker on re-activation resume let a re-dispatch
     // append a SECOND `[role: x]` row to the same session, contradicting the
     // documented "exactly one notice row per child session". The marker is
     // bounded (`NOTICE_EMITTED_LIMIT`) and cleared by the plugin dispose effect
@@ -1712,46 +940,8 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
     lastKnownPolicySettings.delete(agent.id)
   })
 
-  // P3 (plan fallbacks-half-open-recovery): plugin-scope success observation —
-  // a read-only `session/event` subscription that closes half-open circuits on
-  // observed completions. Plain `ctx.on` (no `{ global: true }` — the
-  // dsh-agent-preset precedent): scoping parity with the plugin's own
-  // `agent/*` listeners, so exactly the managed agents' sessions are observed.
-  // Cordis auto-disposes listeners with the plugin fiber — no explicit
-  // disposer, mirroring the existing four. Filter chain (cheap, in order):
-  // type → mode → interrupted → source.kind. `Agent.id` IS the session
-  // identity, so `states.peek(session.id)` needs no reverse map and never
-  // creates (F-004). Read-only: the listener never appends (mount-only).
-  ctx.on('session/event', (session, event) => {
-    if (event.type !== 'assistant/message') return
-    const config = source()
-    if ((config.recovery ?? 'timer') !== 'half-open') return
-    if (event.data.interrupted === true) return
-    const message = event.data.message
-    if (message.source.kind !== 'model') return
-    const state = states.peek(session.id)
-    if (state === undefined) return
-    // QC2 I-1 (plan model-change-notice-loop): the failure side of the circuit
-    // is keyed on the SERVED HEAD — `decide`/`commit` receive
-    // `anchorServedRoute(...)` — while the durable `assistant/message` source
-    // records the REQUEST route. On a `FallbacksChain/Auto` session that is the
-    // virtual pair, so reading the source raw makes this observer a guaranteed
-    // no-op there: the head's episode never closes and its suppression keeps
-    // escalating (×2 up to the 1 h cap) despite served successes. Resolve the
-    // observed route through the SAME anchor so both sides of rule 6 agree; a
-    // real route comes back unchanged, so non-virtual sessions are identical.
-    const observed = anchorServedRoute(
-      config,
-      { provider: message.source.provider, model: message.source.model },
-      new Date(),
-    )
-    states.observeSuccess(state, selectorKey(observed.provider, observed.model))
-  })
-
   ctx.effect(() => () => {
     states.clear()
-    dispatchInjected.clear()
-    dispatchRoles.clear()
     slotWinners.clear()
     blockedAttemptMap.clear()
     chainHeadMap.clear()
@@ -1775,9 +965,10 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
   const fallbacksCommandController: FallbacksCommandController = {
     getSnapshot(agent): FallbacksCommandSnapshot {
       const config = source()
-      // Same preference as decide(): a remembered dispatch role wins.
-      const role = rememberedRole(agent.id)
-        ?? resolveRole(agent, config.roles.rules, roleIds, logger.warn, servedRouteFor(agent, config))
+      // The dispatch seam's record IS the dispatch-role memory (`**Execute as**`
+      // resolved at spawn); the rules stage is the same fallback the walk uses.
+      const role = subagentSeam.records.get(agent.id)?.role
+        ?? resolveRole(agent, config.roles.rules, roleIds, logger.warn)
       const state = states.peek(agent.id)
       // P4 (plan fallbacks-half-open-recovery Task 4): under half-open mode
       // the expired cooldown entries transition AT the diagnostic read (so
