@@ -26,9 +26,9 @@
  * Data: `get` reads the `FallbacksSettingsBridge` source — the same live
  * composed config the runtime reads (schema defaults → plugin-row base →
  * profile patch). There is NO hard-gate resolver (unlike advisor's
- * `resolveAdvisorConfig`): the fallbacks decision path runs at
- * `agent/request` time in `src/index.ts`, so the gateway returns the raw
- * composed config. There is NO config-level `enabled` key on the contract
+ * `resolveAdvisorConfig`): the fallbacks decision path runs inside the
+ * virtual route's chain walk (`src/chain-walk.ts`), so the gateway returns
+ * the raw composed config. There is NO config-level `enabled` key on the contract
  * (plan fallbacks-web-ux-alignment T2): the Plugins-page row toggle is the
  * master switch, the runtime gates read content presence
  * (`isFallbackActive` in `src/config.ts`), and a stored `enabled:` line is

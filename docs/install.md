@@ -43,13 +43,11 @@ dsh plugin --profile web add .
 
 `dsh plugin` forwards its arguments to the pnpm in the profile directory (`add`, `remove`, `why`, etc. all work) and appends `dsh-llm-fallbacks` to the profile's bundle layer list (`dsh.profile.bundles`). The plugin is **mount-only**: installation = bundle row insert + client inject (`dsh.client.inject`), **zero modification of the dsh source tree, no patch steps**; dsh upgrades never require re-patching.
 
-### Bundle layer order (hard requirement)
+### Bundle layer order
 
 A dsh profile is composed of ordered bundle layers: `@deepseek-ai/dsh-base` (contains the llm-retry plugin) → `@deepseek-ai/dsh-web-app` → `@mstar-harness/dsh` → `dsh-llm-fallbacks` (appended by `add`).
 
-**`dsh-llm-fallbacks` must be ordered after llm-retry (inside the `@deepseek-ai/dsh-base` layer)**: the plugin's `agent/request-error` listener must compose after llm-retry so it only steps in after the retry budget is exhausted (normal mode) or after llm-retry has delegated downstream first (always mode); a reversed order would let retryable failures reach this plugin first and preempt llm-retry's backoff.
-
-`add` appends to the end of the list by default, which satisfies this order — no manual change needed; if you edit the `dsh.profile.bundles` of `$DSH_HOME/profiles/web/package.json` by hand, keep `@deepseek-ai/dsh-base` before this plugin.
+The plugin registers **no** listener on the request waterfalls, so there is no ordering contest with llm-retry to lose: llm-retry alone decides when a failed request is retried, and this plugin's chain walk runs inside the virtual `FallbacksChain/Auto` route's own `stream()`. A retryable failure therefore reaches the walk only as an llm-retry re-entry, which is a fresh request. Keep `dsh-llm-fallbacks` after `@deepseek-ai/dsh-base` anyway — the plugin applies against services that layer provides (`llm`, `subagents`), and `add` appends to the end.
 
 ## 3. Registry install
 

@@ -17,24 +17,26 @@
 
 // The `llm/retry` / `llm/retry-started` SessionEventMap entries are
 // declared by `@deepseek-ai/dsh-llm-retry` (host plugin augmenting
-// `@deepseek-ai/dsh-session/types`), not by the core session package. The
-// plugin's always-cap counting reads those durable events, so the peer's
-// augmentation must be part of this program's type graph — type-only import,
-// erased at runtime (same pattern as the client half's empty type-only
-// imports). The event DATA shape stays the `LlmRetryEventData` the
-// host appends (retryId/turn/step/provider/mode/policyKey/retry/...).
+// `@deepseek-ai/dsh-session/types`), not by the core session package. This
+// plugin no longer reads them (direction C deleted the always-mode counter),
+// but the peer's augmentation stays in this program's type graph so every
+// consumer that types a `llm/retry` event against the session map compiles —
+// type-only import, erased at runtime (same pattern as the client half's
+// empty type-only imports). The event DATA shape stays the
+// `LlmRetryEventData` the host appends
+// (retryId/turn/step/provider/mode/policyKey/retry/...).
 import type {} from '@deepseek-ai/dsh-llm-retry/types'
 
 /**
- * Why a switch was decided (spec §5.1 `PendingSwitch.reason`).
+ * Why a switch was decided — a **history and bookkeeping vocabulary** since
+ * direction C, not a set of live decision paths.
  *
- * `role-inject` is the dispatch-time reason (plan fallbacks-role-automatch
- * Task 4): a subagent-origin agent's first request was re-routed to its
- * resolved role's chain head. It is ADDITIVE to the failure-time reasons —
- * the event shape stays a superset of the pre-feature payload, and existing
- * renderers show unknown reasons raw (AC-5). Unlike `trigger-code` /
- * `always-cap`, a `role-inject` event is NOT a failure decision: it carries
- * no pending switch / cooldown / failure bookkeeping (no `commit()`).
+ * `trigger-code` is the only reason the current code produces (the walk's
+ * swallowed trigger failure, and the blocked-attempt record that mirrors it).
+ * `always-cap` (retired always-mode cap) and `role-inject` (retired
+ * dispatch-time request override) survive only so legacy `fallbacks/switch`
+ * events and their renderers keep a label; nothing writes them any more, and
+ * an unknown reason still renders raw (AC-5).
  */
 export type FallbackSwitchReason = 'trigger-code' | 'always-cap' | 'role-inject'
 

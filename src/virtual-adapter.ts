@@ -70,10 +70,12 @@ export interface EffectiveHead {
 
 /**
  * The FIRST DISPATCHABLE exact head of a chain — the single definition of
- * "effective head" (F-001) shared by the virtual adapter's delegate paths and
- * the routing engine's served-route anchor (`anchorServedRoute` in
- * `src/index.ts`). Walks the SAME chain `resolveEffectiveChain` produces,
- * skipping entries that can never
+ * "effective head" (F-001) shared by this module's metadata paths
+ * (`pickerDisplayName` / `resolveModel` / `providerRetryPolicy` /
+ * `imageRequestPricing`), the walk's head and served-route resolution
+ * (`servedRouteOf` in `src/chain-walk.ts`), and the seam's mount gate
+ * (`injectRoute` in `src/subagents-seam.ts`). Walks the SAME chain
+ * `resolveEffectiveChain` produces, skipping entries that can never
  * be dispatched: malformed selectors (config-warning path), `provider/*`
  * `provider/*` wildcards (no real pair), and self-routes back to
  * `FallbacksChain/*` (the P1 recursion guard). `undefined` when the chain

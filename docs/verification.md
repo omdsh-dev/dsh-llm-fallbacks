@@ -6,7 +6,7 @@ This document records the installation / runtime-contract verification already c
 
 ## Verified (evidence summary for this iteration)
 
-> **Snapshot scope**: the §1 per-row counts are snapshots from the verification round that produced them (they were not all re-derived together); the §1 aggregate (55 files / 1335 tests) is `main`'s session-log-repair records refresh (merge commit `e4c0957`, PR #115), not the current tip. The `dispatch + subagent routing` row is the one row re-derived on the merged plan branch.
+> **Snapshot scope**: the §1 table is the **pre-direction-C baseline** — its rows, suite names, counts and stated contracts are the verification round that produced them (they were not all re-derived together); the §1 aggregate (55 files / 1335 tests) is `main`'s session-log-repair records refresh (merge commit `e4c0957`, PR #115), not the current tip. The `dispatch + subagent routing` row is the one row re-derived on the merged plan branch. The 0.2.2-rc.1 direction-C change replaced the decision path and moved the suite set with it — see the delta below the table. This document was **not** re-derived against the new suite set here (a local full run is out of scope for a documentation pass; CI owns it), so no count below is claimed as the current one.
 
 ### 1. Test matrix (unit + integration + client + host gateway + command + release/consumer tooling; 55 files / 1335 tests passed — `main`'s session-log-repair records refresh, not the current tip)
 
@@ -25,18 +25,27 @@ This document records the installation / runtime-contract verification already c
 | session tooling + repair | `session-event-registration.spec.ts` / `session-event-registration-guard.spec.ts` / `session-write-surface.spec.ts` / `repair-session-logs.spec.ts` / `session-log-rules.spec.ts` / `session-log-publish.spec.ts` / `client-slot-registration.spec.ts` | 2 / 2 / 3 / 85 / 62 / 43 / 2 | issue #52 stop-write registration guards (no durable `fallbacks/switch` append); the repo-wide write-surface lint over `src/**` (no durable session-event append, no `MessageSourceMap` merge, no unreleased `MessageSource.kind`); the pre-V3 session-log triage/repair tool (refusal classification, released-catalog oracle, the rule registry with its exact-set-pinned source vocabulary, successor publication) that replaced the retired fail-closed detector; client slot registration ledger |
 | regression | `skeleton.spec.ts` / `host-native.spec.ts` / `peer-deps.test.ts` | 3 / 3 / 5 | bundle contract (row id, empty schema accepted, host+client apply entry points); host-native behavior baseline (real `@deepseek-ai/dsh-agent` module: trigger-code switches route to the chain target, always-cap second return point, no-op invariant); registry peer contract (`@deepseek-ai/*` as peerDependencies only, dsh-* sharing one caret range, autoInstallPeers, no link farm) |
 
+#### Direction C (0.2.2-rc.1) suite delta
+
+Read the table above with this delta applied:
+
+- **Deleted with their mechanism**: `always-mode.spec.ts` (always-mode retry cap), `automatch.spec.ts` (LLM role auto-match), `override.spec.ts` (the `overrideConfig` path), `index-request.spec.ts` (the `agent/request` listener), `allowlist-switch.spec.ts` (the request-time allowlist switch), `context-window.spec.ts` (the request-time context-window walk), `success-observation.spec.ts` (the `session/event` success observer), `runtime.spec.ts`, `time-slots-runtime.spec.ts`, `host-native.spec.ts` (the request-waterfall baseline), and `session-event-registration.spec.ts` / `session-event-registration-guard.spec.ts` (the append-based no-write pins, superseded by the repo-wide write-surface lint).
+- **Added**: `chain-walk.spec.ts` (candidate order and filters, committed rule, exactly-one-finish, effort passthrough, exhausted chain, abort forwarding, recursion guard) and `seam-inject.spec.ts` (the five mount conditions, `chainHeads` labels, resume fallback, record stickiness).
+- **Reworked in place**: `coexist-llm-retry.spec.ts` (composition through walk re-entry instead of waterfall order), `runtime-recovery.spec.ts` (half-open closed by attempt completion), `dispatch-injection.spec.ts` / `dispatch-integration.spec.ts` (mount at the seam), `virtual-adapter.spec.ts` (`stream()` returns the walk), `state.spec.ts` (cooldown + recovery only), `plugin.spec.ts`, `gateway.spec.ts`, `command.spec.ts`, `config.spec.ts`, `support/harness.ts` (the waterfall drivers now assert pass-through, and `cfg` / `walkDeps` / `makeAgent` fixtures drive the walk directly).
+- **Contract moved, not dropped**: the no-durable-write pin now lives in `tests/session-write-surface.spec.ts` (the repo-wide `src/**` write-surface lint), which is listed in the session-tooling row above.
+
 **Test-double caveats (plan `model-change-notice-loop`)**, so a future reader does not mistake them for coverage:
 
 - The harness double (`tests/support/model-selection-stub.ts`) calls the host's **real** `installModelSelection` (plan `model-change-notice-loop` fix round `bcfd827`), so the notice string is built by the upstream `modelSwitchNotice` rather than copied — the double cannot drift from the upstream shape. The literal is still pinned, but now by the **test**, not the seam: `tests/plugin.spec.ts` asserts the `[model changed:` prefix and the `provider/model → provider/model` summary, so a DSH rewording breaks that assertion **without** any plugin defect and has to be re-synced deliberately.
-- The half-open probe case on the virtual route (`always-mode.spec.ts`) seeds its episode through the **store seam**
-  (`stateStore(ctx).get(agent.id).recovery.recordFailure` / `markHalfOpen`) instead of driving a real failure path, so it pins the probe's
+- The half-open probe case (`tests/runtime-recovery.spec.ts`) seeds its episode through the **store seam**
+  (`stateStore(ctx).get(agent.id).recovery.markHalfOpen`) instead of driving a real failure path, so it pins the probe's
   route anchoring without re-testing the recovery circuit itself.
 - The accepted gaps that live in production code (the anchor's origin gate and its own clock, and the **outer-pass
   replay-envelope strip** for real-route history in a virtual-route session) are recorded under
   [docs/configuration.md](docs/configuration.md) § FallbacksChain in the model picker — they are documented, not tested.
   The envelope gap has one executed half (the real-route boundary arm in `tests/virtual-adapter.spec.ts` asserts the strip)
-  and one reasoned half (that the removed root rewrite used to keep that history, since the root request then carried the
-  head pair) — the reasoned half is not measured and cannot be measured in-repo.
+  and one reasoned half (that the removed root primary rewrite used to keep that history, since the request then carried
+  the head pair) — the reasoned half is not measured and cannot be measured in-repo.
 
 Result: **as of `main`'s session-log-repair records refresh — 55 files / 1335 tests passed** (`corepack pnpm@11.21.0 test`, vitest run); `pnpm build` (`tsc -p tsconfig.build.json` emits JS first (standard decorator downgrade `__esDecorate`) → tsdown host bundle →
 `pnpm run build-client` → `tsc` declarations → `node scripts/verify-dist.mjs` artifact-parsing guard) all green — `tsc` is
@@ -64,20 +73,24 @@ $ dsh --profile verify --dump-config
     config: {}
 ```
 
-`llm-fallbacks` sits as an **independent layer after dsh-base (which contains llm-retry)** — i.e. the waterfall
-registration order satisfies the hard requirement to "intervene after llm-retry" (corresponding to the bundle layer
-order section of [docs/install.md](docs/install.md); the real web profile's layer order `dsh-base → dsh-web-app → @mstar-harness/dsh
-→(add) dsh-llm-fallbacks` works the same way — `add` appends to the end, which suffices).
+`llm-fallbacks` sits as an **independent layer after dsh-base (which contains llm-retry)** — i.e. the plugin applies
+after the services it consumes (`llm`, `subagents`) exist (corresponding to the bundle layer order section of
+[docs/install.md](docs/install.md); the real web profile's layer order `dsh-base → dsh-web-app → @mstar-harness/dsh
+→(add) dsh-llm-fallbacks` works the same way — `add` appends to the end, which suffices). Since direction C the plugin
+registers no request-waterfall listener, so the former "intervene after llm-retry" ordering requirement no longer
+exists; see [docs/install.md](docs/install.md) § Bundle layer order.
 
 ### 3. Runtime contracts (backed by test evidence)
 
-- **Switch visibility**: every switch (including the always-cap path) produces a `fallbacks/switch` event (T3 event
-  shape + T4 integration assertions; the spec hard-requires "no event, no switch").
-- **Rollback / failure semantics**: chain exhausted / safety-valve cap exceeded / no matching chain / role-resolution
-  failure / no `triggerCodes` hit → `next()` passes through, preserving the original error code and message verbatim
-  (T3/T4 assertions).
-- **No residue on unload**: `agent/disposed` removes state, `agent/status` idle is defensively cleaned, `ctx.effect`
-  dispose clears everything (T3 assertions).
+- **Switch visibility**: a switch is written to the **info log** (from/to/role/reason/candidates); the plugin writes
+  **no** durable `fallbacks/switch` session event (issue #52 stop-write), and `tests/session-write-surface.spec.ts`
+  lints the whole `src/**` write surface against a reintroduced append.
+- **Walk outcome semantics**: an uncommitted trigger-code failure advances the walk; a committed failure, an aborted
+  finish, a non-trigger code, an exhausted chain or a spent switch cap forwards / re-emits the attempt's terminal
+  `finish` verbatim (original code and message preserved), and an empty or undispatchable chain throws
+  `EMPTY_EFFECTIVE_CHAIN` / `UNDISPATCHABLE_EFFECTIVE_HEAD` before any chunk (`tests/chain-walk.spec.ts`).
+- **No residue on unload**: `agent/disposed` removes the per-agent state and the seam record entries, and `ctx.effect`
+  dispose clears the stores wholesale (`tests/state.spec.ts` + the walk's own disposal assertions).
 - **Real-type contract**: the type layer does not use hand-written `peer-stubs/` — the real
   `@deepseek-ai/*` packages (the versions declared in `package.json`) drive `tsc` and the integration tests (`tests/support/harness.ts` +
   llm-retry-stub + model-selection-stub): in registry mode `autoInstallPeers` resolves them from npm (user-level
@@ -134,7 +147,8 @@ Then restart the dsh web session so the host half and the client half load.
 1. Configure a demo fallback chain in the `fallbacks` namespace: point `rootChain` at a **fallback model**
    (e.g. `openai/gpt-4o-mini`), misconfigure the primary model's (e.g. `deepseek/deepseek-chat`) credentials or
    point the chain at a non-existent provider, and construct a **non-retryable failure code** (`AUTH` / `QUOTA` path,
-   reaching the plugin directly without backoff).
+   reaching the walk directly without backoff). **Select `FallbacksChain / Auto` in the model picker** — a session on a
+   real model has no chain and must show no plugin behavior at all (that negative case is step 5).
 2. Issue a request to trigger the failure.
 3. **Expected**:
    - info-level logs from this plugin appear (candidate attempt order and skip reasons);
@@ -142,8 +156,10 @@ Then restart the dsh web session so the host half and the client half load.
      the info log only);
    - the request continues on the fallback model and the current step/turn is not interrupted.
 4. Retryable-code path (`RATE_LIMIT` / 5xx): with `RATE_LIMIT` in `triggerCodes`, observe
-   llm-retry backing off first and the chain decision being entered only after its budget is exhausted — confirming
-   the layer order (fallback does not preempt backoff).
+   llm-retry backing off first, then the retry re-entering the walk — which happens **inside the same step** and starts
+   past the head that just went on cooldown.
+5. **Negative case (direction C)**: switch the session to a real provider/model and repeat the failure. Expected: no
+   plugin log line, no cooldown, no walk — llm-retry is the only retry layer.
 
 ### 4. QA gate end-to-end verification script (plugin-config card read/write loop + save-takes-effect + switch routing + status block)
 
@@ -184,8 +200,8 @@ Then restart the dsh web session so the host half and the client half load.
 6. **Disk evidence**: `$DSH_HOME/settings.yaml` gains a `fallbacks:` section matching the saved values
    (the added chain line — no `enabled` key exists any more).
 7. **Take-effect evidence (AC-1 core)**: **without restarting the host or reloading the page** — first confirm the host PID/start
-   time matches the §4.1 baseline (`ps -o pid,lstart -p <pid>`), then trigger one trigger-code failure (§4.3
-   injection method, e.g. AUTH/QUOTA) → expected:
+   time matches the §4.1 baseline (`ps -o pid,lstart -p <pid>`), select `FallbacksChain / Auto` for the session, then
+   trigger one trigger-code failure (§4.3 injection method, e.g. AUTH/QUOTA) → expected:
    - `llm-fallbacks: agent ... switch` appears in the logs (info level, candidate attempt order and skip reasons);
    - the session event stream gains **no** `fallbacks/switch` event (issue #52 stop-write — the switch is recorded in
      the info log only);
@@ -201,21 +217,18 @@ Then restart the dsh web session so the host half and the client half load.
 
 #### 4.3 Switch routing + status block (AC-2 / AC-7)
 
-1. **Failure injection**: configure a demo fallback chain (`rootChain` pointing at a fallback model); misconfigure the primary
-   model's credentials or point the chain at a non-existent provider to construct a **non-retryable failure code**
-   (`AUTH` / `QUOTA`, reaching the plugin directly without backoff);
+1. **Failure injection**: configure a demo fallback chain (`rootChain` pointing at a fallback model) and select
+   `FallbacksChain / Auto` for the session; misconfigure the primary model's credentials or point the chain at a
+   non-existent provider to construct a **non-retryable failure code** (`AUTH` / `QUOTA`, reaching the walk directly
+   without backoff);
    on the retryable-code path (`RATE_LIMIT` / 5xx) observe llm-retry backing off first and the chain decision
    after its budget is exhausted.
 2. **Expected**: `llm-fallbacks: agent ... switch` in the logs (no durable `fallbacks/switch` session event is written — issue #52 stop-write; the switch is recorded only in the info log) + the request
    continuing on the chain target with the current step/turn uninterrupted (corresponding to the §3 runtime verification).
-3. **Under an active model-selection (documented degradation, T2 conclusion)**: with an active model-selection (the user
-   picked a provider/model in the settings page / `settings.yaml`), a switch after a trigger-code failure **still happens
-   and is recorded in the info log** (no durable `fallbacks/switch` event — issue #52 stop-write); but that step's routing may be re-applied by the outer model-selection listener (a model manually
-   selected in the web front end is re-applied after the switch) — this is **host-native behavior** after removing the
-   local patch-marker coordination (documented degradation, see §4.7). request-error-triggered chains are unaffected;
-   without an active selection the request routes to the chain target. Spec and guides records:
-   `.mstar/iterations/iter-20260811-fallbacks-mount-only/guides/role-and-model-selection-exploration.md`
-   (Model-selection section).
+3. **Route scope decides who has a chain**: run the same injection against a session on a **real** provider/model.
+   Expected: no switch, no walk, no plugin log line — the failure is llm-retry's alone. With `FallbacksChain / Auto`
+   selected, the session's recorded route stays the virtual pair across the switch, so a web model selection has nothing
+   to re-apply over (see §4.7).
 4. **Status-block entry (AC-2/AC-7)**: the plugin-config card's status block shows **only** the recent-switch line
    (from/to/role/reason, newest first), read from the current session's raw event surface — the plugin writes no durable
    `fallbacks/switch` events (issue #52 stop-write), so the line reflects only events already in the session history
@@ -238,8 +251,8 @@ Then restart the dsh web session so the host half and the client half load.
    only: a steady-state step appends none (the pre-fix measurement was 10 notices over 10 admitted steps with the header
    holding the rewritten real head), and changing the session model away from the row appends exactly one. Then confirm the
    served head's retry policy applies on this route (with e.g. `llm-deepseek.retryPolicy: { mode: 'always' }` the request
-   retries before any fallback walk) and that `alwaysModeRetryCap` trips when the cap is reached and no candidate survives
-   the walk.
+   retries before any fallback walk), that an always-mode retry re-enters the walk and resumes past a head the previous
+   attempt put on cooldown, and that a walk which cannot advance re-emits the last attempt's terminal error.
 
 #### 4.4 No-regression spot checks
 
@@ -259,43 +272,39 @@ Then restart the dsh web session so the host half and the client half load.
 - Any step that deviates from expectations → record it as a QA finding (severity + reproduction steps), report it
   truthfully, and do not write it back into "Verified".
 
-#### 4.6 Dispatch-time role injection (`role-inject` reason) — documented degradation (listener order)
+#### 4.6 Subagent chain mount at the dispatch seam
 
-1. **Setup**: with fallback content configured and a role resolvable for a subagent — an explicit `agentPreset` matching a
-   declared role id, a `roles.rules` match, or (with `roleAutoMatch` left at its default `true`) the LLM auto-match stage —
-   dispatch a subagent whose resolved role's chain head differs from the request's current model.
-2. **Expected**: on the subagent's **first** request the chain-head model is injected — an info-level
-   `llm-fallbacks: agent ... role-inject role=<role> model=<provider>/<model>` log line (no durable `fallbacks/switch`
-   event is written — issue #52 stop-write; the `role-inject` reason survives only in the event vocabulary for legacy
-   events). Later requests are **not**
-   re-injected (idempotent once-marker). The injection writes **no** pending switch / cooldown / failure bookkeeping (it is
-   not a failure decision). With `roleAutoMatch: false` and no explicit/rules role, no auto-match and no injection occurs
-   (today's behavior).
-3. **Documented degradation (listener order)**: dispatch injection reuses the same `agent/request` override path as the
-   failure-time fallback, so whether it survives a **manual web model selection** depends on waterfall listener order — the
-   same documented degradation as the failure-time switch (§4.3 step 3 above). Without an active selection the request
-   routes to the injected model.
+1. **Setup**: with fallback content configured (a non-empty chain for the child's role), dispatch a subagent whose
+   dispatch prompt declares `**Execute as**: <id>` for a declared role, on a **local** backend, and without an explicit
+   `provider`/`model` in the spawn request.
+2. **Expected**: the child's recorded route is the virtual pair — `agentProvider: 'FallbacksChain'`,
+   `agentModel: 'Auto'` in the activation descriptor — and its `request/header.config` records that pair; with the host
+   `subagent-model-selection` policy enabled, the card's Subagents section shows the effective chain head with source
+   `injected`. A failure on a listed code then walks the role chain, and the info log names the from/to pair with
+   `role=<resolved role>`.
+3. **Explicit route is untouched**: repeat with a spawn request that already carries `provider`+`model`. Expected: the
+   child keeps that route, the card (policy enabled) labels the head `authorized`, and no chain participates (the child's
+   requests are real-route).
+4. **External backend degrades**: dispatch the same child on an external (acp) provider. Expected: no local agent is
+   created, nothing is mounted, and the child runs without a chain — the documented degradation, never a failed
+   dispatch.
+5. **No first-request hook**: no `role-inject` log line appears at any request; the plugin registers no request-path
+   listener, so there is nothing to observe there and nothing that a manual web model selection could re-apply over.
 
-#### 4.7 Manual web model selection may re-apply over a fallback switch (AC-2 — documented degradation, re-homed)
+#### 4.7 Model selection and fallback switching no longer interact
 
-1. **Background**: removing the marker coordination that shipped with the local dsh-agent patch (plan
-   `llm-fallbacks-runtime-depatch`) left the plugin with no way to mark a fallback switch so a web-front-end model
-   selection would not re-apply over it. The status block carried a one-line `status.selectionNote` (zh/en) documenting
-   this; since plan `fallbacks-settings-visibility` (AC-2) trims the card's read-only status block to the recent-switch
-   line only, the degradation is re-homed here with equivalent semantics.
-2. **Semantics**: a model **manually selected in the web front end may be re-applied over a fallback switch** — whether
-   the switch routing survives depends on the outer model-selection listener's waterfall order. With an active
-   model-selection (a provider/model picked in the settings page or `settings.yaml`), a switch after a trigger-code
-   failure **still happens and is recorded in the info log** (no durable `fallbacks/switch` event is written — issue
-   #52 stop-write), but that step's routing may be re-applied by the selection listener.
-3. **Scope**: request-error-triggered chains are unaffected; without an active model selection the request routes to the
-   chain target. This is host-native behavior, not a plugin defect.
+1. **Background**: the pre-upgrade plugin decided switches in a request-waterfall listener and rewrote the request, so a
+   web-front-end model selection could be re-applied over the switched route (the retired `status.selectionNote`
+   degradation). Direction C removed that path.
+2. **Semantics now**: the walk dispatches each attempt itself inside the virtual route's `stream()`. A session on
+   `FallbacksChain` / `Auto` keeps that selection while attempts move between real provider/model pairs; a session on a
+   real model is never touched by this plugin. There is no plugin-originated route rewrite left for a selection
+   listener to re-apply over.
+3. **What to check anyway**: with `FallbacksChain` / `Auto` selected, the session's recorded route stays the virtual
+   pair across a switch (no `model/selection` churn, §4.3 step 6), and the host's model-change notice appears only on a
+   genuine selection change.
 4. **Spec/guide records**: `.mstar/iterations/iter-20260811-fallbacks-mount-only/guides/role-and-model-selection-exploration.md`
-   (Model-selection section); the failure-time switch path is §4.3 step 3 above; the dispatch-injection variant of the
-   same listener-order degradation is §4.6 above.
-5. **Not this degradation — the virtual picker row**: with `FallbacksChain` / `Auto` selected, the served route is recorded
-   as the virtual pair, so the host's model-change notice is not re-armed per step (§4.3 step 6). A failure switch on that
-   route is still subject to the re-application above whenever the selection listener composes outer.
+   (Model-selection section) documents the retired behavior; §4.3 step 3 above is the current expected result.
 
 ## Known limitations (real runtime surfaces the sandbox cannot cover)
 
@@ -303,6 +312,6 @@ Then restart the dsh web session so the host half and the client half load.
 |---|---|---|
 | web settings GUI interaction (card appears, edit & save, conflict reload) | the sandbox cannot operate a real web session | user §2 / §4 (client-half logic already covered by the client matrix row above) |
 | real model calls and failure injection (AUTH/QUOTA/RATE_LIMIT triggers, switch continuation) | the sandbox has no real model credentials or running session | user §3 / §4 (decision logic already covered by T3/T4 integration tests) |
-| cross-process observation (info logs, no durable `fallbacks/switch` events landing in a real session) | the sandbox cannot run a real dsh session — issue #52's reload gap is closed by the stop-write decision (the no-write pins in `tests/session-event-registration*.spec.ts` cover the commit + role-inject paths, and `tests/session-write-surface.spec.ts` lints the whole `src/**` write surface against a reintroduced append) and the repair tool's default refusal is covered by `tests/repair-session-logs.spec.ts` + `tests/session-log-rules.spec.ts` (the released session-format chain refuses ignorable-marked unknown events, so the default registry can never write a repair; only the explicit lossy `--drop-legacy-events` opt-in removes such rows) | user §3/§4 + `scripts/repair-session-logs.ts` |
+| cross-process observation (info logs, no durable `fallbacks/switch` events landing in a real session) | the sandbox cannot run a real dsh session — issue #52's reload gap is closed by the stop-write decision (`tests/session-write-surface.spec.ts` lints the whole `src/**` write surface against a reintroduced append, and the walk writes no durable event by construction) and the repair tool's default refusal is covered by `tests/repair-session-logs.spec.ts` + `tests/session-log-rules.spec.ts` (the released session-format chain refuses ignorable-marked unknown events, so the default registry can never write a repair; only the explicit lossy `--drop-legacy-events` opt-in removes such rows) | user §3/§4 + `scripts/repair-session-logs.ts` |
 | `/fallbacks` command input/output in a real session | the sandbox cannot run a real dsh session and command registry | user §4.3 step 5 (command logic already covered by command.spec.ts) |
 | real routing override under an active model-selection (documented degradation) | the sandbox has no real web session and model selection | user §4.3 (combination order already covered by T4 integration tests) |

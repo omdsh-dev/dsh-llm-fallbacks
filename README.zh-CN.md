@@ -7,10 +7,10 @@
 ![node](https://img.shields.io/badge/node-%3E%3D22-339933.svg)
 ![pnpm](https://img.shields.io/badge/pnpm-%3E%3D10-f69220.svg)
 ![dsh tui](https://img.shields.io/badge/dsh%20tui-compatible-4B32C3.svg)
-![dsh](https://img.shields.io/badge/DSH-0.2.1--rc.5-4B32C3.svg)
+![dsh](https://img.shields.io/badge/DSH-0.2.2--rc.1-4B32C3.svg)
 [![dshfind](https://dshfind.com/api/badge/omdsh-dev/dsh-llm-fallbacks?lang=zh)](https://dshfind.com/zh/plugins/omdsh-dev/dsh-llm-fallbacks?ref=badge)
 
-dsh（DeepSeek Harness）的自动模型降级插件：当 agent 的模型请求持续失败（重试耗尽、权限错误、配额超限、限流 429）时，插件按当前角色的 fallback 链切换 provider/model，当前 step/turn 在目标模型上继续——任务不会因模型问题中断。
+dsh（DeepSeek Harness）的自动模型降级插件：只有模型选择走插件虚拟行 **`FallbacksChain / Auto`** 的会话才沿配置的降级链行走——llm 请求在列出的失败码上持续失败（权限错误、配额超限、限流 429 等）时，请求会在下一个可用 provider/model 上重试，任务不会因模型问题中断。选择**真实** provider/model 的会话**没有插件降级**，只由 `llm-retry` 处理。想要降级链，请在模型选择器中选择 `FallbacksChain / Auto`。
 
 两个 dsh 前端均可用：**web** profile（设置 → 插件配置 → Fallbacks 卡片）与 **dsh-tui** 终端 profile（`/fallbacks` 会话诊断、`/fallbacks config` 回读、`/settings` 的 fallbacks 分区用于编辑）。
 
@@ -18,12 +18,14 @@ dsh（DeepSeek Harness）的自动模型降级插件：当 agent 的模型请求
 
 ### 自动模型降级
 
-root 或 subagent，只要持续命中触发码，就沿自身链切到下一个可用 provider/model，step 继续运行。无需手动切换模型；在配置了内容之前，插件不做任何事。
+会话模型选择走 `FallbacksChain / Auto` 时——root agent，或被分发 seam 挂到该行的继承型 subagent——沿自身链行走：请求在**输出任何内容之前**命中触发码，就在同一个请求内改到下一个可用 provider/model，step 继续运行。选择真实 provider/model 的会话不获得任何插件降级。无需手动切换模型；在配置了内容之前，插件不做任何事。
 
-- **触发**：`triggerCodes`（默认 `AUTH` / `QUOTA` / `RATE_LIMIT`）——**任何** dsh 失败码都可用，包括 `CONTEXT_WINDOW_EXCEEDED`（会降级到上下文窗口更大的候选）。可重试失败（5xx、`TRANSPORT`、`TIMEOUT` 等）先交给 llm-retry。
+- **谁能拿到链**：只有模型选择走 `FallbacksChain / Auto` 的会话。包括选中该行的 root agent，以及分发时被 seam 挂到该行的 subagent（本地 backend、请求上没有显式路由）。真实 provider/model 选择——无论 root 还是 subagent——完全交给 llm-retry。
+- **触发**：`triggerCodes`（默认 `AUTH` / `QUOTA` / `RATE_LIMIT`）——**任何** dsh 失败码都可用，包括 `CONTEXT_WINDOW_EXCEEDED`（会降级到上下文窗口更大的候选）。可重试失败（5xx、`TRANSPORT`、`TIMEOUT` 等）先交给 llm-retry；它的每次重试都会重新进入 walk，并从刚进入冷却的链头之后开始。
+- **已输出即提交**：某个尝试一旦吐出 chunk，之后的失败**不会**在该请求内切换——已产出的输出无法撤回。失败上抛给 loop；恢复路径是 llm-retry 重入（新的一次 walk）或终止失败。
 - **恢复**：失败或被切走的模型在 `cooldownMs` 内不再被选中，`revertPolicy: cooldown-expiry` 在冷却到期后回到主模型；可选的 `recovery: half-open` 模式（YAML-only）把这次回归改为证据驱动，而非定时器驱动。
-- **保险丝**：`maxSwitchesPerStep` 限制单 step 的切换次数，`alwaysModeRetryCap` 限制 always 模式的重试次数——链式循环不会放大延迟。
-- **可见性**：每次切换都写入 info 日志（from/to/role/reason），不存在静默切换。
+- **保险丝**：`maxSwitchesPerStep` 限制单次请求 walk 的切换次数（尝试数 ≤ 上限 + 1）——链式循环不会放大延迟。
+- **可见性**：每次切换都写入 info 日志（from/to/role/reason/candidates），不存在静默切换。
 
 → [自动模型降级](docs/features.md#automatic-model-failover) · [上下文窗口降级](docs/features.md#context-window-aware-fallback)
 
@@ -50,7 +52,7 @@ GLM Peak / GLM Valley 仅在配置了 `zai-coding-cn` 时才会出现在卡片�
 
 subagent 的角色由分发提示词声明——Assignment 头部字段 `**Execute as**: <id>`；它与 `roles.list` 中已声明的角色 id 匹配。只有这个**已声明头部**才投递子代理的身份：`persona` 以 system-prompt 分区安装到子代理，子会话恰好写入一行 `[role: <id>]` 通知行，会话头部显示角色徽章。
 
-角色**路由**是另一套解析，按四个有序阶段、先命中者生效——显式 `agentPreset` → **派发声明** `**Execute as**: <id>` 头部 → 规则 → LLM 自动匹配。只要子代理的分发提示词声明了 `**Execute as**: <id>`，该角色的 persona、`[role: <id>]` 通知行与徽章就会投递，**无论哪个路由阶段胜出**——更早的显式 `agentPreset` 可以把子代理路由成另一个角色，而身份载体仍属已声明头部。完全没有声明分发头部的子代理不会获得 persona、通知行与徽章，即使规则或自动匹配为路由解析出了角色。把解析到的角色链头作为子代理模型由插件发起、且带条件：宿主 `subagent-model-selection` 策略启用时，显式授权路由会被保留（跳过注入），注入的链头必须落在生效 allowlist 内——交集为空则不注入任何内容（[宿主策略](docs/features.md#host-subagent-model-selection-policy-dsh-012)）。
+角色**路由**是另一套解析，按三个有序阶段、先命中者生效——显式 `agentPreset` → **派发声明** `**Execute as**: <id>` 头部 → 规则。只要子代理的分发提示词声明了 `**Execute as**: <id>`，该角色的 persona、`[role: <id>]` 通知行与徽章就会投递，**无论哪个路由阶段胜出**——更早的显式 `agentPreset` 可以把子代理路由成另一个角色，而身份载体仍属已声明头部。完全没有声明分发头部的子代理不会获得 persona、通知行与徽章，即使规则为路由解析出了角色。路由同时决定子代理是否拥有降级链：分发时 seam 把继承型子代理挂到虚拟 `FallbacksChain / Auto` 行上——仅限本地 backend，且仅当请求没有显式 `provider`/`model` 路由；带显式路由的请求属于**已授权**，插件永不改写（卡片标签 `authorized`，被挂载的子代理标签 `injected`）。宿主 `subagent-model-selection` 策略启用时，被挂载子代理的候选会与 allowlist 求交；外部 backend 的子代理保持纯继承——也就是没有降级链（[宿主策略](docs/features.md#host-subagent-model-selection-policy-dsh-012)）。
 
 这一套同时覆盖**普通 subagent 分发与 Agent Team 队友**（`spawn_teammate`）：两者都是带着同一头部（由模型写入）经同一分发 seam 创建的子代理，不需要任何按机制区分的配置。
 
@@ -120,11 +122,11 @@ fallbacks:
 
 ## 能力一览
 
-- **自动降级**（root 与 subagent 通用）——命中触发码的 agent 沿链切换，step 继续运行。 → [详情](docs/features.md#automatic-model-failover)
+- **自动降级**（仅虚拟路由）——`FallbacksChain / Auto` 会话（root 或 seam 挂载的 subagent）命中触发码时沿链切换，step 继续运行；真实模型会话没有插件降级。 → [详情](docs/features.md#automatic-model-failover)
 - **上下文窗口感知降级**——`CONTEXT_WINDOW_EXCEEDED` 会切到窗口更大的候选；该切换是请求级的（不消耗冷却）。 → [详情](docs/features.md#context-window-aware-fallback)
 - **峰谷无忧（分时槽）**——四个冻结的 UTC+8 预设或自定义窗口轮换生效 root 链。 → [详情](docs/features.md#time-slots)
-- **角色化 subagent**——派发声明的角色为子代理带来 persona、通知行与徽章；链头注入受宿主策略约束。 → [详情](docs/features.md#role-based-subagents)
-- **模型选择器中的 FallbacksChain**——选择 `FallbacksChain / Auto` 即把配置链作为 root 主模型；选择真实模型仍是仅降级。 → [详情](docs/features.md#fallbackschain-in-the-model-picker)
+- **角色化 subagent**——派发声明的角色为子代理带来 persona、通知行与徽章；继承型子代理被挂到虚拟链路由，受宿主策略约束。 → [详情](docs/features.md#role-based-subagents)
+- **模型选择器中的 FallbacksChain**——选择 `FallbacksChain / Auto` 即由配置链承载该会话；选择真实模型则只由 llm-retry 处理，没有插件降级。 → [详情](docs/features.md#fallbackschain-in-the-model-picker)
 - **宿主子代理模型策略**——dsh 0.1.2 的 allowlist 是插件发起的所有 subagent 路由的硬约束。 → [详情](docs/features.md#host-subagent-model-selection-policy-dsh-012)
 - **五个内置预设角色**——`reviewer` / `scout` / `security-reviewer` / `sonic` / `task`，随 apply 自动声明。 → [详情](docs/features.md#preset-roles)
 - **dsh-tui 操作面**——`/fallbacks`、`/fallbacks config`，以及与 web 卡片等价的 `/settings` 分区。 → [详情](docs/features.md#dsh-tui-surfaces)
