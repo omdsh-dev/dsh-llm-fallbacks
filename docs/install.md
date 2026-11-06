@@ -62,7 +62,7 @@ Registry install notes:
 - **Version**: follows the npm dist-tag (default `latest`); pinning an exact version `dsh-llm-fallbacks@<version>` prevents a later publish from silently changing the code that actually runs.
 - **Mount-only, no patch steps**: a registry install is complete as-is — the plugin makes zero modifications to the dsh source tree (bundle row insert + client inject + its own gateway), no apply/revert scripts, and nothing to re-patch after a dsh upgrade.
 
-> **Release channels**: stable releases publish under the `latest` dist-tag (the default for `npm i dsh-llm-fallbacks`); prereleases publish under their channel dist-tag — install a prerelease line via its channel, e.g. `npm i dsh-llm-fallbacks@alpha`. npm authentication is tokenless Trusted Publishing. Release process → [docs/release.md](docs/release.md).
+> **Release channels**: stable releases publish under the `latest` dist-tag (the default for `npm i dsh-llm-fallbacks`); prereleases publish under their channel dist-tag — install a prerelease line via its channel, e.g. `npm i dsh-llm-fallbacks@alpha`. npm authentication is tokenless Trusted Publishing. Release process → [docs/release.md](release.md).
 
 ## 4. npm / pnpm package install
 
@@ -70,7 +70,7 @@ Registry install notes:
 npm install dsh-llm-fallbacks   # or: pnpm add dsh-llm-fallbacks
 ```
 
-> The package ships built artifacts (`dist/`); the consumer surface (library function imports, named service) is documented in [docs/consumer-api.md](docs/consumer-api.md).
+> The package ships built artifacts (`dist/`); the consumer surface (library function imports, named service) is documented in [docs/consumer-api.md](consumer-api.md).
 
 ## 5. Git install (currently available)
 
@@ -112,8 +112,8 @@ If no dsh-tui profile exists yet, create it first: `dsh plugin --profile dsh-tui
 **Restart the dsh-tui session after installing.** In the terminal:
 
 - The `/` menu lists `/fallbacks` (session diagnostics) and `/fallbacks config` (composed-config readback) with subcommand completion, including the `config` → `revert-seed <role-id>` leaf — this needs the profile's `tuiCommandTrees` service (the `dsh-tui-command-trees` bundle row; the shipped dsh-tui bundle has it).
-- **Editing**: the TUI's write surface is the **`/settings`** screen — with **dsh-tui ≥ v0.8.5** (commit `c51661f` or later; the settings seam shipped in v0.8.0, the groups shape in v0.8.5) `/settings` shows a **fallbacks** section with full parity to the web Settings → 插件配置 → Fallbacks card (see [docs/configuration.md](docs/configuration.md) § TUI readback). On an older dsh-tui the section is absent and file editing remains the only TUI surface. File editing still works everywhere: the shared `$DSH_HOME/settings.yaml` (`fallbacks:` section, the same file the web card writes) for global settings, or the profile patch `~/.dsh/profiles/dsh-tui/cordis.patch.yml` (an `- id: llm-fallbacks` row with `config:` overrides) for dsh-tui-specific values. Note: a patch row **replaces** the targeted row's whole `config` — restate every field you want to keep (schema defaults fill the rest).
-- Read the composed result back with `/fallbacks config` (config namespace + TUI readback → [docs/configuration.md](docs/configuration.md)); verify the layer with `dsh --profile dsh-tui --dump-config` (the `llm-fallbacks` row appears over the profile bundle stack).
+- **Editing**: the TUI's write surface is the **`/settings`** screen — with **dsh-tui ≥ v0.8.5** (commit `c51661f` or later; the settings seam shipped in v0.8.0, the groups shape in v0.8.5) `/settings` shows a **fallbacks** section with full parity to the web Settings → 插件配置 → Fallbacks card (see [docs/configuration.md](configuration.md) § TUI readback). On an older dsh-tui the section is absent and file editing remains the only TUI surface. File editing still works everywhere: the shared `$DSH_HOME/settings.yaml` (`fallbacks:` section, the same file the web card writes) for global settings, or the profile patch `~/.dsh/profiles/dsh-tui/cordis.patch.yml` (an `- id: llm-fallbacks` row with `config:` overrides) for dsh-tui-specific values. Note: a patch row **replaces** the targeted row's whole `config` — restate every field you want to keep (schema defaults fill the rest).
+- Read the composed result back with `/fallbacks config` (config namespace + TUI readback → [docs/configuration.md](configuration.md)); verify the layer with `dsh --profile dsh-tui --dump-config` (the `llm-fallbacks` row appears over the profile bundle stack).
 
 ## 7. Verify the installation
 
@@ -135,7 +135,7 @@ And the layer **before** it includes llm-retry (from `@deepseek-ai/dsh-base`) �
 Then **restart the dsh web session** (`dsh web`, or restart the running session) so that both the host half and the client half (the plugin config card) load:
 
 - The web settings GUI's Settings → **插件配置** page should show the **Fallbacks card**, **always available** — the card skeleton also renders on first open (before any `fallbacks` config exists).
-- The card is readable, editable, and saveable; it renders as the flat always-open form (no feature switch — the config-level `enabled` key was removed) with one Save/Discard footer; with nothing configured the behavior is a no-op (see [docs/configuration.md](docs/configuration.md)).
+- The card is readable, editable, and saveable; it renders as the flat always-open form (no feature switch — the config-level `enabled` key was removed) with one Save/Discard footer; with nothing configured the behavior is a no-op (see [docs/configuration.md](configuration.md)).
 - In-session, type `/fallbacks` directly to inspect the current session's diagnostics (role → chain → recent switches → cooldown); see the README's `/fallbacks` section.
 
 ## 8. Uninstall
