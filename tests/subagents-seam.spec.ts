@@ -919,6 +919,65 @@ describe('subagent seam — install/dispose exception safety', () => {
     // Idempotent: the second call neither throws nor decrements again.
     expect(() => seam.dispose()).not.toThrow()
   })
+
+  it('keeps the install error and releases the claim when a rollback withdrawal throws', () => {
+    ctx.provide('subagents', fakeSubagents({ childId: 'child-rollback' }).service)
+    // The install throws at the third registration while the FIRST one hands
+    // back a throwing disposer: the partial-install rollback itself throws.
+    stubContextOn({ install: 3, dispose: 1 })
+
+    // The ORIGINAL install error surfaces — not the disposer's.
+    expect(() => installSubagentSeam(ctx, { roleIds: () => ROLE_IDS })).toThrow('install boom')
+
+    // The root claim came back with the rollback: a later apply over the same
+    // root still owns the wrapper.
+    const seam = installSubagentSeam(ctx, { roleIds: () => ROLE_IDS })
+    expect(seam.ownsWrapper).toBe(true)
+    seam.dispose()
+  })
+
+  it('releases the seam fiber when apply() throws before its own dispose effect registers', async () => {
+    ctx.provide('subagents', fakeSubagents({ childId: 'child-tail' }).service)
+    const config = () => cfg({ roles: { list: [{ id: 'coder', persona: '', chain: [] }], rules: [] } })
+
+    let failedCtx: Context | undefined
+    ctx.plugin({
+      name: 'fallbacks-throwing-tail',
+      apply: (fiberCtx: Context) => {
+        failedCtx = fiberCtx
+        // The caller's LAST step (`src/index.ts`, the one `ctx.effect` of
+        // `apply`) throws: the seam is installed, no caller lifecycle is left
+        // to release it. The host disposes the whole plugin scope instead.
+        const host = fiberCtx as unknown as { effect: (execute: unknown, label?: string) => unknown }
+        const real = host.effect
+        host.effect = (execute: unknown, label?: string) => {
+          if (label === 'llm-fallbacks: clear per-agent state') throw new Error('effect boom')
+          return real.call(fiberCtx, execute as never, label)
+        }
+        apply(fiberCtx, config())
+      },
+    })
+    await nextTick()
+    expect(subagentSeamOf(failedCtx!)?.ownsWrapper).toBe(true)
+
+    // The failed apply left NO fiber count and no claim behind: this later apply
+    // owns the wrapper again, and ITS dispose is the last fiber's — so the one
+    // record written here is cleared with the root-shared maps.
+    let nextCtx: Context | undefined
+    const nextFiber = ctx.plugin({
+      name: 'fallbacks-after-throwing-tail',
+      apply: (fiberCtx: Context) => {
+        nextCtx = fiberCtx
+        apply(fiberCtx, config())
+      },
+    })
+    await nextTick()
+    const seam = subagentSeamOf(nextCtx!)!
+    expect(seam.ownsWrapper).toBe(true)
+    seam.records.set('child-after-tail', { role: 'coder', at: 1, firstNoticePending: true })
+    await nextFiber.dispose()
+    expect(seam.records.size).toBe(0)
+  })
 })
 
 describe('subagent seam — wrapper identity + install topology', () => {

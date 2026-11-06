@@ -425,6 +425,7 @@ describe('candidate order and filters (design §3.1 step 2)', () => {
     const ALLOWED = [{ provider: 'a', model: '1' }, { provider: 'b', model: '2' }]
     /** Policy reads in order: the resolveWalk admission, then the expansion's re-read. */
     let reads: EffectivePolicy[] = []
+    const recordBlocked = vi.fn()
 
     const plan = (): Partial<ChainWalkDeps> => {
       const states = new FallbackStateStore()
@@ -438,6 +439,7 @@ describe('candidate order and filters (design §3.1 step 2)', () => {
         roleIds: () => CODER_ROLE_IDS,
         states,
         policyFor: () => reads.shift() ?? { state: 'disabled' },
+        recordBlocked,
       }
     }
     const options = { provider: FALLBACKS_PROVIDER, model: FALLBACKS_CHAIN_MODEL, messages: [], sessionId: SessionId('s1') }
@@ -468,6 +470,9 @@ describe('candidate order and filters (design §3.1 step 2)', () => {
     reads = [{ state: 'enabled', allowedModels: ALLOWED }, { state: 'enabled', allowedModels: ALLOWED }]
     await collect(walkChain(walkDeps({ getLlm: () => ctx.llm, ...plan() }), options))
     expect(dispatched()).toEqual(['b/2'])
+    // No trigger failure happened on the cooled-head path, so no blocked-switch
+    // record may claim one ('trigger-code') for it.
+    expect(recordBlocked).not.toHaveBeenCalled()
   })
 
   it('labels an allowlist-rejected candidate as skipped in the switch log', async () => {
@@ -507,6 +512,25 @@ describe('candidate order and filters (design §3.1 step 2)', () => {
     }, { sessionId: SessionId('s1') })
 
     expect(dispatched()).toEqual(['a/1', 'b/2'])
+  })
+
+  it('dispatches a NON-injected walk whose policy reads unprovable (no seam verdict to honour)', async () => {
+    adapter.respond = () => ({ chunks: [STOP] })
+    const policyFor = vi.fn(() => ({ state: 'unprovable' as const }))
+
+    const chunks = await walk({
+      readConfig: config({ rootChain: ['a/1', 'b/2'] }),
+      resolveAgentView: () => ({ origin: 'subagent', sessionId: 's1' }),
+      // An inherited child was never mounted on the virtual row, so the policy
+      // gates nothing: the refusal is the INJECTED verdict's, never a blanket
+      // "unprovable = refuse" (a gate inversion would show up here).
+      seamRecord: () => ({ role: 'inherit' }),
+      policyFor,
+    }, { sessionId: SessionId('s1') })
+
+    expect(dispatched()).toEqual(['a/1'])
+    expect(finishes(chunks)).toHaveLength(1)
+    expect(policyFor).not.toHaveBeenCalled()
   })
 })
 

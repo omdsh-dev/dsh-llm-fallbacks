@@ -952,12 +952,10 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
     slotWinners.clear()
     blockedAttemptMap.clear()
     chainHeadMap.clear()
-    // `subagentSeam.records` / `noticeEmitted` are ROOT-scoped and shared with
-    // every fiber of this root: a per-fiber clear here would strip a surviving
-    // child's `virtualRouteInjected` (the walk's allowlist gate) and role
-    // record. `dispose()` withdraws THIS fiber's registrations and clears the
-    // shared maps only when the last fiber of the root is the one disposing.
-    subagentSeam.dispose()
+    // The seam is NOT disposed here: it registers its OWN lifecycle effect at
+    // install (`src/subagents-seam.ts`) over the same root-shared state, which
+    // is also the only release a caller that throws before this effect exists
+    // can reach.
     lastKnownPolicySettings.clear()
   }, 'llm-fallbacks: clear per-agent state')
 

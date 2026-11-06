@@ -577,8 +577,17 @@ async function* walk(
    * `CONTEXT_WINDOW_EXCEEDED` trigger. `from.provider/model` also anchors
    * wildcard expansion: `provider/*` keeps the request's model id and swaps
    * only the provider.
+   *
+   * `blockedReason` is the reason a would-be switch was decided — present only
+   * for a failure-triggered advance, so a blocked-switch record never claims a
+   * trigger failure that did not happen (a cooled-head re-entry advances on
+   * cross-call cooldown memory alone).
    */
-  const advanceFrom = async (from: EffectiveHead, failureCode?: string): Promise<Advance | undefined> => {
+  const advanceFrom = async (
+    from: EffectiveHead,
+    failureCode?: string,
+    blockedReason?: FallbackSwitchReason,
+  ): Promise<Advance | undefined> => {
     const { all, wildcard } = resolveChainViews(
       config.roles.list,
       rootTail,
@@ -624,7 +633,7 @@ async function* walk(
       const policy = deps.policyFor(owner)
       if (policy.state === 'unprovable') {
         deps.log.warn(
-          'llm-fallbacks: agent "%s" subagent model-selection policy is on but unreadable — skipping fallback switch',
+          'llm-fallbacks: agent "%s" subagent model-selection policy is on but unreadable — no fallback switch (a cooled-head re-entry is refused)',
           owner,
         )
         return { candidates: describeCandidates(annotated), currentAdmitted: false }
@@ -651,7 +660,11 @@ async function* walk(
               wouldBe.provider,
               wouldBe.model,
             )
-            deps.recordBlocked?.(owner, { provider: wouldBe.provider, model: wouldBe.model }, 'trigger-code')
+            // A cooled-head re-entry has no failure reason to record: only a
+            // failure-triggered advance carries one.
+            if (blockedReason !== undefined) {
+              deps.recordBlocked?.(owner, { provider: wouldBe.provider, model: wouldBe.model }, blockedReason)
+            }
           }
           return { candidates: describeCandidates(labelled), currentAdmitted }
         }
@@ -749,7 +762,7 @@ async function* walk(
     bookFailure(target, swallowed.code)
     // §3.1 step 4: no surviving candidate, or the switch cap reached — the
     // last attempt's terminal failure is re-emitted verbatim.
-    const next = switches < config.maxSwitchesPerStep ? await advanceFrom(target, swallowed.code) : undefined
+    const next = switches < config.maxSwitchesPerStep ? await advanceFrom(target, swallowed.code, 'trigger-code') : undefined
     if (next === undefined || next.target === undefined) {
       yield swallowed.chunk
       return

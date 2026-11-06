@@ -359,7 +359,7 @@ export interface SubagentSeam {
    * message.
    */
   readonly ownsWrapper: boolean
-  /** Stop intercepting service reads (the owning fiber's teardown also does). */
+  /** Withdraw this fiber's registrations (its own lifecycle effect does this on teardown). */
   dispose(): void
 }
 
@@ -1047,14 +1047,23 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
   /**
    * Register one THROW-capable surface. A throw withdraws every registration
    * this install already made and releases the root claim: the caller never
-   * receives a seam (so no `dispose` will ever run for it), and the fiber
-   * counter must not outlive that failed install either.
+   * receives a seam, and this fiber was never counted (the counter increments
+   * only after the last registration), so the rollback must not decrement it.
    */
   const installSurface = (register: () => () => void): void => {
     try {
       disposers.push(register())
     } catch (error) {
-      for (const dispose of disposers.splice(0)) dispose()
+      // Per-disposer containment: one throwing withdrawal must neither drop the
+      // rest, nor keep the root claim (every later apply would read
+      // `ownsWrapper: false`), nor replace the install error the caller needs.
+      for (const withdraw of disposers.splice(0)) {
+        try {
+          withdraw()
+        } catch {
+          // Contained: the install error below is the one that must surface.
+        }
+      }
       if (ownsWrapper) subagentSeamRoots.delete(root)
       throw error
     }
@@ -1125,34 +1134,49 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
   // root-shared state pinned above zero (no seam exists to be disposed).
   state.fibers += 1
 
-  const seam: SubagentSeam = {
-    records,
-    noticeEmitted,
-    ownsWrapper,
-    dispose: () => {
-      // Idempotent: the plugin's dispose effect and the fiber teardown both call this.
-      if (disposed) return
-      disposed = true
-      // Release the root claim so a later apply (fiber reload) can own the
-      // wrapper again; the shared state stays for any surviving fiber.
-      if (ownsWrapper) subagentSeamRoots.delete(root)
-      try {
-        for (const dispose of disposers.splice(0)) dispose()
-      } finally {
-        // The record map and the notice marker are ROOT-shared, and the walk's
-        // allowlist gate reads `virtualRouteInjected` from them: only the LAST
-        // fiber of this root may drop them, never a fiber whose siblings'
-        // children are still alive. Exactly one decrement per install, even
-        // when a disposer throws — a leaked count would survive a full teardown
-        // and let a re-apply reuse the stale markers.
-        state.fibers -= 1
-        if (state.fibers === 0) {
-          state.records.clear()
-          state.noticeEmitted.clear()
-        }
+  /**
+   * Release this fiber. Idempotent — the seam's own lifecycle effect and a
+   * direct call both reach it.
+   */
+  const dispose = (): void => {
+    if (disposed) return
+    disposed = true
+    // Release the root claim so a later apply (fiber reload) can own the
+    // wrapper again; the shared state stays for any surviving fiber.
+    if (ownsWrapper) subagentSeamRoots.delete(root)
+    try {
+      for (const withdraw of disposers.splice(0)) withdraw()
+    } finally {
+      // The record map and the notice marker are ROOT-shared, and the walk's
+      // allowlist gate reads `virtualRouteInjected` from them: only the LAST
+      // fiber of this root may drop them, never a fiber whose siblings'
+      // children are still alive. Exactly one decrement per install, even
+      // when a disposer throws — a leaked count would survive a full teardown
+      // and let a re-apply reuse the stale markers.
+      state.fibers -= 1
+      if (state.fibers === 0) {
+        state.records.clear()
+        state.noticeEmitted.clear()
       }
-    },
+    }
   }
+
+  const seam: SubagentSeam = { records, noticeEmitted, ownsWrapper, dispose }
+
+  // The seam owns its lifecycle rather than the caller: a caller that throws
+  // between this install and its own dispose effect (`apply()` does, on any
+  // error the host is not asked to swallow) would otherwise never reach
+  // `dispose`, and this fiber's count would outlive the failed apply. The host
+  // disposes a plugin scope whose `apply` throws, so this effect is the one
+  // release path that always runs.
+  try {
+    ctx.effect(() => () => dispose(), 'llm-fallbacks: subagent seam teardown')
+  } catch (error) {
+    // Withdraw what this install already registered; the caller gets no seam.
+    dispose()
+    throw error
+  }
+
   subagentSeamStores.set(ctx, seam)
   return seam
 }
