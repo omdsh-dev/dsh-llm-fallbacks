@@ -232,7 +232,9 @@ export const FALLBACKS_COMMAND_LOCALES = {
     configRules: '角色规则',
     configCooldown: '冷却',
     configRevert: '回主策略',
-    configMaxSwitches: '单步最大切换',
+    // Cap is per request walk, not per step (design §3.3): the walk-local
+    // switch count is judged once per `stream()` call.
+    configMaxSwitches: '单次请求行走最大切换',
     configPresets: '预置',
     configEdit: '编辑：/settings（TUI 设置界面）或 ~/.dsh/profiles/<profile>/cordis.patch.yml（插件行）/ $DSH_HOME/settings.yaml（fallbacks: 分节）',
     configEditHint: 'TUI 通过 /settings 修改配置；文件编辑仍然可用',
@@ -293,7 +295,7 @@ export const FALLBACKS_COMMAND_LOCALES = {
     configRules: 'Rules',
     configCooldown: 'Cooldown',
     configRevert: 'Revert',
-    configMaxSwitches: 'Max switches/step',
+    configMaxSwitches: 'Max switches per request walk',
     configPresets: 'Presets',
     configEdit: 'Edit: /settings (TUI settings screen) or ~/.dsh/profiles/<profile>/cordis.patch.yml (plugin row) / $DSH_HOME/settings.yaml (fallbacks: section)',
     configEditHint: 'TUI edits config via /settings; file editing still works',
