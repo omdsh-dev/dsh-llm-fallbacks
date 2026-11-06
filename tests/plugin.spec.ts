@@ -47,7 +47,7 @@ import {
   runAgentStep,
   switchEvents,
 } from './support/harness.ts'
-import { installModelSelectionStub, type ModelSelectionRef } from './support/model-selection-stub.ts'
+import { installModelSelectionStub, type ModelSelection } from './support/model-selection-stub.ts'
 
 let ctx: Context
 
@@ -305,17 +305,12 @@ describe('no-op regression (AC-8)', () => {
 })
 
 describe('composition order with model-selection (T3 review ⚠️3)', () => {
-  /** The default composition: an active selection exists only when the user picked one. */
-  function noSelection(): ModelSelectionRef {
-    return { current: undefined, assembled: undefined }
-  }
-
   it('keeps fallback switching intact when model-selection is registered first and no selection is active', async () => {
     const { agent } = makeAgent('ms-first', { provider: 'mock', model: 'gpt-4o' })
     // Model-selection composes OUTER (registered first). With no active
     // selection its listener passes the resolved config through, so the
     // fallback switch must survive the composition.
-    installModelSelectionStub(ctx, noSelection())
+    installModelSelectionStub(ctx)
     apply(ctx, cfg({ rootChain: ['other/gpt-4o'] }))
 
     expect(await dispatchRequestError(ctx, agent)).toEqual({ kind: 'retry' })
@@ -331,7 +326,7 @@ describe('composition order with model-selection (T3 review ⚠️3)', () => {
 
   it('keeps the always-cap path intact under the same composition (model-selection first)', async () => {
     const { agent } = makeAgent('ms-first-cap', { provider: 'mock', model: 'gpt-4o' })
-    installModelSelectionStub(ctx, noSelection())
+    installModelSelectionStub(ctx)
     apply(ctx, cfg({ rootChain: ['other/gpt-4o'], alwaysModeRetryCap: 1 }))
 
     appendLlmRetry(agent, { turn: 1, step: 1, provider: 'mock', mode: 'always', retry: 1 })
@@ -344,7 +339,7 @@ describe('composition order with model-selection (T3 review ⚠️3)', () => {
   it('keeps fallback switching intact when model-selection is registered after the plugin', async () => {
     const { agent } = makeAgent('ms-last', { provider: 'mock', model: 'gpt-4o' })
     apply(ctx, cfg({ rootChain: ['other/gpt-4o'] }))
-    installModelSelectionStub(ctx, noSelection())
+    installModelSelectionStub(ctx)
 
     expect(await dispatchRequestError(ctx, agent)).toEqual({ kind: 'retry' })
     const config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
@@ -362,11 +357,7 @@ describe('composition order with model-selection (T3 review ⚠️3)', () => {
     // the user's selection, NOT the chain target. The switch decision is
     // still applied (no durable event, issue #52) — the coordination loss is
     // observable only in the served route, and the settings page documents it.
-    const selection: ModelSelectionRef = {
-      current: undefined,
-      assembled: { provider: 'sel', model: 'm' },
-    }
-    installModelSelectionStub(ctx, selection)
+    installModelSelectionStub(ctx)
     apply(ctx, cfg({ rootChain: ['other/gpt-4o'] }))
 
     expect(await dispatchRequestError(ctx, agent)).toEqual({ kind: 'retry' })
@@ -377,11 +368,7 @@ describe('composition order with model-selection (T3 review ⚠️3)', () => {
 
   it('keeps the user selection on every request under an active outer selection (no per-step marker)', async () => {
     const { agent } = makeAgent('ms-restore', { provider: 'mock', model: 'gpt-4o' })
-    const selection: ModelSelectionRef = {
-      current: undefined,
-      assembled: { provider: 'sel', model: 'm' },
-    }
-    installModelSelectionStub(ctx, selection)
+    installModelSelectionStub(ctx)
     apply(ctx, cfg({ rootChain: ['other/gpt-4o'] }))
 
     expect(await dispatchRequestError(ctx, agent)).toEqual({ kind: 'retry' })
@@ -407,11 +394,7 @@ describe('composition order with model-selection (T3 review ⚠️3)', () => {
     // composition), the switch survives even an active selection — the
     // degradation only bites when model-selection composes outer.
     apply(ctx, cfg({ rootChain: ['other/gpt-4o'] }))
-    const selection: ModelSelectionRef = {
-      current: undefined,
-      assembled: { provider: 'sel', model: 'm' },
-    }
-    installModelSelectionStub(ctx, selection)
+    installModelSelectionStub(ctx)
 
     expect(await dispatchRequestError(ctx, agent)).toEqual({ kind: 'retry' })
     const config = await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' })
@@ -429,7 +412,7 @@ describe('composition order with model-selection (T3 review ⚠️3)', () => {
  *
  * Post-T1 a root-origin `FallbacksChain/Auto` seed is served unchanged, so the
  * route the loop logs IS the selected pair and the host's
- * `sameRoute(selection.assembled, requestHeader().config)` comparison holds:
+ * selection-vs-`requestHeader().config` comparison holds:
  * zero notices on a steady session. A genuine selection change still produces
  * exactly one, and it retires once the logged route follows the selection.
  */
@@ -443,7 +426,7 @@ describe('model-selection notice on the virtual route (Task 4)', () => {
    * (`{ kind: 'enter', messages }`), so anything else in `decision.messages`
    * was appended by a listener.
    */
-  function dispatchPreStep(agent: Agent, step: number): Promise<PreStepDecision> {
+  function dispatchPreStep(agent: Agent, step: number, modelSelection: ModelSelection): Promise<PreStepDecision> {
     const messages: UserMessage[] = [
       createUserMessage({ content: [{ type: 'text', text: 'continue' }], source: { kind: 'user' } }),
     ]
@@ -453,6 +436,7 @@ describe('model-selection notice on the virtual route (Task 4)', () => {
       turn: 1,
       step,
       signal: new AbortController().signal,
+      modelSelection,
     }, () => Promise.resolve({ kind: 'enter', messages }))
   }
 
@@ -469,28 +453,28 @@ describe('model-selection notice on the virtual route (Task 4)', () => {
   }
 
   /** The default web-profile composition: the plugin registers at bundle load, model-selection after it. */
-  function compose(agentId: string, selection: ModelSelectionRef): Agent {
+  function compose(agentId: string): Agent {
     const { agent } = makeAgent(agentId, { provider: 'mock', model: 'gpt-4o' }, { origin: 'root' })
     apply(ctx, cfg({ rootChain: [OFFICIAL_FLASH] }))
-    installModelSelectionStub(ctx, selection)
+    installModelSelectionStub(ctx)
     return agent
   }
 
   it('records the virtual pair as the request route, so the selection can match it', async () => {
-    const agent = compose('t4-route', { current: virtualPair, assembled: virtualPair })
+    const agent = compose('t4-route')
 
     expect(await dispatchRequest(ctx, agent, virtualPair)).toEqual(virtualPair)
     expect(agent.session.requestHeader()?.config).toMatchObject(virtualPair)
   })
 
   it('appends no notice while the selection keeps matching the logged route (the loop case)', async () => {
-    const agent = compose('t4-steady', { current: virtualPair, assembled: virtualPair })
+    const agent = compose('t4-steady')
     await dispatchRequest(ctx, agent, virtualPair)
 
     // Two further admitted steps on an unchanged selection. Pre-fix each step
     // carried a fresh notice (the live measurement: 10 notices / 10 steps).
-    const second = await dispatchPreStep(agent, 2)
-    const third = await dispatchPreStep(agent, 3)
+    const second = await dispatchPreStep(agent, 2, virtualPair)
+    const third = await dispatchPreStep(agent, 3, virtualPair)
     expect(notices(second)).toEqual([])
     expect(notices(third)).toEqual([])
     // The decision is exactly the inbox batch — nothing was appended at all.
@@ -498,15 +482,12 @@ describe('model-selection notice on the virtual route (Task 4)', () => {
   })
 
   it('appends exactly one notice for a genuine selection change, then retires', async () => {
-    const selection: ModelSelectionRef = { current: virtualPair, assembled: virtualPair }
-    const agent = compose('t4-change', selection)
+    const agent = compose('t4-change')
     await dispatchRequest(ctx, agent, virtualPair)
 
-    // The user picks a real model: the step's assembly snapshots it.
+    // The user picks a real model: the loop captures it for the step.
     const flashed = { provider: 'deepseek-official', model: 'deepseek-flash' }
-    selection.current = flashed
-    selection.assembled = flashed
-    const changed = await dispatchPreStep(agent, 2)
+    const changed = await dispatchPreStep(agent, 2, flashed)
 
     const appended = notices(changed)
     expect(appended).toHaveLength(1)
@@ -521,6 +502,6 @@ describe('model-selection notice on the virtual route (Task 4)', () => {
     // The next request is served on the new selection and logged as such, so
     // the notice does not repeat — the divergence the loop was made of is gone.
     expect(await dispatchRequest(ctx, agent, flashed)).toEqual(flashed)
-    expect(notices(await dispatchPreStep(agent, 3))).toEqual([])
+    expect(notices(await dispatchPreStep(agent, 3, flashed))).toEqual([])
   })
 })

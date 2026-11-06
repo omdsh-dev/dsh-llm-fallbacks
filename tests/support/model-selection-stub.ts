@@ -16,13 +16,10 @@
  * guards reaches this suite automatically (the plan's deferred upstream fix,
  * residual R-001, can no longer flip real behavior while the suite stays green).
  *
- * Registering the real function also installs its `system-prompt/assemble`
- * listener. That listener writes `selection.assembled` from `selection.current`
- * during prompt assembly; the shared test harness never dispatches
- * `system-prompt/assemble`, so a test that hand-sets `assembled` (the
- * composition-order cases) keeps full control of the captured selection while
- * the assemble arm stays real and inert. A test that wants the assemble arm to
- * run seeds `selection.current` and dispatches the event itself.
+ * rc.1 signature: `installModelSelection(agentCtx)` takes only the agent-scoped
+ * context. The selection itself is no longer a mutable ref handed in by the
+ * caller — the host listener reads the step's captured `modelSelection` (and
+ * the session's last request header); see plan `dsh-022-rc1-upgrade`.
  *
  * The real function registers on an agent-scoped context; this seam registers
  * it on the shared test context — waterfall registration order is exactly what
@@ -34,17 +31,16 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import { installModelSelection } from '@deepseek-ai/dsh-agent'
-import type { ModelSelection, ModelSelectionRef } from '@deepseek-ai/dsh-agent'
+import type { ModelSelection } from '@deepseek-ai/dsh-agent'
 
-export type { ModelSelection, ModelSelectionRef }
+export type { ModelSelection }
 
 /**
  * Register the REAL host `installModelSelection` on `ctx`.
  *
  * @param ctx - the context to register on (the shared test context).
- * @param selection - the mutable selection the host listeners read.
- * @returns the host disposer (the listeners also die with the context fiber).
+ * @returns the host disposer (the listener also dies with the context fiber).
  */
-export function installModelSelectionStub(ctx: Context, selection: ModelSelectionRef): () => void {
-  return installModelSelection(ctx, selection)
+export function installModelSelectionStub(ctx: Context): () => void {
+  return installModelSelection(ctx)
 }
