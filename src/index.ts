@@ -744,16 +744,23 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
    * throwing host settings read (with nothing retained) resolves to
    * `'unprovable'`, so neither path takes a plugin-originated decision it
    * cannot prove.
+   *
+   * The settings read needs NO agent, and must not depend on one: the seam's
+   * mount gate runs BEFORE the native start registers the child, so the
+   * reserved id has no `Agent` yet. That is exactly a session which has
+   * recorded no `subagent/model-selection-policy` event — settings alone
+   * decide — so an unreadable policy blocks a fresh dispatch the same way it
+   * blocks a resumed one. A reserved id whose start never materializes keeps
+   * its retained snapshot until plugin dispose (in-memory, one per failed
+   * dispatch).
    */
   const policyFor = (sessionId: string): EffectivePolicy => {
+    const settingsRead = readGuardedPolicySettings(ctx, sessionId, lastKnownPolicySettings, logger.warn)
+    if (!settingsRead.ok) return { state: 'unprovable' }
     // `Agent.id` IS the child session id; the seam hands that id over as a
     // plain string, so this is the one place the brand is re-attached.
-    const agent = ctx.get('agents')?.get(sessionId as SessionId)
-    if (agent === undefined) return { state: 'disabled' }
-    const settingsRead = readGuardedPolicySettings(ctx, sessionId, lastKnownPolicySettings, logger.warn)
-    return settingsRead.ok
-      ? effectivePolicy(readSessionPolicyEvent(agent.session.snapshotEvents()), settingsRead.settings)
-      : { state: 'unprovable' }
+    const events = ctx.get('agents')?.get(sessionId as SessionId)?.session.snapshotEvents() ?? []
+    return effectivePolicy(readSessionPolicyEvent(events), settingsRead.settings)
   }
   // Plan role-based-subagent-adoption Task 1: the dispatch-seam role record —
   // ONE cordis `internal/get` wrapper over `subagents` resolving the Assignment

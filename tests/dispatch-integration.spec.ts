@@ -217,6 +217,18 @@ describe('an injected child walks its role chain (roles-only config, R-2)', () =
     expect(dispatched(adapter)).toEqual(['anthropic/claude-sonnet-4', 'other/gpt-4o'])
   })
 
+  it('skips the mount when the policy settings are unreadable (fail-closed for a fresh dispatch)', async () => {
+    // Present-but-malformed policy value: the settings read throws and nothing is
+    // retained for the reserved id. The mount gate runs BEFORE the native start
+    // registers the child — no agent, hence no session policy event — so the
+    // settings read is the only source that can prove (or refuse) the mount.
+    ;(ctx.get('settings') as MemorySettings).seed(SUBAGENT_POLICY_SETTINGS_NS, { enabled: 'yes' })
+
+    await mountChild(rolesOnlyConfig())
+
+    expect(fake.activations[0]!.request.agentOptions).toBeUndefined()
+  })
+
   it('keeps the virtual pair as the session selection (no model/selection write)', async () => {
     const childId = await mountChild(rolesOnlyConfig())
     await streamChild(childId)
