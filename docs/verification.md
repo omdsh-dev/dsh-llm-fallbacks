@@ -53,7 +53,7 @@ driven by the real host type surface (registry peer `@deepseek-ai/*` at the `pac
 invariants (empty chains / no match / chain exhausted / safety-valve cap exceeded → pass through without producing
 `fallbacks/switch` events) are persistently asserted by T3/T4 tests.
 
-Current tip reality (`pnpm test` re-run on the merged plan branch, 2026-09-11): **57 files / 1391 passed | 0 skipped** — the aggregates above are **not** the current tip.
+Pre-direction-C snapshot (`pnpm test` re-run on the merged plan branch, 2026-09-11): **57 files / 1391 passed | 0 skipped** — neither this figure nor the aggregates above is the current tip (see the snapshot-scope note in §1).
 
 ### 2. Bundle layer order (proven via scratch profile `--dump-config`)
 
@@ -314,4 +314,3 @@ Then restart the dsh web session so the host half and the client half load.
 | real model calls and failure injection (AUTH/QUOTA/RATE_LIMIT triggers, switch continuation) | the sandbox has no real model credentials or running session | user §3 / §4 (decision logic already covered by T3/T4 integration tests) |
 | cross-process observation (info logs, no durable `fallbacks/switch` events landing in a real session) | the sandbox cannot run a real dsh session — issue #52's reload gap is closed by the stop-write decision (`tests/session-write-surface.spec.ts` lints the whole `src/**` write surface against a reintroduced append, and the walk writes no durable event by construction) and the repair tool's default refusal is covered by `tests/repair-session-logs.spec.ts` + `tests/session-log-rules.spec.ts` (the released session-format chain refuses ignorable-marked unknown events, so the default registry can never write a repair; only the explicit lossy `--drop-legacy-events` opt-in removes such rows) | user §3/§4 + `scripts/repair-session-logs.ts` |
 | `/fallbacks` command input/output in a real session | the sandbox cannot run a real dsh session and command registry | user §4.3 step 5 (command logic already covered by command.spec.ts) |
-| real routing override under an active model-selection (documented degradation) | the sandbox has no real web session and model selection | user §4.3 (combination order already covered by T4 integration tests) |
