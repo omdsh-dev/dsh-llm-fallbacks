@@ -114,6 +114,10 @@ describe('export surface: runtime values', () => {
     expect(index.INHERIT_ROLE_ID).toBe('inherit')
     expect(index.ROLE_ID_PATTERN).toBeInstanceOf(RegExp)
     expect('enabled' in index.defaultFallbacksConfig).toBe(false)
+    // Direction C removed both mechanisms; the exported defaults must not
+    // resurrect them.
+    expect('alwaysModeRetryCap' in index.defaultFallbacksConfig).toBe(false)
+    expect('roleAutoMatch' in index.defaultFallbacksConfig).toBe(false)
     expect(index.defaultFallbacksConfig.triggerCodes).toEqual(['AUTH', 'QUOTA', 'RATE_LIMIT'])
   })
 })

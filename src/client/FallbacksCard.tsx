@@ -263,18 +263,10 @@ interface FallbacksScalars {
   cooldownMs: number
   revertPolicy: RevertPolicy
   maxSwitchesPerStep: number
-  alwaysModeRetryCap: number
   // PR #62 feedback round: the tz picker lives in the 分时槽设置 block.
   // Preset rows lock it to Asia/Shanghai at assembly time (UTC+8 frozen
   // windows), so a preset-bearing config always assembles tz Asia/Shanghai.
   tz: string
-  // `roleAutoMatch` is ALWAYS defined at runtime (default `true`): the
-  // schema default is folded on the real wire (gateway composition + client
-  // parse fold), so absent ≡ true (AC-7 re-scope, PM decision 2026-08-17
-  // Option A) and the toggle always renders. The nullable type only mirrors
-  // the optional config-model field (`FallbacksConfig.roleAutoMatch`,
-  // additive, non-breaking for library consumers — src/config.ts).
-  roleAutoMatch: boolean | undefined
 }
 
 /** Split scalars from the row editors (rootChain / role entities / role rules). */
@@ -284,8 +276,6 @@ function scalarsOf(config: FallbacksConfig): FallbacksScalars {
     cooldownMs: config.cooldownMs,
     revertPolicy: config.revertPolicy,
     maxSwitchesPerStep: config.maxSwitchesPerStep,
-    alwaysModeRetryCap: config.alwaysModeRetryCap,
-    roleAutoMatch: config.roleAutoMatch,
     tz: config.tz ?? 'Asia/Shanghai',
   }
 }
@@ -299,12 +289,6 @@ function scalarsOf(config: FallbacksConfig): FallbacksScalars {
  * the top level: no presets UI this iteration (R-001 re-defer), so the
  * draft carries the accepted value through untouched — a clean draft stays
  * equal to the accepted config and a save never drops the key.
- * `roleAutoMatch` follows the same rule (config-model mirror of `presets`):
- * the draft carries the scalar's value through untouched. The scalar is
- * ALWAYS defined — the gateway composition resolves the schema default
- * `true` even for a legacy config that never declared the key — so the
- * toggle always renders (default on) and a save persists the resolved value
- * (AC-7 re-scope, PM decision 2026-08-17 Option A).
  *
  * All-day: rootChain is composed from the 默认降级链 editor's leading
  * selectors plus the 默认模型 tail (exactly one official model — Flash or
@@ -322,7 +306,6 @@ function assembleConfig(
   ruleRows: readonly RoleRuleRow[],
   originalRoles: readonly FallbacksRole[],
   presets: FallbacksConfig['presets'],
-  roleAutoMatch: FallbacksConfig['roleAutoMatch'],
   timeSlotRows: readonly SlotEditorRow[],
 ): FallbacksConfig {
   const list = mergeRoleExtras(roleRows, originalRoles)
@@ -335,9 +318,7 @@ function assembleConfig(
     cooldownMs: scalars.cooldownMs,
     revertPolicy: scalars.revertPolicy,
     maxSwitchesPerStep: scalars.maxSwitchesPerStep,
-    alwaysModeRetryCap: scalars.alwaysModeRetryCap,
     ...(presets === undefined ? {} : { presets }),
-    roleAutoMatch,
     timeSlots: rowsToTimeSlots(timeSlotRows),
     tz,
   }
@@ -348,7 +329,7 @@ function assembleConfig(
  * round 2; plan fallbacks-card-section-ux restores the per-section saves):
  * 主代理 (main agent — time slots / default chain / default model), 子代理
  * (subagents — role entities + role rules), and 高级选项 (advanced
- * options — trigger codes / cooldown / revert / caps / roleAutoMatch).
+ * options — trigger codes / cooldown / revert / max switches).
  * Each bucket's violations render live under its owning section heading;
  * a section's Save is blocked by ITS OWN bucket only (plus the empty-rule-
  * row check on 子代理), so a bad role id never blocks a 主代理 save.
@@ -395,7 +376,7 @@ function seedBadgeLabel(seed: SeedRowInfo | undefined, t: FallbacksCardProps['t'
  * rootChain and role chains. Returns one localized message per violation,
  * bucketed by the section that owns the offending field (主代理: allDay /
  * timeSlots / slot* / tz / default model / default chain; 子代理: role* /
- * rule*; 高级选项: trigger / cooldown / revert / always / roleAutoMatch —
+ * rule*; 高级选项: trigger / cooldown / revert —
  * the scalars are never validated, so the advanced bucket stays empty
  * today). A non-empty bucket blocks THAT section's Save write only
  * (per-section saves, plan fallbacks-card-section-ux) — a sibling section
@@ -1096,7 +1077,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
   const draft = assembleConfig(
     scalars, allDayModel, state.config.rootChain, allDayChainRow,
     roleRows, ruleRows,
-    state.config.roles.list, state.config.presets, scalars.roleAutoMatch,
+    state.config.roles.list, state.config.presets,
     timeSlotRows,
   )
   // Empty rule rows (role still on the "select role" placeholder) never
@@ -1113,10 +1094,10 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
   const subDirty = hasEmptyRuleRows || JSON.stringify(draft.roles) !== JSON.stringify(state.config.roles)
   const advancedDirty = JSON.stringify([
     draft.triggerCodes, draft.cooldownMs, draft.revertPolicy,
-    draft.maxSwitchesPerStep, draft.alwaysModeRetryCap, draft.roleAutoMatch,
+    draft.maxSwitchesPerStep,
   ]) !== JSON.stringify([
     state.config.triggerCodes, state.config.cooldownMs, state.config.revertPolicy,
-    state.config.maxSwitchesPerStep, state.config.alwaysModeRetryCap, state.config.roleAutoMatch,
+    state.config.maxSwitchesPerStep,
   ])
 
   // Host-policy visibility (plan role-chain-allowlist-visibility T2): only a
@@ -1182,8 +1163,6 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
         cooldownMs: state.config.cooldownMs,
         revertPolicy: state.config.revertPolicy,
         maxSwitchesPerStep: state.config.maxSwitchesPerStep,
-        alwaysModeRetryCap: state.config.alwaysModeRetryCap,
-        roleAutoMatch: state.config.roleAutoMatch,
       }))
     }
   }, [state.status, state.config, mainDirty, subDirty, advancedDirty])
@@ -1372,7 +1351,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
   // read-only view (same forced-open rule as the slot/role rows) — the
   // inert toggle there would otherwise hide the section for good.
   const advancedVisible = advancedOpen || !writable
-  // The three numeric fields' default values ride their info-hint tooltip
+  // The two numeric fields' default values ride their info-hint tooltip
   // (data-tip + aria-label — exactly one info source per field; plan
   // fallbacks-card-section-ux T4), replacing the standalone label-row note
   // that wrapped long labels. Composed from `defaults.prefix` + the schema
@@ -1380,7 +1359,6 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
   // documents the default, whatever the operator's config carries now).
   const cooldownMsTip = `${t('cooldownMs.tooltip')} ${t('defaults.prefix')}: ${defaultFallbacksConfig.cooldownMs}`
   const maxSwitchesPerStepTip = `${t('maxSwitchesPerStep.tooltip')} ${t('defaults.prefix')}: ${defaultFallbacksConfig.maxSwitchesPerStep}`
-  const alwaysModeRetryCapTip = `${t('alwaysModeRetryCap.tooltip')} ${t('defaults.prefix')}: ${defaultFallbacksConfig.alwaysModeRetryCap}`
   const unknownCodes = scalars.triggerCodes.filter(code => !KNOWN_TRIGGER_CODES.includes(code))
   // PR #62 feedback round: preset rows lock the tz to UTC+8 / Asia/Shanghai
   // (frozen windows) — the picker is disabled and the assembled tz is forced.
@@ -1527,8 +1505,6 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
           cooldownMs: draft.cooldownMs,
           revertPolicy: draft.revertPolicy,
           maxSwitchesPerStep: draft.maxSwitchesPerStep,
-          alwaysModeRetryCap: draft.alwaysModeRetryCap,
-          roleAutoMatch: draft.roleAutoMatch,
         }
     }
   }
@@ -1578,8 +1554,6 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
           cooldownMs: state.config.cooldownMs,
           revertPolicy: state.config.revertPolicy,
           maxSwitchesPerStep: state.config.maxSwitchesPerStep,
-          alwaysModeRetryCap: state.config.alwaysModeRetryCap,
-          roleAutoMatch: state.config.roleAutoMatch,
         }))
         break
       }
@@ -1622,6 +1596,11 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
           {t('legacy.banner', { keys: state.legacyKeys.join(', ') })}
         </p>
       )}
+      {/* Direction C statement (virtual-chain-only fallback): the chain walks
+          inside the FallbacksChain/Auto adapter, so a real-model selection
+          gets no plugin fallback at all. Always visible — it is the one rule
+          the rest of this form depends on. */}
+      <p className={css.notice}>{t('virtualOnly.rule')}</p>
       {state.status === 'error' && state.error !== null && lastSaveSection === null && (
         // Flat error notice (KD-U3): a LOAD failure (initial load or a
         // refresh that never landed) renders here — a WRITE failure renders
@@ -2698,39 +2677,6 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
         {lastSaveSection === 'advanced' && state.status === 'error' && state.error !== null && (
           <p className={css.error} role="alert">{t('error.generic', { message: state.error })}</p>
         )}
-        {/* The roleAutoMatch toggle (plan fallbacks-settings-visibility Task 3): a
-         * row-level preference in the advanced section, default on (the
-         * config-model default). It ALWAYS renders (AC-7 re-scope, PM
-         * decision 2026-08-17 Option A): the gateway composition always
-         * resolves the schema default `true` for the key — even for a
-         * legacy config that never declared it — so there is no
-         * client-side key-presence signal to hide on. The toggle reads
-         * and writes the scalar → the existing draft → config path via
-         * `assembleConfig`; a legacy config's first save therefore
-         * persists `roleAutoMatch: true` (semantically identical to the
-         * default). */}
-        {/* Checkbox inline-LEFT of its text (the optionRow convention,
-         * card-ux-followup T2): the input is the row's first child and the
-         * whole text block is label-associated — the title AND description
-         * carry `htmlFor`, while the InfoHint stays a sibling of the
-         * label-text elements (QC W-2: never nested inside a `<label>`). */}
-        <div className={css.checkboxRow}>
-          <input
-            id="fallbacks-role-automatch"
-            type="checkbox"
-            className={css.checkbox}
-            checked={scalars.roleAutoMatch}
-            disabled={!writable}
-            onChange={event => { updateScalars(draft => { draft.roleAutoMatch = event.target.checked }) }}
-          />
-          <div className={css.checkLabel}>
-            <span className={css.checkLabelTitle}>
-              <label htmlFor="fallbacks-role-automatch">{t('roleAutoMatch.label')}</label>
-              <InfoHint label={t('roleAutoMatch.tooltip')} disabled={!writable} />
-            </span>
-            <label className={css.checkLabelDesc} htmlFor="fallbacks-role-automatch">{t('roleAutoMatch.hint')}</label>
-          </div>
-        </div>
         <div className={css.field} role="group" aria-labelledby="fallbacks-trigger-codes">
           <span className={css.fieldLabel}>
             <span id="fallbacks-trigger-codes">{t('triggerCodes.label')}</span>
@@ -2773,7 +2719,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
           ))}
         </div>
 
-        {/* The three short numeric fields sit side by side, each keeping a
+        {/* The two short numeric fields sit side by side, each keeping a
          * full-width field of its own grid column. */}
         <div className={css.numberFields}>
           <div className={css.field}>
@@ -2808,23 +2754,6 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
               onChange={event => { updateScalars(draft => { draft.maxSwitchesPerStep = parseCount(event.target.value) }) }}
             />
             <span className={css.hint}>{t('maxSwitchesPerStep.hint')}</span>
-          </div>
-
-          <div className={css.field}>
-            <span className={css.fieldLabel}>
-              <label htmlFor="fallbacks-always-cap">{t('alwaysModeRetryCap.label')}</label>
-              <InfoHint label={alwaysModeRetryCapTip} disabled={!writable} />
-            </span>
-            <input
-              id="fallbacks-always-cap"
-              className={css.input}
-              type="number"
-              min={0}
-              value={String(scalars.alwaysModeRetryCap)}
-              disabled={!writable}
-              onChange={event => { updateScalars(draft => { draft.alwaysModeRetryCap = parseCount(event.target.value) }) }}
-            />
-            <span className={css.hint}>{t('alwaysModeRetryCap.hint')}</span>
           </div>
         </div>
         {/* The advanced section's own Discard + Save INSIDE the expanded

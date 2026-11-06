@@ -1007,8 +1007,7 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
     // runtime reads (schema defaults → plugin-row base → settings user
     // layer). Role summaries from `roles.list` (id + chain length, the
     // two-block model); `presets` is optional-on-type with a schema default,
-    // so the summary falls back to 'bundled' explicitly; `roleAutoMatch`
-    // reads defensively (`?? true`) for direct constructors that omit it.
+    // so the summary falls back to 'bundled' explicitly.
     // T2 AC-4 (fallbacks-tui-settings): the readback is enriched with the
     // time-slot rows (preset rows carry `{ preset, chainCount }` — windows
     // are frozen PRESETS constants, never stored; custom rows carry
@@ -1032,9 +1031,7 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
         cooldownMs: config.cooldownMs,
         revertPolicy: config.revertPolicy,
         maxSwitchesPerStep: config.maxSwitchesPerStep,
-        alwaysModeRetryCap: config.alwaysModeRetryCap,
         presets: config.presets ?? 'bundled',
-        roleAutoMatch: config.roleAutoMatch ?? true,
       }
     },
     // T2 AC-3 (fallbacks-tui-settings): the one write action — revert a

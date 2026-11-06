@@ -189,13 +189,11 @@
 }
 
 .fieldset > .advancedBody > .field,
-.fieldset > .advancedBody > .checkboxRow,
 .fieldset > .advancedBody > .numberFields {
   padding: 12px 0;
 }
 
 .fieldset > .advancedBody > .field + .field,
-.fieldset > .advancedBody > .checkboxRow + .field,
 .fieldset > .advancedBody > .field + .numberFields {
   border-top: 0.5px solid var(--dsw-alias-border-l2);
 }
@@ -220,30 +218,13 @@
    number grid). A section heading / notice between two fields breaks the
    adjacency — the heading is the stronger break and carries no separator. */
 .fieldset > .field,
-.fieldset > .checkboxRow,
 .fieldset > .numberFields {
   padding: 12px 0;
 }
 
 .fieldset > .field + .field,
-.fieldset > .field + .numberFields,
-.fieldset > .checkboxRow + .field {
+.fieldset > .field + .numberFields {
   border-top: 0.5px solid var(--dsw-alias-border-l2);
-}
-
-/* The roleAutoMatch row is the card's only .checkboxRow and lives inside
-   the expanded 高级选项 body (not a direct fieldset child — the pacing rules
-   above match it one level down): a flex row with the checkbox inline-LEFT
-   of its text, the optionRow convention. */
-.checkboxRow {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-}
-
-/* Optical centering: the 16px box on the 22px title line. */
-.checkboxRow .checkbox {
-  margin-top: 3px;
 }
 
 .fieldLabel {
@@ -268,55 +249,6 @@
   font-size: 12px;
   line-height: 18px;
   color: var(--dsw-alias-label-tertiary);
-}
-
-/* The enabled-row vocabulary lives on (the roleAutoMatch toggle): the
-   native checkbox sits inline-left (the row's first child) and this text
-   block rides to its right — both the title and the description are
-   `htmlFor` labels for the checkbox. */
-.checkLabel {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  font-size: 14px;
-  line-height: 22px;
-  font-weight: 400;
-  color: var(--dsw-alias-label-primary);
-  cursor: pointer;
-}
-
-.checkLabelTitle {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-weight: 400;
-}
-
-.checkLabelDesc {
-  font-size: 12px;
-  line-height: 18px;
-  font-weight: 400;
-  color: var(--dsw-alias-label-tertiary);
-}
-
-/* The panel has no switch primitive, so the native checkbox keeps its
-   geometry and semantics; the 16px box and the brand accent tie it to the
-   theme (the advisor `.checkbox` convention), with the same focus-visible
-   ring. */
-.checkbox {
-  flex: none;
-  width: 16px;
-  height: 16px;
-  margin: 0;
-  accent-color: var(--dsw-alias-brand-primary);
-  cursor: pointer;
-}
-
-.checkbox:disabled {
-  opacity: 0.4;
-  cursor: default;
 }
 
 /* A preset time-slot row's frozen name (plan fallbacks-timeslots Task 3):

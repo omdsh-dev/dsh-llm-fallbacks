@@ -198,9 +198,7 @@ const CONFIG_KEYS: Record<string, true> = {
   cooldownMs: true,
   revertPolicy: true,
   maxSwitchesPerStep: true,
-  alwaysModeRetryCap: true,
   presets: true,
-  roleAutoMatch: true,
   // Plan fallbacks-timeslots (P5): time-slot rows + config-level tz. The
   // READ side carries them so `get` matches the composed config (schema
   // defaults); the WRITE side validates them — nested row-shape guards in

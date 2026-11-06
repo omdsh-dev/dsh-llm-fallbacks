@@ -33,18 +33,13 @@ export const zh = {
   'maxSwitchesPerStep.label': '单步最大切换次数',
   'maxSwitchesPerStep.hint': '超过后停止切换',
   'maxSwitchesPerStep.tooltip': '超过后停止切换，以原始错误语义结束当前步，防止链循环放大延迟。',
-  'alwaysModeRetryCap.label': 'always 模式重试上限',
-  'alwaysModeRetryCap.hint': '达到上限次数后切换；0 表示禁用',
-  'alwaysModeRetryCap.tooltip': 'retryPolicy 为 always 的模型在同一请求内重试达到该次数后切换；0 表示禁用。',
+  'virtualOnly.rule': '只有模型选择为 FallbacksChain/Auto 的会话（含插件注入的子代理）会执行降级链；选择真实模型的会话没有插件降级，仅由 llm-retry 处理重试。',
   'advanced.label': '高级选项',
   // 高级选项 disclosure (plan fallbacks-card-section-ux T3/T5): the
   // section is collapsed by default — the expand/collapse a11y labels ride
   // the heading toggle (the time-slot/role-row contract).
   'advanced.expand': '展开高级选项',
   'advanced.collapse': '收起高级选项',
-  'roleAutoMatch.label': '启用角色自动匹配',
-  'roleAutoMatch.hint': '规则未命中时，由模型自选最贴近的已声明角色',
-  'roleAutoMatch.tooltip': '规则未命中时，模型会自动从已声明角色（id + persona）中选择最匹配者并注入该角色的链；关闭后未命中规则时按现状回落（inherit / rootChain）。',
   // PR #62 feedback round: 默认降级链 is the all-day fallback chain as a
   // configurable selector list (no Flash|Pro radio — that panel moved to
   // 默认模型); the preemption hints are removed.
@@ -300,16 +295,11 @@ export const en = {
   'maxSwitchesPerStep.label': 'Max switches per step',
   'maxSwitchesPerStep.hint': 'Stops switching beyond the cap',
   'maxSwitchesPerStep.tooltip': 'Beyond this the step stops switching and ends with the original error semantics, preventing chain loops from amplifying latency.',
-  'alwaysModeRetryCap.label': 'Always-mode retry cap',
-  'alwaysModeRetryCap.hint': 'Switches after the cap; 0 disables',
-  'alwaysModeRetryCap.tooltip': 'Models whose retryPolicy is always switch after this many retries within one request; 0 disables.',
+  'virtualOnly.rule': 'Only sessions whose model selection is FallbacksChain/Auto (including plugin-injected subagents) walk a chain; a real-model selection gets no plugin fallback — llm-retry alone handles its retries.',
   'advanced.label': 'Advanced options',
   // Advanced-options disclosure (plan fallbacks-card-section-ux T3/T5).
   'advanced.expand': 'Expand advanced options',
   'advanced.collapse': 'Collapse advanced options',
-  'roleAutoMatch.label': 'Enable role auto-match',
-  'roleAutoMatch.hint': 'On rules-miss, the model picks the closest declared role',
-  'roleAutoMatch.tooltip': 'When no rule matches, the model auto-selects the best-fit declared role (id + persona) and uses its chain; turn off to keep today\'s fallback (inherit / rootChain) on a rules-miss.',
   // PR #62 feedback round: the default fallback chain is the all-day chain
   // as a configurable selector list (no Flash|Pro radio — that panel moved
   // to 默认模型); the preemption hints are removed.

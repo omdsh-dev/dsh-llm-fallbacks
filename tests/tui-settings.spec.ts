@@ -113,9 +113,8 @@ function makeStubContext(service: TuiSettingsSectionsStub | undefined): {
   }
 }
 
-/** All 13 field key paths the section must declare (web-card capability map). */
+/** All 10 field key paths the section must declare (web-card capability map). */
 const EXPECTED_FIELD_PATHS = [
-  'roleAutoMatch',
   'presets',
   'triggerCodes',
   'tz',
@@ -125,15 +124,14 @@ const EXPECTED_FIELD_PATHS = [
   'roles.rules',
   'cooldownMs',
   'maxSwitchesPerStep',
-  'alwaysModeRetryCap',
   'revertPolicy',
 ]
 
 /** Top-level `Config` schema keys (schema.ts) — every field path must resolve. */
 const SCHEMA_KEYS: Record<string, true> = {
   triggerCodes: true, rootChain: true, roles: true, cooldownMs: true,
-  revertPolicy: true, maxSwitchesPerStep: true, alwaysModeRetryCap: true, presets: true,
-  roleAutoMatch: true, timeSlots: true, tz: true,
+  revertPolicy: true, maxSwitchesPerStep: true, presets: true,
+  timeSlots: true, tz: true,
 }
 /** Declared nested keys of the `roles` object (gateway ROLES_KEYS). */
 const ROLES_NESTED_KEYS: Record<string, true> = {
@@ -285,14 +283,14 @@ describe('fallbacks section — field inventory and schema resolution (AC-1)', (
 describe('fallbacks section — native kinds (AC-1)', () => {
   const section = buildFallbacksTuiSection()
 
-  it('roleAutoMatch is a boolean field (the removed enabled switch has no TUI row)', () => {
-    expect(fieldOf(section, 'roleAutoMatch').kind).toBe('boolean')
+  it('the removed alwaysModeRetryCap / roleAutoMatch keys have no TUI row (direction C)', () => {
+    expect(section.fields.some((field) => field.path[0] === 'alwaysModeRetryCap')).toBe(false)
+    expect(section.fields.some((field) => field.path[0] === 'roleAutoMatch')).toBe(false)
   })
 
-  it('cooldownMs / maxSwitchesPerStep / alwaysModeRetryCap are number fields', () => {
+  it('cooldownMs / maxSwitchesPerStep are number fields', () => {
     expect(fieldOf(section, 'cooldownMs').kind).toBe('number')
     expect(fieldOf(section, 'maxSwitchesPerStep').kind).toBe('number')
-    expect(fieldOf(section, 'alwaysModeRetryCap').kind).toBe('number')
   })
 
   it('presets and revertPolicy are select fields with the right options', () => {

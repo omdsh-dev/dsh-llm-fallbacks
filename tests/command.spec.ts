@@ -78,9 +78,7 @@ function configSummary(overrides: Partial<FallbacksConfigSummary> = {}): Fallbac
     cooldownMs: 300_000,
     revertPolicy: 'cooldown-expiry',
     maxSwitchesPerStep: 8,
-    alwaysModeRetryCap: 5,
     presets: 'bundled',
-    roleAutoMatch: true,
     ...overrides,
   }
 }
@@ -553,15 +551,19 @@ describe('fallbacksConfigText — composed-config readback', () => {
     expect(rulesText).not.toContain('p/m5 → coder')
   })
 
-  it('renders cooldown, revert policy, caps, presets, and role auto-match', () => {
+  it('renders cooldown, revert policy, max switches, and presets', () => {
     expect(fallbacksConfigText(configSummary(), 'en')).toContain('Cooldown: 300000 ms')
     expect(fallbacksConfigText(configSummary(), 'en')).toContain('Revert: cooldown-expiry')
     expect(fallbacksConfigText(configSummary(), 'en')).toContain('Max switches/step: 8')
-    expect(fallbacksConfigText(configSummary(), 'en')).toContain('Always-mode cap: 5')
     expect(fallbacksConfigText(configSummary(), 'en')).toContain('Presets: bundled')
     expect(fallbacksConfigText(configSummary({ presets: 'none' }), 'en')).toContain('Presets: none')
-    expect(fallbacksConfigText(configSummary(), 'en')).toContain('Auto-match: enabled')
-    expect(fallbacksConfigText(configSummary({ roleAutoMatch: false }), 'en')).toContain('Auto-match: disabled')
+  })
+
+  it('omits the removed alwaysModeRetryCap / roleAutoMatch rows', () => {
+    const text = fallbacksConfigText(configSummary(), 'en')
+    expect(text).not.toContain('Always-mode cap')
+    expect(text).not.toContain('Auto-match')
+    expect(fallbacksConfigText(configSummary(), 'zh')).not.toContain('always 上限')
   })
 
   it('renders the edit hints after a blank line — /settings is the TUI edit surface, file editing still documented', () => {
@@ -588,7 +590,6 @@ describe('fallbacksConfigText — zh/en copy smoke', () => {
     expect(text).toContain('冷却: 300000 ms')
     expect(text).toContain('回主策略: cooldown-expiry')
     expect(text).toContain('单步最大切换: 8')
-    expect(text).toContain('always 上限: 5')
     expect(text).toContain('预置: bundled')
     expect(text).toContain('编辑：/settings（TUI 设置界面）或 ~/.dsh/profiles/<profile>/cordis.patch.yml（插件行）/ $DSH_HOME/settings.yaml（fallbacks: 分节）')
     expect(text).toContain('TUI 通过 /settings 修改配置；文件编辑仍然可用')
@@ -606,7 +607,6 @@ describe('fallbacksConfigText — zh/en copy smoke', () => {
     expect(text).toContain('Cooldown: 300000 ms')
     expect(text).toContain('Revert: cooldown-expiry')
     expect(text).toContain('Max switches/step: 8')
-    expect(text).toContain('Always-mode cap: 5')
     expect(text).toContain('Presets: bundled')
     expect(text).toContain('Edit: /settings (TUI settings screen) or ~/.dsh/profiles/<profile>/cordis.patch.yml (plugin row) / $DSH_HOME/settings.yaml (fallbacks: section)')
     expect(text).toContain('TUI edits config via /settings; file editing still works')
@@ -1027,7 +1027,6 @@ describe('apply() wiring — conditional commands child', () => {
     expect(text).toContain('冷却: 300000 ms')
     expect(text).toContain('回主策略: cooldown-expiry')
     expect(text).toContain('单步最大切换: 8')
-    expect(text).toContain('always 上限: 5')
     expect(text).toContain('预置: none')
     expect(text).toContain('编辑：')
     // Read-only: the config readback must not grow the session log.
