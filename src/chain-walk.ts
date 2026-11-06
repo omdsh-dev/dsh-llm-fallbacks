@@ -14,10 +14,11 @@
  *
  * The COMMITTED rule (§3.1 / §7.5) is why a post-output failure cannot be
  * replayed: yielded chunks cannot be unsent, so a second provider's output
- * cannot be concatenated behind a partial one. Such a failure surfaces to the
- * loop, which settles the partial attempt; llm-retry (or the terminal error)
- * takes over from there, and a retry re-enters this walk, which resumes past
- * the cooled head on its own.
+ * cannot be concatenated behind a partial one. Such a failure is still BOOKED
+ * (cooldown / recovery) before it is forwarded — the attempt boundary is where
+ * both transactions happen — and then surfaces to the loop, which settles the
+ * partial attempt; llm-retry (or the terminal error) takes over from there, and
+ * a retry re-enters this walk, which resumes past the cooled head on its own.
  *
  * Bookkeeping survives a walk exactly as far as the state store does: cooldown
  * (`cooldownMs` / `revertPolicy` / half-open escalation) is the cross-call
@@ -341,10 +342,11 @@ function agentLikeOf(view: AgentChainView | undefined): AgentLike {
 function servedRouteOf(
   config: FallbacksConfig,
   view: AgentChainView | undefined,
+  now: Date,
 ): { provider: string; model: string } | undefined {
   const route = view?.optionsRoute
   if (route?.provider !== FALLBACKS_PROVIDER || route.model !== FALLBACKS_CHAIN_MODEL) return undefined
-  const head = effectiveHeadOf(config, new Date())
+  const head = effectiveHeadOf(config, now)
   return head === undefined ? undefined : { provider: head.provider, model: head.model }
 }
 
@@ -400,19 +402,22 @@ function logSlotRotation(deps: ChainWalkDeps, start: WalkStart): void {
  */
 function resolveWalk(deps: ChainWalkDeps, options: GenerateOptions): WalkStart {
   const config = deps.readConfig()
+  // The walk's ONE clock read: the served-route anchor below, the chain tail
+  // and the slot-rotation log all read this instant, so a request landing on a
+  // slot boundary cannot anchor to two different slots.
+  const now = new Date()
   const view = deps.resolveAgentView(options.sessionId)
   const owner = options.sessionId
   const seam = owner === undefined ? undefined : deps.seamRecord(owner)
   const role = resolveDeclaredRole(agentLikeOf(view), config.roles.rules, deps.roleIds(), {
     dispatchRole: seam?.role,
-    servedRoute: servedRouteOf(config, view),
+    servedRoute: servedRouteOf(config, view, now),
     warn: deps.log.warn,
   })
   // Chain tails per origin (§2.2, unchanged from the pre-C decision path):
   // root walks the slot-effective all-day chain, a subagent the raw rootChain
   // tail its role concatenates.
   const origin = view?.origin ?? 'root'
-  const now = new Date()
   const rootTail = origin === 'subagent'
     ? config.rootChain
     : resolveEffectiveChain(config, now, config.tz ?? 'Asia/Shanghai')
@@ -516,6 +521,18 @@ async function* walk(
         ? Date.now() + escalatedCooldownMs(config.cooldownMs, state.recovery.recordFailure(key))
         : Date.now() + config.cooldownMs
     deps.states.suppress(state, key, until)
+  }
+
+  /**
+   * Book one failed attempt at the attempt boundary (§3.3): the per-call
+   * failed key, plus the route-scoped cooldown (a request-scoped code leaves
+   * the healthy route uncooled). Booking is INDEPENDENT of the swallow/switch
+   * decision — a failure after output is forwarded and ends this walk, yet the
+   * next walk must still see that head as dead.
+   */
+  const bookFailure = (failed: EffectiveHead, code: string): void => {
+    failedKeys.add(selectorKey(failed.provider, failed.model))
+    if (!REQUEST_SCOPED_CODES.has(code)) coolRoute(failed)
   }
 
   /**
@@ -646,23 +663,32 @@ async function* walk(
         swallowed = { chunk, code: failure.code }
         break
       }
-      yield chunk
-      committed = true
       if (chunk.type === 'finish') {
-        // A normal finish is attempt-level success (the route-keyed half-open
-        // closure, §3.3); an aborted finish is neither success nor a trigger.
-        if (chunk.reason.kind !== 'error' && chunk.reason.kind !== 'aborted' && state !== undefined) {
-          deps.states.observeSuccess(state, key)
+        // Both attempt-boundary transactions run BEFORE the terminal chunk is
+        // delivered: a consumer that stops on `finish` closes this generator at
+        // that yield, so anything written after it would never run.
+        if (failure === undefined) {
+          // A normal finish is attempt-level success (the route-keyed half-open
+          // closure, §3.3); an aborted finish is neither success nor a trigger.
+          if (chunk.reason.kind !== 'aborted' && state !== undefined) {
+            deps.states.observeSuccess(state, key)
+          }
+        } else if (config.triggerCodes.includes(failure.code)) {
+          // A failure after output is forwarded verbatim and never replayed;
+          // booking it is all this walk keeps from it.
+          bookFailure(target, failure.code)
         }
+        yield chunk
         return
       }
+      yield chunk
+      committed = true
     }
     // A stream that ends with no terminal chunk yields no finish of its own —
     // the adapter never produced one, so the walk has nothing to add.
     if (swallowed === undefined) return
 
-    failedKeys.add(key)
-    if (!REQUEST_SCOPED_CODES.has(swallowed.code)) coolRoute(target)
+    bookFailure(target, swallowed.code)
     // §3.1 step 4: no surviving candidate, or the switch cap reached — the
     // last attempt's terminal failure is re-emitted verbatim.
     const next = switches < config.maxSwitchesPerStep ? await advanceFrom(target, swallowed.code) : undefined

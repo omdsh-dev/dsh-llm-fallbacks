@@ -47,6 +47,8 @@ interface ScriptedAttempt {
   chunks?: StreamChunk[]
   /** The attempt ends by throwing; the runtime normalizes it into a `finish` chunk. */
   failure?: { code: string; message?: string }
+  /** Runs when the attempt's stream closes — drained OR closed early by the consumer. */
+  onClose?: () => void
 }
 
 /** Scripted adapter for every route the scenarios use — records each dispatch. */
@@ -88,8 +90,12 @@ class ScriptedAdapter extends LlmAdapter {
   override async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
     this.calls.push(options)
     const attempt = this.respond(options, this.calls.length - 1)
-    for (const chunk of attempt.chunks ?? []) yield chunk
-    if (attempt.failure !== undefined) throw new LlmError(attempt.failure.message ?? attempt.failure.code, attempt.failure.code)
+    try {
+      for (const chunk of attempt.chunks ?? []) yield chunk
+      if (attempt.failure !== undefined) throw new LlmError(attempt.failure.message ?? attempt.failure.code, attempt.failure.code)
+    } finally {
+      attempt.onClose?.()
+    }
   }
 }
 
@@ -235,6 +241,24 @@ describe('committed rule (design §3.1/§6.1.4)', () => {
     const chunks = await walk({ readConfig: rootConfig(['a/1', 'b/2']) })
 
     expect(finishes(chunks)).toEqual([STOP])
+  })
+
+  it('closes the attempt stream when the consumer cancels mid-stream', async () => {
+    let closed = false
+    adapter.respond = () => ({ chunks: [TEXT, TEXT, TEXT], onClose: () => { closed = true } })
+    const stream = walkChain(
+      walkDeps({ getLlm: () => ctx.llm, readConfig: rootConfig(['a/1', 'b/2']) }),
+      { provider: FALLBACKS_PROVIDER, model: FALLBACKS_CHAIN_MODEL, messages: [] },
+    )[Symbol.asyncIterator]()
+
+    expect(await stream.next()).toEqual({ done: false, value: TEXT })
+    await stream.return?.()
+
+    // The walk's own `for await` closes the inner `llm.stream` at the yield, so
+    // the adapter's iterator runs its finally with two chunks still unread —
+    // and the cancelled attempt is not retried on another route.
+    expect(closed).toBe(true)
+    expect(dispatched()).toEqual(['a/1'])
   })
 })
 
@@ -593,6 +617,40 @@ describe('bookkeeping (design §3.3)', () => {
     }, { sessionId: SessionId('s1') })
 
     expect(states.peek('s1')?.cooldown.peek('a/1')).toBeUndefined()
+  })
+
+  it('cools a head that failed after output, so the next walk resumes past it', async () => {
+    adapter.respond = (options) => options.model === '1'
+      ? { chunks: [TEXT], failure: { code: 'AUTH', message: 'head down' } }
+      : { chunks: [STOP] }
+    const states = new FallbackStateStore()
+
+    // The failure is forwarded verbatim and never replayed inside this walk…
+    const first = await walk({ readConfig: rootConfig(['a/1', 'b/2']), states }, { sessionId: SessionId('s1') })
+    expect(dispatched()).toEqual(['a/1'])
+    expect(finishes(first)).toHaveLength(1)
+
+    // …and the dead head is no longer healthy for the NEXT walk.
+    adapter.calls.length = 0
+    await walk({ readConfig: rootConfig(['a/1', 'b/2']), states }, { sessionId: SessionId('s1') })
+    expect(dispatched()).toEqual(['b/2'])
+  })
+
+  it('observes success before the terminal finish is delivered', async () => {
+    const states = new FallbackStateStore()
+    const state = states.get('s1')
+    state.recovery.markHalfOpen('a/1', Date.now())
+
+    // The valid consumer pattern: stop AT the finish, never ask the iterator for
+    // another result — which closes the generator at that `yield`.
+    for await (const chunk of walkChain(
+      walkDeps({ getLlm: () => ctx.llm, readConfig: rootConfig(['a/1']), states }),
+      { provider: FALLBACKS_PROVIDER, model: FALLBACKS_CHAIN_MODEL, messages: [], sessionId: SessionId('s1') },
+    )) {
+      if (chunk.type === 'finish') break
+    }
+
+    expect(state.recovery.isHalfOpen('a/1')).toBe(false)
   })
 
   it('closes a half-open episode on attempt-level success', async () => {

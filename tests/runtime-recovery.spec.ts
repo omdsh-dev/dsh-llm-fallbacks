@@ -55,6 +55,11 @@ let ctx: Context
 let adapter: FailingAdapter
 
 beforeEach(() => {
+  // Pin the wall clock INSIDE the fixture's 00:00–23:59 slot row: `end` is
+  // exclusive, so under the real clock the 23:59 minute would route to the
+  // official all-day tail this suite never registers (QC1-F3). Only `Date` is
+  // faked — the runtime and the fiber teardown keep real timers.
+  vi.useFakeTimers({ toFake: ['Date'], now: new Date('2026-08-18T04:00:00Z') })
   ctx = new Context()
   new LlmRuntime(ctx)
   adapter = new FailingAdapter()
@@ -62,6 +67,8 @@ beforeEach(() => {
 })
 
 afterEach(async () => {
+  // Back to the real clock BEFORE disposal so teardown never runs faked.
+  vi.useRealTimers()
   await ctx.fiber.dispose()
 })
 
