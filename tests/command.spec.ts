@@ -10,9 +10,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import type { CommandDefinition, CommandInvocation } from '@deepseek-ai/dsh-commands'
-import { apply } from '../src/index.ts'
+import { apply, stateStore } from '../src/index.ts'
 import { FALLBACKS_PROFILE_ENTRY } from '../src/gateway.ts'
-import { cfg, dispatchRequestError, makeAgent } from './support/harness.ts'
+import { cfg, makeAgent } from './support/harness.ts'
 import { MemorySettings } from './support/memory-settings.ts'
 import {
   FALLBACKS_COMMAND_LOCALES,
@@ -29,6 +29,8 @@ import {
   type FallbacksConfigSummary,
 } from '../src/commands.ts'
 import type { FallbacksSwitchEventData } from '../src/events.ts'
+import { OFFICIAL_FLASH } from '../src/time-slots.ts'
+import { FALLBACKS_CHAIN_MODEL, FALLBACKS_PROVIDER } from '../src/virtual-adapter.ts'
 
 /** A fully-populated snapshot; `overrides` trim it to the state under test. */
 function snapshot(overrides: Partial<FallbacksCommandSnapshot> = {}): FallbacksCommandSnapshot {
@@ -78,9 +80,7 @@ function configSummary(overrides: Partial<FallbacksConfigSummary> = {}): Fallbac
     cooldownMs: 300_000,
     revertPolicy: 'cooldown-expiry',
     maxSwitchesPerStep: 8,
-    alwaysModeRetryCap: 5,
     presets: 'bundled',
-    roleAutoMatch: true,
     ...overrides,
   }
 }
@@ -553,15 +553,19 @@ describe('fallbacksConfigText — composed-config readback', () => {
     expect(rulesText).not.toContain('p/m5 → coder')
   })
 
-  it('renders cooldown, revert policy, caps, presets, and role auto-match', () => {
+  it('renders cooldown, revert policy, max switches, and presets', () => {
     expect(fallbacksConfigText(configSummary(), 'en')).toContain('Cooldown: 300000 ms')
     expect(fallbacksConfigText(configSummary(), 'en')).toContain('Revert: cooldown-expiry')
-    expect(fallbacksConfigText(configSummary(), 'en')).toContain('Max switches/step: 8')
-    expect(fallbacksConfigText(configSummary(), 'en')).toContain('Always-mode cap: 5')
+    expect(fallbacksConfigText(configSummary(), 'en')).toContain('Max switches per request walk: 8')
     expect(fallbacksConfigText(configSummary(), 'en')).toContain('Presets: bundled')
     expect(fallbacksConfigText(configSummary({ presets: 'none' }), 'en')).toContain('Presets: none')
-    expect(fallbacksConfigText(configSummary(), 'en')).toContain('Auto-match: enabled')
-    expect(fallbacksConfigText(configSummary({ roleAutoMatch: false }), 'en')).toContain('Auto-match: disabled')
+  })
+
+  it('omits the removed alwaysModeRetryCap / roleAutoMatch rows', () => {
+    const text = fallbacksConfigText(configSummary(), 'en')
+    expect(text).not.toContain('Always-mode cap')
+    expect(text).not.toContain('Auto-match')
+    expect(fallbacksConfigText(configSummary(), 'zh')).not.toContain('always 上限')
   })
 
   it('renders the edit hints after a blank line — /settings is the TUI edit surface, file editing still documented', () => {
@@ -587,8 +591,7 @@ describe('fallbacksConfigText — zh/en copy smoke', () => {
     expect(text).toContain('角色规则: 2 — deepseek/deepseek-chat → coder, anthropic/claude-3-5-sonnet → reviewer')
     expect(text).toContain('冷却: 300000 ms')
     expect(text).toContain('回主策略: cooldown-expiry')
-    expect(text).toContain('单步最大切换: 8')
-    expect(text).toContain('always 上限: 5')
+    expect(text).toContain('单次请求行走最大切换: 8')
     expect(text).toContain('预置: bundled')
     expect(text).toContain('编辑：/settings（TUI 设置界面）或 ~/.dsh/profiles/<profile>/cordis.patch.yml（插件行）/ $DSH_HOME/settings.yaml（fallbacks: 分节）')
     expect(text).toContain('TUI 通过 /settings 修改配置；文件编辑仍然可用')
@@ -605,8 +608,7 @@ describe('fallbacksConfigText — zh/en copy smoke', () => {
     expect(text).toContain('Rules: 2 — deepseek/deepseek-chat → coder, anthropic/claude-3-5-sonnet → reviewer')
     expect(text).toContain('Cooldown: 300000 ms')
     expect(text).toContain('Revert: cooldown-expiry')
-    expect(text).toContain('Max switches/step: 8')
-    expect(text).toContain('Always-mode cap: 5')
+    expect(text).toContain('Max switches per request walk: 8')
     expect(text).toContain('Presets: bundled')
     expect(text).toContain('Edit: /settings (TUI settings screen) or ~/.dsh/profiles/<profile>/cordis.patch.yml (plugin row) / $DSH_HOME/settings.yaml (fallbacks: section)')
     expect(text).toContain('TUI edits config via /settings; file editing still works')
@@ -843,6 +845,18 @@ describe('apply() wiring — conditional commands child', () => {
     await ctx.fiber.dispose()
   })
 
+  /**
+   * Seed the cooldown the chain walk writes for the head it attempted
+   * (direction C). The walk owns cooldown now — no `agent/request-error`
+   * listener exists to drive — so the seed goes through the plugin's own
+   * state store, the same `states` seam the command readback reads.
+   */
+  function seedCooldown(agent: { id: string }, key: string, untilEpochMs: number): void {
+    const states = stateStore(ctx)
+    if (states === undefined) throw new Error('llm-fallbacks state store missing')
+    states.suppress(states.get(agent.id), key, untilEpochMs)
+  }
+
   it('registers /fallbacks only when a commands service is composed', async () => {
     const registered: CommandDefinition[] = []
     ctx.provide('commands', {
@@ -868,9 +882,10 @@ describe('apply() wiring — conditional commands child', () => {
     await vi.waitFor(() => expect(registered).toHaveLength(1))
 
     const { agent } = makeAgent('cmd-agent', { provider: 'mock', model: 'gpt-4o' })
-    // A real switch: cooldown on the source model (no durable event, issue #52).
-    const action = await dispatchRequestError(ctx, agent)
-    expect(action).toEqual({ kind: 'retry' })
+    // Direction C: the walk cools the chain entry it ATTEMPTED — here the
+    // chain head, not the session's source model — and writes no durable
+    // event (issue #52).
+    seedCooldown(agent, 'other/gpt-4o', Date.now() + 300_000)
 
     const result = registered[0]!.handler({
       commandId: 'x',
@@ -891,11 +906,52 @@ describe('apply() wiring — conditional commands child', () => {
     // recent-switch section is empty, while the cooldown readback still works.
     expect(text).toContain('最近降级切换: 本会话暂无 fallback 切换')
     expect(text).toContain('冷却 (1):')
-    expect(text).toContain('mock/gpt-4o 冷却至')
+    expect(text).toContain('other/gpt-4o 冷却至')
     expect(text).not.toContain('无活跃冷却')
 
-    // Read-only: the invocation must not have grown the store or replayed events.
+    // Read-only: the invocation must not have created another agent's state
+    // nor replayed events.
+    expect(stateStore(ctx)?.size).toBe(1)
     expect(agent.session.snapshotEvents()).toHaveLength(0)
+  })
+
+  it('resolves the role through the served route for a child on the virtual row (same as the walk)', async () => {
+    const registered: CommandDefinition[] = []
+    ctx.provide('commands', {
+      register: (def: CommandDefinition) => {
+        registered.push(def)
+        return () => {}
+      },
+    } as never)
+    // A rule keyed on the REAL chain head — the pair the virtual row serves.
+    apply(ctx, cfg({
+      rootChain: [OFFICIAL_FLASH],
+      roles: {
+        list: [{ id: 'coder', persona: '', chain: ['other/gpt-4o'] }],
+        rules: [{ provider: 'deepseek-official', model: 'deepseek-flash', role: 'coder' }],
+      },
+    }))
+    await vi.waitFor(() => expect(registered).toHaveLength(1))
+
+    // The child records the VIRTUAL pair, so only the served route can match
+    // the head-keyed rule — exactly what the walk passes to the same resolver.
+    const { agent } = makeAgent(
+      'cmd-virtual-child',
+      { provider: FALLBACKS_PROVIDER, model: FALLBACKS_CHAIN_MODEL },
+      { origin: 'subagent' },
+    )
+
+    const result = registered[0]!.handler({
+      commandId: 'x',
+      agent,
+      rawInput: '',
+      signal: new AbortController().signal,
+    } as unknown as CommandInvocation)
+    expect(result.kind).toBe('success')
+    if (result.kind !== 'success') throw new Error(`/fallbacks failed: ${result.text}`)
+    const text = result.text ?? ''
+    expect(text).toContain('角色: coder')
+    expect(text).toContain('链: other/gpt-4o')
   })
 
   it('reports the slot as all-day when a legacy non-conforming all-day keeps the rows inert (qc1 F-001)', async () => {
@@ -1026,8 +1082,7 @@ describe('apply() wiring — conditional commands child', () => {
     expect(text).toContain('角色: 1 — coder（chain: 1）')
     expect(text).toContain('冷却: 300000 ms')
     expect(text).toContain('回主策略: cooldown-expiry')
-    expect(text).toContain('单步最大切换: 8')
-    expect(text).toContain('always 上限: 5')
+    expect(text).toContain('单次请求行走最大切换: 8')
     expect(text).toContain('预置: none')
     expect(text).toContain('编辑：')
     // Read-only: the config readback must not grow the session log.
@@ -1209,29 +1264,24 @@ describe('apply() wiring — conditional commands child', () => {
     await vi.waitFor(() => expect(registered).toHaveLength(1))
 
     const { agent } = makeAgent('cmd-half-open', { provider: 'mock', model: 'gpt-4o' })
-    // A real switch: mock is suppressed flat (n=1).
-    const action = await dispatchRequestError(ctx, agent)
-    expect(action).toEqual({ kind: 'retry' })
-    vi.useFakeTimers()
-    try {
-      // The cooldown lapses: the diagnostic read transitions the expired
-      // entry to half-open, so the marker appears at expiry without waiting
-      // for a failure walk.
-      vi.setSystemTime(Date.now() + 301_000)
-      const result = registered[0]!.handler({
-        commandId: 'x',
-        agent,
-        rawInput: '',
-        signal: new AbortController().signal,
-      } as unknown as CommandInvocation)
-      expect(result.kind).toBe('success')
-      const text = (result as { text?: string }).text ?? ''
-      expect(text).toContain('冷却 (1):')
-      expect(text).toContain('mock/gpt-4o half-open（等待恢复探针）')
-      expect(text).not.toContain('冷却至')
-    } finally {
-      vi.useRealTimers()
-    }
+    // Direction C: the walk cooled the head it attempted (mock/gpt-4o here),
+    // and that entry has already lapsed.
+    seedCooldown(agent, 'mock/gpt-4o', Date.now() - 1)
+
+    // The cooldown lapses: the diagnostic read transitions the expired
+    // entry to half-open, so the marker appears at expiry without waiting
+    // for a failure walk.
+    const result = registered[0]!.handler({
+      commandId: 'x',
+      agent,
+      rawInput: '',
+      signal: new AbortController().signal,
+    } as unknown as CommandInvocation)
+    expect(result.kind).toBe('success')
+    const text = (result as { text?: string }).text ?? ''
+    expect(text).toContain('冷却 (1):')
+    expect(text).toContain('mock/gpt-4o half-open（等待恢复探针）')
+    expect(text).not.toContain('冷却至')
   })
 
   it('default timer mode keeps the bare diagnostic byte-identical (no half-open marker, no recovery line)', async () => {
@@ -1246,8 +1296,8 @@ describe('apply() wiring — conditional commands child', () => {
     await vi.waitFor(() => expect(registered).toHaveLength(1))
 
     const { agent } = makeAgent('cmd-timer', { provider: 'mock', model: 'gpt-4o' })
-    const action = await dispatchRequestError(ctx, agent)
-    expect(action).toEqual({ kind: 'retry' })
+    // Direction C: the walk cools the head it attempted (mock/gpt-4o here).
+    seedCooldown(agent, 'mock/gpt-4o', Date.now() + 300_000)
     const result = registered[0]!.handler({
       commandId: 'x',
       agent,

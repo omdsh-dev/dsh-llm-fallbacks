@@ -1,14 +1,10 @@
 /**
- * Cooldown store + per-step failure set (spec §5.1; plan Task 2).
+ * Cooldown store (spec §5.1; plan Task 2).
  *
  * `CooldownStore` maps `provider/model` keys to an expiry epoch ms with lazy
  * evaluation: expired entries are dropped on read. `revertPolicy: 'never'`
  * is expressed by suppressing with `Infinity` — the entry never expires
  * within the session.
- *
- * `StepFailureSet` is the step's failed-model set (spec §5.1 `failed`).
- * `switchCount` / `maxSwitchesPerStep` judgement belongs to the caller
- * (Task 3) — this task only provides the data structure.
  *
  * @module dsh-llm-fallbacks/cooldown
  */
@@ -70,28 +66,5 @@ export class CooldownStore {
       active.push({ key, untilEpochMs: until })
     }
     return active
-  }
-}
-
-/**
- * The current step's failed-model set (`${provider}/${model}` keys).
- */
-export class StepFailureSet {
-  private keys = new Set<string>()
-
-  get size(): number {
-    return this.keys.size
-  }
-
-  add(key: string): void {
-    this.keys.add(key)
-  }
-
-  has(key: string): boolean {
-    return this.keys.has(key)
-  }
-
-  reset(): void {
-    this.keys.clear()
   }
 }

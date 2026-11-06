@@ -116,7 +116,7 @@ function installFallbacksBridge(ctx: Context, entry: FallbacksConfig): Fallbacks
       // The same layering rule the settings merge applies (objects deep-merge,
       // arrays replace) — a local twin of `mergeConfigLayer` in src/index.ts —
       // then resolved through the schema so defaults fold in exactly like the
-      // Loader-composed entry does (roleAutoMatch, materialized row fields).
+      // Loader-composed entry does (materialized row fields).
       // The resolution returns a live reference under schemastery ≥3.18.4
       // (volatile-marked schema) — unwrapped, mirroring `normalizeConfig`.
       const merged: Record<string, unknown> = { ...entry }
@@ -464,18 +464,18 @@ describe('set validation (Config schema, unknown-key rejection unchanged)', () =
     expect(ctx.settings.describe().find((d) => d.ns === FALLBACKS_PROFILE_ENTRY)?.user).toBeUndefined()
   })
 
-  it('accepts the roleAutoMatch switch (plan fallbacks-role-automatch Task 1 — toggleable)', async () => {
+  it('rejects the removed alwaysModeRetryCap / roleAutoMatch keys (direction C)', async () => {
     const ctx = track(new Context())
     await ctx.plugin(MemorySettings)
     const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()), makeSeeds())
     await waitRegistered(ctx)
     await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
 
-    // The key is a declared config key (not rejected as unknown) and lands
-    // on the composed config — the write path the settings UI will use.
-    const setResult = await gateway.set({ roleAutoMatch: false })
-    expect(setResult.config.roleAutoMatch).toBe(false)
-    expect(gateway.get().config.roleAutoMatch).toBe(false)
+    // The keys are no longer declared config keys, so a patch carrying them
+    // (a stale client bundle) is an unknown key — nothing is written.
+    await expect(gateway.set({ alwaysModeRetryCap: 5 } as never)).rejects.toThrow(/unknown config key "alwaysModeRetryCap"/)
+    await expect(gateway.set({ roleAutoMatch: false } as never)).rejects.toThrow(/unknown config key "roleAutoMatch"/)
+    expect(ctx.settings.describe().find((d) => d.ns === FALLBACKS_PROFILE_ENTRY)?.user).toBeUndefined()
   })
 
   it('rejects an own __proto__ key (prototype-chain bypass of the unknown-key gate — F-001)', async () => {
@@ -990,48 +990,40 @@ describe('set/reset return post-write legacyKeys (W-1/F-1)', () => {
 })
 
 // ---------------------------------------------------------------------------
-// ⑨ legacy roleAutoMatch on the real gateway wire (AC-7 re-scope Option A —
-//    PM decision 2026-08-17)
+// ⑨ removed config keys on the real gateway wire (direction C)
 // ---------------------------------------------------------------------------
 
-describe('legacy roleAutoMatch on the real gateway wire (AC-7 re-scope Option A)', () => {
-  it('always emits roleAutoMatch: true for a seeded legacy user layer that never declared the key (F-001 proof)', async () => {
+describe('removed config keys on the real gateway wire (direction C)', () => {
+  it('never emits alwaysModeRetryCap / roleAutoMatch and reports them as legacyKeys', async () => {
     const ctx = track(new Context())
     await ctx.plugin(MemorySettings)
-    // A pre-Plan-A user layer WITHOUT the roleAutoMatch key — the exact
-    // upgrade shape the QC flag (qc1/qc2 F-001) traced: the unit tests only
-    // exercised a hand-built absent-key wire that the real gateway never
-    // produces.
+    // A stored profile from the previous release still carries the removed
+    // keys (plus the tolerated `enabled:` line).
     const settings = ctx.settings as unknown as MemorySettings
     settings.seed(FALLBACKS_PROFILE_ENTRY, {
-      // The removed `enabled:` line rides along (tolerated, stripped from the
-      // wire — LEGACY_KEYS); the assertions below target roleAutoMatch.
       enabled: true,
+      alwaysModeRetryCap: 5,
+      roleAutoMatch: true,
       rootChain: ['other/gpt-4o'],
     })
     const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()), makeSeeds())
     await waitRegistered(ctx)
 
-    // F-001 proof through the REAL path: the `Config` schema composition
-    // (entry base → user layer → `resolve`) folds the schema default into
-    // the merged source, and `readConfig` emits every non-undefined declared
-    // key — so `get()` for a legacy user layer carries `roleAutoMatch: true`
-    // even though the user layer never declared it. There is no
-    // key-presence signal for the client to strip on (AC-7 re-scope Option
-    // A: the toggle always renders, default on).
+    // The composition retains the unknown keys (schemastery), but the wire
+    // snapshot carries only declared keys — neither removed key crosses it.
     const first = gateway.get()
-    expect('roleAutoMatch' in first.config).toBe(true)
-    expect(first.config.roleAutoMatch).toBe(true)
+    expect('alwaysModeRetryCap' in first.config).toBe(false)
+    expect('roleAutoMatch' in first.config).toBe(false)
+    // …and the migration banner reports both (the user rewrites the file;
+    // the plugin never rewrites it automatically).
+    expect(first.legacyKeys).toEqual(['alwaysModeRetryCap', 'roleAutoMatch'])
 
-    // The client's assembled draft always carries the key (the toggle always
-    // renders), so a save pins `roleAutoMatch: true` into the user layer —
-    // semantically identical to the schema default.
-    const result = await gateway.set({ roleAutoMatch: true, cooldownMs: 120_000 })
-    expect(result.config.roleAutoMatch).toBe(true)
-    const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_PROFILE_ENTRY)!
-    expect(descriptor.user).toMatchObject({ roleAutoMatch: true, cooldownMs: 120_000 })
-    // The next get agrees.
-    expect(gateway.get().config.roleAutoMatch).toBe(true)
+    // A new-shape save merges over the user layer, so the legacy keys
+    // survive and the post-write response keeps reporting them (W-1/F-1).
+    const result = await gateway.set({ cooldownMs: 120_000 })
+    expect('alwaysModeRetryCap' in result.config).toBe(false)
+    expect('roleAutoMatch' in result.config).toBe(false)
+    expect(result.legacyKeys).toEqual(['alwaysModeRetryCap', 'roleAutoMatch'])
   })
 })
 

@@ -127,56 +127,30 @@ describe('fallbacks Config schema (two-block model)', () => {
   })
 })
 
-describe('roleAutoMatch config key (plan fallbacks-role-automatch Task 1)', () => {
-  it('defaults roleAutoMatch to true when absent (Config({}) == defaultFallbacksConfig)', () => {
-    const resolved = unwrapConfig(Config({} as FallbacksConfig))
-    expect(resolved.roleAutoMatch).toBe(true)
+describe('removed config keys under direction C (virtual-chain-only fallback)', () => {
+  it('defaultFallbacksConfig carries neither alwaysModeRetryCap nor roleAutoMatch', () => {
+    expect('alwaysModeRetryCap' in defaultFallbacksConfig).toBe(false)
+    expect('roleAutoMatch' in defaultFallbacksConfig).toBe(false)
+  })
+
+  it('Config({}) resolves to defaultFallbacksConfig — neither removed key reappears', () => {
     expect(unwrapConfig(Config({} as FallbacksConfig))).toEqual(defaultFallbacksConfig)
   })
 
-  it('round-trips an explicit true', () => {
-    expect(unwrapConfig(Config({ roleAutoMatch: true } as FallbacksConfig)).roleAutoMatch).toBe(true)
-  })
-
-  it('round-trips an explicit false', () => {
-    expect(unwrapConfig(Config({ roleAutoMatch: false } as FallbacksConfig)).roleAutoMatch).toBe(false)
-  })
-
-  it('defaultFallbacksConfig carries roleAutoMatch: true', () => {
-    expect(defaultFallbacksConfig.roleAutoMatch).toBe(true)
-  })
-
-  it('validation accepts both true and false without a single warn', () => {
-    const { logger } = warnLogger()
-    validateFallbacksConfig({ ...defaultFallbacksConfig, roleAutoMatch: true }, logger)
-    validateFallbacksConfig({ ...defaultFallbacksConfig, roleAutoMatch: false }, logger)
-    expect(messagesOf({ warn: logger.warn })).toEqual([])
-  })
-
-  it('detectLegacyKeys does not flag roleAutoMatch (a new key, not a two-block-era leftover)', () => {
+  it('detectLegacyKeys reports both removed keys', () => {
     expect(detectLegacyKeys({
-      enabled: true,
+      alwaysModeRetryCap: 5,
+      roleAutoMatch: false,
       rootChain: [],
       roles: { list: [], rules: [] },
-      roleAutoMatch: false,
-    })).toEqual([])
+    })).toEqual(['alwaysModeRetryCap', 'roleAutoMatch'])
   })
 
-  it('a FallbacksConfig literal without roleAutoMatch still type-checks (optional-on-type)', () => {
-    // Compile-time pin: library consumers building configs with only the
-    // pre-existing keys must not be forced to add roleAutoMatch (additive,
-    // non-breaking — the documented reason `presets` is optional). There is
-    // no `enabled` key to carry any more (plan fallbacks-web-ux-alignment T2).
-    const minimal: FallbacksConfig = {
-      triggerCodes: ['AUTH', 'QUOTA', 'RATE_LIMIT'],
-      rootChain: [],
-      roles: { list: [], rules: [] },
-      cooldownMs: 300_000,
-      revertPolicy: 'cooldown-expiry',
-      maxSwitchesPerStep: 8,
-      alwaysModeRetryCap: 5,
-    }
-    expect(minimal.roleAutoMatch).toBeUndefined()
+  it('detectLegacyKeys leaves a clean config unflagged', () => {
+    expect(detectLegacyKeys({
+      rootChain: ['other/gpt-4o'],
+      roles: { list: [{ id: 'coder' }], rules: [{ role: 'coder' }] },
+    })).toEqual([])
   })
 })
 

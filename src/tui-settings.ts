@@ -233,12 +233,14 @@ function tzParse(text: string): TuiSettingsFieldWrite | undefined {
 const BUNDLED_PRESETS_LABEL = `Bundled (${presetRoles.length} preset roles)`
 
 /**
- * The `fallbacks` /settings section: 12 fields covering all 14 web-card
+ * The `fallbacks` /settings section: 10 fields covering the web-card
  * capabilities (the default-model choice rides `rootChain`'s last entry and
  * the per-role fallback strategy rides `roles.list` JSON; the config-level
  * `enabled` switch is REMOVED — plan fallbacks-web-ux-alignment T2, the
  * Plugins-page row toggle is the master switch and the runtime gates read
- * content presence). Scalar
+ * content presence; the always-mode retry cap and the dispatch role
+ * auto-match switch are REMOVED with their mechanisms — direction C, only a
+ * `FallbacksChain/Auto` session walks a chain). Scalar
  * capabilities use native kinds (boolean/number/select); complex structures
  * use `text` fields with custom `format`/`parse` that mirror the gateway's
  * validation. Built fresh per call — the host deep-freezes whatever it
@@ -249,8 +251,8 @@ export function buildFallbacksTuiSection(): TuiSettingsSection {
     ns: FALLBACKS_TUI_SECTION_NS,
     title: 'fallbacks',
     descriptions: {
-      zh: '回退设置：降级链、分时切换、角色与高级选项（与 Web 设置卡片完全一致）。',
-      en: 'Fallback settings: degradation chains, time slots, roles, and advanced options (full parity with the web settings card).',
+      zh: '回退设置：降级链、分时切换、角色与高级选项（与 Web 设置卡片完全一致）。仅选中 FallbacksChain/Auto 的会话会执行降级链；选择真实模型的会话没有插件降级。',
+      en: 'Fallback settings: degradation chains, time slots, roles, and advanced options (full parity with the web settings card). Only sessions on FallbacksChain/Auto walk a chain — a real-model selection gets no plugin fallback.',
     },
     groups: [
       { id: 'general', title: 'General', descriptions: { zh: '通用', en: 'General' } },
@@ -259,13 +261,6 @@ export function buildFallbacksTuiSection(): TuiSettingsSection {
       { id: 'advanced', title: 'Advanced', descriptions: { zh: '高级', en: 'Advanced' } },
     ],
     fields: [
-      {
-        path: ['roleAutoMatch'],
-        label: 'LLM role auto-match',
-        descriptions: { zh: 'LLM 角色自动匹配', en: 'LLM role auto-match' },
-        group: 'general',
-        kind: 'boolean',
-      },
       {
         path: ['presets'],
         label: 'Preset roles',
@@ -357,15 +352,8 @@ export function buildFallbacksTuiSection(): TuiSettingsSection {
       },
       {
         path: ['maxSwitchesPerStep'],
-        label: 'Max switches per step',
-        descriptions: { zh: '单步最大切换次数', en: 'Max switches per step' },
-        group: 'advanced',
-        kind: 'number',
-      },
-      {
-        path: ['alwaysModeRetryCap'],
-        label: 'Always-mode retry cap',
-        descriptions: { zh: 'Always 模式重试上限', en: 'Always-mode retry cap' },
+        label: 'Max switches per request walk',
+        descriptions: { zh: '单次请求行走最大切换', en: 'Max switches per request walk' },
         group: 'advanced',
         kind: 'number',
       },

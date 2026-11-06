@@ -90,17 +90,11 @@ const configSchema = z.object({
   cooldownMs: z.number().default(300_000),
   revertPolicy: z.union([z.const('cooldown-expiry'), z.const('never')]).default('cooldown-expiry'),
   maxSwitchesPerStep: z.number().default(8),
-  alwaysModeRetryCap: z.number().default(5),
   // 9th field (spec §9.4): union-of-const + default, same shape as
   // `revertPolicy` above — illegal values fail at schema resolve, and the
   // default guarantees every resolved config carries `presets`.
   presets: z.union([z.const('bundled'), z.const('none')]).default('bundled'),
-  // 10th field (plan fallbacks-role-automatch Task 1): dispatch-time LLM
-  // role auto-match switch, default ON. Boolean with a schema default — the
-  // same additive shape as the other optional fields — so `Config({})`
-  // carries `roleAutoMatch: true` and every resolved config has a value.
-  roleAutoMatch: z.boolean().default(true),
-  // 11th/12th fields (plan fallbacks-timeslots Task 1, P5): extra time-slot
+  // 10th/11th fields (plan fallbacks-timeslots Task 1, P5): extra time-slot
   // rows (the all-day chain keeps `rootChain`'s name) and the
   // config-level timezone. The row shape is deliberately PERMISSIVE (plain
   // strings, no const unions) — malformed rows (bad kind/preset/window)
@@ -121,7 +115,7 @@ const configSchema = z.object({
     )
     .default([]),
   tz: z.string().default('Asia/Shanghai'),
-  // 13th field (plan fallbacks-half-open-recovery Task 1): cooldown-expiry
+  // 12th field (plan fallbacks-half-open-recovery Task 1): cooldown-expiry
   // recovery mode — `'timer'` restores the preferred candidate on expiry
   // (today's behavior, byte-identical); `'half-open'` leaves the route
   // half-open for one logged probe instead. Union-of-const + default, the

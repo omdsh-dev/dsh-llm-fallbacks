@@ -1,66 +1,26 @@
 /**
- * Per-agent fallback state machine (spec §5.1; plan Task 3).
+ * Per-agent fallback state (direction C, plan dsh-022-rc1-upgrade).
  *
  * One `AgentFallbackState` per `agent.id`, held in a `FallbackStateStore`
- * created at plugin apply, removed on `agent/disposed`, defensively pruned on
- * `agent/status` idle, and cleared wholesale on plugin dispose (spec §6:
- * 无残留状态).
+ * created at plugin apply, removed on `agent/disposed`, and cleared wholesale
+ * on plugin dispose (spec §6: 无残留状态).
  *
- * **pendingSwitch lifecycle** (spec §5.1):
- * 1. **Produce** (decision point — request-error trigger-code or
- *    agent/request always-cap): `writePending` stores the decision and clears
- *    `appliedTurnStep`, so a *fresh* decision is always applicable at the
- *    current (turn, step) — required for chains (decision B→C must apply even
- *    though A→B was already applied at the same (turn, step)).
- * 2. **Apply** (`agent/request`): `applyPending` returns the pending switch
- *    when one exists and has not already been applied at the current
- *    (turn, step), records `appliedTurnStep`, and clears `pendingSwitch`
- *    (anti-replay guard).
- * 3. **Discard**: chain exhaustion / safety valve → the caller delegates
- *    (`next()`) and the pending state dies with the agent.
- *
- * **stepFailures** resets whenever (turn, step) advances (`syncStep`);
- * **cooldown** (`CooldownStore`) is a `provider/model → expiry epoch ms` map
- * with lazy expiry (`revertPolicy: 'never'` = `Infinity` TTL). The time-boxed
- * cooldown deliberately survives idle cleanup so `cooldown-expiry` revert
- * (US-4 / T4 integration) works across turns.
+ * The store is the CROSS-CALL memory the chain walk reads: **cooldown**
+ * (`CooldownStore` — a `provider/model → expiry epoch ms` map with lazy expiry;
+ * `revertPolicy: 'never'` = `Infinity` TTL) plus the **recovery** circuit
+ * (`RecoveryStore`). The time-boxed cooldown deliberately survives idle
+ * cleanup so `cooldown-expiry` revert (US-4 / T4 integration) works across
+ * turns. Per-request bookkeeping (the failed-candidate set, the switch cap) is
+ * walk-local: a walk lives inside one `stream()` call, so nothing durable is
+ * kept for it here.
  *
  * @module dsh-llm-fallbacks/state
  */
 
 import type { FallbackSwitchReason } from './events.ts'
-import { CooldownStore, StepFailureSet } from './cooldown.ts'
+import { CooldownStore } from './cooldown.ts'
 import { RecoveryStore } from './recovery.ts'
 import type { RecoveryPolicy } from './config.ts'
-
-/**
- * What a switch's failure was actually about.
- *
- * `'route'` (the default) is every failure the plugin has ever walked: the
- * provider/model itself is unhealthy (auth, quota, rate limit, ...), so the
- * from-route is cooled down and counted as a route failure.
- * `'request'` is a failure of the REQUEST on a healthy route — a
- * `CONTEXT_WINDOW_EXCEEDED` rejection is the request being too big, not the
- * model being down. `commit()` keeps the step-scoped bookkeeping for those
- * but writes no suppression and no recovery failure (see `src/index.ts`
- * `REQUEST_SCOPED_CODES`).
- */
-export type SwitchScope = 'route' | 'request'
-
-/** Decision awaiting application at the next `agent/request` boundary (spec §5.1). */
-export interface PendingSwitch {
-  from: { provider: string; model: string }
-  to: { provider: string; model: string }
-  role: string
-  reason: FallbackSwitchReason
-  /**
-   * What the failure was about — absent means `'route'`, the semantics every
-   * switch had before request-scoped codes existed (same optional-with-a-
-   * documented-default idiom as `FallbacksRole.fallback`). Only the
-   * `agent/request-error` listener ever sets `'request'`.
-   */
-  scope?: SwitchScope
-}
 
 /**
  * One plugin-originated subagent switch the host allowlist blocked (plan
@@ -81,8 +41,9 @@ export interface BlockedSwitchAttempt {
 /**
  * How the effective subagent chain head was chosen (plan dsh-012-subagent-routing
  * T5 / T2 M3). Lives on a per-agent map (mirrors {@link BlockedSwitchAttempt}),
- * not on {@link AgentFallbackState} — recording a head is not a switch intent
- * (F-004: the fallback store grows only inside `commit()`).
+ * not on {@link AgentFallbackState}. The write point is the dispatch seam
+ * (direction C): `authorized` = the spawn request carried an explicit route,
+ * `injected` = the seam mounted the child on the virtual chain row.
  */
 export type ChainHeadSource = 'authorized' | 'injected'
 
@@ -99,24 +60,8 @@ export interface EffectiveChainHead {
   source: ChainHeadSource
 }
 
-/** The current (turn, step)'s failed-model set and switch budget (spec §5.1). */
-export interface StepFailures {
-  turn: number
-  step: number
-  /** `${provider}/${model}` keys failed in this step (double suppression with cooldown). */
-  failed: StepFailureSet
-  /** Switches committed in this step; the caller judges it against `maxSwitchesPerStep`. */
-  switchCount: number
-}
-
-/** One agent's whole fallback runtime state (spec §5.1). */
+/** One agent's fallback runtime state. */
 export interface AgentFallbackState {
-  /** Decision produced but not yet applied at an `agent/request` boundary. */
-  pendingSwitch?: PendingSwitch
-  /** The (turn, step) the last pending switch was applied to — anti-replay. */
-  appliedTurnStep?: { turn: number; step: number }
-  /** Current (turn, step)'s failure bookkeeping. */
-  stepFailures: StepFailures
   /** `provider/model → expiry epoch ms`; lazily expired on read. */
   cooldown: CooldownStore
   /** Half-open recovery bookkeeping (plan fallbacks-half-open-recovery P2). */
@@ -124,8 +69,8 @@ export interface AgentFallbackState {
 }
 
 /**
- * The `Map<agent.id, AgentFallbackState>` store plus the state-machine
- * operations (spec §5.1).
+ * The `Map<agent.id, AgentFallbackState>` store plus the state operations the
+ * walk and the diagnostics surfaces read.
  */
 export class FallbackStateStore {
   private readonly states = new Map<string, AgentFallbackState>()
@@ -148,11 +93,7 @@ export class FallbackStateStore {
   get(agentId: string): AgentFallbackState {
     let state = this.states.get(agentId)
     if (state === undefined) {
-      state = {
-        stepFailures: { turn: 0, step: 0, failed: new StepFailureSet(), switchCount: 0 },
-        cooldown: new CooldownStore(),
-        recovery: new RecoveryStore(),
-      }
+      state = { cooldown: new CooldownStore(), recovery: new RecoveryStore() }
       this.states.set(agentId, state)
     }
     return state
@@ -166,62 +107,6 @@ export class FallbackStateStore {
   /** Remove every agent's state (plugin dispose — no residual state). */
   clear(): void {
     this.states.clear()
-  }
-
-  /** Reset step-scoped bookkeeping when (turn, step) advances (spec §5.1). */
-  syncStep(state: AgentFallbackState, turn: number, step: number): void {
-    const { stepFailures } = state
-    if (stepFailures.turn === turn && stepFailures.step === step) return
-    stepFailures.turn = turn
-    stepFailures.step = step
-    stepFailures.failed.reset()
-    stepFailures.switchCount = 0
-  }
-
-  /** Record the current model as failed in this step (spec §5.1). */
-  recordFailure(state: AgentFallbackState, key: string): void {
-    state.stepFailures.failed.add(key)
-  }
-
-  /** Bump the step's switch budget (spec §5.1). */
-  recordSwitch(state: AgentFallbackState): void {
-    state.stepFailures.switchCount += 1
-  }
-
-  /**
-   * Produce a pending switch. A fresh decision always supersedes a previous
-   * one and must be applicable at the current (turn, step), so the applied
-   * marker is cleared here (see module doc — chains).
-   */
-  writePending(state: AgentFallbackState, pending: PendingSwitch): void {
-    state.pendingSwitch = pending
-    state.appliedTurnStep = undefined
-  }
-
-  /**
-   * Apply the pending switch at (turn, step) when one exists and has not
-   * already been applied there; records the applied marker and clears the
-   * pending switch (spec §5.1 lifecycle step 2).
-   */
-  applyPending(state: AgentFallbackState, turn: number, step: number): PendingSwitch | undefined {
-    const pending = state.pendingSwitch
-    if (pending === undefined) return undefined
-    const applied = state.appliedTurnStep
-    if (applied !== undefined && applied.turn === turn && applied.step === step) return undefined
-    state.appliedTurnStep = { turn, step }
-    state.pendingSwitch = undefined
-    return pending
-  }
-
-  /**
-   * Defensive `agent/status` idle cleanup: drop per-step state. The time-boxed
-   * cooldown survives so `cooldown-expiry` revert works across turns (US-4).
-   */
-  clearStepState(state: AgentFallbackState): void {
-    state.pendingSwitch = undefined
-    state.appliedTurnStep = undefined
-    state.stepFailures.failed.reset()
-    state.stepFailures.switchCount = 0
   }
 
   /** Suppress `key` until `untilEpochMs` (`Infinity` for `revertPolicy: 'never'`). */

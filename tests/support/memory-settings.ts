@@ -42,6 +42,12 @@ export class MemorySettings extends Service {
   /** How many times `describe()` ran — the binding-child-fired probe. */
   describeCalls = 0
 
+  /**
+   * Test hook for the host failure face: `'throw'` makes `describe()` raise,
+   * `'unloaded'` serves no sections (a host that went away mid-session).
+   */
+  hostFailure?: 'throw' | 'unloaded'
+
   private sections = new Map<string, StoredSection>()
 
   constructor(ctx: Context) {
@@ -129,6 +135,8 @@ export class MemorySettings extends Service {
     applies: 'live'
   }[] {
     this.describeCalls += 1
+    if (this.hostFailure === 'throw') throw new Error('settings service exploded')
+    if (this.hostFailure === 'unloaded') return []
     return [...this.sections.entries()].map(([ns, stored]) => ({
       ns: ns as SettingsNamespace,
       autoGenerate: true,

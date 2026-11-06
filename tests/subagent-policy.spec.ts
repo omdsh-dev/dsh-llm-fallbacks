@@ -9,7 +9,7 @@
  */
 
 import { describe, expect, it } from 'vitest'
-import { effectivePolicy, readSessionPolicyEvent } from '../src/subagent-policy.ts'
+import { effectivePolicy, policySettingsFrom, readSessionPolicyEvent } from '../src/subagent-policy.ts'
 import type { EffectivePolicy, SessionPolicyEventRead } from '../src/subagent-policy.ts'
 
 const routeA = { provider: 'deepseek', model: 'deepseek-chat' }
@@ -76,6 +76,32 @@ describe('readSessionPolicyEvent + effectivePolicy', () => {
         policy = effectivePolicy(read, { enabled: true, allowedModels: allowedModels as never })
       }).not.toThrow()
       expect(policy).toEqual({ state: 'unprovable' })
+    }
+  })
+})
+
+describe('policySettingsFrom (settings-form value narrowing)', () => {
+  it('narrows the host settings value into a detached snapshot', () => {
+    const value = { enabled: true, allowedModels: [{ ...routeA }], unrelated: 'ignored' }
+    const settings = policySettingsFrom(value)
+    expect(settings).toEqual({ enabled: true, allowedModels: [routeA] })
+    // Detached: the snapshot never aliases the settings value's route objects.
+    expect(settings?.allowedModels[0]).not.toBe(value.allowedModels[0])
+  })
+
+  it('reports a value that is not a settings snapshot as undefined, never throws', () => {
+    const malformedValues: unknown[] = [
+      undefined,
+      null,
+      'enabled',
+      [],
+      { allowedModels: [routeA] },
+      { enabled: 'yes', allowedModels: [routeA] },
+      { enabled: true, allowedModels: 'nope' },
+      { enabled: true, allowedModels: [{ provider: '', model: routeA.model }] },
+    ]
+    for (const value of malformedValues) {
+      expect(policySettingsFrom(value)).toBeUndefined()
     }
   })
 })

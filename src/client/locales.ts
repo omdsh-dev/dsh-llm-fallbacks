@@ -30,21 +30,16 @@ export const zh = {
   'cooldownMs.label': '冷却时长（毫秒）',
   'cooldownMs.hint': '冷却期内模型不再入选',
   'cooldownMs.tooltip': '被切离/失败的模型在冷却期内不再入选。',
-  'maxSwitchesPerStep.label': '单步最大切换次数',
+  'maxSwitchesPerStep.label': '单次请求行走最大切换',
   'maxSwitchesPerStep.hint': '超过后停止切换',
-  'maxSwitchesPerStep.tooltip': '超过后停止切换，以原始错误语义结束当前步，防止链循环放大延迟。',
-  'alwaysModeRetryCap.label': 'always 模式重试上限',
-  'alwaysModeRetryCap.hint': '达到上限次数后切换；0 表示禁用',
-  'alwaysModeRetryCap.tooltip': 'retryPolicy 为 always 的模型在同一请求内重试达到该次数后切换；0 表示禁用。',
+  'maxSwitchesPerStep.tooltip': '超过后不再切换，以原始错误语义结束本次请求，防止链循环放大延迟。',
+  'virtualOnly.rule': '只有模型选择为 FallbacksChain/Auto 的会话（含插件注入的子代理）会执行降级链；选择真实模型的会话没有插件降级，仅由 llm-retry 处理重试。',
   'advanced.label': '高级选项',
   // 高级选项 disclosure (plan fallbacks-card-section-ux T3/T5): the
   // section is collapsed by default — the expand/collapse a11y labels ride
   // the heading toggle (the time-slot/role-row contract).
   'advanced.expand': '展开高级选项',
   'advanced.collapse': '收起高级选项',
-  'roleAutoMatch.label': '启用角色自动匹配',
-  'roleAutoMatch.hint': '规则未命中时，由模型自选最贴近的已声明角色',
-  'roleAutoMatch.tooltip': '规则未命中时，模型会自动从已声明角色（id + persona）中选择最匹配者并注入该角色的链；关闭后未命中规则时按现状回落（inherit / rootChain）。',
   // PR #62 feedback round: 默认降级链 is the all-day fallback chain as a
   // configurable selector list (no Flash|Pro radio — that panel moved to
   // 默认模型); the preemption hints are removed.
@@ -100,7 +95,7 @@ export const zh = {
   'timeSlots.name': '名称',
   'timeSlots.expand': '展开该行',
   'timeSlots.collapse': '收起该行',
-  'timeSlots.tooltip': '命中行的模型链成为 root 生效链（取代全时段链）；未命中任何行时使用全时段链。分时切换是路由种子而非失败决策：不消耗冷却、不计入单步切换上限。',
+  'timeSlots.tooltip': '命中行的模型链成为 root 生效链（取代全时段链）；未命中任何行时使用全时段链。分时切换是路由种子而非失败决策：不消耗冷却、不计入单次请求行走的切换上限。',
   'timeSlots.addPreset': '添加预设',
   'timeSlots.addCustom': '添加自定义时段',
   'timeSlots.presetPlaceholder': '选择预设',
@@ -297,19 +292,14 @@ export const en = {
   'cooldownMs.label': 'Cooldown (milliseconds)',
   'cooldownMs.hint': 'Models stay out of candidacy during cooldown',
   'cooldownMs.tooltip': 'Switched-away or failed models stay out of candidacy during the cooldown window.',
-  'maxSwitchesPerStep.label': 'Max switches per step',
+  'maxSwitchesPerStep.label': 'Max switches per request walk',
   'maxSwitchesPerStep.hint': 'Stops switching beyond the cap',
-  'maxSwitchesPerStep.tooltip': 'Beyond this the step stops switching and ends with the original error semantics, preventing chain loops from amplifying latency.',
-  'alwaysModeRetryCap.label': 'Always-mode retry cap',
-  'alwaysModeRetryCap.hint': 'Switches after the cap; 0 disables',
-  'alwaysModeRetryCap.tooltip': 'Models whose retryPolicy is always switch after this many retries within one request; 0 disables.',
+  'maxSwitchesPerStep.tooltip': 'Beyond this no further switch happens and the request ends with the original error semantics, preventing chain loops from amplifying latency.',
+  'virtualOnly.rule': 'Only sessions whose model selection is FallbacksChain/Auto (including plugin-injected subagents) walk a chain; a real-model selection gets no plugin fallback — llm-retry alone handles its retries.',
   'advanced.label': 'Advanced options',
   // Advanced-options disclosure (plan fallbacks-card-section-ux T3/T5).
   'advanced.expand': 'Expand advanced options',
   'advanced.collapse': 'Collapse advanced options',
-  'roleAutoMatch.label': 'Enable role auto-match',
-  'roleAutoMatch.hint': 'On rules-miss, the model picks the closest declared role',
-  'roleAutoMatch.tooltip': 'When no rule matches, the model auto-selects the best-fit declared role (id + persona) and uses its chain; turn off to keep today\'s fallback (inherit / rootChain) on a rules-miss.',
   // PR #62 feedback round: the default fallback chain is the all-day chain
   // as a configurable selector list (no Flash|Pro radio — that panel moved
   // to 默认模型); the preemption hints are removed.
@@ -358,7 +348,7 @@ export const en = {
   'timeSlots.name': 'Name',
   'timeSlots.expand': 'Expand this row',
   'timeSlots.collapse': 'Collapse this row',
-  'timeSlots.tooltip': 'A matched row\'s model chain becomes the effective root chain (replacing the all-day chain); no match uses the all-day chain. A time-slot switch is a routing seed, not a failure decision: it consumes no cooldown and does not count against the per-step switch cap.',
+  'timeSlots.tooltip': 'A matched row\'s model chain becomes the effective root chain (replacing the all-day chain); no match uses the all-day chain. A time-slot switch is a routing seed, not a failure decision: it consumes no cooldown and does not count against the per-request-walk switch cap.',
   'timeSlots.addPreset': 'Add preset',
   'timeSlots.addCustom': 'Add custom time slot',
   'timeSlots.presetPlaceholder': 'Select a preset',

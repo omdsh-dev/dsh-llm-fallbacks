@@ -126,10 +126,7 @@ export interface FallbacksConfigSummary {
   readonly cooldownMs: number
   readonly revertPolicy: string
   readonly maxSwitchesPerStep: number
-  readonly alwaysModeRetryCap: number
   readonly presets: 'bundled' | 'none'
-  /** Dispatch-time LLM role auto-match switch (default true). */
-  readonly roleAutoMatch: boolean
 }
 
 /**
@@ -235,10 +232,10 @@ export const FALLBACKS_COMMAND_LOCALES = {
     configRules: '角色规则',
     configCooldown: '冷却',
     configRevert: '回主策略',
-    configMaxSwitches: '单步最大切换',
-    configAlwaysCap: 'always 上限',
+    // Cap is per request walk, not per step (design §3.3): the walk-local
+    // switch count is judged once per `stream()` call.
+    configMaxSwitches: '单次请求行走最大切换',
     configPresets: '预置',
-    configRoleAutoMatch: '角色自动匹配',
     configEdit: '编辑：/settings（TUI 设置界面）或 ~/.dsh/profiles/<profile>/cordis.patch.yml（插件行）/ $DSH_HOME/settings.yaml（fallbacks: 分节）',
     configEditHint: 'TUI 通过 /settings 修改配置；文件编辑仍然可用',
     revertSeedOk: '角色 {id} 已还原为 Seed 默认',
@@ -298,10 +295,8 @@ export const FALLBACKS_COMMAND_LOCALES = {
     configRules: 'Rules',
     configCooldown: 'Cooldown',
     configRevert: 'Revert',
-    configMaxSwitches: 'Max switches/step',
-    configAlwaysCap: 'Always-mode cap',
+    configMaxSwitches: 'Max switches per request walk',
     configPresets: 'Presets',
-    configRoleAutoMatch: 'Auto-match',
     configEdit: 'Edit: /settings (TUI settings screen) or ~/.dsh/profiles/<profile>/cordis.patch.yml (plugin row) / $DSH_HOME/settings.yaml (fallbacks: section)',
     configEditHint: 'TUI edits config via /settings; file editing still works',
     revertSeedOk: 'role {id} reverted to its seed default',
@@ -410,7 +405,7 @@ export function recentFallbacksSwitches(events: readonly unknown[], limit: numbe
  * role resolve to `rootChain`. `inherit: true` marks the append-not-replace
  * tail — the role's `fallback` is `'inherit-root'` (the default) or the role
  * is unknown/built-in `'inherit'`, and `rootChain` is non-empty. Mirrors
- * `resolveChainViews`'s concatenation (see {@link buildRoleEntries} —
+ * `resolveChainViews`'s concatenation (see {@link roleChainEntries} —
  * `src/chains.ts`; the diagnostic keeps its display semantics: the role's
  * own chain renders in full, `rootChain` only when the role has no own
  * chain, with the inherit tail as an annotation) without a failing model to
@@ -653,9 +648,7 @@ export function fallbacksConfigText(
     `${t.configCooldown}: ${summary.cooldownMs} ms`,
     `${t.configRevert}: ${summary.revertPolicy}`,
     `${t.configMaxSwitches}: ${summary.maxSwitchesPerStep}`,
-    `${t.configAlwaysCap}: ${summary.alwaysModeRetryCap}`,
     `${t.configPresets}: ${summary.presets}`,
-    `${t.configRoleAutoMatch}: ${summary.roleAutoMatch ? t.configEnabled : t.configDisabled}`,
     '',
     t.configEdit,
     t.configEditHint,

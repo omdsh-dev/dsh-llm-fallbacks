@@ -29,7 +29,6 @@ const LIBRARY_EXPORT_KEYS = [
   'name',
   'Config',
   'stateStore',
-  'countRetryEvents',
   'apply',
   // Library API functions (plan fallbacks-consumer-api T1).
   'resolveRole',
@@ -73,7 +72,6 @@ describe('export surface: runtime values', () => {
     name: 'string',
     Config: 'function',
     stateStore: 'function',
-    countRetryEvents: 'function',
     apply: 'function',
     resolveRole: 'function',
     resolveCandidate: 'function',
@@ -116,6 +114,10 @@ describe('export surface: runtime values', () => {
     expect(index.INHERIT_ROLE_ID).toBe('inherit')
     expect(index.ROLE_ID_PATTERN).toBeInstanceOf(RegExp)
     expect('enabled' in index.defaultFallbacksConfig).toBe(false)
+    // Direction C removed both mechanisms; the exported defaults must not
+    // resurrect them.
+    expect('alwaysModeRetryCap' in index.defaultFallbacksConfig).toBe(false)
+    expect('roleAutoMatch' in index.defaultFallbacksConfig).toBe(false)
     expect(index.defaultFallbacksConfig.triggerCodes).toEqual(['AUTH', 'QUOTA', 'RATE_LIMIT'])
   })
 })
@@ -200,9 +202,8 @@ describe('export surface: type exports (compile-time only)', () => {
     expectTypeOf<index.Config>().toEqualTypeOf<index.FallbacksConfig>()
     expectTypeOf<index.FallbackSwitchReason>().toEqualTypeOf<'trigger-code' | 'always-cap'>()
     expectTypeOf<index.FallbacksSwitchEventData>().toMatchTypeOf<{ turn: number; step: number }>()
-    expectTypeOf<index.PendingSwitch>().toMatchTypeOf<{ role: string; reason: index.FallbackSwitchReason }>()
-    expectTypeOf<index.AgentFallbackState>().toMatchTypeOf<{ pendingSwitch?: index.PendingSwitch }>()
-    expectTypeOf<index.StepFailures>().toMatchTypeOf<{ turn: number; step: number }>()
+    expectTypeOf<index.AgentFallbackState>().toMatchTypeOf<{ cooldown: object; recovery: object }>()
+    expectTypeOf<index.BlockedSwitchAttempt>().toMatchTypeOf<{ route: index.FailingModel }>()
     expectTypeOf<index.FallbackStateStore>().toMatchTypeOf<object>()
     // Service contract (plan fallbacks-consumer-api T2 + fallbacks-role-seeds
     // T2 + seed-source-provenance T2): the static `provide` metadata value and

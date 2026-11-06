@@ -855,6 +855,131 @@ describe('subagent seam — behavioural (public call path)', () => {
   })
 })
 
+describe('subagent seam — install/dispose exception safety', () => {
+  let ctx: Context
+
+  beforeEach(() => {
+    ctx = new Context()
+  })
+
+  afterEach(async () => {
+    await ctx.fiber.dispose()
+  })
+
+  /**
+   * Make ONE `ctx.on` call throw (install) or hand back a throwing disposer
+   * (dispose). `installRoleNotice` registers through `ctx.on`, so that is the
+   * seam's throw-capable install step.
+   */
+  function stubContextOn(options: { install?: number; dispose?: number }): void {
+    const real = ctx.on.bind(ctx) as (...args: unknown[]) => () => void
+    // cordis types `on` per event key; a counting stub cannot type through that.
+    const host = ctx as unknown as { on: (...args: unknown[]) => () => void }
+    let calls = 0
+    host.on = (...args: unknown[]) => {
+      calls += 1
+      if (calls === options.install) throw new Error('install boom')
+      const dispose = real(...args)
+      if (calls !== options.dispose) return dispose
+      return () => {
+        throw new Error('dispose boom')
+      }
+    }
+  }
+
+  it('rolls back the root claim and the fiber count when a registration throws', () => {
+    ctx.provide('subagents', fakeSubagents({ childId: 'child-install' }).service)
+    // The third registration is `installRoleNotice`, after the two wrapper-owner
+    // listeners: the install is then PARTIAL.
+    stubContextOn({ install: 3 })
+    expect(() => installSubagentSeam(ctx, { roleIds: () => ROLE_IDS })).toThrow('install boom')
+
+    // The claim came back with the partial install: a later apply over the same
+    // root still owns the wrapper instead of silently installing none.
+    const seam = installSubagentSeam(ctx, { roleIds: () => ROLE_IDS })
+    expect(seam.ownsWrapper).toBe(true)
+
+    // …and the failed install left no fiber behind: ONE install means this
+    // dispose is the LAST fiber's, so the root-shared maps are zeroed.
+    seam.records.set('child-install', { role: 'coder', at: 1, firstNoticePending: true })
+    seam.dispose()
+    expect(seam.records.size).toBe(0)
+  })
+
+  it('decrements the fiber counter exactly once when a disposer throws', () => {
+    ctx.provide('subagents', fakeSubagents({ childId: 'child-dispose' }).service)
+    stubContextOn({ dispose: 1 })
+    const seam = installSubagentSeam(ctx, { roleIds: () => ROLE_IDS })
+    seam.records.set('child-dispose', { role: 'coder', at: 1, firstNoticePending: true })
+
+    expect(() => seam.dispose()).toThrow('dispose boom')
+    // The counter dropped in the `finally`, so the LAST fiber still zeroes the
+    // shared maps even though its first disposer threw.
+    expect(seam.records.size).toBe(0)
+    // Idempotent: the second call neither throws nor decrements again.
+    expect(() => seam.dispose()).not.toThrow()
+  })
+
+  it('keeps the install error and releases the claim when a rollback withdrawal throws', () => {
+    ctx.provide('subagents', fakeSubagents({ childId: 'child-rollback' }).service)
+    // The install throws at the third registration while the FIRST one hands
+    // back a throwing disposer: the partial-install rollback itself throws.
+    stubContextOn({ install: 3, dispose: 1 })
+
+    // The ORIGINAL install error surfaces — not the disposer's.
+    expect(() => installSubagentSeam(ctx, { roleIds: () => ROLE_IDS })).toThrow('install boom')
+
+    // The root claim came back with the rollback: a later apply over the same
+    // root still owns the wrapper.
+    const seam = installSubagentSeam(ctx, { roleIds: () => ROLE_IDS })
+    expect(seam.ownsWrapper).toBe(true)
+    seam.dispose()
+  })
+
+  it('releases the seam fiber when apply() throws before its own dispose effect registers', async () => {
+    ctx.provide('subagents', fakeSubagents({ childId: 'child-tail' }).service)
+    const config = () => cfg({ roles: { list: [{ id: 'coder', persona: '', chain: [] }], rules: [] } })
+
+    let failedCtx: Context | undefined
+    ctx.plugin({
+      name: 'fallbacks-throwing-tail',
+      apply: (fiberCtx: Context) => {
+        failedCtx = fiberCtx
+        // The caller's LAST step (`src/index.ts`, the one `ctx.effect` of
+        // `apply`) throws: the seam is installed, no caller lifecycle is left
+        // to release it. The host disposes the whole plugin scope instead.
+        const host = fiberCtx as unknown as { effect: (execute: unknown, label?: string) => unknown }
+        const real = host.effect
+        host.effect = (execute: unknown, label?: string) => {
+          if (label === 'llm-fallbacks: clear per-agent state') throw new Error('effect boom')
+          return real.call(fiberCtx, execute as never, label)
+        }
+        apply(fiberCtx, config())
+      },
+    })
+    await nextTick()
+    expect(subagentSeamOf(failedCtx!)?.ownsWrapper).toBe(true)
+
+    // The failed apply left NO fiber count and no claim behind: this later apply
+    // owns the wrapper again, and ITS dispose is the last fiber's — so the one
+    // record written here is cleared with the root-shared maps.
+    let nextCtx: Context | undefined
+    const nextFiber = ctx.plugin({
+      name: 'fallbacks-after-throwing-tail',
+      apply: (fiberCtx: Context) => {
+        nextCtx = fiberCtx
+        apply(fiberCtx, config())
+      },
+    })
+    await nextTick()
+    const seam = subagentSeamOf(nextCtx!)!
+    expect(seam.ownsWrapper).toBe(true)
+    seam.records.set('child-after-tail', { role: 'coder', at: 1, firstNoticePending: true })
+    await nextFiber.dispose()
+    expect(seam.records.size).toBe(0)
+  })
+})
+
 describe('subagent seam — wrapper identity + install topology', () => {
   let ctx: Context
 
@@ -1055,6 +1180,53 @@ describe('subagent seam — per-apply lifetime through apply()', () => {
     expect(third!.records).toBe(first!.records)
     await thirdFiber.dispose()
     await secondFiber.dispose()
+  })
+
+  it('multi-fiber: a disposing fiber keeps the mount verdict a surviving child still reads', async () => {
+    const fake = fakeSubagents({}, LOCAL_PROVIDER)
+    ctx.provide('subagents', fake.service)
+    const config = () => cfg({ roles: { list: [{ id: 'coder', persona: '', chain: ['other/gpt-4o'] }], rules: [] } })
+
+    let firstCtx: Context | undefined
+    let secondCtx: Context | undefined
+    const firstFiber = ctx.plugin({
+      name: 'fallbacks-keep-first',
+      apply: (fiberCtx: Context) => {
+        firstCtx = fiberCtx
+        apply(fiberCtx, config())
+      },
+    })
+    await nextTick()
+    const secondFiber = ctx.plugin({
+      name: 'fallbacks-keep-second',
+      apply: (fiberCtx: Context) => {
+        secondCtx = fiberCtx
+        apply(fiberCtx, config())
+      },
+    })
+    await nextTick()
+
+    const first = subagentSeamOf(firstCtx!)!
+    const second = subagentSeamOf(secondCtx!)!
+    expect(second.records).toBe(first.records)
+
+    // A LOCAL dispatch mounts the child on the virtual route: the record holds
+    // the role AND the mount verdict the walk's allowlist gate reads.
+    const { value } = await injectSubagents(ctx)
+    await startActivationOf(value)(activationSpec('mounted', assignment('coder')))
+    const childId = String(fake.activations[0]!.childId)
+    expect(first.records.get(childId)).toMatchObject({ role: 'coder', virtualRouteInjected: true })
+
+    // The OWNER fiber tears down. The maps are ROOT-scoped: clearing them here
+    // would strip the surviving child's verdict + role, and its next walk would
+    // skip the allowlist and fall back to the root chain.
+    await firstFiber.dispose()
+    expect(second.records.get(childId)).toMatchObject({ role: 'coder', virtualRouteInjected: true })
+
+    // …while the LAST fiber's teardown still leaves no residual state.
+    await secondFiber.dispose()
+    expect(second.records.size).toBe(0)
+    expect(second.noticeEmitted.size).toBe(0)
   })
 
   it('pre-writes the role record before the native call at the ONE install point (apply())', async () => {

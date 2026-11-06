@@ -407,7 +407,6 @@ describe('config schema — timeSlots and tz (P5)', () => {
       cooldownMs: 300_000,
       revertPolicy: 'cooldown-expiry',
       maxSwitchesPerStep: 8,
-      alwaysModeRetryCap: 5,
     }
     expect(minimal.timeSlots).toBeUndefined()
     expect(minimal.tz).toBeUndefined()

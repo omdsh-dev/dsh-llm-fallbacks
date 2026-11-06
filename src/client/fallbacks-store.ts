@@ -385,8 +385,7 @@ export function parseFallbacksConfig(value: unknown): FallbacksConfig {
   })
   const cooldownMs = value.cooldownMs
   const maxSwitchesPerStep = value.maxSwitchesPerStep
-  const alwaysModeRetryCap = value.alwaysModeRetryCap
-  for (const [field, raw] of [['cooldownMs', cooldownMs], ['maxSwitchesPerStep', maxSwitchesPerStep], ['alwaysModeRetryCap', alwaysModeRetryCap]] as const) {
+  for (const [field, raw] of [['cooldownMs', cooldownMs], ['maxSwitchesPerStep', maxSwitchesPerStep]] as const) {
     if (raw !== undefined && typeof raw !== 'number') {
       throw new TypeError(`fallbacks descriptor ${field} must be a number`)
     }
@@ -398,10 +397,6 @@ export function parseFallbacksConfig(value: unknown): FallbacksConfig {
   const presets = value.presets
   if (presets !== undefined && presets !== 'bundled' && presets !== 'none') {
     throw new TypeError('fallbacks descriptor presets must be bundled|none')
-  }
-  const roleAutoMatch = value.roleAutoMatch
-  if (roleAutoMatch !== undefined && typeof roleAutoMatch !== 'boolean') {
-    throw new TypeError('fallbacks descriptor roleAutoMatch must be a boolean')
   }
   // P5 mirror: the host schema gained `timeSlots` (11th field) — mechanical
   // descriptor guard for the row shape; the card edits rows in Task 3.
@@ -442,29 +437,21 @@ export function parseFallbacksConfig(value: unknown): FallbacksConfig {
     cooldownMs: (cooldownMs as number | undefined) ?? defaultFallbacksConfig.cooldownMs,
     revertPolicy: (revertPolicy as FallbacksConfig['revertPolicy'] | undefined) ?? defaultFallbacksConfig.revertPolicy,
     maxSwitchesPerStep: (maxSwitchesPerStep as number | undefined) ?? defaultFallbacksConfig.maxSwitchesPerStep,
-    alwaysModeRetryCap: (alwaysModeRetryCap as number | undefined) ?? defaultFallbacksConfig.alwaysModeRetryCap,
     // §9.4 mirror: the host default gained `presets` (9th field), so the
     // client fold mirrors it too — `parseFallbacksConfig` output must stay
     // equal to `defaultFallbacksConfig` (pinned invariant). Mechanical
     // mirror of `revertPolicy`; the settings card neither consumes nor
     // renders `presets` (R-001 re-defer — no client feature change).
     presets: (presets as FallbacksConfig['presets'] | undefined) ?? defaultFallbacksConfig.presets,
-    // §9.4 mirror: the host default gained `roleAutoMatch` (10th field), so
-    // the client fold mirrors it too — `parseFallbacksConfig` output must
-    // stay equal to `defaultFallbacksConfig` (pinned invariant). Mechanical
-    // mirror of `revertPolicy`; the settings card renders the key as an
-    // always-on "Enable role auto-match" toggle (default true, plan
-    // fallbacks-settings-visibility Task 3).
-    roleAutoMatch: roleAutoMatch ?? defaultFallbacksConfig.roleAutoMatch,
-    // P5 mirror: the host default gained `timeSlots` (11th field), so the
+    // P5 mirror: the host default gained `timeSlots` (10th field), so the
     // client fold mirrors it too — `parseFallbacksConfig` output must stay
     // equal to `defaultFallbacksConfig` (pinned invariant). Mechanical
     // mirror of `triggerCodes`; the settings card edits rows in Task 3.
     timeSlots: (timeSlots as SlotRowConfig[] | undefined) ?? [...(defaultFallbacksConfig.timeSlots ?? [])],
-    // P5 mirror: the host default gained `tz` (12th field), so the client
+    // P5 mirror: the host default gained `tz` (11th field), so the client
     // fold mirrors it too — mechanical mirror of `presets`.
     tz: (tz as FallbacksConfig['tz'] | undefined) ?? defaultFallbacksConfig.tz,
-    // P1 mirror: the host default gained `recovery` (13th field), so the
+    // P1 mirror: the host default gained `recovery` (12th field), so the
     // client fold mirrors it too — `parseFallbacksConfig` output must stay
     // equal to `defaultFallbacksConfig` (pinned invariant). Mechanical
     // mirror of `presets`; the settings card neither consumes nor renders
@@ -1339,17 +1326,6 @@ export class FallbacksSettingsController {
     subagentPolicy: SubagentPolicyView | undefined,
   ): void {
     const parsed = config === undefined ? undefined : parseFallbacksConfig(config)
-    // `roleAutoMatch` (plan fallbacks-role-automatch Task 1) is a boolean
-    // with a schemastery schema default `true`, so the gateway composition
-    // (entry base → user layer) ALWAYS resolves the key on the real wire —
-    // even for a pre-Plan-A / legacy descriptor that never declared it
-    // (AC-7 re-scope, PM decision 2026-08-17 Option A). There is no
-    // key-presence signal to honor client-side: `parseFallbacksConfig` folds
-    // the key to the default, the card toggle always renders (default on),
-    // and a save persists the resolved value (`true` for a legacy config).
-    // Keeping the key in the stored config-basis is honest to server truth
-    // and the clean-draft invariant holds (both the draft and the accepted
-    // config carry `roleAutoMatch`).
     this.store.update((state) => {
       state.status = 'ready'
       state.error = null

@@ -279,28 +279,6 @@ async function mountCard(options: Parameters<typeof scriptedApi>[0] = {}, preloa
 const BASE_CONFIG: typeof defaultFallbacksConfig = { ...defaultFallbacksConfig }
 
 /**
- * A config with the `roleAutoMatch` key removed — the pre-fold legacy wire
- * shape (plan fallbacks-settings-visibility T3): a unit fixture can hand-build
- * it, but the REAL gateway composition always folds the schema default
- * `roleAutoMatch: true` into the wire (see tests/gateway.spec.ts), so the
- * card must render the toggle (default on) even for this shape and a save
- * persists the resolved value (AC-7 re-scope, PM decision 2026-08-17
- * Option A).
- */
-const LEGACY_CONFIG: typeof defaultFallbacksConfig = withoutRoleAutoMatch({
-  ...BASE_CONFIG,
-  // Conforming all-day tail — the save test drives the whole-form gate (T3).
-  rootChain: [OFFICIAL_FLASH],
-})
-
-/** Copy a config without the `roleAutoMatch` property. */
-function withoutRoleAutoMatch(config: typeof defaultFallbacksConfig): typeof defaultFallbacksConfig {
-  const copy: Record<string, unknown> = { ...config }
-  delete copy.roleAutoMatch
-  return copy as typeof defaultFallbacksConfig
-}
-
-/**
  * A two-block config (spec §8) exercising every new editing surface: a
  * CONFORMING all-day rootChain (official Flash head — the 默认模型 panel),
  * two declared role entities (one `inherit-root`, one
@@ -707,7 +685,6 @@ describe('FallbacksCard section saves (plan fallbacks-card-section-ux)', () => {
     expect(document.querySelectorAll('.defaultNote')).toHaveLength(0)
     expect(screen.getByRole('img', { name: `${en['cooldownMs.tooltip']} ${en['defaults.prefix']}: 300000` })).toBeTruthy()
     expect(screen.getByRole('img', { name: `${en['maxSwitchesPerStep.tooltip']} ${en['defaults.prefix']}: 8` })).toBeTruthy()
-    expect(screen.getByRole('img', { name: `${en['alwaysModeRetryCap.tooltip']} ${en['defaults.prefix']}: 5` })).toBeTruthy()
   })
 
   it('keeps dirty tracking section-scoped: an advanced edit arms only the advanced pair', async () => {
@@ -3098,110 +3075,28 @@ describe('FallbacksCard 主代理 layout (PR #62 feedback round)', () => {
   })
 })
 
-describe('FallbacksCard roleAutoMatch toggle (plan fallbacks-settings-visibility T3)', () => {
-  it('renders the toggle in the advanced options, default on', async () => {
+describe('FallbacksCard direction C surface (virtual-chain-only fallback)', () => {
+  it('renders the virtual-chain-only rule at the top, in both dictionaries', async () => {
     const { view, props } = await mountCard({ config: BASE_CONFIG })
     view.rerender(<FallbacksCard {...props} />)
-    // The toggle lives in the advanced section (collapsed by default —
-    // plan fallbacks-card-section-ux T3) and starts checked (the
-    // config-model default, `true` — compass AC-6 roleAutoMatch default on).
-    expandAdvanced()
-    const toggle = screen.getByLabelText(en['roleAutoMatch.label']) as HTMLInputElement
-    expect(toggle.checked).toBe(true)
-  })
-
-  it('renders the checkbox inline-left of its text: input first in the row, title and description both label the control', async () => {
-    const { view, props } = await mountCard({ config: BASE_CONFIG })
-    view.rerender(<FallbacksCard {...props} />)
-    // The optionRow convention (card-ux-followup T2): the input is the
-    // row's FIRST child (checkbox on the left), and the whole text block is
-    // label-associated — the description resolves to the SAME control via
-    // its explicit `htmlFor` (label association, not click-forwarding).
-    expandAdvanced()
-    const toggle = screen.getByLabelText(en['roleAutoMatch.label']) as HTMLInputElement
-    expect(screen.getByLabelText(en['roleAutoMatch.hint'])).toBe(toggle)
-    const title = screen.getByText(en['roleAutoMatch.label'])
-    expect(toggle.compareDocumentPosition(title) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-  })
-
-  it('writes the toggle to the scalar and persists roleAutoMatch:false through a save', async () => {
-    // A conforming all-day tail so the accepted config is save-valid; the
-    // advanced section's own Save persists the scalar.
-    const { view, props, scripted } = await mountCard({
-      config: { ...defaultFallbacksConfig, rootChain: [OFFICIAL_FLASH] },
-    })
-    view.rerender(<FallbacksCard {...props} />)
-    expandAdvanced()
-    // Flipping the toggle off dirties the advanced section (scalar
-    // roleAutoMatch true → false); the advanced Save persists it.
-    fireEvent.click(screen.getByLabelText(en['roleAutoMatch.label']))
-    view.rerender(<FallbacksCard {...props} />)
-    expect((screen.getByLabelText(en['roleAutoMatch.label']) as HTMLInputElement).checked).toBe(false)
-    fireEvent.click(saveButton('advanced'))
-    await waitFor(() => expect(scripted.set).toHaveBeenCalled())
-    expect(scripted.set).toHaveBeenCalledWith(expect.objectContaining({
-      args: { patch: expect.objectContaining({ roleAutoMatch: false }) },
-    }))
-  })
-
-  it('renders the toggle (default on) for a legacy config that never declared the key (AC-7 re-scope Option A)', async () => {
-    const { view, props } = await mountCard({ config: LEGACY_CONFIG })
-    view.rerender(<FallbacksCard {...props} />)
-    // AC-7 re-scope (PM decision 2026-08-17 Option A): the real gateway wire
-    // always carries `roleAutoMatch: true` (the schema fold — see
-    // tests/gateway.spec.ts), so the card ALWAYS renders the toggle and it
-    // starts checked. The advanced options render the rest as usual.
-    expandAdvanced()
-    const toggle = screen.getByLabelText(en['roleAutoMatch.label']) as HTMLInputElement
-    expect(toggle.checked).toBe(true)
-    expect(screen.getByLabelText(en['cooldownMs.label'])).toBeTruthy()
-  })
-
-  it('loads a legacy config clean (no unsaved pill) — the draft and accepted basis both carry the folded roleAutoMatch: true', async () => {
-    // The dirty-check invariant must hold for legacy configs too: the
-    // accepted config-basis keeps the folded `roleAutoMatch: true` (the
-    // value every real-wire read emits), and the assembled draft carries the
-    // same value, so the card does NOT show a spurious "unsaved" state the
-    // moment it loads.
-    const { view, props } = await mountCard({ config: LEGACY_CONFIG })
-    view.rerender(<FallbacksCard {...props} />)
-    expect(saveButton('main').disabled).toBe(true)
-  })
-
-  it('a legacy-config save persists roleAutoMatch: true (the schema default is pinned, not invented)', async () => {
-    const { view, props, scripted } = await mountCard({ config: LEGACY_CONFIG })
-    view.rerender(<FallbacksCard {...props} />)
-    // An advanced edit makes the advanced section dirty (a clean section's
-    // Save button is disabled); the always-rendered toggle stays on, so the
-    // saved section carries `roleAutoMatch: true` and the save pins it —
-    // semantically identical to the schema default (AC-7 re-scope Option A).
-    expandAdvanced()
-    fireEvent.change(screen.getByLabelText(en['cooldownMs.label']), { target: { value: '7000' } })
-    view.rerender(<FallbacksCard {...props} />)
-    fireEvent.click(saveButton('advanced'))
-    await waitFor(() => expect(scripted.set).toHaveBeenCalled())
-    expect(scripted.set).toHaveBeenCalledWith(expect.objectContaining({
-      args: { patch: expect.objectContaining({ roleAutoMatch: true }) },
-    }))
-  })
-
-  it('keeps the roleAutoMatch label + hint/tooltip keys in both zh and en dictionaries', () => {
+    expect(screen.getByText(en['virtualOnly.rule'])).toBeTruthy()
     // Bilingual-pair constraint (plan Global Constraints).
-    expect(zh['roleAutoMatch.label']).toBeTruthy()
-    expect(en['roleAutoMatch.label']).toBeTruthy()
-    expect(zh['roleAutoMatch.hint']).toBeTruthy()
-    expect(en['roleAutoMatch.hint']).toBeTruthy()
-    expect(zh['roleAutoMatch.tooltip']).toBeTruthy()
-    expect(en['roleAutoMatch.tooltip']).toBeTruthy()
+    expect(zh['virtualOnly.rule']).toBeTruthy()
+    expect(en['virtualOnly.rule']).toBeTruthy()
   })
 
-  it('keeps the toggle inert under the global read-only gate (!writable)', async () => {
-    const { view, props } = await mountCard({ config: BASE_CONFIG, writable: false })
+  it('drops the removed roleAutoMatch toggle and alwaysModeRetryCap field from the advanced options', async () => {
+    const { view, props } = await mountCard({ config: BASE_CONFIG })
     view.rerender(<FallbacksCard {...props} />)
-    // Read-only forces the advanced options open and the wrapping fieldset
-    // + explicit disabled term make the toggle inert (F-002 precedent).
-    const toggle = screen.getByLabelText(en['roleAutoMatch.label']) as HTMLInputElement
-    expect(toggle.disabled).toBe(true)
+    expandAdvanced()
+    // Both controls belonged to the deleted automatch / always-cap
+    // mechanisms; the remaining advanced controls still mount.
+    expect(screen.queryByLabelText(en['cooldownMs.label'])).toBeTruthy()
+    expect(document.querySelector('#fallbacks-role-automatch')).toBeNull()
+    expect(document.querySelector('#fallbacks-always-cap')).toBeNull()
+    // No dead locale keys survive the removal.
+    expect('roleAutoMatch.label' in en).toBe(false)
+    expect('alwaysModeRetryCap.label' in zh).toBe(false)
   })
 })
 

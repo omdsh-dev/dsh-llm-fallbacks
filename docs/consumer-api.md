@@ -33,7 +33,7 @@ validateFallbacksConfig(config, logger)
 | `selectCandidates(all, wildcard, filter?, modelExists?)` | Applies the filter and existence probes to the candidate views, returning the list of surviving candidates. |
 | `resolveChain(roles, rootChain, role, provider, model, filter?, modelExists?, warn?)` | Full chain resolution (same as the decision path): concatenates the role chain + `rootChain` (`fallback: 'none'` appends nothing), returning the surviving candidates. |
 | `hasWildcardEntry(roles, rootChain, role)` | Detects whether a role's concatenated chain contains `provider/*` wildcard entries — callers use it to decide whether catalog existence probes are needed (same source as resolution, no over-approximation). |
-| `createCandidateFilter(options)` | Builds a candidate filter: skips the current model, models in cooldown, models already failed in this step, and missing model ids. |
+| `createCandidateFilter(options)` | Builds a candidate filter: skips the current model, models in cooldown, models that already failed earlier in the same walk, and missing model ids. |
 | `annotateCandidates(candidates, surviving, options)` | Annotates each candidate with its skip reason (`skip` undefined = surviving), for visibility / logging. |
 | `validateFallbacksConfig(config, logger)` | Validates config legality (undeclared role references, illegal chains, etc.); problems are warned via `logger.warn` (never throws). |
 | `detectLegacyKeys(source)` | Detects removed legacy keys (e.g. `chains`) in the config, returning the list of keys hit. |
@@ -80,7 +80,9 @@ Operator-facing behavior of the automatic declaration (config key `presets: 'bun
 
 ### Existing plugin exports (unchanged)
 
-`name` / `Config` (schemastery schema) / `stateStore` / `countRetryEvents` / `apply` and the event and state types (`FallbackSwitchReason` / `FallbacksSwitchEventData` / `AgentFallbackState` / `FallbackStateStore` / `PendingSwitch` / `SwitchScope` / `StepFailures`) continue to be exported from the package root, zero regression.
+`name` / `Config` (schemastery schema) / `stateStore` / `apply` and the event and state types (`FallbackSwitchReason` / `FallbacksSwitchEventData` / `AgentFallbackState` / `BlockedSwitchAttempt` / `FallbackStateStore`) continue to be exported from the package root, zero regression.
+
+> **Removed in 0.2.2-rc.1 (direction C)**: `countRetryEvents` and the `PendingSwitch` / `SwitchScope` / `StepFailures` types are gone — the request-waterfall decision path that produced them was deleted, so no successor exists. A consumer importing any of the four now gets a resolution error; the walk keeps its failed set and switch count per call, not in exported state.
 
 > **Mechanical guard (S-3)**: the SSOT for the runtime export inventory above (functions / values / existing plugin exports) is `LIBRARY_EXPORT_KEYS` in `tests/export-surface.spec.ts` — adding or removing any runtime key in this inventory requires syncing that array (and the `valueExports` type mapping in the same file), or CI fails. The type export inventory is pinned by the `expectTypeOf` block in the same file (dev-time type pin, checked by local tsc).
 

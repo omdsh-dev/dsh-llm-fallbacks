@@ -21,9 +21,10 @@
  * Every case below drives an activation through the real `apply()`
  * composition and asserts what a teammate's declared role must (or must not)
  * produce: (a) the per-child seam record, (b) the child's scoped persona
- * section, (c) the role's chain head on the child's FIRST `agent/request`. The
- * two non-local cases assert the documented external outcomes instead — the
- * record keyed from the resolved id, or a refusal with no delivery at all.
+ * section, (c) the child's effective chain head — the role's chain head,
+ * mounted on the virtual route by the dispatch seam. The two non-local cases
+ * assert the documented external outcomes instead — the record keyed from the
+ * resolved id, or a refusal with no delivery at all.
  *
  * The fake runtime mirrors the rc.1 local/external split the seam routes on:
  * `spawn` exposes `prepareContinuable` (a LOCAL backend — the caller-reserved
@@ -41,10 +42,11 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { PERSONA_PREFIX_SECTION } from '@deepseek-ai/dsh-system-prompt'
-import { apply } from '../src/index.ts'
+import { apply, chainHeads } from '../src/index.ts'
 import { subagentSeamOf, type SubagentActivationSpecView, type SubagentSeamRecord } from '../src/subagents-seam.ts'
+import { FALLBACKS_CHAIN_MODEL, FALLBACKS_PROVIDER } from '../src/virtual-adapter.ts'
 import { MemorySettings } from './support/memory-settings.ts'
-import { cfg, dispatchRequest, makeAgent } from './support/harness.ts'
+import { cfg } from './support/harness.ts'
 import { settle } from './support/settle.ts'
 
 /** Declared taxonomy under test: `coder` carries both the persona and the chain head. */
@@ -268,13 +270,6 @@ async function mount(): Promise<{
   return { fake, activate: await injectSubagents(ctx, fake.service) }
 }
 
-/** Drive one child's FIRST `agent/request` the way the agent loop does. */
-async function firstRequest(childId: string): Promise<{ provider: string; model: string }> {
-  const seed = { provider: 'mock', model: 'gpt-4o' }
-  const { agent } = makeAgent(childId, seed, { origin: 'subagent' })
-  return dispatchRequest(ctx, agent, seed)
-}
-
 describe('Agent Team teammate role delivery (roster-shaped activation)', () => {
   it('delivers a teammate role end to end: record at native-call time, persona, chain head', async () => {
     const { fake, activate } = await mount()
@@ -290,18 +285,28 @@ describe('Agent Team teammate role delivery (roster-shaped activation)', () => {
       role: 'coder',
       at: expect.any(Number),
       firstNoticePending: true,
+      virtualRouteInjected: true,
     })
     expect(records().get(childId)?.role).toBe('coder')
-    // The runtime received the caller's OWN spec object (a reserved id needs no copy).
-    expect(fake.activations[0]).toBe(spec)
+    // The runtime received a DERIVED spec: the seam stamped the virtual route
+    // over the caller's request, mounting the child on the virtual chain.
+    expect(fake.activations[0]).not.toBe(spec)
+    expect(fake.activations[0]!.request.agentOptions).toEqual({
+      provider: FALLBACKS_PROVIDER,
+      model: FALLBACKS_CHAIN_MODEL,
+    })
 
     // (b) The child's persona is its role's, registered on the CHILD's own scope.
     expect(fake.children[0]!.sections).toEqual([
       { name: PERSONA_PREFIX_SECTION, order: 0, text: 'Coder persona' },
     ])
 
-    // (c) The child's first request is routed to the role's chain head.
-    expect(await firstRequest(childId)).toEqual({ provider: 'anthropic', model: 'claude-sonnet-4' })
+    // (c) The child's effective chain head is its role's chain head.
+    expect(chainHeads(ctx)?.get(childId)).toEqual({
+      at: expect.any(Number),
+      route: { provider: 'anthropic', model: 'claude-sonnet-4' },
+      source: 'injected',
+    })
   })
 
   it('gives two teammates of the same role their own record, persona and chain head', async () => {
@@ -325,8 +330,14 @@ describe('Agent Team teammate role delivery (roster-shaped activation)', () => {
     expect(fake.children[1]!.sections).toEqual([
       { name: PERSONA_PREFIX_SECTION, order: 0, text: 'Coder persona' },
     ])
-    expect(await firstRequest(first)).toEqual({ provider: 'anthropic', model: 'claude-sonnet-4' })
-    expect(await firstRequest(second)).toEqual({ provider: 'anthropic', model: 'claude-sonnet-4' })
+    expect(chainHeads(ctx)?.get(first)).toMatchObject({
+      route: { provider: 'anthropic', model: 'claude-sonnet-4' },
+      source: 'injected',
+    })
+    expect(chainHeads(ctx)?.get(second)).toMatchObject({
+      route: { provider: 'anthropic', model: 'claude-sonnet-4' },
+      source: 'injected',
+    })
   })
 
   it('leaves a teammate with no declared header un-roled: no record, no persona, request unchanged', async () => {
@@ -343,8 +354,8 @@ describe('Agent Team teammate role delivery (roster-shaped activation)', () => {
     // The teammate still exists — nothing was delivered to it.
     expect(fake.children.map((child) => child.childId)).toEqual([childId])
     expect(fake.children[0]!.sections).toEqual([])
-    // The rules/inherit path: the first request keeps the route it inherited.
-    expect(await firstRequest(childId)).toEqual({ provider: 'mock', model: 'gpt-4o' })
+    // The rules/inherit path: no mount, so no chain head is labelled for it.
+    expect(chainHeads(ctx)?.size).toBe(0)
   })
 
   it('leaves a teammate declaring an UNDECLARED header un-roled (same no-op)', async () => {
@@ -357,7 +368,7 @@ describe('Agent Team teammate role delivery (roster-shaped activation)', () => {
     expect(records().size).toBe(0)
     expect(fake.activations[0]).toBe(spec)
     expect(fake.children[0]!.sections).toEqual([])
-    expect(await firstRequest(childId)).toEqual({ provider: 'mock', model: 'gpt-4o' })
+    expect(chainHeads(ctx)?.size).toBe(0)
   })
 
   it('keys a generic external child record off the id the backend resolved', async () => {

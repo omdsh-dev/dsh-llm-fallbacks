@@ -7,12 +7,16 @@ when it intervenes, and how each surface behaves. The landing-page overview is
 
 ## Automatic model failover
 
-Any agent — root or subagent — that keeps failing on a listed failure code
-switches down its chain to the next available provider/model, and the failing
-request is retried on the target model so the current step/turn continues. The
-configuration is two blocks: `rootChain` for the root agent, and declared role
-entities (`roles.list`) referenced by `roles.rules` (or the built-in `inherit`)
-for subagents.
+Only a session whose model selection routes to the plugin's virtual
+`FallbacksChain / Auto` row has a chain: the root agent when that row is
+selected, or an inheriting subagent the dispatch seam mounted there. Such a
+session that keeps failing on a listed failure code walks down its chain to the
+next available provider/model, and the failing request is retried on the target
+model so the current step/turn continues. **A real provider/model selection —
+root or subagent — gets no plugin fallback**: nothing in this plugin touches it,
+and `llm-retry` alone handles its failures. The configuration is two blocks:
+`rootChain` for the root agent, and declared role entities (`roles.list`)
+referenced by `roles.rules` (or the built-in `inherit`) for subagents.
 
 **Neither block is configured by default** — there is no `rootChain` and there
 are no `timeSlots` rows until you write them. The one thing `apply` declares on
@@ -22,24 +26,28 @@ else, never a chain. With no root chain, no slot rows and no role chain matched,
 requests pass through unchanged and the `fallbacks/switch` path writes nothing
 (see [No configuration, no behavior](#no-configuration-no-behavior) and
 [docs/configuration.md](configuration.md#no-op-invariant)). A seeded role
-becomes routing-relevant only once a dispatch header, a rule or the LLM
-auto-match selects a role that does carry a chain.
+becomes routing-relevant only once a dispatch header or a rule selects a role
+that does carry a chain.
 
 ### Fallback triggers (`triggerCodes`)
 
-`fallbacks.triggerCodes` is a plain list of dsh failure codes, and **any** code the harness can report is accepted — not only the three defaults (`AUTH` / `QUOTA` / `RATE_LIMIT`). A failure whose code is not listed passes straight through to llm-retry or to the original error, exactly as if the plugin were not installed. Retryable failures (5xx / `TRANSPORT` / `TIMEOUT` / `EMPTY_RESPONSE`) need no extra entries: llm-retry backs them off first and the failure enters the chain decision the same way once that budget is exhausted.
+`fallbacks.triggerCodes` is a plain list of dsh failure codes, and **any** code the harness can report is accepted — not only the three defaults (`AUTH` / `QUOTA` / `RATE_LIMIT`). A failure whose code is not listed is forwarded verbatim to llm-retry or to the original error, exactly as if the plugin were not installed. Retryable failures (5xx / `TRANSPORT` / `TIMEOUT` / `EMPTY_RESPONSE`) need no extra entries: llm-retry backs them off first, and every retry re-enters the walk as a fresh request — which starts past the head that failed, because that head is already on cooldown. The walk therefore never pins a failing route, and no separate always-mode cap is needed.
+
+### Partial output (committed rule)
+
+A walk cannot replay an attempt that already emitted output: yielded chunks cannot be unsent, and concatenating a second model's output behind a partial one would corrupt the assistant message. So a trigger-code failure is switched **only while the attempt has produced no chunk yet**. Once a chunk has been yielded, the attempt is committed and any later failure is forwarded verbatim: the loop settles the partial attempt and llm-retry or the terminal error takes over. That differs from the pre-upgrade path, which decided a switch at the next step's request after a mid-output failure; here the switch still happens, but only if llm-retry retries.
 
 ### Cooldown and revert
 
-Failed / switched-away models are not re-selected during cooldown; `revertPolicy: cooldown-expiry` returns to the primary model automatically.
+Failed / switched-away models are not re-selected during cooldown; `revertPolicy: cooldown-expiry` returns to the primary model automatically. The cooldown/recovery store is the walk's only cross-call memory (keyed per agent) — the route cooldown plus the half-open escalation counters — which is what lets an llm-retry re-entry resume past a failed head.
 
 ### Half-open recovery (opt-in)
 
-`recovery: half-open` makes recovery evidence-driven — an expired cooldown leaves the route half-open for one logged probe instead of restoring the preference; consecutive failures escalate the suppression duration (×2 per failure, capped at 1 h); an observed completion closes the circuit and fully restores the preference. `revertPolicy: 'never'` keeps the mechanism inert; state is session-scoped in-memory (a restart resets). YAML-only — the default `timer` keeps every existing behavior byte-identical (see [docs/configuration.md](configuration.md#recovery-mode-recovery-key)).
+`recovery: half-open` makes recovery evidence-driven — an expired cooldown leaves the route half-open for one logged probe instead of restoring the preference; consecutive failures escalate the suppression duration (×2 per failure, capped at 1 h); a completed attempt closes the circuit and fully restores the preference. `revertPolicy: 'never'` keeps the mechanism inert; state is session-scoped in-memory (a restart resets). YAML-only — the default `timer` keeps every existing behavior byte-identical (see [docs/configuration.md](configuration.md#recovery-mode-recovery-key)).
 
 ### Safety valves
 
-`maxSwitchesPerStep` caps switches per step and `alwaysModeRetryCap` caps always-mode retries — chain loops cannot amplify latency.
+`maxSwitchesPerStep` caps switches **per request walk** (attempts ≤ cap + 1); beyond it the walk stops advancing and re-emits the last attempt's terminal error verbatim — chain loops cannot amplify latency. The per-call failed set and the cap live only for that walk; the retired `alwaysModeRetryCap` has no successor (see [docs/configuration.md](configuration.md#field-overview)).
 
 ### Switch visibility
 
@@ -68,9 +76,11 @@ fallbacks:
     - deepseek-official/deepseek-flash  # last resort (Flash or Pro)
 ```
 
-**Ordering — the fallback runs before compaction.** With `CONTEXT_WINDOW_EXCEEDED` in `triggerCodes`, this plugin's `agent/request-error` listener handles the rejection **before** the harness's compaction plugin gets to compact: the conversation moves to the fallback model on the first overflow, and the context is never compacted. Leave the code out of `triggerCodes` if you would rather have compaction tried first.
+**Ordering — on a virtual-route session the fallback runs before compaction.** With `CONTEXT_WINDOW_EXCEEDED` in `triggerCodes`, a `FallbacksChain / Auto` request that overflows is handled inside the walk while the attempt has emitted nothing, so the conversation moves to a larger-context candidate and the context is not compacted. The failure only reaches the harness's compaction plugin when the walk itself cannot continue (no larger candidate, or the switch cap is reached) — then the last terminal failure is re-emitted verbatim and the host's normal error path, compaction included, runs. This applies **only** to sessions on the virtual route; a session on a real provider/model has no chain, so its overflow goes straight to compaction as before. Leave the code out of `triggerCodes` to have compaction tried first on virtual-route sessions too.
 
-**Request-scoped switching.** A context-window rejection says the *request* was too big, not that the route is unhealthy. Such a switch is **request-scoped**: the from-route is recorded as failed for the current step (so the step does not bounce straight back to it) and still counts against `maxSwitchesPerStep`, but it is **not** put on cooldown for `cooldownMs` and does not feed the half-open recovery counter — the next, shorter prompt goes to the primary model as usual, and no half-open probe is spent on a route that never failed. Every other trigger code stays **route-scoped** (cooldown + recovery bookkeeping) exactly as before.
+**Request-scoped switching.** A context-window rejection says the *request* was too big, not that the route is unhealthy. Such a switch is **request-scoped**: the from-route is recorded as failed for the current walk (so the walk does not bounce straight back to it) and still counts against `maxSwitchesPerStep`, but it is **not** put on cooldown for `cooldownMs` and does not feed the half-open recovery counter — the next, shorter prompt goes to the primary model as usual, and no half-open probe is spent on a route that never failed. Every other trigger code stays **route-scoped** (cooldown + recovery bookkeeping) exactly as before.
+
+Note what a request-scoped failure deliberately does **not** buy: because no cooldown is written, an llm-retry re-entry starts from the same head again. Only route-scoped failures push the walk past a head across calls.
 
 **Candidates that cannot fit are skipped.** On a context-window walk the chain skips any candidate whose advertised context window is not larger than the failing model's — falling over from a 128k model to an 8k one would only fail again. Windows come from the host model catalog: the catalog row's `contextWindow` when it carries one, otherwise `llm.resolveModelInfo(provider, model)`'s `context.contextWindow`. A model that discloses no window either way is kept as a candidate, so a provider without capacity metadata never empties a chain. Skipped candidates are named in the switch log line as `skipped: context-window`.
 
@@ -105,7 +115,7 @@ mechanisms share that header, and they are not the same thing:
   makes the child a role child: the role's `persona` is installed on it, its own
   session shows one `[role: <id>]` notice row, and the web session header shows
   a role badge.
-- **Routing resolution** runs on the child's first request in the four ordered
+- **Routing resolution** runs inside the chain walk, in the three ordered
   stages below, where the same header is stage 2. Routing and identity are
   independent: a child that declares `**Execute as**: <id>` keeps that role's
   delivered persona, notice row and badge **regardless of which routing stage
@@ -113,21 +123,27 @@ mechanisms share that header, and they are not the same thing:
   the carriers remain the declared role's. A child with **no declared dispatch
   header** gets no persona, no notice row and no role half of the badge (the
   model half still renders when the child has a recorded route), even when a
-  rule or auto-match resolves a role for routing; no carrier reports a role
-  inferred after the fact.
+  rule resolves a role for routing; no carrier reports a role inferred after
+  the fact.
 
-Injection is conditional too: the resolved role's chain head replaces the
-child's model only when it is plugin-originated *and* the host lets it through —
-an authorized route is preserved and the allowlist bounds the head (see
+Chain mounting is conditional too, and it happens at **dispatch**, not at the
+first request: the seam stamps `FallbacksChain / Auto` into an inheriting
+child's creation options, so the child's route is the virtual row and the walk
+serves it. A spawn request that already carries an explicit `provider`/`model`
+route is **authorized** and never touched, and the host allowlist bounds a
+mounted child's candidates (see
 [Host subagent model selection policy](#host-subagent-model-selection-policy-dsh-012)).
+A child that is neither mounted nor explicitly on the virtual row has no chain
+at all — external (acp) backends always land here, because they cannot resolve
+the virtual provider out of process.
 
 The same seam serves an ordinary subagent dispatch and an Agent Team teammate
 (`spawn_teammate`): both are children dispatched with the same Assignment
 header, so nothing Agent-Team-specific is required.
 
-### Dispatch-time role resolution
+### Role resolution in the walk
 
-On a subagent's first request its role is resolved in **four ordered stages** (first hit wins) — explicit (`agentPreset` matches a declared role id) → **dispatch-declared role** (the role the dispatch seam resolved from the child's prompt header `**Execute as**: <id>` — a normally delegated Assignment or an Agent Team teammate's initial prompt — trimmed and looked up in the live declared-role set, so an absent header, the reserved `inherit` and a since-removed id all fall through silently) → deterministic rules (matching either the recorded pair or the served head — see [FallbacksChain in the model picker](#fallbackschain-in-the-model-picker)) → LLM auto-match from the declared role taxonomy (`fallbacks.roleAutoMatch`, default `true`). The resolved role's chain-head model is then injected into the first request — as far as the host policy lets it through: an explicit authorized route skips the inject, an injected head must be on the effective allowlist, and an empty intersection injects nothing (see [Host subagent model selection policy](#host-subagent-model-selection-policy-dsh-012)) — and recorded via an explicit `role → model` log line (no durable `fallbacks/switch` event is written — issue #52 stop-write); `inherit` never injects. Set `roleAutoMatch: false` to disable the LLM auto-match stage (the explicit `agentPreset` and dispatch-declared stages still resolve and inject under `false`; with neither declared this reproduces the previous rules-only behavior). The settings card always renders an **Enable role auto-match** switch (default `true`) to toggle it — the schema default applies even to legacy configs that never declared the key.
+An agent's role is resolved inside every walk, in **three ordered stages** (first hit wins) — explicit (`agentPreset` matches a declared role id) → **dispatch-declared role** (the role the dispatch seam resolved from the child's prompt header `**Execute as**: <id>` — a normally delegated Assignment or an Agent Team teammate's initial prompt — trimmed and looked up in the live declared-role set, so an absent header, the reserved `inherit` and a since-removed id all fall through silently) → deterministic rules (matching either the recorded pair or the served head — see [FallbacksChain in the model picker](#fallbackschain-in-the-model-picker)). The resolved role then only decides **which chain the walk uses**: the role's own chain concatenated with the root tail (`fallback: inherit-root`) or alone (`none`), with `inherit` walking the effective root chain. Resolution is a pure in-memory read — no LLM call, no request override, no bookkeeping: the walk is already inside the request whose chain it picks. There is no LLM auto-match stage and no `roleAutoMatch` key any more (see the migration note in [docs/configuration.md](configuration.md#field-overview)).
 
 ### Role persona on the child
 
@@ -141,7 +157,7 @@ A child dispatched with a declared role gets exactly one plugin notice row in it
 
 A subagent **session** shows a compact badge next to the session's agent-preset (mode) chip in the web session header, reading `role · provider/model`; hover shows `role → provider/model (request route)`. The two halves are independent facts and each is omitted when its own source is absent:
 
-- **Role**: shown only for a child **dispatched with a declared role** — the `**Execute as**: <id>` field of its Assignment, the same declaration that carries the persona, and the badge's ONLY role source (policy on or off). Only the DECLARED header is read, so a child whose role came from another stage (`agentPreset` match, a role rule, or the LLM auto-match) but which declares no Assignment header is still routed as that role yet shows **no role** — the badge never reports a role inferred after the fact. An `inherit`/unresolved dispatch omits the role half; it does not hide the badge.
+- **Role**: shown only for a child **dispatched with a declared role** — the `**Execute as**: <id>` field of its Assignment, the same declaration that carries the persona, and the badge's ONLY role source (policy on or off). Only the DECLARED header is read, so a child whose role came from another stage (`agentPreset` match, or a role rule) but which declares no Assignment header is still routed as that role yet shows **no role** — the badge never reports a role inferred after the fact. An `inherit`/unresolved dispatch omits the role half; it does not hide the badge.
 - **Model**: the host's own `modelSelection` projection, read as `next ?? lastUsed` — the route the child's next request will use, falling back to the route its latest recorded request ran on. It renders for any subagent session that has a recorded route, declared role or not.
 
 A **root** session never shows the badge (its composer owns the model control). The badge is durable: both halves are read from the child's own session record, so it is still shown for a **settled** subagent session and **after a host restart**.
@@ -161,7 +177,7 @@ declared in `roles.list` to resolve. No per-mechanism configuration exists.
 
 - **The header is the only role carrier.** A teammate whose prompt omits it, or
   names an id that is not currently declared, falls through to rules →
-  auto-match → `inherit`, exactly like a normally delegated child without one.
+  `inherit`, exactly like a normally delegated child without one.
 - **Names stay arbitrary (but unique inside one Team).** Any number of
   differently named teammates can carry the same role; there is **no
   name→role mapping**.
@@ -172,21 +188,21 @@ declared in `roles.list` to resolve. No per-mechanism configuration exists.
   reserved id for a non-local provider (`UNSUPPORTED_CAPABILITY`), so member
   creation fails and no role is delivered.
 
-Full resolution/injection reference (stages, bounds, no-commit semantics) → [docs/configuration.md](configuration.md#dispatch-time-role-resolution-and-injection-roleautomatch).
+Full resolution reference (stages, chain composition) → [docs/configuration.md](configuration.md#subagent-role-resolution-and-chain-mounting).
 
 ## FallbacksChain in the model picker
 
-Whenever the plugin has content configured (a non-empty `rootChain`, at least one `timeSlots` row, or one declared role), it registers a virtual provider, **FallbacksChain**, with a single catalog row: **Auto**. The web profile and dsh-tui both see the row: they share the same adapter catalog, so the row needs no settings-page wiring or host patch (it is independent of the `/settings` fallbacks section, which edits configuration rather than the picker catalog). A legacy or empty all-day chain does NOT hide the row as long as other content is configured (the delegate just refuses to serve it); with nothing configured there is no row.
+Whenever the plugin has content configured (a non-empty `rootChain`, at least one `timeSlots` row, or one declared role), it registers a virtual provider, **FallbacksChain**, with a single catalog row: **Auto**. The web profile and dsh-tui both see the row: they share the same adapter catalog, so the row needs no settings-page wiring or host patch (it is independent of the `/settings` fallbacks section, which edits configuration rather than the picker catalog). A legacy or empty all-day chain does NOT hide the row as long as other content is configured (the walk just refuses to serve it); with nothing configured there is no row.
 
-Selecting **FallbacksChain / Auto** uses the configured chain as the root **primary**: the request stays on the virtual pair and the adapter's thin delegate dispatches the effective chain's first exact `provider/model` at request time, so the fallback engine degrades from that head as usual. Serving the selection unchanged (instead of rewriting the route to the head) is also what keeps the host's model-change notice quiet: the recorded route equals the session selection, so the notice appears once on a genuine selection change rather than being re-armed on every step. Selecting any real catalog model keeps the v0.2.2 fallback-only behavior — the session model is primary and the chain engages only after it fails.
+Selecting **FallbacksChain / Auto** makes the configured chain the session route: the request stays on the virtual pair, and the adapter's `stream()` **walks** the chain — the first attempt is the effective chain's first dispatchable exact `provider/model`, and a pre-output trigger-code failure advances to the next candidate inside the same request. For a subagent mounted at the dispatch seam, that first attempt must also be on the host model allowlist: an `unprovable` model-selection policy, or a head the allowlist no longer admits when the walk rechecks it after the catalog query, refuses the attempt with no dispatch instead. Serving the selection unchanged (instead of rewriting the route to the head) is also what keeps the host's model-change notice quiet: the recorded route equals the session selection, so the notice appears once on a genuine selection change rather than being re-armed on every step. Selecting any real catalog model instead gives the session **no plugin fallback at all**: the session model is primary and only `llm-retry` retries it.
 
-There is **no `rootMode` switch** — no config key, YAML field, settings toggle, or gateway flag. The mode is the session's `{provider, model}` selection itself: `FallbacksChain` = chain primary; any real model = fallback-only.
+There is **no `rootMode` switch** — no config key, YAML field, settings toggle, or gateway flag. The mode is the session's `{provider, model}` selection itself: `FallbacksChain` = chain walked; any real model = no plugin fallback.
 
 Notes:
 
 - **Picker label**: the row's catalog `name` (what the composer trigger shows) is live — `Auto: DeepSeek Flash[Liang Peak]` / `Auto: DeepSeek Flash[all-day]` (catalog display name, not the model id); the id stays `Auto`. Bare `Auto` if the all-day tail is not conforming. Refresh by reopening the picker.
-- **Thin delegate on every origin**: the row is served by the same `stream()` delegate for the root agent and for a subagent session that inherits the selection — subagent role resolution and injection keep their semantics apart from one deliberate widening: dispatch-time rule matching accepts **either** the recorded pair or the served head (a superset of the previous matching, so a rule keyed on the real head keeps matching), and the virtual row is never a second routing engine. A subagent that inherits the selection still routes through the chain head.
-- **Conformance gate on the tail**: a successful delegation requires the all-day chain to be **tail-conforming** — its last entry must be exactly one official model (`deepseek-official/deepseek-flash` or `deepseek-official/deepseek-v4-pro`, the card's Default model panel); leading entries (Default fallback chain) are walked first. Deactivating the plugin (the Plugins-page row switch, or clearing all configured content) hides the row again (slot-row/chain edits never churn registration).
+- **One walk for every origin**: the same `stream()` walk serves the root agent and a subagent session mounted on (or inheriting) the selection — the only difference is which chain tail it uses (slot-effective all-day for root, role chain + raw `rootChain` for a subagent). Rule matching is widened deliberately: the rules stage accepts **either** the recorded pair or the served head (a superset of the previous matching, so a rule keyed on the real head keeps matching), and the virtual row is never a second routing engine.
+- **Conformance gate on the tail**: a successful virtual-route request requires the all-day chain to be **tail-conforming** — its last entry must be exactly one official model (`deepseek-official/deepseek-flash` or `deepseek-official/deepseek-v4-pro`, the card's Default model panel); leading entries (Default fallback chain) are walked first. Deactivating the plugin (the Plugins-page row switch, or clearing all configured content) hides the row again (slot-row/chain edits never churn registration).
 - **Stale selection**: if the row disappears (plugin deactivated) while `FallbacksChain / Auto` is selected, the session keeps showing it as the current model with `routable: false` — pick a real model from the catalog to continue (host-native catalog semantics).
 - **Capabilities and retry policy follow the head**: the row's model metadata (context window, modalities, reasoning) mirrors the current effective head, and `providerRetryPolicy` returns **that head's** policy — so a user's `llm-deepseek.retryPolicy` applies on this route too, not the permissive default. The host captures the policy once at registration, so a later policy edit or a slot-driven head-provider rotation shows up only after the plugin re-registers. Retry events are keyed by the virtual provider — the route the runtime actually sees. Full semantics → [docs/configuration.md](configuration.md).
 
@@ -198,16 +214,15 @@ dsh 0.1.2 adds host-side child-model selection for subagents: a `subagent-model-
 
 When the policy is **enabled**:
 
-- **Authorized head preserved (skip inject)**: a subagent spawned with an explicit `provider`+`model` (spawn options, durable `request/header`, or a `model/selection` selection) keeps that route as its chain head — role-inject is skipped and the authorized route is never overwritten at the first request; the plugin chain applies only from failure time onward. Pure inheritance (no explicit selection fields) is **not** an authorized route.
-- **Allowlist-constrained inject**: pure inheritance still resolves a role in the four stages above, but the injected chain head is plugin-originated and must be on the effective allowlist — the first resolved in-allowlist candidate wins. Empty intersection → inject is skipped and the host seed stands (warn log).
-- **Allowlist-constrained failure switching**: after a triggering failure, the resolved candidates (wildcards already expanded; cooldown / step-failed / same-as-current filters already applied) are intersected with the allowlist in walk order. Empty intersection → **no switch**, no out-of-allowlist request, a warn log plus an in-memory blocked-attempt record (no durable session write — issue #52 stands).
-- **Fail-closed**: a present-but-malformed policy event, or enabled settings with an unreadable route list, disables plugin-originated injects and switches for that session (warn log); the host seed and non-switch behavior are untouched.
+- **Authorized route preserved (no mount)**: a spawn request that carries an explicit `provider`+`model` in `agentOptions` keeps that route — the seam never overwrites it and labels it `authorized`; the child then has no chain at all (its route is an explicit real provider/model). Pure inheritance (no explicit route) is **not** authorized.
+- **Allowlist-constrained mount**: an inheriting child whose role resolves is mounted on `FallbacksChain / Auto` at dispatch only while the policy is not unprovable **and** the role chain has a dispatchable exact head on the allowlist — plugin-originated, so a role chain with no allowlisted dispatchable route declines the mount and the child keeps pure inheritance. A mounted child's first attempt is allowlist-admitted like every switch (the walk starts on the first dispatchable route on the allowlist and refuses before any attempt when none remains); its later switches intersect the resolved candidates with the allowlist in candidate order, and a switch with no allowlisted candidate is blocked (warn log + in-memory blocked-attempt record, no durable session write — issue #52 stands).
+- **Fail-closed**: a present-but-malformed policy event, or enabled settings with an unreadable route list, disables plugin-originated mounts and switches for that session (warn log), and a mounted child's walk refuses before its first attempt (`UNDISPATCHABLE_EFFECTIVE_HEAD`; no request is sent) rather than dispatching a route it cannot prove; pure inheritance and every non-switch behavior are untouched.
 - **Card status area (read-only status + one explicit sync action)**: while enabled, the Fallbacks card Subagents section shows the effective allowlist, the effective chain head with its source (`authorized` / `injected`), and an empty-intersection warning when a switch was blocked — the same numbers the runtime uses. The card also explains what the allowlist cuts: role-card chain titles hide exact entries the policy cannot use (wildcards stay — their resolved routes are unknown client-side) and the same filtered string is used for the visible summary and its tooltip; a hint line counts the selected role-chain exact entries outside the allowlist; and `FallbacksChain/Auto` is recommended whenever the allowlist lacks that exact route. A **sync to host allowlist** button (disabled in a read-only store, user click only, never silent) merges the current allowlist with every exact `provider/model` route in the configured role chains and `rootChain` plus `FallbacksChain/Auto`, de-duplicated by exact provider+model (the current allowlist first), and writes **only** `allowedModels` — never `enabled` — through the host settings service. Wildcard entries are not expanded and never synced; the card then shows the refreshed snapshot. The sync merges the **saved** configuration only: unsaved role-chain or root-chain edits disable the button (with a "save first" hint), since the gateway reads the persisted config rather than the card draft.
-- **Virtual-route carve-out**: a subagent explicitly spawned on the plugin's virtual provider (`FallbacksChain` / `Auto`) is user-authorized for that route (spec D2 — explicit selection). The virtual adapter's internal delegation of its requests to the configured effective chain head is that route's documented purpose and is outside D1's selection semantics — D1 governs provider/model selection the plugin makes, not delegation inside an explicitly chosen virtual route — so the delegated head is not allowlist-filtered.
+- **Virtual-route carve-out (injected vs authorized)**: a subagent a *user or model* put on the plugin's virtual provider (`FallbacksChain` / `Auto` — an explicit spawn route, or a parent-inherited virtual selection) is user-authorized for that route, so its walk is **not** allowlist-filtered. A **seam-mounted** child is plugin-originated — the plugin is the one that chose the route — so it keeps D1 continuity and its candidates are allowlist-filtered. The card carries both labels: `authorized` for the explicit route, `injected` for the mount.
 
-When the policy is **disabled or absent**, inject and failure-switch **selection** are unchanged from 0.3.5 (no allowlist filter, no authorized-route skip).
+When the policy is **disabled or absent** there is no allowlist filter and no authorized-route check beyond the explicit-route skip above, so a walk takes the first surviving resolved candidate.
 
-**Effort rule (policy-independent)**: `reasoningEffort` on every override path (role-inject, failure switch, always-cap switch) follows the upstream 0.1.2 `routeChanged` rule — an unchanged provider+model route keeps the seed effort; a route change drops it unless an effort is explicitly named for the override (explicit always survives). A stale effort is never carried into a different provider.
+**Effort rule**: the walk never rewrites a seed config — `reasoningEffort` is passed through verbatim on every attempt. An effort carried by the session's virtual selection therefore rides every attempt; when the selection names none, none is sent (the virtual pair owns no real route for an effort to belong to).
 
 Full semantics → [docs/configuration.md](configuration.md#host-subagent-model-selection-dsh-012).
 
@@ -220,7 +235,7 @@ The plugin ships **5 bundled generic subagent roles** out of the box — `review
 
 ## Agent presets (plugin composition)
 
-Agent **presets** are a dsh feature for composing plugins — they are declarative child-plugin lists a user can apply as a set, and they carry **no** model fields of their own. The fallbacks plugin needs no preset-specific configuration: because a preset composes plugins, the fallback applies **wherever the plugin's row is mounted** — a preset that includes the `dsh-llm-fallbacks` row gives that preset's sessions the same chains and roles configured for the plugin.
+Agent **presets** are a dsh feature for composing plugins — they are declarative child-plugin lists a user can apply as a set, and they carry **no** model fields of their own. The fallbacks plugin needs no preset-specific configuration: because a preset composes plugins, the plugin exists **wherever its row is mounted** — a preset that includes the `dsh-llm-fallbacks` row gives that preset's sessions the same chains and roles, and its sessions get a chain when they select `FallbacksChain / Auto`.
 
 Two composition caveats:
 
@@ -232,8 +247,8 @@ Two composition caveats:
 In a dsh-tui profile the plugin has three operator surfaces, with a strict duty split:
 
 - **`/fallbacks`** — what happened this session: origin, resolved role, effective chain, recent fallback switches, cooldown status (half-open marker rows when `recovery: half-open` is active). Read-only.
-- **`/fallbacks config`** — what is configured: composed-config readback (trigger codes, root chain, time slots, timezone, roles, role rules, cooldown, revert policy, safety valves, presets, role auto-match). Read-only apart from the one action command **`/fallbacks config revert-seed <role-id>`**, which restores a seeded role's persona to its declared seed default — the web settings card presents seeded personas read-only (no revert affordance), so the command is that action's only surface.
-- **`/settings`** — the edit surface. The plugin registers a **fallbacks** section with full parity to the web settings card: booleans (`roleAutoMatch`) render as toggles, selects (`presets`, `revertPolicy`) as pickers, and numbers (`cooldownMs`, `maxSwitchesPerStep`, `alwaysModeRetryCap`) as numeric inputs; complex structures (`rootChain`, `timeSlots`, `roles.list`, `roles.rules`) are JSON text fields and `triggerCodes` a comma-separated text field. Invalid drafts (bad JSON, non-conforming chains, malformed time-slot rows) block the save — the section never corrupts the config.
+- **`/fallbacks config`** — what is configured: composed-config readback (trigger codes, root chain, time slots, timezone, roles, role rules, cooldown, revert policy, max switches per request walk — printed as `Max switches per request walk` / `单次请求行走最大切换` — and presets). Read-only apart from the one action command **`/fallbacks config revert-seed <role-id>`**, which restores a seeded role's persona to its declared seed default — the web settings card presents seeded personas read-only (no revert affordance), so the command is that action's only surface.
+- **`/settings`** — the edit surface. The plugin registers a **fallbacks** section with full parity to the web settings card: selects (`presets`, `revertPolicy`) render as pickers and numbers (`cooldownMs`, `maxSwitchesPerStep`) as numeric inputs; complex structures (`rootChain`, `timeSlots`, `roles.list`, `roles.rules`) are JSON text fields, `triggerCodes` a comma-separated text field and `tz` a plain text field. Invalid drafts (bad JSON, non-conforming chains, malformed time-slot rows) block the save — the section never corrupts the config.
 
 **Requirements**: the `/settings` fallbacks section needs **dsh-tui ≥ v0.8.5** (commit `c51661f` or later on `main`; the settings seam shipped in v0.8.0, the groups shape + validation in v0.8.5). On an older dsh-tui the section is absent, and file editing remains the only TUI edit surface.
 

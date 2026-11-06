@@ -26,9 +26,9 @@
  * Data: `get` reads the `FallbacksSettingsBridge` source — the same live
  * composed config the runtime reads (schema defaults → plugin-row base →
  * profile patch). There is NO hard-gate resolver (unlike advisor's
- * `resolveAdvisorConfig`): the fallbacks decision path runs at
- * `agent/request` time in `src/index.ts`, so the gateway returns the raw
- * composed config. There is NO config-level `enabled` key on the contract
+ * `resolveAdvisorConfig`): the fallbacks decision path runs inside the
+ * virtual route's chain walk (`src/chain-walk.ts`), so the gateway returns
+ * the raw composed config. There is NO config-level `enabled` key on the contract
  * (plan fallbacks-web-ux-alignment T2): the Plugins-page row toggle is the
  * master switch, the runtime gates read content presence
  * (`isFallbackActive` in `src/config.ts`), and a stored `enabled:` line is
@@ -103,7 +103,7 @@ export const FALLBACKS_PROFILE_ENTRY = 'llm-fallbacks'
 export type SubagentPolicyRoute = { provider: string; model: string }
 
 /** Settings namespace of the host's subagent-model-selection policy. */
-const SUBAGENT_POLICY_SETTINGS_NS = 'subagent-model-selection-settings'
+export const SUBAGENT_POLICY_SETTINGS_NS = 'subagent-model-selection-settings'
 
 /**
  * The virtual all-fallbacks route the host carve-out recognizes
@@ -198,9 +198,7 @@ const CONFIG_KEYS: Record<string, true> = {
   cooldownMs: true,
   revertPolicy: true,
   maxSwitchesPerStep: true,
-  alwaysModeRetryCap: true,
   presets: true,
-  roleAutoMatch: true,
   // Plan fallbacks-timeslots (P5): time-slot rows + config-level tz. The
   // READ side carries them so `get` matches the composed config (schema
   // defaults); the WRITE side validates them — nested row-shape guards in

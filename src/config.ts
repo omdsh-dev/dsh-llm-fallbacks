@@ -101,7 +101,6 @@ export interface FallbacksConfig {
   cooldownMs: number
   revertPolicy: RevertPolicy
   maxSwitchesPerStep: number
-  alwaysModeRetryCap: number
   /**
    * Preset-role injection switch: `'bundled'` declares the 5 preset roles
    * (spec §9.2) as seed rows on apply; `'none'` disables declaration.
@@ -112,19 +111,6 @@ export interface FallbacksConfig {
    * every resolved config carries a value via the schema default.
    */
   presets?: 'bundled' | 'none'
-  /**
-   * Dispatch-time LLM role auto-match switch (plan fallbacks-role-automatch
-   * Task 1): when `true` (default), a subagent-origin request with no
-   * explicit/rules-resolved role may have the best-fit declared role picked
-   * by the LLM; `false` reproduces today's behavior exactly. Optional on
-   * purpose, mirroring `presets` — a required field would break library
-   * consumers that construct `FallbacksConfig` literals with the existing
-   * keys (additive, non-breaking). The value domain is guarded by the
-   * schema (`z.boolean().default(true)` in `src/schema.ts`), and the
-   * runtime reads it defensively as `config.roleAutoMatch ?? true` (safe
-   * for direct constructors that omit it).
-   */
-  roleAutoMatch?: boolean
   /**
    * Extra time-slot rows (plan fallbacks-timeslots Task 1, P5): the FIRST
    * matching row's chain becomes the effective root chain at request time;
@@ -167,9 +153,7 @@ export const defaultFallbacksConfig: FallbacksConfig = {
   cooldownMs: 300_000,
   revertPolicy: 'cooldown-expiry',
   maxSwitchesPerStep: 8,
-  alwaysModeRetryCap: 5,
   presets: 'bundled',
-  roleAutoMatch: true,
   timeSlots: [],
   tz: 'Asia/Shanghai',
   recovery: 'timer',
@@ -338,8 +322,10 @@ export function validateFallbacksConfig(config: FallbacksConfig, logger: Fallbac
 /**
  * Detect legacy (two-block-era) leftovers in a config SOURCE — the composed
  * object `source()` returns, or a raw settings document. Recognizes the
- * removed `chains` key, the removed `roles.default` field, the removed
- * role-entity fields `roles.list[].label` / `roles.list[].description`
+ * removed `chains` key, the removed always-mode retry cap and dispatch
+ * role-auto-match keys (`alwaysModeRetryCap` / `roleAutoMatch` — direction
+ * C, virtual-chain-only fallback), the removed `roles.default` field, the
+ * removed role-entity fields `roles.list[].label` / `roles.list[].description`
  * (renamed to `persona`), and `roles.rules[].role` values that reference no
  * declared `roles.list` id and are not the built-in `'inherit'`. Returns
  * descriptive key/role names; the gateway attaches them as `get().legacyKeys`
@@ -350,6 +336,8 @@ export function validateFallbacksConfig(config: FallbacksConfig, logger: Fallbac
 export function detectLegacyKeys(source: Record<string, unknown>): string[] {
   const keys: string[] = []
   if (Object.hasOwn(source, 'chains')) keys.push('chains')
+  if (Object.hasOwn(source, 'alwaysModeRetryCap')) keys.push('alwaysModeRetryCap')
+  if (Object.hasOwn(source, 'roleAutoMatch')) keys.push('roleAutoMatch')
   const roles = source.roles
   if (isRecordLike(roles)) {
     if (Object.hasOwn(roles, 'default')) keys.push('roles.default')
