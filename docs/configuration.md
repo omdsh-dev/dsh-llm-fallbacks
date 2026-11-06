@@ -238,7 +238,7 @@ Whenever the plugin has content configured (PR #62 feedback's registration gate 
 
 Time slots are the wall-clock peak/valley model: each slot row — a frozen UTC+8 preset (Liang Peak / Liang Valley / GLM Peak / GLM Valley) or a custom window — carries its own fallback chain, and the first matching row becomes the effective root chain while the all-day chain stays as the last resort (see [docs/features.md](features.md#time-slots)).
 
-![Time slots](docs/assets/screenshot-1-en.png)
+![Time slots](assets/screenshot-1-en.png)
 
 Time-slot rows rotate the **effective root chain** by wall-clock windows. At every **root** request the resolver (`resolveEffectiveChain` in `src/time-slots.ts`) walks the stored rows top-to-bottom: the FIRST row whose window contains `now` (in the config-level `tz`, default `Asia/Shanghai`) wins and its `chain` **replaces** the all-day chain (never concatenated); no match → the all-day `rootChain`. Subagent walks are not slot-rotated (they use the raw `rootChain` tail). The all-day row is always last and **required**.
 
