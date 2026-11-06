@@ -1,13 +1,13 @@
 ---
 module: dsh-llm-fallbacks / subagent routing
 date: 2026-08-28
-last_updated: 2026-08-28
+last_updated: 2026-11-06
 problem_type: architecture_pattern
 category: architecture-patterns
 severity: medium
 tags: [subagent, model-selection, allowlist, fallback-chain, dsh-0.1.2, policy]
 plan_id: dsh-012-subagent-routing
-related_components: [src/subagent-policy.ts, src/route-allowlist.ts, src/authorized-route.ts, src/override.ts, src/index.ts]
+related_components: [src/subagent-policy.ts, src/route-allowlist.ts, src/chain-walk.ts, src/subagents-seam.ts, src/index.ts]
 applies_when:
   - dsh host exposes a subagent child-model selection policy (0.1.2+ `subagent-model-selection`)
   - a plugin injects or switches LLM routes for subagent requests
@@ -62,10 +62,14 @@ routes will fight this policy unless reconciled.
 - **Hardening:** keep the last known policy snapshot per agent (wiring-level
   state, pruned on agent dispose) so a settings-service disappearance
   mid-session fails to the last known allowlist instead of fail-open.
-- **Pure cores + thin wiring:** policy reader / allowlist intersection /
-  authorized-route detection / effort rule live in host-free modules (plain
-  data in, results out, never throw); `src/index.ts` only feeds data and applies
-  results. Card/UI reads policy state only through the plugin gateway payload.
+- **Pure cores + thin wiring:** the policy reader (`src/subagent-policy.ts`)
+  and the allowlist intersection (`src/route-allowlist.ts`) live in host-free
+  modules (plain data in, results out, never throw); the switch decision lives
+  in the walk (`src/chain-walk.ts`), and `src/index.ts` only feeds data and
+  applies results. Route authorization needs no module of its own: an explicit
+  `agentOptions` pair on the request is authoritative and is never rewritten
+  (`src/subagents-seam.ts`). Card/UI reads policy state only through the plugin
+  gateway payload.
 
 ## Why This Matters
 
@@ -85,6 +89,6 @@ spawn marker retires the known inheritance-discrimination limit).
 ## Examples
 
 Shipped in dsh-llm-fallbacks `plan/dsh-012-subagent-routing` (modules above);
-card display under `#fallbacks-subagents`; failure-switch intersection in
-`decide()`. Promoted from the iteration spec
+card display under `#fallbacks-subagents`; the failure-switch intersection runs
+inside the walk (`src/chain-walk.ts`). Promoted from the iteration spec
 `iterations/iter-20260828-dsh-012-adoption/specs/subagent-routing-policy.md`.
