@@ -35,7 +35,7 @@ that does carry a chain.
 
 ### Partial output (committed rule)
 
-A walk cannot replay an attempt that already emitted output: yielded chunks cannot be unsent, and concatenating a second model's output behind a partial one would corrupt the assistant message. So a trigger-code failure is switched **only while the attempt has produced no chunk yet**. Once a chunk has been yielded, the attempt is committed and any later failure is forwarded verbatim: the loop settles the partial attempt and llm-retry or the terminal error takes over. That differs from the pre-upgrade path, which decided a switch at the next step's request after a mid-output failure; here the switch still happens, but only if llm-retry retries.
+A walk cannot replay an attempt that already emitted output: yielded chunks cannot be unsent, and concatenating a second model's output behind a partial one would corrupt the assistant message. So a trigger-code failure is switched **only while the attempt has produced no output yet**. A `usage` chunk is passthrough metadata, not output: adapters emit it before their terminal `finish`, so it never commits the attempt. Once an output chunk has been yielded, the attempt is committed and any later failure is forwarded verbatim: the loop settles the partial attempt and llm-retry or the terminal error takes over. That differs from the pre-upgrade path, which decided a switch at the next step's request after a mid-output failure; here the switch still happens, but only if llm-retry retries.
 
 ### Cooldown and revert
 
@@ -222,7 +222,7 @@ When the policy is **enabled**:
 
 When the policy is **disabled or absent** there is no allowlist filter and no authorized-route check beyond the explicit-route skip above, so a walk takes the first surviving resolved candidate.
 
-**Effort rule**: the walk never rewrites a seed config — `reasoningEffort` is passed through verbatim on every attempt. An effort carried by the session's virtual selection therefore rides every attempt; when the selection names none, none is sent (the virtual pair owns no real route for an effort to belong to).
+**Parameter adaptation**: before each dispatch the walk narrows the request to what THAT candidate declares it can serve, reading the host's `resolveModelInfo(provider, model)` once per candidate per walk. An inherited `reasoningEffort` is dropped when the candidate declares no reasoning or does not list that effort; an inherited `maxTokens` is dropped when it exceeds the candidate's disclosed `defaultMaxTokens`. Nothing is clamped or aliased, and the seed config is never rewritten — when the candidate is compatible, or the host discloses nothing (or the probe throws), the inherited controls ride the attempt byte-for-byte unchanged. The walk therefore keeps advancing through candidates an inherited parameter would otherwise have ruled out. Dropping is proactive, not a guarantee: a post-dispatch `UNSUPPORTED_REASONING_EFFORT` (the adapter re-checks against a set the probe did not disclose) or `INVALID_REQUEST` (too broad to trigger on — it also covers malformed request history) still ends the turn after one attempt unless the operator lists the code in `triggerCodes`.
 
 Full semantics → [docs/configuration.md](configuration.md#host-subagent-model-selection-dsh-012).
 
