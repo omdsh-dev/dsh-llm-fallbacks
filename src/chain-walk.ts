@@ -871,12 +871,13 @@ async function* walk(
 
     // §3.1 step 3: yield every chunk as it arrives. The first OUTPUT chunk
     // commits the attempt — from then on a failure belongs to the upper layers
-    // and is never replayed (§6.1.4). Two chunk kinds are NOT output: `usage` is
-    // metadata adapters emit BEFORE the terminal finish (committing on it would
-    // make the triggerCodes swallow branch unreachable for every such provider),
-    // and a `tool-call` block-START is protocol, not content (dsh's own
-    // visibility rule; the block counts at its end). The flag LATCHES: once
-    // committed, a later metadata chunk must never un-commit the attempt.
+    // and is never replayed (§6.1.4). A `usage` chunk is metadata, not output:
+    // adapters emit it BEFORE the terminal finish, so committing on it would
+    // make the triggerCodes swallow branch unreachable for every such provider.
+    // Everything else — including a block START — is output and commits: a
+    // switch after an opened block would pour the next candidate's deltas into
+    // this attempt's partial block, which assembly then drops (QC2 option b).
+    // The flag LATCHES: once committed, a later `usage` must not un-commit it.
     let committed = false
     let swallowed: { chunk: StreamChunk; code: string } | undefined
     let attemptOptions = await adaptForTarget(options, target, modelInfoOf, deps.log.debug)
@@ -924,9 +925,7 @@ async function* walk(
           return
         }
         yield chunk
-        if (chunk.type !== 'usage' && !(chunk.type === 'block-start' && chunk.blockType === 'tool-call')) {
-          committed = true
-        }
+        if (chunk.type !== 'usage') committed = true
       }
       if (repair === undefined) break
       repaired.add(repair)

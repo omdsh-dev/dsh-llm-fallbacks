@@ -257,16 +257,22 @@ describe('committed rule (design §3.1/§6.1.4)', () => {
     })
   })
 
-  it('does not commit a tool-call block start before any content arrives (QC F2)', async () => {
+  it('commits a tool-call block start, so the failure is forwarded (QC2 option b)', async () => {
+    // A switch here would pour the next candidate's deltas into this attempt's
+    // opened tool-call partial, which assembly then drops — so a block start
+    // counts as output, exactly as on `main`.
     adapter.respond = (options) => options.model === '1'
       ? { chunks: [TOOL_START], failure: { code: 'AUTH', message: 'head down' } }
-      : { chunks: [STOP] }
+      : { chunks: [TEXT, STOP] }
 
-    await walk({ readConfig: rootConfig(['a/1', 'b/2']) })
+    const chunks = await walk({ readConfig: rootConfig(['a/1', 'b/2']) })
 
-    // A tool call's opening is protocol, not content: nothing was yielded that
-    // a second candidate's output could be concatenated onto.
-    expect(dispatched()).toEqual(['a/1', 'b/2'])
+    expect(dispatched()).toEqual(['a/1'])
+    expect(chunks.slice(0, 1)).toEqual([TOOL_START])
+    expect(chunks.at(-1)).toMatchObject({
+      type: 'finish',
+      reason: { kind: 'error', failure: { code: 'AUTH', message: 'head down' } },
+    })
   })
 
   it('forwards a post-output failure verbatim and never starts another attempt', async () => {
