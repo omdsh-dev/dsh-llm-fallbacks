@@ -35,7 +35,7 @@ that does carry a chain.
 
 ### Partial output (committed rule)
 
-A walk cannot replay an attempt that already emitted output: yielded chunks cannot be unsent, and concatenating a second model's output behind a partial one would corrupt the assistant message. So a trigger-code failure is switched **only while the attempt has produced no chunk yet**. Once a chunk has been yielded, the attempt is committed and any later failure is forwarded verbatim: the loop settles the partial attempt and llm-retry or the terminal error takes over. That differs from the pre-upgrade path, which decided a switch at the next step's request after a mid-output failure; here the switch still happens, but only if llm-retry retries.
+A walk cannot replay an attempt that already emitted output: yielded chunks cannot be unsent, and concatenating a second model's output behind a partial one would corrupt the assistant message. So a trigger-code failure is switched **only while the attempt has produced no output yet**. A `usage` chunk is passthrough metadata, not output: adapters emit it before their terminal `finish`, so it never commits the attempt. Once an output chunk has been yielded, the attempt is committed and any later failure is forwarded verbatim: the loop settles the partial attempt and llm-retry or the terminal error takes over. A block **start** counts as output and commits too — including a `tool-call` opening — because a switch after an opened block would pour the next candidate's deltas into this attempt's partial block and lose the answer; the cost is that a failure right after a block start is forwarded instead of switched. That differs from the pre-upgrade path, which decided a switch at the next step's request after a mid-output failure; here the switch still happens, but only if llm-retry retries.
 
 ### Cooldown and revert
 
@@ -222,7 +222,12 @@ When the policy is **enabled**:
 
 When the policy is **disabled or absent** there is no allowlist filter and no authorized-route check beyond the explicit-route skip above, so a walk takes the first surviving resolved candidate.
 
-**Effort rule**: the walk never rewrites a seed config — `reasoningEffort` is passed through verbatim on every attempt. An effort carried by the session's virtual selection therefore rides every attempt; when the selection names none, none is sent (the virtual pair owns no real route for an effort to belong to).
+**Parameter adaptation**: the walk protects a candidate from an inherited parameter it cannot serve, in two steps, and the seed config is never rewritten.
+
+- **Proactive**: before each dispatch it narrows the request to what THAT candidate declares it can serve, reading the host's `resolveModelInfo(provider, model)` once per candidate per walk. An inherited `reasoningEffort` is dropped when the candidate declares no reasoning or does not list that effort; an inherited `maxTokens` is dropped when it exceeds the candidate's disclosed `defaultMaxTokens`.
+- **Reactive**: a disclosed capability is not always the truth. When a candidate that already received the request rejects it before emitting output — `UNSUPPORTED_REASONING_EFFORT`, or an `INVALID_REQUEST` naming a `max_tokens` range — the walk retries the **same** candidate once with that control removed. This is a request repair, not a chain switch: no cooldown, no failed-set entry, no switch consumed, and at most one repair per control.
+
+Nothing is clamped or aliased. When the candidate is compatible, the host discloses nothing, or the probe throws, the inherited controls ride the attempt unchanged — and a proactive drop is logged (debug) so a smaller served budget stays traceable. What remains is forwarded, not guessed at: a second identical rejection after its repair, an `UNSUPPORTED_REASONING_EFFORT` on an attempt that carried no effort, or an `INVALID_REQUEST` from any other cause still ends the turn after one attempt unless the operator lists the code in `triggerCodes`.
 
 Full semantics → [docs/configuration.md](configuration.md#host-subagent-model-selection-dsh-012).
 

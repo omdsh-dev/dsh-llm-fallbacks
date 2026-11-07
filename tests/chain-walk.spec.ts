@@ -42,6 +42,8 @@ import { cfg, walkDeps } from './support/harness.ts'
 
 const TEXT: StreamChunk = { type: 'text-delta', index: 0, text: 'ok' }
 const STOP: StreamChunk = { type: 'finish', reason: { kind: 'stop' } }
+const USAGE: StreamChunk = { type: 'usage', usage: { inputTokens: 0, outputTokens: 0 } }
+const TOOL_START: StreamChunk = { type: 'block-start', index: 0, blockType: 'tool-call' }
 
 /** One scripted attempt: the chunks it emits, then either a throw or a clean end. */
 interface ScriptedAttempt {
@@ -57,8 +59,11 @@ class ScriptedAdapter extends LlmAdapter {
   readonly calls: GenerateOptions[] = []
   /** Advisory catalog per provider (the wildcard / context-window probes read it). */
   catalog: (provider: string) => Array<{ id: string; contextWindow?: number }> = () => []
-  /** Whether every model advertises a `high` reasoning effort (the effort rule's route shape). */
-  reasoning = false
+  /** Disclosed reasoning efforts per route; `undefined` advertises no reasoning support. */
+  efforts: (provider: string, model: string) => readonly { id: string; name: string }[] | undefined
+    = () => undefined
+  /** Disclosed per-request output cap per route (parameter adaptation drops an above-cap request). */
+  outputCap: (provider: string, model: string) => number | undefined = () => undefined
   /**
    * Disclosed context window per route. The walk's probe reads this through
    * `resolveModelInfo` — the runtime REBUILDS `listModels` rows from a known
@@ -79,12 +84,15 @@ class ScriptedAdapter extends LlmAdapter {
 
   override resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
     const window = this.windows(provider, model)
+    const efforts = this.efforts(provider, model)
+    const defaultMaxTokens = this.outputCap(provider, model)
     return Promise.resolve({
       provider,
       id: model,
       name: model,
       ...(window === undefined ? {} : { context: { contextWindow: window } }),
-      ...(this.reasoning ? { reasoning: { efforts: [{ id: 'high', name: 'High' }] } } : {}),
+      ...(defaultMaxTokens === undefined ? {} : { defaultMaxTokens }),
+      ...(efforts === undefined ? {} : { reasoning: { efforts } }),
     })
   }
 
@@ -205,6 +213,66 @@ describe('committed rule (design §3.1/§6.1.4)', () => {
     expect(dispatched()).toEqual(['a/1', 'b/2'])
     // The swallowed attempt contributes nothing — not even its finish.
     expect(chunks).toEqual([TEXT, STOP])
+  })
+
+  it('advances after a usage chunk when the trigger failure follows it', async () => {
+    // Adaptors emit usage BEFORE the terminal finish: 0-token usage is
+    // metadata, so it must not commit the attempt (plan 2026-11-07 T1).
+    adapter.respond = (options) => options.model === '1'
+      ? { chunks: [USAGE], failure: { code: 'QUOTA', message: 'quota' } }
+      : { chunks: [TEXT, STOP] }
+
+    const chunks = await walk({ readConfig: rootConfig(['a/1', 'b/2']) })
+
+    expect(dispatched()).toEqual(['a/1', 'b/2'])
+    expect(chunks).toEqual([USAGE, TEXT, STOP])
+  })
+
+  it('still forwards a failure after real output that follows a usage chunk', async () => {
+    adapter.respond = () => ({ chunks: [USAGE, TEXT], failure: { code: 'AUTH', message: 'head down' } })
+
+    const chunks = await walk({ readConfig: rootConfig(['a/1', 'b/2']) })
+
+    expect(dispatched()).toEqual(['a/1'])
+    expect(chunks.slice(0, 2)).toEqual([USAGE, TEXT])
+    expect(chunks.at(-1)).toMatchObject({
+      type: 'finish',
+      reason: { kind: 'error', failure: { code: 'AUTH', message: 'head down' } },
+    })
+  })
+
+  it('does not un-commit an attempt whose usage chunk follows real output (QC F1)', async () => {
+    // The flag LATCHES: `text-delta` → `usage` → trigger failure must keep the
+    // attempt committed, or the second candidate's output would be concatenated
+    // behind output the consumer already received.
+    adapter.respond = () => ({ chunks: [TEXT, USAGE], failure: { code: 'AUTH', message: 'after output' } })
+
+    const chunks = await walk({ readConfig: rootConfig(['a/1', 'b/2']) })
+
+    expect(dispatched()).toEqual(['a/1'])
+    expect(chunks.slice(0, 2)).toEqual([TEXT, USAGE])
+    expect(chunks.at(-1)).toMatchObject({
+      type: 'finish',
+      reason: { kind: 'error', failure: { code: 'AUTH', message: 'after output' } },
+    })
+  })
+
+  it('commits a tool-call block start, so the failure is forwarded (QC2 option b)', async () => {
+    // A switch here would pour the next candidate's deltas into this attempt's
+    // opened tool-call partial, which assembly then drops — so a block start
+    // counts as output, exactly as on `main`.
+    adapter.respond = (options) => options.model === '1'
+      ? { chunks: [TOOL_START], failure: { code: 'AUTH', message: 'head down' } }
+      : { chunks: [TEXT, STOP] }
+
+    const chunks = await walk({ readConfig: rootConfig(['a/1', 'b/2']) })
+
+    expect(dispatched()).toEqual(['a/1'])
+    expect(chunks.slice(0, 1)).toEqual([TOOL_START])
+    expect(chunks.at(-1)).toMatchObject({
+      type: 'finish',
+      reason: { kind: 'error', failure: { code: 'AUTH', message: 'head down' } },
+    })
   })
 
   it('forwards a post-output failure verbatim and never starts another attempt', async () => {
@@ -588,7 +656,7 @@ describe('role chain tail (design §2.2)', () => {
 
 describe('effort rule (design §3.2)', () => {
   it('keeps an explicit selection effort on every attempt', async () => {
-    adapter.reasoning = true
+    adapter.efforts = () => [{ id: 'high', name: 'High' }]
     adapter.respond = (options) => (options.model === '1' ? { failure: { code: 'AUTH' } } : { chunks: [STOP] })
 
     await walk(
@@ -605,6 +673,179 @@ describe('effort rule (design §3.2)', () => {
     await walk({ readConfig: rootConfig(['a/1', 'b/2']) })
 
     expect(adapter.calls.map((call) => 'reasoningEffort' in call)).toEqual([false, false])
+  })
+})
+
+describe('per-target parameter adaptation (plan 2026-11-07 T2)', () => {
+  it('drops an inherited effort the next candidate does not list', async () => {
+    adapter.efforts = (_provider, model) => (model === '1'
+      ? [{ id: 'high', name: 'High' }]
+      : [{ id: 'low', name: 'Low' }])
+    adapter.respond = (options) => (options.model === '1' ? { failure: { code: 'AUTH' } } : { chunks: [STOP] })
+
+    await walk(
+      { readConfig: rootConfig(['a/1', 'b/2']) },
+      { reasoningEffort: 'high' as GenerateOptions['reasoningEffort'] },
+    )
+
+    expect(adapter.calls.map((call) => call.reasoningEffort)).toEqual(['high', undefined])
+    // Absent, not `undefined`: the runtime would reject an unsupported effort.
+    expect('reasoningEffort' in adapter.calls[1]!).toBe(false)
+  })
+
+  it('drops a maxTokens above the candidate disclosed cap', async () => {
+    adapter.outputCap = (_provider, model) => (model === '2' ? 1000 : 4000)
+    adapter.respond = (options) => (options.model === '1' ? { failure: { code: 'AUTH' } } : { chunks: [STOP] })
+
+    await walk({ readConfig: rootConfig(['a/1', 'b/2']) }, { maxTokens: 2000 })
+
+    // a/1's cap fits, so the inherited 2000 rides; b/2 (cap 1000) drops it and
+    // the runtime materializes THAT route's default instead.
+    expect(adapter.calls.map((call) => call.maxTokens)).toEqual([2000, 1000])
+  })
+
+  it('keeps both controls when the candidate lists the effort and fits the cap', async () => {
+    adapter.efforts = () => [{ id: 'high', name: 'High' }]
+    adapter.outputCap = () => 4000
+    adapter.respond = (options) => (options.model === '1' ? { failure: { code: 'AUTH' } } : { chunks: [STOP] })
+
+    await walk(
+      { readConfig: rootConfig(['a/1', 'b/2']) },
+      { reasoningEffort: 'high' as GenerateOptions['reasoningEffort'], maxTokens: 2000 },
+    )
+
+    expect(adapter.calls.map((call) => [call.reasoningEffort, call.maxTokens])).toEqual([
+      ['high', 2000],
+      ['high', 2000],
+    ])
+  })
+
+  it('keeps the inherited controls when the capability probe throws', async () => {
+    adapter.efforts = () => [{ id: 'high', name: 'High' }]
+    adapter.respond = (options) => (options.model === '1' ? { failure: { code: 'AUTH' } } : { chunks: [STOP] })
+    const runtime = ctx.llm
+    const flaky = {
+      stream: (options: GenerateOptions) => runtime.stream(options),
+      resolveModelInfo: () => Promise.reject(new Error('probe down')),
+    } as unknown as LlmRuntime
+
+    await walk(
+      { readConfig: rootConfig(['a/1', 'b/2']), getLlm: () => flaky },
+      { reasoningEffort: 'high' as GenerateOptions['reasoningEffort'], maxTokens: 2000 },
+    )
+
+    // Fail open: an unreadable probe rewrites nothing.
+    expect(adapter.calls.map((call) => [call.reasoningEffort, call.maxTokens])).toEqual([
+      ['high', 2000],
+      ['high', 2000],
+    ])
+  })
+
+  it('keeps the inherited controls when the host exposes no capability probe', async () => {
+    adapter.efforts = () => [{ id: 'high', name: 'High' }]
+    adapter.respond = (options) => (options.model === '1' ? { failure: { code: 'AUTH' } } : { chunks: [STOP] })
+    const streamOnly = {
+      stream: (options: GenerateOptions) => ctx.llm.stream(options),
+    } as unknown as LlmRuntime
+
+    await walk(
+      { readConfig: rootConfig(['a/1', 'b/2']), getLlm: () => streamOnly },
+      { reasoningEffort: 'high' as GenerateOptions['reasoningEffort'], maxTokens: 2000 },
+    )
+
+    expect(adapter.calls.map((call) => [call.reasoningEffort, call.maxTokens])).toEqual([
+      ['high', 2000],
+      ['high', 2000],
+    ])
+  })
+
+  it('logs the proactive drop at debug level (QC F3)', async () => {
+    const debug = vi.fn()
+    adapter.efforts = () => [{ id: 'low', name: 'Low' }]
+
+    await walk(
+      { readConfig: rootConfig(['a/1']), log: { info: () => {}, warn: () => {}, debug } },
+      { reasoningEffort: 'high' as GenerateOptions['reasoningEffort'] },
+    )
+
+    expect(debug).toHaveBeenCalledWith(expect.stringContaining('parameter adaptation'), 'a', '1', 'reasoningEffort')
+  })
+})
+
+describe('reactive parameter repair (plan 2026-11-07 T2 / AC-7)', () => {
+  it('repairs a max_tokens rejection by retrying the SAME candidate without maxTokens', async () => {
+    // The observed zai-coding-cn shape: the route discloses no defaultMaxTokens,
+    // so proactive adaptation cannot see the cap and the provider 400s instead.
+    adapter.respond = (options) => (options.maxTokens === undefined
+      ? { chunks: [TEXT, STOP] }
+      : { failure: { code: 'INVALID_REQUEST', message: 'max_tokens参数非法：限制数值范围[1,131072]' } })
+
+    const chunks = await walk({ readConfig: rootConfig(['a/1', 'b/2']) }, { maxTokens: 384_000 })
+
+    expect(dispatched()).toEqual(['a/1', 'a/1'])
+    expect(adapter.calls.map((call) => call.maxTokens)).toEqual([384_000, undefined])
+    expect(chunks).toEqual([TEXT, STOP])
+  })
+
+  it('repairs UNSUPPORTED_REASONING_EFFORT by retrying the SAME candidate without the effort', async () => {
+    // The probe lists `high` (so the proactive drop keeps it) but the adapter
+    // rejects it anyway — only its own rejection exposes the real set.
+    adapter.efforts = () => [{ id: 'high', name: 'High' }]
+    adapter.respond = (options) => (options.reasoningEffort === undefined
+      ? { chunks: [TEXT, STOP] }
+      : { failure: { code: 'UNSUPPORTED_REASONING_EFFORT', message: 'no such effort' } })
+
+    const chunks = await walk(
+      { readConfig: rootConfig(['a/1', 'b/2']) },
+      { reasoningEffort: 'high' as GenerateOptions['reasoningEffort'] },
+    )
+
+    expect(dispatched()).toEqual(['a/1', 'a/1'])
+    expect('reasoningEffort' in adapter.calls[1]!).toBe(false)
+    expect(chunks).toEqual([TEXT, STOP])
+  })
+
+  it('forwards a second identical rejection instead of repairing it again', async () => {
+    adapter.efforts = () => [{ id: 'high', name: 'High' }]
+    adapter.respond = () => ({ failure: { code: 'UNSUPPORTED_REASONING_EFFORT', message: 'still no' } })
+
+    const chunks = await walk(
+      { readConfig: rootConfig(['a/1', 'b/2']) },
+      { reasoningEffort: 'high' as GenerateOptions['reasoningEffort'] },
+    )
+
+    // One repair, never a loop: the second attempt carried no effort to drop.
+    expect(adapter.calls).toHaveLength(2)
+    expect(finishes(chunks)).toHaveLength(1)
+    expect(chunks.at(-1)).toMatchObject({ reason: { failure: { code: 'UNSUPPORTED_REASONING_EFFORT' } } })
+  })
+
+  it('does not repair an INVALID_REQUEST that merely mentions max_tokens', async () => {
+    // Narrowing (operator concern): prose about the parameter is not a range
+    // rejection, so the failure is forwarded instead of guessed at.
+    adapter.respond = () => ({ failure: { code: 'INVALID_REQUEST', message: 'prompt exceeds max_tokens budget' } })
+
+    const chunks = await walk({ readConfig: rootConfig(['a/1', 'b/2']) }, { maxTokens: 384_000 })
+
+    expect(adapter.calls).toHaveLength(1)
+    expect(adapter.calls[0]!.maxTokens).toBe(384_000)
+    expect(chunks.at(-1)).toMatchObject({ reason: { failure: { code: 'INVALID_REQUEST' } } })
+  })
+
+  it('books no cooldown for a repaired candidate', async () => {
+    const states = new FallbackStateStore()
+    adapter.respond = (options) => (options.maxTokens === undefined
+      ? { chunks: [STOP] }
+      : { failure: { code: 'INVALID_REQUEST', message: 'max_tokens out of range' } })
+    const deps = { readConfig: rootConfig(['a/1', 'b/2']), states }
+
+    await walk(deps, { maxTokens: 384_000, sessionId: SessionId('s1') })
+    expect(dispatched()).toEqual(['a/1', 'a/1'])
+
+    // The repair is a request fix, not a chain switch: the head is attempted
+    // again on the next walk instead of being skipped as cooled.
+    await walk(deps, { maxTokens: 384_000, sessionId: SessionId('s1') })
+    expect(dispatched()).toEqual(['a/1', 'a/1', 'a/1', 'a/1'])
   })
 })
 
