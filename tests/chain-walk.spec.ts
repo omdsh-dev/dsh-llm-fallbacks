@@ -43,6 +43,7 @@ import { cfg, walkDeps } from './support/harness.ts'
 const TEXT: StreamChunk = { type: 'text-delta', index: 0, text: 'ok' }
 const STOP: StreamChunk = { type: 'finish', reason: { kind: 'stop' } }
 const USAGE: StreamChunk = { type: 'usage', usage: { inputTokens: 0, outputTokens: 0 } }
+const TOOL_START: StreamChunk = { type: 'block-start', index: 0, blockType: 'tool-call' }
 
 /** One scripted attempt: the chunks it emits, then either a throw or a clean end. */
 interface ScriptedAttempt {
@@ -238,6 +239,34 @@ describe('committed rule (design §3.1/§6.1.4)', () => {
       type: 'finish',
       reason: { kind: 'error', failure: { code: 'AUTH', message: 'head down' } },
     })
+  })
+
+  it('does not un-commit an attempt whose usage chunk follows real output (QC F1)', async () => {
+    // The flag LATCHES: `text-delta` → `usage` → trigger failure must keep the
+    // attempt committed, or the second candidate's output would be concatenated
+    // behind output the consumer already received.
+    adapter.respond = () => ({ chunks: [TEXT, USAGE], failure: { code: 'AUTH', message: 'after output' } })
+
+    const chunks = await walk({ readConfig: rootConfig(['a/1', 'b/2']) })
+
+    expect(dispatched()).toEqual(['a/1'])
+    expect(chunks.slice(0, 2)).toEqual([TEXT, USAGE])
+    expect(chunks.at(-1)).toMatchObject({
+      type: 'finish',
+      reason: { kind: 'error', failure: { code: 'AUTH', message: 'after output' } },
+    })
+  })
+
+  it('does not commit a tool-call block start before any content arrives (QC F2)', async () => {
+    adapter.respond = (options) => options.model === '1'
+      ? { chunks: [TOOL_START], failure: { code: 'AUTH', message: 'head down' } }
+      : { chunks: [STOP] }
+
+    await walk({ readConfig: rootConfig(['a/1', 'b/2']) })
+
+    // A tool call's opening is protocol, not content: nothing was yielded that
+    // a second candidate's output could be concatenated onto.
+    expect(dispatched()).toEqual(['a/1', 'b/2'])
   })
 
   it('forwards a post-output failure verbatim and never starts another attempt', async () => {
@@ -722,6 +751,95 @@ describe('per-target parameter adaptation (plan 2026-11-07 T2)', () => {
       ['high', 2000],
       ['high', 2000],
     ])
+  })
+
+  it('logs the proactive drop at debug level (QC F3)', async () => {
+    const debug = vi.fn()
+    adapter.efforts = () => [{ id: 'low', name: 'Low' }]
+
+    await walk(
+      { readConfig: rootConfig(['a/1']), log: { info: () => {}, warn: () => {}, debug } },
+      { reasoningEffort: 'high' as GenerateOptions['reasoningEffort'] },
+    )
+
+    expect(debug).toHaveBeenCalledWith(expect.stringContaining('parameter adaptation'), 'a', '1', 'reasoningEffort')
+  })
+})
+
+describe('reactive parameter repair (plan 2026-11-07 T2 / AC-7)', () => {
+  it('repairs a max_tokens rejection by retrying the SAME candidate without maxTokens', async () => {
+    // The observed zai-coding-cn shape: the route discloses no defaultMaxTokens,
+    // so proactive adaptation cannot see the cap and the provider 400s instead.
+    adapter.respond = (options) => (options.maxTokens === undefined
+      ? { chunks: [TEXT, STOP] }
+      : { failure: { code: 'INVALID_REQUEST', message: 'max_tokens参数非法：限制数值范围[1,131072]' } })
+
+    const chunks = await walk({ readConfig: rootConfig(['a/1', 'b/2']) }, { maxTokens: 384_000 })
+
+    expect(dispatched()).toEqual(['a/1', 'a/1'])
+    expect(adapter.calls.map((call) => call.maxTokens)).toEqual([384_000, undefined])
+    expect(chunks).toEqual([TEXT, STOP])
+  })
+
+  it('repairs UNSUPPORTED_REASONING_EFFORT by retrying the SAME candidate without the effort', async () => {
+    // The probe lists `high` (so the proactive drop keeps it) but the adapter
+    // rejects it anyway — only its own rejection exposes the real set.
+    adapter.efforts = () => [{ id: 'high', name: 'High' }]
+    adapter.respond = (options) => (options.reasoningEffort === undefined
+      ? { chunks: [TEXT, STOP] }
+      : { failure: { code: 'UNSUPPORTED_REASONING_EFFORT', message: 'no such effort' } })
+
+    const chunks = await walk(
+      { readConfig: rootConfig(['a/1', 'b/2']) },
+      { reasoningEffort: 'high' as GenerateOptions['reasoningEffort'] },
+    )
+
+    expect(dispatched()).toEqual(['a/1', 'a/1'])
+    expect('reasoningEffort' in adapter.calls[1]!).toBe(false)
+    expect(chunks).toEqual([TEXT, STOP])
+  })
+
+  it('forwards a second identical rejection instead of repairing it again', async () => {
+    adapter.efforts = () => [{ id: 'high', name: 'High' }]
+    adapter.respond = () => ({ failure: { code: 'UNSUPPORTED_REASONING_EFFORT', message: 'still no' } })
+
+    const chunks = await walk(
+      { readConfig: rootConfig(['a/1', 'b/2']) },
+      { reasoningEffort: 'high' as GenerateOptions['reasoningEffort'] },
+    )
+
+    // One repair, never a loop: the second attempt carried no effort to drop.
+    expect(adapter.calls).toHaveLength(2)
+    expect(finishes(chunks)).toHaveLength(1)
+    expect(chunks.at(-1)).toMatchObject({ reason: { failure: { code: 'UNSUPPORTED_REASONING_EFFORT' } } })
+  })
+
+  it('does not repair an INVALID_REQUEST that merely mentions max_tokens', async () => {
+    // Narrowing (operator concern): prose about the parameter is not a range
+    // rejection, so the failure is forwarded instead of guessed at.
+    adapter.respond = () => ({ failure: { code: 'INVALID_REQUEST', message: 'prompt exceeds max_tokens budget' } })
+
+    const chunks = await walk({ readConfig: rootConfig(['a/1', 'b/2']) }, { maxTokens: 384_000 })
+
+    expect(adapter.calls).toHaveLength(1)
+    expect(adapter.calls[0]!.maxTokens).toBe(384_000)
+    expect(chunks.at(-1)).toMatchObject({ reason: { failure: { code: 'INVALID_REQUEST' } } })
+  })
+
+  it('books no cooldown for a repaired candidate', async () => {
+    const states = new FallbackStateStore()
+    adapter.respond = (options) => (options.maxTokens === undefined
+      ? { chunks: [STOP] }
+      : { failure: { code: 'INVALID_REQUEST', message: 'max_tokens out of range' } })
+    const deps = { readConfig: rootConfig(['a/1', 'b/2']), states }
+
+    await walk(deps, { maxTokens: 384_000, sessionId: SessionId('s1') })
+    expect(dispatched()).toEqual(['a/1', 'a/1'])
+
+    // The repair is a request fix, not a chain switch: the head is attempted
+    // again on the next walk instead of being skipped as cooled.
+    await walk(deps, { maxTokens: 384_000, sessionId: SessionId('s1') })
+    expect(dispatched()).toEqual(['a/1', 'a/1', 'a/1', 'a/1'])
   })
 })
 
