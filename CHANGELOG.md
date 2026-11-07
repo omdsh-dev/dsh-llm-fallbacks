@@ -6,6 +6,23 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-07
+
+### Changed
+
+- Under an enabled subagent model-selection allowlist, a mounted child's first attempt is allowlist-admitted: the walk starts on the first dispatchable route of the role chain that is on the allowlist, so a child can start on a non-head route.
+- A mount is declined when the role chain has no allowlisted dispatchable route — the child keeps pure inheritance instead of being mounted on a chain the host allowlist cannot serve.
+- A mounted child's walk refuses before any attempt (`UNDISPATCHABLE_EFFECTIVE_HEAD`, no request sent) when the host subagent policy becomes `unprovable` or no longer admits the cooled head, instead of dispatching an unfiltered route first.
+- Fallback now applies only to sessions whose model selection is `FallbacksChain / Auto`; a real-model selection is served by llm-retry alone, with no plugin fallback.
+- A walk switches only while the failed attempt has emitted no output; after the first chunk the attempt is committed and the failure is forwarded verbatim, so no second model's output is appended behind a partial one.
+- Subagents mounted through the dispatch seam inherit a chain; explicit routes (`provider` + `model` in the spawn request) and external backends keep their own route unchanged.
+- The `alwaysModeRetryCap` and `roleAutoMatch` config keys were removed with no successor; a stored section that still carries them is reported by the legacy-key notice and startup warn, then ignored.
+- Upgrade `@deepseek-ai/dsh-*` peers to `^0.2.2-rc.1`.
+
+### Added
+
+- Add a localized preview image to the README header and the Plugins-page detail view.
+
 ## [0.6.13] - 2026-10-28
 
 ### Changed
