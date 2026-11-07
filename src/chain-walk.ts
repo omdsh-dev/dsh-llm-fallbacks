@@ -9,8 +9,9 @@
  * pre-output terminal `finish` whose failure code is a trigger code is
  * swallowed, booked (cooldown / recovery) and the walk advances; anything
  * else — a normal finish, an aborted finish, a non-trigger failure, or any
- * failure after the attempt already yielded a chunk — is forwarded verbatim
- * and ends the walk.
+ * failure after the attempt already yielded output — is forwarded verbatim
+ * and ends the walk. A `usage` chunk is metadata, so it neither commits the
+ * attempt nor stops the advance.
  *
  * The COMMITTED rule (§3.1 / §7.5) is why a post-output failure cannot be
  * replayed: yielded chunks cannot be unsent, so a second provider's output
@@ -116,6 +117,18 @@ export const CONTEXT_WINDOW_EXCEEDED_CODE = 'CONTEXT_WINDOW_EXCEEDED'
 export const REQUEST_SCOPED_CODES: ReadonlySet<string> = new Set([CONTEXT_WINDOW_EXCEEDED_CODE])
 
 /**
+ * The exact-route capabilities a walk reads from `resolveModelInfo`: the
+ * context window (wildcard / overflow expansions) plus the two request
+ * controls parameter adaptation compares against. Every field is optional — a
+ * host that discloses nothing leaves every request untouched.
+ */
+interface ModelInfoLike {
+  context?: { contextWindow?: number }
+  defaultMaxTokens?: number
+  reasoning?: { efforts: readonly { id: string; name: string }[] }
+}
+
+/**
  * Model-catalog view the wildcard / context-window probes read. `contextWindow`
  * is a host-disclosed extra on the advisory catalog row (the dsh `LlmModelInfo`
  * does not type it), while `resolveModelInfo` is where the host actually
@@ -124,7 +137,7 @@ export const REQUEST_SCOPED_CODES: ReadonlySet<string> = new Set([CONTEXT_WINDOW
  */
 export interface ModelCatalogLike {
   listModels(provider: string): Promise<readonly { id: string; contextWindow?: number }[]>
-  resolveModelInfo?(provider: string, model: string): Promise<{ context?: { contextWindow?: number } }>
+  resolveModelInfo?(provider: string, model: string): Promise<ModelInfoLike>
 }
 
 /**
@@ -200,6 +213,72 @@ export async function makeContextWindowOf(
     }))
   }
   return (provider, model) => windows.get(selectorKey(provider, model))
+}
+
+/**
+ * The per-walk capability lookup behind parameter adaptation: one
+ * `resolveModelInfo` per `provider/model`, cached for the walk (an attempt is
+ * dispatched once per route, but the head may be resolved again on re-entry).
+ * TOTAL — a missing catalog, a throwing probe or malformed metadata reads as
+ * UNKNOWN (`undefined`), and unknown always keeps the request unchanged.
+ */
+function makeModelInfoOf(
+  catalog: ModelCatalogLike | undefined,
+): (provider: string, model: string) => Promise<ModelInfoLike | undefined> {
+  const resolveModelInfo = catalog?.resolveModelInfo?.bind(catalog)
+  if (resolveModelInfo === undefined) return () => Promise.resolve(undefined)
+  const cache = new Map<string, Promise<ModelInfoLike | undefined>>()
+  return (provider, model) => {
+    const key = selectorKey(provider, model)
+    let info = cache.get(key)
+    if (info === undefined) {
+      info = (async () => {
+        try {
+          return await resolveModelInfo(provider, model)
+        } catch {
+          // Fail open: an unreadable capability never rewrites the request.
+          return undefined
+        }
+      })()
+      cache.set(key, info)
+    }
+    return info
+  }
+}
+
+/**
+ * Adapt one dispatch to the candidate's declared capabilities (plan
+ * 2026-11-07 T2): DROP a request control the exact route cannot serve —
+ * `reasoningEffort` it does not list, `maxTokens` above its disclosed
+ * `defaultMaxTokens` — instead of clamping or aliasing it. Unknown capability
+ * (`undefined`) or unreadable metadata keeps `options` byte-for-byte unchanged,
+ * so a host that discloses nothing behaves exactly as before.
+ */
+async function adaptForTarget(
+  options: GenerateOptions,
+  target: EffectiveHead,
+  modelInfoOf: (provider: string, model: string) => Promise<ModelInfoLike | undefined>,
+): Promise<GenerateOptions> {
+  // Nothing inherited to adapt: no probe, no behavior change.
+  if (options.reasoningEffort === undefined && options.maxTokens === undefined) return options
+  const info = await modelInfoOf(target.provider, target.model)
+  if (info === undefined || info === null) return options
+  try {
+    const adapted = { ...options }
+    const effort = options.reasoningEffort
+    if (effort !== undefined
+      && !(info.reasoning?.efforts ?? []).some((supported) => supported.id === effort)) {
+      delete adapted.reasoningEffort
+    }
+    const maxTokens = options.maxTokens
+    if (maxTokens !== undefined && info.defaultMaxTokens !== undefined && maxTokens > info.defaultMaxTokens) {
+      delete adapted.maxTokens
+    }
+    return adapted
+  } catch {
+    // Malformed metadata reads as unknown; the request goes out unchanged.
+    return options
+  }
 }
 
 /**
@@ -516,10 +595,11 @@ async function* walk(
   const { config, role, rootTail, head, llm, owner } = start
   // P7 分时切换 log — a routing seed observation, never a failure decision.
   logSlotRotation(deps, start)
-  // §3.2 effort rule: an explicit selection effort rides every attempt (the
-  // spread below keeps it). The pre-C override path had to DROP an inherited
-  // effort on a route change; the walk never rewrites a seed config, so the
-  // rule collapses to a verbatim passthrough — an absent effort stays absent.
+  // §3.2 adaptation: before each dispatch the request is narrowed to what THAT
+  // candidate declares it can serve (drop-only, fail open). The pre-C override
+  // path rewrote a seed config on a route change; the walk keeps the seed and
+  // adapts only the per-attempt copy below.
+  const modelInfoOf = makeModelInfoOf(llm)
   const messages = restoreEnvelopeProvenance(options.messages)
 
   /** The session's state, or `undefined` while the walk has written nothing (F-004). */
@@ -723,12 +803,15 @@ async function* walk(
       )
     }
 
-    // §3.1 step 3: yield every chunk as it arrives. The FIRST yielded chunk
+    // §3.1 step 3: yield every chunk as it arrives. The first OUTPUT chunk
     // commits the attempt — from then on a failure belongs to the upper layers
-    // and is never replayed (§6.1.4).
+    // and is never replayed (§6.1.4). A `usage` chunk is metadata, not output:
+    // adapters emit it BEFORE the terminal finish, so committing on it would
+    // make the triggerCodes swallow branch unreachable for every such provider.
     let committed = false
     let swallowed: { chunk: StreamChunk; code: string } | undefined
-    for await (const chunk of llm.stream({ ...options, provider: target.provider, model: target.model, messages })) {
+    const attemptOptions = await adaptForTarget(options, target, modelInfoOf)
+    for await (const chunk of llm.stream({ ...attemptOptions, provider: target.provider, model: target.model, messages })) {
       const failure = chunk.type === 'finish' && chunk.reason.kind === 'error' ? chunk.reason.failure : undefined
       if (failure !== undefined && !committed && config.triggerCodes.includes(failure.code)) {
         swallowed = { chunk, code: failure.code }
@@ -753,7 +836,7 @@ async function* walk(
         return
       }
       yield chunk
-      committed = true
+      committed = chunk.type !== 'usage'
     }
     // A stream that ends with no terminal chunk yields no finish of its own —
     // the adapter never produced one, so the walk has nothing to add.
