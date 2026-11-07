@@ -202,9 +202,20 @@ The walk never rewrites a seed config: before each dispatch it adapts only the p
 | The inherited `maxTokens` exceeds the candidate's disclosed `defaultMaxTokens` | `maxTokens` is dropped for THAT attempt only, so the route's own default applies |
 | The probe is absent, throws, or returns malformed metadata | the request is dispatched unchanged (fail open) |
 
+A drop is logged at **debug** level (`llm-fallbacks: parameter adaptation candidate=<provider>/<model> dropped=<control>`), because a served request with a smaller budget than the caller asked for is otherwise indistinguishable from a normal turn.
+
 This is the same rule the retired `overrideConfig` path enforced by dropping a stale effort on a route change, now applied per candidate rather than once per request. Policy-independent either way.
 
-**Residual path**: adaptation is proactive, so a candidate can still reject the request after dispatch. `UNSUPPORTED_REASONING_EFFORT` still ends the turn when the adapter re-checks the effort against a set the probe did not disclose (or the probe failed open), and `INVALID_REQUEST` is never adapted (too broad — it also covers malformed request history). Both end the turn after one attempt unless the operator lists the code in `triggerCodes`; the walk's default trigger codes are unchanged.
+**Reactive repair (after an explicit rejection)**: a disclosed capability is not always the truth — a route can declare no `defaultMaxTokens` at all and still reject the request (observed on `zai-coding-cn` for `glm-5.3-flash`: no configured cap, so the 384000 request reached the API and the provider answered 400). So when an attempt fails **before emitting output** with the adapter's own parameter rejection, the walk retries the SAME candidate **once** with that control removed:
+
+| Rejection | Repaired when |
+|-----------|---------------|
+| `UNSUPPORTED_REASONING_EFFORT` | the attempt carried `reasoningEffort` |
+| `INVALID_REQUEST` whose message names a `max_tokens` **range/validity** rejection (`max_tokens参数非法…[1,131072]`, `max_tokens: … invalid`) | the attempt carried `maxTokens` |
+
+The repair is a request fix, not a chain switch: **no** cooldown, **no** failed-set entry, **no** `fallbacks/switch` reason and no switch consumed — the candidate stays available to the next walk. At most one repair per control per attempt, so a repaired attempt that is rejected again follows the normal rules (trigger-code swallow/advance, or verbatim forwarding). The message shape is deliberately narrow: prose that merely mentions the parameter (`prompt exceeds max_tokens budget`) is not a range rejection and is forwarded, not guessed at.
+
+**Residual path**: `UNSUPPORTED_REASONING_EFFORT` on an attempt that carried no effort, a second identical rejection after its repair, and `INVALID_REQUEST` from any other cause (it is too broad — it also covers malformed request history) still end the turn after one attempt unless the operator lists the code in `triggerCodes`; the walk's default trigger codes are unchanged.
 
 ### Card: filtered titles, policy hint and the explicit sync button
 
@@ -415,9 +426,10 @@ One walk per `stream()` call of the virtual `FallbacksChain/Auto` route (`src/ch
 
 1. **Start**: resolve the agent view, the role and the chain tail; throw `EMPTY_EFFECTIVE_CHAIN` / `UNDISPATCHABLE_EFFECTIVE_HEAD` / `LLM_UNAVAILABLE` synchronously when no attempt can start. A root walk additionally requires the all-day tail to be conforming; a subagent walks its role chain, so the all-day shape never gates it.
 2. **First attempt**: the chain head — or, when cross-call memory has the head on cooldown, the next surviving candidate (the llm-retry re-entry contract). A chain whose candidates are all cooled still attempts the head, so a request is never left without an answer — except on a seam-mounted child, where the cooled-head re-entry re-reads the host policy first: if that fresh policy no longer admits the head (a narrowed allowlist, or `unprovable`), the walk throws `UNDISPATCHABLE_EFFECTIVE_HEAD` with no attempt rather than re-dispatch a route the operator has since revoked.
-3. **Per attempt**: the request is adapted to this candidate (effort / `maxTokens` dropped when it cannot serve them, unchanged when the probe is absent or unreadable), then nested `llm.stream({ ...adapted, provider, model })`, every chunk yielded as it arrives. The first **output** chunk commits the attempt — a `usage` chunk is passthrough metadata and never commits it.
-4. **On an uncommitted trigger-code failure**: swallow the finish, add the route to this walk's failed set, cool it down (unless the code is request-scoped), log the switch line (from/to/role/reason/candidates) and advance — until `maxSwitchesPerStep` switches are spent.
-5. **Otherwise**: forward the attempt's finish verbatim and end the walk — a normal finish, an aborted finish, a non-trigger failure, any failure after commit, or an exhausted chain / spent cap (the last attempted failure is re-emitted).
+3. **Per attempt**: the request is adapted to this candidate (effort / `maxTokens` dropped when it cannot serve them, unchanged when the probe is absent or unreadable), then nested `llm.stream({ ...adapted, provider, model })`, every chunk yielded as it arrives. The first **output** chunk commits the attempt, and the flag latches — two chunk kinds never commit: `usage` (passthrough metadata adapters emit before the terminal finish) and a `tool-call` block start (protocol, not content).
+4. **On an uncommitted parameter rejection**: repair instead of switching — retry the SAME candidate once with the rejected control dropped (`UNSUPPORTED_REASONING_EFFORT` → `reasoningEffort`, a `max_tokens`-range `INVALID_REQUEST` → `maxTokens`), one `info` line per repair, no cooldown and no failed-set entry. The repaired attempt returns to these rules.
+5. **On an uncommitted trigger-code failure**: swallow the finish, add the route to this walk's failed set, cool it down (unless the code is request-scoped), log the switch line (from/to/role/reason/candidates) and advance — until `maxSwitchesPerStep` switches are spent.
+6. **Otherwise**: forward the attempt's finish verbatim and end the walk — a normal finish, an aborted finish, a non-trigger failure, any failure after commit, or an exhausted chain / spent cap (the last attempted failure is re-emitted).
 
 Exactly one terminal `finish` chunk is emitted per walk, no attempt's provider is ever `FallbacksChain` (recursion guard), and a walk never writes a durable `fallbacks/switch` event (issue #52) — the info log is the record.
 
