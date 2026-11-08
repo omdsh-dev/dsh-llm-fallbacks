@@ -543,6 +543,9 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
   })
   const bridge: FallbacksSettingsBridge = {
     source: (): FallbacksConfig => source(),
+    // Legacy detection needs the stored view: the upgraded one carries none of
+    // the v1 keys by construction (plan fallbacks-v1-auto-migration).
+    rawSource: (): FallbacksConfig => rawSource(),
   }
   // T1 (plan llm-fallbacks-settings-gateway): the host-side `fallbacks` config
   // gateway — the `/api/fallbacks/get` + `/api/fallbacks/set` +

@@ -109,7 +109,15 @@ export const FALLBACKS_PROFILE_ENTRY = 'llm-fallbacks'
  * `onChange` fan-out was removed in the QC fix wave — nothing subscribed).
  */
 export interface FallbacksSettingsBridge {
+  /** The EFFECTIVE config the runtime reads (v1 already upgraded in memory). */
   source(): FallbacksConfig
+  /**
+   * The STORED view, before the in-memory upgrade. Legacy detection reads it,
+   * so the migration banner keeps reporting keys the effective config no
+   * longer carries (plan fallbacks-v1-auto-migration). Optional: a caller
+   * without one is assumed to hold the raw shape itself.
+   */
+  rawSource?(): FallbacksConfig
 }
 
 /** Patch shape accepted by `fallbacks.set` — any subset of the config keys. */
@@ -404,10 +412,14 @@ export class FallbacksConfigGateway extends TypertRemoteService {
    * badge state, W-1/F-1).
    */
   private readResult(): FallbacksReadResult {
-    const source = this.bridge.source()
+    // The reported config comes from the EFFECTIVE view (upgraded); legacy
+    // detection comes from the STORED one — `migrateLegacyConfig` rebuilds only
+    // declared keys, so detecting on the upgraded object would always be empty
+    // and a v1 profile would lose its per-role chains silently.
+    const raw = this.bridge.rawSource?.() ?? this.bridge.source()
     return {
-      config: this.readConfig(source),
-      legacyKeys: detectLegacyKeys(source as unknown as Record<string, unknown>),
+      config: this.readConfig(this.bridge.source()),
+      legacyKeys: detectLegacyKeys(raw as unknown as Record<string, unknown>),
       seeds: this.seeds.wireStatus(this.seedsIo()),
     }
   }

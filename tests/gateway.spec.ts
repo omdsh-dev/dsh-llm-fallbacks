@@ -48,7 +48,7 @@ import { TypertRegistry } from '@deepseek-ai/dsh-typert-registry'
 import type { PeerScope } from '@deepseek-ai/dsh-typert-protocol'
 import { apply } from '../src/index.ts'
 import { Config } from '../src/schema.ts'
-import { defaultFallbacksConfig, type FallbacksConfig } from '../src/config.ts'
+import { defaultFallbacksConfig, migrateLegacyConfig, type FallbacksConfig } from '../src/config.ts'
 import { OFFICIAL_FLASH, OFFICIAL_PRO } from '../src/time-slots.ts'
 import {
   FALLBACKS_PROFILE_ENTRY,
@@ -114,8 +114,9 @@ function installFallbacksBridge(ctx: Context, entry: FallbacksConfig): Fallbacks
       if (ns === FALLBACKS_PROFILE_ENTRY) refresh()
     })
   })
-  return {
-    source: (): FallbacksConfig => {
+  /** The composed-but-UNMIGRATED view (mirrors what the settings merge stores). */
+  const rawComposed = (): FallbacksConfig => {
+    {
       if (userSection === undefined) return entry
       // The same layering rule the settings merge applies (objects deep-merge,
       // arrays replace) — a local twin of `mergeConfigLayer` in src/index.ts —
@@ -132,7 +133,14 @@ function installFallbacksBridge(ctx: Context, entry: FallbacksConfig): Fallbacks
           : value
       }
       return unwrapConfig(Config(merged)) as FallbacksConfig
-    },
+    }
+  }
+  // Mirror the production bridge (src/index.ts): the EFFECTIVE view is the
+  // in-memory upgrade, the STORED view is what legacy detection reads. A
+  // regression that detects on the upgraded view turns these tests red.
+  return {
+    source: (): FallbacksConfig => migrateLegacyConfig(rawComposed()),
+    rawSource: (): FallbacksConfig => rawComposed(),
   }
 }
 
@@ -835,6 +843,45 @@ describe('get legacyKeys detection (two-block-era leftovers)', () => {
     expect(gateway.get().config.roles.list).toEqual([])
   })
 
+  it('the PRODUCTION wiring reports v1 legacyKeys from the stored view and the migrated config', async () => {
+    // End-to-end through `apply()`, not the gateway class: the bridge is the
+    // one src/index.ts builds, so a regression that detects on the UPGRADED
+    // source (where no v1 key survives) turns this red.
+    const ctx = track(new Context())
+    await ctx.plugin(MemorySettings)
+    const settings = ctx.settings as unknown as MemorySettings
+    settings.seed(FALLBACKS_PROFILE_ENTRY, {
+      rootChain: ['a/one', 'b/two', 'deepseek-official/deepseek-flash'],
+      roles: {
+        rules: [{ role: 'alpha' }],
+        list: [{ id: 'alpha', persona: 'Alpha persona', fallback: 'inherit-root' }],
+      },
+    })
+    apply(ctx, { ...defaultFallbacksConfig, presets: 'none' })
+    await vi.waitFor(() => expect(ctx.get('fallbacks')).toBeDefined())
+    await vi.waitFor(() => expect(ctx.get('llm-fallbacks')).toBeDefined())
+    const gateway = ctx.get('fallbacks') as FallbacksConfigGateway
+
+    // READ: the banner reports the STORED leftovers…
+    const first = gateway.get()
+    expect(first.legacyKeys).toEqual(['rootChain', 'roles.rules', 'roles.list[].fallback'])
+    // …while the reported config is the migrated v2 shape (chain #0 + roles).
+    expect(first.config.chains.map(chain => chain.id)).toEqual(['Auto'])
+    expect(first.config.chains[0]!.entries.at(-1)).toBe('deepseek-official/deepseek-flash')
+    expect(first.config.roles.list).toHaveLength(1)
+    expect(first.config.roles.list[0]).toMatchObject({ id: 'alpha', persona: 'Alpha persona' })
+    expect('chain' in first.config.roles.list[0]!).toBe(false)
+
+    // ONE save persists v2 and retires the banner — on the response and later.
+    const saved = await gateway.set({ cooldownMs: 120_000 })
+    expect(saved.legacyKeys).toEqual([])
+    expect(gateway.get().legacyKeys).toEqual([])
+    expect(settings.get(FALLBACKS_PROFILE_ENTRY)).toEqual({
+      cooldownMs: 120_000,
+      roles: { list: [{ id: 'alpha', persona: 'Alpha persona' }] },
+    })
+  })
+
   it('detects the removed roles.rules key (whole-family legacy)', () => {
     const ctx = track(new Context())
     const legacy = {
@@ -862,14 +909,17 @@ describe('get legacyKeys detection (two-block-era leftovers)', () => {
     const gateway = new FallbacksConfigGateway(ctx, bridge, makeSeeds())
     await waitRegistered(ctx)
 
-    // Merge-retention path: the composed source the runtime adapters read
-    // (apply/onChange/decide/getSnapshot in src/index.ts) still carries the
-    // legacy keys through the settings merge.
-    const composed = bridge.source() as unknown as Record<string, unknown>
-    expect(Object.hasOwn(composed, 'rootChain')).toBe(true)
-    const roles = composed.roles as Record<string, unknown>
+    // The STORED view keeps the legacy keys (that is what the banner reads)…
+    const stored = bridge.rawSource!() as unknown as Record<string, unknown>
+    expect(Object.hasOwn(stored, 'rootChain')).toBe(true)
+    const roles = stored.roles as Record<string, unknown>
     expect(Object.hasOwn(roles, 'default')).toBe(true)
     expect(Array.isArray(roles.rules)).toBe(true)
+    // …while the EFFECTIVE view the runtime adapters read is already upgraded
+    // (plan fallbacks-v1-auto-migration): the old rootChain is chain #0.
+    const effective = bridge.source()
+    expect(effective.chains.map(chain => chain.id)).toEqual(['Auto'])
+    expect(effective.chains[0]!.entries).toEqual(['other/gpt-4o'])
 
     // get() reports the v1 legacy classes — the migration banner source for
     // a real upgraded user.
