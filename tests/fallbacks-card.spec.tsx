@@ -345,6 +345,40 @@ describe('per-tab blocks and per-tab save isolation', () => {
     void panel
   })
 
+  it('marks the four tab-body titles as block headings and drops the editor-card wrappers', async () => {
+    const { view } = await mountCard({ config: v2Config() })
+    // T1/AC1: the four per-chain titles carry the block-heading tier, so they
+    // outrank the field labels inside them (the CSS supplies 14px/600).
+    for (const id of [
+      'fallbacks-chain-name-Auto',
+      'fallbacks-time-slots-Auto',
+      'fallbacks-root-chain-Auto',
+      'fallbacks-default-model-Auto',
+    ]) {
+      expect(document.getElementById(id)!.parentElement!.getAttribute('class')).toContain('blockHeading')
+    }
+    // AC2: the default-chain selector list and the 默认模型 radio group sit
+    // directly in their block — no second container language.
+    for (const id of ['fallbacks-root-chain-Auto', 'fallbacks-default-model-Auto']) {
+      const block = view.container.querySelector(`[aria-labelledby="${id}"]`)!
+      expect(block.querySelector('[class*="editorCard"]')).toBeNull()
+    }
+  })
+
+  it('an empty time-slot block explains the all-day default (zh + en)', async () => {
+    const { view, props } = await mountCard({ config: v2Config() })
+    // Chain Auto carries one slot row → no empty line.
+    expect(view.container.querySelector('[data-slot-empty]')).toBeNull()
+    fireEvent.click(view.container.querySelector('[data-chain-tab="night"]')!)
+    const empty = view.container.querySelector('[data-slot-empty]')!
+    expect(empty.textContent).toBe(en['timeSlots.empty'])
+    // One tertiary line, not an error.
+    expect(empty.getAttribute('class')).toContain('hint')
+    // The zh half of the dictionary.
+    view.rerender(<FallbacksCard {...props} t={zhT} />)
+    expect(view.container.querySelector('[data-slot-empty]')!.textContent).toBe(zh['timeSlots.empty'])
+  })
+
   it('the 默认模型 radio owns the LAST entry (tail) and save validation blocks a non-official tail', async () => {
     const { view, scripted } = await mountCard({ config: v2Config() })
     // Pick Pro: the last selector row becomes deepseek-official/deepseek-v4-pro.
@@ -622,9 +656,55 @@ describe('role card shape', () => {
     expect(card.querySelectorAll('select')).toHaveLength(1)
   })
 
+  it('collapses to ONE row: no select, no persona, no footer; delete sits beside the toggle', async () => {
+    const { view } = await mountCard({ config: v2Config() })
+    const card = view.container.querySelector('[data-role-card="coder"]') as HTMLElement
+    fireEvent.click(card.querySelector('[aria-expanded]')!)
+    const row = card.querySelector('[class*="collapseRow"]') as HTMLElement
+    // T2/AC3: the compact card tier + the row and nothing else (6px/12px
+    // padding and a 10px gap leave the collapsed card one ~40px row).
+    expect(card.getAttribute('class')).toContain('roleCard')
+    expect(card.children).toHaveLength(1)
+    expect(card.querySelector('select')).toBeNull()
+    expect(card.querySelector('textarea')).toBeNull()
+    expect(card.querySelector('[class*="cardFoot"]')).toBeNull()
+    // Role id on the left, the current chain route on the right.
+    expect(row.textContent).toContain('coder')
+    expect(row.textContent).toContain('FallbacksChain/Auto')
+    // The delete action is a SIBLING of the collapse button (never nested:
+    // a nested button is invalid HTML and double-activates the row).
+    const buttons = [...row.querySelectorAll('button')]
+    expect(buttons).toHaveLength(2)
+    expect(buttons[0]!.getAttribute('aria-expanded')).toBe('false')
+    expect(buttons[0]!.getAttribute('aria-label')).toBe(en['roles.expand'])
+    expect(buttons[0]!.contains(buttons[1]!)).toBe(false)
+    expect(buttons[1]!.getAttribute('aria-label')).toBe(en['roles.remove'])
+    // Re-expanding restores the chain select and the persona field.
+    fireEvent.click(buttons[0]!)
+    expect(card.querySelector('select')).not.toBeNull()
+    expect(card.querySelector('textarea')).not.toBeNull()
+  })
+
   it('the legacy migration banner renders for v1 keys', async () => {
     const { view } = await mountCard({ config: v2Config(), legacyKeys: ['rootChain'] })
     expect(view.container.textContent).toContain('Legacy fields detected')
+  })
+})
+
+describe('info badge (T3)', () => {
+  it('renders a neutral "i" and keeps aria-label + data-tip on every mark', async () => {
+    const { view } = await mountCard({ config: v2Config() })
+    const badge = view.container.querySelector('[class*="infoHint"]') as HTMLElement
+    expect(badge).not.toBeNull()
+    expect(badge.textContent).toBe('i')
+    expect(badge.getAttribute('role')).toBe('img')
+    expect(badge.getAttribute('aria-label')).toBe(en['chains.name.tooltip'])
+    expect(badge.getAttribute('data-tip')).toBe(en['chains.name.tooltip'])
+    expect(badge.getAttribute('tabindex')).toBe('0')
+    // No error-shaped "!" is left on any info mark of the screen.
+    const marks = [...view.container.querySelectorAll('[class*="infoHint"]')]
+    expect(marks.length).toBeGreaterThan(1)
+    for (const mark of marks) expect(mark.textContent).toBe('i')
   })
 })
 
@@ -635,5 +715,7 @@ describe('read-only mode', () => {
     // The role card is expanded (read-only forces content disclosures open).
     const card = view.container.querySelector('[data-role-card="coder"]')!
     expect(card.querySelector('[aria-expanded]')!.getAttribute('aria-expanded')).toBe('true')
+    // The info mark leaves the tab order with the rest of the controls (AC4).
+    expect(view.container.querySelector('[class*="infoHint"]')!.getAttribute('tabindex')).toBe('-1')
   })
 })

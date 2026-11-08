@@ -91,6 +91,7 @@ export const zh = {
   // windows stay frozen UTC+8. The label carries the UTC± cue.
   'timeSlots.label': '分时槽设置',
   'timeSlots.hint': '自上而下第一条命中生效；全时段行固定最后',
+  'timeSlots.empty': '当前链未配置分时槽：全天沿用默认降级链与默认模型。',
   'timeSlots.tz.label': '时区（UTC±）',
   'timeSlots.drag': '拖拽排序（或使用上下按钮）',
   // PR #62 feedback round: collapsible slot rows — collapsed shows the
@@ -309,6 +310,7 @@ export const en = {
   // lives inside expanded custom rows only; preset windows stay UTC+8.
   'timeSlots.label': 'Time slots',
   'timeSlots.hint': 'First match from top to bottom wins; the all-day row is always last',
+  'timeSlots.empty': 'No time slots configured: this chain runs on its default fallback chain all day.',
   'timeSlots.tz.label': 'Timezone (UTC±)',
   'timeSlots.drag': 'Drag to reorder (or use the up/down buttons)',
   // PR #62 feedback round: collapsible slot rows — collapsed shows the

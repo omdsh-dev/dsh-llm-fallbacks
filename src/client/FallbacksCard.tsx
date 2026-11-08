@@ -344,22 +344,24 @@ function catalogOf(state: FallbacksSettingsState): CatalogLookup | undefined {
 }
 
 /**
- * Inline "!" info badge (T3): the detailed explanation rides a CSS
- * `data-tip` bubble (the card's self-drawn tooltip pattern — T4 replaces
- * the primitives Tooltip; anchored to the RIGHT of the badge, the original
- * primitives side="right" contract) while the short inline hint stays on
- * the row. The badge is an exposed, focusable image — the Models page
- * credential-status pattern (role="img" + aria-label) — so the accessible
- * name is always available; the bubble is a progressive enhancement on top.
+ * Inline info mark (T3): a neutral `i` on the tertiary tone — four of them
+ * on one screen read as information, not as four validation errors. The
+ * detailed explanation rides a CSS `data-tip` bubble (the card's self-drawn
+ * tooltip pattern — T4 replaces the primitives Tooltip; anchored to the
+ * RIGHT of the mark, the original primitives side="right" contract) while
+ * the short inline hint stays on the row. The mark is an exposed, focusable
+ * image — the Models page credential-status pattern (role="img" +
+ * aria-label) — so the accessible name is always available; the bubble is a
+ * progressive enhancement on top.
  *
  * `disabled` mirrors the read-only/loading suppression of the surrounding
- * controls: the bubble is suppressed, the badge drops out of the tab order
+ * controls: the bubble is suppressed, the mark drops out of the tab order
  * (and its `:disabled` style dims it).
  *
- * Placement contract (QC W-2 fix): the badge is always a **sibling** of the
+ * Placement contract (QC W-2 fix): the mark is always a **sibling** of the
  * label-text element — never nested inside a `<label>` or an
  * `aria-labelledby`-referenced node — so its aria-label can never leak into
- * a control/group accessible name. A click on the badge therefore has no
+ * a control/group accessible name. A click on the mark therefore has no
  * label-activation default action to cancel.
  */
 function InfoHint({ label, disabled = false }: { label: string; disabled?: boolean }): ReactNode {
@@ -371,7 +373,7 @@ function InfoHint({ label, disabled = false }: { label: string; disabled?: boole
       data-tip={label}
       tabIndex={disabled ? -1 : 0}
     >
-      !
+      i
     </span>
   )
 }
@@ -1315,8 +1317,8 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
               is where a maintainer looks after clicking 「+」 and seeing the raw
               id as the tab title. The ID is the picker model id and stays
               fixed; only the display name is editable. */}
-          <div className={css.field} role="group" aria-labelledby={`fallbacks-chain-name-${activeDraft!.id}`}>
-            <span className={css.fieldLabel}>
+          <div className={`${css.field} ${css.blockField}`} role="group" aria-labelledby={`fallbacks-chain-name-${activeDraft!.id}`}>
+            <span className={css.blockHeading}>
               <span id={`fallbacks-chain-name-${activeDraft!.id}`}>{t('chains.name.label')}</span>
               <InfoHint label={t('chains.name.tooltip')} disabled={!writable} />
             </span>
@@ -1333,13 +1335,16 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
           </div>
 
           {/* ======== 分时槽设置 (per chain) ======== */}
-          <div className={css.field} role="group" aria-labelledby={`fallbacks-time-slots-${activeDraft!.id}`}>
-            <span className={css.fieldLabel}>
+          <div className={`${css.field} ${css.blockField}`} role="group" aria-labelledby={`fallbacks-time-slots-${activeDraft!.id}`}>
+            <span className={css.blockHeading}>
               <span id={`fallbacks-time-slots-${activeDraft!.id}`}>{t('timeSlots.label')}</span>
               <InfoHint label={t('timeSlots.tooltip')} disabled={!writable} />
             </span>
             <span className={css.hint}>{t('timeSlots.hint')}</span>
             <div className={css.list}>
+              {timeSlotRows.length === 0 && (
+                <span className={css.hint} data-slot-empty="">{t('timeSlots.empty')}</span>
+              )}
               {timeSlotRows.map((row, index) => {
                 const invalidWindow = invalidSlotRows.has(index)
                 const chainEmpty = row.selectors.every(selector => selectorRowToRaw(selector) === '')
@@ -1610,8 +1615,8 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
           </div>
 
           {/* ======== 默认降级链 (per chain) ======== */}
-          <div className={css.field} role="group" aria-labelledby={`fallbacks-root-chain-${activeDraft!.id}`}>
-            <span className={css.fieldLabel}>
+          <div className={`${css.field} ${css.blockField}`} role="group" aria-labelledby={`fallbacks-root-chain-${activeDraft!.id}`}>
+            <span className={css.blockHeading}>
               <span id={`fallbacks-root-chain-${activeDraft!.id}`}>{t('rootChain.label')}</span>
               <InfoHint label={t('rootChain.tooltip')} disabled={!writable} />
             </span>
@@ -1630,36 +1635,34 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
               </p>
             )}
             <div className={css.list}>
-              <div className={css.editorCard}>
-                <div className={css.chainBlock} data-chain-block="">
-                  <ChainSelectorList
-                    selectors={activeDraft!.selectors}
-                    catalog={catalogOf(state)}
-                    configuredProviders={state.configuredProviders}
-                    disabled={!writable}
-                    t={t}
-                    onChange={(selectorIndex, patch) => { updateChainSelector(selectorIndex, patch) }}
-                    onRemove={selectorIndex => { removeChainSelector(selectorIndex) }}
-                    onMove={reorderChainSelector}
-                  />
-                  <button
-                    type="button"
-                    className={`${css.outlineButton} ${css.addButton}`}
-                    disabled={!writable}
-                    onClick={addChainSelector}
-                  >
-                    <PlusIcon />
-                    {t('timeSlots.selector.add')}
-                  </button>
-                </div>
+              <div className={css.chainBlock} data-chain-block="">
+                <ChainSelectorList
+                  selectors={activeDraft!.selectors}
+                  catalog={catalogOf(state)}
+                  configuredProviders={state.configuredProviders}
+                  disabled={!writable}
+                  t={t}
+                  onChange={(selectorIndex, patch) => { updateChainSelector(selectorIndex, patch) }}
+                  onRemove={selectorIndex => { removeChainSelector(selectorIndex) }}
+                  onMove={reorderChainSelector}
+                />
+                <button
+                  type="button"
+                  className={`${css.outlineButton} ${css.addButton}`}
+                  disabled={!writable}
+                  onClick={addChainSelector}
+                >
+                  <PlusIcon />
+                  {t('timeSlots.selector.add')}
+                </button>
               </div>
             </div>
           </div>
 
           {/* ======== 默认模型（链尾） (per chain): the radio owns the LAST
            * entries element — the two blocks cannot disagree. ======== */}
-          <div className={css.field} role="group" aria-labelledby={`fallbacks-default-model-${activeDraft!.id}`}>
-            <span className={css.fieldLabel}>
+          <div className={`${css.field} ${css.blockField}`} role="group" aria-labelledby={`fallbacks-default-model-${activeDraft!.id}`}>
+            <span className={css.blockHeading}>
               <span id={`fallbacks-default-model-${activeDraft!.id}`}>{t('defaultModel.label')}</span>
             </span>
             <span className={css.hint}>{t('allDay.hint')}</span>
@@ -1667,36 +1670,34 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
               <p className={css.error} role="alert" data-tail-error="">{`${t('validation.blocked')}${tailError}`}</p>
             )}
             <div className={css.list}>
-              <div className={css.editorCard}>
-                {OFFICIAL_ALL_DAY_IDS.map(id => {
-                  const chain = chains[activeChain]
-                  const tail = chain !== undefined && chain.entries.length >= 1
-                    ? chain.entries[chain.entries.length - 1]
-                    : undefined
-                  return (
-                    <label key={id} className={css.optionRow}>
-                      <input
-                        type="radio"
-                        name={`fallbacks-chain-tail-${activeDraft!.id}`}
-                        checked={tail === id}
-                        disabled={!writable}
-                        onChange={() => {
-                          patchActiveDraft(draft => {
-                            const selector = entryToSelectorRow(id, catalogOf(state))
-                            if (draft.selectors.length === 0) {
-                              return { ...draft, selectors: [selector] }
-                            }
-                            const selectors = draft.selectors.map(row => ({ ...row }))
-                            selectors[selectors.length - 1] = selector
-                            return { ...draft, selectors }
-                          })
-                        }}
-                      />
-                      {t(id === OFFICIAL_ALL_DAY_IDS[0] ? 'allDay.flash' : 'allDay.pro')}
-                    </label>
-                  )
-                })}
-              </div>
+              {OFFICIAL_ALL_DAY_IDS.map(id => {
+                const chain = chains[activeChain]
+                const tail = chain !== undefined && chain.entries.length >= 1
+                  ? chain.entries[chain.entries.length - 1]
+                  : undefined
+                return (
+                  <label key={id} className={css.optionRow}>
+                    <input
+                      type="radio"
+                      name={`fallbacks-chain-tail-${activeDraft!.id}`}
+                      checked={tail === id}
+                      disabled={!writable}
+                      onChange={() => {
+                        patchActiveDraft(draft => {
+                          const selector = entryToSelectorRow(id, catalogOf(state))
+                          if (draft.selectors.length === 0) {
+                            return { ...draft, selectors: [selector] }
+                          }
+                          const selectors = draft.selectors.map(row => ({ ...row }))
+                          selectors[selectors.length - 1] = selector
+                          return { ...draft, selectors }
+                        })
+                      }}
+                    />
+                    {t(id === OFFICIAL_ALL_DAY_IDS[0] ? 'allDay.flash' : 'allDay.pro')}
+                  </label>
+                )
+              })}
             </div>
           </div>
 
@@ -1778,7 +1779,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
               // synthetic option so the dangling reference is honest.
               const chainOutside = row.chain !== '' && !chains.some(chain => chain.id === row.chain)
               return (
-              <div key={index} className={css.editorCard} data-role-card={row.id}>
+              <div key={index} className={`${css.editorCard} ${css.roleCard}`} data-role-card={row.id}>
                 <div className={css.collapseRow}>
                   <button
                     type="button"
@@ -1794,6 +1795,17 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                       <span className={css.seedBadge} title={seedBadge}>{seedBadge}</span>
                     )}
                     <span className={css.collapseMeta} title={chainRoute}>{chainRoute}</span>
+                  </button>
+                  {/* SIBLING of the collapse button, never nested: a nested
+                    * button is invalid HTML and double-activates the row. */}
+                  <button
+                    type="button"
+                    className={`${css.iconButton} ${css.iconButtonDanger}`}
+                    data-tip={t('roles.remove')}
+                    aria-label={t('roles.remove')}
+                    onClick={() => { removeRole(index) }}
+                  >
+                    <TrashIcon />
                   </button>
                 </div>
                 {roleExpanded && (
@@ -1889,17 +1901,6 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                       </>
                     )}
                   </div>
-                </div>
-                <div className={css.cardFoot}>
-                  <button
-                    type="button"
-                    className={`${css.iconButton} ${css.iconButtonDanger}`}
-                    data-tip={t('roles.remove')}
-                    aria-label={t('roles.remove')}
-                    onClick={() => { removeRole(index) }}
-                  >
-                    <TrashIcon />
-                  </button>
                 </div>
                 </>
                 )}
