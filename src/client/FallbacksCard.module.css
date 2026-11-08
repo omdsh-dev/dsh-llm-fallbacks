@@ -177,32 +177,19 @@
   outline-offset: 1px;
 }
 
-/* The expanded 高级选项 body (plan fallbacks-card-section-ux T3): the
-   official field pacing re-scoped one level down — its fields are no
-   longer direct fieldset children, so the direct-child pacing rules above
-   get this twin (identical rhythm: 12px 0 fields, hairline separators
-   between adjacent fields). */
+/* The expanded 高级选项 body (plan fallbacks-card-section-ux T3): a nested
+   field body one level down; its pacing comes from the shared rule below. */
 .advancedBody {
   display: flex;
   flex-direction: column;
   min-width: 0;
 }
 
-.fieldset > .advancedBody > .field,
-.fieldset > .advancedBody > .numberFields {
-  padding: 12px 0;
-}
-
-.fieldset > .advancedBody > .field + .field,
-.fieldset > .advancedBody > .field + .numberFields {
-  border-top: 0.5px solid var(--dsw-alias-border-l2);
-}
-
 /* Field grouping: label + hint + controls. `min-width: 0` keeps long option
    rows from overflowing their grid/column. Base padding is 0 — nested
    fields inside editor cards keep the tight card rhythm; the OFFICIAL flat
-   pacing (12px 0, hairline separators) is scoped to the fieldset's direct
-   children below. */
+   pacing (20px block rhythm, hairline separators) is scoped to the three
+   form bodies below. */
 .field {
   display: flex;
   flex-direction: column;
@@ -213,17 +200,27 @@
   min-width: 0;
 }
 
-/* Official flat field pacing (reference §3): 12px vertical padding,
-   0.5px hairline separator between ADJACENT fields (and into the paired
-   number grid). A section heading / notice between two fields breaks the
-   adjacency — the heading is the stronger break and carries no separator. */
+/* Official flat block pacing (reference §3): a SYMMETRIC 10px half-rhythm
+   around every block, so adjacent blocks sit 20px apart with the 0.5px
+   hairline centred between them. The bottom half matters: every block ends
+   in a filled row / radio row / add button, and a top-only pad put the
+   separator straight against that control. Shared by ALL THREE form bodies
+   — the fieldset's direct children, the 高级选项 body and the per-chain tab
+   body (`.chainBody`). One rule on purpose: the per-chain blocks used to
+   have no pacing at all because only two bodies were listed. A section
+   heading / notice between two fields breaks the adjacency — the heading is
+   the stronger break and carries no separator. */
 .fieldset > .field,
-.fieldset > .numberFields {
-  padding: 12px 0;
+.fieldset > .numberFields,
+.fieldset > :is(.advancedBody, .chainBody) > .field,
+.fieldset > :is(.advancedBody, .chainBody) > .numberFields {
+  padding: 10px 0;
 }
 
 .fieldset > .field + .field,
-.fieldset > .field + .numberFields {
+.fieldset > .field + .numberFields,
+.fieldset > :is(.advancedBody, .chainBody) > .field + .field,
+.fieldset > :is(.advancedBody, .chainBody) > .field + .numberFields {
   border-top: 0.5px solid var(--dsw-alias-border-l2);
 }
 
@@ -239,6 +236,32 @@
   line-height: 1.5;
   font-weight: 500;
   color: var(--dsw-alias-label-primary);
+}
+
+/* Per-chain BLOCK headings (T1): 链名称 / 分时槽设置 / 默认降级链 / 默认模型
+   are blocks, not fields — 14px/600 so they outrank both the 13px field
+   labels and the 12px `.ruleCellLabel` copy inside them. Same inline-flex
+   form as `.fieldLabel` so the info badge keeps riding the title line. */
+.blockHeading {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0;
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 600;
+  color: var(--dsw-alias-label-primary);
+}
+
+/* The block rhythm inside a tab body (T1): a tight title→hint (4px) and a
+   wider hint→controls (10px). One uniform gap cannot express both, so the
+   controls carry the extra 6px on top of the block's 4px gap. */
+.blockField {
+  gap: 4px;
+}
+
+.blockField > .list {
+  margin-top: 6px;
 }
 
 .hint {
@@ -261,26 +284,26 @@
   color: var(--dsw-alias-label-primary);
 }
 
-/* The "!" info badge (T3): a quiet circular mark on the tertiary tone whose
-   explanation rides the self-drawn CSS `data-tip` bubble (T4 — the
-   primitives Tooltip is gone). The bubble anchors to the RIGHT of the badge
-   (the original primitives side="right" contract), vertically centered, and
-   wraps at ~280px. The 16px geometry matches the checkbox/radio controls.
-   Focusable so keyboard users reach the same explanation; the focus-visible
-   ring mirrors the checkbox ring. */
+/* The info mark (T3): a neutral 14px `i` glyph on the tertiary tone — no
+   filled circle, so four marks on one screen read as information rather
+   than four validation errors. The explanation still rides the self-drawn
+   CSS `data-tip` bubble (T4 — the primitives Tooltip is gone), anchored to
+   the RIGHT of the mark (the original primitives side="right" contract),
+   vertically centered, wrapping at ~280px. Focusable so keyboard users
+   reach the same explanation; the focus-visible ring mirrors the checkbox
+   ring. */
 .infoHint {
   position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   flex: none;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  font-size: 14px;
+  width: 14px;
+  height: 14px;
+  font-size: 12px;
   line-height: 1;
+  font-weight: 500;
   color: var(--dsw-alias-label-tertiary);
-  background: var(--dsw-alias-interactive-bg-hover);
   cursor: help;
   user-select: none;
 }
@@ -539,7 +562,7 @@ select.input {
   margin-top: 4px;
 }
 
-/* Row editors (a chain's entries / a role card): a filled module on the page
+/* Row editors (a chain's time-slot rows): a filled module on the page
    surface — r12 on the module-platform fill. */
 .editorCard {
   display: flex;
@@ -548,6 +571,15 @@ select.input {
   padding: 14px 16px;
   border-radius: 12px;
   background: var(--dsw-alias-bg-module-platform);
+}
+
+/* Compact role card (T2): the subagent list is a LIST, not a screen of
+   cards. 6px/12px padding and a 10px gap leave a collapsed card one 28px
+   row (~40px tall, inside the ≤48px target) while the expanded card keeps
+   the same field vocabulary. */
+.roleCard {
+  gap: 10px;
+  padding: 6px 12px;
 }
 
 .cardFoot {
@@ -605,6 +637,12 @@ select.input {
   align-items: center;
   gap: 8px;
   min-width: 0;
+}
+
+/* A row-level icon action beside the collapse button (the role card's delete
+   in T2) must never compress with the row — the fixed 28px box holds. */
+.collapseRow > .iconButton {
+  flex: none;
 }
 
 .collapseToggle {
@@ -1418,6 +1456,8 @@ select.input {
 }
 .emptyState strong { color: var(--dsw-alias-label-primary); }
 
+/* The per-chain tab body (the third field body; its 20px block rhythm and
+   hairline separators come from the shared pacing rule at the top). */
 .chainBody { min-width: 0; }
 
 .chainFoot {

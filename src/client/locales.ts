@@ -91,6 +91,7 @@ export const zh = {
   // windows stay frozen UTC+8. The label carries the UTC± cue.
   'timeSlots.label': '分时槽设置',
   'timeSlots.hint': '自上而下第一条命中生效；全时段行固定最后',
+  'timeSlots.empty': '当前链未配置分时槽：全天沿用默认降级链与默认模型。',
   'timeSlots.tz.label': '时区（UTC±）',
   'timeSlots.drag': '拖拽排序（或使用上下按钮）',
   // PR #62 feedback round: collapsible slot rows — collapsed shows the
@@ -175,11 +176,14 @@ export const zh = {
   'roles.chain.tooltip': '手动指定该角色使用的命名虚拟链：派发到该角色的子代理会挂到 FallbacksChain/<链 id>，由那条链承接降级。未指定则插件不干预。',
   'roles.chainMeta.unspecified': '未指定降级链',
   'roles.add': '添加角色',
-  'roles.remove': '删除该角色',
+  'roles.remove': '删除角色 {id}（{chain}）',
+  // Short visual tooltip: the aria-label above carries the identity, but a
+  // nowrap bubble would overflow the row's trailing edge with it.
+  'roles.remove.tip': '删除该角色',
   // Collapsible role panels — collapsed shows the role id + its specified
   // chain route (or 未指定降级链).
-  'roles.expand': '展开该角色',
-  'roles.collapse': '收起该角色',
+  'roles.expand': '展开角色 {id}',
+  'roles.collapse': '收起角色 {id}',
   'validation.blocked': '配置校验未通过，保存被拦截：',
   'validation.roleIdFormat': '角色 id "{id}" 不符合格式 /^[a-z0-9-]{1,32}$/',
   'validation.roleIdReserved': '"inherit" 为保留角色 id，不能用于角色实体',
@@ -309,6 +313,7 @@ export const en = {
   // lives inside expanded custom rows only; preset windows stay UTC+8.
   'timeSlots.label': 'Time slots',
   'timeSlots.hint': 'First match from top to bottom wins; the all-day row is always last',
+  'timeSlots.empty': 'No time slots configured: this chain runs on its default fallback chain and default model all day.',
   'timeSlots.tz.label': 'Timezone (UTC±)',
   'timeSlots.drag': 'Drag to reorder (or use the up/down buttons)',
   // PR #62 feedback round: collapsible slot rows — collapsed shows the
@@ -393,11 +398,14 @@ export const en = {
   'roles.chain.tooltip': 'Manually specify the named virtual chain for this role: children dispatched under it mount on FallbacksChain/<chain id> and that chain owns the fallback. Unspecified ⇒ the plugin does not intervene.',
   'roles.chainMeta.unspecified': 'No chain specified',
   'roles.add': 'Add role',
-  'roles.remove': 'Remove this role',
+  'roles.remove': 'Remove role {id} ({chain})',
+  // Short visual tooltip: the aria-label above carries the identity, but a
+  // nowrap bubble would overflow the row's trailing edge with it.
+  'roles.remove.tip': 'Remove this role',
   // Collapsible role panels — collapsed shows the role id + its specified
   // chain route (or "no chain specified").
-  'roles.expand': 'Expand this role',
-  'roles.collapse': 'Collapse this role',
+  'roles.expand': 'Expand role {id}',
+  'roles.collapse': 'Collapse role {id}',
   'validation.blocked': 'Configuration validation failed; save was blocked: ',
   'validation.roleIdFormat': 'Role id "{id}" does not match /^[a-z0-9-]{1,32}$/',
   'validation.roleIdReserved': '"inherit" is a reserved role id and cannot be declared',
