@@ -41,7 +41,7 @@ import type { SessionId } from '@deepseek-ai/dsh-session/types'
 // the settings child below follows).
 import type {} from '@deepseek-ai/dsh-settings/types'
 import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
-import { defaultFallbacksConfig, detectLegacyKeys, isFallbackActive, validateFallbacksConfig, type FallbacksConfig } from './config.ts'
+import { defaultFallbacksConfig, detectLegacyKeys, isFallbackActive, migrateLegacyConfig, validateFallbacksConfig, type FallbacksConfig } from './config.ts'
 import { Config } from './schema.ts'
 import { resolveChain } from './chains.ts'
 import { slotMarkerPrefix, walkChain, type ChainWalkDeps } from './chain-walk.ts'
@@ -430,11 +430,19 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
   // settings-composed view fresh instead; before that child fires the
   // normalized entry is the source.
   let settingsComposed: FallbacksConfig | undefined
-  let source = (): FallbacksConfig => {
+  // The RAW composed view: schema defaults → plugin row → settings user layer,
+  // exactly as stored (v1 keys included).
+  const rawSource = (): FallbacksConfig => {
     if (isLiveConfigRef(config)) return config.get() as FallbacksConfig
     if (settingsComposed !== undefined) return settingsComposed
     return entry
   }
+  // EVERY read goes through the in-memory v1 → v2 upgrade
+  // (plan fallbacks-v1-auto-migration): a profile still holding `rootChain` /
+  // array role chains / `roles.rules` keeps working — the old default chain
+  // becomes chain #0 `Auto`, so the picker route the user already selected
+  // resolves again. No file is rewritten; the next explicit save persists v2.
+  const source = (): FallbacksConfig => migrateLegacyConfig(rawSource())
   // Virtual FallbacksChain adapter: ONE conditional `ctx.inject(['llm'])`
   // child — the picker rows register whenever the config is ACTIVE
   // (`isFallbackActive` = `chains.length > 0`), and hide when no chain is
@@ -454,12 +462,12 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
   // checked once (invalid ids / undeclared rule references / illegal
   // selectors / bad fallback enum); each violation warns and "does not take
   // effect", the config stays usable (spec §4).
-  validateFallbacksConfig(entry, logger)
+  validateFallbacksConfig(migrateLegacyConfig(entry), logger)
   // US-4: two-block-era leftovers in the live source (schemastery retains
   // unknown keys, verified plan Task 1 Step 1) → one startup warn pointing
   // at the migration table; the gateway separately reports the same keys as
   // get().legacyKeys for the UI banner. warn-only — never auto-migrates.
-  const legacyKeys = detectLegacyKeys(source() as unknown as Record<string, unknown>)
+  const legacyKeys = detectLegacyKeys(rawSource() as unknown as Record<string, unknown>)
   if (legacyKeys.length > 0) {
     logger.warn('llm-fallbacks: legacy config keys detected (v1 two-block keys); see docs/configuration.md migration table — %o', legacyKeys)
   }
@@ -535,6 +543,9 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
   })
   const bridge: FallbacksSettingsBridge = {
     source: (): FallbacksConfig => source(),
+    // Legacy detection needs the stored view: the upgraded one carries none of
+    // the v1 keys by construction (plan fallbacks-v1-auto-migration).
+    rawSource: (): FallbacksConfig => rawSource(),
   }
   // T1 (plan llm-fallbacks-settings-gateway): the host-side `fallbacks` config
   // gateway — the `/api/fallbacks/get` + `/api/fallbacks/set` +

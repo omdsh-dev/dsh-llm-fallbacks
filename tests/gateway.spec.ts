@@ -48,7 +48,7 @@ import { TypertRegistry } from '@deepseek-ai/dsh-typert-registry'
 import type { PeerScope } from '@deepseek-ai/dsh-typert-protocol'
 import { apply } from '../src/index.ts'
 import { Config } from '../src/schema.ts'
-import { defaultFallbacksConfig, type FallbacksConfig } from '../src/config.ts'
+import { defaultFallbacksConfig, isFallbackActive, migrateLegacyConfig, type FallbacksConfig } from '../src/config.ts'
 import { OFFICIAL_FLASH, OFFICIAL_PRO } from '../src/time-slots.ts'
 import {
   FALLBACKS_PROFILE_ENTRY,
@@ -114,8 +114,9 @@ function installFallbacksBridge(ctx: Context, entry: FallbacksConfig): Fallbacks
       if (ns === FALLBACKS_PROFILE_ENTRY) refresh()
     })
   })
-  return {
-    source: (): FallbacksConfig => {
+  /** The composed-but-UNMIGRATED view (mirrors what the settings merge stores). */
+  const rawComposed = (): FallbacksConfig => {
+    {
       if (userSection === undefined) return entry
       // The same layering rule the settings merge applies (objects deep-merge,
       // arrays replace) — a local twin of `mergeConfigLayer` in src/index.ts —
@@ -132,7 +133,14 @@ function installFallbacksBridge(ctx: Context, entry: FallbacksConfig): Fallbacks
           : value
       }
       return unwrapConfig(Config(merged)) as FallbacksConfig
-    },
+    }
+  }
+  // Mirror the production bridge (src/index.ts): the EFFECTIVE view is the
+  // in-memory upgrade, the STORED view is what legacy detection reads. A
+  // regression that detects on the upgraded view turns these tests red.
+  return {
+    source: (): FallbacksConfig => migrateLegacyConfig(rawComposed()),
+    rawSource: (): FallbacksConfig => rawComposed(),
   }
 }
 
@@ -716,11 +724,11 @@ describe('containment (malformed stored user layer)', () => {
     expect(result.config.cooldownMs).toBe(defaultFallbacksConfig.cooldownMs)
   })
 
-  it('omits a schema key whose composed value is undefined (never present-as-undefined on the wire)', () => {
-    // The gateway result validator rejects undefined values, so `readConfig`
-    // must OMIT absent values instead of carrying them — a schema key whose
-    // composed value is `undefined` is dropped, it does not ride the wire as
-    // an own key with an undefined value (F-002, readConfig normalization).
+  it('never puts an undefined value on the wire — the migration fills the default', () => {
+    // The gateway result validator rejects undefined values. Since the read
+    // path runs `migrateLegacyConfig` first (plan fallbacks-v1-auto-migration),
+    // a schema key whose composed value is `undefined` comes back as its
+    // documented DEFAULT rather than as an own key holding undefined (F-002).
     const ctx = track(new Context())
     const gateway = new FallbacksConfigGateway(ctx, {
       source: (): FallbacksConfig => ({
@@ -730,7 +738,7 @@ describe('containment (malformed stored user layer)', () => {
     }, makeSeeds())
 
     const result = gateway.get()
-    expect('cooldownMs' in result.config).toBe(false)
+    expect(result.config.cooldownMs).toBe(defaultFallbacksConfig.cooldownMs)
     // The remaining schema keys still cross the wire with their values — and
     // the removed `enabled` key never does (not a schema key any more, T2).
     expect('enabled' in result.config).toBe(false)
@@ -827,14 +835,66 @@ describe('get legacyKeys detection (two-block-era leftovers)', () => {
     expect(gateway.get().legacyKeys).toEqual(['roles.default', 'roles.rules'])
     // The wire config itself is the new shape — legacy keys never cross.
     expect('rootChain' in gateway.get().config).toBe(false)
-    // Nested legacy keys are stripped too (reviewer T1 Important #1): the
-    // wire roles object carries only its declared list/rules fields — a
-    // consumer like Task 2's parseFallbacksConfig never misreads
-    // roles.default as a live config value. Absent fields stay omitted
-    // (wire boundary rule), so the legacy `{ default, rules }` object
-    // normalizes to `{ rules }` — no `default`, and no invented `list`.
+    // Nested legacy keys are stripped too: the wire roles object carries only
+    // its declared `list` — a consumer never misreads `roles.default` as a
+    // live config value, and the migration supplies the (empty) list.
     expect('default' in gateway.get().config.roles).toBe(false)
-    expect(Object.keys(gateway.get().config.roles)).toEqual([])
+    expect(Object.keys(gateway.get().config.roles)).toEqual(['list'])
+    expect(gateway.get().config.roles.list).toEqual([])
+  })
+
+  it('the PRODUCTION wiring reports v1 legacyKeys from the stored view and the migrated config', async () => {
+    // End-to-end through `apply()`, not the gateway class: the bridge is the
+    // one src/index.ts builds, so a regression that detects on the UPGRADED
+    // source (where no v1 key survives) turns this red.
+    const ctx = track(new Context())
+    await ctx.plugin(MemorySettings)
+    const settings = ctx.settings as unknown as MemorySettings
+    settings.seed(FALLBACKS_PROFILE_ENTRY, {
+      rootChain: ['a/one', 'b/two', 'deepseek-official/deepseek-flash'],
+      roles: {
+        rules: [{ role: 'alpha' }],
+        list: [{ id: 'alpha', persona: 'Alpha persona', fallback: 'inherit-root' }],
+      },
+    })
+    apply(ctx, { ...defaultFallbacksConfig, presets: 'none' })
+    await vi.waitFor(() => expect(ctx.get('fallbacks')).toBeDefined())
+    await vi.waitFor(() => expect(ctx.get('llm-fallbacks')).toBeDefined())
+    const gateway = ctx.get('fallbacks') as FallbacksConfigGateway
+
+    // READ: the banner reports the STORED leftovers…
+    const first = gateway.get()
+    expect(first.legacyKeys).toEqual(['rootChain', 'roles.rules', 'roles.list[].fallback'])
+    // …while the reported config is the migrated v2 shape (chain #0 + roles).
+    expect(first.config.chains.map(chain => chain.id)).toEqual(['Auto'])
+    expect(first.config.chains[0]!.entries.at(-1)).toBe('deepseek-official/deepseek-flash')
+    expect(first.config.roles.list).toHaveLength(1)
+    expect(first.config.roles.list[0]).toMatchObject({ id: 'alpha', persona: 'Alpha persona' })
+    expect('chain' in first.config.roles.list[0]!).toBe(false)
+
+    // ONE save persists v2 and retires the banner — on the response and later.
+    const saved = await gateway.set({ cooldownMs: 120_000 })
+    expect(saved.legacyKeys).toEqual([])
+    expect(gateway.get().legacyKeys).toEqual([])
+    // The partial patch did NOT drop the chain: the writer materialized the
+    // migrated `chains` into the same write, so the stored section is
+    // self-sufficient v2 — no v1 key, and the chain survives a reload.
+    const stored = settings.get(FALLBACKS_PROFILE_ENTRY)!
+    expect(stored).toEqual({
+      cooldownMs: 120_000,
+      chains: [{
+        id: 'Auto',
+        label: '默认链',
+        entries: ['a/one', 'b/two', 'deepseek-official/deepseek-flash'],
+        timeSlots: [],
+      }],
+      roles: { list: [{ id: 'alpha', persona: 'Alpha persona' }] },
+    })
+    // RELOAD: a fresh composition reads the persisted section back.
+    const reloaded = gateway.get().config
+    expect(reloaded.chains.map(chain => chain.id)).toEqual(['Auto'])
+    expect(reloaded.chains[0]!.entries).toEqual(['a/one', 'b/two', 'deepseek-official/deepseek-flash'])
+    expect(isFallbackActive(reloaded)).toBe(true)
   })
 
   it('detects the removed roles.rules key (whole-family legacy)', () => {
@@ -864,14 +924,17 @@ describe('get legacyKeys detection (two-block-era leftovers)', () => {
     const gateway = new FallbacksConfigGateway(ctx, bridge, makeSeeds())
     await waitRegistered(ctx)
 
-    // Merge-retention path: the composed source the runtime adapters read
-    // (apply/onChange/decide/getSnapshot in src/index.ts) still carries the
-    // legacy keys through the settings merge.
-    const composed = bridge.source() as unknown as Record<string, unknown>
-    expect(Object.hasOwn(composed, 'rootChain')).toBe(true)
-    const roles = composed.roles as Record<string, unknown>
+    // The STORED view keeps the legacy keys (that is what the banner reads)…
+    const stored = bridge.rawSource!() as unknown as Record<string, unknown>
+    expect(Object.hasOwn(stored, 'rootChain')).toBe(true)
+    const roles = stored.roles as Record<string, unknown>
     expect(Object.hasOwn(roles, 'default')).toBe(true)
     expect(Array.isArray(roles.rules)).toBe(true)
+    // …while the EFFECTIVE view the runtime adapters read is already upgraded
+    // (plan fallbacks-v1-auto-migration): the old rootChain is chain #0.
+    const effective = bridge.source()
+    expect(effective.chains.map(chain => chain.id)).toEqual(['Auto'])
+    expect(effective.chains[0]!.entries).toEqual(['other/gpt-4o'])
 
     // get() reports the v1 legacy classes — the migration banner source for
     // a real upgraded user.
@@ -916,17 +979,142 @@ describe('set/reset return post-write legacyKeys (W-1/F-1)', () => {
     ])
 
     // The save is merge-only, so the removals ride path ops: only the named
-    // v1 fields go, everything else (including a foreign key) stays.
+    // v1 fields go, everything else (including a foreign key) stays — plus the
+    // migrated `chains`, so the chain the rootChain carried is not lost.
     const result = await gateway.set({ cooldownMs: 120_000 })
     expect(result.config.cooldownMs).toBe(120_000)
     expect(result.legacyKeys).toEqual([])
     expect(settings.get(FALLBACKS_PROFILE_ENTRY)).toEqual({
       cooldownMs: 120_000,
+      chains: [{
+        id: 'Auto',
+        label: '默认链',
+        entries: ['other/gpt-4o'],
+        timeSlots: [{ kind: 'custom', name: 'old', start: '09:00', end: '10:00', chain: ['openai/gpt-4o'] }],
+      }],
       roles: { list: [{ id: 'coder', persona: 'p', vendorNote: 'keep me' }] },
       'x-vendor': { keep: true },
     })
     // The next get agrees (no flicker window).
     expect(gateway.get().legacyKeys).toEqual([])
+  })
+
+  it('a partial save from a v1 profile emits ONE mutate, setting chains before the v1 unsets', async () => {
+    const ctx = track(new Context())
+    await ctx.plugin(MemorySettings)
+    const settings = ctx.settings as unknown as MemorySettings
+    settings.seed(FALLBACKS_PROFILE_ENTRY, {
+      rootChain: ['a/one', 'b/two', 'deepseek-official/deepseek-flash'],
+      roles: { rules: [{ role: 'alpha' }], list: [{ id: 'alpha', persona: 'Alpha persona', fallback: 'inherit-root' }] },
+    })
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()), makeSeeds())
+    await waitRegistered(ctx)
+    await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
+
+    const spy = vi.spyOn(settings, 'mutate')
+    await gateway.set({ cooldownMs: 120_000 })
+
+    // Durability ordering: exactly one call, and the replacement chain is set
+    // before any unset — so no crash can strand the section without a shape.
+    // (Deliberately not asserting the removal list: which v1 members the writer
+    // removes is its business, the ordering is the contract.)
+    expect(spy).toHaveBeenCalledTimes(1)
+    const ops = spy.mock.calls[0]![1] as Array<{ op: string; path: string[] }>
+    const firstUnset = ops.findIndex(entry => entry.op === 'unset')
+    expect(firstUnset).toBeGreaterThan(0)
+    expect(ops.slice(0, firstUnset).some(entry => entry.op === 'set' && entry.path[0] === 'chains')).toBe(true)
+    expect(ops.slice(firstUnset).every(entry => entry.op === 'unset' || entry.path[0] === 'roles')).toBe(true)
+  })
+
+  it('a patch carrying roles wins over the stored per-row v1 members', async () => {
+    // The filter under test: with a `roles` patch the writer must NOT also
+    // rewrite `roles.list` from the stored (v1) rows — that trailing write
+    // would clobber the patch it belongs to.
+    const ctx = track(new Context())
+    await ctx.plugin(MemorySettings)
+    const settings = ctx.settings as unknown as MemorySettings
+    settings.seed(FALLBACKS_PROFILE_ENTRY, {
+      roles: { rules: [{ role: 'stale' }], list: [{ id: 'stale', persona: 'Stale', fallback: 'inherit-root' }] },
+    })
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()), makeSeeds())
+    await waitRegistered(ctx)
+    await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
+
+    await gateway.set({ roles: { list: [{ id: 'fresh', persona: 'Fresh', chain: 'Auto' }] } })
+
+    const persisted = settings.get(FALLBACKS_PROFILE_ENTRY)!
+    expect(persisted['roles']).toEqual({ list: [{ id: 'fresh', persona: 'Fresh', chain: 'Auto' }] })
+    expect(Object.hasOwn(persisted['roles'] as object, 'rules')).toBe(false)
+  })
+
+  it('materializes chain #0 when the stored chains array is EMPTY beside a rootChain', async () => {
+    const ctx = track(new Context())
+    await ctx.plugin(MemorySettings)
+    const settings = ctx.settings as unknown as MemorySettings
+    settings.seed(FALLBACKS_PROFILE_ENTRY, {
+      chains: [],
+      rootChain: ['a/one', 'b/two', 'deepseek-official/deepseek-flash'],
+    })
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()), makeSeeds())
+    await waitRegistered(ctx)
+    await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
+
+    const spy = vi.spyOn(settings, 'mutate')
+    await gateway.set({ cooldownMs: 120_000 })
+
+    // ONE call carries the chain and the removal.
+    expect(spy).toHaveBeenCalledTimes(1)
+    const persisted = settings.get(FALLBACKS_PROFILE_ENTRY)!
+    expect(persisted['chains']).toEqual([{
+      id: 'Auto',
+      label: '默认链',
+      entries: ['a/one', 'b/two', 'deepseek-official/deepseek-flash'],
+      timeSlots: [],
+    }])
+    expect(Object.hasOwn(persisted, 'rootChain')).toBe(false)
+  })
+
+  it('leaves a stored non-empty chains array byte-identical (mixed shape, stale rootChain)', async () => {
+    const ctx = track(new Context())
+    await ctx.plugin(MemorySettings)
+    const settings = ctx.settings as unknown as MemorySettings
+    const storedChains = [{
+      id: 'Coding',
+      label: 'Coding',
+      entries: ['x/1', 'deepseek-official/deepseek-flash'],
+      timeSlots: [],
+      vendorNote: 'not this plugin to drop',
+    }]
+    settings.seed(FALLBACKS_PROFILE_ENTRY, { chains: storedChains, rootChain: ['a/one', 'deepseek-official/deepseek-flash'] })
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()), makeSeeds())
+    await waitRegistered(ctx)
+    await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
+
+    await gateway.set({ cooldownMs: 120_000 })
+
+    const persisted = settings.get(FALLBACKS_PROFILE_ENTRY)!
+    // The operator's chains are untouched, foreign member included…
+    expect(persisted['chains']).toEqual(storedChains)
+    // …and the stale v1 key is gone.
+    expect(Object.hasOwn(persisted, 'rootChain')).toBe(false)
+    expect(persisted['cooldownMs']).toBe(120_000)
+  })
+
+  it('never re-materializes chains when the patch supplies them', async () => {
+    const ctx = track(new Context())
+    await ctx.plugin(MemorySettings)
+    const settings = ctx.settings as unknown as MemorySettings
+    settings.seed(FALLBACKS_PROFILE_ENTRY, { rootChain: ['a/one', 'deepseek-official/deepseek-flash'] })
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()), makeSeeds())
+    await waitRegistered(ctx)
+    await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
+
+    const patched = [{ id: 'night', label: '夜间', entries: ['n/1', 'deepseek-official/deepseek-flash'], timeSlots: [] }]
+    await gateway.set({ chains: patched })
+
+    const persisted = settings.get(FALLBACKS_PROFILE_ENTRY)!
+    expect(persisted['chains']).toEqual(patched)
+    expect(Object.hasOwn(persisted, 'rootChain')).toBe(false)
   })
 
   it('strips a third-party nested-legacy patch without touching foreign members', async () => {

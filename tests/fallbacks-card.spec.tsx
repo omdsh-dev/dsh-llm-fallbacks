@@ -50,7 +50,8 @@ import type { FallbacksRemote, FallbacksSettingsState } from '../src/client/fall
 import type { SeedsWireStatus } from '../src/seeds.ts'
 import { presetRoles } from '../src/presets.ts'
 import { apply } from '../src/client/index.ts'
-import { defaultFallbacksConfig } from '../src/config.ts'
+import { defaultFallbacksConfig, migrateLegacyConfig } from '../src/config.ts'
+import { parseFallbacksConfig } from '../src/client/fallbacks-store.ts'
 import { OFFICIAL_FLASH, OFFICIAL_PRO } from '../src/time-slots.ts'
 import { en, zh } from '../src/client/locales.ts'
 
@@ -513,6 +514,65 @@ describe('per-tab blocks and per-tab save isolation', () => {
   })
 })
 
+describe('migrated v1 config (plan fallbacks-v1-auto-migration)', () => {
+  /** The LIVE profile shape (synthetic ids/personas): v1 rootChain + array role chains. */
+  const v1Descriptor = () => ({
+    triggerCodes: ['AUTH'],
+    rootChain: ['a/one', 'b/two', OFFICIAL_FLASH],
+    timeSlots: [],
+    roles: {
+      rules: [{ role: 'alpha' }],
+      list: [
+        { id: 'alpha', persona: 'Alpha persona', chain: ['a/one', 'b/two'], fallback: 'inherit-root' },
+        { id: 'beta', persona: 'Beta persona', chain: ['b/two'], fallback: 'none' },
+      ],
+    },
+  })
+
+  it('renders chain #0 plus both roles, with 未指定 selected and the chains offered', async () => {
+    const migrated = parseFallbacksConfig(migrateLegacyConfig(v1Descriptor()))
+    const { view } = await mountCard({ config: migrated as typeof defaultFallbacksConfig })
+
+    // chain #0 is the migrated default chain.
+    const tab = view.container.querySelector('[data-chain-tab="Auto"]')
+    expect(tab).not.toBeNull()
+    expect(tab!.textContent).toContain('默认链')
+
+    // Both roles survived as identity rows.
+    expect(view.container.querySelector('[data-role-card="alpha"]')).not.toBeNull()
+    expect(view.container.querySelector('[data-role-card="beta"]')).not.toBeNull()
+
+    // Each role's pointer select is present, UNSET, and offers the chains.
+    const selects = [...view.container.querySelectorAll('[data-role-chain-select]')] as HTMLSelectElement[]
+    expect(selects).toHaveLength(2)
+    for (const select of selects) {
+      expect(select.value).toBe('')
+      const values = [...select.options].map(option => option.value)
+      expect(values).toEqual(['', 'Auto'])
+    }
+  })
+
+  it('persists a re-attached 指定降级链 as the chain id string', async () => {
+    const migrated = parseFallbacksConfig(migrateLegacyConfig(v1Descriptor()))
+    const { view, scripted } = await mountCard({ config: migrated as typeof defaultFallbacksConfig })
+
+    const selects = [...view.container.querySelectorAll('[data-role-chain-select]')] as HTMLSelectElement[]
+    expect(selects).toHaveLength(2) // alpha + beta, both UNSET after the migration
+    fireEvent.change(selects[0]!, { target: { value: 'Auto' } })
+
+    const heading = view.container.querySelector('#fallbacks-subagents')!
+    const save = [...heading.querySelectorAll('button')].at(-1) as HTMLButtonElement
+    expect(save.disabled).toBe(false)
+    fireEvent.click(save)
+
+    await waitFor(() => expect(scripted.set).toHaveBeenCalled())
+    const patch = scripted.set.mock.calls.at(-1)![0].args.patch
+    const alpha = patch.roles.list.find((role: { id: string }) => role.id === 'alpha')
+    expect(alpha.chain).toBe('Auto')
+    expect(typeof alpha.chain).toBe('string')
+  })
+})
+
 describe('role cards (指定降级链)', () => {
   it('renders a role card with id, persona, and the chain-pointer select', async () => {
     const { view } = await mountCard({ config: v2Config() })
@@ -564,7 +624,7 @@ describe('role card shape', () => {
 
   it('the legacy migration banner renders for v1 keys', async () => {
     const { view } = await mountCard({ config: v2Config(), legacyKeys: ['rootChain'] })
-    expect(view.container.textContent).toContain('Legacy config fields detected')
+    expect(view.container.textContent).toContain('Legacy fields detected')
   })
 })
 

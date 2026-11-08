@@ -71,7 +71,7 @@ import SettingsForms, { type SettingsNamespace, type SettingsPathOp } from '@dee
 import { TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import type { TypertContribution } from '@deepseek-ai/dsh-typert-registry'
 import { Config } from './schema'
-import { detectLegacyKeys } from './config'
+import { detectLegacyKeys, migrateLegacyConfig } from './config'
 import type { FallbacksConfig } from './config'
 import { PRESETS, isAllDayConforming } from './time-slots'
 import { CHAIN_ID_PATTERN } from './config'
@@ -109,7 +109,15 @@ export const FALLBACKS_PROFILE_ENTRY = 'llm-fallbacks'
  * `onChange` fan-out was removed in the QC fix wave — nothing subscribed).
  */
 export interface FallbacksSettingsBridge {
+  /** The EFFECTIVE config the runtime reads (v1 already upgraded in memory). */
   source(): FallbacksConfig
+  /**
+   * The STORED view, before the in-memory upgrade. Legacy detection reads it,
+   * so the migration banner keeps reporting keys the effective config no
+   * longer carries (plan fallbacks-v1-auto-migration). Optional: a caller
+   * without one is assumed to hold the raw shape itself.
+   */
+  rawSource?(): FallbacksConfig
 }
 
 /** Patch shape accepted by `fallbacks.set` — any subset of the config keys. */
@@ -380,9 +388,14 @@ export class FallbacksConfigGateway extends TypertRemoteService {
    * even though `legacyKeys` still reports them.
    */
   private readConfig(source: FallbacksConfig = this.bridge.source()): FallbacksConfig {
+    // The v1 → v2 upgrade runs FIRST (plan fallbacks-v1-auto-migration), so the
+    // wire value is the config the runtime actually reads: a profile holding
+    // `rootChain` reports chain #0 `Auto` and identity roles, not a v1 shape the
+    // card would reject. `legacyKeys` still comes from the RAW source.
+    const migrated = migrateLegacyConfig(source) as unknown as Record<string, unknown>
     const wire: Record<string, unknown> = {}
     for (const key of Object.keys(CONFIG_KEYS)) {
-      const value = (source as unknown as Record<string, unknown>)[key]
+      const value = migrated[key]
       if (value === undefined) continue
       wire[key] = key === 'roles' ? normalizeRoles(value) : value
     }
@@ -399,10 +412,14 @@ export class FallbacksConfigGateway extends TypertRemoteService {
    * badge state, W-1/F-1).
    */
   private readResult(): FallbacksReadResult {
-    const source = this.bridge.source()
+    // The reported config comes from the EFFECTIVE view (upgraded); legacy
+    // detection comes from the STORED one — `migrateLegacyConfig` rebuilds only
+    // declared keys, so detecting on the upgraded object would always be empty
+    // and a v1 profile would lose its per-role chains silently.
+    const raw = this.bridge.rawSource?.() ?? this.bridge.source()
     return {
-      config: this.readConfig(source),
-      legacyKeys: detectLegacyKeys(source as unknown as Record<string, unknown>),
+      config: this.readConfig(this.bridge.source()),
+      legacyKeys: detectLegacyKeys(raw as unknown as Record<string, unknown>),
       seeds: this.seeds.wireStatus(this.seedsIo()),
     }
   }
@@ -475,24 +492,60 @@ export async function writeFallbacksSection(
   patch: Record<string, unknown>,
   ns: string = FALLBACKS_PROFILE_ENTRY,
 ): Promise<void> {
+  const stored = storedSection(settings, ns)
   const cleaned = stripLegacyForWrite(patch)
-  const removals = legacySectionRemovals(settings, ns)
-  if (removals.length > 0) await settings.mutate(ns, removals)
-  if (Object.keys(cleaned).length > 0) await settings.update(ns, cleaned)
+  const patchHasRoles = cleaned['roles'] !== undefined
+  // A patch that supplies `roles` replaces the whole object, so the per-member
+  // v1 removals under it are already satisfied — keeping them would CLOBBER the
+  // patch: a later `roles.list` write would trail the patch's own `roles` set.
+  const removals = legacySectionRemovals(stored)
+    .filter(op => !(patchHasRoles && op.path[0] === 'roles'))
+  const ops: SettingsPathOp[] = []
+
+  // A v1 profile keeps its whole chain in `rootChain`, which the removals
+  // below delete. A patch that does not carry `chains` would therefore leave the
+  // section with NEITHER shape, and the next read would migrate to `chains: []`
+  // — the user's chain silently gone. So the migrated chains ride the SAME
+  // call, set FIRST (before any unset), which also removes the crash window a
+  // second call would open. Materialize only when the stored section has no
+  // usable `chains`: a non-empty one is the operator's data and stays byte-
+  // identical (its rows may carry members this plugin does not model).
+  const storedChains = stored?.['chains']
+  const storedHasUsableChains = Array.isArray(storedChains) && storedChains.length > 0
+  if (cleaned['chains'] === undefined && !storedHasUsableChains && stored !== undefined
+    && (Object.hasOwn(stored, 'rootChain') || Object.hasOwn(stored, 'timeSlots'))) {
+    const migrated = migrateLegacyConfig({ ...stored, ...cleaned })
+    if (migrated.chains.length > 0) ops.push({ op: 'set', path: ['chains'], value: migrated.chains })
+  }
+  for (const [key, value] of Object.entries(cleaned)) {
+    ops.push({ op: 'set', path: [key], value })
+  }
+  ops.push(...removals)
+  // ONE call: no intermediate state in which the section has neither shape.
+  if (ops.length > 0) await settings.mutate(ns, ops)
+}
+
+/**
+ * The ACTIVE PROFILE's persisted section (the user layer), or `undefined` when
+ * the profile holds none.
+ * @param settings - the live settings service.
+ * @param ns - profile entry id.
+ */
+function storedSection(settings: SettingsForms, ns: string): Record<string, unknown> | undefined {
+  const descriptor = settings.describe().find((candidate) => candidate.ns === ns)
+  const user = descriptor?.user
+  if (typeof user !== 'object' || user === null || Array.isArray(user)) return undefined
+  return user as Record<string, unknown>
 }
 
 /**
  * `unset` path ops for every v1 field the persisted section still holds.
  * Path-addressed on purpose: the write must not restate (and so cannot
  * destroy) fields this plugin does not own.
- * @param settings - the live settings service.
- * @param ns - profile entry id.
+ * @param section - the persisted section, or `undefined` when there is none.
  */
-function legacySectionRemovals(settings: SettingsForms, ns: string): readonly SettingsPathOp[] {
-  const descriptor = settings.describe().find((candidate) => candidate.ns === ns)
-  const user = descriptor?.user
-  if (typeof user !== 'object' || user === null || Array.isArray(user)) return []
-  const section = user as Record<string, unknown>
+function legacySectionRemovals(section: Record<string, unknown> | undefined): readonly SettingsPathOp[] {
+  if (section === undefined) return []
   const removals: SettingsPathOp[] = []
   for (const key of LEGACY_KEYS) {
     if (Object.hasOwn(section, key)) removals.push({ op: 'unset', path: [key] })
