@@ -254,19 +254,18 @@ export function parseFallbacksConfig(value: unknown): FallbacksConfig {
       || (permissions.deny !== undefined && (!Array.isArray(permissions.deny) || permissions.deny.some(item => typeof item !== 'string'))))) {
       throw new TypeError(`fallbacks descriptor roles.list[${String(index)}].permissions must be an allow/deny string-array object`)
     }
-    // v2: `chain` is a single named-chain POINTER (string); a v1 ARRAY value
-    // is stripped by the gateway and never reaches here, but a defensive
-    // guard keeps the type honest.
-    const chain = role.chain
-    if (chain !== undefined && chain !== null && typeof chain !== 'string') {
-      throw new TypeError(`fallbacks descriptor roles.list[${String(index)}].chain must be a string pointer`)
-    }
+    // v2: `chain` is a single named-chain POINTER (string). A v1 ARRAY is
+    // normally stripped by the gateway's migration, but an un-migrated host
+    // must never brick the card: a non-string value reads as NOT SPECIFIED
+    // (the 指定降级链 select takes over) instead of throwing. Every other
+    // malformed shape keeps its strict rejection above.
+    const chain = typeof role.chain === 'string' ? role.chain : undefined
     return {
       id: role.id,
       persona: persona ?? '',
       ...(prompt === undefined ? {} : { prompt }),
       ...(permissions === undefined ? {} : { permissions }),
-      ...(chain === undefined || chain === null || chain === '' ? {} : { chain }),
+      ...(chain === undefined || chain === '' ? {} : { chain }),
     }
   })
   const cooldownMs = value.cooldownMs

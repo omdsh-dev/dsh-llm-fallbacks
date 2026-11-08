@@ -71,7 +71,7 @@ import SettingsForms, { type SettingsNamespace, type SettingsPathOp } from '@dee
 import { TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import type { TypertContribution } from '@deepseek-ai/dsh-typert-registry'
 import { Config } from './schema'
-import { detectLegacyKeys } from './config'
+import { detectLegacyKeys, migrateLegacyConfig } from './config'
 import type { FallbacksConfig } from './config'
 import { PRESETS, isAllDayConforming } from './time-slots'
 import { CHAIN_ID_PATTERN } from './config'
@@ -380,9 +380,14 @@ export class FallbacksConfigGateway extends TypertRemoteService {
    * even though `legacyKeys` still reports them.
    */
   private readConfig(source: FallbacksConfig = this.bridge.source()): FallbacksConfig {
+    // The v1 → v2 upgrade runs FIRST (plan fallbacks-v1-auto-migration), so the
+    // wire value is the config the runtime actually reads: a profile holding
+    // `rootChain` reports chain #0 `Auto` and identity roles, not a v1 shape the
+    // card would reject. `legacyKeys` still comes from the RAW source.
+    const migrated = migrateLegacyConfig(source) as unknown as Record<string, unknown>
     const wire: Record<string, unknown> = {}
     for (const key of Object.keys(CONFIG_KEYS)) {
-      const value = (source as unknown as Record<string, unknown>)[key]
+      const value = migrated[key]
       if (value === undefined) continue
       wire[key] = key === 'roles' ? normalizeRoles(value) : value
     }
