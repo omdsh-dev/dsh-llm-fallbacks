@@ -271,7 +271,7 @@ Key points:
 
 ## Migration mapping table (v1 two-block → named chains)
 
-v1 two-block configuration (the `rootChain` + `roles.rules` era) is **not migrated automatically**: the migration is WARN-ONLY (see the next section) and the user rewrites it manually per the table below. The seeded/migrated default chain, when you write one by hand, is `{ id: 'Auto', label: '默认链', entries: <old rootChain>, timeSlots: <old timeSlots rows> }` — the label is display-only, so the 指定降级链 dropdown can never be misread as an auto mode.
+v1 two-block configuration (the `rootChain` + `roles.rules` era) is **not migrated automatically**: the migration is WARN-ONLY (see the next section) and the user rewrites it manually per the table below. The seeded/migrated default chain, when you write one by hand, is `{ id: 'Auto', label: '默认链', entries: <old rootChain>, timeSlots: <old timeSlots rows> }` — the label is display-only, so the 指定降级链 dropdown can never be misread as an auto mode. **Copy the old values into the v2 shape FIRST, then save**: a save cleans the persisted v1 fields but never converts their values, so saving before you copy discards the `rootChain` / `roles.rules` content it removes.
 
 | Old (v1 two-block) | New (named chains) |
 |----------------------------|-----|

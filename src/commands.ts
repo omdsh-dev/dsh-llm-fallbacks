@@ -105,9 +105,9 @@ export interface FallbacksCommandSnapshot {
  */
 export interface FallbacksConfigSummary {
   /**
-   * Content-presence gate (`isFallbackActive`, plan fallbacks-web-ux-alignment
-   * T2 — the removed config-level `enabled` switch re-keyed): the plugin
-   * intervenes exactly when a chain/time-slot/role is configured.
+   * Content-presence gate (`isFallbackActive`): the plugin intervenes exactly
+   * when the named-chain list is non-empty (`chains.length > 0`). Slot rows and
+   * declared roles alone do NOT activate it — they are per-chain / optional.
    */
   readonly active: boolean
   readonly triggerCodes: readonly string[]
