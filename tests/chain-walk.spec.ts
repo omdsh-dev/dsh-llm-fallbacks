@@ -770,6 +770,33 @@ describe('per-target parameter adaptation (plan 2026-11-07 T2)', () => {
 
     expect(debug).toHaveBeenCalledWith(expect.stringContaining('parameter adaptation'), 'a', '1', 'reasoningEffort')
   })
+
+  it('applies the drop when the debug sink throws (I-000118)', async () => {
+    // A logger fault is a sink fault, not an adaptation fault: the request must
+    // still go out with the above-cap control dropped. `maxTokens` is used
+    // because the runtime does NOT reject an over-cap value on its own (an
+    // unsupported effort is normalized by the runtime and would mask the bug).
+    adapter.outputCap = () => 1000
+
+    await walk(
+      {
+        readConfig: rootConfig(['a/1']),
+        log: {
+          info: () => {},
+          warn: () => {},
+          debug: () => {
+            throw new Error('sink down')
+          },
+        },
+      },
+      { maxTokens: 4000 },
+    )
+
+    expect(dispatched()).toEqual(['a/1'])
+    // The drop reached dispatch: the runtime materialized the route's own
+    // default budget instead of the inherited 4000.
+    expect(adapter.calls[0]!.maxTokens).toBe(1000)
+  })
 })
 
 describe('reactive parameter repair (plan 2026-11-07 T2 / AC-7)', () => {
@@ -785,6 +812,21 @@ describe('reactive parameter repair (plan 2026-11-07 T2 / AC-7)', () => {
     expect(dispatched()).toEqual(['a/1', 'a/1'])
     expect(adapter.calls.map((call) => call.maxTokens)).toEqual([384_000, undefined])
     expect(chunks).toEqual([TEXT, STOP])
+  })
+
+  it('suppresses the rejected attempt usage before a repair (I-000120)', async () => {
+    // The rejected request's usage describes a request that 400ed, so it is not
+    // yielded: exactly one usage chunk belongs to this logical attempt, and it
+    // is the repaired attempt's own (inputTokens 0 here).
+    const rejectedUsage: StreamChunk = { type: 'usage', usage: { inputTokens: 7, outputTokens: 0 } }
+    adapter.respond = (options) => (options.maxTokens === undefined
+      ? { chunks: [USAGE, TEXT, STOP] }
+      : { chunks: [rejectedUsage], failure: { code: 'INVALID_REQUEST', message: 'max_tokens参数非法：限制数值范围[1,131072]' } })
+
+    const chunks = await walk({ readConfig: rootConfig(['a/1', 'b/2']) }, { maxTokens: 384_000 })
+
+    expect(dispatched()).toEqual(['a/1', 'a/1'])
+    expect(chunks).toEqual([USAGE, TEXT, STOP])
   })
 
   it('repairs UNSUPPORTED_REASONING_EFFORT by retrying the SAME candidate without the effort', async () => {
