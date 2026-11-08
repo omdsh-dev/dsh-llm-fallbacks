@@ -271,7 +271,13 @@ Key points:
 
 ## Migration mapping table (v1 two-block → named chains)
 
-v1 two-block configuration (the `rootChain` + `roles.rules` era) is **not migrated automatically**: the migration is WARN-ONLY (see the next section) and the user rewrites it manually per the table below. The seeded/migrated default chain, when you write one by hand, is `{ id: 'Auto', label: '默认链', entries: <old rootChain>, timeSlots: <old timeSlots rows> }` — the label is display-only, so the 指定降级链 dropdown can never be misread as an auto mode. **Copy the old values into the v2 shape FIRST, then save**: a save cleans the persisted v1 fields but never converts their values, so saving before you copy discards the `rootChain` / `roles.rules` content it removes.
+v1 two-block configuration (the `rootChain` + `roles.rules` era) is **upgraded automatically — in memory, at every config read**. Nothing is written to disk on load; your file keeps its v1 text until you save, and the next explicit save persists the v2 shape. The upgrade is exactly what the table below describes, applied by the plugin itself:
+
+- `rootChain` + the top-level `timeSlots` array become **chain #0** — `{ id: 'Auto', label: '默认链', entries: <old rootChain>, timeSlots: <old rows> }` — so the `FallbacksChain/Auto` route you already selected keeps resolving. The label is display-only, so the 指定降级链 dropdown can never be misread as an auto mode.
+- `roles.list[]` survive as identity rows (`id` / `persona` / the reserved `prompt` / `permissions`). A v1 **ARRAY** `chain` becomes **not specified** — the card's 指定降级链 select takes over, and any other member of the row (a foreign key) is preserved. `fallback` is dropped, as are `roles.rules`, `roles.default` and `enabled`.
+- A config that already has a non-empty `chains` list keeps it; only the v1 leftovers are stripped. An empty `chains` next to a v1 `rootChain` is a profile that never had v2 content, so it is migrated (otherwise your chain would silently vanish).
+
+If you would rather see it in text, the table below is the same transformation; hand-editing is optional, not required.
 
 | Old (v1 two-block) | New (named chains) |
 |----------------------------|-----|
@@ -287,11 +293,11 @@ v1 two-block configuration (the `rootChain` + `roles.rules` era) is **not migrat
 
 **Removed surfaces** (nothing to migrate — they are gone): role rules and their matching, per-role chain definitions, the host-policy sync (the card's sync button and the `subagentPolicy` wire field), the card's 运行状态（只读） block, and the General page status row.
 
-**Accepted degradations** (stated, not hidden): the virtual route's `providerRetryPolicy` returns `undefined` (the host's own default applies — a head's custom policy stops applying on the virtual route); switches inside a stamped child's chain are not host-allowlist-filtered (the chain is user-authored config); and the migration is warn-only — the plugin never rewrites your file.
+**Accepted degradations** (stated, not hidden): the virtual route's `providerRetryPolicy` returns `undefined` (the host's own default applies — a head's custom policy stops applying on the virtual route); switches inside a stamped child's chain are not host-allowlist-filtered (the chain is user-authored config); and the upgrade is in memory only — the plugin never rewrites your file, so an unsaved profile keeps its v1 text (and re-migrates identically on every load).
 
 ## Three-channel legacy notice
 
-After an upgrade, legacy-format configuration is flagged through **three channels**. **Loading never migrates anything** — that is what warn-only means. The one thing that does change your persisted section is an explicit save (see the end of this section).
+After an upgrade, legacy-format configuration is **upgraded in memory** (see the migration section above) and, while the file still holds v1 text, flagged through **three channels**. Loading does not change your file — the banner is informational, and an explicit save is what persists the v2 shape (see the end of this section).
 
 1. **UI banner** (live this round): the Fallbacks card renders a migration banner at the top of its body (when the `get` / `set` / `reset` response carries a non-empty `legacyKeys`) — "Legacy config fields detected (...): now shown in the new model — rewrite them manually following the migration table in docs/configuration.md (the plugin will not rewrite them automatically)." It does not block editing and does not touch disk by itself.
 2. **Startup warn** (shipped): on plugin startup / config read, detected legacy fields are reported via `logger.warn` — `apply()` detects them through `detectLegacyKeys`, and the `legacyKeys` pipeline reports synchronously; the three channels are closed.
