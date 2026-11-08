@@ -653,6 +653,10 @@ select.input {
   min-width: 0;
   font: inherit;
   text-align: left;
+  /* The title/meta/badge caps cover normal panel widths; this clip is the
+     last-resort bound for a badge + meta that still exceed the row. It clips
+     children only, so the button's own focus ring is unaffected. */
+  overflow: hidden;
 }
 
 .collapseToggle:disabled {
