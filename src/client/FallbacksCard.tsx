@@ -1525,7 +1525,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                     />
                     <button
                       type="button"
-                      className={`${css.outlineButton} ${css.addButton}`}
+                      className={`${css.outlineButton} ${css.addButton} ${css.addButtonGhost}`}
                       disabled={!writable}
                       onClick={() => { addTimeSlotSelector(index) }}
                     >
@@ -1604,7 +1604,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
               </button>
               <button
                 type="button"
-                className={`${css.outlineButton} ${css.addButton}`}
+                className={`${css.outlineButton} ${css.addButton} ${css.addButtonGhost}`}
                 disabled={!writable}
                 onClick={addCustomSlotRow}
               >
@@ -1648,7 +1648,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                 />
                 <button
                   type="button"
-                  className={`${css.outlineButton} ${css.addButton}`}
+                  className={`${css.outlineButton} ${css.addButton} ${css.addButtonGhost}`}
                   disabled={!writable}
                   onClick={addChainSelector}
                 >

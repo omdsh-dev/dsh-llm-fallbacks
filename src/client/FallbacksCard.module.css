@@ -679,13 +679,13 @@ select.input {
   /* The meta sits at the FAR RIGHT of the row and renders whole: it never
      shrinks, so a narrow panel degrades the title instead of both sides.
      `max-width` is the row ceiling that keeps an over-long route from
-     overflowing — with `overflow: hidden` it clamps and ellipsizes there,
-     which the earlier uncapped `flex: none` could not (it just overflowed)
-     and the 40% cap hit far too early. The 40% cap's job — leaving the
-     55%-capped title its room — is gone with the title cap. */
+     overflowing — with `overflow: hidden` it clamps and ellipsizes there.
+     The ceiling is bounded against the row's other fixed child: the seed
+     badge caps at 40%, so 40% + 50% here leaves 10% for the title plus the
+     chevron and the three 8px gaps. */
   flex: none;
   min-width: 0;
-  max-width: 70%;
+  max-width: 50%;
   margin-left: auto;
   font-size: 12px;
   line-height: 18px;
@@ -1079,15 +1079,13 @@ select.input {
   align-self: flex-start;
 }
 
-/* The chain's add affordance is a ghost row at the chain tail (plan
-   fallbacks-chain-row-compact T2). `.outlineButton` / `.addButton` keep their
-   declarations for the other sections, so the override is scoped by row: 26px
-   tall on the same 1px border the bordered variant carries (kept
-   transparent), so the box does not jump when the hover fill appears.
-   The time-slot add row joins it (batch2 T4): Add preset stays the block's
-   one bordered primary add, and the row's trailing Add custom is the ghost. */
-.chainBlock > .addButton,
-.slotAddRow > .addButton:last-of-type {
+/* The ghost add affordance: a quiet 26px row on the same 1px border the
+   bordered variant carries (kept transparent), so the box does not jump when
+   the hover fill appears (plan fallbacks-chain-row-compact T2). It is applied
+   by class, never by position: the chain tail's add and the time-slot row's
+   trailing Add custom carry it, while Add preset stays that block's one
+   bordered primary add (batch2 T4). */
+.addButtonGhost {
   box-sizing: border-box;
   align-self: flex-start;
   height: 26px;
@@ -1099,8 +1097,7 @@ select.input {
   color: var(--dsw-alias-label-secondary);
 }
 
-.chainBlock > .addButton:hover:not(:disabled),
-.slotAddRow > .addButton:last-of-type:hover:not(:disabled) {
+.addButtonGhost:hover:not(:disabled) {
   border-color: transparent;
   background: var(--dsw-alias-interactive-bg-hover);
   color: var(--dsw-alias-label-primary);
@@ -1108,8 +1105,7 @@ select.input {
 
 /* The ghost keeps the quiet ring of `.iconButton` rather than the bordered
    button's brand outline. */
-.chainBlock > .addButton:focus-visible,
-.slotAddRow > .addButton:last-of-type:focus-visible {
+.addButtonGhost:focus-visible {
   outline: none;
   box-shadow: 0 0 0 2px var(--dsw-alias-border-l3);
 }
@@ -1117,7 +1113,7 @@ select.input {
 /* The time-slot add row (preset picker + Add preset + Add custom): the
    picker keeps the enum-select width (max 240px), the two buttons trail it —
    the row never stretches across the field. Add preset is the block's single
-   primary add; Add custom is the ghost (the scoped ghost rule above). */
+   primary add; Add custom is the ghost (the class rule above). */
 .slotAddRow {
   display: flex;
   align-items: center;
@@ -1161,24 +1157,20 @@ select.input {
   border-color: var(--dsw-alias-label-dimmed);
 }
 
-/* The brand fill with the host's own on-fill foreground token — the glyph
-   is a label token, not a surface token. */
+/* The documented host primary-button pair (`.mstar/knowledge/
+   dsh-settings-ui-fidelity`: primary = `button-primary-fill` +
+   `label-primary-foreground`): a button fill token, not a text token, and the
+   on-fill label as the glyph, not a surface token. */
 .save {
-  background: var(--dsw-alias-brand-primary);
+  background: var(--dsw-alias-button-primary-fill);
   color: var(--dsw-alias-label-primary-foreground);
 }
 
-.discard:disabled {
-  opacity: 0.4;
-  cursor: default;
-}
-
-/* A disabled Save steps down to the host's dimmed primary surface rather
-   than the shared 0.4 opacity: fading the solid fill left a mid-gray slab
-   that read as a secondary button in dark. */
+/* Disabled is the documented button treatment — keep the fill, carry the
+   state on the shared 0.4 opacity. */
+.discard:disabled,
 .save:disabled {
-  background: var(--dsw-alias-button-primary-dimmed);
-  color: var(--dsw-alias-label-tertiary);
+  opacity: 0.4;
   cursor: default;
 }
 
