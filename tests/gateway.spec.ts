@@ -999,6 +999,78 @@ describe('set/reset return post-write legacyKeys (W-1/F-1)', () => {
     expect(gateway.get().legacyKeys).toEqual([])
   })
 
+  it('a partial save from a v1 profile emits ONE mutate, setting chains before the v1 unsets', async () => {
+    const ctx = track(new Context())
+    await ctx.plugin(MemorySettings)
+    const settings = ctx.settings as unknown as MemorySettings
+    settings.seed(FALLBACKS_PROFILE_ENTRY, {
+      rootChain: ['a/one', 'b/two', 'deepseek-official/deepseek-flash'],
+      roles: { rules: [{ role: 'alpha' }], list: [{ id: 'alpha', persona: 'Alpha persona', fallback: 'inherit-root' }] },
+    })
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()), makeSeeds())
+    await waitRegistered(ctx)
+    await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
+
+    const spy = vi.spyOn(settings, 'mutate')
+    await gateway.set({ cooldownMs: 120_000 })
+
+    // Durability ordering: exactly one call, and the replacement chain is set
+    // before any unset — no window with neither shape.
+    expect(spy).toHaveBeenCalledTimes(1)
+    const ops = spy.mock.calls[0]![1] as Array<{ op: string; path: string[] }>
+    expect(ops[0]).toMatchObject({ op: 'set', path: ['chains'] })
+    const firstUnset = ops.findIndex(entry => entry.op === 'unset')
+    expect(firstUnset).toBeGreaterThan(0)
+    expect(ops.slice(firstUnset).map(entry => entry.path.join('.'))).toEqual([
+      'rootChain',
+      'roles.rules',
+      'roles.list',
+    ])
+  })
+
+  it('leaves a stored non-empty chains array byte-identical (mixed shape, stale rootChain)', async () => {
+    const ctx = track(new Context())
+    await ctx.plugin(MemorySettings)
+    const settings = ctx.settings as unknown as MemorySettings
+    const storedChains = [{
+      id: 'Coding',
+      label: 'Coding',
+      entries: ['x/1', 'deepseek-official/deepseek-flash'],
+      timeSlots: [],
+      vendorNote: 'not this plugin to drop',
+    }]
+    settings.seed(FALLBACKS_PROFILE_ENTRY, { chains: storedChains, rootChain: ['a/one', 'deepseek-official/deepseek-flash'] })
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()), makeSeeds())
+    await waitRegistered(ctx)
+    await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
+
+    await gateway.set({ cooldownMs: 120_000 })
+
+    const persisted = settings.get(FALLBACKS_PROFILE_ENTRY)!
+    // The operator's chains are untouched, foreign member included…
+    expect(persisted['chains']).toEqual(storedChains)
+    // …and the stale v1 key is gone.
+    expect(Object.hasOwn(persisted, 'rootChain')).toBe(false)
+    expect(persisted['cooldownMs']).toBe(120_000)
+  })
+
+  it('never re-materializes chains when the patch supplies them', async () => {
+    const ctx = track(new Context())
+    await ctx.plugin(MemorySettings)
+    const settings = ctx.settings as unknown as MemorySettings
+    settings.seed(FALLBACKS_PROFILE_ENTRY, { rootChain: ['a/one', 'deepseek-official/deepseek-flash'] })
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()), makeSeeds())
+    await waitRegistered(ctx)
+    await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
+
+    const patched = [{ id: 'night', label: '夜间', entries: ['n/1', 'deepseek-official/deepseek-flash'], timeSlots: [] }]
+    await gateway.set({ chains: patched } as never)
+
+    const persisted = settings.get(FALLBACKS_PROFILE_ENTRY)!
+    expect(persisted['chains']).toEqual(patched)
+    expect(Object.hasOwn(persisted, 'rootChain')).toBe(false)
+  })
+
   it('strips a third-party nested-legacy patch without touching foreign members', async () => {
     const ctx = track(new Context())
     await ctx.plugin(MemorySettings)

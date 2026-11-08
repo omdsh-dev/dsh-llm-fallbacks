@@ -494,22 +494,35 @@ export async function writeFallbacksSection(
 ): Promise<void> {
   const stored = storedSection(settings, ns)
   const cleaned = stripLegacyForWrite(patch)
+  const patchHasRoles = cleaned['roles'] !== undefined
+  // A patch that supplies `roles` replaces the whole object, so the per-member
+  // v1 removals under it are already satisfied — keeping them would let a
+  // path op race the object write it belongs to.
   const removals = legacySectionRemovals(stored)
-  // A v1 profile has its whole chain in `rootChain`, which the removals above
-  // delete. A patch that does not carry `chains` would therefore leave the
-  // section with NEITHER shape: the next read migrates to `chains: []` and the
-  // user's chain silently disappears. So when a stored v1 chain exists and the
-  // patch does not replace it, materialize the migrated chains into the same
-  // write — the section becomes self-sufficient v2, and the effective config
-  // after the save equals the one before it.
-  const writes: Record<string, unknown> = { ...cleaned }
-  if (cleaned['chains'] === undefined && stored !== undefined
+    .filter(op => !(patchHasRoles && op.path[0] === 'roles'))
+  const ops: SettingsPathOp[] = []
+
+  // A v1 profile keeps its whole chain in `rootChain`, which the removals
+  // below delete. A patch that does not carry `chains` would therefore leave the
+  // section with NEITHER shape, and the next read would migrate to `chains: []`
+  // — the user's chain silently gone. So the migrated chains ride the SAME
+  // call, set FIRST (before any unset), which also removes the crash window a
+  // second call would open. Materialize only when the stored section has no
+  // usable `chains`: a non-empty one is the operator's data and stays byte-
+  // identical (its rows may carry members this plugin does not model).
+  const storedChains = stored?.['chains']
+  const storedHasUsableChains = Array.isArray(storedChains) && storedChains.length > 0
+  if (cleaned['chains'] === undefined && !storedHasUsableChains && stored !== undefined
     && (Object.hasOwn(stored, 'rootChain') || Object.hasOwn(stored, 'timeSlots'))) {
     const migrated = migrateLegacyConfig({ ...stored, ...cleaned })
-    if (migrated.chains.length > 0) writes['chains'] = migrated.chains
+    if (migrated.chains.length > 0) ops.push({ op: 'set', path: ['chains'], value: migrated.chains })
   }
-  if (removals.length > 0) await settings.mutate(ns, removals)
-  if (Object.keys(writes).length > 0) await settings.update(ns, writes)
+  for (const [key, value] of Object.entries(cleaned)) {
+    ops.push({ op: 'set', path: [key], value })
+  }
+  ops.push(...removals)
+  // ONE call: no intermediate state in which the section has neither shape.
+  if (ops.length > 0) await settings.mutate(ns, ops)
 }
 
 /**
