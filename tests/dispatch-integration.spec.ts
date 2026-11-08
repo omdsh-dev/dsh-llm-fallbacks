@@ -1,13 +1,9 @@
 /**
- * End-to-end direction C integration (plan dsh-022-rc1-upgrade): a dispatch
- * child is MOUNTED on the virtual row by the seam, and its virtual-route
- * request WALKS the role chain inside the adapter (real `LlmRuntime`, scripted
- * per-provider adapters, a registry-backed agent view).
- *
- * The config here holds its ONLY chain in `roles.list` (empty `rootChain`) —
- * the production shape for a subagent deployment, and the exact shape that
- * used to fail with `EMPTY_EFFECTIVE_CHAIN` before the walk owned the guards
- * (R-2).
+ * End-to-end integration (named virtual chains §3): a dispatch child is
+ * pointed at its role's NAMED CHAIN by the seam, and its
+ * `FallbacksChain/<chain id>` request WALKS that chain inside the adapter
+ * (real `LlmRuntime`, scripted per-provider adapters, a registry-backed agent
+ * view).
  *
  * @module tests/dispatch-integration
  */
@@ -24,13 +20,16 @@ import {
   type StreamChunk,
 } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session/types'
+import { OFFICIAL_FLASH } from '../src/time-slots.ts'
 import type { FallbacksConfig } from '../src/config.ts'
-import { SUBAGENT_POLICY_SETTINGS_NS } from '../src/gateway.ts'
 import { apply } from '../src/index.ts'
 import type { SubagentActivationSpecView } from '../src/subagents-seam.ts'
-import { FALLBACKS_CHAIN_MODEL, FALLBACKS_PROVIDER } from '../src/virtual-adapter.ts'
+import { FALLBACKS_PROVIDER } from '../src/virtual-adapter.ts'
 import { MemorySettings } from './support/memory-settings.ts'
 import { cfg } from './support/harness.ts'
+
+/** The named chain the `coder` role points at. */
+const CHAIN_ID = 'daily'
 
 const TEXT: StreamChunk = { type: 'text-delta', index: 0, text: 'ok' }
 const STOP: StreamChunk = { type: 'finish', reason: { kind: 'stop' } }
@@ -85,11 +84,11 @@ interface AgentViewShape {
   session: { header: { origin: 'subagent' }; snapshotEvents(): unknown[] }
 }
 
-/** The config under test: the ONLY chain lives in `roles.list` (roles-only). */
+/** The config under test: a named chain + a role pointing at it. */
 function rolesOnlyConfig(): FallbacksConfig {
   return cfg({
-    rootChain: [],
-    roles: { list: [{ id: 'coder', persona: '', chain: ['anthropic/claude-sonnet-4', 'other/gpt-4o'] }], rules: [] },
+    chains: [{ id: CHAIN_ID, label: 'Test', entries: ['anthropic/claude-sonnet-4', OFFICIAL_FLASH] }],
+    roles: { list: [{ id: 'coder', persona: '', chain: CHAIN_ID }] },
   })
 }
 
@@ -128,7 +127,7 @@ beforeEach(() => {
   ctx.plugin(MemorySettings)
   new LlmRuntime(ctx)
   adapter = new ScriptedAdapter()
-  ctx.llm.registerAdapter(['anthropic', 'other'], adapter)
+  ctx.llm.registerAdapter(['anthropic', 'other', 'deepseek-official'], adapter)
   views = new Map()
   ctx.provide('agents', { get: (id: string) => views.get(id) })
   fake = fakeSubagents()
@@ -160,7 +159,7 @@ async function mountChild(config: FallbacksConfig): Promise<string> {
   }) as { childId: string }
   views.set(result.childId, {
     id: result.childId,
-    options: { provider: FALLBACKS_PROVIDER, model: FALLBACKS_CHAIN_MODEL },
+    options: { provider: FALLBACKS_PROVIDER, model: CHAIN_ID },
     session: { header: { origin: 'subagent' }, snapshotEvents: () => [] },
   })
   return result.childId
@@ -170,7 +169,7 @@ async function mountChild(config: FallbacksConfig): Promise<string> {
 function streamChild(childId: string): Promise<StreamChunk[]> {
   return collect(ctx.llm.stream({
     provider: FALLBACKS_PROVIDER,
-    model: FALLBACKS_CHAIN_MODEL,
+    model: CHAIN_ID,
     sessionId: SessionId(childId),
     messages: [],
   }))
@@ -181,7 +180,7 @@ describe('an injected child walks its role chain (roles-only config, R-2)', () =
     const childId = await mountChild(rolesOnlyConfig())
     expect(fake.activations[0]!.request.agentOptions).toEqual({
       provider: FALLBACKS_PROVIDER,
-      model: FALLBACKS_CHAIN_MODEL,
+      model: CHAIN_ID,
     })
 
     const chunks = await streamChild(childId)
@@ -198,37 +197,8 @@ describe('an injected child walks its role chain (roles-only config, R-2)', () =
 
     const chunks = await streamChild(childId)
 
-    expect(dispatched(adapter)).toEqual(['anthropic/claude-sonnet-4', 'other/gpt-4o'])
+    expect(dispatched(adapter)).toEqual(['anthropic/claude-sonnet-4', 'deepseek-official/deepseek-flash'])
     expect(chunks).toEqual([TEXT, STOP])
-  })
-
-  it('starts the child on the only allowlisted route when the policy is enabled', async () => {
-    // Policy from the settings snapshot (no session event on the fake child).
-    ;(ctx.get('settings') as MemorySettings).seed(SUBAGENT_POLICY_SETTINGS_NS, {
-      enabled: true,
-      allowedModels: [{ provider: 'other', model: 'gpt-4o' }],
-    })
-    const childId = await mountChild(rolesOnlyConfig())
-    adapter.respond = () => ({ failure: { code: 'AUTH', message: 'down' } })
-
-    await streamChild(childId)
-
-    // The role chain head (`anthropic/claude-sonnet-4`) is outside the
-    // allowlist, so the child's first attempt is the only allowed route; the
-    // switch after its failure has nothing legal left.
-    expect(dispatched(adapter)).toEqual(['other/gpt-4o'])
-  })
-
-  it('skips the mount when the policy settings are unreadable (fail-closed for a fresh dispatch)', async () => {
-    // Present-but-malformed policy value: the settings read throws and nothing is
-    // retained for the reserved id. The mount gate runs BEFORE the native start
-    // registers the child — no agent, hence no session policy event — so the
-    // settings read is the only source that can prove (or refuse) the mount.
-    ;(ctx.get('settings') as MemorySettings).seed(SUBAGENT_POLICY_SETTINGS_NS, { enabled: 'yes' })
-
-    await mountChild(rolesOnlyConfig())
-
-    expect(fake.activations[0]!.request.agentOptions).toBeUndefined()
   })
 
   it('keeps the virtual pair as the session selection (no model/selection write)', async () => {
@@ -239,22 +209,21 @@ describe('an injected child walks its role chain (roles-only config, R-2)', () =
     // the virtual pair, so the host's selection notice never re-arms.
     expect(views.get(childId)?.options).toEqual({
       provider: FALLBACKS_PROVIDER,
-      model: FALLBACKS_CHAIN_MODEL,
+      model: CHAIN_ID,
     })
   })
 })
 
-describe('root sessions on the virtual row keep their all-day chain', () => {
-  it('walks the conforming all-day chain for a root session', async () => {
-    ctx.llm.registerAdapter(['deepseek-official'], adapter)
-    apply(ctx, cfg({ rootChain: ['deepseek-official/deepseek-flash'] }))
+describe('root sessions on a named chain keep their chain', () => {
+  it('walks the conforming chain entries for a root session', async () => {
+    apply(ctx, cfg({ chains: [{ id: CHAIN_ID, label: 'Test', entries: ['deepseek-official/deepseek-flash'] }] }))
     await vi.waitFor(async () => {
       expect((await ctx.llm.listModels(FALLBACKS_PROVIDER)).length).toBe(1)
     })
 
     const chunks = await collect(ctx.llm.stream({
       provider: FALLBACKS_PROVIDER,
-      model: FALLBACKS_CHAIN_MODEL,
+      model: CHAIN_ID,
       sessionId: SessionId('root-session'),
       messages: [],
     }))
@@ -263,15 +232,15 @@ describe('root sessions on the virtual row keep their all-day chain', () => {
     expect(chunks).toEqual([TEXT, STOP])
   })
 
-  it('keeps the all-day conformance gate for a legacy multi-model chain', async () => {
-    apply(ctx, cfg({ rootChain: ['other/gpt-4o', 'anthropic/claude-sonnet-4'] }))
+  it('keeps the conformance gate for a non-conforming chain', async () => {
+    apply(ctx, cfg({ chains: [{ id: CHAIN_ID, label: 'Test', entries: ['other/gpt-4o', 'anthropic/claude-sonnet-4'] }] }))
     await vi.waitFor(async () => {
       expect((await ctx.llm.listModels(FALLBACKS_PROVIDER)).length).toBe(1)
     })
 
     const chunks = await collect(ctx.llm.stream({
       provider: FALLBACKS_PROVIDER,
-      model: FALLBACKS_CHAIN_MODEL,
+      model: CHAIN_ID,
       sessionId: SessionId('root-session'),
       messages: [],
     }))

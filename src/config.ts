@@ -152,6 +152,14 @@ export const defaultFallbacksConfig: FallbacksConfig = {
 export const ROLE_ID_PATTERN = /^[a-z0-9-]{1,32}$/
 
 /**
+ * Reserved role id: FORBIDDEN in `roles.list[].id` (the validator's reserved
+ * warn) and in seed declarations (`seeds.ts` reserved-id skip). `rules` that
+ * could target it are deleted (v2), but the id itself stays reserved so a
+ * declared role can never shadow the "no specific role" meaning.
+ */
+export const INHERIT_ROLE_ID = 'inherit'
+
+/**
  * The no-op gate (AC-8): the plugin intervenes exactly when at least one
  * named chain is configured. Roles alone no longer activate (a role
  * without a chain is pure identity). An inactive config is a pass-through

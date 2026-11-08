@@ -44,17 +44,14 @@ import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
 import { defaultFallbacksConfig, detectLegacyKeys, isFallbackActive, validateFallbacksConfig, type FallbacksConfig } from './config.ts'
 import { Config } from './schema.ts'
 import { resolveChain } from './chains.ts'
-import { servedRouteOf, walkChain, type AgentChainView, type ChainWalkDeps } from './chain-walk.ts'
-import { resolveRole } from './roles.ts'
-import { effectivePolicy, policySettingsFrom, readSessionPolicyEvent, type EffectivePolicy, type PolicySettings } from './subagent-policy.ts'
+import { walkChain, type ChainWalkDeps } from './chain-walk.ts'
 import { installSubagentSeam, subagentSeamOf, type SubagentSeam } from './subagents-seam.ts'
 import { installRolePersona } from './role-persona.ts'
-import { FallbackStateStore, type BlockedSwitchAttempt, type EffectiveChainHead } from './state.ts'
+import { FallbackStateStore } from './state.ts'
 import { resolveSlotState } from './time-slots.ts'
 import {
   FALLBACKS_PROFILE_ENTRY,
   FallbacksConfigGateway,
-  SUBAGENT_POLICY_SETTINGS_NS,
   fallbacksTypertContribution,
   type FallbacksSettingsBridge,
 } from './gateway.ts'
@@ -79,12 +76,7 @@ import {
 import { presetRoles } from './presets.ts'
 import { installTuiClient } from './tui.ts'
 import { installTuiSettingsSection } from './tui-settings.ts'
-import {
-  effectiveHeadOf,
-  FALLBACKS_CHAIN_MODEL,
-  FALLBACKS_PROVIDER,
-  installFallbacksAdapter,
-} from './virtual-adapter.ts'
+import { FALLBACKS_PROVIDER, installFallbacksAdapter } from './virtual-adapter.ts'
 
 /** The plugin row id mounted by the profile bundle patch. */
 export const name = 'llm-fallbacks'
@@ -122,7 +114,6 @@ export interface FallbacksService {
   name: 'llm-fallbacks'
   /** Package.json version string (module-load snapshot). */
   version: string
-  resolveRole: typeof resolveRole
   resolveChain: typeof resolveChain
   validateFallbacksConfig: typeof validateFallbacksConfig
   detectLegacyKeys: typeof detectLegacyKeys
@@ -171,22 +162,16 @@ export { Config }
 /** The plugin's composition config — the `fallbacks` settings schema (spec §4). */
 export type Config = FallbacksConfig
 export type { FallbackSwitchReason, FallbacksSwitchEventData } from './events.ts'
-export type { AgentFallbackState, BlockedSwitchAttempt, FallbackStateStore } from './state.ts'
-/** @internal T5 test-seam types (mirrors `BlockedSwitchAttempt`; not public API). */
-export type { ChainHeadSource, EffectiveChainHead } from './state.ts'
+export type { AgentFallbackState, FallbackStateStore } from './state.ts'
 
 // --- Library API re-exports (plan fallbacks-consumer-api T1) ---
-// The full fallback-runtime surface — role resolution, chain resolution,
-// config validation, selector parsing — re-exported from the package root so
-// consumers can `import { resolveRole } from 'dsh-llm-fallbacks'`. Each block
-// mirrors its submodule's export surface exactly; symbols also used
-// internally by apply() keep their local imports (the re-export refers to
-// the same binding — no duplicate definitions).
-export {
-  resolveRole,
-  type AgentLike,
-  type Origin,
-} from './roles.ts'
+// The fallback-runtime surface — chain resolution, config validation,
+// selector parsing — re-exported from the package root so consumers can
+// `import { resolveChain } from 'dsh-llm-fallbacks'`. Each block mirrors its
+// submodule's export surface exactly; symbols also used internally by apply()
+// keep their local imports (the re-export refers to the same binding — no
+// duplicate definitions). Role-rules resolution (`resolveRole`) is DELETED
+// with `roles.rules` (v2).
 export {
   annotateCandidates,
   createCandidateFilter,
@@ -201,6 +186,7 @@ export {
   type FailingModel,
 } from './chains.ts'
 export {
+  CHAIN_ID_PATTERN,
   defaultFallbacksConfig,
   detectLegacyKeys,
   INHERIT_ROLE_ID,
@@ -210,8 +196,7 @@ export {
   type FallbacksConfigLogger,
   type FallbacksRole,
   type FallbacksRoles,
-  type FallbacksRoleRule,
-  type FallbackStrategy,
+  type NamedChain,
   type RevertPolicy,
   type RecoveryPolicy,
 } from './config.ts'
@@ -271,161 +256,6 @@ const stateStores = new WeakMap<Context, FallbackStateStore>()
  */
 export function stateStore(ctx: Context): FallbackStateStore | undefined {
   return stateStores.get(ctx)
-}
-
-/**
- * Per-apply blocked-switch-attempt maps, keyed by context. Weak so entries
- * die with the context; the plugin's own dispose effect clears the map
- * contents (mirrors `stateStores`).
- * @internal
- */
-const blockedAttemptStores = new WeakMap<Context, ReadonlyMap<string, BlockedSwitchAttempt>>()
-
-/**
- * @internal Test seam (mirrors `stateStore`): the per-agent blocked-switch
- * attempts recorded by the T3 allowlist gate for the plugin applied to `ctx`
- * (spec D1; in-memory only, issue #52). Not part of the plugin's public
- * surface; lets tests (and the T5 gateway projection) read blocked attempts
- * without reaching into the closure. `undefined` when no plugin is applied.
- */
-export function blockedAttempts(ctx: Context): ReadonlyMap<string, BlockedSwitchAttempt> | undefined {
-  return blockedAttemptStores.get(ctx)
-}
-
-/**
- * Per-apply effective-chain-head maps, keyed by context. Weak so entries
- * die with the context; the plugin's own dispose effect clears the map
- * contents (mirrors `blockedAttemptStores`).
- * @internal
- */
-const chainHeadStores = new WeakMap<Context, ReadonlyMap<string, EffectiveChainHead>>()
-
-/**
- * @internal Test seam (mirrors `blockedAttempts`): the per-agent effective
- * chain heads recorded by the T2 inject path (source `authorized` |
- * `injected`) for the plugin applied to `ctx` (spec D4 / T2 M3). Not part
- * of the plugin's public surface; lets tests and the T5 gateway projection
- * read the head without reaching into the closure. `undefined` when no
- * plugin is applied.
- */
-export function chainHeads(ctx: Context): ReadonlyMap<string, EffectiveChainHead> | undefined {
-  return chainHeadStores.get(ctx)
-}
-
-/** Latest map value by `at` (the Subagents card shows the current one). */
-function latestByAt<T extends { at: number }>(map: ReadonlyMap<string, T>): T | undefined {
-  let latest: T | undefined
-  for (const value of map.values()) {
-    if (latest === undefined || value.at >= latest.at) latest = value
-  }
-  return latest
-}
-
-/**
- * The minimal agent view one chain walk reads (design dsh-022-rc1-upgrade
- * §2.2): `GenerateOptions` carries only `sessionId`, so the session's agent is
- * resolved through the host `agents` registry — the opportunistic
- * `ctx.get('agents')?.get(id)` read the authorized-route view already uses.
- * `undefined` when the id is absent or the agent left the registry: the walk
- * then treats the call as a root agent with no role (the effective-chain walk
- * still runs).
- */
-function agentChainView(ctx: Context, sessionId: GenerateOptions['sessionId']): AgentChainView | undefined {
-  if (sessionId === undefined) return undefined
-  const agent = ctx.get('agents')?.get(sessionId)
-  if (agent === undefined) return undefined
-  const header = agent.session?.header
-  const route = agent.options
-  return {
-    origin: header?.origin ?? 'root',
-    ...(header?.agentPreset === undefined ? {} : { agentPreset: header.agentPreset }),
-    ...(typeof route?.provider === 'string' && typeof route?.model === 'string'
-      ? { optionsRoute: { provider: route.provider, model: route.model } }
-      : {}),
-    sessionId,
-  }
-}
-
-/**
- * Read the host's live subagent model-selection settings as plain data (T1
- * ADR: the settings value is the policy read's second source). rc.1 made the
- * settings service's own snapshot reader private, so the value is read through
- * the settings form service's namespace row — the same live composed config
- * (`enabled` + `allowedModels`, schema defaults applied) that reader returned.
- * Runtime presence is host-composition-dependent, so absence reads as
- * `undefined` — {@link effectivePolicy} resolves that to `'disabled'` (plan
- * Global Constraints). A present-but-malformed value throws, mirroring the
- * upstream reader's own validation.
- */
-function readSubagentSettings(ctx: Context): PolicySettings | undefined {
-  const settings = ctx.get('settings')
-  if (settings === undefined) return undefined
-  const descriptor = settings.describe().find((d) => d.ns === SUBAGENT_POLICY_SETTINGS_NS)
-  if (descriptor === undefined) return undefined
-  const policy = policySettingsFrom(descriptor.value)
-  if (policy === undefined) throw new Error('subagent model-selection settings are malformed')
-  return policy
-}
-
-/**
- * Outcome of the guarded per-agent policy settings read (qc fix wave W-002 +
- * S-hard). `ok` carries the snapshot to feed {@link effectivePolicy} —
- * `undefined` still means "policy off" (service absent, nothing retained);
- * `!ok` means the live read threw and no last-known snapshot exists for the
- * agent — the wiring resolves that to the same fail-closed skip as
- * `'unprovable'`, never a fail-open unconstrained selection.
- */
-type GuardedPolicySettings =
-  | { readonly ok: true; readonly settings: PolicySettings | undefined }
-  | { readonly ok: false }
-
-/**
- * Guarded per-agent read of the host subagent model-selection settings value
- * (qc fix wave W-002 + S-hard), wrapping {@link readSubagentSettings}:
- *
- * - the live read never propagates a throw into the request path — a throwing
- *   host settings read warns (the plugin doctrine: any throw in the
- *   resolution/injection path warns and the request proceeds unchanged) and
- *   degrades like the inject path's own try/catch;
- * - the freshest successful read for the agent is retained in `lastKnown`, so
- *   a mid-session settings disappearance (or a later throwing read) feeds the
- *   last proven snapshot to {@link effectivePolicy} instead of `undefined` —
- *   an enabled policy stays enabled (fail-closed), never silently reverting
- *   to the earlier unconstrained switching;
- * - agents never proven anything keep `undefined` (policy off) — the
- *   pre-policy selection unchanged.
- *
- * A throwing read with nothing retained resolves to `{ ok: false }`: the
- * callers treat it exactly like `'unprovable'` (warn + skip, host seed
- * stands). Pure bookkeeping — the map is the caller's per-agent state, this
- * helper stays stateless.
- */
-function readGuardedPolicySettings(
-  ctx: Context,
-  agentId: string,
-  lastKnown: Map<string, PolicySettings>,
-  warn: (message: string, ...args: unknown[]) => void,
-): GuardedPolicySettings {
-  try {
-    const settings = readSubagentSettings(ctx)
-    if (settings === undefined) {
-      // Settings absent (never composed, or it disappeared mid-session): the
-      // last proven snapshot stands — absent-with-nothing stays `undefined`.
-      return { ok: true, settings: lastKnown.get(agentId) }
-    }
-    // Freshest successful read wins — including `enabled: false` (the
-    // operator's last known truth, still resolving to `'disabled'`).
-    lastKnown.set(agentId, settings)
-    return { ok: true, settings }
-  } catch (error) {
-    warn(
-      'llm-fallbacks: agent "%s" subagent model-selection settings read failed — %s',
-      agentId,
-      (error as Error)?.message ?? String(error),
-    )
-    const known = lastKnown.get(agentId)
-    return known === undefined ? { ok: false } : { ok: true, settings: known }
-  }
 }
 
 /**
@@ -532,7 +362,6 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
       sctx.provide('llm-fallbacks', {
         name: 'llm-fallbacks',
         version,
-        resolveRole,
         resolveChain,
         validateFallbacksConfig,
         detectLegacyKeys,
@@ -637,7 +466,7 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
   // get().legacyKeys for the UI banner. warn-only — never auto-migrates.
   const legacyKeys = detectLegacyKeys(source() as unknown as Record<string, unknown>)
   if (legacyKeys.length > 0) {
-    logger.warn('llm-fallbacks: legacy config keys detected (chains/roles.default/undeclared role refs); see docs/configuration.md migration table — %o', legacyKeys)
+    logger.warn('llm-fallbacks: legacy config keys detected (v1 two-block keys); see docs/configuration.md migration table — %o', legacyKeys)
   }
   // Declared role ids rules resolve against (spec §7.1): trimmed id → the
   // DECLARED RAW id, so a padded YAML id (' coder ') and a trimmed rule
@@ -720,48 +549,6 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
   // fails loud on a duplicate key, so the catch lets the first fiber own the
   // `fallbacks` service key while later fibers fall back (no gateway) — the
   // typertGateway claim set dedupes, so claims never conflict.
-  // T3/T5 (plan dsh-012-subagent-routing): per-agent blocked-switch attempts
-  // and effective chain heads. Grown here so the gateway snapshot (constructed
-  // next) can close over them; cleaned on agent/disposed + plugin dispose
-  // (mirrors `dispatchInjected` / `slotWinners`). In-memory only (issue #52).
-  const chainHeadMap = new Map<string, EffectiveChainHead>()
-  chainHeadStores.set(ctx, chainHeadMap)
-  const blockedAttemptMap = new Map<string, BlockedSwitchAttempt>()
-  blockedAttemptStores.set(ctx, blockedAttemptMap)
-  // S-hard (qc fix wave): per-agent last-known subagent model-selection
-  // settings snapshots — the freshest successful settings read per agent,
-  // retained so a mid-session settings disappearance (or a later throwing
-  // read) keeps a proven-enabled policy constraining (fail-closed) instead of
-  // reverting to unconstrained pre-policy behavior. Grown only by the guarded
-  // policy read (`readGuardedPolicySettings`); cleaned on agent/disposed +
-  // plugin dispose (mirrors `dispatchInjected` / `slotWinners`). In-memory
-  // only. Declared before the seam install: the seam's inject gate and the
-  // walk's switch filter read the SAME snapshot map.
-  const lastKnownPolicySettings = new Map<string, PolicySettings>()
-  /**
-   * The host subagent policy for one session — the ONE reader the seam's mount
-   * gate and the walk's switch filter share. Guarded and fail-closed: a
-   * throwing host settings read (with nothing retained) resolves to
-   * `'unprovable'`, so neither path takes a plugin-originated decision it
-   * cannot prove.
-   *
-   * The settings read needs NO agent, and must not depend on one: the seam's
-   * mount gate runs BEFORE the native start registers the child, so the
-   * reserved id has no `Agent` yet. That is exactly a session which has
-   * recorded no `subagent/model-selection-policy` event — settings alone
-   * decide — so an unreadable policy blocks a fresh dispatch the same way it
-   * blocks a resumed one. A reserved id whose start never materializes keeps
-   * its retained snapshot until plugin dispose (in-memory, one per failed
-   * dispatch).
-   */
-  const policyFor = (sessionId: string): EffectivePolicy => {
-    const settingsRead = readGuardedPolicySettings(ctx, sessionId, lastKnownPolicySettings, logger.warn)
-    if (!settingsRead.ok) return { state: 'unprovable' }
-    // `Agent.id` IS the child session id; the seam hands that id over as a
-    // plain string, so this is the one place the brand is re-attached.
-    const events = ctx.get('agents')?.get(sessionId as SessionId)?.session.snapshotEvents() ?? []
-    return effectivePolicy(readSessionPolicyEvent(events), settingsRead.settings)
-  }
   // Plan role-based-subagent-adoption Task 1: the dispatch-seam role record —
   // ONE cordis `internal/get` wrapper over `subagents` resolving the Assignment
   // `**Execute as**: <id>` role at `start`/`startContinuable` and keying a
@@ -797,12 +584,9 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
     // child the runtime then mints, so the seam is what carries that child's
     // persona verdict onto the record the notice row reads.
     roles: () => source().roles.list,
-    // Direction C mount (§1.3): the seam stamps the virtual route onto a
-    // dispatch child's creation options, reads the SAME live config/policy the
-    // walk reads, and labels the effective chain head for the Subagents card.
+    // Role chain stamp (`injectRoleChain`): the seam points a dispatch child
+    // at its role's named chain, reading the SAME live config the walk reads.
     source: () => source(),
-    policyFor,
-    chainHeads: chainHeadMap,
     debug: (message) => logger.debug(message),
   })
   if (!subagentSeam.ownsWrapper) {
@@ -833,21 +617,10 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
       ctx,
       bridge,
       seeds,
-      () => {
-        // Same T1 reader the inject/switch paths use (no second policy source).
-        // get() is settings-page scoped: no live session, so the event read is
-        // "absent" and settings (or disabled) decide — identical to a session
-        // that has not yet recorded `subagent/model-selection-policy`.
-        try {
-          return {
-            policy: effectivePolicy({ ok: false, present: false }, readSubagentSettings(ctx)),
-            head: latestByAt(chainHeadMap),
-            blockedAttempt: latestByAt(blockedAttemptMap),
-          }
-        } catch {
-          return { policy: { state: 'unprovable' as const } }
-        }
-      },
+      // INTERIM (T4 re-keys the gateway wire): the host-policy snapshot
+      // surfaces are deleted (named virtual chains §3) — the gateway's own
+      // subagentPolicy wire field goes away in the same wave.
+      () => ({ policy: { state: 'unprovable' as const } }),
     )
   } catch (error) {
     if (!(error instanceof Error) || !error.message.includes('has been registered')) throw error
@@ -915,17 +688,7 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
   const walkDeps: ChainWalkDeps = {
     readConfig: () => source(),
     getLlm: () => ctx.get('llm'),
-    resolveAgentView: (sessionId) => agentChainView(ctx, sessionId),
     states,
-    roleIds: () => roleIds,
-    seamRecord: (sessionId) => subagentSeam.records.get(sessionId),
-    // The same guarded, last-known-backed reader the seam's mount gate uses:
-    // a throwing host settings read warns and resolves to `'unprovable'`
-    // (fail-closed — no plugin-originated switch the plugin cannot prove).
-    policyFor,
-    recordBlocked: (sessionId, route, reason) => {
-      blockedAttemptMap.set(sessionId, { at: Date.now(), route, reason })
-    },
     slotWinners,
     log: logger,
   }
@@ -934,8 +697,6 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
   ctx.on('agent/disposed', ({ agent }) => {
     states.delete(agent.id)
     slotWinners.delete(agent.id)
-    blockedAttemptMap.delete(agent.id)
-    chainHeadMap.delete(agent.id)
     subagentSeam.records.delete(agent.id)
     // CF-6: `noticeEmitted` is deliberately NOT cleared here. `Agent.id` IS the
     // child session id, and a continuable child's durable session OUTLIVES the
@@ -944,19 +705,15 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
     // documented "exactly one notice row per child session". The marker is
     // bounded (`NOTICE_EMITTED_LIMIT`) and cleared when the last fiber of this
     // root disposes (the seam's `dispose`, in the effect below).
-    lastKnownPolicySettings.delete(agent.id)
   })
 
   ctx.effect(() => () => {
     states.clear()
     slotWinners.clear()
-    blockedAttemptMap.clear()
-    chainHeadMap.clear()
     // The seam is NOT disposed here: it registers its OWN lifecycle effect at
     // install (`src/subagents-seam.ts`) over the same root-shared state, which
     // is also the only release a caller that throws before this effect exists
     // can reach.
-    lastKnownPolicySettings.clear()
   }, 'llm-fallbacks: clear per-agent state')
 
   // AC-5: /fallbacks — session-scoped read-only diagnostics. Conditional
@@ -974,11 +731,9 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
     getSnapshot(agent): FallbacksCommandSnapshot {
       const config = source()
       // The dispatch seam's record IS the dispatch-role memory (`**Execute as**`
-      // resolved at spawn); the rules stage is the same fallback the walk uses —
-      // including the served route, so a child on the virtual row matches a rule
-      // keyed on the real chain head exactly as the walk does.
+      // resolved at spawn); a session with no record has NO resolved role
+      // (rules are gone — v2).
       const role = subagentSeam.records.get(agent.id)?.role
-        ?? resolveRole(agent, config.roles.rules, roleIds, logger.warn, servedRouteOf(config, agent.options, new Date()))
       const state = states.peek(agent.id)
       // P4 (plan fallbacks-half-open-recovery Task 4): under half-open mode
       // the expired cooldown entries transition AT the diagnostic read (so
@@ -990,14 +745,28 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
       if (state !== undefined && recovery === 'half-open') {
         states.syncRecovery(state, Date.now(), recovery)
       }
+      // INTERIM (T4 re-keys commands.ts): the diagnostic lists the calling
+      // agent's selected chain — the chain id the agent's route names — and
+      // falls back to the first configured chain. `resolveChainForDiagnostic`
+      // and the per-chain listing land with the commands.ts rewrite.
+      const selectedChainId = agent.options?.provider === 'FallbacksChain'
+        ? agent.options?.model
+        : undefined
+      const chain = config.chains.find((entry) => entry.id === selectedChainId)
+        ?? config.chains[0]
+      const entries = chain?.entries ?? []
       return {
         origin: agent.session.header?.origin ?? 'root',
-        role,
-        ...resolveChainForDiagnostic(config.roles.list, config.rootChain, role, logger.warn),
+        role: role ?? '',
+        chainRole: role !== undefined && role !== '',
+        chain: entries,
+        inherit: false,
         // P7: current slot winner + label — the 分时 side of the status
         // strip; the switches section below is the 降级切换 side. Config
-        // fact at `now` (a subagent session's chain display is unchanged).
-        slot: resolveSlotState(config, new Date(), config.tz ?? 'Asia/Shanghai'),
+        // fact at `now`, per chain.
+        slot: chain === undefined
+          ? { winner: 'all-day' as const, label: 'all-day' }
+          : resolveSlotState(chain, new Date(), config.tz ?? 'Asia/Shanghai'),
         switches: recentFallbacksSwitches(agent.session.snapshotEvents(), RECENT_SWITCHES_LIMIT),
         cooldown: state === undefined
           ? []
@@ -1031,13 +800,16 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
       return {
         active: isFallbackActive(config),
         triggerCodes: config.triggerCodes,
-        rootChain: config.rootChain,
-        timeSlots: (config.timeSlots ?? []).map((row) => row.kind === 'preset'
-          ? { preset: row.preset, chainCount: (row.chain ?? []).length }
-          : { start: row.start, end: row.end, days: row.days, chainCount: (row.chain ?? []).length }),
+        chains: config.chains.map((chain) => ({
+          id: chain.id,
+          label: chain.label,
+          entries: chain.entries,
+          timeSlots: (chain.timeSlots ?? []).map((row) => row.kind === 'preset'
+            ? { preset: row.preset, chainCount: (row.chain ?? []).length }
+            : { start: row.start, end: row.end, days: row.days, chainCount: (row.chain ?? []).length }),
+        })),
         tz: config.tz ?? 'Asia/Shanghai',
-        roles: config.roles.list.map((role) => ({ id: role.id, chainCount: role.chain?.length ?? 0 })),
-        rules: config.roles.rules.map((rule) => ({ provider: rule.provider ?? '', model: rule.model ?? '', role: rule.role })),
+        roles: config.roles.list.map((role) => ({ id: role.id, chain: role.chain })),
         cooldownMs: config.cooldownMs,
         revertPolicy: config.revertPolicy,
         maxSwitchesPerStep: config.maxSwitchesPerStep,

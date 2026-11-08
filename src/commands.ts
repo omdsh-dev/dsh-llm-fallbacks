@@ -27,8 +27,9 @@
  */
 
 import type { CommandDefinition, CommandInvocation, CommandResult } from '@deepseek-ai/dsh-commands'
-import { INHERIT_ROLE_ID, type FallbacksRole } from './config.ts'
-import type { Origin } from './roles.ts'
+import type { FallbacksRole } from './config.ts'
+
+type Origin = 'root' | 'subagent'
 import type { FallbackSwitchReason, FallbacksSwitchEventData } from './events.ts'
 import type { SeedRevertFailReason } from './seeds.ts'
 import { PRESETS, type PresetId, type SlotRowConfig } from './time-slots.ts'
@@ -115,14 +116,16 @@ export interface FallbacksConfigSummary {
    */
   readonly active: boolean
   readonly triggerCodes: readonly string[]
-  readonly rootChain: readonly string[]
-  /** Summarized time-slot rows (preset rows carry `preset`, custom rows carry `start`/`end`; both may carry a day mask). */
-  readonly timeSlots: readonly { preset?: string; start?: string; end?: string; days?: readonly number[]; chainCount: number }[]
+  /** Named chains (v2): id/label/entries + summarized per-chain slot rows. */
+  readonly chains: readonly {
+    id: string
+    label: string
+    entries: readonly string[]
+    timeSlots: readonly { preset?: string; start?: string; end?: string; days?: readonly number[]; chainCount: number }[]
+  }[]
   /** Config-level timezone for slot matching (default `Asia/Shanghai`). */
   readonly tz: string
-  readonly roles: readonly { id: string; chainCount: number }[]
-  /** Summarized role rules: provider/model patterns → declared role (or the built-in `'inherit'`). */
-  readonly rules: readonly { provider: string; model: string; role: string }[]
+  readonly roles: readonly { id: string; chain?: string }[]
   readonly cooldownMs: number
   readonly revertPolicy: string
   readonly maxSwitchesPerStep: number
@@ -427,7 +430,7 @@ export function resolveChainForDiagnostic(
   // an illegal config declared a role with the reserved id (startup
   // validation warns "reserved"; the runtime never consults it, so the
   // diagnostic must not display it either).
-  if (role.trim() === INHERIT_ROLE_ID) {
+  if (role.trim() === 'inherit') {
     return { chainRole: false, chain: rootChain, inherit: rootChain.length > 0 }
   }
   const roleDef = roles.find((declared) => declared.id.trim() === role.trim())

@@ -17,48 +17,9 @@
  * @module dsh-llm-fallbacks/state
  */
 
-import type { FallbackSwitchReason } from './events.ts'
 import { CooldownStore } from './cooldown.ts'
 import { RecoveryStore } from './recovery.ts'
 import type { RecoveryPolicy } from './config.ts'
-
-/**
- * One plugin-originated subagent switch the host allowlist blocked (plan
- * dsh-012-subagent-routing T3; spec D1). The intersection of the resolved
- * candidates with the effective allowlist was empty while the unconstrained walk
- * would have switched — the attempt is recorded in-memory only (issue #52:
- * no durable session write) for the Subagents card warning (spec D4/T5).
- */
-export interface BlockedSwitchAttempt {
-  /** Epoch ms when the switch was blocked. */
-  at: number
-  /** The route the unconstrained walk would have switched to (exact provider+model). */
-  route: { provider: string; model: string }
-  /** The failure reason that triggered the would-be switch. */
-  reason: FallbackSwitchReason
-}
-
-/**
- * How the effective subagent chain head was chosen (plan dsh-012-subagent-routing
- * T5 / T2 M3). Lives on a per-agent map (mirrors {@link BlockedSwitchAttempt}),
- * not on {@link AgentFallbackState}. The write point is the dispatch seam
- * (direction C): `authorized` = the spawn request carried an explicit route,
- * `injected` = the seam mounted the child on the virtual chain row.
- */
-export type ChainHeadSource = 'authorized' | 'injected'
-
-/**
- * The effective chain head for one subagent, plus the source label the
- * Subagents card renders (spec D4). In-memory only (issue #52).
- */
-export interface EffectiveChainHead {
-  /** Epoch ms when this head was recorded (recency for the card snapshot). */
-  at: number
-  /** Exact provider+model of the effective chain head. */
-  route: { provider: string; model: string }
-  /** `authorized` = host spawn preserved; `injected` = plugin role-inject. */
-  source: ChainHeadSource
-}
 
 /** One agent's fallback runtime state. */
 export interface AgentFallbackState {
