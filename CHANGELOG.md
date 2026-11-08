@@ -6,6 +6,26 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-08
+
+### Fixed
+
+- A fallback chain keeps advancing when a candidate is parameter-incompatible: an inherited `reasoningEffort` the target model does not list, and an inherited `maxTokens` above the target's disclosed `defaultMaxTokens`, are dropped for that attempt instead of ending the turn.
+- A candidate that rejects the request for a parameter before emitting output is retried once with that parameter removed, so a route that discloses no cap at all but still rejects the request no longer ends the turn after one attempt.
+- A `usage` chunk no longer commits an attempt, so a trigger-code failure that follows it still switches to the next candidate (adapters emit usage before their terminal finish).
+- A parameter-repair retry no longer replays the rejected request's `usage` chunk: the repaired logical attempt emits exactly one `usage`, belonging to the attempt that actually ran.
+- A throwing debug logger can no longer cancel a proactive parameter drop; the request still goes out with the unsupported control removed.
+- A resume of an already-dispatched subagent is no longer treated as a fresh virtual-chain mount: it keeps the child's own durable route and reports no role-chain head, while a newly reserved child id still mounts as before.
+- Upgrade a v1 configuration automatically, in memory, at every config read: `rootChain` + the top-level `timeSlots` rows become chain #0 `Auto` (so an already-selected `FallbacksChain/Auto` route keeps working), role rows keep their identity and persona while their v1 array `chain` reads as not specified (re-attachable via 指定降级链), and `fallback` / `roles.rules` / `roles.default` / `enabled` are dropped. No file is rewritten on load — the next save persists the upgraded shape and retires the migration banner.
+
+### Changed
+
+- Replace the two-block config (`rootChain` + per-role chains + `roles.rules`) with N named virtual chains, each selectable in the model picker as `FallbacksChain/<chain id>` with its own 默认降级链, 默认模型 tail and per-chain 分时 slots; the settings card renders chain tabs (add / rename label / delete, per-tab save).
+- Role entities keep identity (id/persona) plus a manually specified chain POINTER (`roles.list[].chain`, 「指定降级链」); unspecified roles no longer touch routing.
+- Remove role-rule matching, the `fallback` chain-append policy, the host subagent-policy sync (card status area + sync button + `subagentPolicy` wire), the card's 运行状态 block, and the General page status row.
+- Accept the documented degradation: the virtual route's `providerRetryPolicy` returns the host default (the head's custom policy no longer applies on the virtual route).
+- Saving the settings removes the v1 `rootChain` / top-level `timeSlots` / `roles.rules` / `roles.default` / `enabled` fields and each role's `fallback` and array-form `chain` from the persisted section, preserving foreign keys and unrelated configuration; loading alone changes nothing.
+
 ## [0.7.0] - 2026-11-07
 
 ### Changed
