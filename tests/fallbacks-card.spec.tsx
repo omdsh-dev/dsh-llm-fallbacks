@@ -223,6 +223,18 @@ async function mountCard(options: Parameters<typeof scriptedApi>[0] = {}, preloa
 }
 
 /**
+ * Expand every role card: role editors mount COLLAPSED (one scannable row per
+ * role). Content assertions call this right after mounting; the collapse-state
+ * assertions skip it. Scoped to the collapse row so the persona disclosure
+ * inside an already-expanded card is never toggled.
+ */
+function expandRoleCards(container: HTMLElement): void {
+  for (const toggle of container.querySelectorAll('[data-role-card] [class*="collapseRow"] [aria-expanded="false"]')) {
+    fireEvent.click(toggle)
+  }
+}
+
+/**
  * A base loaded config. The FLAT card renders every field unconditionally —
  * there is no config-level `enabled` gate to satisfy (plan
  * fallbacks-web-ux-alignment T2/T3), so the draft is clean (it seeds from
@@ -577,6 +589,7 @@ describe('migrated v1 config (plan fallbacks-v1-auto-migration)', () => {
     expect(view.container.querySelector('[data-role-card="beta"]')).not.toBeNull()
 
     // Each role's pointer select is present, UNSET, and offers the chains.
+    expandRoleCards(view.container)
     const selects = [...view.container.querySelectorAll('[data-role-chain-select]')] as HTMLSelectElement[]
     expect(selects).toHaveLength(2)
     for (const select of selects) {
@@ -590,6 +603,7 @@ describe('migrated v1 config (plan fallbacks-v1-auto-migration)', () => {
     const migrated = parseFallbacksConfig(migrateLegacyConfig(v1Descriptor()))
     const { view, scripted } = await mountCard({ config: migrated as typeof defaultFallbacksConfig })
 
+    expandRoleCards(view.container)
     const selects = [...view.container.querySelectorAll('[data-role-chain-select]')] as HTMLSelectElement[]
     expect(selects).toHaveLength(2) // alpha + beta, both UNSET after the migration
     fireEvent.change(selects[0]!, { target: { value: 'Auto' } })
@@ -611,6 +625,7 @@ describe('role cards (指定降级链)', () => {
   it('renders a role card with id, persona, and the chain-pointer select', async () => {
     const { view } = await mountCard({ config: v2Config() })
     expect(view.container.querySelector('[data-role-card="coder"]')).not.toBeNull()
+    expandRoleCards(view.container)
     const select = view.container.querySelector('[data-role-chain-select]') as HTMLSelectElement
     const options = [...select.options].map(option => option.value)
     expect(options[0]).toBe('') // 未指定（沿用 dsh 默认）
@@ -618,10 +633,20 @@ describe('role cards (指定降级链)', () => {
     expect(options).toContain('night')
     // Option labels carry the picker route.
     expect(select.textContent).toContain(`FallbacksChain/Auto`)
+    // The chain help copy rides the info badge and DESCRIBES the select: the
+    // badge's aria-label is the select's accessible description.
+    const described = view.container.querySelector(`#${select.getAttribute('aria-describedby')}`) as HTMLElement
+    expect(described).not.toBeNull()
+    expect(described.getAttribute('role')).toBe('img')
+    expect(described.getAttribute('aria-label')).toBe(en['roles.chain.tooltip'])
+    expect(described.getAttribute('data-tip')).toBe(en['roles.chain.tooltip'])
+    expect(view.container.querySelector('[data-role-card="coder"]')!.textContent)
+      .not.toContain(en['roles.chain.tooltip'])
   })
 
   it('changing the pointer stages the roles save and writes the pointer', async () => {
     const { view, scripted } = await mountCard({ config: v2Config() })
+    expandRoleCards(view.container)
     const select = view.container.querySelector('[data-role-chain-select]') as HTMLSelectElement
     fireEvent.change(select, { target: { value: 'night' } })
     const heading = view.container.querySelector('#fallbacks-subagents')!
@@ -635,6 +660,25 @@ describe('role cards (指定降级链)', () => {
     expect(patch.chains).toEqual(v2Config().chains)
   })
 
+  it('a saved pointer re-seeds the rows COLLAPSED with the accepted value', async () => {
+    const { view, scripted } = await mountCard({ config: v2Config() })
+    expandRoleCards(view.container)
+    const select = view.container.querySelector('[data-role-chain-select]') as HTMLSelectElement
+    fireEvent.change(select, { target: { value: 'night' } })
+    const heading = view.container.querySelector('#fallbacks-subagents')!
+    fireEvent.click([...heading.querySelectorAll('button')].at(-1)!)
+    await waitFor(() => expect(scripted.set).toHaveBeenCalled())
+    const card = view.container.querySelector('[data-role-card="coder"]') as HTMLElement
+    // The post-save re-seed rebuilds the rows from the accepted config:
+    // collapsed again, with the saved route on the collapse meta.
+    await waitFor(() => expect(card.querySelector('[aria-expanded]')!.getAttribute('aria-expanded')).toBe('false'))
+    expect(card.querySelector('select')).toBeNull()
+    expect(card.textContent).toContain('FallbacksChain/night')
+    // Re-opening the card shows the ACCEPTED pointer, not the stale draft.
+    fireEvent.click(card.querySelector('[class*="collapseRow"] [aria-expanded="false"]')!)
+    expect((card.querySelector('[data-role-chain-select]') as HTMLSelectElement).value).toBe('night')
+  })
+
   it('the collapsed meta names the specified route or 未指定降级链 — never an auto mode', async () => {
     const { view } = await mountCard({
       config: { ...v2Config(), roles: { list: [{ id: 'coder', persona: '' }] } },
@@ -643,6 +687,7 @@ describe('role cards (指定降级链)', () => {
     expect(card.textContent).toContain(en['roles.chainMeta.unspecified'])
     expect(card.textContent).not.toContain('自动')
     // Pick a chain → meta shows the route.
+    expandRoleCards(view.container)
     const select = card.querySelector('[data-role-chain-select]') as HTMLSelectElement
     fireEvent.change(select, { target: { value: 'Auto' } })
     expect(card.textContent).toContain('FallbacksChain/Auto')
@@ -653,13 +698,48 @@ describe('role card shape', () => {
   it('carries exactly ONE select — the 指定降级链 pointer', async () => {
     const { view } = await mountCard({ config: v2Config() })
     const card = view.container.querySelector('[data-role-card="coder"]')!
+    expandRoleCards(view.container)
     expect(card.querySelectorAll('select')).toHaveLength(1)
+  })
+
+  it('mounts every role card COLLAPSED — no editor until the row is opened', async () => {
+    const { view } = await mountCard({ config: v2Config() })
+    const cards = [...view.container.querySelectorAll('[data-role-card]')]
+    expect(cards).toHaveLength(1)
+    for (const card of cards) {
+      expect(card.querySelector('[aria-expanded]')!.getAttribute('aria-expanded')).toBe('false')
+      expect(card.querySelector('select')).toBeNull()
+      expect(card.querySelector('textarea')).toBeNull()
+    }
+    // AC2: a staged edit survives an expand → collapse → expand round trip.
+    const card = cards[0]!
+    expandRoleCards(view.container)
+    fireEvent.change(card.querySelector('[data-role-chain-select]')!, { target: { value: 'night' } })
+    fireEvent.click(card.querySelector('[aria-expanded]')!)
+    fireEvent.click(card.querySelector('[aria-expanded]')!)
+    expect((card.querySelector('[data-role-chain-select]') as HTMLSelectElement).value).toBe('night')
+  })
+
+  it('keeps per-row collapse state independent', async () => {
+    const twoRoles = {
+      ...v2Config(),
+      roles: { list: [{ id: 'alpha', persona: '', chain: 'Auto' }, { id: 'beta', persona: '', chain: '' }] },
+    }
+    const { view } = await mountCard({ config: twoRoles })
+    const alpha = view.container.querySelector('[data-role-card="alpha"]')!
+    const beta = view.container.querySelector('[data-role-card="beta"]')!
+    expect(alpha.querySelector('[aria-expanded]')!.getAttribute('aria-expanded')).toBe('false')
+    expect(beta.querySelector('[aria-expanded]')!.getAttribute('aria-expanded')).toBe('false')
+    // Expanding alpha leaves beta on its own collapsed row.
+    fireEvent.click(alpha.querySelector('[class*="collapseRow"] [aria-expanded="false"]')!)
+    expect(alpha.querySelector('[data-role-chain-select]')).not.toBeNull()
+    expect(beta.querySelector('[aria-expanded]')!.getAttribute('aria-expanded')).toBe('false')
+    expect(beta.querySelector('select')).toBeNull()
   })
 
   it('collapses to ONE row: no select, no persona, no footer; delete sits beside the toggle', async () => {
     const { view, props } = await mountCard({ config: v2Config() })
     const card = view.container.querySelector('[data-role-card="coder"]') as HTMLElement
-    fireEvent.click(card.querySelector('[aria-expanded]')!)
     const row = card.querySelector('[class*="collapseRow"]') as HTMLElement
     // T2/AC3: the compact card tier + the row and nothing else (6px/12px
     // padding and a 10px gap leave the collapsed card one ~40px row).
@@ -693,6 +773,10 @@ describe('role card shape', () => {
     expect(card.querySelector('select')).not.toBeNull()
     expect(card.querySelector('textarea')).not.toBeNull()
     expect(named[0]!.getAttribute('aria-label')).toBe('Collapse role coder')
+    // Clicking the toggle again collapses the body back to the one-row card.
+    fireEvent.click(named[0]!)
+    expect(card.querySelector('select')).toBeNull()
+    expect(named[0]!.getAttribute('aria-expanded')).toBe('false')
   })
 
   it('the legacy migration banner renders for v1 keys', async () => {
@@ -725,7 +809,13 @@ describe('read-only mode', () => {
     // The role card is expanded (read-only forces content disclosures open).
     const card = view.container.querySelector('[data-role-card="coder"]')!
     expect(card.querySelector('[aria-expanded]')!.getAttribute('aria-expanded')).toBe('true')
-    // The info mark leaves the tab order with the rest of the controls (AC4).
-    expect(view.container.querySelector('[class*="infoHint"]')!.getAttribute('tabindex')).toBe('-1')
+    // Edit-control info marks leave the tab order (AC4); the chain explanation
+    // is information, not an edit control, so its badge stays reachable even
+    // when the surface is read-only.
+    const marks = [...view.container.querySelectorAll('[class*="infoHint"]')]
+    const chainHint = marks.find(mark => mark.getAttribute('aria-label') === en['roles.chain.tooltip'])!
+    const neighbour = marks.find(mark => mark !== chainHint)!
+    expect(chainHint.getAttribute('tabindex')).toBe('0')
+    expect(neighbour.getAttribute('tabindex')).toBe('-1')
   })
 })

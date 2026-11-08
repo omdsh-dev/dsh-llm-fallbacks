@@ -298,7 +298,7 @@ describe('per-chain row editors (pure round-trips)', () => {
 describe('role chain POINTER (指定降级链)', () => {
   it('rolesToRows keeps the pointer; rowsToRoles drops an empty one', () => {
     const rows = rolesToRows(v2Config().roles.list)
-    expect(rows[0]).toMatchObject({ id: 'coder', persona: 'Coder', chain: 'Auto', collapsed: false })
+    expect(rows[0]).toMatchObject({ id: 'coder', persona: 'Coder', chain: 'Auto', collapsed: true })
     expect(rowsToRoles([{ id: 'a', persona: '', chain: '', collapsed: false, personaOpen: false }]))
       .toEqual([{ id: 'a', persona: '' }])
     expect(rowsToRoles(rows)).toEqual(v2Config().roles.list)

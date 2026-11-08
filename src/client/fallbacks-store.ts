@@ -548,8 +548,9 @@ export function rolesToRows(roles: readonly FallbacksRole[]): RoleRow[] {
     id: role.id,
     persona: role.persona,
     chain: role.chain ?? '',
-    // Role cards default EXPANDED (the frozen mockup renders the editor).
-    collapsed: false,
+    // Role cards default COLLAPSED: the list stays scannable and every
+    // editor opens on demand (a new row starts collapsed too).
+    collapsed: true,
     personaOpen: false,
   }))
 }

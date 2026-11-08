@@ -358,15 +358,19 @@ function catalogOf(state: FallbacksSettingsState): CatalogLookup | undefined {
  * controls: the bubble is suppressed, the mark drops out of the tab order
  * (and its `:disabled` style dims it).
  *
+ * `id` lets a control point its `aria-describedby` at the mark's label when
+ * the control has no other description.
+ *
  * Placement contract (QC W-2 fix): the mark is always a **sibling** of the
  * label-text element — never nested inside a `<label>` or an
  * `aria-labelledby`-referenced node — so its aria-label can never leak into
  * a control/group accessible name. A click on the mark therefore has no
  * label-activation default action to cancel.
  */
-function InfoHint({ label, disabled = false }: { label: string; disabled?: boolean }): ReactNode {
+function InfoHint({ label, disabled = false, id }: { label: string; disabled?: boolean; id?: string }): ReactNode {
   return (
     <span
+      id={id}
       className={disabled ? `${css.infoHint} ${css.infoHintDisabled}` : css.infoHint}
       role="img"
       aria-label={label}
@@ -1831,7 +1835,10 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                 )}
                 <div className={css.ruleGrid}>
                   <div className={css.ruleCell}>
-                    <label className={css.ruleCellLabel} htmlFor={`fallbacks-role-chain-${index}`}>{t('roles.chain.label')}</label>
+                    <span className={css.fieldLabel}>
+                      <label className={css.ruleCellLabel} htmlFor={`fallbacks-role-chain-${index}`}>{t('roles.chain.label')}</label>
+                      <InfoHint id={`fallbacks-role-chain-hint-${index}`} label={t('roles.chain.tooltip')} />
+                    </span>
                     <select
                       id={`fallbacks-role-chain-${index}`}
                       className={`${css.input} ${css.selectInput}`}
@@ -1851,7 +1858,6 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                         <option value={row.chain}>{`${row.chain}${t('roles.chainMeta.unspecified')}`}</option>
                       )}
                     </select>
-                    <span className={css.hint} id={`fallbacks-role-chain-hint-${index}`}>{t('roles.chain.hint')}</span>
                   </div>
                 </div>
                 <div className={css.ruleGrid}>
