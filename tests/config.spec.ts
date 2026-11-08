@@ -17,6 +17,9 @@ import { unwrapConfig } from './support/unwrap-config.ts'
 import {
   defaultFallbacksConfig,
   detectLegacyKeys,
+  MIGRATED_CHAIN_ID,
+  MIGRATED_CHAIN_LABEL,
+  migrateLegacyConfig,
   isFallbackActive,
   validateFallbacksConfig,
   type FallbacksConfig,
@@ -463,5 +466,105 @@ describe('detectLegacyKeys — v1 two-block keys + older removals', () => {
       rootChain: [OFFICIAL_FLASH],
       roles: { default: 'reviewer', list: [{ id: 'a', chain: ['x/y'] }], rules: [] },
     })).toEqual(['rootChain', 'roles.default', 'roles.rules', 'roles.list[].chain'])
+  })
+})
+
+describe('migrateLegacyConfig (plan fallbacks-v1-auto-migration)', () => {
+  /** The LIVE profile shape, with the ids/personas replaced by synthetic ones. */
+  const liveShape = () => ({
+    triggerCodes: ['QUOTA', 'RATE_LIMIT', 'AUTH'],
+    rootChain: ['a/one', 'b/two', 'c/three', 'd/four', OFFICIAL_FLASH],
+    timeSlots: [],
+    roles: {
+      rules: [{ role: 'alpha' }],
+      default: 'alpha',
+      list: [
+        { id: 'alpha', persona: 'Alpha persona', permissions: { allow: [], deny: [] }, chain: ['c/three', 'b/two'], fallback: 'inherit-root' },
+        { id: 'beta', persona: 'Beta persona', chain: ['a/one'], fallback: 'inherit-root' },
+      ],
+    },
+  })
+
+  it('turns a v1 rootChain + top-level timeSlots into chain #0 Auto', () => {
+    const migrated = migrateLegacyConfig(liveShape())
+    expect(migrated.chains).toEqual([{
+      id: MIGRATED_CHAIN_ID,
+      label: MIGRATED_CHAIN_LABEL,
+      entries: ['a/one', 'b/two', 'c/three', 'd/four', OFFICIAL_FLASH],
+      timeSlots: [],
+    }])
+    // The route the user already selected keeps resolving.
+    expect(migrated.chains[0]!.id).toBe('Auto')
+    expect(migrated.chains[0]!.entries.at(-1)).toBe(OFFICIAL_FLASH)
+  })
+
+  it('keeps roles as identity rows and drops their v1 array chain + fallback', () => {
+    const migrated = migrateLegacyConfig(liveShape())
+    expect(migrated.roles.list).toEqual([
+      { id: 'alpha', persona: 'Alpha persona', permissions: { allow: [], deny: [] } },
+      { id: 'beta', persona: 'Beta persona' },
+    ])
+    expect(migrated.roles.list.every(role => role.chain === undefined)).toBe(true)
+    expect(migrated.roles.list.some(role => 'fallback' in role)).toBe(false)
+  })
+
+  it('drops roles.rules / roles.default / enabled', () => {
+    const migrated = migrateLegacyConfig({ ...liveShape(), enabled: false })
+    expect('rules' in migrated.roles).toBe(false)
+    expect('default' in migrated.roles).toBe(false)
+    expect('enabled' in migrated).toBe(false)
+  })
+
+  it('is idempotent: a v2 config passes through untouched', () => {
+    const v2: FallbacksConfig = {
+      ...defaultFallbacksConfig,
+      chains: [{ id: 'Auto', label: '默认链', entries: [OFFICIAL_FLASH], timeSlots: [] }],
+      roles: { list: [{ id: 'alpha', persona: 'Alpha', chain: 'Auto' }] },
+    }
+    expect(migrateLegacyConfig(v2)).toEqual(v2)
+    // …and migrating the migration changes nothing either.
+    expect(migrateLegacyConfig(migrateLegacyConfig(liveShape()))).toEqual(migrateLegacyConfig(liveShape()))
+  })
+
+  it('keeps a v2 chains list and only strips the v1 leftovers (mixed shape)', () => {
+    const migrated = migrateLegacyConfig({
+      ...liveShape(),
+      chains: [{ id: 'Coding', label: 'Coding', entries: ['x/1', OFFICIAL_FLASH], timeSlots: [] }],
+    })
+    expect(migrated.chains.map(chain => chain.id)).toEqual(['Coding'])
+    expect(migrated.roles.list.map(role => role.id)).toEqual(['alpha', 'beta'])
+    expect(migrated.roles.list.every(role => role.chain === undefined && !('fallback' in role))).toBe(true)
+  })
+
+  it('never throws on malformed input and degrades to the defaults', () => {
+    for (const junk of [undefined, null, 'nope', 42, [], { chains: 'nope', roles: 'nope', rootChain: 'nope' }]) {
+      const migrated = migrateLegacyConfig(junk)
+      expect(migrated.chains).toEqual([])
+      expect(migrated.roles).toEqual({ list: [] })
+      expect(migrated.triggerCodes).toEqual(defaultFallbacksConfig.triggerCodes)
+    }
+  })
+
+  it('does not migrate a rootChain when the v2 chains list already has entries', () => {
+    const migrated = migrateLegacyConfig({
+      chains: [{ id: 'Auto', label: '默认链', entries: [OFFICIAL_FLASH], timeSlots: [] }],
+      rootChain: ['a/one', OFFICIAL_FLASH],
+    })
+    expect(migrated.chains.map(chain => chain.id)).toEqual(['Auto'])
+    expect(migrated.chains[0]!.entries).toEqual([OFFICIAL_FLASH])
+  })
+
+  it('reports the RAW keys so the banner stays honest while the config is v2', () => {
+    const raw = liveShape()
+    expect(detectLegacyKeys(raw)).toEqual([
+      'rootChain',
+      'timeSlots',
+      'roles.default',
+      'roles.rules',
+      'roles.list[].fallback',
+      'roles.list[].chain',
+    ])
+    // …and the MIGRATED object carries none of them.
+    expect(detectLegacyKeys(migrateLegacyConfig(raw) as unknown as Record<string, unknown>)).toEqual([])
   })
 })

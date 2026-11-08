@@ -251,7 +251,10 @@ describe('parseFallbacksConfig (descriptor read, v2)', () => {
     expect(() => parseFallbacksConfig({ chains: [{ id: 1 }] })).toThrow(TypeError)
     expect(() => parseFallbacksConfig({ chains: [{ id: 'a', label: 'b', entries: 'x' }] })).toThrow(TypeError)
     expect(() => parseFallbacksConfig({ roles: { list: [{ persona: 'no id' }] } })).toThrow(/string id/)
-    expect(() => parseFallbacksConfig({ roles: { list: [{ id: 'a', chain: ['v1-array'] }] } })).toThrow(/string pointer/)
+    // A v1 ARRAY chain is NOT a malformed shape any more: an un-migrated host
+    // must not brick the card, so it reads as NOT SPECIFIED (plan
+    // fallbacks-v1-auto-migration T2).
+    expect(parseFallbacksConfig({ roles: { list: [{ id: 'a', chain: ['v1-array'] }] } }).roles.list[0]).toEqual({ id: 'a', persona: '' })
     expect(() => parseFallbacksConfig({ cooldownMs: 'x' })).toThrow(/number/)
     expect(() => parseFallbacksConfig({ revertPolicy: 'sometimes' })).toThrow(/cooldown-expiry\|never/)
     expect(() => parseFallbacksConfig({ presets: 'sometimes' })).toThrow(/bundled\|none/)

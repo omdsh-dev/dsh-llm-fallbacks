@@ -716,11 +716,11 @@ describe('containment (malformed stored user layer)', () => {
     expect(result.config.cooldownMs).toBe(defaultFallbacksConfig.cooldownMs)
   })
 
-  it('omits a schema key whose composed value is undefined (never present-as-undefined on the wire)', () => {
-    // The gateway result validator rejects undefined values, so `readConfig`
-    // must OMIT absent values instead of carrying them — a schema key whose
-    // composed value is `undefined` is dropped, it does not ride the wire as
-    // an own key with an undefined value (F-002, readConfig normalization).
+  it('never puts an undefined value on the wire — the migration fills the default', () => {
+    // The gateway result validator rejects undefined values. Since the read
+    // path runs `migrateLegacyConfig` first (plan fallbacks-v1-auto-migration),
+    // a schema key whose composed value is `undefined` comes back as its
+    // documented DEFAULT rather than as an own key holding undefined (F-002).
     const ctx = track(new Context())
     const gateway = new FallbacksConfigGateway(ctx, {
       source: (): FallbacksConfig => ({
@@ -730,7 +730,7 @@ describe('containment (malformed stored user layer)', () => {
     }, makeSeeds())
 
     const result = gateway.get()
-    expect('cooldownMs' in result.config).toBe(false)
+    expect(result.config.cooldownMs).toBe(defaultFallbacksConfig.cooldownMs)
     // The remaining schema keys still cross the wire with their values — and
     // the removed `enabled` key never does (not a schema key any more, T2).
     expect('enabled' in result.config).toBe(false)
@@ -827,14 +827,12 @@ describe('get legacyKeys detection (two-block-era leftovers)', () => {
     expect(gateway.get().legacyKeys).toEqual(['roles.default', 'roles.rules'])
     // The wire config itself is the new shape — legacy keys never cross.
     expect('rootChain' in gateway.get().config).toBe(false)
-    // Nested legacy keys are stripped too (reviewer T1 Important #1): the
-    // wire roles object carries only its declared list/rules fields — a
-    // consumer like Task 2's parseFallbacksConfig never misreads
-    // roles.default as a live config value. Absent fields stay omitted
-    // (wire boundary rule), so the legacy `{ default, rules }` object
-    // normalizes to `{ rules }` — no `default`, and no invented `list`.
+    // Nested legacy keys are stripped too: the wire roles object carries only
+    // its declared `list` — a consumer never misreads `roles.default` as a
+    // live config value, and the migration supplies the (empty) list.
     expect('default' in gateway.get().config.roles).toBe(false)
-    expect(Object.keys(gateway.get().config.roles)).toEqual([])
+    expect(Object.keys(gateway.get().config.roles)).toEqual(['list'])
+    expect(gateway.get().config.roles.list).toEqual([])
   })
 
   it('detects the removed roles.rules key (whole-family legacy)', () => {
@@ -927,6 +925,48 @@ describe('set/reset return post-write legacyKeys (W-1/F-1)', () => {
     })
     // The next get agrees (no flicker window).
     expect(gateway.get().legacyKeys).toEqual([])
+  })
+
+  it('a v1 composite config reads as migrated and clears its banner on one save', async () => {
+    const ctx = track(new Context())
+    await ctx.plugin(MemorySettings)
+    const settings = ctx.settings as unknown as MemorySettings
+    // The live shape: v1 rootChain + array role chain + fallback + rules, in the
+    // settings USER LAYER (the composed source the runtime and the card read).
+    // (The v1 ARRAY `chain` is exercised by the pure-function matrix in
+    // config.spec.ts: the MemorySettings double composes through the strict
+    // schema, which rejects that value — the real host's non-strict composition
+    // passes it through, which is exactly how the array reaches the card.)
+    settings.seed(FALLBACKS_PROFILE_ENTRY, {
+      rootChain: ['a/one', 'b/two', 'deepseek-official/deepseek-flash'],
+      roles: {
+        rules: [{ role: 'alpha' }],
+        list: [{ id: 'alpha', persona: 'Alpha persona', fallback: 'inherit-root' }],
+      },
+    })
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()), makeSeeds())
+    await waitRegistered(ctx)
+    await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
+
+    // READ: the wire config is v2 (chain #0 Auto, identity role), while the
+    // banner still reports the RAW leftovers.
+    const first = gateway.get()
+    expect(first.config.chains.map(chain => chain.id)).toEqual(['Auto'])
+    expect(first.config.chains[0]!.entries.at(-1)).toBe('deepseek-official/deepseek-flash')
+    expect(first.config.roles.list).toHaveLength(1)
+    expect(first.config.roles.list[0]).toMatchObject({ id: 'alpha', persona: 'Alpha persona' })
+    expect('chain' in first.config.roles.list[0]!).toBe(false)
+    expect('fallback' in first.config.roles.list[0]!).toBe(false)
+    expect(first.legacyKeys).toEqual(['rootChain', 'roles.rules', 'roles.list[].fallback'])
+
+    // ONE save persists v2 and retires the banner.
+    const saved = await gateway.set({ cooldownMs: 120_000 })
+    expect(saved.legacyKeys).toEqual([])
+    expect(gateway.get().legacyKeys).toEqual([])
+    expect(settings.get(FALLBACKS_PROFILE_ENTRY)).toEqual({
+      cooldownMs: 120_000,
+      roles: { list: [{ id: 'alpha', persona: 'Alpha persona' }] },
+    })
   })
 
   it('strips a third-party nested-legacy patch without touching foreign members', async () => {
