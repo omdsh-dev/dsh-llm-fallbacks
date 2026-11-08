@@ -1,40 +1,32 @@
 /**
- * Virtual `FallbacksChain/Auto` LLM adapter (plan fallbacks-virtual-chain
- * Task 1, technical pins P1–P3; PR #62 feedback round): a mount-only
- * catalog row that makes the configured effective chain selectable as the
- * session **primary** in the host model picker, without patching dsh or
- * dsh-TUI (web and TUI share the adapter catalog).
+ * Virtual `FallbacksChain` LLM adapter (named virtual chains, plan
+ * named-virtual-chains T2): one provider carrying N model rows — ONE per
+ * named chain, the row id BEING the chain id (picker selection is
+ * `FallbacksChain/<chain id>`), without patching dsh or dsh-TUI.
  *
- * Wiring (P2): `installFallbacksAdapter` installs ONE conditional
+ * Wiring: `installFallbacksAdapter` installs ONE conditional
  * `ctx.inject(['llm'])` child — absent `llm` service (test harness) is a
  * clean no-op, and fiber unload ⇒ the child's disposer unregisters the
  * route. Registration is an idempotent transition-reconcile on COMMITTED
- * config snapshots: register when nothing is configured → something is
- * (`isFallbackActive` — content presence, plan fallbacks-web-ux-alignment
- * T2), unregister on the reverse, driven by the settings `onChange` hook
- * (the returned reconcile thunk, wired by `apply()`) plus child activation.
- * The row is visible whenever something is configured — a non-conforming
- * all-day chain does NOT hide it (PR #62 feedback); conformance still gates
- * a successful delegate (`effectiveHeadOf` below refuses a non-conforming
- * all-day). The registration gate is `isFallbackActive` content presence
- * (`rootChain` / `timeSlots` / declared roles): a slot-row edit that flips
- * that gate (e.g. removing the only slot while `rootChain` and roles are
- * empty) intentionally churns registration — the content-presence contract
- * (plan fallbacks-web-ux-alignment T2), not churn to design away; do NOT
- * re-narrow the condition to ignore `timeSlots`. Conformance-only chain
- * edits still never churn (conformance gates the delegate, not the row).
+ * config snapshots: register when `chains` goes empty → non-empty
+ * (`isFallbackActive` = `chains.length > 0`), unregister on the reverse,
+ * driven by the settings `onChange` hook (the returned reconcile thunk,
+ * wired by `apply()`) plus child activation. A chain with empty or
+ * non-conforming `entries` still shows its row (conformance gates the
+ * delegate via {@link effectiveHeadOf}, not the row). One
+ * `llm.registerAdapter([FALLBACKS_PROVIDER], adapter)` call serves all rows.
  *
- * Adapter behavior (P1/P3, direction C): `listModels` advertises exactly the
- * one virtual row; `stream()` WALKS the session's chain (cooldown / failed-set
- * / switch cap / recovery bookkeeping) in `src/chain-walk.ts` — the walk is
- * injected at install and owns the pre-attempt guards, so this module stays
- * the catalog + metadata surface. `resolveModel` proxies the current effective
- * head's metadata when resolvable (modalities/context-window/reasoning follow
- * the head) with a permissive default otherwise — never throws.
- * `providerRetryPolicy` and `imageRequestPricing` mirror the same head for the
- * host-captured retry policy and the token meter — also never throwing.
+ * Adapter behavior: `listModels` advertises one row per chain;
+ * `stream()` WALKS the selected chain (cooldown / failed-set / switch cap /
+ * recovery bookkeeping) in `src/chain-walk.ts` — the walk is injected at
+ * install and owns the pre-attempt guards. `resolveModel` /
+ * `imageRequestPricing` resolve the chain FROM the `model` argument and
+ * follow its effective head (permissive default otherwise — never throw).
+ * `providerRetryPolicy` returns `undefined` (documented degradation): the
+ * host captures the policy ONCE per provider at registration, so the virtual
+ * route cannot mirror a per-chain head's policy — the host default applies.
  *
- * @module dsh-llm-fallbacks/virtual-adapter
+@module dsh-llm-fallbacks/virtual-adapter
  */
 
 import type { Context } from '@deepseek-ai/cordis'
@@ -48,22 +40,12 @@ import {
   type ResolvedRetryPolicy,
   type StreamChunk,
 } from '@deepseek-ai/dsh-llm'
-import { isFallbackActive, type FallbacksConfig } from './config.ts'
-import { routeOnAllowlist } from './route-allowlist.ts'
-import type { PolicyRoute } from './subagent-policy.ts'
+import { isFallbackActive, type FallbacksConfig, type NamedChain } from './config.ts'
 import { parseSelector, type Selector } from './selectors.ts'
 import { isAllDayConforming, resolveEffectiveChain, resolveSlotState } from './time-slots.ts'
 
 /** Provider route of the virtual adapter (exact string, spec lock). */
 export const FALLBACKS_PROVIDER = 'FallbacksChain'
-/**
- * Model id of the virtual catalog row (exact string, spec lock). "Auto" is
- * the hardcoded picker id (not i18n — user decision 2026-08-18). The
- * catalog `name` the host picker renders is dynamic — see
- * {@link pickerDisplayName} (`Auto: <model>[<slot>]`).
- */
-export const FALLBACKS_CHAIN_MODEL = 'Auto'
-
 /** One dispatchable exact head: `provider/model`. Wildcards are never seeds (P3). */
 export interface EffectiveHead {
   provider: string
@@ -73,26 +55,16 @@ export interface EffectiveHead {
 /**
  * The FIRST DISPATCHABLE exact head of a chain — the single definition of
  * "effective head" (F-001) shared by this module's metadata paths
- * (`pickerDisplayName` / `resolveModel` / `providerRetryPolicy` /
- * `imageRequestPricing`), the walk's head and served-route resolution
- * (`servedRouteOf` in `src/chain-walk.ts`), and the seam's mount gate
- * (`injectRoute` in `src/subagents-seam.ts`). Walks the SAME chain
- * `resolveEffectiveChain` produces, skipping entries that can never
+ * (`pickerDisplayName` / `resolveModel` / `imageRequestPricing`) and the
+ * walk's head resolution (`resolveWalk` in `src/chain-walk.ts`). Walks the
+ * SAME chain `resolveEffectiveChain` produces, skipping entries that can never
  * be dispatched: malformed selectors (config-warning path), `provider/*`
  * `provider/*` wildcards (no real pair), and self-routes back to
  * `FallbacksChain/*` (the P1 recursion guard). `undefined` when the chain
  * is empty or no entry is dispatchable.
- *
- * `allowedModels` (spec D1) additionally restricts the result to the host
- * subagent allowlist: a PLUGIN-originated route is only ever attempted on a
- * route the host authorizes, so the seam's mount gate and a plugin-originated
- * walk's start pass the enabled policy's list and an entry it excludes is
- * skipped like any other non-dispatchable entry. An empty intersection is
- * `undefined` — the caller declines the mount / refuses the walk.
  */
 export function firstDispatchableExactHead(
   chain: readonly string[],
-  allowedModels?: readonly PolicyRoute[],
 ): EffectiveHead | undefined {
   for (const entry of chain) {
     let selector: Selector
@@ -103,53 +75,42 @@ export function firstDispatchableExactHead(
     }
     if (selector.model === undefined) continue // wildcard: no real pair to delegate
     if (selector.provider === FALLBACKS_PROVIDER) continue // self-route: recursion guard
-    const head = { provider: selector.provider, model: selector.model }
-    if (allowedModels !== undefined && !routeOnAllowlist(head, allowedModels)) continue
-    return head
+    return { provider: selector.provider, model: selector.model }
   }
   return undefined
 }
 
 /**
- * The effective chain head at `now` (P1): the first DISPATCHABLE exact head
- * of the SAME `resolveEffectiveChain` the routing engine uses — thin
- * config+clock entry into the shared {@link firstDispatchableExactHead} (no
- * divergent skip/walk rules). `undefined` when the chain is empty or no
- * entry is dispatchable (wildcard, self-route to `FallbacksChain/*`,
- * malformed selector).
- *
- * Conformance gate (PR #62 feedback): the all-day `rootChain` must be
- * conforming (exactly one official model — Flash or Pro)
- * for a successful delegate —
- * a legacy multi-model (or empty) all-day chain earns no primary
- * semantics even though the picker row is visible. `resolveModel` then
- * falls back to the permissive default. The delegate side of that gate is the
- * chain walk's ROOT-origin rule (`UNDISPATCHABLE_EFFECTIVE_HEAD`); a subagent
- * walks its role chain instead, so the all-day shape never gates a child.
+ * The effective chain head of ONE named chain at `now`: the first
+ * DISPATCHABLE exact head of the SAME `resolveEffectiveChain` the walk uses —
+ * thin chain+clock entry into the shared {@link firstDispatchableExactHead}.
+ * `undefined` when the entries are empty or non-conforming (the tail must be
+ * exactly one official model), or no entry is dispatchable (wildcard,
+ * self-route to `FallbacksChain/*`, malformed selector). `resolveModel` then
+ * falls back to the permissive default; the delegate side of the conformance
+ * gate is the chain walk's `UNDISPATCHABLE_EFFECTIVE_HEAD`.
  */
-export function effectiveHeadOf(config: FallbacksConfig, now: Date): EffectiveHead | undefined {
-  if (!isAllDayConforming(config.rootChain)) return undefined
-  const chain = resolveEffectiveChain(config, now, config.tz ?? 'Asia/Shanghai')
-  return firstDispatchableExactHead(chain)
+export function effectiveHeadOf(chain: NamedChain, now: Date, tz = 'Asia/Shanghai'): EffectiveHead | undefined {
+  if (!isAllDayConforming(chain.entries)) return undefined
+  return firstDispatchableExactHead(resolveEffectiveChain(chain, now, tz))
 }
 
 /**
- * Host picker label: `Auto: <displayName>[<slot>]`.
- * Display name first so the trigger stays readable and platforms stay
- * distinguishable (catalog `name`, not the model id). Bare `Auto` when
- * there is no dispatchable head. Slot label from {@link resolveSlotState}.
- * @param modelDisplayName - catalog/resolved name; falls back to the id.
+ * Host picker label for one chain: `` `${chain.label}: <head>[<slot>]` ``.
+ * Bare `chain.label` when there is no dispatchable head. The label is
+ * user-editable and display-only; the model id is the chain id.
  */
 export function pickerDisplayName(
-  config: FallbacksConfig,
+  chain: NamedChain,
   now: Date = new Date(),
   modelDisplayName?: string,
+  tz = 'Asia/Shanghai',
 ): string {
-  const head = effectiveHeadOf(config, now)
-  if (head === undefined) return FALLBACKS_CHAIN_MODEL
-  const slot = resolveSlotState(config, now, config.tz ?? 'Asia/Shanghai')
+  const head = effectiveHeadOf(chain, now, tz)
+  if (head === undefined) return chain.label
+  const slot = resolveSlotState(chain, now, tz)
   const model = modelDisplayName !== undefined && modelDisplayName !== '' ? modelDisplayName : head.model
-  return `${FALLBACKS_CHAIN_MODEL}: ${model}[${slot.label}]`
+  return `${chain.label}: ${model}[${slot.label}]`
 }
 
 /** Catalog `name` for a head pair; id if the provider is not listed. */
@@ -189,30 +150,36 @@ export class FallbacksChainAdapter extends LlmAdapter {
     return { id: provider, name: FALLBACKS_PROVIDER }
   }
 
-  /** Advisory catalog: one virtual row; `name` is the live picker label. */
+  /** Advisory catalog: ONE row per named chain; `name` is the live picker label. */
   override async listModels(provider: string): Promise<readonly LlmModelInfo[]> {
     const config = this.readConfig()
     const now = new Date()
-    const head = effectiveHeadOf(config, now)
-    const display = head === undefined ? undefined : await resolveHeadDisplayName(this.getLlm(), head)
-    return [{
-      provider,
-      id: FALLBACKS_CHAIN_MODEL,
-      name: pickerDisplayName(config, now, display),
-    }]
+    const tz = config.tz ?? 'Asia/Shanghai'
+    return Promise.all(config.chains.map(async (chain) => {
+      const head = effectiveHeadOf(chain, now, tz)
+      const display = head === undefined ? undefined : await resolveHeadDisplayName(this.getLlm(), head)
+      return {
+        provider,
+        id: chain.id,
+        name: pickerDisplayName(chain, now, display, tz),
+      }
+    }))
   }
 
   /**
-   * Proxy the current effective head's model metadata when resolvable (P3):
-   * modalities/context-window/reasoning follow the head — the truthful
-   * answer for the CURRENT head. Permissive default otherwise; never throws.
+   * Model-scoped metadata: resolve the chain FROM the `model` argument (the
+   * chain id) and follow its effective head — modalities/context-window/
+   * reasoning follow the head, the truthful answer for the CURRENT head.
+   * Permissive default for an unknown chain id or an unresolvable head;
+   * never throws.
    */
   override async resolveModel(
     provider: string,
     model: string,
     signal?: AbortSignal,
   ): Promise<LlmResolvedModelInfo> {
-    const head = effectiveHeadOf(this.readConfig(), new Date())
+    const chain = this.readConfig().chains.find((entry) => entry.id === model)
+    const head = chain === undefined ? undefined : effectiveHeadOf(chain, new Date(), this.readConfig().tz ?? 'Asia/Shanghai')
     const llm = this.getLlm()
     if (head !== undefined && llm !== undefined) {
       try {
@@ -229,59 +196,34 @@ export class FallbacksChainAdapter extends LlmAdapter {
         }
       } catch {
         // Head metadata unresolvable (e.g. the head's provider is not
-        // registered) — fall through to the permissive default (P3).
+        // registered) — fall through to the permissive default.
       }
     }
     return { provider, id: model, name: model }
   }
 
   /**
-   * Route-accurate retry attribution: the virtual row declares no policy of
-   * its own — the virtual `provider` argument is intentionally ignored. The
-   * host captures `adapter.providerRetryPolicy(provider) ??
-   * resolveRetryPolicy(void 0, …)` ONCE, when a route is registered, so
-   * answering here with the SAME policy the concrete head route declared
-   * (e.g. a user's `llm-deepseek.retryPolicy`, including `mode: 'always'`)
-   * keeps retries behaving exactly as they do on the head `stream()`
-   * dispatches. Never throws: an unresolvable head, a vanished `llm`, or an
-   * unregistered head provider degrades to `undefined` — the host's own
-   * default. That last arm matters: the runtime's lookup THROWS `NO_ADAPTER`
-   * for an unknown provider, and this call happens inside the plugin's
-   * `registerAdapter`, so an escaping throw would take the whole virtual
-   * route down instead of just degrading its policy.
+   * DOCUMENTED DEGRADATION (named virtual chains): the adapter stays ONE
+   * `FallbacksChain` provider carrying N chain rows, but the host captures
+   * `adapter.providerRetryPolicy(provider)` ONCE per provider at
+   * registration, so the virtual route can no longer mirror its head's
+   * retry policy. It returns `undefined` — the host's own default applies.
    */
   override providerRetryPolicy(_provider: string): ResolvedRetryPolicy | undefined {
-    try {
-      const head = effectiveHeadOf(this.readConfig(), new Date())
-      // Defensive recursion guard (mirroring imageRequestPricing):
-      // `effectiveHeadOf` already refuses self-routes, so a
-      // `FallbacksChain/*` head is impossible — assert it anyway so a future
-      // resolution change can never re-enter the virtual adapter's own
-      // registration.
-      if (head === undefined || head.provider === FALLBACKS_PROVIDER) return undefined
-      return this.getLlm()?.providerRetryPolicy(head.provider)
-    } catch {
-      return undefined // unknown provider route → the host's own default
-    }
+    return undefined
   }
 
   /**
-   * Route-accurate image pricing: the virtual row has no
-   * pricing of its own — the virtual `provider`/`model` arguments are
-   * intentionally ignored. Resolves the SAME effective head `stream()`
-   * dispatches and delegates through the runtime lookup, so the token
-   * meter gets exactly the answer the concrete route's adapter would give
-   * (including `undefined`). Never throws: an unresolvable head, a
-   * vanished `llm`, or a throwing delegate degrades to `undefined` — the
-   * token meter's neutral estimate.
+   * Image pricing, model-scoped: resolve the chain FROM the `model`
+   * argument and delegate through the runtime lookup for its effective head
+   * (including `undefined`). Never throws: an unknown chain id, an
+   * unresolvable head, a vanished `llm`, or a throwing delegate degrades to
+   * `undefined` — the token meter's neutral estimate.
    */
-  override imageRequestPricing(_provider: string, _model: string): LlmImageRequestPricing | undefined {
+  override imageRequestPricing(_provider: string, model: string): LlmImageRequestPricing | undefined {
     try {
-      const head = effectiveHeadOf(this.readConfig(), new Date())
-      // Defensive recursion guard: `effectiveHeadOf` already refuses
-      // self-routes, so a `FallbacksChain/*` head is impossible — assert
-      // it anyway so a future resolution change can never recurse image
-      // pricing into the virtual adapter itself.
+      const chain = this.readConfig().chains.find((entry) => entry.id === model)
+      const head = chain === undefined ? undefined : effectiveHeadOf(chain, new Date(), this.readConfig().tz ?? 'Asia/Shanghai')
       if (head === undefined || head.provider === FALLBACKS_PROVIDER) return undefined
       return this.getLlm()?.imageRequestPricing(head.provider, head.model)
     } catch {
@@ -290,14 +232,12 @@ export class FallbacksChainAdapter extends LlmAdapter {
   }
 
   /**
-   * The virtual route's entry point (P1, direction C): the session's chain is
-   * WALKED (`src/chain-walk.ts`) — the walk owns the pre-attempt guards
-   * (`EMPTY_EFFECTIVE_CHAIN` / `UNDISPATCHABLE_EFFECTIVE_HEAD` /
-   * `LLM_UNAVAILABLE`, thrown synchronously before any chunk, so the runtime
-   * normalizes them exactly like an adapter throw) because only it can resolve
-   * WHICH chain the calling session walks: a subagent's role chain is not the
-   * root's all-day chain, so a root-only gate here would refuse a child that
-   * has a perfectly walkable role chain.
+   * The virtual route's entry point: `options.model` IS the chain id and the
+   * selected chain is WALKED (`src/chain-walk.ts`) — the walk owns the
+   * pre-attempt guards (`UNKNOWN_CHAIN` / `EMPTY_EFFECTIVE_CHAIN` /
+   * `UNDISPATCHABLE_EFFECTIVE_HEAD` / `LLM_UNAVAILABLE`, thrown synchronously
+   * before any chunk, so the runtime normalizes them exactly like an adapter
+   * throw).
    */
   override stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
     return this.walk(options)
@@ -342,7 +282,7 @@ export function installFallbacksAdapter(
       try {
         disposeAdapter = llm.registerAdapter([FALLBACKS_PROVIDER], adapter)
         registered = true
-        logger.info('llm-fallbacks: virtual adapter registered — FallbacksChain/Auto is selectable in the model picker')
+        logger.info('llm-fallbacks: virtual adapter registered — FallbacksChain/<chain id> rows are selectable in the model picker')
       } catch (error) {
         // Multi-fiber dedupe (P2, mirroring the service/gateway/typert
         // children): a later fiber applying over a shared context root hits
@@ -357,7 +297,7 @@ export function installFallbacksAdapter(
       disposeAdapter?.()
       disposeAdapter = undefined
       registered = false
-      logger.info('llm-fallbacks: virtual adapter unregistered — FallbacksChain/Auto hidden from the model picker')
+      logger.info('llm-fallbacks: virtual adapter unregistered — FallbacksChain rows hidden from the model picker')
     }
   }
 

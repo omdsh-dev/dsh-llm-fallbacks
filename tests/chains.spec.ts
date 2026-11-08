@@ -1,20 +1,15 @@
 /**
- * Chain resolution unit tests (plan fallbacks-role-runtime Task 1).
- *
- * Covers spec §7.2 concatenation semantics — `[...role.chain,
- * ...(fallback === 'none' ? [] : rootChain)]` (append-not-replace: role
- * entries first, rootChain tail), the built-in `inherit` role (rootChain,
- * silent), the unknown-role defense (rootChain + warn), wildcard entries
- * (keep failing model id, swap provider only),
- * entry-level skip logic (`resolveCandidate` with `modelExists`),
- * malformed-entry resilience, the caller-side candidate filter (cooldown /
- * failed-set / same-as-current / absent model id / too-small context window),
- * and the `hasWildcardEntry` probe on the same concatenated candidates.
+ * Chain resolution unit tests (per-chain entries, plan named-virtual-chains
+ * T2). Covers the entries walk semantics — order preserved, wildcard entries
+ * (keep failing model id, swap provider only), entry-level skip logic
+ * (`resolveCandidate` with `modelExists`), malformed-entry resilience, the
+ * caller-side candidate filter (cooldown / failed-set / same-as-current /
+ * absent model id / too-small context window), and the `hasWildcardEntry`
+ * probe on the same entries. Role concatenation, the built-in `inherit`
+ * role, and the unknown-role defense are DELETED with the two-block model.
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { FallbacksRole } from '../src/config.ts'
-import { INHERIT_ROLE_ID } from '../src/config.ts'
 import { CooldownStore } from '../src/cooldown.ts'
 import type { Selector } from '../src/selectors.ts'
 import {
@@ -29,49 +24,17 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-/** Declared-role fixture: defaults fill the required FallbacksRole fields. */
-function role(id: string, overrides: Omit<Partial<FallbacksRole>, 'id'> = {}): FallbacksRole {
-  return { id, persona: '', ...overrides }
-}
-
-describe('resolveChain — concatenation semantics (spec §7.2)', () => {
-  const rootChain = ['local/*']
-
-  it('uses rootChain when the role declares no chain (roleDef exists)', () => {
-    const roles = [role('coder')]
-    expect(resolveChain(roles, rootChain, 'coder', 'openai', 'gpt-4o').map((c) => c.raw)).toEqual([
-      'local/gpt-4o',
-    ])
-  })
-
-  it('appends rootChain after the role chain (inherit-root default): role entries first', () => {
-    const roles = [role('coder', { chain: ['mistral/*'] })]
-    expect(resolveChain(roles, rootChain, 'coder', 'openai', 'gpt-4o').map((c) => c.raw)).toEqual([
-      'mistral/gpt-4o',
-      'local/gpt-4o',
-    ])
-  })
-
-  it('uses only the role chain when fallback is "none"', () => {
-    const roles = [role('coder', { chain: ['mistral/*'], fallback: 'none' })]
-    expect(resolveChain(roles, rootChain, 'coder', 'openai', 'gpt-4o').map((c) => c.raw)).toEqual([
-      'mistral/gpt-4o',
-    ])
-  })
-
-  it('keeps entry order within the concatenation', () => {
-    const roles = [role('coder', { chain: ['a/x', 'b/y', 'c/z'] })]
-    expect(resolveChain(roles, rootChain, 'coder', 'openai', 'gpt-4o').map((c) => c.raw)).toEqual([
+describe('resolveChain — entries walk', () => {
+  it('keeps entry order', () => {
+    expect(resolveChain(['a/x', 'b/y', 'c/z'], 'openai', 'gpt-4o').map((c) => c.raw)).toEqual([
       'a/x',
       'b/y',
       'c/z',
-      'local/gpt-4o',
     ])
   })
 
   it('resolves wildcard entries to concrete selectors keeping the failing model id', () => {
-    const roles = [role('coder', { chain: ['anthropic/*'] })]
-    expect(resolveChain(roles, rootChain, 'coder', 'openai', 'gpt-4o')[0]).toEqual({
+    expect(resolveChain(['anthropic/*'], 'openai', 'gpt-4o')[0]).toEqual({
       provider: 'anthropic',
       model: 'gpt-4o',
       raw: 'anthropic/gpt-4o',
@@ -83,8 +46,7 @@ describe('resolveChain — concatenation semantics (spec §7.2)', () => {
     // a multi-slash model id must resolve as an exact candidate with the
     // raw entry preserved, and must not be existence-filtered as an exact
     // entry (only provider/*-origin candidates consult modelExists).
-    const roles = [role('coder', { chain: ['nvidia/minimaxai/minimax-m3'] })]
-    const candidates = resolveChain(roles, [], 'coder', 'openai', 'gpt-4o', undefined, () => false)
+    const candidates = resolveChain(['nvidia/minimaxai/minimax-m3'], 'openai', 'gpt-4o', undefined, () => false)
     expect(candidates.map((c) => c.raw)).toEqual(['nvidia/minimaxai/minimax-m3'])
     expect(candidates[0]).toEqual({
       provider: 'nvidia',
@@ -94,104 +56,46 @@ describe('resolveChain — concatenation semantics (spec §7.2)', () => {
   })
 
   it('skips malformed entries without throwing (they do not take effect)', () => {
-    const roles = [role('coder', { chain: ['bogus', 'provider/', 'openai/gpt-4o', ''] })]
-    expect(resolveChain(roles, rootChain, 'coder', 'openai', 'gpt-4o').map((c) => c.raw)).toEqual([
+    expect(resolveChain(['bogus', 'provider/', 'openai/gpt-4o', ''], 'openai', 'gpt-4o').map((c) => c.raw)).toEqual([
       'openai/gpt-4o',
-      'local/gpt-4o',
     ])
   })
 
-  it('returns an empty list when the concatenation is empty', () => {
-    // roleDef exists with an empty effective chain (fallback none, no root).
-    const roles = [role('coder', { fallback: 'none' })]
-    expect(resolveChain(roles, [], 'coder', 'openai', 'gpt-4o')).toEqual([])
+  it('returns an empty list for empty entries', () => {
+    expect(resolveChain([], 'openai', 'gpt-4o')).toEqual([])
   })
 
   it('forwards modelExists to wildcard entries (absent model ids skipped)', () => {
-    const roles = [role('coder', { chain: ['anthropic/*', 'local/*'] })]
-    const candidates = resolveChain(roles, [], 'coder', 'openai', 'gpt-4o', undefined, (provider) => provider === 'local')
+    const candidates = resolveChain(['anthropic/*', 'local/*'], 'openai', 'gpt-4o', undefined, (provider) => provider === 'local')
     expect(candidates.map((c) => c.raw)).toEqual(['local/gpt-4o'])
   })
-})
 
-describe('resolveChain — unknown role defense', () => {
-  it('falls back to rootChain and warns once for an unknown role id', () => {
+  it('never warns (no role resolution is left)', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    const rootChain = ['local/*']
-    expect(resolveChain([], rootChain, 'ghost', 'openai', 'gpt-4o').map((c) => c.raw)).toEqual([
-      'local/gpt-4o',
-    ])
-    expect(warn).toHaveBeenCalledTimes(1)
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('unknown role "ghost"'))
-  })
-
-  it('does not warn for a declared role (even with no chain)', () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    const roles = [role('coder')]
-    resolveChain(roles, ['local/*'], 'coder', 'openai', 'gpt-4o')
-    expect(warn).not.toHaveBeenCalled()
-  })
-})
-
-describe('resolveChain — built-in inherit role (T1 review Minor 1)', () => {
-  it('resolves inherit to rootChain without warning (legal built-in role, not a typo)', () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    const rootChain = ['local/*']
-    expect(resolveChain([], rootChain, INHERIT_ROLE_ID, 'openai', 'gpt-4o').map((c) => c.raw)).toEqual([
-      'local/gpt-4o',
-    ])
+    resolveChain(['a/x'], 'openai', 'gpt-4o')
     expect(warn).not.toHaveBeenCalled()
   })
 })
 
 describe('resolveChain — filter', () => {
   it('applies an optional caller filter to the ordered candidates', () => {
-    const roles = [role('coder', { chain: ['a/x', 'b/y', 'c/z'] })]
-    const filtered = resolveChain(roles, [], 'coder', 'openai', 'gpt-4o', (c) => c.provider !== 'b')
+    const filtered = resolveChain(['a/x', 'b/y', 'c/z'], 'openai', 'gpt-4o', (c) => c.provider !== 'b')
     expect(filtered.map((c) => c.raw)).toEqual(['a/x', 'c/z'])
   })
 })
 
-describe('hasWildcardEntry — probe on the concatenated candidates', () => {
-  const rootChain = ['local/*']
-
-  it('is true when the role chain has a provider/* entry', () => {
-    const roles = [role('coder', { chain: ['mistral/*'] })]
-    expect(hasWildcardEntry(roles, rootChain, 'coder')).toBe(true)
+describe('hasWildcardEntry — probe on the entries', () => {
+  it('is true when the entries have a provider/* entry', () => {
+    expect(hasWildcardEntry(['mistral/*'])).toBe(true)
   })
 
-  it('is true when only rootChain has a provider/* entry', () => {
-    const roles = [role('coder', { chain: ['anthropic/claude-3-5-sonnet'] })]
-    expect(hasWildcardEntry(roles, rootChain, 'coder')).toBe(true)
-  })
-
-  it('is false for exact-only entries (role chain + rootChain)', () => {
-    const roles = [role('coder', { chain: ['anthropic/claude-3-5-sonnet'] })]
-    expect(hasWildcardEntry(roles, ['local/gemini-1.5-pro'], 'coder')).toBe(false)
-  })
-
-  it('probes rootChain for an unknown role (defense)', () => {
-    expect(hasWildcardEntry([], rootChain, 'ghost')).toBe(true)
-    expect(hasWildcardEntry([], ['local/gemini-1.5-pro'], 'ghost')).toBe(false)
-  })
-
-  it('is false for a fallback-none role with an exact-only chain even when rootChain carries a wildcard (qc2 F-003)', () => {
-    // F-003/S-1 exactness: `fallback: 'none'` excludes rootChain from the
-    // concatenation, so a wildcard that can never reach the candidate list
-    // must not build a catalog probe — the probe is exact, not an
-    // over-approximation.
-    const roles = [role('coder', { chain: ['anthropic/claude-3-5-sonnet'], fallback: 'none' })]
-    expect(hasWildcardEntry(roles, rootChain, 'coder')).toBe(false)
-  })
-
-  it('is true for a fallback-none role whose own chain carries a wildcard', () => {
-    const roles = [role('coder', { chain: ['mistral/*'], fallback: 'none' })]
-    expect(hasWildcardEntry(roles, rootChain, 'coder')).toBe(true)
+  it('is false for exact-only entries', () => {
+    expect(hasWildcardEntry(['anthropic/claude-3-5-sonnet'])).toBe(false)
+    expect(hasWildcardEntry(['local/gemini-1.5-pro'])).toBe(false)
   })
 
   it('skips malformed entries without throwing', () => {
-    const roles = [role('coder', { chain: ['bogus', 'mistral/*'] })]
-    expect(hasWildcardEntry(roles, [], 'coder')).toBe(true)
+    expect(hasWildcardEntry(['bogus', 'mistral/*'])).toBe(true)
   })
 })
 

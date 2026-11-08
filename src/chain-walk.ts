@@ -4,8 +4,9 @@
  * `stream()` instead of on the `agent/request` / `agent/request-error`
  * waterfalls.
  *
- * One walk per `stream()` call: resolve the session's agent view, resolve the
- * role and the chain tail, then attempt the chain's heads in order. A
+ * One walk per `stream()` call: resolve the selected named chain and its
+ * slot-effective tail, then attempt the chain's heads in order. Root and
+ * subagent walks are the SAME shape — every walk is the selected chain. A
  * pre-output terminal `finish` whose failure code is a trigger code is
  * swallowed, booked (cooldown / recovery) and the walk advances; anything
  * else — a normal finish, an aborted finish, a non-trigger failure, or any
@@ -32,10 +33,9 @@
  * the per-call failed set and the switch cap live only for this walk
  * (`maxSwitchesPerStep` = switches per walk, attempts ≤ cap + 1).
  *
- * The pre-attempt guards (`EMPTY_EFFECTIVE_CHAIN` / `UNDISPATCHABLE_EFFECTIVE_HEAD`
- * / `LLM_UNAVAILABLE`) and the ROOT-only all-day conformance gate are owned
- * here, and `slotWinners` carries the 分时切换 rotation log — all of it needs the
- * session's resolved role/origin, which the adapter does not have.
+ * The pre-attempt guards (`UNKNOWN_CHAIN` / `EMPTY_EFFECTIVE_CHAIN` /
+ * `UNDISPATCHABLE_EFFECTIVE_HEAD` / `LLM_UNAVAILABLE`) are owned here, and
+ * `slotWinners` carries the per-(agent, chain) 分时切换 rotation log.
  *
  * @module dsh-llm-fallbacks/chain-walk
  */
@@ -52,25 +52,17 @@ import {
   createCandidateFilter,
   hasWildcardEntry,
   resolveChainViews,
-  roleChainEntries,
   selectCandidates,
   type AnnotatedCandidate,
   type FailingModel,
 } from './chains.ts'
-import type { FallbacksConfig } from './config.ts'
-import type { FallbackSwitchReason } from './events.ts'
+import type { FallbacksConfig, NamedChain } from './config.ts'
 import { escalatedCooldownMs } from './recovery.ts'
-import { firstAllowedCandidate, resolvedRoutes, routeOnAllowlist } from './route-allowlist.ts'
-import { resolveDeclaredRole } from './role-resolution.ts'
-import type { AgentLike } from './roles.ts'
 import { selectorKey, type Selector } from './selectors.ts'
 import type { FallbackStateStore } from './state.ts'
-import type { EffectivePolicy } from './subagent-policy.ts'
 import { resolveEffectiveChain, isAllDayConforming, resolveSlotState, type SlotRowConfig } from './time-slots.ts'
 import {
-  FALLBACKS_CHAIN_MODEL,
   FALLBACKS_PROVIDER,
-  effectiveHeadOf,
   firstDispatchableExactHead,
   type EffectiveHead,
 } from './virtual-adapter.ts'
@@ -89,6 +81,16 @@ export const EMPTY_EFFECTIVE_CHAIN_CODE = 'EMPTY_EFFECTIVE_CHAIN'
  * non-conforming all-day `rootChain` (the picker row's conformance gate).
  */
 export const UNDISPATCHABLE_HEAD_CODE = 'UNDISPATCHABLE_EFFECTIVE_HEAD'
+/**
+ * `LlmError` code: `options.model` names no declared chain — reachable only
+ * once a chain the session selected is deleted or renamed (the migrated
+ * default id `Auto` is unchanged, so an upgrade alone never hits this).
+ * Thrown synchronously before any chunk; the host surfaces a terminal error
+ * finish and the user re-selects in the picker. No silent fallback to
+ * another chain — picking the wrong named chain silently would be a
+ * data-routing surprise.
+ */
+export const UNKNOWN_CHAIN_CODE = 'UNKNOWN_CHAIN'
 /** `LlmError` code (defensive): the `llm` runtime disappeared mid-flight. */
 export const LLM_UNAVAILABLE_CODE = 'LLM_UNAVAILABLE'
 
@@ -347,41 +349,16 @@ function repairableControl(failure: LlmFailure, options: GenerateOptions): Repai
   return undefined
 }
 
-/**
- * The minimal agent view one walk needs (design §2.2): `GenerateOptions`
- * carries only `sessionId`, so the session's agent is read opportunistically
- * through the host `agents` registry. `undefined` when the id is absent or the
- * agent left the registry — treated as a root agent with no role (the
- * effective-chain walk still runs).
- */
-export interface AgentChainView {
-  /** `agent.session.header.origin`; a missing header is a root agent. */
-  origin: 'root' | 'subagent'
-  /** `agent.session.header.agentPreset` — the explicit role stage. */
-  agentPreset?: string
-  /** `agent.options` — the pair the rules stage matches (a virtual pair on this path). */
-  optionsRoute?: { provider: string; model: string }
-  sessionId: string
-}
-
-/** Everything one walk reads from the plugin wiring (design §6.1). */
+/** Everything one walk reads from the plugin wiring. */
 export interface ChainWalkDeps {
   readConfig(): FallbacksConfig
   getLlm(): LlmRuntime | undefined
-  resolveAgentView(sessionId: GenerateOptions['sessionId']): AgentChainView | undefined
   states: FallbackStateStore
-  /** The live `trimmed id → declared raw id` map (re-derived on settings change). */
-  roleIds(): ReadonlyMap<string, string>
-  /** The dispatch seam's record for one child — the dispatch-role stage. */
-  seamRecord(sessionId: SessionKey): { role?: string; virtualRouteInjected?: boolean } | undefined
-  /** The host subagent policy for one session: guarded read + fail-closed. */
-  policyFor(sessionId: SessionKey): EffectivePolicy
-  /** Record a plugin-originated switch the allowlist emptied (in-memory, card-only). */
-  recordBlocked?(sessionId: SessionKey, route: { provider: string; model: string }, reason: FallbackSwitchReason): void
   /**
-   * Per-agent last time-slot winner (P7 分时切换 marker): the caller owns the
-   * map (re-baselined on a settings change, cleared on dispose), the walk reads
-   * and writes it — the log only, never a failure decision. Absent ⇒ no log.
+   * Per-(agent, chain id) last time-slot winner (P7 分时切换 marker): the
+   * caller owns the map (re-baselined on a settings change, cleared on
+   * dispose), the walk reads and writes it — the log only, never a failure
+   * decision. Absent ⇒ no log.
    */
   slotWinners?: Map<string, { key: string; label: string }>
   log: {
@@ -452,7 +429,7 @@ function restoreEnvelopeProvenance(messages: DelegatedMessage[]): DelegatedMessa
     // one-shot user input carries `source?: never`), and only an assistant
     // message's `model` source names a provider/model pair to re-stamp.
     if (message.role !== 'assistant' || source?.kind !== 'model') return message
-    if (source.provider !== FALLBACKS_PROVIDER || source.model !== FALLBACKS_CHAIN_MODEL) return message
+    if (source.provider !== FALLBACKS_PROVIDER) return message
     const provenance = envelopeProvenance(source.replayState)
     if (provenance === undefined) return message
     changed = true
@@ -466,40 +443,12 @@ interface WalkStart {
   config: FallbacksConfig
   /** The walk's single clock read (slot resolution + rotation log agree). */
   now: Date
-  origin: 'root' | 'subagent'
-  role: string
-  rootTail: readonly string[]
+  chain: NamedChain
+  /** The slot-effective entries this walk attempts (head first). */
+  entries: readonly string[]
   head: EffectiveHead
   llm: LlmRuntime
   owner: SessionKey | undefined
-  seam: { role?: string; virtualRouteInjected?: boolean } | undefined
-}
-
-/** The agent shape {@link resolveDeclaredRole} matches rules against. */
-function agentLikeOf(view: AgentChainView | undefined): AgentLike {
-  return {
-    options: view?.optionsRoute,
-    session: { header: { origin: view?.origin ?? 'root', agentPreset: view?.agentPreset } },
-  }
-}
-
-/**
- * The route a `FallbacksChain/Auto` selection really SERVED, for the rules
- * stage's pair-wise matching (QC1 I-1 in the pre-C path): a child whose
- * recorded pair is the virtual row keeps matching a rule keyed on the real
- * chain head. `effectiveHeadOf` is the same head the picker row advertises, and
- * a non-conforming all-day chain yields `undefined` — no anchor, no widening.
- * Shared by the walk (`resolveWalk`) and the `/fallbacks` snapshot, so the
- * diagnostic surface resolves the role exactly as the run does.
- */
-export function servedRouteOf(
-  config: FallbacksConfig,
-  route: { readonly provider?: string; readonly model?: string } | undefined,
-  now: Date,
-): { provider: string; model: string } | undefined {
-  if (route?.provider !== FALLBACKS_PROVIDER || route.model !== FALLBACKS_CHAIN_MODEL) return undefined
-  const head = effectiveHeadOf(config, now)
-  return head === undefined ? undefined : { provider: head.provider, model: head.model }
 }
 
 /**
@@ -517,101 +466,76 @@ function slotWinnerKey(winner: SlotRowConfig | 'all-day'): string {
 }
 
 /**
- * P7 分时切换 detection, moved here from the deleted `agent/request` listener:
- * ROOT-origin walks only, gated on a conforming all-day and at least one slot
- * row (the gate every slot surface reads — `resolveSlotState` already reports
- * `'all-day'`, but the explicit gate keeps a legacy chain completely inert). A
- * winner different from this agent's last seen winner is a time-slot switch — a
- * ROUTING SEED, not a failure decision: info log only, no cooldown, no switch
- * count, no chain switch. A settings edit re-baselines the marker (the caller
- * clears the map), so a config change never logs as a rotation.
+ * P7 分时切换 detection, keyed per (agent, chain id): gated on THAT chain's
+ * conformance and at least one slot row (the gate every slot surface reads —
+ * `resolveSlotState` already reports `'all-day'`, but the explicit gate keeps
+ * a non-conforming chain completely inert). Every chain logs its own rotation.
+ * A winner different from this agent's last seen winner on this chain is a
+ * time-slot switch — a ROUTING SEED, not a failure decision: info log only,
+ * no cooldown, no switch count, no chain switch. A settings edit re-baselines
+ * the marker (the caller clears the map), so a config change never logs as a
+ * rotation.
  */
 function logSlotRotation(deps: ChainWalkDeps, start: WalkStart): void {
-  const { config, now, origin, owner } = start
+  const { config, now, chain, owner } = start
   const markers = deps.slotWinners
-  if (markers === undefined || owner === undefined || origin !== 'root') return
-  if (!isAllDayConforming(config.rootChain) || (config.timeSlots?.length ?? 0) === 0) return
-  const slot = resolveSlotState(config, now, config.tz ?? 'Asia/Shanghai')
+  if (markers === undefined || owner === undefined) return
+  if (!isAllDayConforming(chain.entries) || (chain.timeSlots?.length ?? 0) === 0) return
+  const slot = resolveSlotState(chain, now, config.tz ?? 'Asia/Shanghai')
+  const markerKey = owner + '\0' + chain.id
   const key = slotWinnerKey(slot.winner)
-  const previous = markers.get(owner)
+  const previous = markers.get(markerKey)
   if (previous !== undefined && previous.key !== key) {
     deps.log.info(
-      'llm-fallbacks: agent "%s" time-slot switch (分时切换): %s -> %s',
+      'llm-fallbacks: agent "%s" time-slot switch (分时切换) on chain "%s": %s -> %s',
       owner,
+      chain.id,
       previous.label,
       slot.label,
     )
   }
-  markers.set(owner, { key, label: slot.label })
+  markers.set(markerKey, { key, label: slot.label })
 }
 
 /**
- * Resolve the walk's start state, throwing the three pre-attempt `LlmError`s
- * (design §6.1.1) — synchronously, before any chunk, so the runtime's adapter
- * boundary normalizes them into one terminal error finish. The guards live HERE
- * (not in the adapter) because they need the session's ROLE: a subagent walks
- * its role chain, so root/all-day semantics would refuse a walkable child.
+ * Resolve the walk's start state, throwing the pre-attempt `LlmError`s —
+ * synchronously, before any chunk, so the runtime's adapter boundary
+ * normalizes them into one terminal error finish.
  */
 function resolveWalk(deps: ChainWalkDeps, options: GenerateOptions): WalkStart {
   const config = deps.readConfig()
-  // The walk's ONE clock read: the served-route anchor below, the chain tail
-  // and the slot-rotation log all read this instant, so a request landing on a
-  // slot boundary cannot anchor to two different slots.
+  // The walk's ONE clock read: the chain tail and the slot-rotation log read
+  // this instant, so a request landing on a slot boundary cannot anchor to
+  // two different slots.
   const now = new Date()
-  const view = deps.resolveAgentView(options.sessionId)
   const owner = options.sessionId
-  const seam = owner === undefined ? undefined : deps.seamRecord(owner)
-  const role = resolveDeclaredRole(agentLikeOf(view), config.roles.rules, deps.roleIds(), {
-    dispatchRole: seam?.role,
-    servedRoute: servedRouteOf(config, view?.optionsRoute, now),
-    warn: deps.log.warn,
-  })
-  // Chain tails per origin (§2.2, unchanged from the pre-C decision path):
-  // root walks the slot-effective all-day chain, a subagent the raw rootChain
-  // tail its role concatenates.
-  const origin = view?.origin ?? 'root'
-  const rootTail = origin === 'subagent'
-    ? config.rootChain
-    : resolveEffectiveChain(config, now, config.tz ?? 'Asia/Shanghai')
-  const entries = roleChainEntries(config.roles.list, rootTail, role)
+  const chain = config.chains.find((entry) => entry.id === options.model)
+  if (chain === undefined) {
+    throw new LlmError(
+      `llm-fallbacks: unknown virtual chain "${String(options.model)}" — re-select a chain in the model picker`,
+      UNKNOWN_CHAIN_CODE,
+    )
+  }
+  const entries = resolveEffectiveChain(chain, now, config.tz ?? 'Asia/Shanghai')
   if (entries.length === 0) {
     throw new LlmError(
       'llm-fallbacks: the effective chain is empty — the virtual FallbacksChain route has no head to delegate to',
       EMPTY_EFFECTIVE_CHAIN_CODE,
     )
   }
-  // Conformance gate (PR #62 feedback), ROOT walks only: a legacy non-conforming
-  // all-day chain earns no delegate even though the picker row is visible. A
-  // subagent walks its ROLE chain, so the all-day shape must never refuse it.
-  if (origin === 'root' && !isAllDayConforming(config.rootChain)) {
+  // Conformance gate (PR #62 semantics, per chain): a non-conforming entries
+  // tail earns no delegate even though the picker row is visible. Same gate
+  // for every walk — there is no origin split any more.
+  if (!isAllDayConforming(chain.entries)) {
     throw new LlmError(
-      'llm-fallbacks: the all-day chain is not conforming (exactly one official model required) — refusing to delegate',
+      'llm-fallbacks: the chain is not conforming (exactly one official model required) — refusing to delegate',
       UNDISPATCHABLE_HEAD_CODE,
     )
   }
-  // Allowlist admission (spec D1, the mount gate's counterpart): the FIRST
-  // attempt of a plugin-originated walk is a plugin-originated route just like
-  // every switch, so the head is the chain's first route ON the host
-  // allowlist — which is also what the cooled-head re-entry below may resume
-  // at. `unprovable` is a pre-attempt REFUSAL, never "no admission": the mount
-  // gate declines that state and the switch path fails closed, so a first
-  // attempt the plugin cannot prove stays undispatchable; an empty
-  // intersection is refused here too.
-  const policy = owner !== undefined && seam?.virtualRouteInjected === true ? deps.policyFor(owner) : undefined
-  if (policy?.state === 'unprovable') {
-    throw new LlmError(
-      'llm-fallbacks: the subagent model-selection policy is unprovable — refusing to delegate the FallbacksChain call',
-      UNDISPATCHABLE_HEAD_CODE,
-    )
-  }
-  const dispatchable = firstDispatchableExactHead(entries)
-  const allowedModels = policy?.state === 'enabled' ? policy.allowedModels : undefined
-  const head = allowedModels === undefined ? dispatchable : firstDispatchableExactHead(entries, allowedModels)
+  const head = firstDispatchableExactHead(entries)
   if (head === undefined) {
     throw new LlmError(
-      dispatchable === undefined
-        ? 'llm-fallbacks: the effective chain head cannot be dispatched (wildcard, malformed, or self-route) — refusing to delegate'
-        : 'llm-fallbacks: every dispatchable route of the effective chain is outside the subagent allowlist — refusing to delegate',
+      'llm-fallbacks: the effective chain head cannot be dispatched (wildcard, malformed, or self-route) — refusing to delegate',
       UNDISPATCHABLE_HEAD_CODE,
     )
   }
@@ -624,7 +548,7 @@ function resolveWalk(deps: ChainWalkDeps, options: GenerateOptions): WalkStart {
       LLM_UNAVAILABLE_CODE,
     )
   }
-  return { config, now, origin, role, rootTail, head, llm, owner, seam }
+  return { config, now, chain, entries, head, llm, owner }
 }
 
 /**
@@ -644,14 +568,6 @@ interface Advance {
   /** The next attempt target; absent when no candidate survives. */
   target?: EffectiveHead
   candidates: string[]
-  /**
-   * Injected walks only, from the SAME fresh policy read this expansion used:
-   * does it still admit the route the expansion started from? A cooled-head
-   * re-entry was admitted at resolve time, BEFORE this expansion's catalog
-   * awaits, so it must not resume at a route the policy has since revoked.
-   * `undefined` = no policy proof (not injected, or policy off).
-   */
-  currentAdmitted?: boolean
 }
 
 /**
@@ -663,7 +579,7 @@ async function* walk(
   start: WalkStart,
   options: GenerateOptions,
 ): AsyncIterable<StreamChunk> {
-  const { config, role, rootTail, head, llm, owner } = start
+  const { config, chain, head, llm, owner } = start
   // P7 分时切换 log — a routing seed observation, never a failure decision.
   logSlotRotation(deps, start)
   // §3.2 adaptation: before each dispatch the request is narrowed to what THAT
@@ -720,39 +636,28 @@ async function* walk(
    * Expand the chain from the route that just failed and return the next
    * attempt target, or `undefined` when nothing survives (chain exhausted).
    *
-   * Runs per failure — exactly where the pre-C decision path ran, so the
-   * filters keep their old meaning: `same-as-current` is the route that just
-   * failed, cooldown is the cross-call memory, the per-call failed set is the
-   * walk's own memory, the wildcard probe applies to `provider/*` entries
-   * only, and the context-window filter exists only for a
-   * `CONTEXT_WINDOW_EXCEEDED` trigger. `from.provider/model` also anchors
-   * wildcard expansion: `provider/*` keeps the request's model id and swaps
-   * only the provider.
-   *
-   * `blockedReason` is the reason a would-be switch was decided — present only
-   * for a failure-triggered advance, so a blocked-switch record never claims a
-   * trigger failure that did not happen (a cooled-head re-entry advances on
-   * cross-call cooldown memory alone).
+   * Runs per failure. The filters keep their meaning: `same-as-current` is
+   * the route that just failed, cooldown is the cross-call memory, the
+   * per-call failed set is the walk's own memory, the wildcard probe applies
+   * to `provider/*` entries only, and the context-window filter exists only
+   * for a `CONTEXT_WINDOW_EXCEEDED` trigger. `from.provider/model` also
+   * anchors wildcard expansion: `provider/*` keeps the request's model id and
+   * swaps only the provider.
    */
-  const advanceFrom = async (
-    from: EffectiveHead,
-    failureCode?: string,
-    blockedReason?: FallbackSwitchReason,
-  ): Promise<Advance | undefined> => {
+  const advanceFrom = async (from: EffectiveHead, failureCode?: string): Promise<Advance | undefined> => {
     const { all, wildcard } = resolveChainViews(
-      config.roles.list,
-      rootTail,
-      role,
+      start.entries,
       from.provider,
       from.model,
       deps.log.warn,
     )
     // Recursion guard (§6.1.2): an entry that routes back into this adapter is
-    // not a candidate at all — never dispatched, never annotated.
+    // not a candidate at all — never dispatched, never annotated. Correctly
+    // treats `FallbacksChain/<other-chain-id>` entries as self-routes too.
     const own = all.map((candidate) => candidate.provider !== FALLBACKS_PROVIDER)
     const candidates = all.filter((_, index) => own[index])
     const wildcards = wildcard.filter((_, index) => own[index])
-    const exists = hasWildcardEntry(config.roles.list, rootTail, role)
+    const exists = hasWildcardEntry(start.entries)
       ? await makeModelExists(llm, [...new Set(candidates.map((candidate) => candidate.provider))])
       : undefined
     const contextWindowOf = failureCode === CONTEXT_WINDOW_EXCEEDED_CODE
@@ -768,60 +673,12 @@ async function* walk(
     const failed = { has: (key: string) => failedKeys.has(key) }
     const filter = createCandidateFilter({ current: from, cooldown, failed, minContextWindow, contextWindowOf })
     const surviving = selectCandidates(candidates, wildcards, filter, exists)
-    // §2 行为可见性: the log shows the attempt order AND why each candidate was
-    // skipped; survivors (including the target) are unlabelled. A survivor the
-    // host allowlist excludes gets that label in the policy branch below.
+    // 行为可见性: the log shows the attempt order AND why each candidate was
+    // skipped; survivors (including the target) are unlabelled.
     const annotated = annotateCandidates(candidates, surviving, { current: from, cooldown, failed, minContextWindow, contextWindowOf })
     const describeCandidates = (list: readonly AnnotatedCandidate[]): string[] => list.map(({ candidate, skip }) => skip === undefined
       ? `${candidate.provider}/${candidate.model}`
       : `${candidate.provider}/${candidate.model} (skipped: ${skip})`)
-
-    // §3.1 step 2 / spec D1: a seam-injected child is a PLUGIN-originated
-    // route, so its switches are intersected with the host allowlist in
-    // candidate order; an empty intersection is recorded and exhausts the
-    // walk, and an unprovable policy fails closed (no switch it cannot prove).
-    if (start.seam?.virtualRouteInjected === true && owner !== undefined) {
-      const policy = deps.policyFor(owner)
-      if (policy.state === 'unprovable') {
-        deps.log.warn(
-          'llm-fallbacks: agent "%s" subagent model-selection policy is on but unreadable — no fallback switch (a cooled-head re-entry is refused)',
-          owner,
-        )
-        return { candidates: describeCandidates(annotated), currentAdmitted: false }
-      }
-      if (policy.state === 'enabled') {
-        const currentAdmitted = routeOnAllowlist(from, policy.allowedModels)
-        const permitted = new Set(
-          surviving
-            .filter((candidate) => candidate.model !== undefined
-              && routeOnAllowlist({ provider: candidate.provider, model: candidate.model }, policy.allowedModels))
-            .map((candidate) => selectorKey(candidate.provider, candidate.model)),
-        )
-        const labelled = annotated.map((entry) => entry.skip === undefined
-          && !permitted.has(selectorKey(entry.candidate.provider, entry.candidate.model))
-          ? { candidate: entry.candidate, skip: 'allowlist' as const }
-          : entry)
-        const allowed = firstAllowedCandidate(resolvedRoutes(surviving), policy.allowedModels)
-        if (allowed === undefined) {
-          const wouldBe = surviving[0]
-          if (wouldBe?.model !== undefined) {
-            deps.log.warn(
-              'llm-fallbacks: agent "%s" fallback switch %s/%s blocked: resolved candidates are all outside the subagent allowlist — no switch',
-              owner,
-              wouldBe.provider,
-              wouldBe.model,
-            )
-            // A cooled-head re-entry has no failure reason to record: only a
-            // failure-triggered advance carries one.
-            if (blockedReason !== undefined) {
-              deps.recordBlocked?.(owner, { provider: wouldBe.provider, model: wouldBe.model }, blockedReason)
-            }
-          }
-          return { candidates: describeCandidates(labelled), currentAdmitted }
-        }
-        return { target: allowed, candidates: describeCandidates(labelled), currentAdmitted }
-      }
-    }
     const first: Selector | undefined = surviving[0]
     if (first?.model === undefined) return { candidates: describeCandidates(annotated) }
     return { target: { provider: first.provider, model: first.model }, candidates: describeCandidates(annotated) }
@@ -831,24 +688,11 @@ async function* walk(
   // in which case the walk resumes at the next surviving candidate (the
   // llm-retry re-entry contract). A chain whose every candidate is cooled has
   // no replacement: the head is still attempted, so a request is never left
-  // without an answer. For a plugin-originated walk that fallback holds only
-  // while the FRESH policy still admits the head: it was admitted at resolve
-  // time, but `advanceFrom` awaits the catalog BEFORE it re-reads the policy,
-  // so an allowlist that narrowed (or turned unprovable) inside that window
-  // must refuse — never re-dispatch a route the operator has since revoked.
+  // without an answer.
   let target: EffectiveHead
   if (isCooled(selectorKey(head.provider, head.model))) {
     const advance = await advanceFrom(head)
-    if (advance?.target !== undefined) {
-      target = advance.target
-    } else if (advance?.currentAdmitted === false) {
-      throw new LlmError(
-        'llm-fallbacks: the subagent model-selection policy no longer admits the chain head — refusing to delegate the FallbacksChain call',
-        UNDISPATCHABLE_HEAD_CODE,
-      )
-    } else {
-      target = head
-    }
+    target = advance?.target ?? head
   } else {
     target = head
   }
@@ -865,11 +709,11 @@ async function* walk(
       state.recovery.tryMarkProbeLogged(key)
     ) {
       deps.log.info(
-        'llm-fallbacks: agent "%s" half-open probe %s/%s (role=%s, reason=%s)',
+        'llm-fallbacks: agent "%s" half-open probe %s/%s (chain=%s, reason=%s)',
         owner ?? '',
         target.provider,
         target.model,
-        role,
+        chain.id,
         'trigger-code',
       )
     }
@@ -970,20 +814,20 @@ async function* walk(
     bookFailure(target, swallowed.code)
     // §3.1 step 4: no surviving candidate, or the switch cap reached — the
     // last attempt's terminal failure is re-emitted verbatim.
-    const next = switches < config.maxSwitchesPerStep ? await advanceFrom(target, swallowed.code, 'trigger-code') : undefined
+    const next = switches < config.maxSwitchesPerStep ? await advanceFrom(target, swallowed.code) : undefined
     if (next === undefined || next.target === undefined) {
       yield swallowed.chunk
       return
     }
     switches += 1
     deps.log.info(
-      'llm-fallbacks: agent "%s" fallback switch (降级切换) %s/%s -> %s/%s (role=%s, reason=%s, candidates=%o)',
+      'llm-fallbacks: agent "%s" fallback switch (降级切换) %s/%s -> %s/%s (chain=%s, reason=%s, candidates=%o)',
       owner ?? '',
       target.provider,
       target.model,
       next.target.provider,
       next.target.model,
-      role,
+      chain.id,
       'trigger-code',
       next.candidates,
     )
