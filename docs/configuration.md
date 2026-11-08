@@ -88,12 +88,7 @@ Invalid/unknown entries (missing separator, empty segment, wildcard inside a mod
 
 ## Role resolution and chain composition
 
-**Role resolution** runs in TWO ordered stages (first hit wins):
-
-1. **Explicit** — the session's `agentPreset` header value, trimmed, matches a declared role id → that role. The reserved `'inherit'` and any undeclared preset are never dispatchable explicit roles.
-2. **Dispatch-declared role** — the role the dispatch seam resolved from the child prompt's `**Execute as**: <id>` header, trimmed and looked up in the live declared-role map. An absent header, the reserved `'inherit'`, or a since-deleted role fall through silently.
-
-Neither stage resolves → **NOT SPECIFIED**: no role, no persona delivery, and (without a chain pointer) no plugin intervention.
+**Role resolution** has ONE source, read at dispatch: the role the dispatch seam resolves from the child prompt's `**Execute as**: <id>` header (`resolveDeclaredRoleFromAssignment` in `src/subagents-seam.ts`), trimmed and looked up in the live declared-role map. An absent header, the reserved `'inherit'`, or a since-deleted role resolves to nothing, silently — **NOT SPECIFIED**: no role, no persona delivery, and (without a chain pointer) no plugin intervention.
 
 **Chain composition** — a walk's candidate chain is the SELECTED chain's slot-effective entries:
 
@@ -105,9 +100,9 @@ Candidate filtering (skipped on hit): the same-as-current route, in cooldown (pe
 
 ## Subagent role chain stamping
 
-**Role resolution** runs inside the dispatch seam (at spawn), in the two stages above. The seam then stamps the role's named chain onto the child — `request.agentOptions = { provider: 'FallbacksChain', model: <role.chain> }` (rc.1 merges these over the parent's route when the child is created) — when **all four** conditions hold:
+**Role resolution** runs inside the dispatch seam (at spawn), from the declared header above. The seam then stamps the role's named chain onto the child — `request.agentOptions = { provider: 'FallbacksChain', model: <role.chain> }` (rc.1 merges these over the parent's route when the child is created) — when **all four** conditions hold:
 
-1. a declared role resolved (explicit preset or the `**Execute as**` header);
+1. the `**Execute as**` header resolved a declared role;
 2. that role's `chain` is non-empty AND names a declared `chains[].id` (an undeclared pointer behaves as NOT SPECIFIED — one startup warn, the child inherits the delegating agent's route);
 3. the request carries **no** explicit `agentOptions.provider` / `agentOptions.model` — an explicit route is **authorized** and is never touched;
 4. the backend is **local** — an external (acp) child keeps pure inheritance.
@@ -169,9 +164,11 @@ Whenever the plugin is active (`chains` non-empty — conformance is NOT part of
 
 ## Time slots (分时切换)
 
-Time slots are the wall-clock peak/valley model: each slot row — a frozen UTC+8 preset (Liang Peak / Liang Valley / GLM Peak / GLM Valley) or a custom window — carries its own fallback chain, and the first matching row becomes the effective root chain while the all-day chain stays as the last resort (see [docs/features.md](features.md#time-slots)).
+Time slots are the wall-clock peak/valley model: each slot row — a frozen UTC+8 preset (Liang Peak / Liang Valley / GLM Peak / GLM Valley) or a custom window — carries its own entries, the first matching row becomes that chain's effective entries for the next request, and the chain's own `entries` stay as the last resort (see [docs/features.md](features.md#time-slots)).
 
-![Time slots](assets/screenshot-1-en.png)
+![The Fallbacks settings card: one tab per chain, each with its own Time slots (分时槽设置) → Default fallback chain (默认降级链) → Default model (默认模型) blocks and Discard/Save pair](assets/card-en.svg)
+
+The figure shows the shipped card's structure: a **tab per chain** (`＋` adds one, `⋯` renames the label or deletes the chain), the selected tab's Chain name (链名称) field, the per-chain blocks **Time slots (分时槽设置) → Default fallback chain (默认降级链) → Default model (默认模型)**, and that chain's own Discard/Save pair (hint: "Saves this chain only: selectors · tail · time slots · name"). The Subagents (子代理) section renders one collapsed role card per role with its own save pair. The card also has a collapsible Advanced options (高级选项) disclosure below the role list (not shown in this figure).
 
 Time-slot rows are configured PER CHAIN (`chains[].timeSlots`) and rotate that chain's effective entries by wall-clock windows: the resolver (`resolveEffectiveChain` in `src/time-slots.ts`) walks the chain's rows top-to-bottom — the FIRST row whose window contains `now` (in the config-level `tz`, default `Asia/Shanghai`) wins and its `chain` **replaces** the chain's `entries` (never concatenated); no match → the chain's own `entries`. A non-conforming `entries` tail keeps the rows inert (the delegate gate every slot surface reads). Two chains never share slot state: each resolves against its own rows/entries only, and the rotation log is keyed per (agent, chain).
 
@@ -285,7 +282,7 @@ If you would rather see it in text, the table below is the same transformation; 
 | top-level `timeSlots: [...]` | Move the rows into that chain's `timeSlots` (the row shape is unchanged) |
 | `roles.list[].chain: [...]` (an inline array — the v1 ARRAY form) | **Delete the inline array**; write a pointer instead (`chain: '<a chains[].id>'`) or create a chain for it |
 | `roles.list[].fallback: 'inherit-root' \| 'none'` | **Delete this field** — there is no root append any more; point the role at a chain that already ends the way you want |
-| `roles.rules: [...]` (all rule matching) | **Delete the whole key** — rules are gone; a child's chain is decided by its role's `chain` pointer (declared via `**Execute as**`/`agentPreset`) or by pure inheritance |
+| `roles.rules: [...]` (all rule matching) | **Delete the whole key** — rules are gone; a child's chain is decided by its role's `chain` pointer (declared via the `**Execute as**` header) or by pure inheritance |
 | `roles.list[].id` / `persona` | Unchanged |
 | `prompt` / `permissions` | Still schema-reserved; no UI and no runtime consumption; writing them in YAML does not change fallback behavior |
 | (no old counterpart) chain `id` = anything | Ids are case-sensitive and MAY be uppercase (`Auto` is the conventional migrated default); `/^[A-Za-z0-9][A-Za-z0-9-]{0,31}$/` |
@@ -317,7 +314,7 @@ So one save is the supported way to clean a v1 section — no YAML surgery requi
 ## Web plugin-config card usage
 
 - **Entry**: web settings GUI → Settings → **Plugin Settings** page → **Fallbacks card** (rc.7 keyed slot: key `fallbacks`, the settings namespace the card edits, rendered after the bash / agent-loop / web-search / advisor cards in registration order; the card replaces the old standalone Settings navigation page).
-- **Flat always-open card (the official Plugins-page form language)**: the card renders its whole form unconditionally in any state — first open, loading, error — with no collapsible chrome (no header button, no chevron, no unsaved pill) and **no feature switch** (the config-level `enabled` key is removed; the Plugins-page row toggle is the master switch). The 主代理 / 子代理 / 高级选项 headings are flat, non-collapsible section markers. The config comes from the gateway channel `get` (`present` when it succeeds); when `get` fails / the channel is unreachable, the always-visible informational notice renders **flat atop the form** and the card stays the usable last-known skeleton (failures are reported truthfully, see below).
+- **Always-available card, no feature switch**: the card renders its form in any state — first open, loading, error — with **no feature switch** (the config-level `enabled` key is removed; the Plugins-page row toggle is the master switch). Its sections are Virtual chains (虚拟链) / Subagents (子代理) / Advanced options (高级选项): the chain tab strip below is the card's shape, role cards start collapsed, and Advanced options (高级选项) is a collapsible disclosure (see the bullets below). The config comes from the gateway channel `get` (`present` when it succeeds); when `get` fails / the channel is unreachable, the informational notice renders atop the form and the card stays the usable last-known skeleton (failures are reported truthfully, see below).
 - **Legacy banner**: a non-empty `legacyKeys` in the `get` response → a migration banner (zh/en) renders at the top of the card body, pointing at this document's migration table; it does not block editing or touch disk.
 - **Readable labels**: enumerable config items show readable labels instead of raw enum values — `RATE_LIMIT` → "Rate limit (429)", `QUOTA` → "Quota exceeded", `AUTH` → "Auth / permission failure"; `cooldown-expiry` → "Return to the primary model", `never` → "Keep the fallback model (until session end)". Numeric fields show the default value beside them; other fields show the currently effective value (the default when unset). The **Advanced options** (高级选项) group (`triggerCodes` / `revertPolicy` / `cooldownMs` / `maxSwitchesPerStep`) is a collapsed-by-default disclosure, forced open in a read-only view (`!writable`).
 - **虚拟链 group — TAB-PER-CHAIN (the frozen mockup)**: one underline tab per chain on the 0.5px l2 hairline — the active tab's label renders in label-primary with a 2px brand underline; a dirty tab shows a pip, a tab with a validation error a red `!`. A `＋` button adds a chain (a fresh unique id is generated; the label is set via the tab); a `⋯` button opens the chain menu — rename the **label** (the id is immutable and shown in the menu so a rename can never orphan a saved picker selection) and delete the chain (at least one chain remains). Many tabs scroll horizontally with edge fades. The tab body carries the SHIPPED block order **分时槽设置 → 默认降级链 → 默认模型（链尾）** — 分时 rows as before (preset picker / custom rows / drag-reorder, all per chain), 默认降级链 as the provider/model selector list, 默认模型 as the official Flash | Pro exclusive radio that owns the LAST entry — plus a **per-tab Discard/Save** footer that writes ONLY that chain (a sibling chain's dirt never arms this Save, and validation errors render under their owning block).
@@ -349,7 +346,7 @@ A walk runs on a session whose model selection routes to `FallbacksChain/<chain 
 
 ### Chain walk
 
-One walk per `stream()` call of the virtual `FallbacksChain/Auto` route (`src/chain-walk.ts`):
+One walk per `stream()` call of the selected chain's `FallbacksChain/<chain id>` route (`src/chain-walk.ts`):
 
 1. **Start**: resolve the SELECTED chain (the `options.model` argument IS the chain id — an unknown id throws `UNKNOWN_CHAIN` synchronously) and its slot-effective entries; throw `UNKNOWN_CHAIN` / `EMPTY_EFFECTIVE_CHAIN` / `UNDISPATCHABLE_EFFECTIVE_HEAD` / `LLM_UNAVAILABLE` synchronously when no attempt can start. Every walk requires its own chain's tail to be conforming — there is no origin split.
 2. **First attempt**: the chain head — or, when cross-call memory has the head on cooldown, the next surviving candidate (the llm-retry re-entry contract). A chain whose candidates are all cooled still attempts the head, so a request is never left without an answer.
@@ -391,11 +388,11 @@ With no configured content (empty `chains` — the only first-run state), or a s
 
 ### Relationship with llm-retry
 
-This plugin **does not modify** llm-retry's or providers' `retryPolicy`, and it registers no listener on the request waterfalls — llm-retry owns the request-error waterfall exclusively. The two compose through the walk: a retryable failure reaches this plugin only as llm-retry's re-entry, and that fresh request starts past the cooled head. The virtual row's `providerRetryPolicy` mirrors the head's policy, so a user's retry configuration applies on the virtual route exactly as it does on the real head. On plugin unload (HMR/dispose) the injected walk unloads with the fiber and all per-agent state is cleared entirely — no residual state.
+This plugin **does not modify** llm-retry's or providers' `retryPolicy`, and it registers no listener on the request waterfalls — llm-retry owns the request-error waterfall exclusively. The two compose through the walk: a retryable failure reaches this plugin only as llm-retry's re-entry, and that fresh request starts past the cooled head. The virtual row's `providerRetryPolicy` returns `undefined` (documented degradation), so the host's own default applies — a head provider's custom `retryPolicy` does not apply on the virtual route. On plugin unload (HMR/dispose) the injected walk unloads with the fiber and all per-agent state is cleared entirely — no residual state.
 
 ### Agent presets (plugin composition)
 
-Agent **presets** are a dsh mechanism for composing plugins — a declarative child-plugin entry list applied as a set, carrying **no** model fields of their own. The fallbacks plugin needs no preset-specific configuration: a preset that includes the `dsh-llm-fallbacks` plugin row gives that preset's sessions the same chains/roles configured for the plugin — the plugin (and therefore its virtual `FallbacksChain / Auto` route) exists **wherever the plugin's row is mounted**, and sessions on that row get the chain. Two caveats:
+Agent **presets** are a dsh mechanism for composing plugins — a declarative child-plugin entry list applied as a set, carrying **no** model fields of their own. The fallbacks plugin needs no preset-specific configuration: a preset that includes the `dsh-llm-fallbacks` plugin row gives that preset's sessions the same chains/roles configured for the plugin — the plugin (and therefore its virtual `FallbacksChain/<chain id>` rows) exists **wherever the plugin's row is mounted**, and a session that selects one of those rows gets that chain. Two caveats:
 
 - **A user preset override replaces the entire child list** (no merge): a preset that omits the fallbacks row silently unmounts the plugin for sessions using that preset. Restate every plugin row you want to keep.
 - **Preset-scoped chain configs are possible by mounting the row inside a preset**: the plugin row's `config:` overrides in the preset composition produce a chain configuration that applies to that preset's sessions only (patch rows replace the whole `config`, so restate every field).

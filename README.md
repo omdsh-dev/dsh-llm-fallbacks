@@ -24,7 +24,7 @@ A session routed to `FallbacksChain / <chain id>` — the root agent by selectio
 
 - **Who gets a chain**: only sessions whose model selection routes to `FallbacksChain / <chain id>`. That is the root agent when the row is selected, and a subagent the seam mounted there at dispatch (local backend, no explicit route on the request). A real provider/model selection — root or subagent — is left entirely to llm-retry.
 - **Triggers**: `triggerCodes` (default `AUTH` / `QUOTA` / `RATE_LIMIT`) — **any** dsh failure code is accepted, including `CONTEXT_WINDOW_EXCEEDED`, which fails over to a larger-context candidate. Retryable failures (5xx, `TRANSPORT`, `TIMEOUT`, …) stay with llm-retry first; each of its retries re-enters the walk, which starts past the head that just went on cooldown.
-- **Partial output is committed**: once an attempt has emitted a chunk, a later failure is **not** switched inside the request — yielded output cannot be unsent. The failure surfaces to the loop; recovery is llm-retry re-entry (a fresh walk) or the terminal error.
+- **Partial output is committed**: the first **output** chunk commits the attempt — a block start counts, a `usage` metadata chunk does not — and after commit a later failure is **not** switched inside the request, because yielded output cannot be unsent. The failure surfaces to the loop; recovery is llm-retry re-entry (a fresh walk) or the terminal error.
 - **Recovery**: a failed / switched-away model is held out of selection for `cooldownMs`, and `revertPolicy: cooldown-expiry` returns to the primary model on expiry. The opt-in `recovery: half-open` mode (YAML-only) makes that return evidence-driven instead of timer-based.
 - **Safety valve**: `maxSwitchesPerStep` caps switches per request walk (attempts ≤ cap + 1) — chain loops cannot amplify latency.
 - **Visibility**: every switch is recorded in an info-level log line (from/to/role/reason/candidates) — no silent model switching.
@@ -35,9 +35,11 @@ A session routed to `FallbacksChain / <chain id>` — the root agent by selectio
 
 Time slots are configured **per chain** and rotate that chain's effective entries by wall-clock windows: the first row whose window contains the current moment replaces the chain's default entries for the next request — the chain's own entries stay the last resort when no row matches. Rotation is a routing seed, not a failure decision: it consumes no cooldown and leaves the failure walk (fallback switch) untouched.
 
-![Time slots](docs/assets/screenshot-1-en.png)
+![The Fallbacks settings card: one tab per chain, each with its own Time slots (分时槽设置) → Default fallback chain (默认降级链) → Default model (默认模型) blocks and Discard/Save pair](https://raw.githubusercontent.com/omdsh-dev/dsh-llm-fallbacks/main/docs/assets/card-en.svg)
 
-Four frozen UTC+8 presets (windows are code constants; preset rows lock `tz` to Asia/Shanghai):
+The figure shows the shipped card's structure: a **tab per chain** (`＋` adds one, `⋯` renames the label or deletes the chain), and inside the selected tab — under its Chain name (链名称) field — the per-chain blocks **Time slots (分时槽设置) → Default fallback chain (默认降级链) → Default model (默认模型)**, saved by that chain's own Discard/Save pair. The Subagents (子代理) section renders one collapsed role card per role with its own save pair. The card also has a collapsible Advanced options (高级选项) disclosure below the role list (not shown in this figure).
+
+Four frozen UTC+8 presets (the windows are code constants). `fallbacks.tz` is the config-level zone every row's window is evaluated in; the card shows it read-only inside a custom row (`Asia/Shanghai (UTC+8)`) while preset rows exist:
 
 | Preset | Window |
 |---|---|
@@ -52,9 +54,9 @@ GLM Peak and GLM Valley are offered in the card picker only when `zai-coding-cn`
 
 ### Role-based subagents
 
-A subagent's role is declared in its dispatch prompt — the Assignment header `**Execute as**: <id>` — and it is resolved against the role ids declared in `roles.list`. Only that **declared header** delivers the child's identity: the role's `persona` is installed on the child as a system-prompt section, the child's own session gets exactly one `[role: <id>]` notice row, and its session header shows a role badge.
+A subagent's role is declared in its dispatch prompt — the Assignment header `**Execute as**: <id>` — and it is resolved against the role ids declared in `roles.list`. Only that **declared header** resolves a role: the role's `persona` is installed on the child as a system-prompt section, the child's own session gets exactly one `[role: <id>]` notice row, and its session header shows a role badge.
 
-Role **identity** is resolved at dispatch in two ordered stages, first hit winning — explicit `agentPreset` → the **dispatch-declared** `**Execute as**: <id>` header. If the child's dispatch prompt declares `**Execute as**: <id>`, that role's persona, `[role: <id>]` notice and badge are delivered. A child with **no declared dispatch header** is NOT SPECIFIED: no persona, no notice row, no role half of the badge — and the plugin does not intervene. The role can also carry a **manual chain pointer** (「指定降级链」): at dispatch the seam stamps a local, non-explicit-route child onto `FallbacksChain / <role.chain>` — an explicit route is **authorized** and never touched, and an external-backend child keeps pure inheritance. There is no rule matching and no host-policy consultation: the mapping is your static config.
+Role **identity** is resolved at dispatch from one source — the **dispatch-declared** `**Execute as**: <id>` header — so a child whose prompt declares a declared role id gets that role's persona, its one `[role: <id>]` notice row and its badge. A child with **no declared dispatch header** is NOT SPECIFIED: no persona, no notice row, no role half of the badge — and the plugin does not intervene. The role can also carry a **manual chain pointer** (「指定降级链」): at dispatch the seam stamps a local, non-explicit-route child onto `FallbacksChain / <role.chain>` — an explicit route is **authorized** and never touched, and an external-backend child keeps pure inheritance. There is no rule matching and no host-policy consultation: the mapping is your static config.
 
 This covers an **ordinary subagent dispatch and an Agent Team teammate** (`spawn_teammate`) alike: both are children dispatched with the same header, which the model writes — the same dispatch seam, no mechanism-specific configuration.
 
@@ -111,7 +113,7 @@ fallbacks:
 Three rules of thumb:
 
 - **There is no feature switch**: the plugin intervenes exactly when a chain is configured (`chains` non-empty). An empty section is a complete no-op, and the Plugins-page row toggle is the master switch.
-- **A chain's LAST entry (默认模型) must be exactly one official model** — `deepseek-official/deepseek-flash` **or** `deepseek-official/deepseek-v4-pro` (XOR); the leading 默认降级链 entries are walked first.
+- **A chain's LAST entry (默认模型) must be exactly one official model** — `deepseek-official/deepseek-flash` **or** `deepseek-official/deepseek-v4-pro` (XOR); the leading Default fallback chain (默认降级链) entries are walked first. That applies to a NON-EMPTY `entries`: an empty one is accepted by the gateway (the row still appears, its walk refuses with `EMPTY_EFFECTIVE_CHAIN`), while the card requires a tail before its Save arms.
 - **Slots and roles are optional**: each chain's first matching time-slot row replaces that chain's entries; a role's `chain` pointer (or nothing) decides which chain a dispatched child mounts.
 
 Full reference (keys, entry syntax, selector rules, migration) → [docs/configuration.md](docs/configuration.md).
@@ -129,7 +131,6 @@ Save the config and restart the session, then type `/fallbacks` — the read-onl
 - **Peak/valley time slots** — four frozen UTC+8 presets or custom windows rotate a chain's own effective entries. → [details](docs/features.md#time-slots)
 - **Role-based subagents** — a dispatch-declared role brings persona, notice row and badge to the child, and its optional `chain` pointer puts the child on `FallbacksChain/<id>`. → [details](docs/features.md#role-based-subagents)
 - **FallbacksChain in the picker** — select `FallbacksChain / <chain id>` to make the configured chain the session route; any real model is served by llm-retry alone, with no plugin fallback. → [details](docs/features.md#fallbackschain-in-the-model-picker)
-- **Host subagent model policy** — dsh enforces its 0.1.2 child-model allowlist on the dispatching side; this plugin does not consult it. An explicit child selection is limited to the parent route unless the host allowlist admits it. → [details](docs/features.md#role-based-subagents)
 - **Five bundled preset roles** — `reviewer` / `scout` / `security-reviewer` / `sonic` / `task`, declared on apply. → [details](docs/features.md#preset-roles)
 - **dsh-tui surfaces** — `/fallbacks`, `/fallbacks config`, and a `/settings` section with web-card parity. → [details](docs/features.md#dsh-tui-surfaces)
 

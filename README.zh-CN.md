@@ -24,7 +24,7 @@ dsh（DeepSeek Harness）的自动模型降级插件：插件注册 N 条**命�
 
 - **谁能拿到链**：只有模型选择走 `FallbacksChain / <链 id>` 的会话。包括选中该行的 root agent，以及角色「指定降级链」指向该链、分发时被盖章到该行的 subagent（本地 backend、请求上没有显式路由）。真实 provider/model 选择——无论 root 还是 subagent——完全交给 llm-retry。
 - **触发**：`triggerCodes`（默认 `AUTH` / `QUOTA` / `RATE_LIMIT`）——**任何** dsh 失败码都可用，包括 `CONTEXT_WINDOW_EXCEEDED`（会降级到上下文窗口更大的候选）。可重试失败（5xx、`TRANSPORT`、`TIMEOUT` 等）先交给 llm-retry；它的每次重试都会重新进入 walk，并从刚进入冷却的链头之后开始。
-- **已输出即提交**：某个尝试一旦吐出 chunk，之后的失败**不会**在该请求内切换——已产出的输出无法撤回。失败上抛给 loop；恢复路径是 llm-retry 重入（新的一次 walk）或终止失败。
+- **已输出即提交**：第一个**输出** chunk 即提交该尝试——block start 算输出，`usage` 元数据块不算——提交之后的失败**不会**在该请求内切换，已产出的输出无法撤回。失败上抛给 loop；恢复路径是 llm-retry 重入（新的一次 walk）或终止失败。
 - **恢复**：失败或被切走的模型在 `cooldownMs` 内不再被选中，`revertPolicy: cooldown-expiry` 在冷却到期后回到主模型；可选的 `recovery: half-open` 模式（YAML-only）把这次回归改为证据驱动，而非定时器驱动。
 - **保险丝**：`maxSwitchesPerStep` 限制单次请求 walk 的切换次数（尝试数 ≤ 上限 + 1）——链式循环不会放大延迟。
 - **可见性**：每次切换都写入 info 日志（from/to/role/reason/candidates），不存在静默切换。
@@ -33,11 +33,13 @@ dsh（DeepSeek Harness）的自动模型降级插件：插件注册 N 条**命�
 
 ### 峰谷无忧（分时切换）
 
-分时槽按墙钟窗口轮换**生效 root 链**：每一行携带自己的 fallback 链，第一个窗口包含当前时刻的行将在下一个 root 请求取代全时段链；无行命中时，全时段链作为最后兜底。轮换是路由种子而非失败决策：不消耗冷却，也不影响失败降级（fallback switch）。
+分时槽按链配置（`chains[].timeSlots`），按墙钟窗口轮换该链自己的生效条目：第一个窗口包含当前时刻的行会在下一个请求取代该链的 `entries`；无行命中时，该链自己的条目作为最后兜底。轮换是路由种子而非失败决策：不消耗冷却，也不影响失败降级（fallback switch）。
 
-![峰谷无忧](docs/assets/screenshot-1-zh.png)
+![Fallbacks 设置卡片：每条链一个 tab，各自带 分时槽设置 → 默认降级链 → 默认模型 区块与保存按钮](https://raw.githubusercontent.com/omdsh-dev/dsh-llm-fallbacks/main/docs/assets/card-zh.svg)
 
-四个冻结的 UTC+8 预设（窗口是代码常量；存在预设行时 `tz` 锁定为 Asia/Shanghai）：
+图为当前设置卡片的结构：**每条链一个 tab**（`＋` 新建、`⋯` 改链名标签或删除链），选中 tab 内是 链名称 字段与逐链区块 **分时槽设置 → 默认降级链 → 默认模型**，由该链自己的 放弃修改/保存 按钮写入。子代理 区每个角色是一张可折叠的角色卡，另有自己的保存按钮。卡片在角色列表下方还有一个可折叠的 高级选项 区块（图中未画出）。
+
+四个冻结的 UTC+8 预设（窗口是代码常量）。`fallbacks.tz` 是所有行窗口的判定时区；存在预设行时，卡片在自定义行里只读展示该时区（`Asia/Shanghai (UTC+8)`）：
 
 | 预设 | 窗口 |
 |---|---|
@@ -52,9 +54,9 @@ GLM Peak / GLM Valley 仅在配置了 `zai-coding-cn` 时才会出现在卡片�
 
 ### 角色化 subagent
 
-subagent 的角色由分发提示词声明——Assignment 头部字段 `**Execute as**: <id>`；它与 `roles.list` 中已声明的角色 id 匹配。只有这个**已声明头部**才投递子代理的身份：`persona` 以 system-prompt 分区安装到子代理，子会话恰好写入一行 `[role: <id>]` 通知行，会话头部显示角色徽章。
+subagent 的角色由分发提示词声明——Assignment 头部字段 `**Execute as**: <id>`；它与 `roles.list` 中已声明的角色 id 匹配。只有这个**已声明头部**才解析出角色：`persona` 以 system-prompt 分区安装到子代理，子会话恰好写入一行 `[role: <id>]` 通知行，会话头部显示角色徽章。
 
-角色**身份**在分发时按两个有序阶段解析、先命中者生效——显式 `agentPreset` → **派发声明** `**Execute as**: <id>` 头部。只要子代理的分发提示词声明了 `**Execute as**: <id>`，该角色的 persona、`[role: <id>]` 通知行与徽章就会投递。完全没有声明分发头部的子代理是**未指定**：没有 persona、通知行与徽章角色半边——插件也不干预。角色还可携带**手动链指针**（「指定降级链」）：分发时 seam 把本地、无显式路由的子代理盖到 `FallbacksChain / <role.chain>` 上——带显式路由的请求属于**已授权**，插件永不改写；外部 backend 的子代理保持纯继承。没有规则匹配，也没有宿主策略咨询：映射就是你的静态配置。
+角色**身份**只在分发时从一个来源解析——**派发声明**的 `**Execute as**: <id>` 头部——因此分发提示词声明了已声明角色 id 的子代理会拿到该角色的 persona、恰好一行 `[role: <id>]` 通知行与徽章。完全没有声明分发头部的子代理是**未指定**：没有 persona、通知行与徽章角色半边——插件也不干预。角色还可携带**手动链指针**（「指定降级链」）：分发时 seam 把本地、无显式路由的子代理盖到 `FallbacksChain / <role.chain>` 上——带显式路由的请求属于**已授权**，插件永不改写；外部 backend 的子代理保持纯继承。没有规则匹配，也没有宿主策略咨询：映射就是你的静态配置。
 
 这一套同时覆盖**普通 subagent 分发与 Agent Team 队友**（`spawn_teammate`）：两者都是带着同一头部（由模型写入）经同一分发 seam 创建的子代理，不需要任何按机制区分的配置。
 
@@ -111,8 +113,8 @@ fallbacks:
 三条要点：
 
 - **没有功能开关**：只要配置了链（`chains` 非空）插件才介入；空配置是完全的 no-op，Plugins 页的行开关是总开关。
-- **每条链的末项（默认模型）必须恰好是一个官方模型**——`deepseek-official/deepseek-flash` **或** `deepseek-official/deepseek-v4-pro`（XOR）；前部「默认降级链」条目优先进走。
-- **分时槽与角色都是可选的**：第一个窗口命中的分时行会在下一个 root 请求取代全时段链；规则把 subagent 映射到已声明角色，且永不匹配 root 请求。
+- **每条链的末项（默认模型）必须恰好是一个官方模型**——`deepseek-official/deepseek-flash` **或** `deepseek-official/deepseek-v4-pro`（XOR）；前部「默认降级链」条目优先进走。该要求只针对非空 `entries`：空 `entries` 网关也会接受（行仍出现在选择器中，walk 以 `EMPTY_EFFECTIVE_CHAIN` 拒绝），而卡片要求选好链尾才允许保存。
+- **分时槽与角色都是可选的**：第一个窗口命中的分时行会在下一个请求取代该链自己的 `entries`；角色是已声明的身份加一个可选的 `chain` 指针（「指定降级链」），root 请求完全不受角色影响。
 
 完整参考（字段、条目语法、选择器规则、迁移）→ [docs/configuration.md](docs/configuration.md)。
 
@@ -129,7 +131,6 @@ fallbacks:
 - **峰谷无忧（分时槽）**——四个冻结的 UTC+8 预设或自定义窗口轮换该链自己的生效条目。 → [详情](docs/features.md#time-slots)
 - **角色化 subagent**——派发声明的角色为子代理带来 persona、通知行与徽章，其可选的 `chain` 指针把子代理挂到 `FallbacksChain/<id>`。 → [详情](docs/features.md#role-based-subagents)
 - **模型选择器中的 FallbacksChain**——选择 `FallbacksChain / <链 id>` 即由配置链承载该会话；选择真实模型则只由 llm-retry 处理，没有插件降级。 → [详情](docs/features.md#fallbackschain-in-the-model-picker)
-- **宿主子代理模型策略**——dsh 在**派发侧**执行自己的 0.1.2 子模型 allowlist；本插件不读取它。显式子代理选择只允许父路由，除非该路由在宿主 allowlist 内。 → [详情](docs/features.md#role-based-subagents)
 - **五个内置预设角色**——`reviewer` / `scout` / `security-reviewer` / `sonic` / `task`，随 apply 自动声明。 → [详情](docs/features.md#preset-roles)
 - **dsh-tui 操作面**——`/fallbacks`、`/fallbacks config`，以及与 web 卡片等价的 `/settings` 分区。 → [详情](docs/features.md#dsh-tui-surfaces)
 

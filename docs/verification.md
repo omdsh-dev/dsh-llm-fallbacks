@@ -6,7 +6,7 @@ This document records the installation / runtime-contract verification already c
 
 ## Verified (evidence summary for this iteration)
 
-> **Snapshot scope**: the §1 table names the suites that pin each contract; **no count in it is claimed as the current one** (a documentation pass does not run the full suite — CI owns it). The suite set is now 45 files after the `named-virtual-chains` plan — 44 `*.spec.ts(x)` plus `tests/peer-deps.test.ts` (role rules, per-role chains, the host-policy module and the two read-only status surfaces are gone with their specs, and `enabled-read-sweep.spec.ts` was deleted as a source-text scan rather than a behavioural gate; the chain walk, per-chain slots, the seam stamp and the chain tabs are the added coverage). Rows marked **†** were re-derived by a targeted run on 2026-11-08 and their counts ARE current: `gateway` 49, `config` 36, `chains` 35, `time-slots` 37, `virtual-adapter` 34, `chain-walk` 49, `role-resolution` 10, `seam-inject` 11, `subagents-seam` 43, `fallbacks-store` 19, `fallbacks-card` 22, `conversation-switch` 19, `client-slot-registration` 2, `service` 15, `presets-integration` 13, `export-surface` 29, `seeds` 52. Everything else below is the historical round that produced it — read the file list as the gate, not the number.
+> **Snapshot scope**: the §1 table names the suites that pin each contract; **no count in it is claimed as the current one** (a documentation pass does not run the full suite — CI owns it). The suite set is now 45 files after the `named-virtual-chains` plan — 44 `*.spec.ts(x)` plus `tests/peer-deps.test.ts` (role rules, per-role chains, the host-policy module and the two read-only status surfaces are gone with their specs, and `enabled-read-sweep.spec.ts` was deleted as a source-text scan rather than a behavioural gate; the chain walk, per-chain slots, the seam stamp and the chain tabs are the added coverage). The **file list** is the gate and CI owns every count: per-file case counts are deliberately not quoted here, because they drift with every test edit and a re-derived figure reads as a current claim. The aggregates below are historical round records, labeled as such.
 
 ### 1. Test matrix (unit + integration + client + host gateway + command + release/consumer tooling, by scope; 45 files at HEAD — counts are CI's, see the note above)
 
@@ -17,7 +17,7 @@ This document records the installation / runtime-contract verification already c
 | unit (config + state) | `config.spec.ts` / `state.spec.ts` / `events.spec.ts` | `Config({})` equals the default config (empty `chains` = the only first-run state), every `validateFallbacksConfig` warn branch (chain id/dupes/tail, per-chain slot guards, role ids, undeclared chain pointer, inert half-open escalation) and `detectLegacyKeys` over the v1 two-block keys; the walk state machine (pendingSwitch created → applied → cleared, `appliedTurnStep` replay guard, reset on step advance); `fallbacks/switch` event shape and JSON round-trip |
 | integration (walk + coexistence) | `plugin.spec.ts` / `coexist-llm-retry.spec.ts` / `virtual-adapter.spec.ts` / `runtime-recovery.spec.ts` | end-to-end re-integration (including the registration-order dependency of the model-selection combination), **two-plugin coexistence order** (normal backs off first, switches after the budget is exhausted; non-retryable codes switch directly), the adapter surface (one catalog row per chain, `resolveModel`/`imageRequestPricing` following the selected chain, `providerRetryPolicy` → `undefined`), and half-open closure observed at the attempt boundary |
 | walk mechanics | `chain-walk.spec.ts` | candidate order and filters, the committed rule (first chunk commits), exactly-one-finish, the pre-attempt throws (`UNKNOWN_CHAIN` / `EMPTY_EFFECTIVE_CHAIN` / `UNDISPATCHABLE_EFFECTIVE_HEAD` / `LLM_UNAVAILABLE`), abort forwarding, the recursion guard, per-chain slot markers keyed `(agent, chain)` |
-| dispatch + subagent routing | `seam-inject.spec.ts` / `subagents-seam.spec.ts` / `dispatch-injection.spec.ts` / `dispatch-integration.spec.ts` / `role-resolution.spec.ts` / `role-notice.spec.ts` / `role-persona.spec.ts` / `role-projection.spec.ts` / `subagent-role-badge.spec.tsx` / `agent-team-roles.spec.ts` | two-stage role resolution (explicit `agentPreset` → dispatch-declared; no rules, no auto-match), the `injectRoleChain` stamp matrix (declared role + declared chain pointer + no explicit route + LOCAL backend; unspecified / undeclared / explicit-wins / external / resume / rollback), role persona delivery to the child, the in-session notice row, the projection-key badge, and a child's first attempt served from the role's named chain |
+| dispatch + subagent routing | `seam-inject.spec.ts` / `subagents-seam.spec.ts` / `dispatch-injection.spec.ts` / `dispatch-integration.spec.ts` / `role-resolution.spec.ts` / `role-notice.spec.ts` / `role-persona.spec.ts` / `role-projection.spec.ts` / `subagent-role-badge.spec.tsx` / `agent-team-roles.spec.ts` | role resolution from the dispatch-declared `**Execute as**` header (no rules, no auto-match; `role-resolution.spec.ts` pins the older two-stage helper `resolveDeclaredRole`, which the shipped seam does not call), the `injectRoleChain` stamp matrix (declared role + declared chain pointer + no explicit route + LOCAL backend; unspecified / undeclared / explicit-wins / external / resume / rollback), role persona delivery to the child, the in-session notice row, the projection-key badge, and a child's first attempt served from the role's named chain |
 | client (card, store, surfaces) | `fallbacks-store.spec.ts` / `fallbacks-card.spec.tsx` / `conversation-switch.spec.tsx` / `client-slot-registration.spec.ts` / `skeleton.spec.ts` | card read/write via the **gateway channel** (`load` → `get`, `save` → `set`, `resetToDefaults` → `reset`), `present` flag and unreachable-channel skeleton, draft seeded only from a real `get` result, the chain tab strip (tablist keyboard semantics, add / rename label / delete, ≥1 chain, dirty pip + error mark), per-tab save isolation including add/delete persistence and the cross-tab invalid-chain block, role cards with the 指定降级链 pointer, the transcript switch row, the slot registration ledger |
 | TUI surface | `tui-settings.spec.ts` / `tui-client.spec.ts` | the `/settings` section (scalar fields, the `Chains (JSON)` complex field, gateway-parity parsing/validation, readback of the composed values) and the dsh-tui client seams (command tree, settings-section registration gate) |
 | recovery + seeds + presets | `recovery.spec.ts` / `runtime-recovery.spec.ts` / `seeds.spec.ts` / `seeds-integration.spec.ts` / `seeds-declare-window.spec.ts` / `presets.spec.ts` / `presets-integration.spec.ts` | half-open recovery circuit and escalation, role-seed manager + integration (dual storage, derived state, `{ list }` write shape, chain-pointer preservation), preset seed declarations and their timing gate |
@@ -31,9 +31,9 @@ Historical deltas, kept as a record — none of the names in this section's dele
 
 - **Deleted with their mechanism**: `always-mode.spec.ts` (always-mode retry cap), `automatch.spec.ts` (LLM role auto-match), `override.spec.ts` (the `overrideConfig` path), `index-request.spec.ts` (the `agent/request` listener), `allowlist-switch.spec.ts` (the request-time allowlist switch), `context-window.spec.ts` (the request-time context-window walk), `success-observation.spec.ts` (the `session/event` success observer), `runtime.spec.ts`, `time-slots-runtime.spec.ts`, `host-native.spec.ts` (the request-waterfall baseline), and `session-event-registration.spec.ts` / `session-event-registration-guard.spec.ts` (the append-based no-write pins), and `session-write-surface.spec.ts` (the repo-wide write-surface lint, retired with the `named-virtual-chains` plan — the absence pin now sits in `plugin.spec.ts` / `command.spec.ts`).
 - **Added**: `chain-walk.spec.ts` (candidate order and filters, committed rule, exactly-one-finish, effort passthrough, exhausted chain, abort forwarding, recursion guard) and `seam-inject.spec.ts` (the role-chain stamp matrix — declared role + declared pointer + no explicit route + local backend stamps; unspecified / undeclared pointer / explicit-wins / external / resume stamp nothing; thrown native call rolls the reservation back).
-- **Per-file counts live in the note above and nowhere else** (re-derived 2026-11-08; the rc.1 figures this line used
-  to quote were `rg` counts from before the chain-tab and per-chain-slot cases landed). Keeping one owner for the
-  numbers is the point — this block only says which suites moved.
+- **Per-file counts are owned by CI and quoted nowhere in this record** (the figures an earlier revision carried here
+  were `rg` counts that had already drifted before the chain-tab and per-chain-slot cases landed). This block only says
+  which suites moved.
 - **Reworked in place**: `coexist-llm-retry.spec.ts` (composition through walk re-entry instead of waterfall order), `runtime-recovery.spec.ts` (half-open closed by attempt completion), `dispatch-injection.spec.ts` / `dispatch-integration.spec.ts` (mount at the seam), `virtual-adapter.spec.ts` (`stream()` returns the walk), `state.spec.ts` (cooldown + recovery only), `plugin.spec.ts`, `gateway.spec.ts`, `command.spec.ts`, `config.spec.ts`, `support/harness.ts` (the waterfall drivers now assert pass-through, and `cfg` / `walkDeps` / `makeAgent` fixtures drive the walk directly).
 - **Contract moved, not dropped**: with `session-write-surface.spec.ts` retired (it imported a deleted module), the no-durable-write pin lives where the decision is observable — `tests/plugin.spec.ts` (no decision ⇒ no bookkeeping ⇒ no durable event) and `tests/command.spec.ts` (stop-write, issue #52: the command reads only switches already in history) — instead of a repo-wide static lint.
 
@@ -91,9 +91,9 @@ exists; see [docs/install.md](install.md) § Bundle layer order.
 - **Walk outcome semantics**: an uncommitted trigger-code failure advances the walk; a committed failure, an aborted
   finish, a non-trigger code, an exhausted chain or a spent switch cap forwards / re-emits the attempt's terminal
   `finish` verbatim (original code and message preserved), and an empty or undispatchable chain throws
-  `EMPTY_EFFECTIVE_CHAIN` / `UNDISPATCHABLE_EFFECTIVE_HEAD` before any chunk. A plugin-originated walk refuses the same
-  way — `UNDISPATCHABLE_EFFECTIVE_HEAD`, no attempt dispatched — when the subagent model-selection policy is `unprovable`
-  or when the admitted head is no longer on the allowlist after the catalog query (`tests/chain-walk.spec.ts`).
+  `EMPTY_EFFECTIVE_CHAIN` / `UNDISPATCHABLE_EFFECTIVE_HEAD` before any chunk. A walk whose effective head is
+  undispatchable — a wildcard-only or self-route chain — refuses the same way: `UNDISPATCHABLE_EFFECTIVE_HEAD`, no
+  attempt dispatched (`tests/chain-walk.spec.ts`).
 - **No residue on unload**: `agent/disposed` removes the per-agent state and the seam record entries, and `ctx.effect`
   dispose clears the stores wholesale (`tests/state.spec.ts` + the walk's own disposal assertions).
 - **Real-type contract**: the type layer does not use hand-written `peer-stubs/` — the real
@@ -133,18 +133,18 @@ Then restart the dsh web session so the host half and the client half load.
 ### 2. Web plugin-config card verification
 
 1. Open the web settings GUI → Settings → **插件配置** (**Plugin Settings**), confirm the **Fallbacks card** appears (same list as the bash / agent-loop / web-search / advisor cards), titled/described/iconified from the plugin's `locale/*.json` meta + `icon.svg`.
-2. **Flat always-open form**: the card renders its full configuration form unconditionally — no collapsible chrome and no
-   feature switch (the config-level `enabled` key was removed; the Plugins-page row toggle is the master switch) — with the
-   主代理 / 子代理 / 高级选项 headings as flat, non-collapsible section markers and the read-only status block at the bottom.
-   The card is always usable and never blank just because the namespace is missing.
-3. Edit any field (e.g. change `cooldownMs` to `600000`) — the single footer Save/Discard pair arms (Save disabled =
-   `!dirty || invalid || saving || !writable`) — and save.
+2. **Shipped tab-per-chain form**: the card renders its form in any state — no feature switch (the config-level `enabled`
+   key was removed; the Plugins-page row toggle is the master switch) — with the Virtual chains (虚拟链) / Subagents (子代理) / Advanced options (高级选项) sections: a
+   chain tab strip plus a per-chain Save/Discard pair, role cards that start collapsed, and a collapsible Advanced options
+   disclosure. The card is always usable and never blank just because the namespace is missing.
+3. Edit one section (e.g. change `cooldownMs` to `600000` inside Advanced options) — that section's Save/Discard pair arms (Save
+   disabled = `!dirty || invalid || saving || !writable`) — and save.
 4. **Expected**: the save succeeds with no conflict banner; `$DSH_HOME/settings.yaml` (or that profile's settings
    path) gets the whole validated draft written; re-entering the page shows the saved values, and a concurrent
    modification from another session surfaces as a truthful error banner on save — the gateway `set` has no revision
    guard, so there is no "Reload" prompt and no silent overwrite (KD-G3).
-5. **Discard**: click the footer Discard → the WHOLE draft reverts to the last accepted config and the gates relock
-   (staged edits survive refresh in the store, so Discard is kept — the documented divergence from the official
+5. **Discard**: click a section's Discard → THAT section's draft reverts to the last accepted config and its gates
+   relock (staged edits survive refresh in the store, so Discard is kept — the documented divergence from the official
    no-discard form; the card's Reset-to-defaults button is gone and the gateway `fallbacks/reset` RPC remains a host API).
 
 ### 3. Runtime fallback verification (simulated failures)
@@ -152,8 +152,9 @@ Then restart the dsh web session so the host half and the client half load.
 1. Configure a demo fallback chain in the `fallbacks` namespace: point a chain's `entries` at a **fallback model**
    (e.g. `openai/gpt-4o-mini`), misconfigure the primary model's (e.g. `deepseek/deepseek-chat`) credentials or
    point the chain at a non-existent provider, and construct a **non-retryable failure code** (`AUTH` / `QUOTA` path,
-   reaching the walk directly without backoff). **Select `FallbacksChain / Auto` in the model picker** — a session on a
-   real model has no chain and must show no plugin behavior at all (that negative case is step 5).
+   reaching the walk directly without backoff). **Select the configured chain's `FallbacksChain / <chain id>` row in the
+   model picker** (`Auto` is only the conventional id a v1 migration creates) — a session on a real model has no chain
+   and must show no plugin behavior at all (that negative case is step 5).
 2. Issue a request to trigger the failure.
 3. **Expected**:
    - info-level logs from this plugin appear (candidate attempt order and skip reasons);
@@ -166,7 +167,7 @@ Then restart the dsh web session so the host half and the client half load.
 5. **Negative case (direction C)**: switch the session to a real provider/model and repeat the failure. Expected: no
    plugin log line, no cooldown, no walk — llm-retry is the only retry layer.
 
-### 4. QA gate end-to-end verification script (plugin-config card read/write loop + save-takes-effect + switch routing + status block)
+### 4. QA gate end-to-end verification script (plugin-config card read/write loop + save-takes-effect + switch routing)
 
 > This section is the **mandatory input** for the QA gate phase: execute and record the steps in a real dsh environment
 > (`$DSH_HOME` installation, web profile, operable web settings GUI, real model calls). Paths are always expressed as
@@ -189,14 +190,15 @@ Then restart the dsh web session so the host half and the client half load.
 #### 4.2 Plugin-config card read/write loop (save-takes-effect, AC-1)
 
 1. Open the web settings GUI → Settings → **Plugin Settings** → **Fallbacks card**.
-2. **Expected ① (gateway channel works)**: the card renders its flat always-open form (the 主代理 / 子代理 / 高级选项
-   section headings, the read-only status block, one Save/Discard footer; no feature switch — the config-level `enabled`
-   key was removed) — config read/write goes through the plugin's gateway channel
+2. **Expected ① (gateway channel works)**: the card renders the shipped tab-per-chain form (the Virtual chains (虚拟链) / Subagents (子代理) / Advanced options
+   (高级选项) sections, a per-chain Save/Discard pair, collapsed role cards, a collapsible Advanced options disclosure;
+   no feature switch —
+   the config-level `enabled` key was removed) — config read/write goes through the plugin's gateway channel
    (`/api/fallbacks/get|set|reset`), independent of any settings-exposure mechanism of the dsh host (the `fallbacks`
    namespace not appearing in the describe exposure set is by design); a successful `get` sets `present`,
    and an unreachable channel shows the flat informational notice atop the still-usable form rather than a dead page.
-3. **Add a chain via catalog selection**: create a chain in the 虚拟链 tab strip (`＋`), name its label, then pick
-   targets in its 默认降级链 selector rows through the provider/model **dropdown (model catalog)** and one 默认模型
+3. **Add a chain via catalog selection**: create a chain in the Virtual chains (虚拟链) tab strip (`＋`), name its label, then pick
+   targets in its Default fallback chain (默认降级链) selector rows through the provider/model **dropdown (model catalog)** and one Default model (默认模型)
    tail (Flash or Pro). A role card's 指定降级链 dropdown points a dispatched child at one named chain (optional).
    New rows only offer in-catalog options; out-of-catalog values are kept, annotated as synthetic options.
 5. **Save** → UI saving → ready (`save` writes the user layer via `fallbacks/set`; `set` is
@@ -205,7 +207,7 @@ Then restart the dsh web session so the host half and the client half load.
 6. **Disk evidence**: `$DSH_HOME/settings.yaml` gains a `fallbacks:` section matching the saved values
    (the added chain line — no `enabled` key exists any more).
 7. **Take-effect evidence (AC-1 core)**: **without restarting the host or reloading the page** — first confirm the host PID/start
-   time matches the §4.1 baseline (`ps -o pid,lstart -p <pid>`), select `FallbacksChain / Auto` for the session, then
+   time matches the §4.1 baseline (`ps -o pid,lstart -p <pid>`), select the configured chain's `FallbacksChain / <chain id>` row for the session, then
    trigger one trigger-code failure (§4.3 injection method, e.g. AUTH/QUOTA) → expected:
    - `llm-fallbacks: agent ... switch` appears in the logs (info level, candidate attempt order and skip reasons);
    - the session event stream gains **no** `fallbacks/switch` event (issue #52 stop-write — the switch is recorded in
@@ -213,17 +215,17 @@ Then restart the dsh web session so the host half and the client half load.
    - subsequent requests route to the chain target (provider/model becomes the first chain entry), and the current step/turn
      is not interrupted.
    → **the next failure after saving switches = no session restart needed**.
-8. **Read-back evidence**: reload the page → the server truth renders via `fallbacks/get` (the chain line is there);
-   the status block does **not** show step 7's switch (no durable event was written — the recent-switch line reflects
-   only events already in the session history, see §4.3 step 4).
+8. **Read-back evidence**: reload the page → the server truth renders via `fallbacks/get` (the chain line is there).
+   The card carries no switch-history surface any more (the read-only status block, 运行状态, was removed), so a switch is visible
+   in the info logs and in `/fallbacks` only — never in the card (see §4.3 step 4).
 9. **Counter-evidence control**: if step 7 shows the change **only takes effect after a host restart** → record it
    truthfully (with PID/start-time change evidence), and report it back to the compass/spec product commitment (the
    Global Constraint fallback clause).
 
-#### 4.3 Switch routing + status block (AC-2 / AC-7)
+#### 4.3 Switch routing (AC-2 / AC-7)
 
 1. **Failure injection**: configure a demo fallback chain (its `entries` pointing at a fallback model) and select its `FallbacksChain/<id>` row
-   `FallbacksChain / Auto` for the session; misconfigure the primary model's credentials or point the chain at a
+   for the session; misconfigure the primary model's credentials or point the chain at a
    non-existent provider to construct a **non-retryable failure code** (`AUTH` / `QUOTA`, reaching the walk directly
    without backoff);
    on the retryable-code path (`RATE_LIMIT` / 5xx) observe llm-retry backing off first and the chain decision
@@ -231,33 +233,29 @@ Then restart the dsh web session so the host half and the client half load.
 2. **Expected**: `llm-fallbacks: agent ... switch` in the logs (no durable `fallbacks/switch` session event is written — issue #52 stop-write; the switch is recorded only in the info log) + the request
    continuing on the chain target with the current step/turn uninterrupted (corresponding to the §3 runtime verification).
 3. **Route scope decides who has a chain**: run the same injection against a session on a **real** provider/model.
-   Expected: no switch, no walk, no plugin log line — the failure is llm-retry's alone. With `FallbacksChain / Auto`
-   selected, the session's recorded route stays the virtual pair across the switch, so a web model selection has nothing
-   to re-apply over (see §4.7).
-4. **Status-block entry (AC-2/AC-7)**: the plugin-config card's status block shows **only** the recent-switch line
-   (from/to/role/reason, newest first), read from the current session's raw event surface — the plugin writes no durable
-   `fallbacks/switch` events (issue #52 stop-write), so the line reflects only events already in the session history
-   (e.g. legacy `fallbacks/switch` events — the repair script cannot make such sessions loadable, see the README
-   Features note); new switches are **not** visible
-   here, neither in-process nor after a restart (they are recorded in the info logs instead). The former "current
-   effective model" line (D-6) and the selectionNote line were removed from the card (compass AC-2 — the read-only
-   status block keeps the recent switch only). The summary refreshes via push on `settings/document-updated` (fallbacks
-   namespace) / `llm/adapters-updated` (catalog only) / session switch / connection reset — with no durable events
-   written, a switch occurring while the page is open never appears, with or without a page reload or host restart.
+   Expected: no switch, no walk, no plugin log line — the failure is llm-retry's alone. With a per-chain
+   `FallbacksChain / <chain id>` row selected, the session's recorded route stays the virtual pair across the switch, so a
+   web model selection has nothing to re-apply over (see §4.7).
+4. **No card-side switch history (AC-2/AC-7)**: this step is a HISTORICAL record, not a current expectation — the
+   card's read-only status block (运行状态; its recent-switch line, D-6's "current effective model" line and the selectionNote
+   line) was removed from the shipped card, so there is no card surface to check here. What still holds: the plugin
+   writes no durable `fallbacks/switch` events (issue #52 stop-write), so new switches are visible in the info logs only,
+   and in-session `/fallbacks` reflects just the events already in the session history (step 5).
 5. **In-session diagnostics (AC-5)**: type `/fallbacks` in the same session; the output should contain the session origin
    (root/subagent), the resolved role, the resolved chain (including the default-fallback annotation), recent switches
    (newest first, from/to/role/reason — historical events only; the plugin writes no durable events, issue #52, so new
    switches are visible in the info logs, not here) and the cooldown state; the command is read-only and never changes
    any fallback state.
-6. **Virtual route + model-selection notice (plan `model-change-notice-loop`)**: select `FallbacksChain` / `Auto` in the
-   model picker and run a multi-step turn. Expected — the session log's `request/header.config` records the **virtual
-   pair** `{ provider: 'FallbacksChain', model: 'Auto' }` (the route is served, no longer rewritten to the head), and the
+6. **Virtual route + model-selection notice (plan `model-change-notice-loop`)**: select a `FallbacksChain` / `<chain id>`
+   row in the model picker and run a multi-step turn. Expected — the session log's `request/header.config` records the **virtual
+   pair** `{ provider: 'FallbacksChain', model: '<chain id>' }` (the route is served, no longer rewritten to the head), and the
    durable `user/message` notices with `source.plugin = 'model-selection'` appear **once per genuine selection change**
    only: a steady-state step appends none (the pre-fix measurement was 10 notices over 10 admitted steps with the header
-   holding the rewritten real head), and changing the session model away from the row appends exactly one. Then confirm the
-   served head's retry policy applies on this route (with e.g. `llm-deepseek.retryPolicy: { mode: 'always' }` the request
-   retries before any fallback walk), that an always-mode retry re-enters the walk and resumes past a head the previous
-   attempt put on cooldown, and that a walk which cannot advance re-emits the last attempt's terminal error.
+   holding the rewritten real head), and changing the session model away from the row appends exactly one. Note the
+   documented degradation: the virtual route's `providerRetryPolicy` returns `undefined`, so a head provider's custom
+   `retryPolicy` (including `mode: 'always'`) does NOT apply here — the host default does. An llm-retry re-entry still
+   re-enters the walk and resumes past a head the previous attempt put on cooldown, and a walk which cannot advance
+   re-emits the last attempt's terminal error.
 
 #### 4.4 No-regression spot checks
 
@@ -283,13 +281,11 @@ Then restart the dsh web session so the host half and the client half load.
    dispatch prompt declares `**Execute as**: <id>` for a declared role, on a **local** backend, and without an explicit
    `provider`/`model` in the spawn request.
 2. **Expected**: the child's recorded route is the virtual pair — `agentProvider: 'FallbacksChain'`,
-   `agentModel: 'Auto'` in the activation descriptor — and its `request/header.config` records that pair; with the host
-   `subagent-model-selection` policy enabled, the card's Subagents section shows the effective chain head with source
-   `injected`. A failure on a listed code then walks the role chain, and the info log names the from/to pair with
-   `role=<resolved role>`.
+   `agentModel: '<chain id>'` (the id the role's pointer names; `Auto` only when a v1 migration created it) in the
+   activation descriptor — and its `request/header.config` records that pair. A failure on a listed code then walks the
+   role chain, and the info log names the from/to pair with `role=<resolved role>`.
 3. **Explicit route is untouched**: repeat with a spawn request that already carries `provider`+`model`. Expected: the
-   child keeps that route, the card (policy enabled) labels the head `authorized`, and no chain participates (the child's
-   requests are real-route).
+   child keeps that route and no chain participates (the child's requests are real-route).
 4. **External backend degrades**: dispatch the same child on an external (acp) provider. Expected: no local agent is
    created, nothing is mounted, and the child runs without a chain — the documented degradation, never a failed
    dispatch.
@@ -301,11 +297,11 @@ Then restart the dsh web session so the host half and the client half load.
 1. **Background**: the pre-upgrade plugin decided switches in a request-waterfall listener and rewrote the request, so a
    web-front-end model selection could be re-applied over the switched route (the retired `status.selectionNote`
    degradation). Direction C removed that path.
-2. **Semantics now**: the walk dispatches each attempt itself inside the virtual route's `stream()`. A session on
-   `FallbacksChain` / `Auto` keeps that selection while attempts move between real provider/model pairs; a session on a
-   real model is never touched by this plugin. There is no plugin-originated route rewrite left for a selection
-   listener to re-apply over.
-3. **What to check anyway**: with `FallbacksChain` / `Auto` selected, the session's recorded route stays the virtual
+2. **Semantics now**: the walk dispatches each attempt itself inside the virtual route's `stream()`. A session on a
+   `FallbacksChain` / `<chain id>` row keeps that selection while attempts move between real provider/model pairs; a
+   session on a real model is never touched by this plugin. There is no plugin-originated route rewrite left for a
+   selection listener to re-apply over (historical: the pre-upgrade rewrite is what §4.7 step 1 records).
+3. **What to check anyway**: with a `FallbacksChain` / `<chain id>` row selected, the session's recorded route stays the virtual
    pair across a switch (no `model/selection` churn, §4.3 step 6), and the host's model-change notice appears only on a
    genuine selection change.
 4. **Spec/guide records**: `.mstar/iterations/iter-20260811-fallbacks-mount-only/guides/role-and-model-selection-exploration.md`
