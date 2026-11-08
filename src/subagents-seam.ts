@@ -770,7 +770,7 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
   }
 
   /** Resolve the dispatch role from one request's prompt; contained, never throws. */
-  const resolveRoleAtSeam = (request: SubagentStartRequestView | undefined): string | undefined => {
+  const resolveSeamRole = (request: SubagentStartRequestView | undefined): string | undefined => {
     try {
       const prompt = promptTextOf(request?.prompt)
       if (prompt.trim() === '') return undefined
@@ -871,7 +871,7 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
     const wrapper: SubagentsServiceView = Object.create(value)
     wrapper.startActivation = (spec: SubagentActivationSpecView): unknown => {
       const role =
-        resolveRoleAtSeam(spec?.request)
+        resolveSeamRole(spec?.request)
         // Resume fallback (plan Global Constraints): a resume request may carry
         // no Assignment header — reuse the record of the child the caller
         // already reserved, else no-op.

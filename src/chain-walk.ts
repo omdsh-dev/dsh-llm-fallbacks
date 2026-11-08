@@ -348,6 +348,23 @@ function repairableControl(failure: LlmFailure, options: GenerateOptions): Repai
   return undefined
 }
 
+/** NUL separator: neither an agent id nor a chain id (`CHAIN_ID_PATTERN`) can contain it. */
+const SLOT_MARKER_SEPARATOR = '\u0000'
+
+/**
+ * Key of one (agent, chain) 分时切换 marker. Both the walk's write and the
+ * wiring's `agent/disposed` cleanup build keys through here, so the two halves
+ * of the contract cannot drift apart.
+ */
+export function slotMarkerKey(agentId: string, chainId: string): string {
+  return agentId + SLOT_MARKER_SEPARATOR + chainId
+}
+
+/** Key prefix covering every chain marker of one agent (the cleanup sweep). */
+export function slotMarkerPrefix(agentId: string): string {
+  return agentId + SLOT_MARKER_SEPARATOR
+}
+
 /** Everything one walk reads from the plugin wiring. */
 export interface ChainWalkDeps {
   readConfig(): FallbacksConfig
@@ -481,7 +498,7 @@ function logSlotRotation(deps: ChainWalkDeps, start: WalkStart): void {
   if (markers === undefined || owner === undefined) return
   if (!isAllDayConforming(chain.entries) || (chain.timeSlots?.length ?? 0) === 0) return
   const slot = resolveSlotState(chain, now, config.tz ?? 'Asia/Shanghai')
-  const markerKey = owner + '\0' + chain.id
+  const markerKey = slotMarkerKey(owner, chain.id)
   const key = slotWinnerKey(slot.winner)
   const previous = markers.get(markerKey)
   if (previous !== undefined && previous.key !== key) {

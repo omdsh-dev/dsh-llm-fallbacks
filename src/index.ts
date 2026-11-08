@@ -44,7 +44,7 @@ import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
 import { defaultFallbacksConfig, detectLegacyKeys, isFallbackActive, validateFallbacksConfig, type FallbacksConfig } from './config.ts'
 import { Config } from './schema.ts'
 import { resolveChain } from './chains.ts'
-import { walkChain, type ChainWalkDeps } from './chain-walk.ts'
+import { slotMarkerPrefix, walkChain, type ChainWalkDeps } from './chain-walk.ts'
 import { installSubagentSeam, subagentSeamOf, type SubagentSeam } from './subagents-seam.ts'
 import { installRolePersona } from './role-persona.ts'
 import { FallbackStateStore } from './state.ts'
@@ -169,8 +169,8 @@ export type { AgentFallbackState, FallbackStateStore } from './state.ts'
 // `import { resolveChain } from 'dsh-llm-fallbacks'`. Each block mirrors its
 // submodule's export surface exactly; symbols also used internally by apply()
 // keep their local imports (the re-export refers to the same binding — no
-// duplicate definitions). Role-rules resolution (`resolveRole`) is DELETED
-// with `roles.rules` (v2).
+// duplicate definitions). Role resolution stays seam-internal
+// (`resolveDeclaredRole`), not a package-root function.
 export {
   annotateCandidates,
   createCandidateFilter,
@@ -459,14 +459,14 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
   if (legacyKeys.length > 0) {
     logger.warn('llm-fallbacks: legacy config keys detected (v1 two-block keys); see docs/configuration.md migration table — %o', legacyKeys)
   }
-  // Declared role ids rules resolve against (spec §7.1): trimmed id → the
-  // DECLARED RAW id, so a padded YAML id (' coder ') and a trimmed rule
+  // Declared role ids the seam resolves against (spec §7.1): trimmed id → the
+  // DECLARED RAW id, so a padded YAML id (' coder ') and a trimmed header
   // reference ('coder') resolve to the same role (client-canonical trim
   // alignment, qc2 F-001 — validateFallbacksConfig trims both sides, and
-  // resolveRole returns the raw declared id so roleDef lookups match the
-  // stored roles.list entry exactly). The built-in 'inherit' is always
-  // legal and never listed. Re-derived on every settings change (onChange
-  // below) — roleIds follows source().
+  // resolveDeclaredRole returns the raw declared id so roleDef and chain
+  // pointers match the stored roles.list entry exactly). The reserved
+  // 'inherit' id is always legal and never listed. Re-derived on every
+  // settings change (onChange below) — roleIds follows source().
   let roleIds = new Map(entry.roles.list.map((role) => [role.id.trim(), role.id] as const))
 
   // Guide §7 (plan llm-fallbacks-settings-gateway): the gateway's
@@ -512,8 +512,8 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
       // Validation (validateFallbacksConfig / detectLegacyKeys) is
       // intentionally STARTUP-ONLY: a live settings merge is already
       // schema-validated by the settings layer, and the defensive runtime
-      // (resolveRole / resolveChainViews / roleDef lookups) tolerates bad
-      // values with warn-not-crash semantics (qc1 F-006).
+      // (resolveDeclaredRole / resolveChainViews / roleDef lookups) tolerates
+      // bad values with warn-not-crash semantics (qc1 F-006).
       const current = source()
       roleIds = new Map(current.roles.list.map((role) => [role.id.trim(), role.id] as const))
       // Virtual adapter registration reconcile: an empty/non-empty `chains`
@@ -662,7 +662,7 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
   ctx.on('agent/disposed', ({ agent }) => {
     states.delete(agent.id)
     // One marker per (agent, chain) — drop every chain's entry for this agent.
-    const markerPrefix = `${agent.id}\u0000`
+    const markerPrefix = slotMarkerPrefix(agent.id)
     for (const key of slotWinners.keys()) {
       if (key.startsWith(markerPrefix)) slotWinners.delete(key)
     }

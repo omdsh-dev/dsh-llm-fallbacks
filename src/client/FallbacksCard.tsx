@@ -1031,6 +1031,11 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
   // Whole-draft validation, bucketed per chain + roles/advanced.
   const liveErrors = validateDraft(chains, rolesDraft.list, t)
   const activeErrors = liveErrors.chains[activeChain] ?? []
+  // `chainsPatch()` writes the whole draft list, so ANY chain's error blocks
+  // the section save — not just the active tab's bucket. (A pending chain has
+  // no accepted counterpart, so it would otherwise be persisted exactly as
+  // the card marks it invalid.)
+  const anyChainErrors = liveErrors.chains.some(bucket => bucket.length > 0)
   const activeDirty = (perChainDirty[activeChain] ?? false) || structureDirty
 
   // Catalog reseed (llm/adapters-updated) re-classifies CLEAN section rows.
@@ -1069,7 +1074,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
   }
   const saveSection = (section: 'chains' | 'sub' | 'advanced'): void => {
     if (section === 'chains') {
-      if (activeErrors.length > 0) return
+      if (anyChainErrors) return
       setLastSaveSection('chains')
       setLastSaveChain(activeChain)
       void controller.save({ ...state.config, chains: chainsPatch() })
@@ -1683,7 +1688,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
             <button
               type="button"
               className={css.save}
-              disabled={!writable || saving || !activeDirty || activeErrors.length > 0}
+              disabled={!writable || saving || !activeDirty || anyChainErrors}
               onClick={() => { saveSection('chains') }}
             >
               {saving ? t('save.saving') : t('save')}
