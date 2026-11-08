@@ -468,11 +468,11 @@ describe('per-target parameter adaptation (plan 2026-11-07 T2)', () => {
 
   it('treats an undisclosed reasoning capability as UNKNOWN, not as "supports none"', async () => {
     // The proactive layer must NOT drop on a route whose metadata omits
-    // `reasoning` — that is unknown, and unknown keeps the request byte-for-byte
-    // (the same rule the maxTokens branch follows for an undisclosed cap). The
-    // runtime is the authority that rejects such a control
-    // (`UNSUPPORTED_REASONING_EFFORT`), and the walk's reactive repair drops it
-    // on the same candidate, so the request still completes.
+    // `reasoning` — that is unknown, and unknown keeps the request
+    // byte-for-byte (the same rule the maxTokens branch follows for an
+    // undisclosed cap). This test therefore pins the ABSENCE of a proactive
+    // adaptation; what happens at the adapter boundary is the peer runtime's
+    // business, not this layer's.
     const debug = vi.fn()
     adapter.efforts = () => undefined
     adapter.respond = (options) => (options.model === '1' ? { failure: { code: 'AUTH' } } : { chunks: [STOP] })
@@ -482,9 +482,11 @@ describe('per-target parameter adaptation (plan 2026-11-07 T2)', () => {
       { reasoningEffort: 'high' as GenerateOptions['reasoningEffort'] },
     )
 
-    // No proactive adaptation line for the undisclosed route…
+    // The discriminating assertion: the walk logged no drop of its own.
     expect(debug.mock.calls.filter((call) => String(call[0]).includes('parameter adaptation'))).toEqual([])
-    // …and the repair is the only thing that removes the control.
+    // Observation only (NOT a contract of this layer): `@deepseek-ai/dsh-llm`
+    // normalizes an effort the route never disclosed before it reaches
+    // `adapter.stream`, so the adapter never sees the control.
     expect(adapter.calls.map((call) => 'reasoningEffort' in call)).toEqual([false, false])
   })
 

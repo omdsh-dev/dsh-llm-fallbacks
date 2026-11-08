@@ -30,6 +30,8 @@ import {
   cfg,
   dispatchRequest,
   dispatchRequestError,
+  CHAIN_ID,
+  chainOf,
   llmRetryEvents,
   makeAgent,
   normalPolicy,
@@ -65,11 +67,6 @@ beforeEach(() => {
 afterEach(async () => {
   await ctx.fiber.dispose()
 })
-
-/** The chain every scenario selects (the picker row id IS the chain id). */
-const CHAIN_ID = 'Auto'
-/** One named chain (v2). */
-const chainOf = (entries: string[], id: string = CHAIN_ID) => ({ id, label: id, entries, timeSlots: [] })
 
 describe('the plugin stays off llm-retry’s waterfall (normal mode)', () => {
   it('lets llm-retry own a retryable code: it backs off, the plugin never decides', async () => {

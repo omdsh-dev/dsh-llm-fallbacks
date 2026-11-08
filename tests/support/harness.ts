@@ -21,7 +21,7 @@ import type {
 } from '@deepseek-ai/dsh-llm'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import type { ChainWalkDeps } from '../../src/chain-walk.ts'
-import { defaultFallbacksConfig, type FallbacksConfig } from '../../src/config.ts'
+import { defaultFallbacksConfig, type FallbacksConfig, type NamedChain } from '../../src/config.ts'
 import { FallbackStateStore } from '../../src/state.ts'
 
 /**
@@ -39,6 +39,22 @@ export function cfg(overrides: Partial<FallbacksConfig> = {}): FallbacksConfig {
   // bundled behavior expand the default config explicitly
   // (`{ ...defaultFallbacksConfig, presets: 'bundled' }`).
   return { ...defaultFallbacksConfig, presets: 'none', ...overrides }
+}
+
+/**
+ * The chain id every scenario selects. The picker row id IS the chain id, so a
+ * walk's `options.model` is this value.
+ */
+export const CHAIN_ID = 'Auto'
+
+/**
+ * One named chain (config v2): `{ id, label, entries, timeSlots }`. Routes that
+ * do not need slot rotation pass the empty list the schema would compose.
+ * @param entries - the 默认降级链 followed by the 默认模型 tail.
+ * @param id - chain id (defaults to {@link CHAIN_ID}).
+ */
+export function chainOf(entries: string[], id: string = CHAIN_ID): NamedChain {
+  return { id, label: id, entries, timeSlots: [] }
 }
 
 /**

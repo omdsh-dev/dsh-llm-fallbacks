@@ -20,7 +20,7 @@ import { walkChain } from '../src/chain-walk.ts'
 import { ESCALATION_CAP_MS, escalatedCooldownMs } from '../src/recovery.ts'
 import { FallbackStateStore } from '../src/state.ts'
 import { FALLBACKS_PROVIDER } from '../src/virtual-adapter.ts'
-import { cfg, walkDeps } from './support/harness.ts'
+import { CHAIN_ID, cfg, chainOf, walkDeps } from './support/harness.ts'
 
 const COOLDOWN_MS = 60_000
 
@@ -79,9 +79,7 @@ afterEach(async () => {
 function walkOnce(states: FallbackStateStore, chain: readonly string[], recovery: 'timer' | 'half-open', info?: (message: string, ...args: unknown[]) => void) {
   const config = cfg({
     chains: [{
-      id: CHAIN_ID,
-      label: CHAIN_ID,
-      entries: ['deepseek-official/deepseek-flash'],
+      ...chainOf(['deepseek-official/deepseek-flash']),
       // The chain under test rides a full-day slot row, so the all-day tail
       // stays conforming (the per-chain gate).
       timeSlots: [{ kind: 'custom', start: '00:00', end: '23:59', chain: [...chain] }],
@@ -99,9 +97,6 @@ function walkOnce(states: FallbackStateStore, chain: readonly string[], recovery
     { provider: FALLBACKS_PROVIDER, model: CHAIN_ID, messages: [], sessionId: SessionId('s1') },
   ))
 }
-
-/** The chain every walk selects (the picker row id IS the chain id). */
-const CHAIN_ID = 'Auto'
 
 describe('half-open: attempt-level success closes the circuit', () => {
   it('closes a served route’s episode on a normal finish', async () => {
@@ -198,9 +193,7 @@ describe('revertPolicy: never is structural', () => {
     const states = new FallbackStateStore()
     const config = cfg({
       chains: [{
-        id: CHAIN_ID,
-        label: CHAIN_ID,
-        entries: ['deepseek-official/deepseek-flash'],
+        ...chainOf(['deepseek-official/deepseek-flash']),
         timeSlots: [{ kind: 'custom', start: '00:00', end: '23:59', chain: ['a/1'] }],
       }],
       revertPolicy: 'never',

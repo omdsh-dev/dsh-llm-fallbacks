@@ -27,6 +27,7 @@ import { FALLBACKS_PROVIDER } from '../src/virtual-adapter.ts'
 import { OFFICIAL_FLASH } from '../src/time-slots.ts'
 import { MemorySettings } from './support/memory-settings.ts'
 import {
+  CHAIN_ID, chainOf,
   cfg,
   dispatchRequest,
   dispatchRequestError,
@@ -36,11 +37,6 @@ import {
 import { installModelSelectionStub, type ModelSelection } from './support/model-selection-stub.ts'
 
 let ctx: Context
-
-/** The chain every scenario selects; the picker row id IS the chain id. */
-const CHAIN_ID = 'Auto'
-/** One named chain (v2): the picker row, its entries and an empty slot list. */
-const chainOf = (entries: string[], id: string = CHAIN_ID) => ({ id, label: id, entries, timeSlots: [] })
 
 beforeEach(() => {
   ctx = new Context()
