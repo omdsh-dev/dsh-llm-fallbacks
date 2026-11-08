@@ -149,7 +149,7 @@ Then restart the dsh web session so the host half and the client half load.
 
 ### 3. Runtime fallback verification (simulated failures)
 
-1. Configure a demo fallback chain in the `fallbacks` namespace: point `rootChain` at a **fallback model**
+1. Configure a demo fallback chain in the `fallbacks` namespace: point a chain's `entries` at a **fallback model**
    (e.g. `openai/gpt-4o-mini`), misconfigure the primary model's (e.g. `deepseek/deepseek-chat`) credentials or
    point the chain at a non-existent provider, and construct a **non-retryable failure code** (`AUTH` / `QUOTA` path,
    reaching the walk directly without backoff). **Select `FallbacksChain / Auto` in the model picker** — a session on a
@@ -195,7 +195,7 @@ Then restart the dsh web session so the host half and the client half load.
    (`/api/fallbacks/get|set|reset`), independent of any settings-exposure mechanism of the dsh host (the `fallbacks`
    namespace not appearing in the describe exposure set is by design); a successful `get` sets `present`,
    and an unreachable channel shows the flat informational notice atop the still-usable form rather than a dead page.
-3. **Add a chain via catalog selection**: in the `rootChain` selector row pick a target in the provider/model **dropdown
+3. **Add a chain via catalog selection**: in the chain's 默认降级链 selector row pick a target in the provider/model **dropdown
    (model catalog)** to add a chain entry (e.g. the root chain → a fallback `provider/model` that exists in the
    catalog); same for `roles.list` role-chain rows and `roles.rules` row editing (optional). New rows only offer
    in-catalog options; out-of-catalog values are kept, annotated as synthetic options.
@@ -222,7 +222,7 @@ Then restart the dsh web session so the host half and the client half load.
 
 #### 4.3 Switch routing + status block (AC-2 / AC-7)
 
-1. **Failure injection**: configure a demo fallback chain (`rootChain` pointing at a fallback model) and select
+1. **Failure injection**: configure a demo fallback chain (its `entries` pointing at a fallback model) and select its `FallbacksChain/<id>` row
    `FallbacksChain / Auto` for the session; misconfigure the primary model's credentials or point the chain at a
    non-existent provider to construct a **non-retryable failure code** (`AUTH` / `QUOTA`, reaching the walk directly
    without backoff);
