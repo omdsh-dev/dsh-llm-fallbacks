@@ -657,7 +657,7 @@ describe('role card shape', () => {
   })
 
   it('collapses to ONE row: no select, no persona, no footer; delete sits beside the toggle', async () => {
-    const { view } = await mountCard({ config: v2Config() })
+    const { view, props } = await mountCard({ config: v2Config() })
     const card = view.container.querySelector('[data-role-card="coder"]') as HTMLElement
     fireEvent.click(card.querySelector('[aria-expanded]')!)
     const row = card.querySelector('[class*="collapseRow"]') as HTMLElement
@@ -676,13 +676,23 @@ describe('role card shape', () => {
     const buttons = [...row.querySelectorAll('button')]
     expect(buttons).toHaveLength(2)
     expect(buttons[0]!.getAttribute('aria-expanded')).toBe('false')
-    expect(buttons[0]!.getAttribute('aria-label')).toBe(en['roles.expand'])
     expect(buttons[0]!.contains(buttons[1]!)).toBe(false)
-    expect(buttons[1]!.getAttribute('aria-label')).toBe(en['roles.remove'])
+    // F3: both row controls name the ROLE (id + chain route), not a generic
+    // action — otherwise every row of the list sounds identical. The module
+    // `t` seat does not interpolate, so this rerenders with the concrete one.
+    view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
+    const namedRow = view.container.querySelector('[data-role-card="coder"] [class*="collapseRow"]') as HTMLElement
+    const named = [...namedRow.querySelectorAll('button')]
+    expect(named[0]!.getAttribute('aria-label')).toBe('Expand role coder')
+    expect(named[1]!.getAttribute('aria-label')).toBe('Remove role coder (FallbacksChain/Auto)')
+    // The visible bubble stays short — a nowrap tooltip carrying the identity
+    // would overflow the row's trailing edge.
+    expect(named[1]!.getAttribute('data-tip')).toBe('Remove this role')
     // Re-expanding restores the chain select and the persona field.
-    fireEvent.click(buttons[0]!)
+    fireEvent.click(named[0]!)
     expect(card.querySelector('select')).not.toBeNull()
     expect(card.querySelector('textarea')).not.toBeNull()
+    expect(named[0]!.getAttribute('aria-label')).toBe('Collapse role coder')
   })
 
   it('the legacy migration banner renders for v1 keys', async () => {

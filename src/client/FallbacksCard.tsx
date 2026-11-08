@@ -1785,7 +1785,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                     type="button"
                     className={css.collapseToggle}
                     aria-expanded={roleExpanded}
-                    aria-label={t(roleExpanded ? 'roles.collapse' : 'roles.expand')}
+                    aria-label={t(roleExpanded ? 'roles.collapse' : 'roles.expand', { id: row.id })}
                     disabled={!writable}
                     onClick={() => { updateRoleRow(index, { collapsed: !row.collapsed }) }}
                   >
@@ -1797,12 +1797,14 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                     <span className={css.collapseMeta} title={chainRoute}>{chainRoute}</span>
                   </button>
                   {/* SIBLING of the collapse button, never nested: a nested
-                    * button is invalid HTML and double-activates the row. */}
+                    * button is invalid HTML and double-activates the row.
+                    * Both row controls name the role (F3): a generic "remove"
+                    * sounds identical on every row of the list. */}
                   <button
                     type="button"
                     className={`${css.iconButton} ${css.iconButtonDanger}`}
-                    data-tip={t('roles.remove')}
-                    aria-label={t('roles.remove')}
+                    data-tip={t('roles.remove.tip')}
+                    aria-label={t('roles.remove', { id: row.id, chain: chainRoute })}
                     onClick={() => { removeRole(index) }}
                   >
                     <TrashIcon />

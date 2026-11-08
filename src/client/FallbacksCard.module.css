@@ -133,14 +133,6 @@
   min-width: 0;
 }
 
-/* Group breaks (T1): every heading after the first opens a NEW group —
-   子代理 / 高级选项 must not read as one more block inside the previous
-   section. No hairline: the heading itself is the stronger break. */
-.sectionHeading:not(:first-child) {
-  margin-top: 12px;
-  padding-top: 16px;
-}
-
 /* Per-section action pair (plan fallbacks-card-section-ux T2): the
    Discard + Save buttons right-aligned in the heading row (高级选项: at
    the end of its expanded body). The compact sizing keeps the pair
@@ -193,13 +185,6 @@
   min-width: 0;
 }
 
-/* The advanced body's action pair closes the section: the 20px block rhythm
-   leaves the last field no bottom padding, so the pair carries its own
-   separation. */
-.advancedBody > .sectionActions {
-  padding-top: 12px;
-}
-
 /* Field grouping: label + hint + controls. `min-width: 0` keeps long option
    rows from overflowing their grid/column. Base padding is 0 — nested
    fields inside editor cards keep the tight card rhythm; the OFFICIAL flat
@@ -215,18 +200,21 @@
   min-width: 0;
 }
 
-/* Official flat block pacing (reference §3): a 20px rhythm with a 0.5px
-   hairline between ADJACENT blocks, shared by ALL THREE form bodies — the
-   fieldset's direct children, the 高级选项 body and the per-chain tab body
-   (`.chainBody`). One rule on purpose: the per-chain blocks used to have no
-   pacing at all because only two bodies were listed. A section heading /
-   notice between two fields breaks the adjacency — the heading is the
-   stronger break and carries no separator. */
+/* Official flat block pacing (reference §3): a SYMMETRIC 10px half-rhythm
+   around every block, so adjacent blocks sit 20px apart with the 0.5px
+   hairline centred between them. The bottom half matters: every block ends
+   in a filled row / radio row / add button, and a top-only pad put the
+   separator straight against that control. Shared by ALL THREE form bodies
+   — the fieldset's direct children, the 高级选项 body and the per-chain tab
+   body (`.chainBody`). One rule on purpose: the per-chain blocks used to
+   have no pacing at all because only two bodies were listed. A section
+   heading / notice between two fields breaks the adjacency — the heading is
+   the stronger break and carries no separator. */
 .fieldset > .field,
 .fieldset > .numberFields,
 .fieldset > :is(.advancedBody, .chainBody) > .field,
 .fieldset > :is(.advancedBody, .chainBody) > .numberFields {
-  padding: 20px 0 0;
+  padding: 10px 0;
 }
 
 .fieldset > .field + .field,
