@@ -334,24 +334,45 @@ describe('never touched: explicit routes and external backends', () => {
 })
 
 describe('resume + record stickiness', () => {
-  it('resolves the role from the record for a header-less resume and mounts it', async () => {
-    const { fake, seam } = install()
-    const first = activationSpec()
-    await startThroughWrapper(ctx, first)
+  it('hands a resume the caller’s own spec and writes only the role record (I-000081)', async () => {
+    const { fake, seam, chainHeads } = install()
+    await startThroughWrapper(ctx, activationSpec({ agentOptions: { provider: 'openai', model: 'gpt-4o' } }))
     const childId = String(fake.activations[0]!.childId)
+    const authorized = chainHeads.get(childId)!
+    expect(authorized.source).toBe('authorized')
 
     // A resume: the caller reserves the SAME child id and carries no Assignment
-    // header at all — the record is the only role memory.
+    // header at all — the record is the only role memory. The activation
+    // creates nothing, so it is NOT a fresh mount: it must not stamp the
+    // virtual pair, record a mount verdict or claim a chain head (I-000081).
     const resume = { provider: 'spawn', label: 'resume', childId, request: { prompt: [] } }
     await startThroughWrapper(ctx, resume)
 
-    const received = fake.activations[1]!
-    expect(received.childId).toBe(childId)
-    expect(received.request.agentOptions).toEqual({
-      provider: FALLBACKS_PROVIDER,
-      model: FALLBACKS_CHAIN_MODEL,
+    expect(fake.activations[1]).toBe(resume)
+    expect(seam.records.get(childId)).toEqual({
+      role: 'coder',
+      at: expect.any(Number),
+      firstNoticePending: true,
     })
+    // The spawn's own label stands — the resume writes none.
+    expect(chainHeads.get(childId)).toBe(authorized)
+  })
+
+  it('keeps the spawn mount verdict on a resume of a mounted child (sticky)', async () => {
+    const { fake, seam, chainHeads } = install()
+    await startThroughWrapper(ctx, activationSpec())
+    const childId = String(fake.activations[0]!.childId)
+    const injected = chainHeads.get(childId)!
+    expect(injected.source).toBe('injected')
+
+    const resume = { provider: 'spawn', label: 'resume', childId, request: { prompt: [] } }
+    await startThroughWrapper(ctx, resume)
+
+    expect(fake.activations[1]).toBe(resume)
+    // The mount happened at spawn; a resume adds no verdict and no label of
+    // its own, so the spawn's sticky `true` and its head label both survive.
     expect(seam.records.get(childId)).toMatchObject({ role: 'coder', virtualRouteInjected: true })
+    expect(chainHeads.get(childId)).toBe(injected)
   })
 
   it('keeps the mount verdict across a rewrite that carries no verdict of its own', async () => {
@@ -360,12 +381,10 @@ describe('resume + record stickiness', () => {
     const childId = String(fake.activations[0]!.childId)
     expect(seam.records.get(childId)?.virtualRouteInjected).toBe(true)
 
-    // A second dispatch under the same reserved id that does NOT mount (an
-    // explicit route): the sticky flag must survive the rewrite.
-    await startThroughWrapper(ctx, activationSpec({
-      childId,
-      agentOptions: { provider: 'openai', model: 'gpt-4o' },
-    }))
+    // A second dispatch under the same reserved id (a resume, so it never
+    // mounts) rewrites the record without a verdict of its own: the sticky
+    // flag must survive the rewrite.
+    await startThroughWrapper(ctx, activationSpec({ childId }))
 
     expect(seam.records.get(childId)).toMatchObject({ virtualRouteInjected: true })
   })

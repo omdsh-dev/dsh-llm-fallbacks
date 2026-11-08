@@ -72,11 +72,12 @@
  * record carries `virtualRouteInjected` (sticky) and the effective chain head
  * is labelled in `chainHeads` (`injected` / `authorized`). Injection is
  * creation-time only BY CONSTRUCTION: rc.1's `startActivation` rejects any
- * child id that already exists (`DUPLICATE_CHILD`), so this path never attaches
- * to an existing child and cannot overwrite its durable selection — a
- * caller-reserved `childId` is a pre-chosen identity for a NEW child. A
- * non-injectable dispatch forwards the caller's spec untouched (external
- * backends keep pure inheritance).
+ * child id that already exists (`DUPLICATE_CHILD`): a caller-reserved
+ * `childId` the seam already recorded is a RE-ACTIVATION of that child (its
+ * durable selection is already fixed), so it mounts nothing — that activation
+ * writes the role record and no verdict or label (I-000081). A non-injectable
+ * dispatch forwards the caller's spec untouched (external backends keep pure
+ * inheritance).
  *
  * In-session notice row (plan Task 3): the SAME install point registers the
  * `agent/pre-step` emitter (`./role-notice.ts`) over the record map it owns, so
@@ -953,19 +954,34 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
           // row. Either way the record is written BEFORE the native call — the
           // child's own listeners read this map, and the walk reads the mount
           // verdict from it.
+          //
+          // A caller-reserved `childId` the seam ALREADY recorded is a
+          // RE-ACTIVATION, not a fresh mount: the runtime refuses a new child
+          // under an existing id (`DUPLICATE_CHILD`), so creation options are
+          // already fixed and this activation only re-attaches to the child's
+          // own durable route. It injects nothing and claims no head — the role
+          // record is its ONLY write (I-000081). A reserved id with no record
+          // is still a NEW child (a roster teammate reserves its name up
+          // front), so it mounts like any other fresh dispatch. Limit: the
+          // record map is process-local, so a resume after a host restart looks
+          // fresh.
+          const resume = spec.childId !== undefined && records.has(spec.childId)
           const authorized = explicitRoute(spec.request)
-          const injected = injectRoute(spec, role, reservedId)
+          const injected = resume ? undefined : injectRoute(spec, role, reservedId)
           effectiveSpec = injected === undefined
             ? (reservedId === spec.childId ? spec : { ...spec, childId: reservedId })
             : { ...spec, childId: reservedId, request: injected.request }
           recordChild(reservedId, role, at, { virtualRouteInjected: injected !== undefined })
-          const head = injected?.head ?? authorized
-          if (head !== undefined) {
-            options.chainHeads?.set(reservedId, {
-              at,
-              route: { provider: head.provider, model: head.model },
-              source: injected === undefined ? 'authorized' : 'injected',
-            })
+          // A resume labels nothing either: the spawn's own label stands.
+          if (!resume) {
+            const head = injected?.head ?? authorized
+            if (head !== undefined) {
+              options.chainHeads?.set(reservedId, {
+                at,
+                route: { provider: head.provider, model: head.model },
+                source: injected === undefined ? 'authorized' : 'injected',
+              })
+            }
           }
         }
       } catch (error) {

@@ -282,9 +282,10 @@ async function adaptForTarget(
   if (options.reasoningEffort === undefined && options.maxTokens === undefined) return options
   const info = await modelInfoOf(target.provider, target.model)
   if (info === undefined || info === null) return options
+  let adapted: GenerateOptions
+  const dropped: RepairableControl[] = []
   try {
-    const adapted = { ...options }
-    const dropped: RepairableControl[] = []
+    adapted = { ...options }
     const effort = options.reasoningEffort
     if (effort !== undefined
       && !(info.reasoning?.efforts ?? []).some((supported) => supported.id === effort)) {
@@ -296,19 +297,23 @@ async function adaptForTarget(
       delete adapted.maxTokens
       dropped.push('maxTokens')
     }
-    if (dropped.length > 0) {
+  } catch {
+    // Malformed metadata reads as unknown; the request goes out unchanged.
+    return options
+  }
+  if (dropped.length > 0) {
+    // The sink runs OUTSIDE the adaptation try, and its own fault is swallowed:
+    // a logger failure must never cancel the drop (I-000118).
+    try {
       debug?.(
         'llm-fallbacks: parameter adaptation candidate=%s/%s dropped=%s',
         target.provider,
         target.model,
         dropped.join(','),
       )
-    }
-    return adapted
-  } catch {
-    // Malformed metadata reads as unknown; the request goes out unchanged.
-    return options
+    } catch { /* a sink fault is not an adaptation fault */ }
   }
+  return adapted
 }
 
 /**
@@ -890,6 +895,11 @@ async function* walk(
       committed = false
       swallowed = undefined
       let repair: RepairableControl | undefined
+      // Pre-output `usage` is buffered, not yielded: a repair re-streams this
+      // attempt, and the rejected request's usage must not reach the consumer
+      // (pinned: one usage chunk per logical attempt). Any other chunk flushes
+      // the buffer first, preserving arrival order.
+      const pendingUsage: StreamChunk[] = []
       for await (const chunk of llm.stream({ ...attemptOptions, provider: target.provider, model: target.model, messages })) {
         const failure = chunk.type === 'finish' && chunk.reason.kind === 'error' ? chunk.reason.failure : undefined
         if (failure !== undefined && !committed) {
@@ -921,13 +931,26 @@ async function* walk(
             // booking it is all this walk keeps from it.
             bookFailure(target, failure.code)
           }
+          for (const pending of pendingUsage) yield pending
+          pendingUsage.length = 0
           yield chunk
           return
         }
+        if (chunk.type === 'usage' && !committed) {
+          pendingUsage.push(chunk)
+          continue
+        }
+        for (const pending of pendingUsage) yield pending
+        pendingUsage.length = 0
         yield chunk
         if (chunk.type !== 'usage') committed = true
       }
-      if (repair === undefined) break
+      if (repair === undefined) {
+        // Not repaired: the attempt is kept (a swallowed switch or forwarded
+        // failure), so its buffered usage is delivered before the walk moves on.
+        for (const pending of pendingUsage) yield pending
+        break
+      }
       repaired.add(repair)
       // A narrowed COPY: `adaptForTarget` may hand back the caller's own options.
       attemptOptions = { ...attemptOptions }

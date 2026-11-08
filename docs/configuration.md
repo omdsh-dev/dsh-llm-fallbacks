@@ -143,7 +143,7 @@ There is **no LLM auto-match stage**: a walk is already inside the request whose
 4. the config is active and the resolved role's concatenated chain has at least one dispatchable exact head (`roleChainEntries` + `firstDispatchableExactHead`, the same two calls the walk starts from);
 5. the host subagent policy is not `unprovable` (fail-closed: never mount a route whose switches the plugin could not prove), and — when that policy is `enabled` — the role chain has at least one dispatchable exact head **on** the allowlist: the first attempt is a plugin-originated route like every switch, so an empty intersection declines the mount and the child keeps pure inheritance.
 
-Mounting is **creation-time only**, so it can never overwrite a resumed child's own durable selection, and it is not a routing engine: the child's role chain is still resolved per walk. The seam records the verdict:
+Mounting is **creation-time only**, so it can never overwrite a resumed child's own durable selection — and a reserved child id the seam already recorded is a **re-activation**, not a mount: it rewrites the role record only, stamps nothing and labels no head. A reserved id the seam has not seen (a roster teammate reserves its identity up front) is a new child and mounts like any other dispatch. Mounting is also not a routing engine: the child's role chain is still resolved per walk. The seam records the verdict:
 
 - `virtualRouteInjected: true` on the subagent seam record (sticky across record rewrites) — this is also the flag that makes the walk allowlist-filter the child's candidates;
 - `chainHeads`: source `injected` for a mount, source `authorized` for a request that already carried an explicit route (the card renders both labels).
@@ -214,6 +214,8 @@ This is the same rule the retired `overrideConfig` path enforced by dropping a s
 | `INVALID_REQUEST` whose message names a `max_tokens` **range/validity** rejection (`max_tokens参数非法…[1,131072]`, `max_tokens: … invalid`) | the attempt carried `maxTokens` |
 
 The repair is a request fix, not a chain switch: **no** cooldown, **no** failed-set entry, **no** `fallbacks/switch` reason and no switch consumed — the candidate stays available to the next walk. At most one repair per control per attempt, so a repaired attempt that is rejected again follows the normal rules (trigger-code swallow/advance, or verbatim forwarding). The message shape is deliberately narrow: prose that merely mentions the parameter (`prompt exceeds max_tokens budget`) is not a range rejection and is forwarded, not guessed at.
+
+**Usage chunks on repair**: the rejected request's `usage` describes a request the provider refused, so it is **not** yielded — the walk buffers uncommitted `usage` until the attempt either produces output or ends, and a repair discards it. A repaired logical attempt therefore emits **one** `usage` chunk: the repaired attempt's own (same as an attempt that was never rejected). An attempt swallowed for a chain switch still emits its `usage`, because it is not re-streamed.
 
 **Residual path**: `UNSUPPORTED_REASONING_EFFORT` on an attempt that carried no effort, a second identical rejection after its repair, and `INVALID_REQUEST` from any other cause (it is too broad — it also covers malformed request history) still end the turn after one attempt unless the operator lists the code in `triggerCodes`; the walk's default trigger codes are unchanged.
 
