@@ -223,6 +223,17 @@ async function mountCard(options: Parameters<typeof scriptedApi>[0] = {}, preloa
 }
 
 /**
+ * Expand every role card: role editors mount COLLAPSED (one scannable row per
+ * role). Content assertions call this right after mounting; the collapse-state
+ * assertions skip it.
+ */
+function expandRoleCards(container: HTMLElement): void {
+  for (const toggle of container.querySelectorAll('[data-role-card] [aria-expanded="false"]')) {
+    fireEvent.click(toggle)
+  }
+}
+
+/**
  * A base loaded config. The FLAT card renders every field unconditionally —
  * there is no config-level `enabled` gate to satisfy (plan
  * fallbacks-web-ux-alignment T2/T3), so the draft is clean (it seeds from
@@ -577,6 +588,7 @@ describe('migrated v1 config (plan fallbacks-v1-auto-migration)', () => {
     expect(view.container.querySelector('[data-role-card="beta"]')).not.toBeNull()
 
     // Each role's pointer select is present, UNSET, and offers the chains.
+    expandRoleCards(view.container)
     const selects = [...view.container.querySelectorAll('[data-role-chain-select]')] as HTMLSelectElement[]
     expect(selects).toHaveLength(2)
     for (const select of selects) {
@@ -590,6 +602,7 @@ describe('migrated v1 config (plan fallbacks-v1-auto-migration)', () => {
     const migrated = parseFallbacksConfig(migrateLegacyConfig(v1Descriptor()))
     const { view, scripted } = await mountCard({ config: migrated as typeof defaultFallbacksConfig })
 
+    expandRoleCards(view.container)
     const selects = [...view.container.querySelectorAll('[data-role-chain-select]')] as HTMLSelectElement[]
     expect(selects).toHaveLength(2) // alpha + beta, both UNSET after the migration
     fireEvent.change(selects[0]!, { target: { value: 'Auto' } })
@@ -611,6 +624,7 @@ describe('role cards (指定降级链)', () => {
   it('renders a role card with id, persona, and the chain-pointer select', async () => {
     const { view } = await mountCard({ config: v2Config() })
     expect(view.container.querySelector('[data-role-card="coder"]')).not.toBeNull()
+    expandRoleCards(view.container)
     const select = view.container.querySelector('[data-role-chain-select]') as HTMLSelectElement
     const options = [...select.options].map(option => option.value)
     expect(options[0]).toBe('') // 未指定（沿用 dsh 默认）
@@ -618,10 +632,17 @@ describe('role cards (指定降级链)', () => {
     expect(options).toContain('night')
     // Option labels carry the picker route.
     expect(select.textContent).toContain(`FallbacksChain/Auto`)
+    // The chain help copy rides the info badge, not a visible hint line.
+    const chainHint = [...view.container.querySelectorAll('[class*="infoHint"]')]
+      .find(mark => mark.getAttribute('aria-label') === en['roles.chain.hint'])
+    expect(chainHint?.getAttribute('data-tip')).toBe(en['roles.chain.hint'])
+    expect(view.container.querySelector('[data-role-card="coder"]')!.textContent)
+      .not.toContain(en['roles.chain.hint'])
   })
 
   it('changing the pointer stages the roles save and writes the pointer', async () => {
     const { view, scripted } = await mountCard({ config: v2Config() })
+    expandRoleCards(view.container)
     const select = view.container.querySelector('[data-role-chain-select]') as HTMLSelectElement
     fireEvent.change(select, { target: { value: 'night' } })
     const heading = view.container.querySelector('#fallbacks-subagents')!
@@ -643,6 +664,7 @@ describe('role cards (指定降级链)', () => {
     expect(card.textContent).toContain(en['roles.chainMeta.unspecified'])
     expect(card.textContent).not.toContain('自动')
     // Pick a chain → meta shows the route.
+    expandRoleCards(view.container)
     const select = card.querySelector('[data-role-chain-select]') as HTMLSelectElement
     fireEvent.change(select, { target: { value: 'Auto' } })
     expect(card.textContent).toContain('FallbacksChain/Auto')
@@ -653,13 +675,31 @@ describe('role card shape', () => {
   it('carries exactly ONE select — the 指定降级链 pointer', async () => {
     const { view } = await mountCard({ config: v2Config() })
     const card = view.container.querySelector('[data-role-card="coder"]')!
+    expandRoleCards(view.container)
     expect(card.querySelectorAll('select')).toHaveLength(1)
+  })
+
+  it('mounts every role card COLLAPSED — no editor until the row is opened', async () => {
+    const { view } = await mountCard({ config: v2Config() })
+    const cards = [...view.container.querySelectorAll('[data-role-card]')]
+    expect(cards).toHaveLength(1)
+    for (const card of cards) {
+      expect(card.querySelector('[aria-expanded]')!.getAttribute('aria-expanded')).toBe('false')
+      expect(card.querySelector('select')).toBeNull()
+      expect(card.querySelector('textarea')).toBeNull()
+    }
+    // AC2: a staged edit survives an expand → collapse → expand round trip.
+    const card = cards[0]!
+    expandRoleCards(view.container)
+    fireEvent.change(card.querySelector('[data-role-chain-select]')!, { target: { value: 'night' } })
+    fireEvent.click(card.querySelector('[aria-expanded]')!)
+    fireEvent.click(card.querySelector('[aria-expanded]')!)
+    expect((card.querySelector('[data-role-chain-select]') as HTMLSelectElement).value).toBe('night')
   })
 
   it('collapses to ONE row: no select, no persona, no footer; delete sits beside the toggle', async () => {
     const { view, props } = await mountCard({ config: v2Config() })
     const card = view.container.querySelector('[data-role-card="coder"]') as HTMLElement
-    fireEvent.click(card.querySelector('[aria-expanded]')!)
     const row = card.querySelector('[class*="collapseRow"]') as HTMLElement
     // T2/AC3: the compact card tier + the row and nothing else (6px/12px
     // padding and a 10px gap leave the collapsed card one ~40px row).

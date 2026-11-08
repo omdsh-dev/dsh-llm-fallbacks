@@ -1831,12 +1831,14 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                 )}
                 <div className={css.ruleGrid}>
                   <div className={css.ruleCell}>
-                    <label className={css.ruleCellLabel} htmlFor={`fallbacks-role-chain-${index}`}>{t('roles.chain.label')}</label>
+                    <span className={css.fieldLabel}>
+                      <label className={css.ruleCellLabel} htmlFor={`fallbacks-role-chain-${index}`}>{t('roles.chain.label')}</label>
+                      <InfoHint label={t('roles.chain.hint')} disabled={!writable} />
+                    </span>
                     <select
                       id={`fallbacks-role-chain-${index}`}
                       className={`${css.input} ${css.selectInput}`}
                       value={row.chain}
-                      aria-describedby={`fallbacks-role-chain-hint-${index}`}
                       disabled={!writable}
                       onChange={event => { updateRoleRow(index, { chain: event.target.value }) }}
                       data-role-chain-select=""
@@ -1851,7 +1853,6 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                         <option value={row.chain}>{`${row.chain}${t('roles.chainMeta.unspecified')}`}</option>
                       )}
                     </select>
-                    <span className={css.hint} id={`fallbacks-role-chain-hint-${index}`}>{t('roles.chain.hint')}</span>
                   </div>
                 </div>
                 <div className={css.ruleGrid}>
