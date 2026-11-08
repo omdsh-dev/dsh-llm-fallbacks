@@ -135,20 +135,14 @@
 
 /* Per-section action pair (plan fallbacks-card-section-ux T2): the
    Discard + Save buttons right-aligned in the heading row (高级选项: at
-   the end of its expanded body). The compact sizing keeps the pair
-   subordinate to the heading it rides. */
+   the end of its expanded body). Sizing lives on `.discard` / `.save`
+   themselves so every pair (section heading, chain footer, advanced
+   footer) renders at one metric. */
 .sectionActions {
   display: flex;
   align-items: center;
   gap: 8px;
   margin-left: auto;
-}
-
-.sectionActions .discard,
-.sectionActions .save {
-  padding: 3px 12px;
-  font-size: 12px;
-  line-height: 18px;
 }
 
 /* The 高级选项 disclosure toggle (plan fallbacks-card-section-ux T3): a
@@ -659,6 +653,10 @@ select.input {
   min-width: 0;
   font: inherit;
   text-align: left;
+  /* The title/meta/badge caps cover normal panel widths; this clip is the
+     last-resort bound for a badge + meta that still exceed the row. It clips
+     children only, so the button's own focus ring is unaffected. */
+  overflow: hidden;
 }
 
 .collapseToggle:disabled {
@@ -667,9 +665,10 @@ select.input {
 
 .collapseTitle {
   /* PR #62 UX round 4 part B: no flex:1 — the row tags hug the name
-     (flex:none + a max-width keeps the ellipsis for long custom names). */
-  flex: none;
-  max-width: 55%;
+     (content width). The title is the row's ONE truncating side: it keeps
+     `min-width: 0` and gives width back first, so the name ellipsizes
+     before any route detail is lost. */
+  flex: 0 1 auto;
   min-width: 0;
   font-size: 12px;
   line-height: 18px;
@@ -681,16 +680,16 @@ select.input {
 }
 
 .collapseMeta {
-  /* PR #62 UX round 4 part B: the meta sits at the FAR RIGHT of the row (the
-     tags no longer push it — they hug the name). Plan fallbacks-chain-reorder
-     T2: the role header carries the WHOLE chain now, so the meta must give
-     width back instead of holding it — `flex: none` overflowed the row and
-     `text-overflow` never engaged. The cap leaves the 55%-capped title its
-     room; a single short string (the time-slot first-model meta, which shares
-     this class) is unaffected. */
-  flex: 0 1 auto;
+  /* The meta sits at the FAR RIGHT of the row and renders whole: it never
+     shrinks, so a narrow panel degrades the title instead of both sides.
+     `max-width` is the row ceiling that keeps an over-long route from
+     overflowing — with `overflow: hidden` it clamps and ellipsizes there.
+     The ceiling is bounded against the row's other fixed child: the seed
+     badge caps at 40%, so 40% + 50% here leaves 10% for the title plus the
+     chevron and the three 8px gaps. */
+  flex: none;
   min-width: 0;
-  max-width: 40%;
+  max-width: 50%;
   margin-left: auto;
   font-size: 12px;
   line-height: 18px;
@@ -1084,12 +1083,13 @@ select.input {
   align-self: flex-start;
 }
 
-/* The chain's add affordance is a ghost row at the chain tail (plan
-   fallbacks-chain-row-compact T2). `.outlineButton` / `.addButton` keep their
-   declarations for the other sections, so the override is scoped to the chain
-   block: 26px tall on the same 1px border the bordered variant carries (kept
-   transparent), so the box does not jump when the hover fill appears. */
-.chainBlock > .addButton {
+/* The ghost add affordance: a quiet 26px row on the same 1px border the
+   bordered variant carries (kept transparent), so the box does not jump when
+   the hover fill appears (plan fallbacks-chain-row-compact T2). It is applied
+   by class, never by position: the chain tail's add and the time-slot row's
+   trailing Add custom carry it, while Add preset stays that block's one
+   bordered primary add (batch2 T4). */
+.addButtonGhost {
   box-sizing: border-box;
   align-self: flex-start;
   height: 26px;
@@ -1101,7 +1101,7 @@ select.input {
   color: var(--dsw-alias-label-secondary);
 }
 
-.chainBlock > .addButton:hover:not(:disabled) {
+.addButtonGhost:hover:not(:disabled) {
   border-color: transparent;
   background: var(--dsw-alias-interactive-bg-hover);
   color: var(--dsw-alias-label-primary);
@@ -1109,14 +1109,15 @@ select.input {
 
 /* The ghost keeps the quiet ring of `.iconButton` rather than the bordered
    button's brand outline. */
-.chainBlock > .addButton:focus-visible {
+.addButtonGhost:focus-visible {
   outline: none;
   box-shadow: 0 0 0 2px var(--dsw-alias-border-l3);
 }
 
 /* The time-slot add row (preset picker + Add preset + Add custom): the
    picker keeps the enum-select width (max 240px), the two buttons trail it —
-   the row never stretches across the field. */
+   the row never stretches across the field. Add preset is the block's single
+   primary add; Add custom is the ghost (the class rule above). */
 .slotAddRow {
   display: flex;
   align-items: center;
@@ -1133,19 +1134,19 @@ select.input {
   gap: 4px;
 }
 
-/* Discard (secondary outline) + Save (dark solid primary) — the official
+/* Discard (secondary outline) + Save (solid primary) — the official
    SettingsForm action pair, re-homed beside each section heading (plan
-   fallbacks-card-section-ux T2; the flat footer is gone). Sized by
-   `.sectionActions`. */
+   fallbacks-card-section-ux T2; the flat footer is gone). One compact
+   metric for every pair: section heading, chain footer, advanced footer. */
 .discard,
 .save {
   appearance: none;
   border: 1px solid transparent;
   border-radius: var(--dsw-radius-md);
-  padding: 5px 14px;
+  padding: 3px 12px;
   font: inherit;
-  font-size: 13px;
-  line-height: 1.5;
+  font-size: 12px;
+  line-height: 18px;
   cursor: pointer;
 }
 
@@ -1160,11 +1161,17 @@ select.input {
   border-color: var(--dsw-alias-label-dimmed);
 }
 
+/* The documented host primary-button pair (`.mstar/knowledge/
+   dsh-settings-ui-fidelity`: primary = `button-primary-fill` +
+   `label-primary-foreground`): a button fill token, not a text token, and the
+   on-fill label as the glyph, not a surface token. */
 .save {
-  background: var(--dsw-alias-label-primary);
-  color: var(--dsw-alias-bg-layer-3);
+  background: var(--dsw-alias-button-primary-fill);
+  color: var(--dsw-alias-label-primary-foreground);
 }
 
+/* Disabled is the documented button treatment — keep the fill, carry the
+   state on the shared 0.4 opacity. */
 .discard:disabled,
 .save:disabled {
   opacity: 0.4;
@@ -1299,7 +1306,6 @@ select.input {
 .tabsWrap {
   position: relative;
   border-bottom: 0.5px solid var(--dsw-alias-border-l2);
-  max-width: 720px;
 }
 
 .tabs {
