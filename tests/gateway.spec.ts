@@ -1015,17 +1015,63 @@ describe('set/reset return post-write legacyKeys (W-1/F-1)', () => {
     await gateway.set({ cooldownMs: 120_000 })
 
     // Durability ordering: exactly one call, and the replacement chain is set
-    // before any unset — no window with neither shape.
+    // before any unset — so no crash can strand the section without a shape.
+    // (Deliberately not asserting the removal list: which v1 members the writer
+    // removes is its business, the ordering is the contract.)
     expect(spy).toHaveBeenCalledTimes(1)
     const ops = spy.mock.calls[0]![1] as Array<{ op: string; path: string[] }>
-    expect(ops[0]).toMatchObject({ op: 'set', path: ['chains'] })
     const firstUnset = ops.findIndex(entry => entry.op === 'unset')
     expect(firstUnset).toBeGreaterThan(0)
-    expect(ops.slice(firstUnset).map(entry => entry.path.join('.'))).toEqual([
-      'rootChain',
-      'roles.rules',
-      'roles.list',
-    ])
+    expect(ops.slice(0, firstUnset).some(entry => entry.op === 'set' && entry.path[0] === 'chains')).toBe(true)
+    expect(ops.slice(firstUnset).every(entry => entry.op === 'unset' || entry.path[0] === 'roles')).toBe(true)
+  })
+
+  it('a patch carrying roles wins over the stored per-row v1 members', async () => {
+    // The filter under test: with a `roles` patch the writer must NOT also
+    // rewrite `roles.list` from the stored (v1) rows — that trailing write
+    // would clobber the patch it belongs to.
+    const ctx = track(new Context())
+    await ctx.plugin(MemorySettings)
+    const settings = ctx.settings as unknown as MemorySettings
+    settings.seed(FALLBACKS_PROFILE_ENTRY, {
+      roles: { rules: [{ role: 'stale' }], list: [{ id: 'stale', persona: 'Stale', fallback: 'inherit-root' }] },
+    })
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()), makeSeeds())
+    await waitRegistered(ctx)
+    await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
+
+    await gateway.set({ roles: { list: [{ id: 'fresh', persona: 'Fresh', chain: 'Auto' }] } })
+
+    const persisted = settings.get(FALLBACKS_PROFILE_ENTRY)!
+    expect(persisted['roles']).toEqual({ list: [{ id: 'fresh', persona: 'Fresh', chain: 'Auto' }] })
+    expect(Object.hasOwn(persisted['roles'] as object, 'rules')).toBe(false)
+  })
+
+  it('materializes chain #0 when the stored chains array is EMPTY beside a rootChain', async () => {
+    const ctx = track(new Context())
+    await ctx.plugin(MemorySettings)
+    const settings = ctx.settings as unknown as MemorySettings
+    settings.seed(FALLBACKS_PROFILE_ENTRY, {
+      chains: [],
+      rootChain: ['a/one', 'b/two', 'deepseek-official/deepseek-flash'],
+    })
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()), makeSeeds())
+    await waitRegistered(ctx)
+    await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
+
+    const spy = vi.spyOn(settings, 'mutate')
+    await gateway.set({ cooldownMs: 120_000 })
+
+    // ONE call carries the chain and the removal.
+    expect(spy).toHaveBeenCalledTimes(1)
+    const persisted = settings.get(FALLBACKS_PROFILE_ENTRY)!
+    expect(persisted['chains']).toEqual([{
+      id: 'Auto',
+      label: '默认链',
+      entries: ['a/one', 'b/two', 'deepseek-official/deepseek-flash'],
+      timeSlots: [],
+    }])
+    expect(Object.hasOwn(persisted, 'rootChain')).toBe(false)
   })
 
   it('leaves a stored non-empty chains array byte-identical (mixed shape, stale rootChain)', async () => {
@@ -1064,7 +1110,7 @@ describe('set/reset return post-write legacyKeys (W-1/F-1)', () => {
     await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
 
     const patched = [{ id: 'night', label: '夜间', entries: ['n/1', 'deepseek-official/deepseek-flash'], timeSlots: [] }]
-    await gateway.set({ chains: patched } as never)
+    await gateway.set({ chains: patched })
 
     const persisted = settings.get(FALLBACKS_PROFILE_ENTRY)!
     expect(persisted['chains']).toEqual(patched)

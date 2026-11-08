@@ -496,8 +496,8 @@ export async function writeFallbacksSection(
   const cleaned = stripLegacyForWrite(patch)
   const patchHasRoles = cleaned['roles'] !== undefined
   // A patch that supplies `roles` replaces the whole object, so the per-member
-  // v1 removals under it are already satisfied — keeping them would let a
-  // path op race the object write it belongs to.
+  // v1 removals under it are already satisfied — keeping them would CLOBBER the
+  // patch: a later `roles.list` write would trail the patch's own `roles` set.
   const removals = legacySectionRemovals(stored)
     .filter(op => !(patchHasRoles && op.path[0] === 'roles'))
   const ops: SettingsPathOp[] = []
