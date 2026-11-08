@@ -1309,6 +1309,28 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
             <p className={css.error} role="alert">{`${t('validation.blocked')}${slotErrors.join('; ')}`}</p>
           )}
 
+          {/* ======== 链名称 (per chain) ======== */}
+          {/* Discoverable rename: the ⋯ menu is the secondary path, this field
+              is where a maintainer looks after clicking 「+」 and seeing the raw
+              id as the tab title. The ID is the picker model id and stays
+              fixed; only the display name is editable. */}
+          <div className={css.field} role="group" aria-labelledby={`fallbacks-chain-name-${activeDraft!.id}`}>
+            <span className={css.fieldLabel}>
+              <span id={`fallbacks-chain-name-${activeDraft!.id}`}>{t('chains.name.label')}</span>
+              <InfoHint label={t('chains.name.tooltip')} disabled={!writable} />
+            </span>
+            <input
+              className={css.input}
+              value={activeDraft!.label}
+              placeholder={activeDraft!.id}
+              aria-label={t('chains.name.label')}
+              data-chain-name=""
+              disabled={!writable}
+              onChange={event => { patchActiveDraft(draft => ({ ...draft, label: event.target.value })) }}
+            />
+            <span className={css.hint}>{t('chains.name.hint', { id: activeDraft!.id })}</span>
+          </div>
+
           {/* ======== 分时槽设置 (per chain) ======== */}
           <div className={css.field} role="group" aria-labelledby={`fallbacks-time-slots-${activeDraft!.id}`}>
             <span className={css.fieldLabel}>
