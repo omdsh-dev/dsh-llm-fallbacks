@@ -380,6 +380,26 @@ describe('per-tab blocks and per-tab save isolation', () => {
     expect((view.container.querySelector('[data-chain-tab="night"] [data-error-mark]'))).toBeNull()
   })
 
+  it('does NOT persist an invalid pending chain staged in another tab', async () => {
+    const { view, scripted } = await mountCard({ config: v2Config() })
+    // Add a chain, leave it unnamed (label '' + empty entries = invalid), then
+    // move to a sibling tab: the structural change alone would arm the save,
+    // and chainsPatch() writes the whole draft list — so the section save must
+    // stay blocked while ANY chain is invalid.
+    fireEvent.click(view.container.querySelector('[data-tab-add]')!)
+    expect([...view.container.querySelectorAll('[data-chain-tab]')]).toHaveLength(3)
+    fireEvent.click(view.container.querySelector('[data-chain-tab="night"]')!)
+
+    const save = view.container.querySelector('[data-chain-foot] button[class*="save"]') as HTMLButtonElement
+    expect(save.disabled).toBe(true)
+    // Firing the click anyway must not persist the pending row.
+    fireEvent.click(save)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(scripted.set).not.toHaveBeenCalled()
+    // The invalid tab still carries its own error mark.
+    expect(view.container.querySelector('[data-chain-tab="chain-3"] [data-error-mark]')).not.toBeNull()
+  })
+
   it('persists a newly ADDED chain (append survives the save)', async () => {
     const { view, scripted } = await mountCard({ config: v2Config() })
     fireEvent.click(view.container.querySelector('[data-tab-add]')!)
