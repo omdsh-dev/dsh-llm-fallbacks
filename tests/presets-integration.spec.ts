@@ -69,7 +69,7 @@ function gateway(ctx: Context): FallbacksConfigGateway {
 }
 
 /** The raw user-layer roles section of the fallbacks settings namespace. */
-function userSection(ctx: Context): { roles: { list: Array<{ id: string; persona: string }>; rules: unknown[] } } | undefined {
+function userSection(ctx: Context): { roles: { list: Array<{ id: string; persona: string }> } } | undefined {
   return ctx.settings.describe().find((d) => d.ns === FALLBACKS_PROFILE_ENTRY)?.user
 }
 
@@ -120,7 +120,7 @@ describe('bundled preset self-declaration (real apply)', () => {
     // The RAW write shape is the two-key `{ id, persona }` (R4 — no
     // chain/fallback/prompt/permissions invented on insert).
     expect(userSection(ctx)).toEqual({
-      roles: { list: presetRoles.map((preset) => ({ id: preset.id, persona: preset.persona })), rules: [] },
+      roles: { list: presetRoles.map((preset) => ({ id: preset.id, persona: preset.persona })) },
     })
     // Badge: all five rows seeded at their default (nothing overridden), all
     // carrying the internal self-declare's `bundled` provenance.
@@ -148,7 +148,7 @@ describe('bundled preset self-declaration (real apply)', () => {
     expect(rows.map((row) => row.id)).toEqual(presetRoles.map((preset) => preset.id))
     expect(rows.map((row) => row.persona)).toEqual(presetRoles.map((preset) => preset.persona))
     expect(userSection(ctx)).toEqual({
-      roles: { list: presetRoles.map((preset) => ({ id: preset.id, persona: preset.persona })), rules: [] },
+      roles: { list: presetRoles.map((preset) => ({ id: preset.id, persona: preset.persona })) },
     })
     expect(gateway(ctx).get().seeds).toEqual(
       presetRoles.map((preset) => ({ id: preset.id, overridden: false, source: 'bundled' })),
@@ -278,7 +278,7 @@ describe('bundled preset self-declaration (real apply)', () => {
     // the dev-time mirror of a provider whose document already carries the
     // row when the owning plugin loads.
     ;(ctx.settings as unknown as MemorySettings).seed(FALLBACKS_PROFILE_ENTRY, {
-      roles: { list: [{ id: 'scout', persona: 'operator persona' }], rules: [] },
+      roles: { list: [{ id: 'scout', persona: 'operator persona' }] },
     })
     const logs = captureLogs(ctx)
     apply(ctx)
@@ -373,7 +373,7 @@ describe('bundled preset self-declaration (real apply)', () => {
     expect(gateway(ctx).get().seeds).toEqual([])
     // apply/runtime unaffected: the service stays defined and callable.
     expect(ctx.get('llm-fallbacks')).toBeDefined()
-    expect(service(ctx).resolveRole).toBeDefined()
+    expect(service(ctx).resolveChain).toBeDefined()
   })
 
   it('multi-fiber: same-root second apply does not re-fire (no second conflict warn, no extra write) (D9.3-a W-1)', async () => {
@@ -382,7 +382,7 @@ describe('bundled preset self-declaration (real apply)', () => {
     const settings = ctx.settings as unknown as CountingSettings
     // A conflict on the FIRST fire makes a second fire observable via warns.
     ;(ctx.settings as unknown as MemorySettings).seed(FALLBACKS_PROFILE_ENTRY, {
-      roles: { list: [{ id: 'scout', persona: 'operator persona' }], rules: [] },
+      roles: { list: [{ id: 'scout', persona: 'operator persona' }] },
     })
     const logs = captureLogs(ctx)
     apply(ctx)

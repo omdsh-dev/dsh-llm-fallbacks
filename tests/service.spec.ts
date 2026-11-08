@@ -40,7 +40,7 @@ import {
   detectLegacyKeys,
   provide,
   resolveChain,
-  resolveRole,
+  resolveChainViews,
   validateFallbacksConfig,
   type FallbacksConfig,
   type FallbacksService,
@@ -108,15 +108,15 @@ describe('llm-fallbacks named cordis service', () => {
 
   it('exposes exactly the pure function surface + name/version metadata + the three additive seed methods + the dispatch-role getter (no state fields)', async () => {
     const fb = await appliedService()
-    // The ten-key shape pins both the full surface AND the absence of any
+    // The nine-key shape pins both the full surface AND the absence of any
     // state-bearing FIELD (stateStore / event emitters / filter helpers).
     // The seed methods are closures over the per-apply manager and the getter
     // is a closure over the fiber's own seam — state stays behind the
     // closures, never a property on the service object (spec §9.5).
+    // Role resolution is a seam-internal step, not a service function.
     expect(Object.keys(fb)).toEqual([
       'name',
       'version',
-      'resolveRole',
       'resolveChain',
       'validateFallbacksConfig',
       'detectLegacyKeys',
@@ -129,7 +129,6 @@ describe('llm-fallbacks named cordis service', () => {
 
   it('references the SAME functions as the package-root re-exports (single point of truth)', async () => {
     const fb = await appliedService()
-    expect(fb.resolveRole).toBe(resolveRole)
     expect(fb.resolveChain).toBe(resolveChain)
     expect(fb.validateFallbacksConfig).toBe(validateFallbacksConfig)
     expect(fb.detectLegacyKeys).toBe(detectLegacyKeys)
@@ -137,39 +136,34 @@ describe('llm-fallbacks named cordis service', () => {
 
   it('service functions are directly callable', async () => {
     const fb = await appliedService()
-    // resolveRole — rule hit from a subagent + provider match (same minimal
-    // fixture as tests/export-surface.spec.ts; PR #62 feedback: rules are
-    // subagent-only, so a root agent would resolve to 'inherit').
-    const agent: Parameters<typeof resolveRole>[0] = {
-      options: { provider: 'openai', model: 'gpt-4o' },
-      session: { header: { origin: 'subagent' } },
-    }
-    expect(fb.resolveRole(agent, [{ provider: 'openai', role: 'coder' }], new Map([['coder', 'coder']]))).toBe('coder')
-    // resolveChain — the rootChain candidate survives the default filter
-    // when the current model differs.
+    // resolveChain — the ONE chain's entry survives the default filter when
+    // the current model differs (nothing is concatenated any more).
     expect(
-      fb.resolveChain([], ['openai/gpt-4o'], 'inherit', 'mock', 'gpt-4o').map((candidate) => candidate.raw),
+      fb.resolveChain(['openai/gpt-4o'], 'mock', 'gpt-4o').map((candidate) => candidate.raw),
     ).toEqual(['openai/gpt-4o'])
-    // validateFallbacksConfig — a valid config warns nothing.
+    // resolveChainViews is the package-root pure function behind it.
+    expect(resolveChainViews(['openai/gpt-4o'], 'mock', 'gpt-4o').all).toEqual([
+      { provider: 'openai', model: 'gpt-4o', raw: 'openai/gpt-4o' },
+    ])
+    // validateFallbacksConfig — a valid v2 config warns nothing.
     const warn = vi.fn()
     // Spread the defaults so the fixture satisfies the full FallbacksConfig
-    // shape (same pattern as tests/export-surface.spec.ts) — surfaced by the
-    // dev-time tsc validation (F-001), pre-existing latent type error.
+    // shape (same pattern as tests/export-surface.spec.ts).
     const validConfig: FallbacksConfig = {
       ...defaultFallbacksConfig,
-      enabled: true,
-      // Conforming all-day head (P6): rootChain must start with one official
-      // Conforming all-day head (P6): rootChain must end with one official model.
-      rootChain: ['deepseek-official/deepseek-flash'],
-      roles: {
-        list: [{ id: 'coder', persona: '', chain: ['anthropic/claude-3-5-sonnet'] }],
-        rules: [{ origin: 'root', role: 'coder' }],
-      },
+      chains: [{
+        id: 'Auto',
+        label: 'Default chain',
+        entries: ['anthropic/claude-3-5-sonnet', 'deepseek-official/deepseek-flash'],
+        timeSlots: [],
+      }],
+      // The role carries a POINTER into `chains[].id`, never an inline chain.
+      roles: { list: [{ id: 'coder', persona: '', chain: 'Auto' }] },
     }
     fb.validateFallbacksConfig(validConfig, { warn })
     expect(warn).not.toHaveBeenCalled()
-    // detectLegacyKeys — the removed `chains` key is flagged.
-    expect(fb.detectLegacyKeys({ chains: [] })).toContain('chains')
+    // detectLegacyKeys — the v1 two-block keys are flagged.
+    expect(fb.detectLegacyKeys({ rootChain: [], timeSlots: [] })).toEqual(['rootChain', 'timeSlots'])
   })
 
   it('unregisters on dispose: ctx.get returns undefined afterwards', async () => {
@@ -198,7 +192,7 @@ describe('llm-fallbacks named cordis service', () => {
     // The FIRST apply's service object stays registered: same identity and
     // same function references (no clobber by the second apply).
     expect(ctx.get('llm-fallbacks')).toBe(first)
-    expect(first.resolveRole).toBe(resolveRole)
+    expect(first.resolveChain).toBe(resolveChain)
   })
 
   it('declareSeeds materializes rows and getEffectiveRoles reads them back (manager single point of truth)', async () => {
@@ -233,7 +227,7 @@ describe('llm-fallbacks named cordis service', () => {
     // channel the same child bound), not just in the manager registry.
     const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_PROFILE_ENTRY)!
     expect(descriptor.user).toEqual({
-      roles: { list: [{ id: 'architect', persona: 'architects the fallback flow' }], rules: [] },
+      roles: { list: [{ id: 'architect', persona: 'architects the fallback flow' }] },
     })
   })
 
@@ -255,7 +249,7 @@ describe('llm-fallbacks named cordis service', () => {
     // channel) — the row persona IS the override; nothing override-shaped is
     // stored separately (spec §9.2).
     await ctx.settings.update(FALLBACKS_PROFILE_ENTRY, {
-      roles: { list: [{ id: 'architect', persona: 'operator edit' }], rules: [] },
+      roles: { list: [{ id: 'architect', persona: 'operator edit' }] },
     })
     expect(fb.getEffectiveRoles().roles[0]).toMatchObject({ personaOverridden: true })
 
@@ -304,10 +298,7 @@ describe('llm-fallbacks named cordis service', () => {
     try {
       apply(bareCtx, {
         ...defaultFallbacksConfig,
-        roles: {
-          list: [{ id: 'architect', persona: 'operator edit' }],
-          rules: [],
-        },
+        roles: { list: [{ id: 'architect', persona: 'operator edit' }] },
       })
 
       // Absent synchronously AND after the settings child's settlement
