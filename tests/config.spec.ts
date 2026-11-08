@@ -536,6 +536,41 @@ describe('migrateLegacyConfig (plan fallbacks-v1-auto-migration)', () => {
     expect(migrated.roles.list.every(role => role.chain === undefined && !('fallback' in role))).toBe(true)
   })
 
+  it('migrates a rootChain even when an EMPTY chains list is present', () => {
+    // The boundary the guard protects: a profile that never had v2 content
+    // (`chains: []` from the schema default) keeps its v1 chain.
+    const migrated = migrateLegacyConfig({
+      chains: [],
+      rootChain: ['a/one', 'b/two', OFFICIAL_FLASH],
+      timeSlots: [],
+    })
+    expect(migrated.chains).toEqual([{
+      id: MIGRATED_CHAIN_ID,
+      label: MIGRATED_CHAIN_LABEL,
+      entries: ['a/one', 'b/two', OFFICIAL_FLASH],
+      timeSlots: [],
+    }])
+  })
+
+  it('passes every scalar through (it runs on every read)', () => {
+    const migrated = migrateLegacyConfig({
+      triggerCodes: ['QUOTA', 'CONTEXT_WINDOW_EXCEEDED'],
+      cooldownMs: 42_000,
+      revertPolicy: 'never',
+      maxSwitchesPerStep: 3,
+      presets: 'none',
+      tz: 'Europe/Berlin',
+      recovery: 'half-open',
+    })
+    expect(migrated.triggerCodes).toEqual(['QUOTA', 'CONTEXT_WINDOW_EXCEEDED'])
+    expect(migrated.cooldownMs).toBe(42_000)
+    expect(migrated.revertPolicy).toBe('never')
+    expect(migrated.maxSwitchesPerStep).toBe(3)
+    expect(migrated.presets).toBe('none')
+    expect(migrated.tz).toBe('Europe/Berlin')
+    expect(migrated.recovery).toBe('half-open')
+  })
+
   it('never throws on malformed input and degrades to the defaults', () => {
     for (const junk of [undefined, null, 'nope', 42, [], { chains: 'nope', roles: 'nope', rootChain: 'nope' }]) {
       const migrated = migrateLegacyConfig(junk)
