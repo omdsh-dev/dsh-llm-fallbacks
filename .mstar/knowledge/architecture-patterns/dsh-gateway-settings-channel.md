@@ -126,9 +126,9 @@ settings-channel 迭代；trigger：第三并发写者或该迭代启动）。
 
 ### 读写路径同用 containment 守卫
 
-schemastery/mergeLayers 非严格组合会保留 legacy/畸形嵌套键（如两块制前的
+schemastery/mergeLayers 非严格组合会保留 legacy/畸形嵌套键（如 v1 的
 `roles.default`、非数组 `list`）。**读路径必须容忍**（降级为 `[]`/默认，不崩——「readbacks
-must never crash」）；**写路径必须与读路径共用同一守卫**（`roleRows()`/`roleRules()`）——
+must never crash」）；**写路径必须与读路径共用同一守卫**（`roleRows()`）——
 否则同一畸形源在写路径抛裸 TypeError（RPC 错误面）而读路径静默降级，语义不对称。2026-08-15
 fix wave 实证：declare/revert 直读 `config.roles.list` 被收口到守卫。
 
