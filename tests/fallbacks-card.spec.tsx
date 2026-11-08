@@ -225,10 +225,11 @@ async function mountCard(options: Parameters<typeof scriptedApi>[0] = {}, preloa
 /**
  * Expand every role card: role editors mount COLLAPSED (one scannable row per
  * role). Content assertions call this right after mounting; the collapse-state
- * assertions skip it.
+ * assertions skip it. Scoped to the collapse row so the persona disclosure
+ * inside an already-expanded card is never toggled.
  */
 function expandRoleCards(container: HTMLElement): void {
-  for (const toggle of container.querySelectorAll('[data-role-card] [aria-expanded="false"]')) {
+  for (const toggle of container.querySelectorAll('[data-role-card] [class*="collapseRow"] [aria-expanded="false"]')) {
     fireEvent.click(toggle)
   }
 }
@@ -733,6 +734,10 @@ describe('role card shape', () => {
     expect(card.querySelector('select')).not.toBeNull()
     expect(card.querySelector('textarea')).not.toBeNull()
     expect(named[0]!.getAttribute('aria-label')).toBe('Collapse role coder')
+    // Clicking the toggle again collapses the body back to the one-row card.
+    fireEvent.click(named[0]!)
+    expect(card.querySelector('select')).toBeNull()
+    expect(named[0]!.getAttribute('aria-expanded')).toBe('false')
   })
 
   it('the legacy migration banner renders for v1 keys', async () => {
@@ -767,5 +772,10 @@ describe('read-only mode', () => {
     expect(card.querySelector('[aria-expanded]')!.getAttribute('aria-expanded')).toBe('true')
     // The info mark leaves the tab order with the rest of the controls (AC4).
     expect(view.container.querySelector('[class*="infoHint"]')!.getAttribute('tabindex')).toBe('-1')
+    // The chain explanation is information, not an edit control, and the
+    // select no longer describes itself: the badge stays reachable read-only.
+    const chainHint = [...view.container.querySelectorAll('[class*="infoHint"]')]
+      .find(mark => mark.getAttribute('aria-label') === en['roles.chain.hint'])!
+    expect(chainHint.getAttribute('tabindex')).toBe('0')
   })
 })

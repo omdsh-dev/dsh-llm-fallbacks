@@ -1833,7 +1833,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                   <div className={css.ruleCell}>
                     <span className={css.fieldLabel}>
                       <label className={css.ruleCellLabel} htmlFor={`fallbacks-role-chain-${index}`}>{t('roles.chain.label')}</label>
-                      <InfoHint label={t('roles.chain.hint')} disabled={!writable} />
+                      <InfoHint label={t('roles.chain.hint')} />
                     </span>
                     <select
                       id={`fallbacks-role-chain-${index}`}
