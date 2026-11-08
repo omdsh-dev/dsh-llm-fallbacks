@@ -710,6 +710,21 @@ describe('role cards (指定降级链)', () => {
     expect(meta.textContent).toBe('ghost')
     expect(meta.getAttribute('title')).toBe('FallbacksChain/ghost')
   })
+
+  it('a chain with a blank label falls back to the raw chain id', async () => {
+    const { view } = await mountCard({
+      config: {
+        ...v2Config(),
+        chains: [...v2Config().chains, { id: 'blank', label: '', entries: [OFFICIAL_PRO], timeSlots: [] }],
+        roles: { list: [{ id: 'coder', persona: '', chain: 'blank' }] },
+      },
+    })
+    const card = view.container.querySelector('[data-role-card="coder"]')!
+    const meta = card.querySelector('[class*="collapseMeta"]') as HTMLElement
+    // A blank label has nothing to show: the id, never an empty meta.
+    expect(meta.textContent).toBe('blank')
+    expect(meta.getAttribute('title')).toBe('FallbacksChain/blank')
+  })
 })
 
 describe('role card shape', () => {

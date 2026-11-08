@@ -1787,7 +1787,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
               const roleExpanded = !row.collapsed || !writable
               // A pointer naming a chain deleted elsewhere stays visible as a
               // synthetic option so the dangling reference is honest.
-              const chainOutside = row.chain !== '' && !chains.some(chain => chain.id === row.chain)
+              const chainOutside = row.chain !== '' && pointerChain === undefined
               return (
               <div key={index} className={`${css.editorCard} ${css.roleCard}`} data-role-card={row.id}>
                 <div className={css.collapseRow}>
