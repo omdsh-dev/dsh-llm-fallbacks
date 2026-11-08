@@ -888,28 +888,73 @@ describe('get legacyKeys detection (two-block-era leftovers)', () => {
 // ---------------------------------------------------------------------------
 
 describe('set/reset return post-write legacyKeys (W-1/F-1)', () => {
-  it('a save on a legacy user layer keeps reporting the legacy keys (merge, not overwrite)', async () => {
+  it('an explicit save REMOVES the persisted v1 fields and keeps unrelated configuration', async () => {
     const ctx = track(new Context())
     await ctx.plugin(MemorySettings)
     const settings = ctx.settings as unknown as MemorySettings
     settings.seed(FALLBACKS_PROFILE_ENTRY, {
       rootChain: ['other/gpt-4o'],
-      roles: { default: 'reviewer', rules: [{ role: 'reviewer' }] },
+      timeSlots: [{ kind: 'custom', name: 'old', start: '09:00', end: '10:00', chain: ['openai/gpt-4o'] }],
+      roles: {
+        default: 'reviewer',
+        rules: [{ role: 'reviewer' }],
+        list: [{ id: 'coder', persona: 'p', fallback: 'none', vendorNote: 'keep me' }],
+      },
+      'x-vendor': { keep: true },
     })
     const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()), makeSeeds())
     await waitRegistered(ctx)
     await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
 
-    expect(gateway.get().legacyKeys).toEqual(['rootChain', 'roles.default', 'roles.rules'])
+    // Before the save the banner reports every v1 field the file carries.
+    expect(gateway.get().legacyKeys).toEqual([
+      'rootChain',
+      'timeSlots',
+      'roles.default',
+      'roles.rules',
+      'roles.list[].fallback',
+    ])
 
-    // A new-shape save MERGES over the user layer: the legacy keys survive
-    // the write, so the post-write response re-reports them — the client
-    // banner stays honest instead of flickering off against server truth.
+    // The save is merge-only, so the removals ride path ops: only the named
+    // v1 fields go, everything else (including a foreign key) stays.
     const result = await gateway.set({ cooldownMs: 120_000 })
     expect(result.config.cooldownMs).toBe(120_000)
-    expect(result.legacyKeys).toEqual(['rootChain', 'roles.default', 'roles.rules'])
+    expect(result.legacyKeys).toEqual([])
+    expect(settings.get(FALLBACKS_PROFILE_ENTRY)).toEqual({
+      cooldownMs: 120_000,
+      roles: { list: [{ id: 'coder', persona: 'p', vendorNote: 'keep me' }] },
+      'x-vendor': { keep: true },
+    })
     // The next get agrees (no flicker window).
-    expect(gateway.get().legacyKeys).toEqual(['rootChain', 'roles.default', 'roles.rules'])
+    expect(gateway.get().legacyKeys).toEqual([])
+  })
+
+  it('strips a third-party nested-legacy patch without touching foreign members', async () => {
+    const ctx = track(new Context())
+    await ctx.plugin(MemorySettings)
+    const settings = ctx.settings as unknown as MemorySettings
+    // A section that already holds a foreign key at both levels.
+    settings.seed(FALLBACKS_PROFILE_ENTRY, {
+      'x-vendor': { keep: true },
+      roles: { list: [{ id: 'old', persona: 'p', vendorNote: 'keep me' }] },
+    })
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()), makeSeeds())
+    await waitRegistered(ctx)
+    await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
+
+    // The patch a v1-era client would send: a v1 row field plus an unknown
+    // member the schema retains.
+    await gateway.set({
+      roles: {
+        list: [{ id: 'coder', persona: 'p', fallback: 'inherit-root', vendorNote: 'mine' }],
+      } as never,
+    })
+
+    const persisted = settings.get(FALLBACKS_PROFILE_ENTRY)!
+    expect(persisted).toEqual({
+      'x-vendor': { keep: true },
+      roles: { list: [{ id: 'coder', persona: 'p', vendorNote: 'mine' }] },
+    })
   })
 
   it('reset drops the user layer but re-reports legacy keys carried by the entry base', async () => {
@@ -960,12 +1005,14 @@ describe('removed config keys on the real gateway wire (direction C)', () => {
     // the plugin never rewrites it automatically).
     expect(first.legacyKeys).toEqual(['alwaysModeRetryCap', 'roleAutoMatch', 'rootChain'])
 
-    // A new-shape save merges over the user layer, so the legacy keys
-    // survive and the post-write response keeps reporting them (W-1/F-1).
+    // A save removes the v1 two-block fields it owns (`rootChain`, `enabled`)
+    // but leaves unknown keys alone — `alwaysModeRetryCap` / `roleAutoMatch`
+    // are other eras' keys, not this plan's v1 surface, so the banner keeps
+    // reporting them until the operator edits them out.
     const result = await gateway.set({ cooldownMs: 120_000 })
     expect('alwaysModeRetryCap' in result.config).toBe(false)
     expect('roleAutoMatch' in result.config).toBe(false)
-    expect(result.legacyKeys).toEqual(['alwaysModeRetryCap', 'roleAutoMatch', 'rootChain'])
+    expect(result.legacyKeys).toEqual(['alwaysModeRetryCap', 'roleAutoMatch'])
   })
 })
 

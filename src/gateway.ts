@@ -67,7 +67,7 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
-import SettingsForms, { type SettingsNamespace } from '@deepseek-ai/dsh-settings'
+import SettingsForms, { type SettingsNamespace, type SettingsPathOp } from '@deepseek-ai/dsh-settings'
 import { TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import type { TypertContribution } from '@deepseek-ai/dsh-typert-registry'
 import { Config } from './schema'
@@ -261,13 +261,14 @@ export class FallbacksConfigGateway extends TypertRemoteService {
    * patch). No hard-gate resolver (ADR-2): the raw composed config is
    * the wire value. The removed `enabled` key never crosses the wire (the
    * read whitelist drops it — the snapshot-strip half of LEGACY_KEYS).
-   * @returns the wire-normalized composed config plus `legacyKeys` — legacy
-   *   two-block-era fields (`chains` / `roles.default` / undeclared rule
-   *   role refs) detected on the composed source (schemastery retains them,
-   *   plan Task 1 Step 1), so the client can show a migration banner (spec
-   *   §9, incremental field — old clients ignore it) — plus the additive
-   *   `seeds` badge state (spec §9.4, legacyKeys precedent — old clients
-   *   ignore it).
+   * @returns the wire-normalized composed config plus `legacyKeys` — every
+   *   v1 field detected on the composed source (`rootChain`, top-level
+   *   `timeSlots`, `roles.rules`, `roles.default`, `roles.list[].fallback`,
+   *   the v1 ARRAY form of `roles.list[].chain`, plus the older
+   *   `alwaysModeRetryCap` / `roleAutoMatch` / renamed role fields —
+   *   schemastery retains them), so the client can show a migration banner
+   *   (incremental field — old clients ignore it) — plus the additive `seeds`
+   *   badge state (legacyKeys precedent — old clients ignore it).
    */
   get(): FallbacksReadResult {
     return this.readResult()
@@ -309,11 +310,14 @@ export class FallbacksConfigGateway extends TypertRemoteService {
     // (the Plugins-page row toggle replaced it; writing it back would
     // resurrect a switch nothing reads). An all-null / enabled-only patch is
     // a no-op, like the empty patch above.
-    const normalized = Object.fromEntries(
-      Object.entries(patch).filter(([key, value]) => !LEGACY_KEYS.has(key) && value !== null),
+    const normalized = stripLegacyForWrite(
+      Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== null)),
     )
-    if (Object.keys(normalized).length === 0) return this.readResult()
-    await settings.update(FALLBACKS_PROFILE_ENTRY, normalized)
+    // A no-op patch (empty, or only legacy keys — those are stripped above)
+    // still cleans the persisted section: an explicit save is the moment a
+    // stored v1 field must go. A truly empty patch keeps the S2 no-op.
+    if (Object.keys(normalized).length === 0 && Object.keys(patch).length === 0) return this.readResult()
+    await this.writeSection(normalized)
     return this.readResult()
   }
 
@@ -404,15 +408,17 @@ export class FallbacksConfigGateway extends TypertRemoteService {
   }
 
   /**
-   * The io seam the seed manager writes through (spec §9.1): `read` walks
-   * the same live bridge source the gateway reads; `writeRoles` persists a
-   * full `{ list, rules }` to the plugin's profile-entry section — both
-   * arrays always computed from a fresh composed read, so the write stays
-   * correct under the settings merge's array-replace semantics and never
-   * touches operator rules. The write channel fails with the same KD-G5
-   * message as set/reset when no settings service is composed. Built fresh
-   * per call so the mutable settings capture is read at call time (the
-   * inject child swaps it when the settings service appears/disappears).
+   * The io seam the seed manager writes through (spec §9.1): `read` walks the
+   * same live bridge source the gateway reads; `writeRoles` persists the
+   * declared roles as `{ list }` — the v2 shape, whose rows are `{ id,
+   * persona, chain? }` — computed from a fresh composed read, so the write
+   * stays correct under the settings merge's replace-whole-array semantics
+   * and every operator-specified `chain` pointer survives verbatim. It goes
+   * through {@link writeSection}, so a seed write also drops any stored v1
+   * field. The write channel fails with the same KD-G5 message as set/reset
+   * when no settings service is composed. Built fresh per call so the mutable
+   * settings capture is read at call time (the inject child swaps it when the
+   * settings service appears/disappears).
    */
   private seedsIo(): SeedsIo {
     const settings = this.settings
@@ -422,10 +428,91 @@ export class FallbacksConfigGateway extends TypertRemoteService {
         if (settings === undefined) {
           throw new Error('fallbacks: settings service is unavailable — configuration cannot be written')
         }
-        return settings.update(FALLBACKS_PROFILE_ENTRY, { roles })
+        return this.writeSection(stripLegacyForWrite({ roles: roles as unknown as Record<string, unknown> }))
       },
     }
   }
+
+  /**
+   * Write a CLEANED patch and, in the same save, remove v1 fields the
+   * persisted section may still carry. `settings.update` is merge-only, so a
+   * stored `rootChain` / top-level `timeSlots` / `roles.rules` /
+   * `roles.list[].fallback` would otherwise survive every v2 save; the
+   * removals ride `settings.mutate`'s `unset` path ops, which touch only the
+   * named fields (unrelated configuration, foreign keys and redacted secrets
+   * are preserved — a wholesale `replace` rebuilt from a descriptor would not
+   * be).
+   * @param patch - already stripped of v1 fields and null values.
+   */
+  private async writeSection(patch: Record<string, unknown>): Promise<void> {
+    const settings = this.settings
+    if (settings === undefined) {
+      throw new Error('fallbacks: settings service is unavailable — configuration cannot be written')
+    }
+    const removals = this.legacySectionRemovals(settings)
+    if (removals.length > 0) await settings.mutate(FALLBACKS_PROFILE_ENTRY, removals)
+    if (Object.keys(patch).length > 0) await settings.update(FALLBACKS_PROFILE_ENTRY, patch)
+  }
+
+  /**
+   * `unset` path ops for every v1 field the ACTIVE PROFILE's persisted section
+   * still holds. Path-addressed on purpose: the write must not restate (and so
+   * cannot destroy) fields this plugin does not own.
+   * @param settings - the live settings service.
+   */
+  private legacySectionRemovals(settings: SettingsForms): readonly SettingsPathOp[] {
+    const descriptor = settings.describe().find((candidate) => candidate.ns === FALLBACKS_PROFILE_ENTRY)
+    const user = descriptor?.user
+    if (typeof user !== 'object' || user === null || Array.isArray(user)) return []
+    const section = user as Record<string, unknown>
+    const removals: SettingsPathOp[] = []
+    for (const key of LEGACY_KEYS) {
+      if (Object.hasOwn(section, key)) removals.push({ op: 'unset', path: [key] })
+    }
+    const roles = section['roles']
+    if (typeof roles !== 'object' || roles === null || Array.isArray(roles)) return removals
+    const declared = roles as Record<string, unknown>
+    for (const key of ['rules', 'default']) {
+      if (Object.hasOwn(declared, key)) removals.push({ op: 'unset', path: ['roles', key] })
+    }
+    if (!Array.isArray(declared['list'])) return removals
+    // Rows are rewritten as a whole rather than by index: the list is the one
+    // array a v1 field lives in, and rewriting it keeps every foreign member
+    // (the normalizer only drops `fallback` and the v1 ARRAY-form `chain`).
+    const stale = declared['list'].some((row) => typeof row === 'object' && row !== null
+      && !Array.isArray(row)
+      && (Object.hasOwn(row as Record<string, unknown>, 'fallback')
+        || Array.isArray((row as Record<string, unknown>)['chain'])))
+    if (stale) {
+      const cleaned = normalizeRoles({ list: declared['list'] }) as Record<string, unknown>
+      removals.push({ op: 'set', path: ['roles', 'list'], value: cleaned['list'] ?? [] })
+    }
+    return removals
+  }
+}
+
+/**
+ * Strip the v1 two-block fields from a patch on the WRITE path (the read side
+ * filters by schema-declared keys instead). Recursive by construction: the
+ * top-level {@link LEGACY_KEYS} and `roles` — whose rows lose `fallback` and
+ * the v1 ARRAY form of `chain` — are the only places a v1 field can live.
+ * @param value - the patch (or a section being rewritten) to clean.
+ * @returns a new object; the input is never mutated.
+ */
+function stripLegacyForWrite(value: Record<string, unknown>): Record<string, unknown> {
+  const cleaned: Record<string, unknown> = {}
+  for (const [key, member] of Object.entries(value)) {
+    if (LEGACY_KEYS.has(key)) continue
+    if (key === 'roles') {
+      const roles = normalizeRoles(member)
+      if (roles !== undefined) cleaned[key] = roles
+      continue
+    }
+    cleaned[key] = member
+  }
+  // `timeSlots` is a v1 TOP-LEVEL key and a v2 PER-CHAIN field: the set only
+  // strips the former, which is what the loop above already did.
+  return cleaned
 }
 
 /**
