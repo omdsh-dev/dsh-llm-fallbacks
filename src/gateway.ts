@@ -449,46 +449,75 @@ export class FallbacksConfigGateway extends TypertRemoteService {
     if (settings === undefined) {
       throw new Error('fallbacks: settings service is unavailable — configuration cannot be written')
     }
-    const removals = this.legacySectionRemovals(settings)
-    if (removals.length > 0) await settings.mutate(FALLBACKS_PROFILE_ENTRY, removals)
-    if (Object.keys(patch).length > 0) await settings.update(FALLBACKS_PROFILE_ENTRY, patch)
+    await writeFallbacksSection(settings, patch)
   }
+}
 
-  /**
-   * `unset` path ops for every v1 field the ACTIVE PROFILE's persisted section
-   * still holds. Path-addressed on purpose: the write must not restate (and so
-   * cannot destroy) fields this plugin does not own.
-   * @param settings - the live settings service.
-   */
-  private legacySectionRemovals(settings: SettingsForms): readonly SettingsPathOp[] {
-    const descriptor = settings.describe().find((candidate) => candidate.ns === FALLBACKS_PROFILE_ENTRY)
-    const user = descriptor?.user
-    if (typeof user !== 'object' || user === null || Array.isArray(user)) return []
-    const section = user as Record<string, unknown>
-    const removals: SettingsPathOp[] = []
-    for (const key of LEGACY_KEYS) {
-      if (Object.hasOwn(section, key)) removals.push({ op: 'unset', path: [key] })
-    }
-    const roles = section['roles']
-    if (typeof roles !== 'object' || roles === null || Array.isArray(roles)) return removals
-    const declared = roles as Record<string, unknown>
-    for (const key of ['rules', 'default']) {
-      if (Object.hasOwn(declared, key)) removals.push({ op: 'unset', path: ['roles', key] })
-    }
-    if (!Array.isArray(declared['list'])) return removals
-    // Rows are rewritten as a whole rather than by index: the list is the one
-    // array a v1 field lives in, and rewriting it keeps every foreign member
-    // (the normalizer only drops `fallback` and the v1 ARRAY-form `chain`).
-    const stale = declared['list'].some((row) => typeof row === 'object' && row !== null
-      && !Array.isArray(row)
-      && (Object.hasOwn(row as Record<string, unknown>, 'fallback')
-        || Array.isArray((row as Record<string, unknown>)['chain'])))
-    if (stale) {
-      const cleaned = normalizeRoles({ list: declared['list'] }) as Record<string, unknown>
-      removals.push({ op: 'set', path: ['roles', 'list'], value: cleaned['list'] ?? [] })
-    }
-    return removals
+/**
+ * Persist a CLEANED patch and, in the same operation, remove the v1 fields the
+ * ACTIVE PROFILE's persisted section still holds. `settings.update` is
+ * merge-only, so a stored `rootChain` / top-level `timeSlots` / `roles.rules` /
+ * `roles.list[].fallback` would otherwise survive every v2 save; the removals
+ * ride `settings.mutate`'s path ops, which touch only the named fields
+ * (unrelated configuration, foreign keys and redacted secrets are preserved —
+ * a wholesale `replace` rebuilt from a descriptor would delete them).
+ *
+ * Exported because the plugin has TWO write entry points — the gateway
+ * (`set` / `writeRoles`) and the apply-level `SeedsIo` (`declareSeeds`,
+ * `revertSeededPersona`, the bundled preset self-declaration) — and the same
+ * logical operation must clean the same way through both.
+ * @param settings - the live settings service.
+ * @param patch - a patch; v1 fields are stripped here, callers need not.
+ * @param ns - profile entry id (defaults to the plugin's own).
+ */
+export async function writeFallbacksSection(
+  settings: SettingsForms,
+  patch: Record<string, unknown>,
+  ns: string = FALLBACKS_PROFILE_ENTRY,
+): Promise<void> {
+  const cleaned = stripLegacyForWrite(patch)
+  const removals = legacySectionRemovals(settings, ns)
+  if (removals.length > 0) await settings.mutate(ns, removals)
+  if (Object.keys(cleaned).length > 0) await settings.update(ns, cleaned)
+}
+
+/**
+ * `unset` path ops for every v1 field the persisted section still holds.
+ * Path-addressed on purpose: the write must not restate (and so cannot
+ * destroy) fields this plugin does not own.
+ * @param settings - the live settings service.
+ * @param ns - profile entry id.
+ */
+function legacySectionRemovals(settings: SettingsForms, ns: string): readonly SettingsPathOp[] {
+  const descriptor = settings.describe().find((candidate) => candidate.ns === ns)
+  const user = descriptor?.user
+  if (typeof user !== 'object' || user === null || Array.isArray(user)) return []
+  const section = user as Record<string, unknown>
+  const removals: SettingsPathOp[] = []
+  for (const key of LEGACY_KEYS) {
+    if (Object.hasOwn(section, key)) removals.push({ op: 'unset', path: [key] })
   }
+  const roles = section['roles']
+  if (typeof roles !== 'object' || roles === null || Array.isArray(roles)) return removals
+  const declared = roles as Record<string, unknown>
+  for (const key of ['rules', 'default']) {
+    if (Object.hasOwn(declared, key)) removals.push({ op: 'unset', path: ['roles', key] })
+  }
+  if (!Array.isArray(declared['list'])) return removals
+  // Rows are rewritten as a whole rather than unset per index: the list is the
+  // one array a v1 field lives in, and this rewrite is safe only because no
+  // role member is a schema-declared secret (`describe()` here is unredacted,
+  // but a redacted caller would lose one). Prefer per-index unset if
+  // `SettingsPathOp` ever expresses an object member inside an array cleanly.
+  const stale = declared['list'].some((row) => typeof row === 'object' && row !== null
+    && !Array.isArray(row)
+    && (Object.hasOwn(row as Record<string, unknown>, 'fallback')
+      || Array.isArray((row as Record<string, unknown>)['chain'])))
+  if (stale) {
+    const cleanedRoles = normalizeRoles({ list: declared['list'] }) as Record<string, unknown>
+    removals.push({ op: 'set', path: ['roles', 'list'], value: cleanedRoles['list'] ?? [] })
+  }
+  return removals
 }
 
 /**

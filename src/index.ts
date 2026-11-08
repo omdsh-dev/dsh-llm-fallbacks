@@ -53,6 +53,7 @@ import {
   FALLBACKS_PROFILE_ENTRY,
   FallbacksConfigGateway,
   fallbacksTypertContribution,
+  writeFallbacksSection,
   type FallbacksSettingsBridge,
 } from './gateway.ts'
 import {
@@ -356,7 +357,10 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
   // clears `serviceOwned` BEFORE rethrowing any other error, so the preset
   // child skips when the child fiber fails (the fiber logs the failure).
   ctx.inject(['settings'], (sctx) => {
-    writeRoles = (roles) => sctx.settings.update(FALLBACKS_PROFILE_ENTRY, { roles })
+    // Same write path as the gateway (strip + path-addressed v1 cleanup): the
+    // service-level seeds io is a live entry point too (declareSeeds,
+    // revertSeededPersona, the bundled preset self-declaration).
+    writeRoles = (roles) => writeFallbacksSection(sctx.settings, { roles })
     try {
       sctx.provide('llm-fallbacks', {
         name: 'llm-fallbacks',
@@ -767,7 +771,7 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
         chains: config.chains.map((chain) => ({
           id: chain.id,
           label: chain.label,
-          entries: chain.entries,
+          entries: Array.isArray(chain.entries) ? chain.entries : [],
           timeSlots: (chain.timeSlots ?? []).map((row) => row.kind === 'preset'
             ? { preset: row.preset, chainCount: (row.chain ?? []).length }
             : { start: row.start, end: row.end, days: row.days, chainCount: (row.chain ?? []).length }),

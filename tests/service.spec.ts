@@ -195,6 +195,49 @@ describe('llm-fallbacks named cordis service', () => {
     expect(first.resolveChain).toBe(resolveChain)
   })
 
+  it('the service seed write path strips v1 fields and keeps foreign keys', async () => {
+    // The apply-level SeedsIo is a second live write entry point (declareSeeds /
+    // revertSeededPersona / the bundled preset self-declaration). It must clean
+    // the section exactly like the gateway: a v1 profile carrying rootChain,
+    // top-level timeSlots, roles.rules and a row-level fallback loses all of
+    // them on the first seed write, while unrelated members survive.
+    const settings = ctx.settings as unknown as MemorySettings
+    settings.seed(FALLBACKS_PROFILE_ENTRY, {
+      rootChain: ['openai/gpt-4o'],
+      timeSlots: [{ kind: 'custom', name: 'old', start: '09:00', end: '10:00', chain: ['openai/gpt-4o'] }],
+      roles: {
+        rules: [{ role: 'architect' }],
+        list: [{ id: 'architect', persona: 'operator edit', fallback: 'none', vendorNote: 'keep me' }],
+      },
+      'x-vendor': { keep: true },
+    })
+    const fb = await appliedService({ ...defaultFallbacksConfig, presets: 'none' })
+
+    // A declare of a NEW id materializes a row — the one seed path that must
+    // write (an existing row with a different persona is a conflict, not a
+    // write) — so the section goes through the io and gets cleaned.
+    await fb.declareSeeds([{ id: 'fresh-role', persona: 'seed default' }])
+
+    const persisted = settings.get(FALLBACKS_PROFILE_ENTRY)!
+    // The v1 surface is gone…
+    expect(Object.hasOwn(persisted, 'rootChain')).toBe(false)
+    expect(Object.hasOwn(persisted, 'timeSlots')).toBe(false)
+    const roles = persisted.roles as Record<string, unknown>
+    expect(Object.hasOwn(roles, 'rules')).toBe(false)
+    expect((roles.list as Array<Record<string, unknown>>)[0]).not.toHaveProperty('fallback')
+    // …while the rows themselves, their foreign member and the top-level
+    // foreign key survive (the schema's own defaults may be folded in).
+    expect(persisted).toMatchObject({
+      roles: {
+        list: [
+          { id: 'architect', persona: 'operator edit', vendorNote: 'keep me' },
+          { id: 'fresh-role', persona: 'seed default' },
+        ],
+      },
+      'x-vendor': { keep: true },
+    })
+  })
+
   it('declareSeeds materializes rows and getEffectiveRoles reads them back (manager single point of truth)', async () => {
     // Pin to `presets: 'none'` (fallbacks-preset-roles T3): the bundled
     // preset self-declaration would otherwise add 5 preset rows to the
