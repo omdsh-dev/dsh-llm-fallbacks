@@ -748,19 +748,17 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
             : state.cooldown.snapshot(),
       }
     },
-    // T2 AC-2: composed-config readback — the SAME live `source()` the
-    // runtime reads (schema defaults → plugin-row base → settings user
-    // layer). Role summaries from `roles.list` (id + chain length, the
-    // two-block model); `presets` is optional-on-type with a schema default,
-    // so the summary falls back to 'bundled' explicitly.
-    // T2 AC-4 (fallbacks-tui-settings): the readback is enriched with the
-    // time-slot rows (preset rows carry `{ preset, chainCount }` — windows
-    // are frozen PRESETS constants, never stored; custom rows carry
-    // `{ start, end, chainCount }`), the config `tz`, and the role rules
-    // (`provider`/`model` optional at the config model, summarized as `''`
-    // → rendered `*` when omitted). Chain counts read defensively (`?? []`)
-    // so a malformed legacy slot row never crashes the readback (the
-    // resolver warns and skips it at request time).
+    // Composed-config readback — the SAME live `source()` the runtime reads
+    // (schema defaults → plugin-row base → settings user layer). Every named
+    // chain is summarized with its label, entries and time-slot rows (preset
+    // rows carry `{ preset, chainCount }` — windows are frozen PRESETS
+    // constants, never stored; custom rows carry `{ start, end, chainCount }`),
+    // each role with its `chain` POINTER (the `FallbacksChain/<id>` route it
+    // specifies, or absent = NOT SPECIFIED), plus the config `tz`. `presets`
+    // is optional-on-type with a schema default, so the summary falls back to
+    // 'bundled' explicitly. Chain and entry lists read defensively (`?? []`)
+    // so a malformed legacy slot row never crashes the readback (the resolver
+    // warns and skips it at request time).
     getConfig(): FallbacksConfigSummary {
       const config = source()
       return {

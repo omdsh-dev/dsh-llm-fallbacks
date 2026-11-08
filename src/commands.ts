@@ -556,12 +556,13 @@ function formatConfigTimeSlots(
 }
 
 /**
- * Render the `/fallbacks config` surface (plan fallbacks-tui-client T2,
- * AC-2 + fallbacks-tui-settings Task 2 AC-4): the composed `fallbacks`
- * namespace as the runtime reads it — enriched with the time-slot rows
- * (preset rows resolve their frozen window from {@link PRESETS}), the
- * config timezone, and the role rules — plus edit hints pointing at the
- * `/settings` TUI edit surface while keeping the file-edit documentation.
+ * Render the `/fallbacks config` surface: the composed `fallbacks` namespace
+ * as the runtime reads it — every named chain with its label, entries and
+ * time-slot rows (preset rows resolve their frozen window from
+ * {@link PRESETS}), the config timezone, and each role with its `chain`
+ * POINTER (the `FallbacksChain/<id>` it specifies, or NOT SPECIFIED) — plus
+ * edit hints pointing at the `/settings` TUI edit surface while keeping the
+ * file-edit documentation.
  * The FIRST LINE marks the composed-config readback — distinct from the
  * diagnostic title and never merged into {@link fallbacksCommandText} (two
  * operator surfaces, product lock). Locale defaults to `zh` (the command
