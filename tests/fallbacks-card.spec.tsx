@@ -633,12 +633,15 @@ describe('role cards (指定降级链)', () => {
     expect(options).toContain('night')
     // Option labels carry the picker route.
     expect(select.textContent).toContain(`FallbacksChain/Auto`)
-    // The chain help copy rides the info badge, not a visible hint line.
-    const chainHint = [...view.container.querySelectorAll('[class*="infoHint"]')]
-      .find(mark => mark.getAttribute('aria-label') === en['roles.chain.hint'])
-    expect(chainHint?.getAttribute('data-tip')).toBe(en['roles.chain.hint'])
+    // The chain help copy rides the info badge and DESCRIBES the select: the
+    // badge's aria-label is the select's accessible description.
+    const described = view.container.querySelector(`#${select.getAttribute('aria-describedby')}`) as HTMLElement
+    expect(described).not.toBeNull()
+    expect(described.getAttribute('role')).toBe('img')
+    expect(described.getAttribute('aria-label')).toBe(en['roles.chain.tooltip'])
+    expect(described.getAttribute('data-tip')).toBe(en['roles.chain.tooltip'])
     expect(view.container.querySelector('[data-role-card="coder"]')!.textContent)
-      .not.toContain(en['roles.chain.hint'])
+      .not.toContain(en['roles.chain.tooltip'])
   })
 
   it('changing the pointer stages the roles save and writes the pointer', async () => {
@@ -655,6 +658,25 @@ describe('role cards (指定降级链)', () => {
     expect(patch.roles.list[0]).toEqual({ id: 'coder', persona: 'Coder', chain: 'night' })
     // Chains ride along UNCHANGED (the roles save does not touch them).
     expect(patch.chains).toEqual(v2Config().chains)
+  })
+
+  it('a saved pointer re-seeds the rows COLLAPSED with the accepted value', async () => {
+    const { view, scripted } = await mountCard({ config: v2Config() })
+    expandRoleCards(view.container)
+    const select = view.container.querySelector('[data-role-chain-select]') as HTMLSelectElement
+    fireEvent.change(select, { target: { value: 'night' } })
+    const heading = view.container.querySelector('#fallbacks-subagents')!
+    fireEvent.click([...heading.querySelectorAll('button')].at(-1)!)
+    await waitFor(() => expect(scripted.set).toHaveBeenCalled())
+    const card = view.container.querySelector('[data-role-card="coder"]') as HTMLElement
+    // The post-save re-seed rebuilds the rows from the accepted config:
+    // collapsed again, with the saved route on the collapse meta.
+    await waitFor(() => expect(card.querySelector('[aria-expanded]')!.getAttribute('aria-expanded')).toBe('false'))
+    expect(card.querySelector('select')).toBeNull()
+    expect(card.textContent).toContain('FallbacksChain/night')
+    // Re-opening the card shows the ACCEPTED pointer, not the stale draft.
+    fireEvent.click(card.querySelector('[class*="collapseRow"] [aria-expanded="false"]')!)
+    expect((card.querySelector('[data-role-chain-select]') as HTMLSelectElement).value).toBe('night')
   })
 
   it('the collapsed meta names the specified route or 未指定降级链 — never an auto mode', async () => {
@@ -696,6 +718,23 @@ describe('role card shape', () => {
     fireEvent.click(card.querySelector('[aria-expanded]')!)
     fireEvent.click(card.querySelector('[aria-expanded]')!)
     expect((card.querySelector('[data-role-chain-select]') as HTMLSelectElement).value).toBe('night')
+  })
+
+  it('keeps per-row collapse state independent', async () => {
+    const twoRoles = {
+      ...v2Config(),
+      roles: { list: [{ id: 'alpha', persona: '', chain: 'Auto' }, { id: 'beta', persona: '', chain: '' }] },
+    }
+    const { view } = await mountCard({ config: twoRoles })
+    const alpha = view.container.querySelector('[data-role-card="alpha"]')!
+    const beta = view.container.querySelector('[data-role-card="beta"]')!
+    expect(alpha.querySelector('[aria-expanded]')!.getAttribute('aria-expanded')).toBe('false')
+    expect(beta.querySelector('[aria-expanded]')!.getAttribute('aria-expanded')).toBe('false')
+    // Expanding alpha leaves beta on its own collapsed row.
+    fireEvent.click(alpha.querySelector('[class*="collapseRow"] [aria-expanded="false"]')!)
+    expect(alpha.querySelector('[data-role-chain-select]')).not.toBeNull()
+    expect(beta.querySelector('[aria-expanded]')!.getAttribute('aria-expanded')).toBe('false')
+    expect(beta.querySelector('select')).toBeNull()
   })
 
   it('collapses to ONE row: no select, no persona, no footer; delete sits beside the toggle', async () => {
@@ -770,12 +809,13 @@ describe('read-only mode', () => {
     // The role card is expanded (read-only forces content disclosures open).
     const card = view.container.querySelector('[data-role-card="coder"]')!
     expect(card.querySelector('[aria-expanded]')!.getAttribute('aria-expanded')).toBe('true')
-    // The info mark leaves the tab order with the rest of the controls (AC4).
-    expect(view.container.querySelector('[class*="infoHint"]')!.getAttribute('tabindex')).toBe('-1')
-    // The chain explanation is information, not an edit control, and the
-    // select no longer describes itself: the badge stays reachable read-only.
-    const chainHint = [...view.container.querySelectorAll('[class*="infoHint"]')]
-      .find(mark => mark.getAttribute('aria-label') === en['roles.chain.hint'])!
+    // Edit-control info marks leave the tab order (AC4); the chain explanation
+    // is information, not an edit control, so its badge stays reachable even
+    // when the surface is read-only.
+    const marks = [...view.container.querySelectorAll('[class*="infoHint"]')]
+    const chainHint = marks.find(mark => mark.getAttribute('aria-label') === en['roles.chain.tooltip'])!
+    const neighbour = marks.find(mark => mark !== chainHint)!
     expect(chainHint.getAttribute('tabindex')).toBe('0')
+    expect(neighbour.getAttribute('tabindex')).toBe('-1')
   })
 })
