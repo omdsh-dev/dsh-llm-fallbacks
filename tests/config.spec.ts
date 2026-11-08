@@ -603,3 +603,47 @@ describe('migrateLegacyConfig (plan fallbacks-v1-auto-migration)', () => {
     expect(detectLegacyKeys(migrateLegacyConfig(raw) as unknown as Record<string, unknown>)).toEqual([])
   })
 })
+
+// The composition boundary: cordis validates the entry config against
+// `Config` BEFORE `apply()`, so the schema must accept a v1 section — a
+// rejection there kills the fiber and `migrateLegacyConfig` never runs.
+// These cases are the regression pin for that ordering.
+describe('v1 sections compose through the real schema (plan fallbacks-schema-v1-tolerance)', () => {
+  it('composes an ARRAY role chain, then migrates it to NOT SPECIFIED', () => {
+    const composed = unwrapConfig(Config({
+      roles: { list: [{ id: 'alpha', persona: 'Alpha persona', chain: ['x/1', 'y/2'] }] },
+    })) as unknown as Record<string, unknown>
+    const roles = (composed['roles'] as { list: Record<string, unknown>[] }).list
+    expect(roles[0]!['chain']).toEqual(['x/1', 'y/2'])
+
+    const migrated = migrateLegacyConfig(composed)
+    expect(migrated.roles.list).toHaveLength(1)
+    expect(migrated.roles.list[0]!.id).toBe('alpha')
+    expect(migrated.roles.list[0]!.persona).toBe('Alpha persona')
+    expect('chain' in migrated.roles.list[0]!).toBe(false)
+  })
+
+  it('composes a full v1 section and migrates it to chain #0 + identity roles', () => {
+    const composed = unwrapConfig(Config({
+      rootChain: ['a/one', 'b/two', OFFICIAL_FLASH],
+      timeSlots: [],
+      roles: {
+        rules: [{ provider: 'a', model: 'one', role: 'alpha' }],
+        list: [{ id: 'alpha', persona: 'Alpha persona', chain: ['x/1'], fallback: 'inherit-root' }],
+      },
+    })) as unknown as Record<string, unknown>
+
+    const migrated = migrateLegacyConfig(composed)
+    expect(migrated.chains).toHaveLength(1)
+    expect(migrated.chains[0]!.id).toBe(MIGRATED_CHAIN_ID)
+    expect(migrated.chains[0]!.entries).toEqual(['a/one', 'b/two', OFFICIAL_FLASH])
+    // The schema folds its own `permissions` default into the row; what matters
+    // is that identity survives and the v1 members do not.
+    const role = migrated.roles.list[0]! as unknown as Record<string, unknown>
+    expect(role['id']).toBe('alpha')
+    expect(role['persona']).toBe('Alpha persona')
+    expect('chain' in role).toBe(false)
+    expect('fallback' in role).toBe(false)
+    expect(isFallbackActive(migrated)).toBe(true)
+  })
+})
