@@ -166,7 +166,7 @@ export default defineConfig({
     // `v11/projects/<hash>/` snapshots of this checkout taken at install
     // time — pre-fix sources whose tests then fail — and needs the same
     // treatment.
-    exclude: [...defaultExclude, '**/.worktrees/**', '**/.pnpm-store/**'],
+    exclude: [...defaultExclude, '**/.worktrees/**', '**/.agents/**', '**/.pnpm-store/**'],
     server: {
       deps: {
         // Inline the peers whose VALUE imports the test graph needs (see
