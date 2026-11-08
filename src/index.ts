@@ -431,25 +431,17 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
     if (settingsComposed !== undefined) return settingsComposed
     return entry
   }
-  // Virtual FallbacksChain/Auto adapter (plan fallbacks-virtual-chain
-  // Task 1, P2; PR #62 feedback): ONE conditional `ctx.inject(['llm'])`
-  // child — the picker row registers whenever the config is ACTIVE
-  // (`isFallbackActive` — content presence; the removed `enabled` switch is
-  // re-keyed to it. Conformance of the all-day chain is NOT part of
-  // registration: a legacy multi-model or empty rootChain still earns the
-  // row as long as something is configured; the adapter's delegate still
-  // refuses a non-conforming all-day), and hides
-  // when nothing is configured. The returned reconcile thunk is wired into
-  // the settings
-  // onChange below: transition-reconcile over COMMITTED composed
-  // snapshots only (card drafts are client-side until gateway save), so
-  // the catalog never flickers; the gate is `isFallbackActive` content
-  // presence (`rootChain` / `timeSlots` / declared roles), so slot-row
-  // edits churn registration whenever they flip that gate (e.g. removing
-  // the only slot while rootChain and roles are empty) — the intended
-  // content-presence contract (T2), not churn to design away; do NOT
-  // re-narrow the condition to ignore `timeSlots`. Conformance-only chain
-  // edits never churn (conformance gates the delegate, not the row).
+  // Virtual FallbacksChain adapter: ONE conditional `ctx.inject(['llm'])`
+  // child — the picker rows register whenever the config is ACTIVE
+  // (`isFallbackActive` = `chains.length > 0`), and hide when no chain is
+  // configured. Conformance is NOT part of registration: a chain with empty or
+  // non-conforming entries still earns its row, and the walk refuses it. The
+  // returned reconcile thunk is wired into the settings onChange below:
+  // transition-reconcile over COMMITTED composed snapshots only (card drafts
+  // are client-side until gateway save), so the catalog never flickers. The
+  // gate is the chain LIST, so adding/removing the last chain intentionally
+  // churns registration; a per-chain conformance or slot edit never does
+  // (conformance gates the walk, not the row).
   // `() => source()` — the mutable binding, not the initial thunk: `source`
   // reads the Loader's live config reference (or the settings-composed view —
   // same binding), and reconcile must read the LIVE composed snapshot (same
@@ -515,8 +507,8 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
     const disposeDocumentUpdated = ctx.on('settings/document-updated', (ns: SettingsNamespace) => {
       if (ns !== FALLBACKS_PROFILE_ENTRY) return
       if (!isLiveConfigRef(config)) refreshComposed()
-      // A settings update can change roles.list / rootChain — roleIds
-      // re-derives from the same live source the runtime reads.
+      // A settings update can change roles.list / chains — roleIds re-derives
+      // from the same live source the runtime reads.
       // Validation (validateFallbacksConfig / detectLegacyKeys) is
       // intentionally STARTUP-ONLY: a live settings merge is already
       // schema-validated by the settings layer, and the defensive runtime
@@ -524,8 +516,8 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
       // values with warn-not-crash semantics (qc1 F-006).
       const current = source()
       roleIds = new Map(current.roles.list.map((role) => [role.id.trim(), role.id] as const))
-      // Virtual adapter registration reconcile (P2): active / all-day
-      // conformance transitions only — idempotent, slot edits no-op.
+      // Virtual adapter registration reconcile: an empty/non-empty `chains`
+      // transition only — idempotent, per-chain edits no-op.
       reconcileFallbacksAdapter()
       // P7: a settings edit is a config change, not a wall-clock rotation —
       // re-baseline the 分时切换 markers so the next root request starts
@@ -642,33 +634,15 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
 
   const states = new FallbackStateStore()
   stateStores.set(ctx, states)
-  // P7 分时切换 marker (plan fallbacks-timeslots Task 2): per-root-agent
-  // LAST slot winner (identity key + display label), in-process only. The
-  // WALK compares it against the current winner (a routing seed observation,
-  // never a failure decision — no cooldown, no switch count, no durable
-  // event). Cleaned on agent/disposed + plugin dispose and re-baselined on a
-  // settings change (a config edit is not a wall-clock rotation).
   const slotWinners = new Map<string, { key: string; label: string }>()
-  // T3 blocked-attempt / T5 chain-head maps are constructed before the
-  // gateway (so the snapshot can close over them). decide() writes the
-  // blocked record below; the inject path writes the head.
-  //
-  // Virtual FallbacksChain/Auto adapter (plan fallbacks-virtual-chain Task 1,
-  // P2; direction C in plan dsh-022-rc1-upgrade): ONE conditional
-  // `ctx.inject(['llm'])` child — the picker row registers whenever the config
-  // is ACTIVE (`isFallbackActive` — content presence; conformance of the
-  // all-day chain is NOT part of registration: a legacy multi-model or empty
-  // rootChain still earns the row as long as something is configured; the
-  // walk still refuses a chain with no dispatchable head), and hides when
-  // nothing is configured. The returned reconcile thunk is wired into the
-  // settings `onChange` below: transition-reconcile over COMMITTED composed
-  // snapshots only (card drafts are client-side until gateway save), so the
-  // catalog never flickers; the gate is `isFallbackActive` content presence
-  // (`rootChain` / `timeSlots` / declared roles), so slot-row edits churn
-  // registration whenever they flip that gate — the intended content-presence
-  // contract (T2), not churn to design away; do NOT re-narrow the condition to
-  // ignore `timeSlots`. Conformance-only chain edits never churn (conformance
-  // gates the walk, not the row).
+  // P7 分时切换 marker: the LAST slot winner per (agent, chain id) — identity
+  // key + display label, in-process only. The WALK compares it against the
+  // current winner (a routing seed observation, never a failure decision — no
+  // cooldown, no switch count, no durable event). Cleaned on agent/disposed
+  // (every chain's marker for that agent) + plugin dispose, and re-baselined
+  // on a settings change (a config edit is not a wall-clock rotation).
+  // The adapter registration lifecycle is declared above (the install happens
+  // below, once the walk deps exist).
   //
   // The deps bundle is built HERE, over the live per-apply state: the walk
   // reads the same `source()` / `roleIds` bindings and the same cooldown
@@ -687,7 +661,11 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
 
   ctx.on('agent/disposed', ({ agent }) => {
     states.delete(agent.id)
-    slotWinners.delete(agent.id)
+    // One marker per (agent, chain) — drop every chain's entry for this agent.
+    const markerPrefix = `${agent.id}\u0000`
+    for (const key of slotWinners.keys()) {
+      if (key.startsWith(markerPrefix)) slotWinners.delete(key)
+    }
     subagentSeam.records.delete(agent.id)
     // CF-6: `noticeEmitted` is deliberately NOT cleared here. `Agent.id` IS the
     // child session id, and a continuable child's durable session OUTLIVES the

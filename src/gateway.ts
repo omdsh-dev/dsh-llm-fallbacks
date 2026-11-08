@@ -464,9 +464,10 @@ function normalizeRoles(value: unknown): unknown {
  * top-level keys (schemastery merges them silently — the settings service
  * would accept them), and schema type violations — plus the Task 3 semantic
  * guards the permissive schema deliberately does not carry: nested `roles`
- * keys, `timeSlots` row shapes (unknown preset ids, duplicate presets, preset
- * rows carrying windows, non-`HH:mm` custom bounds, out-of-range days, empty
- * chains), and the all-day `rootChain` head conformance.
+ * keys, `chains[]` row shape (id pattern, case-sensitive uniqueness, label),
+ * per-chain `timeSlots` row shapes (unknown preset ids, duplicate presets,
+ * preset rows carrying windows, non-`HH:mm` custom bounds, out-of-range days,
+ * empty chains), and each chain's non-empty `entries` tail conformance.
  *
  * Exported (plan fallbacks-tui-settings Task 1): the TUI settings section's
  * JSON-field `parse` mirrors the gateway save rules through this single

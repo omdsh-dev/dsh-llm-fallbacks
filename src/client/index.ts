@@ -41,9 +41,9 @@ import type {} from '@deepseek-ai/dsh-client-locale/client'
 // value import.
 import type {} from '@deepseek-ai/dsh-client-ui-plugin-manager/client'
 // Type-only: the settings domain's slot-contract merge (the
-// 'settings.general.item' entry — the General page status row's registration
-// target). Same empty type-only pattern; the ui-settings package is already
-// a type-only peer (`peerDependencies`) and a manifest inject entry.
+// 'plugins.bundle.config' keyed card seat this plugin registers into). Same
+// empty type-only pattern; the ui-settings package is already a type-only
+// peer (`peerDependencies`) and a manifest inject entry.
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 // Type-only: the conversation domain's Context merge (the `uiConversation`
 // service seat — the D1 Definition registry's home). Same empty

@@ -497,8 +497,8 @@ function promptTextOf(blocks: readonly SubagentPromptBlockView[] | undefined): s
  * DECLARED RAW id the seam already resolved, so this is an exact id match, not
  * a second canonicalization pass.
  *
- * Only `id` and `persona` are read: no `chain`, no `rootChain`, no routing
- * state — a `chain: []` role's persona resolves exactly like a chained one's.
+ * Only `id` and `persona` are read: no `chain` pointer, no routing state — a
+ * role that specifies a chain names its persona exactly like one that does not.
  *
  * @param roles - the live declared roles (`roles.list`).
  * @param roleId - the DECLARED RAW role id resolved at the seam.

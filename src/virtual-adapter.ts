@@ -270,12 +270,10 @@ export function installFallbacksAdapter(
 
   const reconcile = () => {
     const config = readConfig()
-    // PR #62 feedback: the row is visible whenever something is configured
-    // (`isFallbackActive` — content presence; the removed `enabled` switch is
-    // re-keyed to it) — conformance of the all-day chain is NOT part of
-    // registration (a legacy/empty chain still earns the row as long as
-    // something is configured; the delegate refuses it via
-    // `effectiveHeadOf`).
+    // The rows are visible whenever a chain is configured
+    // (`isFallbackActive` = `chains.length > 0`); a chain's conformance is NOT
+    // part of registration — a chain with empty or non-conforming entries
+    // still earns its row, and the delegate refuses it via `effectiveHeadOf`.
     const shouldRegister = isFallbackActive(config)
     if (shouldRegister && !registered) {
       if (llm === undefined) return

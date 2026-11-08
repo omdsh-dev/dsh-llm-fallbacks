@@ -1,10 +1,11 @@
 /**
  * `/fallbacks` slash command (plan fallbacks-role-runtime T3, AC-5).
  *
- * Session-scoped, read-only diagnostic: current session origin → resolved
- * role → resolved chain (role chain, else rootChain — an `inherit: true`
- * tail is annotated 「（inherit-root）」) → recent `fallbacks/switch` events
- * (newest first, capped) → cooldown status. Mirrors dsh-advisor's
+ * Session-scoped, read-only diagnostic: current session origin → the resolved
+ * dispatch role (+ its specified chain pointer) → every configured named chain
+ * with its tail and current slot label, the calling agent's selection marked →
+ * recent `fallbacks/switch` events (newest first, capped) → cooldown status.
+ * Mirrors dsh-advisor's
  * `/advisor` command pattern: a conditional `ctx.inject(['commands'])` child
  * in `src/index.ts` calls {@link registerFallbacksCommands} with a
  * factory-bound handler; `commands` never joins the top-level inject list, so
@@ -89,22 +90,18 @@ export interface FallbacksCommandSnapshot {
 }
 
 /**
- * The composed-config surface `/fallbacks config` renders (plan
- * fallbacks-tui-client T2, AC-2): the composed `fallbacks` namespace as the
- * runtime sees it (settings user layer included). Roles are summarized from
- * `roles.list` as `{ id, chainCount }` — the two-block model: `roles.list`
- * entities carry id/persona/chain/fallback (NO per-role `model`;
- * `provider`/`model` live on `roles.rules`), so the readback line is id +
- * chain count, never a rules dump.
+ * The composed-config surface `/fallbacks config` renders: the composed
+ * `fallbacks` namespace as the runtime sees it (settings user layer included).
+ * It carries every named chain (`{ id, label, entries, timeSlots }`) and the
+ * declared roles as `{ id, chain? }` — the role's optional POINTER into
+ * `chains[].id` (「指定降级链」), rendered as its `FallbacksChain/<id>` route or
+ * as NOT SPECIFIED. There is no rules dump (rules are gone).
  *
- * Enriched readback (plan fallbacks-tui-settings Task 2, AC-4): timeSlots /
- * tz / roles.rules join the summary so TUI operators can verify `/settings`
- * edits. One summarized time-slot row: preset rows carry `{ preset,
- * chainCount }` (windows are frozen code constants in {@link PRESETS} and
- * never stored on the row — the render resolves the window text from
- * PRESETS); custom rows carry `{ start, end, chainCount }`. Rules rows carry
- * `{ provider, model, role }` — an omitted provider/model (wildcard match at
- * runtime) is summarized as `''` and rendered as `*`.
+ * The config-level `tz` joins the summary so TUI operators can verify
+ * `/settings` edits. One summarized time-slot row: preset rows carry
+ * `{ preset, chainCount }` (windows are frozen code constants in
+ * {@link PRESETS} and never stored on the row — the render resolves the window
+ * text from PRESETS); custom rows carry `{ start, end, chainCount }`.
  */
 export interface FallbacksConfigSummary {
   /**
@@ -133,8 +130,8 @@ export interface FallbacksConfigSummary {
 /**
  * The session-scoped read-only operations the `/fallbacks` handler drives.
  * Implemented by the wiring (`src/index.ts`) against the live config source
- * (`roles.list` / `rootChain` — no chain map anymore) and the per-agent
- * state store; faked in unit tests.
+ * (`chains` / `roles.list`), the dispatch seam's per-child record and the
+ * per-agent state store; faked in unit tests.
  */
 export interface FallbacksCommandController {
   /** Snapshot the session's fallback diagnostics. Never mutates state. */
@@ -198,7 +195,6 @@ export const FALLBACKS_COMMAND_LOCALES = {
     origin: '会话来源',
     role: '角色',
     chain: '链',
-    inheritRoot: '（inherit-root）',
     chainNone: '未配置',
     // Copy split (spec § Copy): the slot line is the 分时切换 side; the
     // switches section lists failure walks only — 降级切换. Never mix.
@@ -263,7 +259,6 @@ export const FALLBACKS_COMMAND_LOCALES = {
     origin: 'Session origin',
     role: 'Role',
     chain: 'Chain',
-    inheritRoot: ' (inherit-root)',
     chainNone: 'not configured',
     // Copy split (spec § Copy): the slot line is the time-slot side; the
     // switches section lists failure walks only — fallback switches.

@@ -68,17 +68,16 @@ import {
 } from './virtual-adapter.ts'
 
 /**
- * `LlmError` code: the effective chain is empty — the virtual route has no
- * head to walk (the pre-attempt guard, owned here because only the walk knows
- * WHICH chain the calling session walks: a subagent's role chain, not the
- * root's all-day chain).
+ * `LlmError` code: the effective chain is empty — the selected named chain has
+ * no entries to walk (the pre-attempt guard; the walk is the only point that
+ * knows WHICH chain the session selected, `options.model` being the chain id).
  */
 export const EMPTY_EFFECTIVE_CHAIN_CODE = 'EMPTY_EFFECTIVE_CHAIN'
 /**
- * `LlmError` code: the chain head is not a dispatchable real pair — an
- * undispatchable entry (wildcard selector, malformed selector, or a self-route
- * back to `FallbacksChain/*` — the recursion guard), or, for a ROOT walk, a
- * non-conforming all-day `rootChain` (the picker row's conformance gate).
+ * `LlmError` code: the chain cannot be walked — its entries tail is not
+ * conforming (the last entry must be exactly one official model), or no entry
+ * is a dispatchable real pair (wildcard selector, malformed selector, or a
+ * self-route back to `FallbacksChain/*` — the recursion guard).
  */
 export const UNDISPATCHABLE_HEAD_CODE = 'UNDISPATCHABLE_EFFECTIVE_HEAD'
 /**

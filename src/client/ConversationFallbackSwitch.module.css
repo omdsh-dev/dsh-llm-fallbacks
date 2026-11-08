@@ -44,10 +44,9 @@
 }
 
 /* Role badge (AC-5): a compact, non-interactive chip distinct from the
- * surrounding text — same pill geometry as the card/general-row status
- * badge (`GeneralFallbacksRow.module.css .badge`, `FallbacksCard.module.css`
- * `:107-113`), surfaced on the module-platform tone so it reads as a tag
- * rather than inline summary copy. */
+ * surrounding text — same pill geometry as the settings card's badge
+ * (`FallbacksCard.module.css` `.seedBadge`), surfaced on the module-platform
+ * tone so it reads as a tag rather than inline summary copy. */
 .roleBadge {
   flex: none;
   max-width: 96px;
