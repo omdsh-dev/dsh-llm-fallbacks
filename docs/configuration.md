@@ -308,11 +308,11 @@ After an upgrade, legacy-format configuration is **upgraded in memory** (see the
 
 **What a save does.** An explicit save (the card's Save, `/settings`, or any gateway `set` / the service's seed write) does not merely merge, and it is what turns the in-memory upgrade into stored configuration:
 
-- it **writes the migrated `chains` array** whenever the stored section still carries a v1 chain and the save does not already supply `chains`. That is what keeps a partial save safe: changing only `cooldownMs` from a v1 profile leaves the section self-sufficient v2 — chain #0 with its entries and tail intact — instead of deleting `rootChain` and losing the chain (a patch that supplies `chains` itself wins, and no v1 chain is re-materialized once the section has none);
+- it **writes the migrated `chains` array** in the same settings call that removes the v1 fields (the `chains` set is ordered before the `unset`s, so there is never a stored state with neither shape). Materialization happens only when the stored section has no usable `chains` — absent, or an empty array next to a v1 `rootChain` — and never when the patch supplies `chains`; a stored non-empty `chains` is left byte-identical, foreign members included. That is what keeps a partial save safe: changing only `cooldownMs` from a v1 profile leaves the section self-sufficient v2, chain #0 with its entries and tail intact;
 - it **strips the v1 fields** from the patch AND deletes the ones already in the persisted section — `rootChain`, the top-level `timeSlots` array, `roles.rules`, `roles.default`, `enabled`, and each `roles.list[]` row's `fallback` plus the v1 ARRAY form of `chain`;
 - everything else is preserved: unrelated configuration, foreign keys written by other tooling, and every surviving role member.
 
-So one save is the supported way to clean a v1 section — no YAML surgery required — and the effective config after the save is identical to the one before it. The plugin still never rewrites your file on its own.
+So one save is the supported way to clean a v1 section — no YAML surgery required. The guarantee is scoped to what the writer does: the migrated chain is written together with the v1 removals, so a partial save never loses it, and a patch that supplies `chains` is respected verbatim (the writer then does not touch that array). Everything else about the save is an ordinary merge. The plugin still never rewrites your file on its own.
 
 ## Web plugin-config card usage
 
