@@ -306,28 +306,154 @@ export function validateFallbacksConfig(config: FallbacksConfig, logger: Fallbac
  * no legacy value is ever read or re-persisted.
  */
 export function detectLegacyKeys(source: Record<string, unknown>): string[] {
-  const keys: string[] = []
-  if (Object.hasOwn(source, 'alwaysModeRetryCap')) keys.push('alwaysModeRetryCap')
-  if (Object.hasOwn(source, 'roleAutoMatch')) keys.push('roleAutoMatch')
-  if (Object.hasOwn(source, 'rootChain')) keys.push('rootChain')
-  if (Object.hasOwn(source, 'timeSlots')) keys.push('timeSlots')
+  // One entry per KEY, in first-seen order: a per-row key (`roles.list[].chain`)
+  // would otherwise repeat once per role and swamp the banner.
+  const keys = new Set<string>()
+  if (Object.hasOwn(source, 'alwaysModeRetryCap')) keys.add('alwaysModeRetryCap')
+  if (Object.hasOwn(source, 'roleAutoMatch')) keys.add('roleAutoMatch')
+  if (Object.hasOwn(source, 'rootChain')) keys.add('rootChain')
+  if (Object.hasOwn(source, 'timeSlots')) keys.add('timeSlots')
   const roles = source.roles
   if (isRecordLike(roles)) {
-    if (Object.hasOwn(roles, 'default')) keys.push('roles.default')
-    if (Object.hasOwn(roles, 'rules')) keys.push('roles.rules')
+    if (Object.hasOwn(roles, 'default')) keys.add('roles.default')
+    if (Object.hasOwn(roles, 'rules')) keys.add('roles.rules')
     if (Array.isArray(roles.list)) {
       for (const item of roles.list) {
         if (!isRecordLike(item)) continue
-        if (Object.hasOwn(item, 'label')) keys.push('roles.list[].label')
-        if (Object.hasOwn(item, 'description')) keys.push('roles.list[].description')
-        if (Object.hasOwn(item, 'fallback')) keys.push('roles.list[].fallback')
-        if (Array.isArray(item.chain)) keys.push('roles.list[].chain')
+        if (Object.hasOwn(item, 'label')) keys.add('roles.list[].label')
+        if (Object.hasOwn(item, 'description')) keys.add('roles.list[].description')
+        if (Object.hasOwn(item, 'fallback')) keys.add('roles.list[].fallback')
+        if (Array.isArray(item.chain)) keys.add('roles.list[].chain')
       }
     }
   }
-  return keys
+  return [...keys]
 }
 
 function isRecordLike(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/**
+ * The chain a v1 `rootChain` migrates into (plan fallbacks-v1-auto-migration):
+ * the id is stable so an already-selected `FallbacksChain/Auto` route keeps
+ * resolving, and the label is display-only.
+ */
+export const MIGRATED_CHAIN_ID = 'Auto'
+/** Display label of {@link MIGRATED_CHAIN_ID}. */
+export const MIGRATED_CHAIN_LABEL = '默认链'
+
+/**
+ * Upgrade a config SOURCE to the v2 named-chain shape — in memory, at every
+ * read. Pure, total, idempotent: a v2 config comes back unchanged, a v1 one is
+ * converted, and any malformed shape degrades to the defaults instead of
+ * throwing (the banner keeps reporting the raw leftovers, so honesty survives
+ * the coercion).
+ *
+ * Conversion rules (plan §Goal):
+ * 1. v1 `rootChain` + top-level `timeSlots` become chain #0
+ *    (`{ id: 'Auto', label: '默认链', entries, timeSlots }`), so the picker
+ *    route the user already selected keeps working.
+ * 2. `roles.list[]` survive as identity rows (`id` / `persona` / reserved
+ *    `prompt` / `permissions`); a v1 ARRAY `chain` is dropped (NOT SPECIFIED —
+ *    the card's 指定降级链 select takes over) and `fallback` is dropped;
+ *    `roles.rules` / `roles.default` / `enabled` never reach the output.
+ * 3. A config that already carries a non-empty `chains` array keeps it and only
+ *    loses the v1 leftovers. An EMPTY `chains` alongside a v1 `rootChain` is a
+ *    profile that never had v2 content, so it migrates (otherwise the user's
+ *    chain would silently vanish).
+ *
+ * No file is rewritten here — the next explicit save persists the v2 shape.
+ * @param source - the composed config (schema defaults → plugin row → user
+ *   layer) or any raw document.
+ * @returns a complete {@link FallbacksConfig}; never the input object itself.
+ */
+export function migrateLegacyConfig(source: unknown): FallbacksConfig {
+  const raw = isRecordLike(source) ? source : {}
+  const defaults = defaultFallbacksConfig
+  return {
+    triggerCodes: stringArrayOf(raw['triggerCodes']) ?? [...defaults.triggerCodes],
+    chains: migrateChains(raw),
+    roles: { list: migrateRoles(raw['roles']) },
+    cooldownMs: finiteNumberOr(raw['cooldownMs'], defaults.cooldownMs),
+    revertPolicy: raw['revertPolicy'] === 'never' ? 'never' : defaults.revertPolicy,
+    maxSwitchesPerStep: finiteNumberOr(raw['maxSwitchesPerStep'], defaults.maxSwitchesPerStep),
+    presets: raw['presets'] === 'none' ? 'none' : defaults.presets,
+    tz: typeof raw['tz'] === 'string' && raw['tz'] !== '' ? raw['tz'] : defaults.tz,
+    recovery: raw['recovery'] === 'half-open' ? 'half-open' : defaults.recovery,
+  }
+}
+
+function migrateChains(raw: Record<string, unknown>): NamedChain[] {
+  const declared = Array.isArray(raw['chains']) ? raw['chains'] : undefined
+  if (declared !== undefined && declared.length > 0) {
+    const chains: NamedChain[] = []
+    for (const entry of declared) {
+      const chain = normalizeChain(entry)
+      if (chain !== undefined) chains.push(chain)
+    }
+    return chains
+  }
+  const rootChain = stringArrayOf(raw['rootChain'])
+  const legacyRows = Array.isArray(raw['timeSlots'])
+    ? raw['timeSlots'].filter(isRecordLike).map((row) => ({ ...row }) as unknown as SlotRowConfig)
+    : []
+  // No v1 chain to convert: nothing to build (an empty `chains` stays empty).
+  if (rootChain === undefined || rootChain.length === 0) return []
+  return [{
+    id: MIGRATED_CHAIN_ID,
+    label: MIGRATED_CHAIN_LABEL,
+    entries: [...rootChain],
+    timeSlots: legacyRows,
+  }]
+}
+
+function normalizeChain(value: unknown): NamedChain | undefined {
+  if (!isRecordLike(value)) return undefined
+  const id = typeof value['id'] === 'string' ? value['id'] : undefined
+  if (id === undefined) return undefined
+  const timeSlots = Array.isArray(value['timeSlots'])
+    ? value['timeSlots'].filter(isRecordLike).map((row) => ({ ...row }) as unknown as SlotRowConfig)
+    : []
+  return {
+    id,
+    label: typeof value['label'] === 'string' ? value['label'] : id,
+    entries: stringArrayOf(value['entries']) ?? [],
+    timeSlots,
+  }
+}
+
+function migrateRoles(value: unknown): FallbacksRole[] {
+  if (!isRecordLike(value)) return []
+  const list = Array.isArray(value['list']) ? value['list'] : []
+  const roles: FallbacksRole[] = []
+  for (const row of list) {
+    if (!isRecordLike(row)) continue
+    const id = typeof row['id'] === 'string' ? row['id'] : undefined
+    if (id === undefined) continue
+    // Unknown members are PRESERVED (a foreign key on a role row is not this
+    // plugin's to delete — the write path relies on it); only the v1 fields
+    // below are removed.
+    const role: Record<string, unknown> = { ...row, id, persona: typeof row['persona'] === 'string' ? row['persona'] : '' }
+    for (const stale of ['fallback', 'label', 'description'] as const) delete role[stale]
+    // v2 declares a string POINTER; a v1 ARRAY is dropped (NOT SPECIFIED — the
+    // card's 指定降级链 select takes over).
+    if (typeof row['chain'] !== 'string' || row['chain'] === '') delete role['chain']
+    roles.push(role as unknown as FallbacksRole)
+  }
+  return roles
+}
+
+function stringArrayOf(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const out: string[] = []
+  for (const item of value) {
+    if (typeof item !== 'string') return undefined
+    out.push(item)
+  }
+  return out
+}
+
+function finiteNumberOr(value: unknown, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback
 }
