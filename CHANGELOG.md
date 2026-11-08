@@ -6,6 +6,18 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-11-08
+
+### Changed
+
+- Subagent role cards in the Fallbacks settings page now start collapsed, and the specified-chain explanation moved from a repeated line under every card into the label's info tooltip.
+- Section-heading, chain-footer and advanced-footer Discard/Save pairs now share one compact metric.
+- The Save fill changes from a text token with a surface-token glyph to the host primary-button pair (`button-primary-fill` / `label-primary-foreground`); disabled buttons keep their fill and the documented 0.4 opacity.
+- In the time-slot add row only Add preset stays a bordered primary add; Add custom now reuses the chain tail's ghost treatment.
+- On a narrow panel the collapsed row's chain title now yields width first, so the route meta and the seed badge render whole until they alone exceed their caps.
+- The chain tab strip fills the card's available width instead of stopping at 720px; the edge fades still appear only when the tabs overflow.
+- Tighten the LLM Fallbacks settings card: per-chain blocks carry their own heading tier and vertical rhythm, subagent role rows collapse to a single line with the delete action on the row, the info badge reads as an info mark instead of an error, and an empty time-slot block explains that the chain then falls back all day.
+
 ## [0.8.0] - 2026-11-08
 
 ### Fixed
