@@ -92,7 +92,7 @@ async function declare(
 }
 
 /** The raw user-layer roles section of the fallbacks settings namespace. */
-function userSection(ctx: Context): { roles: { list: Array<{ id: string; persona: string }>; rules: unknown[] } } | undefined {
+function userSection(ctx: Context): { roles: { list: Array<{ id: string; persona: string }> } } | undefined {
   return ctx.settings.describe().find((d) => d.ns === FALLBACKS_PROFILE_ENTRY)?.user
 }
 
@@ -144,7 +144,7 @@ describe('seeds → gateway integration (real apply)', () => {
     // permissions keys omitted on insert), and no revision churn from the
     // second declare.
     const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_PROFILE_ENTRY)!
-    expect(descriptor.user).toEqual({ roles: { list: [{ id: 'architect', persona: 'default' }], rules: [] } })
+    expect(descriptor.user).toEqual({ roles: { list: [{ id: 'architect', persona: 'default' }] } })
   })
 
   it('fiber swap: dispose + re-apply + re-declare keeps rows single and preserves an operator override (AC-1)', async () => {
@@ -171,7 +171,7 @@ describe('seeds → gateway integration (real apply)', () => {
 
     // The operator edits the row persona while the fiber is alive.
     await first.settings.update(FALLBACKS_PROFILE_ENTRY, {
-      roles: { list: [{ id: 'architect', persona: 'operator edit', chain: ['op-chain'] }], rules: [] },
+      roles: { list: [{ id: 'architect', persona: 'operator edit', chain: 'op-chain' }] },
     })
     expect(fb.getEffectiveRoles().roles[0]).toMatchObject({
       persona: 'operator edit',
@@ -206,7 +206,7 @@ describe('seeds → gateway integration (real apply)', () => {
     // operator override (persona + chain) is preserved byte-for-byte (R4).
     const rows = gateway(second).get().config.roles.list
     expect(rows).toHaveLength(1)
-    expect(rows[0]).toMatchObject({ id: 'architect', persona: 'operator edit', chain: ['op-chain'] })
+    expect(rows[0]).toMatchObject({ id: 'architect', persona: 'operator edit', chain: 'op-chain' })
     // The badge reflects the override, not a lost row.
     expect(gateway(second).get().seeds).toEqual([{ id: 'architect', overridden: true, source: 'external' }])
   })
@@ -259,7 +259,7 @@ describe('seeds → gateway integration (real apply)', () => {
     // Operator override then re-declare → loud persona-source conflict, row
     // never overwritten (AC-2).
     await ctx.settings.update(FALLBACKS_PROFILE_ENTRY, {
-      roles: { list: [{ id: 'architect', persona: 'operator edit' }], rules: [] },
+      roles: { list: [{ id: 'architect', persona: 'operator edit' }] },
     })
     await expect(fb.declareSeeds([{ id: 'architect', persona: 'v2' }])).resolves.toEqual({
       applied: ['architect'],
@@ -280,7 +280,7 @@ describe('seeds → gateway integration (real apply)', () => {
 
     // Operator edit → override visible on the wire badge.
     await ctx.settings.update(FALLBACKS_PROFILE_ENTRY, {
-      roles: { list: [{ id: 'architect', persona: 'operator edit' }], rules: [] },
+      roles: { list: [{ id: 'architect', persona: 'operator edit' }] },
     })
     expect(gateway(ctx).get().seeds).toEqual([{ id: 'architect', overridden: true, source: 'external' }])
 
@@ -291,7 +291,7 @@ describe('seeds → gateway integration (real apply)', () => {
     // Operator edits again; gateway-side revert (the card endpoint) restores
     // the same current default and reports the post-write read result.
     await ctx.settings.update(FALLBACKS_PROFILE_ENTRY, {
-      roles: { list: [{ id: 'architect', persona: 'operator edit 2' }], rules: [] },
+      roles: { list: [{ id: 'architect', persona: 'operator edit 2' }] },
     })
     const viaGateway = await gateway(ctx).revertSeed('architect')
     expect(viaGateway.outcome).toEqual({ reverted: true, persona: 'v1' })
@@ -302,7 +302,7 @@ describe('seeds → gateway integration (real apply)', () => {
     // default, never a historical snapshot (R3).
     await declare(ctx, [{ id: 'architect', persona: 'v2' }])
     await ctx.settings.update(FALLBACKS_PROFILE_ENTRY, {
-      roles: { list: [{ id: 'architect', persona: 'operator edit 3' }], rules: [] },
+      roles: { list: [{ id: 'architect', persona: 'operator edit 3' }] },
     })
     await expect(gateway(ctx).revertSeed('architect')).resolves.toMatchObject({
       outcome: { reverted: true, persona: 'v2' },
@@ -323,7 +323,7 @@ describe('seed provenance — source labels on the wire (seed-source-provenance,
     // An operator row that no companion ever declares — its provenance must
     // stay `user` while the declared batch carries the set name.
     await ctx.settings.update(FALLBACKS_PROFILE_ENTRY, {
-      roles: { list: [{ id: 'solo', persona: 'operator row' }], rules: [] },
+      roles: { list: [{ id: 'solo', persona: 'operator row' }] },
     })
     await declare(ctx, [
       { id: 'coder', persona: 'Coders the flow' },
@@ -392,7 +392,7 @@ describe('seed provenance — designer/librarian trim upgrade (seed-source-prove
     "Research specialist for external libraries and APIs who returns definitive, source-verified answers. Treat source as truth, documentation as aspiration, and training data as history; prefer locally installed packages, then official docs. Cross-check at least two locations; copy API signatures verbatim and report the investigated version. Stay read-only on the user's project; if a lookup is empty, try at least two fallback strategies before concluding nothing exists."
 
   /** The full pre-trim user layer: the 5 surviving presets + the two trimmed rows. */
-  function preTrimUserLayer(): { roles: { list: Array<{ id: string; persona: string }>; rules: unknown[] } } {
+  function preTrimUserLayer(): { roles: { list: Array<{ id: string; persona: string }> } } {
     return {
       roles: {
         list: [
@@ -400,7 +400,6 @@ describe('seed provenance — designer/librarian trim upgrade (seed-source-prove
           { id: 'designer', persona: DESIGNER_PERSONA },
           { id: 'librarian', persona: LIBRARIAN_PERSONA },
         ],
-        rules: [],
       },
     }
   }
