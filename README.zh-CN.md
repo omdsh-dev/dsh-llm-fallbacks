@@ -89,23 +89,23 @@ dsh plugin --profile dsh-tui add dsh-llm-fallbacks  # dsh-tui 终端 profile
 
 ```yaml
 fallbacks:
-  chains:                  # 命名虚拟链：每条 = picker 一行（entries 末项 = 默认模型）
-    - anthropic/claude-3-5-sonnet
-    - deepseek-official/deepseek-flash
-  timeSlots:               # 可选：按墙钟窗口轮换生效 root 链
-    - kind: preset
-      preset: liang-peak
-      chain:
+  chains:                  # 命名虚拟链：每条 = picker 一行（FallbacksChain/<id>）
+    - id: Auto             # picker 模型 id（大小写敏感、唯一）
+      label: 默认链         # tab 标题 + picker 前缀（仅展示）
+      entries:             # 默认降级链 …末尾是默认模型（恰好一个官方模型）
         - anthropic/claude-3-5-sonnet
-  roles:                   # 可选：先声明角色实体，再由规则引用
+        - deepseek-official/deepseek-v4-pro
+      timeSlots: []        # 可选：该链自己的分时行
+    - id: Coding
+      label: 编码
+      entries:
+        - openai/gpt-4o-mini
+        - deepseek-official/deepseek-flash
+  roles:                   # 可选：角色身份 + 可选链指针
     list:
       - id: reviewer
         persona: Code-review subagents
-        chain:
-          - openai/gpt-4o-mini
-        chain: Auto           # 指定降级链：该角色派发的子代理挂到 FallbacksChain/Auto
-    rules:                 # 仅 subagent：规则永不匹配 root 请求
-      - role: reviewer
+        chain: Coding      # 指定降级链：该角色派发的子代理挂到 FallbacksChain/Coding
 ```
 
 三条要点：
@@ -126,10 +126,10 @@ fallbacks:
 
 - **自动降级**（仅虚拟路由）——`FallbacksChain / <id>` 会话（root 或角色盖章的 subagent）命中触发码时沿链切换，step 继续运行；真实模型会话没有插件降级。 → [详情](docs/features.md#automatic-model-failover)
 - **上下文窗口感知降级**——`CONTEXT_WINDOW_EXCEEDED` 会切到窗口更大的候选；该切换是请求级的（不消耗冷却）。 → [详情](docs/features.md#context-window-aware-fallback)
-- **峰谷无忧（分时槽）**——四个冻结的 UTC+8 预设或自定义窗口轮换生效 root 链。 → [详情](docs/features.md#time-slots)
-- **角色化 subagent**——派发声明的角色为子代理带来 persona、通知行与徽章；继承型子代理被挂到虚拟链路由，受宿主策略约束。 → [详情](docs/features.md#role-based-subagents)
+- **峰谷无忧（分时槽）**——四个冻结的 UTC+8 预设或自定义窗口轮换该链自己的生效条目。 → [详情](docs/features.md#time-slots)
+- **角色化 subagent**——派发声明的角色为子代理带来 persona、通知行与徽章，其可选的 `chain` 指针把子代理挂到 `FallbacksChain/<id>`。 → [详情](docs/features.md#role-based-subagents)
 - **模型选择器中的 FallbacksChain**——选择 `FallbacksChain / <链 id>` 即由配置链承载该会话；选择真实模型则只由 llm-retry 处理，没有插件降级。 → [详情](docs/features.md#fallbackschain-in-the-model-picker)
-- **宿主子代理模型策略**——dsh 0.1.2 的 allowlist 是插件发起的所有 subagent 路由的硬约束。 → [详情](docs/features.md#host-subagent-model-selection-policy-dsh-012)
+- **宿主子代理模型策略**——dsh 在**派发侧**执行自己的 0.1.2 子模型 allowlist；本插件不读取它。显式子代理选择只允许父路由，除非该路由在宿主 allowlist 内。 → [详情](docs/features.md#role-based-subagents)
 - **五个内置预设角色**——`reviewer` / `scout` / `security-reviewer` / `sonic` / `task`，随 apply 自动声明。 → [详情](docs/features.md#preset-roles)
 - **dsh-tui 操作面**——`/fallbacks`、`/fallbacks config`，以及与 web 卡片等价的 `/settings` 分区。 → [详情](docs/features.md#dsh-tui-surfaces)
 
@@ -143,7 +143,7 @@ fallbacks:
 |---|---|
 | [docs/install.md](docs/install.md) | 桌面/Web 插件页 / profile 安装（web + dsh-tui）/ registry / git / 本地目录 / 卸载 / `--dump-config` 校验 |
 | [docs/configuration.md](docs/configuration.md) | `fallbacks` 命名空间完整参考、选择器语法、示例 YAML、插件配置卡片用法、TUI 回读、行为说明、预设角色 |
-| [docs/features.md](docs/features.md) | 能力参考：降级、上下文窗口降级、分时槽、角色化 subagent、选择器、宿主策略、预设角色、agent 预设、dsh-tui |
+| [docs/features.md](docs/features.md) | 能力参考：降级、上下文窗口降级、分时槽、角色化 subagent、选择器、预设角色、agent 预设、dsh-tui |
 | [docs/repair.md](docs/repair.md) | 会话日志修复：拒载类别、`--apply` 发布、参数、退出码、有损 `--drop-legacy-events` |
 | [docs/consumer-api.md](docs/consumer-api.md) | 开发者消费契约：库 API + 具名 `llm-fallbacks` 服务 + 角色种子、导出清单、生命周期、类型 |
 | [docs/release.md](docs/release.md) | 发布流程：Trusted Publishing 配置、Release prep SOP、fragment 格式、回滚 |

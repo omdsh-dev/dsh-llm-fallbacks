@@ -89,12 +89,14 @@ Note what a request-scoped failure deliberately does **not** buy: because no coo
 
 ## Time slots
 
-Time slots rotate the **effective root chain** by wall-clock windows, so peak
-and valley hours can run different chains while the failure walk stays
-untouched (see [Automatic model failover](#automatic-model-failover)). Each row
-carries its own fallback chain: the first row whose window contains the current
-moment replaces the all-day chain for the next root request, and the all-day
-chain remains the last resort when no row matches. The copy split is strict:
+Time slots are configured PER CHAIN (`chains[].timeSlots`) and rotate that
+chain's own effective entries by wall-clock windows, so peak and valley hours
+can run different entries while the failure walk stays untouched (see
+[Automatic model failover](#automatic-model-failover)). Each row carries its
+own fallback chain: the first row whose window contains the current moment
+replaces the chain's `entries` for the next request on that chain, and the
+chain's own entries remain the last resort when no row matches. Two chains
+never share slot state. The copy split is strict:
 slot rotation logs and UI say **time-slot switch**; the failure walk keeps
 **fallback switch**; the conversation notice Model downgraded stays on the
 failure path only.
@@ -171,9 +173,13 @@ header get the same persona installation, the same routing-role resolution, the
 same `[role: <id>]` notice row and the same badge, and the role still has to be
 declared in `roles.list` to resolve. No per-mechanism configuration exists.
 
-- **The header is the only role carrier.** A teammate whose prompt omits it, or
-  names an id that is not currently declared, falls through to rules →
-  `inherit`, exactly like a normally delegated child without one.
+- **The header is the only role carrier.** Resolution is two ordered stages —
+  the explicit `agentPreset` session header, then the dispatch-declared role —
+  and a teammate whose prompt omits the declaration, or names an id that is not
+  currently declared, resolves to NOT SPECIFIED, exactly like a normally
+  delegated child without one. There is no rules stage: what the role then
+  contributes is its optional `chain` POINTER (「指定降级链」), which mounts the
+  child on `FallbacksChain/<chain id>`.
 - **Names stay arbitrary (but unique inside one Team).** Any number of
   differently named teammates can carry the same role; there is **no
   name→role mapping**.
@@ -222,8 +228,8 @@ Two composition caveats:
 
 In a dsh-tui profile the plugin has three operator surfaces, with a strict duty split:
 
-- **`/fallbacks`** — what happened this session: origin, resolved role, effective chain, recent fallback switches, cooldown status (half-open marker rows when `recovery: half-open` is active). Read-only.
-- **`/fallbacks config`** — what is configured: composed-config readback (trigger codes, root chain, time slots, timezone, roles, role rules, cooldown, revert policy, max switches per request walk — printed as `Max switches per request walk` / `单次请求行走最大切换` — and presets). Read-only apart from the one action command **`/fallbacks config revert-seed <role-id>`**, which restores a seeded role's persona to its declared seed default — the web settings card presents seeded personas read-only (no revert affordance), so the command is that action's only surface.
+- **`/fallbacks`** — what happened this session: origin, the resolved dispatch role and the chain it points at, every configured chain with its tail and current slot label (the calling agent's selection marked `●`), recent fallback switches, cooldown status (half-open marker rows when `recovery: half-open` is active). Read-only.
+- **`/fallbacks config`** — what is configured: composed-config readback (trigger codes, every named chain with its label, entries and time-slot rows, timezone, roles as `{ id, chain }` pointers, cooldown, revert policy, max switches per request walk — printed as `Max switches per request walk` / `单次请求行走最大切换` — and presets). Read-only apart from the one action command **`/fallbacks config revert-seed <role-id>`**, which restores a seeded role's persona to its declared seed default — the web settings card presents seeded personas read-only (no revert affordance), so the command is that action's only surface.
 - **`/settings`** — the edit surface. The plugin registers a **fallbacks** section with full parity to the web settings card: selects (`presets`, `revertPolicy`) render as pickers and numbers (`cooldownMs`, `maxSwitchesPerStep`) as numeric inputs; complex structures (`chains` — one JSON field per the named-chain list — and `roles.list` with the chain pointer) are JSON text fields, `triggerCodes` a comma-separated text field and `tz` a plain text field. Invalid drafts (bad JSON, non-conforming chains, malformed time-slot rows) block the save — the section never corrupts the config.
 
 **Requirements**: the `/settings` fallbacks section needs **dsh-tui ≥ v0.8.5** (commit `c51661f` or later on `main`; the settings seam shipped in v0.8.0, the groups shape + validation in v0.8.5). On an older dsh-tui the section is absent, and file editing remains the only TUI edit surface.

@@ -291,11 +291,13 @@ v1 two-block configuration (the `rootChain` + `roles.rules` era) is **not migrat
 
 ## Three-channel legacy notice
 
-After an upgrade, legacy-format configuration is flagged through **three channels** — nothing is silently dropped and **no file is rewritten automatically**:
+After an upgrade, legacy-format configuration is flagged through **three channels**. **Loading never migrates anything** — that is what warn-only means. The one thing that does change your persisted section is an explicit save (see the end of this section).
 
-1. **UI banner** (live this round): the Fallbacks card renders a migration banner at the top of its body (when the `get` / `set` / `reset` response carries a non-empty `legacyKeys`) — "Legacy config fields detected (...): now shown in the new model — rewrite them manually following the migration table in docs/configuration.md (the plugin will not rewrite them automatically)." It does not block editing or touch disk; **saving does not delete the old-format keys** (`set` is merge-semantics, so old `chains` / `roles.default` stay in the user layer) — clean them up by editing YAML manually (the card's Reset-to-defaults button was removed in PR #62 UX round 3; the gateway `reset` RPC stays as a host API for callers outside the card).
+1. **UI banner** (live this round): the Fallbacks card renders a migration banner at the top of its body (when the `get` / `set` / `reset` response carries a non-empty `legacyKeys`) — "Legacy config fields detected (...): now shown in the new model — rewrite them manually following the migration table in docs/configuration.md (the plugin will not rewrite them automatically)." It does not block editing and does not touch disk by itself.
 2. **Startup warn** (shipped): on plugin startup / config read, detected legacy fields are reported via `logger.warn` — `apply()` detects them through `detectLegacyKeys`, and the `legacyKeys` pipeline reports synchronously; the three channels are closed.
-3. **This document's migration table**: the "Migration mapping table" section above is the reference for manual rewriting.
+3. **This document's migration table**: the "Migration mapping table" section above is the reference for rewriting by hand.
+
+**What a save removes.** An explicit save (the card's Save, `/settings`, or any gateway `set` / the service's seed write) does not merely merge: the write path strips the v1 fields from the patch AND deletes the ones already in the persisted section — `rootChain`, the top-level `timeSlots` array, `roles.rules`, `roles.default`, `enabled`, and each `roles.list[]` row's `fallback` plus the v1 ARRAY form of `chain`. Everything else is preserved: unrelated configuration, foreign keys written by other tooling, and every surviving role member. So a v2 save is the supported way to clean a v1 section — no YAML surgery required — while the plugin still never rewrites your file on its own.
 
 ## Web plugin-config card usage
 

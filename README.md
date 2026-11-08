@@ -89,22 +89,23 @@ The plugin's settings live in a shared `fallbacks:` namespace, editable from thr
 
 ```yaml
 fallbacks:
-  chains:                  # named virtual chains (one per picker row)
-    - anthropic/claude-3-5-sonnet
-    - deepseek-official/deepseek-flash
-  timeSlots:               # optional: rotate the effective root chain by wall-clock windows
-    - kind: preset
-      preset: liang-peak
-      chain:
+  chains:                  # named virtual chains: one picker row each (FallbacksChain/<id>)
+    - id: Auto             # the picker model id (case-sensitive, unique)
+      label: Default chain # tab title + picker prefix (display only)
+      entries:             # 默认降级链 …then the 默认模型 tail (exactly one official model)
         - anthropic/claude-3-5-sonnet
-  roles:                   # optional: role identities + an optional chain pointer
+        - deepseek-official/deepseek-v4-pro
+      timeSlots: []        # optional: this chain's own wall-clock rows
+    - id: Coding
+      label: Coding
+      entries:
+        - openai/gpt-4o-mini
+        - deepseek-official/deepseek-flash
+  roles:                   # optional: role identities + an optional chain POINTER
     list:
       - id: reviewer
         persona: Code-review subagents
-        chain:
-          - openai/gpt-4o-mini
-        chain: Auto           # 指定降级链: children under this role mount FallbacksChain/Auto
-      - role: reviewer
+        chain: Coding      # 指定降级链: children under this role mount FallbacksChain/Coding
 ```
 
 Three rules of thumb:
@@ -125,10 +126,10 @@ Save the config and restart the session, then type `/fallbacks` — the read-onl
 
 - **Automatic failover** on a virtual route — a `FallbacksChain / <id>` session (root or role-stamped subagent) walks its chain on a listed failure code and the step continues; real-model sessions have no plugin fallback. → [details](docs/features.md#automatic-model-failover)
 - **Context-window-aware fallback** — `CONTEXT_WINDOW_EXCEEDED` fails over to a larger-context candidate; the switch is request-scoped (no cooldown). → [details](docs/features.md#context-window-aware-fallback)
-- **Peak/valley time slots** — four frozen UTC+8 presets or custom windows rotate the effective root chain. → [details](docs/features.md#time-slots)
-- **Role-based subagents** — a dispatch-declared role brings persona, notice row and badge to the child; inheriting children are mounted on the virtual chain route subject to host policy. → [details](docs/features.md#role-based-subagents)
+- **Peak/valley time slots** — four frozen UTC+8 presets or custom windows rotate a chain's own effective entries. → [details](docs/features.md#time-slots)
+- **Role-based subagents** — a dispatch-declared role brings persona, notice row and badge to the child, and its optional `chain` pointer puts the child on `FallbacksChain/<id>`. → [details](docs/features.md#role-based-subagents)
 - **FallbacksChain in the picker** — select `FallbacksChain / <chain id>` to make the configured chain the session route; any real model is served by llm-retry alone, with no plugin fallback. → [details](docs/features.md#fallbackschain-in-the-model-picker)
-- **Host subagent model policy** — the dsh 0.1.2 allowlist is a hard constraint on every plugin-originated subagent route. → [details](docs/features.md#host-subagent-model-selection-policy-dsh-012)
+- **Host subagent model policy** — dsh enforces its 0.1.2 child-model allowlist on the dispatching side; this plugin does not consult it. An explicit child selection is limited to the parent route unless the host allowlist admits it. → [details](docs/features.md#role-based-subagents)
 - **Five bundled preset roles** — `reviewer` / `scout` / `security-reviewer` / `sonic` / `task`, declared on apply. → [details](docs/features.md#preset-roles)
 - **dsh-tui surfaces** — `/fallbacks`, `/fallbacks config`, and a `/settings` section with web-card parity. → [details](docs/features.md#dsh-tui-surfaces)
 
@@ -142,7 +143,7 @@ The plugin installs as a **pure mount**: bundle insert + client inject + its own
 |---|---|
 | [docs/install.md](docs/install.md) | desktop/web plugin page / profile install (web + dsh-tui) / registry / git / local variants / uninstall / `--dump-config` verification |
 | [docs/configuration.md](docs/configuration.md) | full `fallbacks` namespace reference, selector syntax, example YAML, plugin-config card usage, TUI readback, behavior notes, preset roles |
-| [docs/features.md](docs/features.md) | capability reference: failover, context-window fallback, time slots, role-based subagents, picker, host policy, preset roles, agent presets, dsh-tui |
+| [docs/features.md](docs/features.md) | capability reference: failover, context-window fallback, time slots, role-based subagents, picker, preset roles, agent presets, dsh-tui |
 | [docs/repair.md](docs/repair.md) | session-log repair: refusal classes, `--apply` publishing, flags, exit codes, lossy `--drop-legacy-events` |
 | [docs/consumer-api.md](docs/consumer-api.md) | developer consumption contract: library API + named `llm-fallbacks` service + role seeds, export inventory, lifecycle, typing |
 | [docs/release.md](docs/release.md) | release process: Trusted Publishing setup, Release prep SOP, fragment format, rollback |
