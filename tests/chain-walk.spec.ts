@@ -466,6 +466,28 @@ describe('per-target parameter adaptation (plan 2026-11-07 T2)', () => {
     expect('reasoningEffort' in adapter.calls[1]!).toBe(false)
   })
 
+  it('treats an undisclosed reasoning capability as UNKNOWN, not as "supports none"', async () => {
+    // The proactive layer must NOT drop on a route whose metadata omits
+    // `reasoning` — that is unknown, and unknown keeps the request byte-for-byte
+    // (the same rule the maxTokens branch follows for an undisclosed cap). The
+    // runtime is the authority that rejects such a control
+    // (`UNSUPPORTED_REASONING_EFFORT`), and the walk's reactive repair drops it
+    // on the same candidate, so the request still completes.
+    const debug = vi.fn()
+    adapter.efforts = () => undefined
+    adapter.respond = (options) => (options.model === '1' ? { failure: { code: 'AUTH' } } : { chunks: [STOP] })
+
+    await walk(
+      { readConfig: chainCfg(['a/1', 'b/2']), log: { info: () => {}, warn: () => {}, debug } },
+      { reasoningEffort: 'high' as GenerateOptions['reasoningEffort'] },
+    )
+
+    // No proactive adaptation line for the undisclosed route…
+    expect(debug.mock.calls.filter((call) => String(call[0]).includes('parameter adaptation'))).toEqual([])
+    // …and the repair is the only thing that removes the control.
+    expect(adapter.calls.map((call) => 'reasoningEffort' in call)).toEqual([false, false])
+  })
+
   it('drops a maxTokens above the candidate disclosed cap', async () => {
     adapter.outputCap = (_provider, model) => (model === '2' ? 1000 : 4000)
     adapter.respond = (options) => (options.model === '1' ? { failure: { code: 'AUTH' } } : { chunks: [STOP] })

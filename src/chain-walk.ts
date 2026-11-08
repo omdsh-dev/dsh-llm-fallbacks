@@ -288,8 +288,11 @@ async function adaptForTarget(
   try {
     adapted = { ...options }
     const effort = options.reasoningEffort
+    // Drop only on a DISCLOSED capability list, like the maxTokens branch below:
+    // a route whose metadata omits `reasoning` is unknown, not "supports none".
     if (effort !== undefined
-      && !(info.reasoning?.efforts ?? []).some((supported) => supported.id === effort)) {
+      && info.reasoning !== undefined
+      && !(info.reasoning.efforts ?? []).some((supported) => supported.id === effort)) {
       delete adapted.reasoningEffort
       dropped.push('reasoningEffort')
     }
