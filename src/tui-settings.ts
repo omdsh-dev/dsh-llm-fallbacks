@@ -233,14 +233,11 @@ function tzParse(text: string): TuiSettingsFieldWrite | undefined {
 const BUNDLED_PRESETS_LABEL = `Bundled (${presetRoles.length} preset roles)`
 
 /**
- * The `fallbacks` /settings section: 10 fields covering the web-card
- * capabilities (the default-model choice rides `rootChain`'s last entry and
- * the per-role fallback strategy rides `roles.list` JSON; the config-level
- * `enabled` switch is REMOVED — plan fallbacks-web-ux-alignment T2, the
- * Plugins-page row toggle is the master switch and the runtime gates read
- * content presence; the always-mode retry cap and the dispatch role
- * auto-match switch are REMOVED with their mechanisms — direction C, only a
- * `FallbacksChain/Auto` session walks a chain). Scalar
+ * The `fallbacks` /settings section covering the web-card capabilities
+ * (named virtual chains v2: ONE `Chains (JSON)` field over `chains` on the
+ * same bounded-parse machinery; `Roles (JSON)` keeps the chain POINTER; the
+ * v1 `rootChain` / top-level `timeSlots` / `roles.rules` fields are REMOVED
+ * with their mechanisms). Scalar
  * capabilities use native kinds (boolean/number/select); complex structures
  * use `text` fields with custom `format`/`parse` that mirror the gateway's
  * validation. Built fresh per call — the host deep-freezes whatever it
@@ -251,8 +248,8 @@ export function buildFallbacksTuiSection(): TuiSettingsSection {
     ns: FALLBACKS_TUI_SECTION_NS,
     title: 'fallbacks',
     descriptions: {
-      zh: '回退设置：降级链、分时切换、角色与高级选项（与 Web 设置卡片完全一致）。仅选中 FallbacksChain/Auto 的会话会执行降级链；选择真实模型的会话没有插件降级。',
-      en: 'Fallback settings: degradation chains, time slots, roles, and advanced options (full parity with the web settings card). Only sessions on FallbacksChain/Auto walk a chain — a real-model selection gets no plugin fallback.',
+      zh: '回退设置：虚拟链（默认降级链 + 链尾 + 分时槽）、角色与高级选项（与 Web 设置卡片完全一致）。主代理需选中 FallbacksChain/<链 id> 才会执行降级链；子代理沿用派发代理的链。',
+      en: "Fallback settings: named chains (default degradation chain + tail + time slots), roles, and advanced options (full parity with the web settings card). The main agent must select FallbacksChain/<chain id> to walk a chain; subagents inherit the delegating agent's chain.",
     },
     groups: [
       { id: 'general', title: 'General', descriptions: { zh: '通用', en: 'General' } },
@@ -304,44 +301,24 @@ export function buildFallbacksTuiSection(): TuiSettingsSection {
         parse: tzParse,
       },
       {
-        path: ['rootChain'],
-        label: 'Root chain (JSON)',
-        descriptions: { zh: '根降级链（JSON）', en: 'Root chain (JSON)' },
-        hint: 'JSON array of model selectors; the last entry must be an official model (deepseek-official/deepseek-flash or deepseek-official/deepseek-v4-pro). Pro is available in the catalog — the settings card no longer disables it.',
-        hintDescriptions: { zh: '模型选择器 JSON 数组；末项必须是官方模型（deepseek-official/deepseek-flash 或 deepseek-official/deepseek-v4-pro）。Pro 已在目录中提供——设置卡中不再禁用。', en: 'JSON array of model selectors; the last entry must be an official model (deepseek-official/deepseek-flash or deepseek-official/deepseek-v4-pro). Pro is available in the catalog — the settings card no longer disables it.' },
+        path: ['chains'],
+        label: 'Chains (JSON)',
+        descriptions: { zh: '虚拟链（JSON）', en: 'Chains (JSON)' },
+        hint: 'JSON array of named chains ({ id, label, entries, timeSlots }); each entries array must end with an official model (deepseek-official/deepseek-flash or deepseek-official/deepseek-v4-pro).',
+        hintDescriptions: { zh: '命名虚拟链 JSON 数组（{ id, label, entries, timeSlots }）；每条 entries 末项必须是官方模型（deepseek-official/deepseek-flash 或 deepseek-official/deepseek-v4-pro）。', en: 'JSON array of named chains ({ id, label, entries, timeSlots }); each entries array must end with an official model (deepseek-official/deepseek-flash or deepseek-official/deepseek-v4-pro).' },
         group: 'chain',
         kind: 'text',
         format: jsonFieldFormat,
-        parse: jsonFieldParse((parsed) => ({ rootChain: parsed })),
-      },
-      {
-        path: ['timeSlots'],
-        label: 'Time slots (JSON)',
-        descriptions: { zh: '分时切换（JSON）', en: 'Time slots (JSON)' },
-        hint: 'JSON array of slot rows (kind: preset|custom).',
-        hintDescriptions: { zh: '分时行 JSON 数组（kind: preset|custom）。', en: 'JSON array of slot rows (kind: preset|custom).' },
-        group: 'chain',
-        kind: 'text',
-        format: jsonFieldFormat,
-        parse: jsonFieldParse((parsed) => ({ timeSlots: parsed })),
+        parse: jsonFieldParse((parsed) => ({ chains: parsed })),
       },
       {
         path: ['roles', 'list'],
         label: 'Roles (JSON)',
-        descriptions: { zh: '角色列表（JSON）', en: 'Roles (JSON)' },
+        descriptions: { zh: '角色列表（JSON，chain 为指定降级链指针）', en: 'Roles (JSON; chain is the specified-chain pointer)' },
         group: 'roles',
         kind: 'text',
         format: jsonFieldFormat,
         parse: jsonFieldParse((parsed) => ({ roles: { list: parsed } })),
-      },
-      {
-        path: ['roles', 'rules'],
-        label: 'Role rules (JSON)',
-        descriptions: { zh: '角色规则（JSON）', en: 'Role rules (JSON)' },
-        group: 'roles',
-        kind: 'text',
-        format: jsonFieldFormat,
-        parse: jsonFieldParse((parsed) => ({ roles: { rules: parsed } })),
       },
       {
         path: ['cooldownMs'],

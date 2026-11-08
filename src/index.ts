@@ -59,7 +59,6 @@ import {
   RECENT_SWITCHES_LIMIT,
   recentFallbacksSwitches,
   registerFallbacksCommands,
-  resolveChainForDiagnostic,
   type FallbacksCommandController,
   type FallbacksCommandSnapshot,
   type FallbacksConfigSummary,
@@ -613,15 +612,7 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
     // `fallbacks/revert-seed` both delegate to it (spec §9.4 single point of
     // truth); the gateway builds its io over the bridge + its own settings
     // capture.
-    new FallbacksConfigGateway(
-      ctx,
-      bridge,
-      seeds,
-      // INTERIM (T4 re-keys the gateway wire): the host-policy snapshot
-      // surfaces are deleted (named virtual chains §3) — the gateway's own
-      // subagentPolicy wire field goes away in the same wave.
-      () => ({ policy: { state: 'unprovable' as const } }),
-    )
+    new FallbacksConfigGateway(ctx, bridge, seeds)
   } catch (error) {
     if (!(error instanceof Error) || !error.message.includes('has been registered')) throw error
     ctx.logger('llm-fallbacks').debug('fallbacks gateway already registered — no gateway on this fiber (multi-fiber dedupe)')
@@ -730,10 +721,6 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
   const fallbacksCommandController: FallbacksCommandController = {
     getSnapshot(agent): FallbacksCommandSnapshot {
       const config = source()
-      // The dispatch seam's record IS the dispatch-role memory (`**Execute as**`
-      // resolved at spawn); a session with no record has NO resolved role
-      // (rules are gone — v2).
-      const role = subagentSeam.records.get(agent.id)?.role
       const state = states.peek(agent.id)
       // P4 (plan fallbacks-half-open-recovery Task 4): under half-open mode
       // the expired cooldown entries transition AT the diagnostic read (so
@@ -745,28 +732,29 @@ export function apply(ctx: Context, config: FallbacksConfig | LiveConfigRef = de
       if (state !== undefined && recovery === 'half-open') {
         states.syncRecovery(state, Date.now(), recovery)
       }
-      // INTERIM (T4 re-keys commands.ts): the diagnostic lists the calling
-      // agent's selected chain — the chain id the agent's route names — and
-      // falls back to the first configured chain. `resolveChainForDiagnostic`
-      // and the per-chain listing land with the commands.ts rewrite.
-      const selectedChainId = agent.options?.provider === 'FallbacksChain'
-        ? agent.options?.model
-        : undefined
-      const chain = config.chains.find((entry) => entry.id === selectedChainId)
-        ?? config.chains[0]
-      const entries = chain?.entries ?? []
+      // Named virtual chains (§4): every configured chain with its slot
+      // state; the calling agent's selection (its route names the chain id)
+      // is marked. The role display is the seam record's id + specified
+      // chain pointer.
+      const roleRecord = subagentSeam.records.get(agent.id)
+      const role = roleRecord?.role ?? ''
+      const roleChain = roleRecord === undefined
+        ? undefined
+        : source().roles.list.find((entry) => entry.id === role)?.chain
+      const selectedChainId = agent.options?.provider === 'FallbacksChain' ? agent.options?.model : undefined
+      const now = new Date()
+      const chains = source().chains.map((chain) => ({
+        id: chain.id,
+        label: chain.label,
+        entries: chain.entries,
+        slotLabel: resolveSlotState(chain, now, source().tz ?? 'Asia/Shanghai').label,
+        selected: chain.id === selectedChainId,
+      }))
       return {
         origin: agent.session.header?.origin ?? 'root',
-        role: role ?? '',
-        chainRole: role !== undefined && role !== '',
-        chain: entries,
-        inherit: false,
-        // P7: current slot winner + label — the 分时 side of the status
-        // strip; the switches section below is the 降级切换 side. Config
-        // fact at `now`, per chain.
-        slot: chain === undefined
-          ? { winner: 'all-day' as const, label: 'all-day' }
-          : resolveSlotState(chain, new Date(), config.tz ?? 'Asia/Shanghai'),
+        role,
+        ...(roleChain === undefined ? {} : { roleChain }),
+        chains,
         switches: recentFallbacksSwitches(agent.session.snapshotEvents(), RECENT_SWITCHES_LIMIT),
         cooldown: state === undefined
           ? []

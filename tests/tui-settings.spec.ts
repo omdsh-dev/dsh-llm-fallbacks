@@ -118,10 +118,8 @@ const EXPECTED_FIELD_PATHS = [
   'presets',
   'triggerCodes',
   'tz',
-  'rootChain',
-  'timeSlots',
+  'chains',
   'roles.list',
-  'roles.rules',
   'cooldownMs',
   'maxSwitchesPerStep',
   'revertPolicy',
@@ -129,14 +127,13 @@ const EXPECTED_FIELD_PATHS = [
 
 /** Top-level `Config` schema keys (schema.ts) — every field path must resolve. */
 const SCHEMA_KEYS: Record<string, true> = {
-  triggerCodes: true, rootChain: true, roles: true, cooldownMs: true,
+  triggerCodes: true, chains: true, roles: true, cooldownMs: true,
   revertPolicy: true, maxSwitchesPerStep: true, presets: true,
-  timeSlots: true, tz: true,
+  tz: true,
 }
 /** Declared nested keys of the `roles` object (gateway ROLES_KEYS). */
 const ROLES_NESTED_KEYS: Record<string, true> = {
   list: true,
-  rules: true,
 }
 
 /** Field lookup by joined path inside a built section. */
@@ -148,10 +145,15 @@ function fieldOf(section: TuiSettingsSection, key: string): TuiSettingsField {
 
 /** JSON-field sample values that pass `validateConfigPatch` (gateway parity). */
 const SAMPLES: Record<string, unknown> = {
-  rootChain: ['deepseek/deepseek-chat', 'deepseek-official/deepseek-flash'],
-  timeSlots: [
-    { kind: 'preset', preset: 'liang-peak', chain: ['deepseek/deepseek-chat'] },
-    { kind: 'custom', start: '09:00', end: '12:00', days: [1, 2, 3], chain: ['deepseek/deepseek-chat'] },
+  chains: [
+    {
+      id: 'daily',
+      label: '日常',
+      entries: ['deepseek/deepseek-chat', 'deepseek-official/deepseek-flash'],
+      timeSlots: [
+        { kind: 'preset', preset: 'liang-peak', chain: ['deepseek/deepseek-chat'] },
+      ],
+    },
   ],
   'roles.list': [
     {
@@ -159,16 +161,12 @@ const SAMPLES: Record<string, unknown> = {
       persona: 'Coder persona',
       prompt: 'You are a coder',
       permissions: { allow: [], deny: [] },
-      chain: ['deepseek/deepseek-chat'],
-      fallback: 'inherit-root',
+      chain: 'daily',
     },
-  ],
-  'roles.rules': [
-    { origin: 'root', provider: 'deepseek', model: 'deepseek-chat', role: 'coder' },
   ],
 }
 
-const JSON_FIELD_KEYS = ['rootChain', 'timeSlots', 'roles.list', 'roles.rules']
+const JSON_FIELD_KEYS = ['chains', 'roles.list']
 
 describe('installTuiSettingsSection — registration shape (AC-1)', () => {
   it('registers exactly one fallbacks section with ns, title, and zh/en descriptions when serviceOwned', () => {
@@ -353,13 +351,10 @@ describe('JSON fields — format/parse round-trips and gateway-parity rejection 
     // undefined (save blocked) — never handed to JSON.parse. The payload
     // below exceeds the cap; the conformance-independent rejection happens
     // before any shape validation.
-    const field = fieldOf(section, 'rootChain')
-    const oversized = `[${JSON.stringify('x'.repeat(JSON_FIELD_MAX_DRAFT_BYTES + 1))}, "deepseek-official/deepseek-flash"]`
+    const field = fieldOf(section, 'chains')
+    const oversized = `[{"id":"a","label":"a","entries":${JSON.stringify('x'.repeat(JSON_FIELD_MAX_DRAFT_BYTES + 1))}}]`
     expect(oversized.length).toBeGreaterThan(JSON_FIELD_MAX_DRAFT_BYTES)
     expect(field.parse!(oversized)).toBeUndefined()
-    // A draft right AT the cap boundary still parses (cap is exclusive).
-    const atCap = `[${JSON.stringify('x'.repeat(JSON_FIELD_MAX_DRAFT_BYTES - 64))}, "deepseek-official/deepseek-flash"]`
-    expect(field.parse!(atCap)).toEqual({ kind: 'set', value: ['x'.repeat(JSON_FIELD_MAX_DRAFT_BYTES - 64), 'deepseek-official/deepseek-flash'] })
   })
 
   it.each(JSON_FIELD_KEYS)('%s: invalid JSON → undefined (save blocked)', (key) => {
@@ -368,28 +363,29 @@ describe('JSON fields — format/parse round-trips and gateway-parity rejection 
     expect(field.parse!('[1, 2')).toBeUndefined()
   })
 
-  it('rootChain: wrong shape (non-conforming tail) → undefined', () => {
-    const field = fieldOf(section, 'rootChain')
-    // Missing the official-V4 tail the gateway requires on save.
-    expect(field.parse!('["deepseek/deepseek-chat"]')).toBeUndefined()
-    expect(field.parse!('{"a":1}')).toBeUndefined()
-    expect(field.parse!('["deepseek/deepseek-chat", 42]')).toBeUndefined()
-  })
-
-  it('timeSlots: rows rejected per validateTimeSlotsPatch rules → undefined', () => {
-    const field = fieldOf(section, 'timeSlots')
-    // Bad kind.
-    expect(field.parse!('[{"kind":"bogus","chain":["deepseek/deepseek-chat"]}]')).toBeUndefined()
-    // Unknown preset id.
-    expect(field.parse!('[{"kind":"preset","preset":"nope","chain":["deepseek/deepseek-chat"]}]')).toBeUndefined()
-    // Preset row carrying its own window.
-    expect(field.parse!('[{"kind":"preset","preset":"liang-peak","start":"09:00","chain":["deepseek/deepseek-chat"]}]')).toBeUndefined()
-    // Custom row without strict HH:mm bounds.
-    expect(field.parse!('[{"kind":"custom","start":"9am","end":"12:00","chain":["deepseek/deepseek-chat"]}]')).toBeUndefined()
-    // Empty chain.
-    expect(field.parse!('[{"kind":"custom","start":"09:00","end":"12:00","chain":[]}]')).toBeUndefined()
+  it('chains: wrong shapes → undefined (save blocked per validateChainsPatch)', () => {
+    const field = fieldOf(section, 'chains')
     // Non-array.
-    expect(field.parse!('{"kind":"preset"}')).toBeUndefined()
+    expect(field.parse!('{"id":"a"}')).toBeUndefined()
+    // Non-object row / missing id or label.
+    expect(field.parse!('42')).toBeUndefined()
+    expect(field.parse!('[{"label":"no id"}]')).toBeUndefined()
+    expect(field.parse!('[{"id":"a"}]')).toBeUndefined()
+    // Invalid id (leading dash).
+    expect(field.parse!('[{"id":"-bad","label":"b"}]')).toBeUndefined()
+    // Duplicate ids (case-sensitive set).
+    expect(field.parse!('[{"id":"a","label":"1"},{"id":"a","label":"2"}]')).toBeUndefined()
+    // Non-conforming entries tail (official model required).
+    expect(field.parse!('[{"id":"a","label":"b","entries":["deepseek/deepseek-chat"]}]')).toBeUndefined()
+    // Bad slot rows inside the chain.
+    expect(field.parse!('[{"id":"a","label":"b","timeSlots":[{"kind":"bogus","chain":["deepseek-official/deepseek-flash"]}]}]')).toBeUndefined()
+    // Unknown nested key.
+    expect(field.parse!('[{"id":"a","label":"b","bogus":1}]')).toBeUndefined()
+    // A conforming chain still parses (boundary pin).
+    expect(field.parse!('[{"id":"a","label":"b","entries":["deepseek-official/deepseek-flash"]}]')).toEqual({
+      kind: 'set',
+      value: [{ id: 'a', label: 'b', entries: ['deepseek-official/deepseek-flash'] }],
+    })
   })
 
   it('roles.list: rows per Config schema → undefined when the schema rejects', () => {
@@ -398,13 +394,6 @@ describe('JSON fields — format/parse round-trips and gateway-parity rejection 
     expect(field.parse!('42')).toBeUndefined()
     expect(field.parse!('[{"persona":"no id"}]')).toBeUndefined()
     expect(field.parse!('[{"id":42}]')).toBeUndefined()
-  })
-
-  it('roles.rules: provider/model/role strings per Config schema → undefined on violation', () => {
-    const field = fieldOf(section, 'roles.rules')
-    expect(field.parse!('[{"role":42}]')).toBeUndefined()
-    expect(field.parse!('[{"origin":"bogus","role":"coder"}]')).toBeUndefined()
-    expect(field.parse!('"coder"')).toBeUndefined()
   })
 })
 

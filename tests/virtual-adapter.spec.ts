@@ -264,13 +264,23 @@ describe('adapter contract (P1/P3)', () => {
         name: `Test: DeepSeek Flash[all-day]`,
       },
     ])
-    // A second configured chain adds its own row (id = chain id, label prefix).
-    apply(ctx, cfg({ chains: [vChain(), vChain([OFFICIAL_FLASH], [], 'night')] }))
-    const rows = await ctx.llm.listModels(FALLBACKS_PROVIDER)
-    expect(rows.map((row) => [row.id, row.name])).toEqual([
-      [CHAIN_ID, 'Test: DeepSeek Flash[all-day]'],
-      ['night', expect.stringContaining('Other: ')],
-    ])
+    // A config with TWO chains advertises two rows (id = chain id, label
+    // prefix per chain) — on a FRESH context, because the first apply's
+    // adapter instance owns this context's route and reads ITS config.
+    const two = new Context()
+    new LlmRuntime(two)
+    try {
+      apply(two, cfg({ chains: [vChain(), vChain([OFFICIAL_FLASH], [], 'night')] }))
+      await vi.waitFor(() => expect(listedOn(two)).toBe(true))
+      const rows = await two.llm.listModels(FALLBACKS_PROVIDER)
+      // No head stub on this context: the display name falls back to the id.
+      expect(rows.map((row) => [row.id, row.name])).toEqual([
+        [CHAIN_ID, 'Test: deepseek-flash[all-day]'],
+        ['night', 'Other: deepseek-flash[all-day]'],
+      ])
+    } finally {
+      await two.fiber.dispose()
+    }
   })
   it('pickerDisplayName annotates the matching slot + head display name with the chain label', () => {
     const now = new Date('2026-08-18T02:00:00Z')
@@ -359,7 +369,7 @@ describe('adapter contract (P1/P3)', () => {
     apply(
       ctx,
       cfg({
-        chains: [vChain([OFFICIAL_FLASH], [{ kind: 'custom', start: '00:00', end: '23:59', chain: ['other/*', 'anthropic/claude-sonnet-4' }])],
+        chains: [vChain([OFFICIAL_FLASH], [{ kind: 'custom', start: '00:00', end: '23:59', chain: ['other/*', 'anthropic/claude-sonnet-4'] }])],
       }),
     )
     await vi.waitFor(() => expect(listed()).toBe(true))
@@ -399,7 +409,7 @@ describe('adapter contract (P1/P3)', () => {
     apply(
       ctx,
       cfg({
-        chains: [vChain([OFFICIAL_FLASH], [{ kind: 'custom', start: '00:00', end: '23:59', chain: ['other/*', 'anthropic/claude-sonnet-4' }])],
+        chains: [vChain([OFFICIAL_FLASH], [{ kind: 'custom', start: '00:00', end: '23:59', chain: ['other/*', 'anthropic/claude-sonnet-4'] }])],
       }),
     )
     await vi.waitFor(() => expect(listed()).toBe(true))
@@ -665,8 +675,13 @@ describe('providerRetryPolicy (documented degradation — host default)', () => 
 
       // The control: the head route itself still answers `always`.
       expect(local.llm.providerRetryPolicy(HEAD_PROVIDER)).toMatchObject({ mode: 'always', initialDelayMs: 1234 })
-      // The virtual route does NOT mirror it — the host default applies.
-      expect(local.llm.providerRetryPolicy(FALLBACKS_PROVIDER)).toBeUndefined()
+      // The virtual route does NOT mirror it — the host captured the
+      // adapter's `undefined` answer at registration and resolved its OWN
+      // normal default (never the head's `always`).
+      const virtual = local.llm.providerRetryPolicy(FALLBACKS_PROVIDER)
+      expect(virtual).toBeDefined()
+      expect(virtual).not.toBe(local.llm.providerRetryPolicy(HEAD_PROVIDER))
+      expect(virtual).toMatchObject({ mode: 'normal' })
     } finally {
       await local.fiber.dispose()
     }

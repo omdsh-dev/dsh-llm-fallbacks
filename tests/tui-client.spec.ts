@@ -312,7 +312,7 @@ describe('apply() wiring — conditional tuiCommandTrees child', () => {
         return () => {}
       },
     } as never)
-    apply(ctx, cfg({ triggerCodes: ['AUTH'], rootChain: ['other/gpt-4o'] }))
+    apply(ctx, cfg({ triggerCodes: ['AUTH'], chains: [{ id: 'daily', label: '日常', entries: ['other/gpt-4o'] }] }))
     await vi.waitFor(() => expect(registered).toHaveLength(1))
 
     const { agent } = makeAgent('cmd-live', { provider: 'mock', model: 'gpt-4o' })
@@ -338,7 +338,7 @@ describe('apply() wiring — conditional tuiCommandTrees child', () => {
     await ctx.settings.update(FALLBACKS_PROFILE_ENTRY, { triggerCodes: ['QUOTA'] })
     await vi.waitFor(() => expect(invoke(' config')).toContain('触发码: QUOTA'))
     expect(invoke(' config')).not.toContain('触发码: AUTH')
-    await ctx.settings.update(FALLBACKS_PROFILE_ENTRY, { rootChain: [] })
+    await ctx.settings.update(FALLBACKS_PROFILE_ENTRY, { chains: [] })
     await vi.waitFor(() => expect(invoke(' config').split('\n')[0]).toBe('Fallbacks 配置: 未启用'))
 
     // Read-only: the readbacks never grow the session log.

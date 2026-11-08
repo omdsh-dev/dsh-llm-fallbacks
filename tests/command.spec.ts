@@ -22,7 +22,6 @@ import {
   RECENT_SWITCHES_LIMIT,
   recentFallbacksSwitches,
   registerFallbacksCommands,
-  resolveChainForDiagnostic,
   type FallbacksCommandController,
   type FallbacksCommandRegistry,
   type FallbacksCommandSnapshot,
@@ -30,17 +29,17 @@ import {
 } from '../src/commands.ts'
 import type { FallbacksSwitchEventData } from '../src/events.ts'
 import { OFFICIAL_FLASH } from '../src/time-slots.ts'
-import { FALLBACKS_CHAIN_MODEL, FALLBACKS_PROVIDER } from '../src/virtual-adapter.ts'
+import { FALLBACKS_PROVIDER } from '../src/virtual-adapter.ts'
 
 /** A fully-populated snapshot; `overrides` trim it to the state under test. */
 function snapshot(overrides: Partial<FallbacksCommandSnapshot> = {}): FallbacksCommandSnapshot {
   return {
     origin: 'root',
-    role: 'inherit',
-    chainRole: true,
-    chain: ['anthropic/claude-3-5-sonnet', 'openai/*'],
-    inherit: false,
-    slot: { winner: 'all-day', label: 'all-day' },
+    role: 'coder',
+    roleChain: 'daily',
+    chains: [
+      { id: 'daily', label: '日常', entries: ['anthropic/claude-3-5-sonnet', 'openai/*'], slotLabel: 'all-day', selected: true },
+    ],
     switches: [
       {
         turn: 1,
@@ -63,19 +62,21 @@ function configSummary(overrides: Partial<FallbacksConfigSummary> = {}): Fallbac
     // removed `enabled` switch re-keyed to `isFallbackActive`).
     active: true,
     triggerCodes: ['AUTH', 'QUOTA', 'RATE_LIMIT'],
-    rootChain: ['anthropic/claude-3-5-sonnet', 'openai/*'],
-    timeSlots: [
-      { preset: 'liang-peak', chainCount: 2 },
-      { start: '09:00', end: '12:00', chainCount: 1 },
+    chains: [
+      {
+        id: 'daily',
+        label: '日常',
+        entries: ['anthropic/claude-3-5-sonnet'],
+        timeSlots: [
+          { preset: 'liang-peak', chainCount: 1 },
+          { start: '09:00', end: '12:00', chainCount: 1 },
+        ],
+      },
     ],
     tz: 'Asia/Shanghai',
     roles: [
-      { id: 'coder', chainCount: 2 },
-      { id: 'reviewer', chainCount: 1 },
-    ],
-    rules: [
-      { provider: 'deepseek', model: 'deepseek-chat', role: 'coder' },
-      { provider: 'anthropic', model: 'claude-3-5-sonnet', role: 'reviewer' },
+      { id: 'coder', chain: 'daily' },
+      { id: 'reviewer', chain: undefined },
     ],
     cooldownMs: 300_000,
     revertPolicy: 'cooldown-expiry',
@@ -136,52 +137,6 @@ describe('registerFallbacksCommands — registration shape', () => {
 })
 
 describe('snapshot building helpers', () => {
-  it('resolveChainForDiagnostic prefers the declared role chain and marks the inherit-root tail', () => {
-    const roles = [{ id: 'reviewer', persona: '', chain: ['openai/gpt-4o-mini'] }]
-    // Own chain shown; a non-empty rootChain is appended as the inherit tail.
-    expect(resolveChainForDiagnostic(roles, ['other/gpt-4o'], 'reviewer')).toEqual({
-      chainRole: true,
-      chain: ['openai/gpt-4o-mini'],
-      inherit: true,
-    })
-    // No rootChain → no inherit tail to annotate.
-    expect(resolveChainForDiagnostic(roles, [], 'reviewer')).toEqual({
-      chainRole: true,
-      chain: ['openai/gpt-4o-mini'],
-      inherit: false,
-    })
-  })
-
-  it('resolveChainForDiagnostic defers an empty own chain and unknown roles to rootChain', () => {
-    const roles = [{ id: 'reviewer', persona: '', chain: [] }]
-    const rootChain = ['other/gpt-4o']
-    expect(resolveChainForDiagnostic(roles, rootChain, 'reviewer')).toEqual({
-      chainRole: false,
-      chain: ['other/gpt-4o'],
-      inherit: true,
-    })
-    // Undeclared role id → rootChain + inherit tail (defensive, no crash).
-    expect(resolveChainForDiagnostic(roles, rootChain, 'unknown-role')).toEqual({
-      chainRole: false,
-      chain: ['other/gpt-4o'],
-      inherit: true,
-    })
-  })
-
-  it('resolveChainForDiagnostic reports an unconfigured chain as empty', () => {
-    expect(resolveChainForDiagnostic([], [], 'default')).toEqual({ chainRole: false, chain: [], inherit: false })
-  })
-
-  it('resolveChainForDiagnostic yields [] for fallback none with an empty own chain even when rootChain is non-empty', () => {
-    const roles = [{ id: 'reviewer', persona: '', chain: [], fallback: 'none' }]
-    // Mirror resolveChainViews' `[...[], ...[]]` exactly — nothing appended.
-    expect(resolveChainForDiagnostic(roles, ['other/gpt-4o'], 'reviewer')).toEqual({
-      chainRole: false,
-      chain: [],
-      inherit: false,
-    })
-  })
-
   it('recentFallbacksSwitches filters the event log, newest first, capped at the limit', () => {
     const events = [
       { type: 'llm/retry', data: {} },
@@ -252,45 +207,44 @@ describe('parseFallbacksSubcommand — rawInput subcommand parsing', () => {
 })
 
 describe('fallbacksCommandText — output states', () => {
-  it('renders origin, role, and a configured role chain without an inherit annotation', () => {
+  it('renders origin, role + its specified chain pointer, and the selected chain line', () => {
     const text = fallbacksCommandText(snapshot(), 'zh')
     expect(text).toContain('会话来源: root')
-    expect(text).toContain('角色: inherit')
-    expect(text).toContain('链: anthropic/claude-3-5-sonnet → openai/*')
+    expect(text).toContain('角色: coder（daily）')
+    expect(text).toContain('链 ●: daily（日常）: anthropic/claude-3-5-sonnet → openai/*｜分时: all-day')
+    // No auto mode framing.
     expect(text).not.toContain('inherit-root')
+    expect(text).not.toContain('自动')
   })
 
-  it('appends the inherit-root annotation when the chain inherits rootChain (inherit: true)', () => {
-    const zh = fallbacksCommandText(snapshot({ chainRole: true, chain: ['openai/gpt-4o-mini'], inherit: true }), 'zh')
-    expect(zh).toContain('链: openai/gpt-4o-mini（inherit-root）')
-    const en = fallbacksCommandText(snapshot({ chainRole: false, chain: ['other/gpt-4o'], inherit: true }), 'en')
-    expect(en).toContain('Chain: other/gpt-4o (inherit-root)')
+  it('renders an unspecified role as NOT SPECIFIED (dsh default, never auto)', () => {
+    const zh = fallbacksCommandText(snapshot({ role: '', roleChain: undefined }), 'zh')
+    expect(zh).toContain('角色: 未指定（沿用 dsh 默认）（未指定（沿用 dsh 默认））')
+    const en = fallbacksCommandText(snapshot({ role: '', roleChain: undefined }), 'en')
+    expect(en).toContain('Role: not specified (dsh default)')
   })
 
   it('renders "not configured" when no chain exists', () => {
-    const zh = fallbacksCommandText(snapshot({ chainRole: false, chain: [], inherit: false }), 'zh')
+    const zh = fallbacksCommandText(snapshot({ chains: [] }), 'zh')
     expect(zh).toContain('链: 未配置')
-    const en = fallbacksCommandText(snapshot({ chainRole: false, chain: [], inherit: false }), 'en')
+    const en = fallbacksCommandText(snapshot({ chains: [] }), 'en')
     expect(en).toContain('Chain: not configured')
   })
 
-  it('renders "not configured" for a fallback-none role with an empty own chain despite a rootChain', () => {
-    // Full path: resolution (none + empty → []) feeds the renderer → 未配置.
-    const { chain, inherit } = resolveChainForDiagnostic(
-      [{ id: 'reviewer', persona: '', chain: [], fallback: 'none' }],
-      ['other/gpt-4o'],
-      'reviewer',
-    )
-    expect(chain).toEqual([])
-    expect(inherit).toBe(false)
-    const zh = fallbacksCommandText(snapshot({ chainRole: false, chain, inherit }), 'zh')
-    expect(zh).toContain('链: 未配置')
+  it('marks exactly the calling agent\'s selected chain among several', () => {
+    const chains = [
+      { id: 'daily', label: 'A', entries: ['a/1'], slotLabel: 'all-day', selected: false },
+      { id: 'night', label: 'B', entries: ['b/2'], slotLabel: 'Liang Peak', selected: true },
+    ]
+    const text = fallbacksCommandText(snapshot({ chains }), 'zh')
+    expect(text).toContain('链: daily（A）')
+    expect(text).toContain('链 ●: night（B）')
+    expect(text).toContain('分时: Liang Peak')
   })
 
   it('lists recent switches newest-first with from/to/role/reason', () => {
-    // Historical old-session events: sessions written before the runtime
-    // resolved no-rule-match to 'inherit' carried role 'default'; the
-    // renderer must keep displaying them verbatim (qc1 F-005).
+    // Historical old-session events: sessions written before v2 carried
+    // role 'default'; the renderer must keep displaying them verbatim.
     const switches: FallbacksSwitchEventData[] = [
       { turn: 1, step: 1, from: { provider: 'deepseek', model: 'deepseek-chat' }, to: { provider: 'anthropic', model: 'claude-3-5-sonnet' }, role: 'default', reason: 'trigger-code' },
       { turn: 2, step: 1, from: { provider: 'anthropic', model: 'claude-3-5-sonnet' }, to: { provider: 'openai', model: 'gpt-4o' }, role: 'default', reason: 'always-cap' },
@@ -312,15 +266,10 @@ describe('fallbacksCommandText — output states', () => {
     expect(en).toContain('Recent fallback switches: No fallback switches in this session')
   })
 
-  it('renders the current time-slot winner (分时 side) with its label', () => {
-    const zh = fallbacksCommandText(snapshot({ slot: { winner: 'all-day', label: 'all-day' } }), 'zh')
-    expect(zh).toContain('分时: all-day')
-    const slotRow = { kind: 'preset' as const, preset: 'liang-peak' as const, chain: ['openai/gpt-4o'] }
-    const peak = fallbacksCommandText(snapshot({ slot: { winner: slotRow, label: 'Liang Peak' } }), 'zh')
-    expect(peak).toContain('分时: Liang Peak')
-    // en mirror
-    const en = fallbacksCommandText(snapshot({ slot: { winner: slotRow, label: 'Liang Peak' } }), 'en')
-    expect(en).toContain('Time slot: Liang Peak')
+  it('renders each chain\'s current slot label (分时 side)', () => {
+    const chains = [{ id: 'daily', label: 'A', entries: ['a/1'], slotLabel: 'Liang Peak', selected: true }]
+    const zh = fallbacksCommandText(snapshot({ chains }), 'zh')
+    expect(zh).toContain('分时: Liang Peak')
   })
 
   it('lists active cooldown entries with their expiry', () => {
@@ -362,8 +311,8 @@ describe('fallbacksCommandText — zh/en copy smoke', () => {
     const text = fallbacksCommandText(populated, 'zh')
     expect(text).toContain('当前会话 fallback 诊断（只读）')
     expect(text).toContain('会话来源: root')
-    expect(text).toContain('角色: inherit')
-    expect(text).toContain('链:')
+    expect(text).toContain('角色: coder（daily）')
+    expect(text).toContain('链 ●: daily（日常）:')
     expect(text).toContain('分时: all-day')
     expect(text).toContain('最近降级切换 (1):')
     expect(text).toContain('冷却 (1):')
@@ -373,8 +322,8 @@ describe('fallbacksCommandText — zh/en copy smoke', () => {
     const text = fallbacksCommandText(populated, 'en')
     expect(text).toContain('Session fallback diagnostics (read-only)')
     expect(text).toContain('Session origin: root')
-    expect(text).toContain('Role: inherit')
-    expect(text).toContain('Chain:')
+    expect(text).toContain('Role: coder（daily）')
+    expect(text).toContain('Chain ●:')
     expect(text).toContain('Time slot: all-day')
     expect(text).toContain('Recent fallback switches (1):')
     expect(text).toContain('Cooldown (1):')
@@ -405,9 +354,16 @@ describe('fallbacksConfigText — composed-config readback', () => {
     expect(fallbacksConfigText(configSummary(), 'en')).toContain('Trigger codes: AUTH, QUOTA, RATE_LIMIT')
   })
 
-  it('renders root chain entries, and (empty) when none', () => {
-    expect(fallbacksConfigText(configSummary(), 'en')).toContain('Root chain: anthropic/claude-3-5-sonnet, openai/*')
-    expect(fallbacksConfigText(configSummary({ rootChain: [] }), 'en')).toContain('Root chain: (empty)')
+  it('renders each chain line: id (label): entries with per-chain slot rows', () => {
+    const text = fallbacksConfigText(configSummary(), 'en')
+    expect(text).toContain(
+      'daily (日常): anthropic/claude-3-5-sonnet | slots: 2 — liang-peak (chain: 1, window 09:00-12:00 (Mon-Fri), 14:00-18:00 (Mon-Fri)), custom 09:00-12:00 (chain: 1)',
+    )
+    // The preset window comes from the frozen PRESETS constant, never from a
+    // stored row field.
+    expect(text).not.toContain('window undefined')
+    const empty = fallbacksConfigText(configSummary({ chains: [{ id: 'daily', label: '日常', entries: [], timeSlots: [] }] }), 'en')
+    expect(empty).toContain('daily (日常): (empty) | slots: (empty)')
   })
 
   it('renders (empty) for no trigger codes — no trailing-empty line (qc2 N-4)', () => {
@@ -416,8 +372,10 @@ describe('fallbacksConfigText — composed-config readback', () => {
     expect(text).not.toMatch(/Trigger codes: ?\n/)
   })
 
-  it('renders the roles summary with the full count and per-role chain counts', () => {
-    expect(fallbacksConfigText(configSummary(), 'en')).toContain('Roles: 2 — coder (chain: 2), reviewer (chain: 1)')
+  it('renders the roles summary with the full count and per-role chain pointers', () => {
+    expect(fallbacksConfigText(configSummary(), 'en')).toContain(
+      'Roles: 2 — coder (specified chain: daily), reviewer (specified chain: not specified (dsh default))',
+    )
   })
 
   it('renders zero roles without a dangling separator', () => {
@@ -427,130 +385,24 @@ describe('fallbacksConfigText — composed-config readback', () => {
   })
 
   it('truncates long lists at the cap with an ellipsis (full count stays visible)', () => {
-    const roles = Array.from({ length: 7 }, (_, i) => ({ id: `role-${i}`, chainCount: i }))
+    const roles = Array.from({ length: 7 }, (_, i) => ({ id: `role-${i}`, chain: i % 2 === 0 ? 'daily' : undefined }))
     const text = fallbacksConfigText(configSummary({ roles }), 'en')
-    expect(text).toContain('Roles: 7 — role-0 (chain: 0), role-1 (chain: 1), role-2 (chain: 2), role-3 (chain: 3), role-4 (chain: 4), …')
+    expect(text).toContain('Roles: 7 — role-0 (specified chain: daily), role-1 (specified chain: not specified (dsh default)), role-2 (specified chain: daily), role-3 (specified chain: not specified (dsh default)), role-4 (specified chain: daily), …')
     expect(text).not.toContain('role-5')
     const codes = ['A', 'B', 'C', 'D', 'E', 'F']
     expect(fallbacksConfigText(configSummary({ triggerCodes: codes }), 'en')).toContain('Trigger codes: A, B, C, D, E, …')
   })
 
-  it('renders the time-slots summary: full count, preset rows resolve their frozen window from PRESETS, custom rows show start-end', () => {
-    const text = fallbacksConfigText(configSummary(), 'en')
-    expect(text).toContain(
-      'Time slots: 2 — liang-peak (chain: 2, window 09:00-12:00 (Mon-Fri), 14:00-18:00 (Mon-Fri)), custom 09:00-12:00 (chain: 1)',
-    )
-    // The preset window comes from the frozen PRESETS constant (09:00-12:00 +
-    // 14:00-18:00 Mon–Fri for liang-peak), never from a stored row field.
-    expect(text).not.toContain('window undefined')
-  })
-
-  it('renders day masks for weekday-masked preset windows and keeps complement wording accurate (C-8)', () => {
-    // glm-peak is Mon–Fri 14:00-18:00 (PRESETS window day mask) — the mask
-    // must be visible so operators can verify /settings edits.
-    const peak = fallbacksConfigText(configSummary({ timeSlots: [{ preset: 'glm-peak', chainCount: 2 }] }), 'en')
-    expect(peak).toContain('glm-peak (chain: 2, window 14:00-18:00 (Mon-Fri))')
-    // glm-valley is the complement of that weekday window — the exclusion is
-    // the Mon–Fri window only, never the whole daily range, so the day mask
-    // qualifies the "outside" wording (qc1 F-004).
-    const valley = fallbacksConfigText(configSummary({ timeSlots: [{ preset: 'glm-valley', chainCount: 2 }] }), 'en')
-    expect(valley).toContain('glm-valley (chain: 2, window outside 14:00-18:00 (Mon-Fri))')
-    // zh mirror for the same row.
-    const zh = fallbacksConfigText(configSummary({ timeSlots: [{ preset: 'glm-valley', chainCount: 2 }] }), 'zh')
-    expect(zh).toContain('glm-valley（chain: 2, window outside 14:00-18:00 (Mon-Fri)）')
-  })
-
-  it('renders a compact day mask on custom rows that carry one', () => {
-    const text = fallbacksConfigText(
-      configSummary({ timeSlots: [{ start: '09:00', end: '12:00', days: [1, 2, 3, 4, 5], chainCount: 1 }] }),
-      'en',
-    )
-    expect(text).toContain('custom 09:00-12:00 (Mon-Fri) (chain: 1)')
-    // Non-contiguous masks stay comma-joined and compact.
-    const weekend = fallbacksConfigText(
-      configSummary({ timeSlots: [{ start: '10:00', end: '14:00', days: [0, 6], chainCount: 1 }] }),
-      'en',
-    )
-    expect(weekend).toContain('custom 10:00-14:00 (Sun, Sat) (chain: 1)')
-  })
-
-  it('skips out-of-range day values — a hand-written days:[7] row never renders "undefined" (S-1)', () => {
-    // settings.yaml `days` are schema-permissive (z.array(z.number()), no
-    // range constraint) and the read path passes them verbatim — the render
-    // guard must keep the C-9 "never undefined in readback" invariant.
-    const mixed = fallbacksConfigText(
-      configSummary({ timeSlots: [{ start: '09:00', end: '12:00', days: [7, 1], chainCount: 1 }] }),
-      'en',
-    )
-    // In-range siblings still render; the out-of-range entry is skipped.
-    expect(mixed).toContain('custom 09:00-12:00 (Mon) (chain: 1)')
-    expect(mixed).not.toContain('undefined')
-    // All entries out of range → the mask segment is dropped entirely.
-    const allOut = fallbacksConfigText(
-      configSummary({ timeSlots: [{ start: '09:00', end: '12:00', days: [7], chainCount: 1 }] }),
-      'en',
-    )
-    expect(allOut).toContain('custom 09:00-12:00 (chain: 1)')
-    expect(allOut).not.toContain('undefined')
-    expect(allOut).not.toContain('()')
-  })
-
-  it('degrades a malformed custom slot row (missing bounds) to a bare custom marker (C-9)', () => {
-    // A legacy row the resolver warns about and skips must not render
-    // `undefined-undefined` — the readback shows the bare custom marker.
-    const text = fallbacksConfigText(configSummary({ timeSlots: [{ chainCount: 0 }] }), 'en')
-    expect(text).toContain('Time slots: 1 — custom  (chain: 0)')
-    expect(text).not.toContain('undefined')
-  })
-
-  it('renders unknown preset ids without a window segment (C-9)', () => {
-    // Legacy rows with an unknown preset id render the bare preset item —
-    // never a window placeholder or undefined.
-    const text = fallbacksConfigText(configSummary({ timeSlots: [{ preset: 'nope', chainCount: 1 }] }), 'en')
-    expect(text).toContain('nope (chain: 1)')
-    expect(text).not.toContain('window')
-    expect(text).not.toContain('undefined')
-  })
-
-  it('renders (empty) when no time slots are configured', () => {
-    expect(fallbacksConfigText(configSummary({ timeSlots: [] }), 'en')).toContain('Time slots: (empty)')
-  })
-
-  it('renders the timezone line', () => {
-    expect(fallbacksConfigText(configSummary(), 'en')).toContain('TZ: Asia/Shanghai')
-    expect(fallbacksConfigText(configSummary({ tz: 'UTC' }), 'en')).toContain('TZ: UTC')
-  })
-
-  it('renders the rules summary: full count, provider/model → role rows', () => {
-    const text = fallbacksConfigText(configSummary(), 'en')
-    expect(text).toContain('Rules: 2 — deepseek/deepseek-chat → coder, anthropic/claude-3-5-sonnet → reviewer')
-  })
-
-  it('renders (empty) when no role rules are configured', () => {
-    expect(fallbacksConfigText(configSummary({ rules: [] }), 'en')).toContain('Rules: (empty)')
-  })
-
-  it('renders omitted rule provider/model as wildcards', () => {
-    const rules = [
-      { provider: 'deepseek', model: '', role: 'coder' },
-      { provider: '', model: 'gpt-4o', role: 'reviewer' },
-    ]
-    expect(fallbacksConfigText(configSummary({ rules }), 'en')).toContain(
-      'Rules: 2 — deepseek/* → coder, */gpt-4o → reviewer',
-    )
-  })
-
-  it('truncates long time-slot and rule lists at the cap with an ellipsis (full count stays visible)', () => {
+  it('truncates long per-chain slot lists at the cap with an ellipsis (full count stays visible)', () => {
     const timeSlots = Array.from({ length: 7 }, (_, i) => ({ start: '09:00', end: '12:00', chainCount: i }))
-    const slotsText = fallbacksConfigText(configSummary({ timeSlots }), 'en')
-    expect(slotsText).toContain(
-      'Time slots: 7 — custom 09:00-12:00 (chain: 0), custom 09:00-12:00 (chain: 1), custom 09:00-12:00 (chain: 2), custom 09:00-12:00 (chain: 3), custom 09:00-12:00 (chain: 4), …',
+    const text = fallbacksConfigText(
+      configSummary({ chains: [{ id: 'daily', label: 'A', entries: ['a/1'], timeSlots }] }),
+      'en',
     )
-    expect(slotsText).not.toContain('custom 09:00-12:00 (chain: 5)')
-    const rules = Array.from({ length: 7 }, (_, i) => ({ provider: 'p', model: `m${i}`, role: 'coder' }))
-    const rulesText = fallbacksConfigText(configSummary({ rules }), 'en')
-    expect(rulesText).toContain('Rules: 7 — p/m0 → coder, p/m1 → coder, p/m2 → coder, p/m3 → coder, p/m4 → coder, …')
-    expect(rulesText).not.toContain('p/m5 → coder')
+    expect(text).toContain(
+      'slots: 7 — custom 09:00-12:00 (chain: 0), custom 09:00-12:00 (chain: 1), custom 09:00-12:00 (chain: 2), custom 09:00-12:00 (chain: 3), custom 09:00-12:00 (chain: 4), …',
+    )
+    expect(text).not.toContain('custom 09:00-12:00 (chain: 5)')
   })
 
   it('renders cooldown, revert policy, max switches, and presets', () => {
@@ -584,11 +436,9 @@ describe('fallbacksConfigText — zh/en copy smoke', () => {
     const text = fallbacksConfigText(populated, 'zh')
     expect(text.split('\n')[0]).toBe('Fallbacks 配置: 已启用')
     expect(text).toContain('触发码: AUTH, QUOTA, RATE_LIMIT')
-    expect(text).toContain('根链: anthropic/claude-3-5-sonnet, openai/*')
-    expect(text).toContain('分时槽: 2 — liang-peak（chain: 2, window 09:00-12:00 (Mon-Fri), 14:00-18:00 (Mon-Fri)）, custom 09:00-12:00（chain: 1）')
+    expect(text).toContain('daily（日常）: anthropic/claude-3-5-sonnet｜分时槽: 2 — liang-peak（chain: 1, window 09:00-12:00 (Mon-Fri), 14:00-18:00 (Mon-Fri)）, custom 09:00-12:00（chain: 1）')
     expect(text).toContain('时区: Asia/Shanghai')
-    expect(text).toContain('角色: 2 — coder（chain: 2）, reviewer（chain: 1）')
-    expect(text).toContain('角色规则: 2 — deepseek/deepseek-chat → coder, anthropic/claude-3-5-sonnet → reviewer')
+    expect(text).toContain('角色: 2 — coder（指定降级链: daily）, reviewer（指定降级链: 未指定（沿用 dsh 默认））')
     expect(text).toContain('冷却: 300000 ms')
     expect(text).toContain('回主策略: cooldown-expiry')
     expect(text).toContain('单次请求行走最大切换: 8')
@@ -601,11 +451,9 @@ describe('fallbacksConfigText — zh/en copy smoke', () => {
     const text = fallbacksConfigText(populated, 'en')
     expect(text.split('\n')[0]).toBe('Fallbacks config: enabled')
     expect(text).toContain('Trigger codes: AUTH, QUOTA, RATE_LIMIT')
-    expect(text).toContain('Root chain: anthropic/claude-3-5-sonnet, openai/*')
-    expect(text).toContain('Time slots: 2 — liang-peak (chain: 2, window 09:00-12:00 (Mon-Fri), 14:00-18:00 (Mon-Fri)), custom 09:00-12:00 (chain: 1)')
+    expect(text).toContain('daily (日常): anthropic/claude-3-5-sonnet | slots: 2 — liang-peak (chain: 1, window 09:00-12:00 (Mon-Fri), 14:00-18:00 (Mon-Fri)), custom 09:00-12:00 (chain: 1)')
     expect(text).toContain('TZ: Asia/Shanghai')
-    expect(text).toContain('Roles: 2 — coder (chain: 2), reviewer (chain: 1)')
-    expect(text).toContain('Rules: 2 — deepseek/deepseek-chat → coder, anthropic/claude-3-5-sonnet → reviewer')
+    expect(text).toContain('Roles: 2 — coder (specified chain: daily), reviewer (specified chain: not specified (dsh default))')
     expect(text).toContain('Cooldown: 300000 ms')
     expect(text).toContain('Revert: cooldown-expiry')
     expect(text).toContain('Max switches per request walk: 8')
@@ -878,10 +726,10 @@ describe('apply() wiring — conditional commands child', () => {
         return () => {}
       },
     } as never)
-    apply(ctx, cfg({ rootChain: ['other/gpt-4o'] }))
+    apply(ctx, cfg({ chains: [{ id: 'daily', label: '日常', entries: ['other/gpt-4o'] }] }))
     await vi.waitFor(() => expect(registered).toHaveLength(1))
 
-    const { agent } = makeAgent('cmd-agent', { provider: 'mock', model: 'gpt-4o' })
+    const { agent } = makeAgent('cmd-agent', { provider: FALLBACKS_PROVIDER, model: 'daily' })
     // Direction C: the walk cools the chain entry it ATTEMPTED — here the
     // chain head, not the session's source model — and writes no durable
     // event (issue #52).
@@ -896,12 +744,10 @@ describe('apply() wiring — conditional commands child', () => {
     expect(result.kind).toBe('success')
     const text = (result as { text?: string }).text ?? ''
     expect(text).toContain('会话来源: root')
-    // No rules match → the built-in 'inherit' role → rootChain + inherit tail.
-    expect(text).toContain('角色: inherit')
-    expect(text).toContain('链: other/gpt-4o（inherit-root）')
-    // P7: the 分时 line reports the current slot winner (all-day here — no
-    // extra rows), separate from the 降级切换 switches section.
-    expect(text).toContain('分时: all-day')
+    // No seam record → NOT SPECIFIED (rules are gone — v2).
+    expect(text).toContain('角色: 未指定')
+    // The calling agent's selected chain is listed and marked.
+    expect(text).toContain('链 ●: daily（日常）: other/gpt-4o｜分时: all-day')
     // Stop-write (issue #52): no durable fallbacks/switch event → the command's
     // recent-switch section is empty, while the cooldown readback still works.
     expect(text).toContain('最近降级切换: 本会话暂无 fallback 切换')
@@ -915,7 +761,7 @@ describe('apply() wiring — conditional commands child', () => {
     expect(agent.session.snapshotEvents()).toHaveLength(0)
   })
 
-  it('resolves the role through the served route for a child on the virtual row (same as the walk)', async () => {
+  it('shows the dispatch seam record as the resolved role (rules are gone — v2)', async () => {
     const registered: CommandDefinition[] = []
     ctx.provide('commands', {
       register: (def: CommandDefinition) => {
@@ -923,21 +769,17 @@ describe('apply() wiring — conditional commands child', () => {
         return () => {}
       },
     } as never)
-    // A rule keyed on the REAL chain head — the pair the virtual row serves.
     apply(ctx, cfg({
-      rootChain: [OFFICIAL_FLASH],
-      roles: {
-        list: [{ id: 'coder', persona: '', chain: ['other/gpt-4o'] }],
-        rules: [{ provider: 'deepseek-official', model: 'deepseek-flash', role: 'coder' }],
-      },
+      chains: [{ id: 'daily', label: '日常', entries: ['other/gpt-4o'] }],
+      roles: { list: [{ id: 'coder', persona: '', chain: 'daily' }] },
     }))
     await vi.waitFor(() => expect(registered).toHaveLength(1))
 
-    // The child records the VIRTUAL pair, so only the served route can match
-    // the head-keyed rule — exactly what the walk passes to the same resolver.
+    // The seam record is the dispatch-role memory; without one the role is
+    // NOT SPECIFIED.
     const { agent } = makeAgent(
       'cmd-virtual-child',
-      { provider: FALLBACKS_PROVIDER, model: FALLBACKS_CHAIN_MODEL },
+      { provider: FALLBACKS_PROVIDER, model: 'daily' },
       { origin: 'subagent' },
     )
 
@@ -950,8 +792,10 @@ describe('apply() wiring — conditional commands child', () => {
     expect(result.kind).toBe('success')
     if (result.kind !== 'success') throw new Error(`/fallbacks failed: ${result.text}`)
     const text = result.text ?? ''
-    expect(text).toContain('角色: coder')
-    expect(text).toContain('链: other/gpt-4o')
+    // No dispatch record for this agent → NOT SPECIFIED, and the selected
+    // chain is still listed + marked.
+    expect(text).toContain('角色: 未指定')
+    expect(text).toContain('链 ●: daily（日常）: other/gpt-4o')
   })
 
   it('reports the slot as all-day when a legacy non-conforming all-day keeps the rows inert (qc1 F-001)', async () => {
@@ -963,15 +807,19 @@ describe('apply() wiring — conditional commands child', () => {
       },
     } as never)
     apply(ctx, cfg({
-      rootChain: ['mock/legacy-a', 'other/legacy-b'],
-      timeSlots: [{ kind: 'custom', start: '09:00', end: '12:00', chain: ['anthropic/claude-sonnet-4'] }],
+      chains: [{
+        id: 'legacy',
+        label: 'Legacy',
+        entries: ['mock/legacy-a', 'other/legacy-b'],
+        timeSlots: [{ kind: 'custom', start: '09:00', end: '12:00', chain: ['anthropic/claude-sonnet-4'] }],
+      }],
     }))
     await vi.waitFor(() => expect(registered).toHaveLength(1))
 
-    const { agent } = makeAgent('cmd-legacy-slot', { provider: 'mock', model: 'gpt-4o' })
+    const { agent } = makeAgent('cmd-legacy-slot', { provider: FALLBACKS_PROVIDER, model: 'legacy' })
     // Pin the clock INSIDE the slot window (09:01 Asia/Shanghai): the row
-    // would win for a conforming all-day — with a legacy multi-model chain
-    // the 分时 line must stay on the inert all-day state (no slot status
+    // would win for a conforming chain — with a non-conforming entries tail
+    // the chain's slot state must stay on the inert all-day (no slot status
     // for a rotation that never affects routing).
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-08-17T01:01:00Z'))
@@ -984,7 +832,7 @@ describe('apply() wiring — conditional commands child', () => {
       } as unknown as CommandInvocation)
       expect(result.kind).toBe('success')
       const text = (result as { text?: string }).text ?? ''
-      expect(text).toContain('分时: all-day')
+      expect(text).toContain('链 ●: legacy（Legacy）: mock/legacy-a → other/legacy-b｜分时: all-day')
       expect(text).not.toContain('custom 09:00-12:00')
     } finally {
       vi.useRealTimers()
@@ -1011,7 +859,6 @@ describe('apply() wiring — conditional commands child', () => {
     } as unknown as CommandInvocation)
     const text = (result as { text?: string }).text ?? ''
     expect(text).toContain('链: 未配置')
-    expect(text).toContain('分时: all-day')
     expect(text).toContain('最近降级切换: 本会话暂无 fallback 切换')
     expect(text).toContain('冷却: 无活跃冷却')
   })
@@ -1059,11 +906,13 @@ describe('apply() wiring — conditional commands child', () => {
     // bundled preset self-declaration inert so the roles summary is stable.
     apply(ctx, cfg({
       triggerCodes: ['AUTH'],
-      rootChain: ['other/gpt-4o'],
-      roles: {
-        list: [{ id: 'coder', persona: '', chain: ['other/gpt-4o-mini'], fallback: 'inherit-root' }],
-        rules: [],
-      },
+      chains: [{
+        id: 'daily',
+        label: '日常',
+        entries: ['other/gpt-4o'],
+        timeSlots: [{ kind: 'custom', start: '09:00', end: '12:00', days: [7], chain: ['other/gpt-4o'] }],
+      }],
+      roles: { list: [{ id: 'coder', persona: '', chain: 'daily' }] },
     }))
     await vi.waitFor(() => expect(registered).toHaveLength(1))
 
@@ -1078,8 +927,8 @@ describe('apply() wiring — conditional commands child', () => {
     const text = result.kind === 'success' ? (result.text ?? '') : ''
     expect(text.split('\n')[0]).toBe('Fallbacks 配置: 已启用')
     expect(text).toContain('触发码: AUTH')
-    expect(text).toContain('根链: other/gpt-4o')
-    expect(text).toContain('角色: 1 — coder（chain: 1）')
+    expect(text).toContain('daily（日常）: other/gpt-4o｜分时槽: 1 — custom 09:00-12:00（chain: 1）')
+    expect(text).toContain('角色: 1 — coder（指定降级链: daily）')
     expect(text).toContain('冷却: 300000 ms')
     expect(text).toContain('回主策略: cooldown-expiry')
     expect(text).toContain('单次请求行走最大切换: 8')
@@ -1103,8 +952,12 @@ describe('apply() wiring — conditional commands child', () => {
     // renderer, which must keep the C-9 invariant instead of indexing
     // DAY_NAMES to `undefined`.
     apply(ctx, cfg({
-      rootChain: ['other/gpt-4o'],
-      timeSlots: [{ kind: 'custom', start: '09:00', end: '12:00', days: [7], chain: ['other/gpt-4o'] }],
+      chains: [{
+        id: 'daily',
+        label: '日常',
+        entries: ['other/gpt-4o'],
+        timeSlots: [{ kind: 'custom', start: '09:00', end: '12:00', days: [7], chain: ['other/gpt-4o'] }],
+      }],
     }))
     await vi.waitFor(() => expect(registered).toHaveLength(1))
 
@@ -1149,7 +1002,7 @@ describe('apply() wiring — conditional commands child', () => {
         return () => {}
       },
     } as never)
-    apply(ctx, cfg({ rootChain: ['other/gpt-4o'] }))
+    apply(ctx, cfg({ chains: [{ id: 'daily', label: '日常', entries: ['other/gpt-4o'] }] }))
     await vi.waitFor(() => expect(registered).toHaveLength(1))
 
     // Seed a role through the service — the controller's revertSeed uses the
@@ -1165,7 +1018,7 @@ describe('apply() wiring — conditional commands child', () => {
 
     // Operator override first, so the revert has a delta to restore.
     await ctx.settings.update(FALLBACKS_PROFILE_ENTRY, {
-      roles: { list: [{ id: 'coder', persona: 'operator edit' }], rules: [] },
+      roles: { list: [{ id: 'coder', persona: 'operator edit' }] },
     })
 
     const result = await registered[0]!.handler({
@@ -1182,7 +1035,7 @@ describe('apply() wiring — conditional commands child', () => {
     // the operator-override update above — the persona is the delta.
     const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_PROFILE_ENTRY)!
     expect(descriptor.user).toMatchObject({
-      roles: { list: [{ id: 'coder', persona: 'seed default' }], rules: [] },
+      roles: { list: [{ id: 'coder', persona: 'seed default' }] },
     })
   })
 
@@ -1236,7 +1089,7 @@ describe('apply() wiring — conditional commands child', () => {
     // Delete the row from the operator config — the seed stays declared, so
     // the revert hits the `row-absent` reason (seeds.ts revert), never
     // `not-seeded`.
-    await ctx.settings.update(FALLBACKS_PROFILE_ENTRY, { roles: { list: [], rules: [] } })
+    await ctx.settings.update(FALLBACKS_PROFILE_ENTRY, { roles: { list: [] } })
 
     const result = await registered[0]!.handler({
       commandId: 'x',
@@ -1292,10 +1145,10 @@ describe('apply() wiring — conditional commands child', () => {
         return () => {}
       },
     } as never)
-    apply(ctx, cfg({ rootChain: ['mock/gpt-4o', 'other/gpt-4o'] }))
+    apply(ctx, cfg({ chains: [{ id: 'daily', label: '日常', entries: ['mock/gpt-4o', 'other/gpt-4o'] }] }))
     await vi.waitFor(() => expect(registered).toHaveLength(1))
 
-    const { agent } = makeAgent('cmd-timer', { provider: 'mock', model: 'gpt-4o' })
+    const { agent } = makeAgent('cmd-timer', { provider: FALLBACKS_PROVIDER, model: 'daily' })
     // Direction C: the walk cools the head it attempted (mock/gpt-4o here).
     seedCooldown(agent, 'mock/gpt-4o', Date.now() + 300_000)
     const result = registered[0]!.handler({
@@ -1320,7 +1173,7 @@ describe('apply() wiring — conditional commands child', () => {
         return () => {}
       },
     } as never)
-    apply(ctx, cfg({ rootChain: ['other/gpt-4o'], recovery: 'half-open' }))
+    apply(ctx, cfg({ chains: [{ id: 'daily', label: '日常', entries: ['other/gpt-4o'] }], recovery: 'half-open' }))
     await vi.waitFor(() => expect(registered).toHaveLength(1))
 
     const { agent } = makeAgent('cmd-config-half-open', { provider: 'mock', model: 'gpt-4o' })
