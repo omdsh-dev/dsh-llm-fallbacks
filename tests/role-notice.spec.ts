@@ -45,8 +45,8 @@ import { cfg, makeAgent } from './support/harness.ts'
 
 /** Declared taxonomy: `coder` and `scout` declare a persona, `reviewer` only whitespace. */
 const ROLES: FallbacksRole[] = [
-  { id: 'coder', persona: 'Coder persona', chain: [] },
-  { id: 'scout', persona: 'Scout persona', chain: ['openai/gpt-4o'] },
+  { id: 'coder', persona: 'Coder persona' },
+  { id: 'scout', persona: 'Scout persona', chain: 'Auto' },
   { id: 'reviewer', persona: '   ' },
 ]
 
@@ -521,7 +521,7 @@ describe('role notice — behavioural (public call path)', () => {
     ctx.plugin(MemorySettings)
     const fake = fakeSubagents()
     ctx.provide('subagents', fake.service)
-    const config = () => cfg({ roles: { list: [{ id: 'coder', persona: 'Coder persona', chain: [] }], rules: [] } })
+    const config = () => cfg({ roles: { list: [{ id: 'coder', persona: 'Coder persona' }] } })
 
     // TWO APPLIED FIBERS over one root: each one registers its own notice
     // emitter, over the ROOT-shared record map and marker.
@@ -693,7 +693,7 @@ describe('role notice — per-apply lifetime through apply()', () => {
     ctx.plugin(MemorySettings)
     const fake = fakeSubagents()
     ctx.provide('subagents', fake.service)
-    apply(ctx, cfg({ roles: { list: [{ id: 'coder', persona: 'Coder persona', chain: [] }], rules: [] } }))
+    apply(ctx, cfg({ roles: { list: [{ id: 'coder', persona: 'Coder persona' }] } }))
 
     const start = await seamActivation(ctx)
     await start(activationSpec('child-apply', assignment('coder')))
@@ -709,7 +709,7 @@ describe('role notice — per-apply lifetime through apply()', () => {
   it('keeps the emitted marker across agent/disposed; clears it only on plugin dispose (CF-6)', async () => {
     ctx = new Context()
     ctx.plugin(MemorySettings)
-    apply(ctx, cfg({ roles: { list: [{ id: 'coder', persona: '', chain: [] }], rules: [] } }))
+    apply(ctx, cfg({ roles: { list: [{ id: 'coder', persona: '' }] } }))
     const seam = subagentSeamOf(ctx)
     expect(seam).toBeDefined()
     const { agent } = makeAgent('child-cleaned', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent' })
@@ -733,7 +733,7 @@ describe('role notice — per-apply lifetime through apply()', () => {
     ctx.plugin(MemorySettings)
     const fake = fakeSubagents()
     ctx.provide('subagents', fake.service)
-    apply(ctx, cfg({ roles: { list: [{ id: 'coder', persona: 'Coder persona', chain: [] }], rules: [] } }))
+    apply(ctx, cfg({ roles: { list: [{ id: 'coder', persona: 'Coder persona' }] } }))
     const start = await seamActivation(ctx)
 
     // First activation: the child is dispatched and announced exactly once.

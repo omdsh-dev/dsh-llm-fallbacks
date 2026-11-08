@@ -1,10 +1,11 @@
 /**
  * `/fallbacks` slash command (plan fallbacks-role-runtime T3, AC-5).
  *
- * Session-scoped, read-only diagnostic: current session origin → resolved
- * role → resolved chain (role chain, else rootChain — an `inherit: true`
- * tail is annotated 「（inherit-root）」) → recent `fallbacks/switch` events
- * (newest first, capped) → cooldown status. Mirrors dsh-advisor's
+ * Session-scoped, read-only diagnostic: current session origin → the resolved
+ * dispatch role (+ its specified chain pointer) → every configured named chain
+ * with its tail and current slot label, the calling agent's selection marked →
+ * recent `fallbacks/switch` events (newest first, capped) → cooldown status.
+ * Mirrors dsh-advisor's
  * `/advisor` command pattern: a conditional `ctx.inject(['commands'])` child
  * in `src/index.ts` calls {@link registerFallbacksCommands} with a
  * factory-bound handler; `commands` never joins the top-level inject list, so
@@ -27,8 +28,9 @@
  */
 
 import type { CommandDefinition, CommandInvocation, CommandResult } from '@deepseek-ai/dsh-commands'
-import { INHERIT_ROLE_ID, type FallbacksRole } from './config.ts'
-import type { Origin } from './roles.ts'
+import type { FallbacksRole } from './config.ts'
+
+type Origin = 'root' | 'subagent'
 import type { FallbackSwitchReason, FallbacksSwitchEventData } from './events.ts'
 import type { SeedRevertFailReason } from './seeds.ts'
 import { PRESETS, type PresetId, type SlotRowConfig } from './time-slots.ts'
@@ -65,23 +67,21 @@ export interface FallbacksCooldownEntry {
 export interface FallbacksCommandSnapshot {
   /** Session origin: `'root'` when the agent carries no header origin. */
   readonly origin: Origin
-  /** Resolved role (first matching `roles.rules` entry → built-in `'inherit'`, spec §7.1). */
+  /** Resolved dispatch role (the seam record), `''` when none resolved. */
   readonly role: string
-  /** True when the role's own chain is non-empty and shown; false when rootChain (or none) is shown. */
-  readonly chainRole: boolean
-  /** The displayed chain entries: the role's own chain when non-empty, else
-   * rootChain — except `fallback: 'none'` with an empty own chain, which
-   * yields `[]` even when rootChain is non-empty (nothing appended, mirroring
-   * resolveChainViews' `[...[], ...[]]`); empty = not configured. */
-  readonly chain: readonly string[]
-  /** True when rootChain is appended as the inherit fallback tail (role's
-   * `fallback` is `'inherit-root'` — or the role is unknown — and rootChain
-   * is non-empty; the diagnostic annotation source, spec §7.4). */
-  readonly inherit: boolean
-  /** Current time-slot winner + display label (P5/P7): the 分时切换 side of
-   * the status strip. The switches section below is the 降级切换 side —
-   * the copy never mixes. */
-  readonly slot: { readonly winner: SlotRowConfig | 'all-day'; readonly label: string }
+  /** The resolved role's declared chain POINTER (「指定降级链」), `undefined`
+   * when the role is unresolved or specifies nothing (NOT SPECIFIED). */
+  readonly roleChain?: string
+  /** Every configured named chain with its slot state; `selected` marks the
+   * calling agent's chain (its route names the chain id). */
+  readonly chains: readonly {
+    readonly id: string
+    readonly label: string
+    readonly entries: readonly string[]
+    /** Current slot label for the chain (`'all-day'` when no row matches). */
+    readonly slotLabel: string
+    readonly selected: boolean
+  }[]
   /** Recent `fallbacks/switch` events (failure walks — 降级切换), newest
    * first, capped at {@link RECENT_SWITCHES_LIMIT}. */
   readonly switches: readonly FallbacksSwitchEventData[]
@@ -90,39 +90,37 @@ export interface FallbacksCommandSnapshot {
 }
 
 /**
- * The composed-config surface `/fallbacks config` renders (plan
- * fallbacks-tui-client T2, AC-2): the composed `fallbacks` namespace as the
- * runtime sees it (settings user layer included). Roles are summarized from
- * `roles.list` as `{ id, chainCount }` — the two-block model: `roles.list`
- * entities carry id/persona/chain/fallback (NO per-role `model`;
- * `provider`/`model` live on `roles.rules`), so the readback line is id +
- * chain count, never a rules dump.
+ * The composed-config surface `/fallbacks config` renders: the composed
+ * `fallbacks` namespace as the runtime sees it (settings user layer included).
+ * It carries every named chain (`{ id, label, entries, timeSlots }`) and the
+ * declared roles as `{ id, chain? }` — the role's optional POINTER into
+ * `chains[].id` (「指定降级链」), rendered as its `FallbacksChain/<id>` route or
+ * as NOT SPECIFIED. There is no rules dump (rules are gone).
  *
- * Enriched readback (plan fallbacks-tui-settings Task 2, AC-4): timeSlots /
- * tz / roles.rules join the summary so TUI operators can verify `/settings`
- * edits. One summarized time-slot row: preset rows carry `{ preset,
- * chainCount }` (windows are frozen code constants in {@link PRESETS} and
- * never stored on the row — the render resolves the window text from
- * PRESETS); custom rows carry `{ start, end, chainCount }`. Rules rows carry
- * `{ provider, model, role }` — an omitted provider/model (wildcard match at
- * runtime) is summarized as `''` and rendered as `*`.
+ * The config-level `tz` joins the summary so TUI operators can verify
+ * `/settings` edits. One summarized time-slot row: preset rows carry
+ * `{ preset, chainCount }` (windows are frozen code constants in
+ * {@link PRESETS} and never stored on the row — the render resolves the window
+ * text from PRESETS); custom rows carry `{ start, end, chainCount }`.
  */
 export interface FallbacksConfigSummary {
   /**
-   * Content-presence gate (`isFallbackActive`, plan fallbacks-web-ux-alignment
-   * T2 — the removed config-level `enabled` switch re-keyed): the plugin
-   * intervenes exactly when a chain/time-slot/role is configured.
+   * Content-presence gate (`isFallbackActive`): the plugin intervenes exactly
+   * when the named-chain list is non-empty (`chains.length > 0`). Slot rows and
+   * declared roles alone do NOT activate it — they are per-chain / optional.
    */
   readonly active: boolean
   readonly triggerCodes: readonly string[]
-  readonly rootChain: readonly string[]
-  /** Summarized time-slot rows (preset rows carry `preset`, custom rows carry `start`/`end`; both may carry a day mask). */
-  readonly timeSlots: readonly { preset?: string; start?: string; end?: string; days?: readonly number[]; chainCount: number }[]
+  /** Named chains (v2): id/label/entries + summarized per-chain slot rows. */
+  readonly chains: readonly {
+    id: string
+    label: string
+    entries: readonly string[]
+    timeSlots: readonly { preset?: string; start?: string; end?: string; days?: readonly number[]; chainCount: number }[]
+  }[]
   /** Config-level timezone for slot matching (default `Asia/Shanghai`). */
   readonly tz: string
-  readonly roles: readonly { id: string; chainCount: number }[]
-  /** Summarized role rules: provider/model patterns → declared role (or the built-in `'inherit'`). */
-  readonly rules: readonly { provider: string; model: string; role: string }[]
+  readonly roles: readonly { id: string; chain?: string }[]
   readonly cooldownMs: number
   readonly revertPolicy: string
   readonly maxSwitchesPerStep: number
@@ -132,8 +130,8 @@ export interface FallbacksConfigSummary {
 /**
  * The session-scoped read-only operations the `/fallbacks` handler drives.
  * Implemented by the wiring (`src/index.ts`) against the live config source
- * (`roles.list` / `rootChain` — no chain map anymore) and the per-agent
- * state store; faked in unit tests.
+ * (`chains` / `roles.list`), the dispatch seam's per-child record and the
+ * per-agent state store; faked in unit tests.
  */
 export interface FallbacksCommandController {
   /** Snapshot the session's fallback diagnostics. Never mutates state. */
@@ -197,7 +195,6 @@ export const FALLBACKS_COMMAND_LOCALES = {
     origin: '会话来源',
     role: '角色',
     chain: '链',
-    inheritRoot: '（inherit-root）',
     chainNone: '未配置',
     // Copy split (spec § Copy): the slot line is the 分时切换 side; the
     // switches section lists failure walks only — 降级切换. Never mix.
@@ -220,16 +217,16 @@ export const FALLBACKS_COMMAND_LOCALES = {
     configEnabled: '已启用',
     configDisabled: '未启用',
     configTriggerCodes: '触发码',
-    configRootChain: '根链',
+    configChains: '虚拟链',
     configEmpty: '（空）',
-    configTimeSlots: '分时槽',
+    configChainItem: '{id}（{label}）: {entries}｜分时槽: {slots}',
     configSlotPresetItem: '{preset}（chain: {n}, window {window}）',
     configSlotPresetBare: '{preset}（chain: {n}）',
     configSlotCustomItem: 'custom {start}-{end}（chain: {n}）',
     configTz: '时区',
     configRoles: '角色',
-    configRoleItem: '{id}（chain: {n}）',
-    configRules: '角色规则',
+    configRoleItem: '{id}（指定降级链: {chain}）',
+    configRoleUnspecified: '未指定（沿用 dsh 默认）',
     configCooldown: '冷却',
     configRevert: '回主策略',
     // Cap is per request walk, not per step (design §3.3): the walk-local
@@ -262,7 +259,6 @@ export const FALLBACKS_COMMAND_LOCALES = {
     origin: 'Session origin',
     role: 'Role',
     chain: 'Chain',
-    inheritRoot: ' (inherit-root)',
     chainNone: 'not configured',
     // Copy split (spec § Copy): the slot line is the time-slot side; the
     // switches section lists failure walks only — fallback switches.
@@ -283,16 +279,16 @@ export const FALLBACKS_COMMAND_LOCALES = {
     configEnabled: 'enabled',
     configDisabled: 'disabled',
     configTriggerCodes: 'Trigger codes',
-    configRootChain: 'Root chain',
+    configChains: 'Chains',
     configEmpty: '(empty)',
-    configTimeSlots: 'Time slots',
+    configChainItem: '{id} ({label}): {entries} | slots: {slots}',
     configSlotPresetItem: '{preset} (chain: {n}, window {window})',
     configSlotPresetBare: '{preset} (chain: {n})',
     configSlotCustomItem: 'custom {start}-{end} (chain: {n})',
     configTz: 'TZ',
     configRoles: 'Roles',
-    configRoleItem: '{id} (chain: {n})',
-    configRules: 'Rules',
+    configRoleItem: '{id} (specified chain: {chain})',
+    configRoleUnspecified: 'not specified (dsh default)',
     configCooldown: 'Cooldown',
     configRevert: 'Revert',
     configMaxSwitches: 'Max switches per request walk',
@@ -396,54 +392,6 @@ export function recentFallbacksSwitches(events: readonly unknown[], limit: numbe
   return found
 }
 
-/**
- * The chain entries `/fallbacks` shows for a role (spec §7.4): the declared
- * role's own chain when non-empty (`chainRole: true`); an empty own chain
- * defers to `rootChain` unless `fallback: 'none'` — then nothing is appended
- * and the display chain is empty, mirroring `resolveChainViews`'s
- * `[...[], ...[]]` exactly; undeclared ids and the built-in `'inherit'`
- * role resolve to `rootChain`. `inherit: true` marks the append-not-replace
- * tail — the role's `fallback` is `'inherit-root'` (the default) or the role
- * is unknown/built-in `'inherit'`, and `rootChain` is non-empty. Mirrors
- * `resolveChainViews`'s concatenation (see {@link roleChainEntries} —
- * `src/chains.ts`; the diagnostic keeps its display semantics: the role's
- * own chain renders in full, `rootChain` only when the role has no own
- * chain, with the inherit tail as an annotation) without a failing model to
- * resolve against (the diagnostic is model-independent).
- *
- * `warn` mirrors {@link resolveChainViews}' defensive unknown-role warn
- * (qc2 F-002 — routed through the injected logger; the `/fallbacks` path
- * never reaches here unsanitized, as {@link resolveRole} resolves to a
- * declared id or `'inherit'` first, so this is direct-caller parity).
- */
-export function resolveChainForDiagnostic(
-  roles: readonly FallbacksRole[],
-  rootChain: readonly string[],
-  role: string,
-  warn: (message: string) => void = console.warn,
-): { readonly chainRole: boolean; readonly chain: readonly string[]; readonly inherit: boolean } {
-  // Explicit INHERIT_ROLE_ID branch (qc2 F-006): the built-in 'inherit' id
-  // resolves to rootChain silently — mirroring resolveChainViews — even if
-  // an illegal config declared a role with the reserved id (startup
-  // validation warns "reserved"; the runtime never consults it, so the
-  // diagnostic must not display it either).
-  if (role.trim() === INHERIT_ROLE_ID) {
-    return { chainRole: false, chain: rootChain, inherit: rootChain.length > 0 }
-  }
-  const roleDef = roles.find((declared) => declared.id.trim() === role.trim())
-  if (roleDef === undefined) {
-    warn(`llm-fallbacks: unknown role "${role}" — falling back to rootChain`)
-  }
-  const roleChain = roleDef?.chain ?? []
-  // Mirror resolveChainViews' concatenation exactly: a declared role's own
-  // chain wins when non-empty; an empty own chain defers to rootChain
-  // UNLESS fallback is 'none' (no tail appended → empty display chain);
-  // the built-in 'inherit' role and any unknown id → rootChain.
-  const chain = roleChain.length > 0 ? roleChain : roleDef?.fallback === 'none' ? [] : rootChain
-  const inherit = rootChain.length > 0 && (roleDef === undefined || roleDef.fallback !== 'none')
-  return { chainRole: roleChain.length > 0, chain, inherit }
-}
-
 // ---------------------------------------------------------------------------
 // Rendering
 // ---------------------------------------------------------------------------
@@ -490,14 +438,16 @@ function formatConfigList(items: readonly string[]): string {
   return [...items.slice(0, FALLBACKS_CONFIG_LIST_CAP), '…'].join(', ')
 }
 
-/** Render the `Roles:` line: full count, then `id (chain: n)` items (truncated). */
-function formatConfigRoles(roles: readonly { id: string; chainCount: number }[], t: FallbacksCommandCopy): string {
+/** Render the `Roles:` line: full count, then `id (specified chain: …)` items (truncated). */
+function formatConfigRoles(roles: readonly { id: string; chain?: string }[], t: FallbacksCommandCopy): string {
   // S-1 (qc3): bound the interpolation allocation before truncation — only
   // the first FALLBACKS_CONFIG_LIST_CAP roles can ever render, so slice
   // before map (never O(N) intermediate strings on the command path). The
   // `Roles:` count below still reports the FULL array length.
   const items = roles.slice(0, FALLBACKS_CONFIG_LIST_CAP)
-    .map((role) => t.configRoleItem.replace('{id}', role.id).replace('{n}', String(role.chainCount)))
+    .map((role) => t.configRoleItem
+      .replace('{id}', role.id)
+      .replace('{chain}', role.chain === undefined || role.chain === '' ? t.configRoleUnspecified : role.chain))
   const list = items.length === 0 ? '' : `${items.join(', ')}${roles.length > FALLBACKS_CONFIG_LIST_CAP ? ', …' : ''}`
   return `${roles.length}${list.length === 0 ? '' : ` — ${list}`}`
 }
@@ -606,27 +556,13 @@ function formatConfigTimeSlots(
 }
 
 /**
- * Render the `Rules:` line: full count, then `provider/model → role` rows
- * (truncated at the cap). An omitted provider/model (wildcard match at
- * runtime) is rendered as `*`.
- */
-function formatConfigRules(
-  rules: readonly { provider: string; model: string; role: string }[],
-  t: FallbacksCommandCopy,
-): string {
-  const items = rules.slice(0, FALLBACKS_CONFIG_LIST_CAP)
-    .map((rule) => `${rule.provider === '' ? '*' : rule.provider}/${rule.model === '' ? '*' : rule.model} → ${rule.role}`)
-  const list = items.length === 0 ? '' : `${items.join(', ')}${rules.length > FALLBACKS_CONFIG_LIST_CAP ? ', …' : ''}`
-  return `${rules.length}${list.length === 0 ? '' : ` — ${list}`}`
-}
-
-/**
- * Render the `/fallbacks config` surface (plan fallbacks-tui-client T2,
- * AC-2 + fallbacks-tui-settings Task 2 AC-4): the composed `fallbacks`
- * namespace as the runtime reads it — enriched with the time-slot rows
- * (preset rows resolve their frozen window from {@link PRESETS}), the
- * config timezone, and the role rules — plus edit hints pointing at the
- * `/settings` TUI edit surface while keeping the file-edit documentation.
+ * Render the `/fallbacks config` surface: the composed `fallbacks` namespace
+ * as the runtime reads it — every named chain with its label, entries and
+ * time-slot rows (preset rows resolve their frozen window from
+ * {@link PRESETS}), the config timezone, and each role with its `chain`
+ * POINTER (the `FallbacksChain/<id>` it specifies, or NOT SPECIFIED) — plus
+ * edit hints pointing at the `/settings` TUI edit surface while keeping the
+ * file-edit documentation.
  * The FIRST LINE marks the composed-config readback — distinct from the
  * diagnostic title and never merged into {@link fallbacksCommandText} (two
  * operator surfaces, product lock). Locale defaults to `zh` (the command
@@ -640,11 +576,13 @@ export function fallbacksConfigText(
   const lines: string[] = [
     `${t.configTitle}: ${summary.active ? t.configEnabled : t.configDisabled}`,
     `${t.configTriggerCodes}: ${summary.triggerCodes.length === 0 ? t.configEmpty : formatConfigList(summary.triggerCodes)}`,
-    `${t.configRootChain}: ${summary.rootChain.length === 0 ? t.configEmpty : formatConfigList(summary.rootChain)}`,
-    `${t.configTimeSlots}: ${summary.timeSlots.length === 0 ? t.configEmpty : formatConfigTimeSlots(summary.timeSlots, t)}`,
+    ...summary.chains.map((chain) => t.configChainItem
+      .replace('{id}', chain.id)
+      .replace('{label}', chain.label)
+      .replace('{entries}', chain.entries.length === 0 ? t.configEmpty : chain.entries.join(' → '))
+      .replace('{slots}', chain.timeSlots.length === 0 ? t.configEmpty : formatConfigTimeSlots(chain.timeSlots, t))),
     `${t.configTz}: ${summary.tz}`,
     `${t.configRoles}: ${formatConfigRoles(summary.roles, t)}`,
-    `${t.configRules}: ${summary.rules.length === 0 ? t.configEmpty : formatConfigRules(summary.rules, t)}`,
     `${t.configCooldown}: ${summary.cooldownMs} ms`,
     `${t.configRevert}: ${summary.revertPolicy}`,
     `${t.configMaxSwitches}: ${summary.maxSwitchesPerStep}`,
@@ -658,8 +596,10 @@ export function fallbacksConfigText(
 
 /**
  * Render the `/fallbacks` status surface for one snapshot. Kept minimal and
- * truthful: origin → role → chain (+ inherit tail) → current slot (分时) →
- * recent switches (降级切换) → cooldown.
+ * truthful: origin → role (+ its specified chain pointer) → every configured
+ * chain with tail + slot state, the calling agent's selection marked →
+ * recent switches (降级切换) → cooldown. No chain-id argument (named virtual
+ * chains §1): the snapshot lists every chain.
  */
 export function fallbacksCommandText(
   snapshot: FallbacksCommandSnapshot,
@@ -668,14 +608,18 @@ export function fallbacksCommandText(
   const t = FALLBACKS_COMMAND_LOCALES[locale]
   const lines: string[] = [t.title]
   lines.push(`${t.origin}: ${snapshot.origin}`)
-  lines.push(`${t.role}: ${snapshot.role}`)
-  if (snapshot.chain.length === 0) {
+  const roleChain = snapshot.roleChain === undefined || snapshot.roleChain === ''
+    ? t.configRoleUnspecified
+    : snapshot.roleChain
+  lines.push(`${t.role}: ${snapshot.role === '' ? t.configRoleUnspecified : snapshot.role}（${roleChain}）`)
+  if (snapshot.chains.length === 0) {
     lines.push(`${t.chain}: ${t.chainNone}`)
   } else {
-    const suffix = snapshot.inherit ? t.inheritRoot : ''
-    lines.push(`${t.chain}: ${snapshot.chain.join(' → ')}${suffix}`)
+    for (const chain of snapshot.chains) {
+      const marker = chain.selected ? ' ●' : ''
+      lines.push(`${t.chain}${marker}: ${chain.id}（${chain.label}）: ${chain.entries.length === 0 ? t.chainNone : chain.entries.join(' → ')}｜${t.slot}: ${chain.slotLabel}`)
+    }
   }
-  lines.push(`${t.slot}: ${snapshot.slot.label}`)
   if (snapshot.switches.length === 0) {
     lines.push(`${t.switches}: ${t.switchesNone}`)
   } else {

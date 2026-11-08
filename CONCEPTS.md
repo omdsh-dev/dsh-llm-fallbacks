@@ -28,21 +28,17 @@ dsh 0.1.2+ 的宿主侧子代理路由授权面：`subagent-model-selection` 设
 
 ## LLM fallbacks
 
-### fallback 链（fallback chains）
-agent 失败时的有序降级 selector 列表。两块制配置模型下链分两级：`rootChain`（root 主代理一条链）+ 声明式角色实体（`roles.list`）各自 `chain`；链拼接 **append-not-replace**：`[...role.chain, ...(fallback === 'none' ? [] : rootChain)]`（角色条目在前、rootChain 兜底在后）。条目 `provider/*` 表示保留失败模型 id 仅换 provider（目标 provider 无此 id 则跳过）。链键 specificity（exact `provider/model` 键 → 角色链 → default 键）已删除（D1）——命名空间只剩角色名。
-*Avoid:* `chains` 键→链映射（旧字段，已删除）
+### fallback 链（fallback chains / named virtual chains）
+agent 失败时的有序降级 selector 列表，v2 起以**命名虚拟链**承载：`chains[]` 每项 `{ id, label, entries, timeSlots }`——`id` 大小写敏感、唯一、即 picker 模型 id（`FallbacksChain/<链 id>`）；`label` 仅展示；`entries` = 默认降级链 + 链尾（末项必须恰好一个官方模型）；`timeSlots` 按链独立、首条命中**替换**该链 entries。空 `chains` = 插件不活跃（唯一初始状态，不预建默认链）。条目 `provider/*` 表示保留失败模型 id 仅换 provider（目标 provider 无此 id 则跳过）。v1 两块制（`rootChain` + 角色内联链 + `roles.rules`）已删除。
+*Avoid:* `rootChain` / `roles.rules` / 角色内联链数组（v1 字段，仅迁移表保留）· 把 label 当可改 id（id 改名会孤儿化已保存选择）
 
-### 两块制配置模型（two-block config model）
-fallbacks 配置的自明结构：块 1 = `rootChain`（root 主代理一条链），块 2 = 声明式角色实体 `roles.list`（id/persona/chain/fallback）+ `roles.rules`（origin/provider/model → 角色 id 或 `inherit` 的引用）。心智模型只有两级：root 一条、角色各自一条（默认继承 root）。
-*Avoid:* `chains` 键→链映射、`roles.default`（旧模型，已删除）
+### 命名链配置模型（named-chain config model）
+fallbacks 配置的自明结构：`chains`（命名虚拟链列表）+ `roles.list`（id/persona + 可选 `chain` 指针）。角色 `chain` 是**手动指定的链 id 指针**（「指定降级链」），缺席/为空 = 未指定——插件不干预，子代理继承派发代理的路由；指向未声明链 id ⇒ 一次启动 warn + 视为未指定。`roles.rules` 已删除。
+*Avoid:* `rootChain`、`roles.rules`、`roles.list[].fallback`、v1 数组形 `roles.list[].chain`（均为 v1 遗留，detectLegacyKeys 上报、只 warn 不自动改写）
 
-### inherit（内置角色 id）
-保留字角色 id：合法作 `roles.rules[].role` 目标与「无规则命中」缺省，**禁止**写入 `roles.list[].id`。解析为 `rootChain`（静默——合法缺省角色，非 typo）。
-*Avoid:* 把 inherit 当链拼接策略、或用作角色实体 id
-
-### inherit-root（链拼接策略）
-`roles.list` 实体上的 `fallback` 枚举值（默认）：角色自身 `chain` 走完后**追加** `rootChain`；`none` = 仅角色链（空链 + none → no-op 透传）。
-*Avoid:* 与 `inherit`（角色 id）混用
+### inherit（保留角色 id）
+保留字角色 id：**禁止**写入 `roles.list[].id`（v1 的规则目标/未命中缺省语义随 `roles.rules` 删除；保留字本身继续由校验器与 seeds 拒绝）。
+*Avoid:* 把 inherit 当角色实体 id、或当链拼接策略（`fallback`/`inherit-root` 已删除）
 
 ### fallbacks/switch 事件
 `fallbacks/switch` 事件类型词汇（from/to/role/reason）——2026-08-17 起插件**不再写入** durable 事件（issue #52：apply() 时的事件类型注册被证伪无效，含该事件的会话在 dsh 重启后拒绝加载），「行为可见」由 info 日志承载；旧版写入的会话事件**无法**通过 `ignorable` 标记修复（已发布的 session-format 迁移链即使事件带 `ignorable` 也拒绝未知事件类型），`pnpm repair:session-logs`（`scripts/repair-session-logs.ts`）因此默认只检测并报告此类日志、绝不写入；只有显式 opt-in 的有损 `--drop-legacy-events` 会删除这些行（见 README「修复已有会话」）。reason 是开放字符串（未知值客户端原样渲染，向后兼容）；`role-inject` 是分发时角色注入的附加 reason 值（additive，非结构变更——见三段式分发角色解析）。
@@ -71,7 +67,7 @@ client 会话转录的节点注册表（`ConversationNodeDefinition` 注册，ki
 
 ## 已决歧义
 
-- `inherit` vs `inherit-root` vs `roles.default`：`inherit` = 内置**角色 id**（规则目标 / 未命中缺省，禁入 `roles.list`）；`inherit-root` = 角色实体上的**链拼接策略**（默认：角色链后追加 rootChain）；`roles.default` = **已删除旧字段**，不再是有效配置。三个词不混用。
+- `inherit` vs `指定降级链`：`inherit` = **保留角色 id**（禁入 `roles.list`）；「指定降级链」= `roles.list[].chain` 手动链指针（缺席 = 未指定，子代理继承派发代理路由）。两个词不混用；`inherit-root` / `roles.default` 均为已删除旧字段。
 - `QUOTA_EXCEEDED`（常见命名）→ 本插件与 dsh taxonomy 用 `QUOTA`；文档中不要混用。
 - `settings slot` vs `gateway channel`：前者是**展示挂载**（页面出现在 Settings），后者是**数据通道**（配置读写从哪来）；讨论设置页时两者分开表述，不要混用。
 - `settings/changed` / `models/changed`（20260811 已移除的客户端事件名）→ 失效刷新一律表述为 remote events（`settings/document-updated` + `llm/adapters-updated`）；不要在代码、测试或文档中恢复旧名。
@@ -96,6 +92,6 @@ companion 插件经释放面声明 `[{id, persona}]`、由本插件自动补全�
 插件自身携带的默认角色声明（iter-20260816-fallbacks-preset-roles）：`presetRoles` 包根导出 + config `presets: 'bundled' | 'none'`（默认 bundled）——插件在 apply 尾部经条件注入子自声明 7 个 omp 风格通用角色（designer/librarian/reviewer/scout/security-reviewer/sonic/task），operator 可关（none = 零声明零写）。与 companion 声明的区别：seeds 的**调用方是插件自身**；语义（冲突保留/幂等/derived seeded）完全复用。
 *Avoid:* 默认 none（bundled 语义开箱即有）· async 化 apply 自声明（fiber FAILED）· 复用早注册注入子 fire（base-only 基线覆盖 operator 行）
 
-### 三段式分发角色解析（three-stage dispatch role resolution）
-subagent 每次 walk 解析角色的三段流程（首个命中即止，纯同步）：显式角色（session header `agentPreset` trim 后精确匹配已声明角色 id；保留字 `inherit` 与未声明 preset 落下一段）→ 分发声明角色（seam 从 `**Execute as**` 解析出的记录，普通派发与 Agent Team teammate 同源；缺失/为空/`inherit`/派发后已移除则静默落下一段）→ 确定性规则匹配（`roles.rules`，与失败时共用 resolveRole；**仅对子代理生效**——root 请求不匹配规则、直落 inherit，遗留 rule `origin` 字段被忽略，PR #62 feedback）。每段都 trim 后经 `roleIds` 查表归一，返回声明的原始 id。解析结果在**创建期**挂载而非首请求注入：seam 把 `FallbacksChain/Auto` 虚拟行写进 `request.agentOptions`（rc.1 `manager.startLocal` 创建子代理时合并到父 route 之上），前置为已解析角色 + 无显式 `agentOptions` route（显式即已授权，原样不动）+ LOCAL 后端 + 角色链有可派发的 exact 链首且在 `enabled` 策略下位于宿主 allowlist + 策略非 `unprovable`。rc.1 的 `startActivation` 拒绝已存在的 child id（`DUPLICATE_CHILD`），所以该路径永不附着既有子代理、不会覆盖其持久选择；不写 `fallbacks/switch` 事件——非失败决策，无冷却/记账，仅 info 日志记录 role → model。
-*Avoid:* 把「模型自选角色」当作既有机制（三段解析不含 LLM 段；自动匹配配置键与 `src/automatch.ts` 已随 dsh-022-rc1-upgrade 删除，无继任者）
+### 两段式分发角色解析（two-stage dispatch role resolution）
+subagent 在**分发期**解析角色的两段流程（首个命中即止，纯同步）：显式角色（session header `agentPreset` trim 后匹配已声明角色 id；保留字 `inherit` 与未声明 preset 落下一段）→ 分发声明角色（seam 从 `**Execute as**` 解析出的记录；缺失/为空/`inherit`/派发后已移除则落空 = **未指定**）。每段都 trim 后经 `roleIds` 查表归一，返回声明的原始 id。`roles.rules` 规则匹配已删除。解析出角色且其 `chain` 指针非空且已声明时，seam 在**创建期**把 `FallbacksChain/<role.chain>` 写进 `request.agentOptions`（rc.1 `manager.startLocal` 创建子代理时合并到父 route 之上），前置为：已解析角色 + 指针已声明 + 无显式 `agentOptions` route（显式即已授权，原样不动）+ LOCAL 后端。**无宿主策略咨询**：无 allowlist 求交、无 `unprovable` 分支、无 `virtualRouteInjected` 标记——映射是用户静态配置；链尾合规由 walk 自己的门拒绝（唯一门在 walk）。rc.1 的 `startActivation` 拒绝已存在的 child id（`DUPLICATE_CHILD`），resume 只重写角色记录、绝不重新盖章；不写 `fallbacks/switch` 事件——非失败决策，仅 info 日志。
+*Avoid:* 把「模型自选角色」当作既有机制（两段解析不含 LLM 段）· 把链内降级切换当作受宿主 allowlist 过滤（已接受退化：链内切换不做 allowlist 过滤——链是用户手写配置）

@@ -42,16 +42,16 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { PERSONA_PREFIX_SECTION } from '@deepseek-ai/dsh-system-prompt'
-import { apply, chainHeads } from '../src/index.ts'
+import { apply } from '../src/index.ts'
 import { subagentSeamOf, type SubagentActivationSpecView, type SubagentSeamRecord } from '../src/subagents-seam.ts'
-import { FALLBACKS_CHAIN_MODEL, FALLBACKS_PROVIDER } from '../src/virtual-adapter.ts'
+import { FALLBACKS_PROVIDER } from '../src/virtual-adapter.ts'
 import { MemorySettings } from './support/memory-settings.ts'
 import { cfg } from './support/harness.ts'
 import { settle } from './support/settle.ts'
 
-/** Declared taxonomy under test: `coder` carries both the persona and the chain head. */
+/** Declared taxonomy under test: `coder` carries the persona and a chain POINTER. */
 function coderRoles() {
-  return { list: [{ id: 'coder', persona: 'Coder persona', chain: ['anthropic/claude-sonnet-4'] }], rules: [] }
+  return { list: [{ id: 'coder', persona: 'Coder persona', chain: 'daily' }] }
 }
 
 /** The lead session every teammate under test is spawned by (`request.parent.session.id`). */
@@ -265,13 +265,13 @@ async function mount(): Promise<{
 }> {
   const fake = fakeSubagents(ctx)
   ctx.provide('subagents', fake.service)
-  apply(ctx, cfg({ roles: coderRoles() }))
+  apply(ctx, cfg({ chains: [{ id: 'daily', label: 'Test', entries: ['deepseek-official/deepseek-flash'] }], roles: coderRoles() }))
   await settle()
   return { fake, activate: await injectSubagents(ctx, fake.service) }
 }
 
 describe('Agent Team teammate role delivery (roster-shaped activation)', () => {
-  it('delivers a teammate role end to end: record at native-call time, persona, chain head', async () => {
+  it('delivers a teammate role end to end: record at native-call time, persona, role chain stamp', async () => {
     const { fake, activate } = await mount()
 
     const childId = randomUUID()
@@ -285,31 +285,23 @@ describe('Agent Team teammate role delivery (roster-shaped activation)', () => {
       role: 'coder',
       at: expect.any(Number),
       firstNoticePending: true,
-      virtualRouteInjected: true,
     })
     expect(records().get(childId)?.role).toBe('coder')
-    // The runtime received a DERIVED spec: the seam stamped the virtual route
-    // over the caller's request, mounting the child on the virtual chain.
+    // The runtime received a DERIVED spec: the seam stamped the role's named
+    // chain over the caller's request.
     expect(fake.activations[0]).not.toBe(spec)
     expect(fake.activations[0]!.request.agentOptions).toEqual({
       provider: FALLBACKS_PROVIDER,
-      model: FALLBACKS_CHAIN_MODEL,
+      model: 'daily',
     })
 
     // (b) The child's persona is its role's, registered on the CHILD's own scope.
     expect(fake.children[0]!.sections).toEqual([
       { name: PERSONA_PREFIX_SECTION, order: 0, text: 'Coder persona' },
     ])
-
-    // (c) The child's effective chain head is its role's chain head.
-    expect(chainHeads(ctx)?.get(childId)).toEqual({
-      at: expect.any(Number),
-      route: { provider: 'anthropic', model: 'claude-sonnet-4' },
-      source: 'injected',
-    })
   })
 
-  it('gives two teammates of the same role their own record, persona and chain head', async () => {
+  it('gives two teammates of the same role their own record and persona', async () => {
     const { fake, activate } = await mount()
 
     // Distinct names AND distinct child ids, both declaring `coder` — the
@@ -330,14 +322,6 @@ describe('Agent Team teammate role delivery (roster-shaped activation)', () => {
     expect(fake.children[1]!.sections).toEqual([
       { name: PERSONA_PREFIX_SECTION, order: 0, text: 'Coder persona' },
     ])
-    expect(chainHeads(ctx)?.get(first)).toMatchObject({
-      route: { provider: 'anthropic', model: 'claude-sonnet-4' },
-      source: 'injected',
-    })
-    expect(chainHeads(ctx)?.get(second)).toMatchObject({
-      route: { provider: 'anthropic', model: 'claude-sonnet-4' },
-      source: 'injected',
-    })
   })
 
   it('leaves a teammate with no declared header un-roled: no record, no persona, request unchanged', async () => {
@@ -354,8 +338,6 @@ describe('Agent Team teammate role delivery (roster-shaped activation)', () => {
     // The teammate still exists — nothing was delivered to it.
     expect(fake.children.map((child) => child.childId)).toEqual([childId])
     expect(fake.children[0]!.sections).toEqual([])
-    // The rules/inherit path: no mount, so no chain head is labelled for it.
-    expect(chainHeads(ctx)?.size).toBe(0)
   })
 
   it('leaves a teammate declaring an UNDECLARED header un-roled (same no-op)', async () => {
@@ -368,7 +350,6 @@ describe('Agent Team teammate role delivery (roster-shaped activation)', () => {
     expect(records().size).toBe(0)
     expect(fake.activations[0]).toBe(spec)
     expect(fake.children[0]!.sections).toEqual([])
-    expect(chainHeads(ctx)?.size).toBe(0)
   })
 
   it('keys a generic external child record off the id the backend resolved', async () => {

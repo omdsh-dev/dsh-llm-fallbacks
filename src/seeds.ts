@@ -46,11 +46,9 @@
 import {
   INHERIT_ROLE_ID,
   ROLE_ID_PATTERN,
-  type FallbackStrategy,
   type FallbacksConfig,
   type FallbacksConfigLogger,
   type FallbacksRole,
-  type FallbacksRoleRule,
   type FallbacksRoles,
 } from './config.ts'
 
@@ -130,10 +128,8 @@ export interface EffectiveRole {
   id: string
   /** Effective row persona. */
   persona: string
-  /** Passthrough — never touched by seeds (R4). */
-  chain?: string[]
-  /** Passthrough — never touched by seeds (R4). */
-  fallback?: FallbackStrategy
+  /** Passthrough — never touched by seeds (R4): the named-chain POINTER. */
+  chain?: string
   /** Id is in the live declaration set (trimmed row-id match). */
   seeded: boolean
   /** `seeded` && row persona !== current seed default. */
@@ -177,7 +173,7 @@ export interface SeedsWireStatus {
 export interface SeedsIo {
   /** Fresh composed config read (the same source the gateway reads). */
   read(): FallbacksConfig
-  /** Persist a full `{ list, rules }` to the settings user layer. */
+  /** Persist the `{ list }` to the settings user layer. */
   writeRoles(roles: FallbacksRoles): Promise<void>
 }
 
@@ -235,7 +231,7 @@ export class FallbacksSeedManager {
    * RESOLVED effective default before/after the candidate slice commit
    * (at-default tracking follows the resolution winner — a producer that
    * is not the winner for an id it declares never rewrites the row),
-   * writes only when the computed `{ list, rules }` differs from the
+   * writes only when the computed `{ list }` differs from the
    * current composed roles (idempotent, AC-1), and commits the slice only
    * after a successful write (compute → write → commit; retry-safe). An
    * empty batch drops the producer's slice.
@@ -271,11 +267,10 @@ export class FallbacksSeedManager {
     const config = io.read()
     // Containment (guide §10, qc2 S-1): the write paths tolerate the same
     // malformed/legacy `roles` shape the read paths guard against
-    // (`roleRows` / `roleRules` degrade to empty) instead of throwing a
-    // raw TypeError. Loud failure modes are unchanged — a rejected
-    // settings write still throws (retry-safe, KD-G5).
+    // (`roleRows` degrades to empty) instead of throwing a raw TypeError.
+    // Loud failure modes are unchanged — a rejected settings write still
+    // throws (retry-safe, KD-G5).
     const currentList = roleRows(config)
-    const currentRules = roleRules(config)
     // Candidate registry: this registry with the declaring slice replaced
     // (or deleted for an empty batch) — the state resolution would see
     // after this declare commits. Tracking is driven by the id's RESOLVED
@@ -304,12 +299,10 @@ export class FallbacksSeedManager {
         `llm-fallbacks: seeds: persona-source conflict for seed id ${JSON.stringify(conflict.id)} — operator row persona kept (never overwritten)`,
       )
     }
-    const computed: FallbacksRoles = { list: newList, rules: currentRules }
-    // AC-1 no-delta check over the `{ list, rules }` members only (qc2
-    // S-2): a composed `config.roles` may retain legacy keys
-    // (`roles.default` etc.), which must not churn a settings write on
-    // every declare for a transitional legacy user layer. Materialization
-    // never touches `rules`, so the list is the only possible delta source.
+    const computed: FallbacksRoles = { list: newList }
+    // AC-1 no-delta check (qc2 S-2): a composed `config.roles` may retain
+    // legacy keys (`roles.default` etc.), which must not churn a settings
+    // write on every declare for a transitional legacy user layer.
     if (!deepEqual(newList, currentList)) {
       // A rejected write throws — the registry below is NOT committed
       // (retry-safe: the next declare re-computes from the fresh read).
@@ -375,8 +368,7 @@ export class FallbacksSeedManager {
         source: seeded ? declared.source : 'user',
       }
       if (seeded) effective.seedPersona = declared.persona
-      if (row.chain !== undefined) effective.chain = row.chain
-      if (row.fallback !== undefined) effective.fallback = row.fallback
+      if (row.chain !== undefined && row.chain !== '') effective.chain = row.chain
       return effective
     })
     return { roles }
@@ -411,12 +403,11 @@ export class FallbacksSeedManager {
     // is then simply absent, and the business outcome stays a value.
     const config = io.read()
     const rows = roleRows(config)
-    const rules = roleRules(config)
     const index = rows.findIndex((row) => row.id.trim() === seedId)
     if (index === -1) return { reverted: false, reason: 'row-absent' }
     if (rows[index].persona === declared.persona) return { reverted: true, persona: declared.persona }
     const nextList = rows.map((row, i) => (i === index ? { ...row, persona: declared.persona } : row))
-    await io.writeRoles({ list: nextList, rules })
+    await io.writeRoles({ list: nextList })
     return { reverted: true, persona: declared.persona }
   }
 
@@ -530,17 +521,7 @@ function roleRows(config: FallbacksConfig): FallbacksRole[] {
   return Array.isArray(list) ? list : []
 }
 
-/**
- * The materialized rule list of a composed config — the `roleRows()` twin
- * for the `rules` member (guide §10 containment): the write paths must
- * tolerate the same malformed/legacy `roles` shape the read paths do.
- */
-function roleRules(config: FallbacksConfig): FallbacksRoleRule[] {
-  const rules = (config.roles as { rules?: unknown } | undefined)?.rules
-  return Array.isArray(rules) ? rules : []
-}
-
-/** Structural equality over the `{ list, rules }` shape (idempotency delta check). */
+/** Structural equality (idempotency delta check). */
 function deepEqual(a: unknown, b: unknown): boolean {
   if (a === b) return true
   if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false

@@ -33,7 +33,7 @@ export const zh = {
   'maxSwitchesPerStep.label': '单次请求行走最大切换',
   'maxSwitchesPerStep.hint': '超过后停止切换',
   'maxSwitchesPerStep.tooltip': '超过后不再切换，以原始错误语义结束本次请求，防止链循环放大延迟。',
-  'virtualOnly.rule': '只有模型选择为 FallbacksChain/Auto 的会话（含插件注入的子代理）会执行降级链；选择真实模型的会话没有插件降级，仅由 llm-retry 处理重试。',
+  'virtualOnly.rule': '只有模型选择为 FallbacksChain/<链 id> 的会话（含继承该路由的子代理）会执行降级链；选择真实模型的会话没有插件降级，仅由 llm-retry 处理重试。',
   'advanced.label': '高级选项',
   // 高级选项 disclosure (plan fallbacks-card-section-ux T3/T5): the
   // section is collapsed by default — the expand/collapse a11y labels ride
@@ -63,25 +63,25 @@ export const zh = {
   // PR #62 feedback: the main-agent section heading groups the time-slot
   // rows + the all-day chooser; the subagents heading groups roles list +
   // rules.
-  'mainAgent.label': '主代理',
   'subagents.label': '子代理',
+  'virtualChain.label': '虚拟链',
+  'virtualChain.hint': '每条链是一张独立的虚拟路由，可各自配置分时、默认降级链与链尾。',
+  'chains.tab.add': '新建链',
+  'chains.tab.menu': '管理当前链：重命名 / 删除',
+  'chains.tab.renameLabel': '链名（仅展示名，id「{id}」不变）',
+  'chains.tab.renameApply': '应用',
+  'chains.tab.delete': '删除该链',
+  'chains.tab.deleteDisabled': '删除该链（至少保留一条链）',
+  'chains.tab.dirty': '（未保存修改）',
+  'chains.tab.error': '（校验错误）',
+  'chains.empty.title': '尚未配置任何降级链',
+  'chains.empty.body': '未配置链时，模型选择器中不会出现任何 FallbacksChain/* 虚拟路由；已选 FallbacksChain 路由的会话将没有插件降级，仅由宿主 llm-retry 处理重试。',
+  'chains.empty.create': '＋ 新建第一条链',
+  'chains.chainFoot.hint': '仅保存当前链：选择器 · 链尾 · 分时槽 · 链名',
+  'chains.chainFoot.discard': '放弃修改',
+  'chains.chainFoot.save': '保存',
   // Host-policy status area (plan dsh-012-subagent-routing T5 / spec D4):
   // read-only; never a second write-face. zh is the key-set source of truth.
-  'subagents.policy.label': '宿主子代理模型策略',
-  'subagents.policy.allowlist': '允许的模型',
-  'subagents.policy.head': '当前链头',
-  'subagents.policy.source.authorized': '宿主授权',
-  'subagents.policy.source.injected': '插件注入',
-  'subagents.policy.blocked': '降级候选均不在允许列表中 — 未切换',
-  'subagents.policy.unprovable': '策略存在但无法读取 — 插件切换已禁用',
-  // Allowlist visibility + explicit sync (plan role-chain-allowlist-visibility
-  // T2): shown only while the policy is proven enabled.
-  'subagents.policy.offAllowlist': '角色链中有 {count} 个精确条目不在允许列表 — 这些条目不会生效',
-  'subagents.policy.recommend': '建议将 FallbacksChain/Auto 加入允许列表（该虚拟路由不受宿主策略过滤）',
-  'subagents.policy.sync': '同步到宿主允许列表',
-  'subagents.policy.sync.done': '已同步：精确条目（角色链、默认降级链与 FallbacksChain/Auto）已写入允许列表；通配条目不展开、不同步',
-  'subagents.policy.sync.failed': '同步失败：宿主设置未写入（策略未启用、条目不可配置或版本冲突等宿主拒绝），请检查宿主设置',
-  'subagents.policy.sync.dirty': '角色链或默认降级链有未保存的修改 — 请先保存再同步（同步只写入已保存的配置）',
   // Time-slot rows (plan fallbacks-timeslots Task 3; PR #62 feedback
   // round): the extra-row list sits under the 主代理 section; preset
   // Timezone picker lives inside expanded custom rows only; preset
@@ -148,8 +148,6 @@ export const zh = {
   'allDay.pro': '官方 Pro（deepseek-official/deepseek-v4-pro）',
   'allDay.nonconforming': '当前默认模型不合法：请选择官方 Flash 或 Pro 后保存',
   'roles.list.label': '角色实体',
-  'roles.list.hint': '先声明角色，规则才能引用',
-  'roles.list.tooltip': '角色 id 须匹配 /^[a-z0-9-]{1,32}$/ 且唯一；"inherit" 为保留字，不能用作角色 id。',
   'roles.id': 'id',
   'roles.id.hint': '小写字母/数字/连字符，1–32 字符',
   'roles.idPlaceholder': '例如 reviewer',
@@ -167,40 +165,26 @@ export const zh = {
   'roles.seedSource.bundled': '内置',
   'roles.seedSource.external': '外部',
   'roles.seedSource.user': '用户',
-  'roles.seedChainOptional': '角色 "{id}" 为 seed 角色：链可留空，保存不会被拦截',
-  'roles.fallback': '链拼接策略',
-  'roles.fallback.inherit-root': '继承 root（角色链后追加 rootChain）',
-  'roles.fallback.none': '仅角色链（不追加 rootChain）',
+  'roles.list.hint': '角色是该角色的身份与人格；可在「指定降级链」中手动指定一条命名虚拟链',
+  'roles.chain.label': '指定降级链',
+  'roles.chain.unspecified': '未指定（沿用 dsh 默认）',
+  'roles.chain.hint': '手动指定该角色使用的虚拟链；未指定时沿用 dsh 默认：继承委派它的代理所选链。',
+  'roles.chain.tooltip': '手动指定该角色使用的命名虚拟链：派发到该角色的子代理会挂到 FallbacksChain/<链 id>，由那条链承接降级。未指定则插件不干预。',
+  'roles.chainMeta.unspecified': '未指定降级链',
   'roles.add': '添加角色',
   'roles.remove': '删除该角色',
-  // PR #62 feedback round: collapsible role panels — collapsed shows the
-  // role id + its first chain model (or inherit-root when the chain is
-  // empty under the inherit-root strategy).
+  // Collapsible role panels — collapsed shows the role id + its specified
+  // chain route (or 未指定降级链).
   'roles.expand': '展开该角色',
   'roles.collapse': '收起该角色',
-  'roles.selector.add': '添加选择器',
-  'roles.rules': '角色规则',
-  // PR #62 feedback: rules are subagent-only — no origin constraint; root
-  // requests never match rules (inherit → rootChain).
-  'roles.rules.hint': '仅对子代理生效：顺序匹配 provider/model，未命中 → inherit（root 链）',
-  'roles.rules.tooltip': '规则仅对子代理生效（root 请求不匹配规则）：命中后走对应角色的链；未命中走内置 inherit（rootChain）。',
-  'roles.rule.provider': 'provider',
-  'roles.rule.provider.any': '任意',
-  'roles.rule.model': 'model',
-  'roles.rule.model.any': '任意',
-  'roles.rule.role': '角色',
-  'roles.rule.role.inherit': 'inherit（内置：root 链）',
-  'roles.rule.roleSelectPlaceholder': '选择角色',
-  'roles.rule.roleUndeclared.short': '（未声明）',
-  'roles.addRule': '添加规则',
-  'roles.removeRule': '删除该规则',
   'validation.blocked': '配置校验未通过，保存被拦截：',
   'validation.roleIdFormat': '角色 id "{id}" 不符合格式 /^[a-z0-9-]{1,32}$/',
   'validation.roleIdReserved': '"inherit" 为保留角色 id，不能用于角色实体',
   'validation.roleIdDuplicate': '角色 id "{id}" 重复',
-  'validation.ruleRoleUndeclared': '规则引用了未声明的角色 "{role}"',
-  'validation.ruleRoleRequired': '规则未选择角色：请选择目标角色，或删除该行',
-  'validation.roleChainRequired': '角色 "{id}" 未配置模型：请至少添加一条链选择器（模型配置）',
+  'validation.chainIdFormat': '链 id "{id}" 不符合格式 /^[A-Za-z0-9][A-Za-z0-9-]{0,31}$/',
+  'validation.chainIdDuplicate': '链 id "{id}" 重复',
+  'validation.chainLabelRequired': '链 "{id}" 缺少展示名（label）',
+  'validation.chainEntriesRequired': '默认降级链不能为空：请至少添加一条选择器。',
   'validation.allDayRequired': '默认模型必须二选一：官方 Flash 或 Pro',
   'validation.slotChainRequired': '分时槽未配置模型：请至少添加一条链选择器',
   'validation.slotWindow': '分时槽开始/结束时间须为 HH:mm 格式',
@@ -218,33 +202,11 @@ export const zh = {
   'catalog.outside.tooltip': '不在当前模型目录，可保留原值并保存；新增条目仅可从目录选择。',
   'catalog.outside.short': ' （目录外）',
   'catalog.unconfigured.short': ' （未配置）',
-  'status.title': '运行状态（只读）',
-  'status.switches.label': '最近切换：',
-  'status.switches.empty': '本会话暂无 fallback 切换。',
-  'status.switches.error': '切换历史读取失败：{message}',
-  'status.switches.compact': '最近 {count} 次 · {from} → {to}（{role} · {reason}）',
-  // Task 5 (direction 3): the role-inject line reads naturally as the
-  // resolved role → its chain-head model (`{to}`) instead of the generic
-  // `({role} · {reason})` parenthetical — role + reason stay visible.
-  // The destination `{to}` appears once (as its role→model mapping), not
-  // twice: the leading `{from} → {to}` is dropped.
-  'status.switches.compact.roleInject': '最近 {count} 次 · {role} → {to}（{reason}）',
+  // One shared reason key family for every seat (qc1 F-004): the
+  // conversation node resolves reasons through this same map.
   'status.switches.reason.trigger-code': '触发失败码',
   'status.switches.reason.always-cap': 'always 模式上限',
-  // One shared reason key family for every seat (qc1 F-004): role-inject
-  // resolves from the same `status.switches.reason.*` family as the other
-  // reasons — the conversation node reads it through the same shared map.
   'status.switches.reason.role-inject': '角色注入',
-  'general.title': '模型故障降级',
-  'general.enabled': '已启用',
-  'general.disabled': '未启用',
-  'general.unknown': '未知',
-  'general.unavailable': '状态通道暂不可达',
-  'general.switch': '最近切换：{from} → {to}（{role} · {reason}）',
-  // Task 5 (direction 3): same dedupe as `status.switches.compact.roleInject`.
-  'general.switch.roleInject': '最近切换：{role} → {to}（{reason}）',
-  'general.switch.empty': '本会话暂无切换',
-  'general.error': '状态读取失败：{message}',
   'chat.switch.title': '模型已降级',
   'chat.switch.summary': '{from} → {to}（{reason}）',
   // Role-mapped (role-inject) summary on the conversation node (qc1 F-002 /
@@ -295,7 +257,7 @@ export const en = {
   'maxSwitchesPerStep.label': 'Max switches per request walk',
   'maxSwitchesPerStep.hint': 'Stops switching beyond the cap',
   'maxSwitchesPerStep.tooltip': 'Beyond this no further switch happens and the request ends with the original error semantics, preventing chain loops from amplifying latency.',
-  'virtualOnly.rule': 'Only sessions whose model selection is FallbacksChain/Auto (including plugin-injected subagents) walk a chain; a real-model selection gets no plugin fallback — llm-retry alone handles its retries.',
+  'virtualOnly.rule': 'Only sessions whose model selection is FallbacksChain/<chain id> (including subagents that inherit that route) walk a chain; a real-model selection gets no plugin fallback — llm-retry alone handles its retries.',
   'advanced.label': 'Advanced options',
   // Advanced-options disclosure (plan fallbacks-card-section-ux T3/T5).
   'advanced.expand': 'Expand advanced options',
@@ -319,24 +281,24 @@ export const en = {
   // PR #62 feedback: the main-agent section heading groups the time-slot
   // rows + the all-day chooser; the subagents heading groups roles list +
   // rules.
-  'mainAgent.label': 'Main agent',
   'subagents.label': 'Subagents',
+  'virtualChain.label': 'Virtual chains',
+  'virtualChain.hint': 'Each chain is a standalone virtual route with its own time slots, default chain and chain tail.',
+  'chains.tab.add': 'New chain',
+  'chains.tab.menu': 'Manage this chain: rename / delete',
+  'chains.tab.renameLabel': 'Chain name (display only; id "{id}" stays)',
+  'chains.tab.renameApply': 'Apply',
+  'chains.tab.delete': 'Delete this chain',
+  'chains.tab.deleteDisabled': 'Delete this chain (keep at least one)',
+  'chains.tab.dirty': ' (unsaved changes)',
+  'chains.tab.error': ' (validation error)',
+  'chains.empty.title': 'No chains configured',
+  'chains.empty.body': 'With no chain configured, no FallbacksChain/* virtual route appears in the model picker; sessions on a FallbacksChain route get no plugin fallback — the host llm-retry alone handles retries.',
+  'chains.empty.create': '＋ Create the first chain',
+  'chains.chainFoot.hint': 'Saves this chain only: selectors · tail · time slots · name',
+  'chains.chainFoot.discard': 'Discard',
+  'chains.chainFoot.save': 'Save',
   // Host-policy status area (plan dsh-012-subagent-routing T5 / spec D4).
-  'subagents.policy.label': 'Host subagent model policy',
-  'subagents.policy.allowlist': 'Allowed models',
-  'subagents.policy.head': 'Effective chain head',
-  'subagents.policy.source.authorized': 'authorized',
-  'subagents.policy.source.injected': 'injected',
-  'subagents.policy.blocked': 'No in-allowlist fallback candidate — switch skipped',
-  'subagents.policy.unprovable': 'Policy present but unreadable — plugin switches disabled',
-  // Allowlist visibility + explicit sync (plan role-chain-allowlist-visibility
-  // T2): shown only while the policy is proven enabled.
-  'subagents.policy.offAllowlist': '{count} exact role-chain entries are outside the allowlist — they will not run',
-  'subagents.policy.recommend': 'Add FallbacksChain/Auto to the allowlist (this virtual route is not filtered by the host policy)',
-  'subagents.policy.sync': 'Sync to host allowlist',
-  'subagents.policy.sync.done': 'Synced: exact entries (role chains, default fallback chain and FallbacksChain/Auto) are now allowed; wildcard entries are not expanded or synced',
-  'subagents.policy.sync.failed': 'Sync failed: the host settings were not written (policy off, entry not configurable, revision conflict or another host refusal) — check the host settings',
-  'subagents.policy.sync.dirty': 'Unsaved role-chain or default-chain edits — save first, then sync (the sync writes the saved configuration only)',
   // Time-slot rows: extra-row list under Main agent. Timezone picker
   // lives inside expanded custom rows only; preset windows stay UTC+8.
   'timeSlots.label': 'Time slots',
@@ -401,8 +363,7 @@ export const en = {
   'allDay.pro': 'Official Pro (deepseek-official/deepseek-v4-pro)',
   'allDay.nonconforming': 'The current default model is not valid: pick official Flash or Pro before saving',
   'roles.list.label': 'Declared roles',
-  'roles.list.hint': 'Declare roles before rules can reference them',
-  'roles.list.tooltip': 'Role ids must match /^[a-z0-9-]{1,32}$/ and be unique; "inherit" is reserved and cannot be used as a role id.',
+  'roles.list.hint': 'A role is the identity + persona; optionally point it at one named chain via 指定降级链',
   'roles.id': 'ID',
   'roles.id.hint': 'lowercase letters, digits, hyphens; 1–32 chars',
   'roles.idPlaceholder': 'e.g. reviewer',
@@ -420,40 +381,25 @@ export const en = {
   'roles.seedSource.bundled': 'bundled',
   'roles.seedSource.external': 'external',
   'roles.seedSource.user': 'User',
-  'roles.seedChainOptional': 'Role "{id}" is a seed role: the chain may stay empty',
-  'roles.fallback': 'Chain append',
-  'roles.fallback.inherit-root': 'Inherit root (append rootChain after the role chain)',
-  'roles.fallback.none': 'Role chain only (no rootChain)',
+  'roles.chain.label': 'Specified chain',
+  'roles.chain.unspecified': 'Not specified (dsh default)',
+  'roles.chain.hint': 'Manually specify the named virtual chain this role uses; when unspecified the dsh default applies: the child inherits the delegating agent\'s chain.',
+  'roles.chain.tooltip': 'Manually specify the named virtual chain for this role: children dispatched under it mount on FallbacksChain/<chain id> and that chain owns the fallback. Unspecified ⇒ the plugin does not intervene.',
+  'roles.chainMeta.unspecified': 'No chain specified',
   'roles.add': 'Add role',
   'roles.remove': 'Remove this role',
-  // PR #62 feedback round: collapsible role panels — collapsed shows the
-  // role id + its first chain model (or inherit-root when the chain is
-  // empty under the inherit-root strategy).
+  // Collapsible role panels — collapsed shows the role id + its specified
+  // chain route (or "no chain specified").
   'roles.expand': 'Expand this role',
   'roles.collapse': 'Collapse this role',
-  'roles.selector.add': 'Add selector',
-  'roles.rules': 'Role rules',
-  // PR #62 feedback: rules are subagent-only — no origin constraint; root
-  // requests never match rules (inherit → rootChain).
-  'roles.rules.hint': 'Subagents only: matches provider/model in order; no match → inherit (root chain)',
-  'roles.rules.tooltip': 'Rules apply to subagents only (root requests never match): a matched rule uses that role\'s chain; no match uses the built-in inherit (rootChain).',
-  'roles.rule.provider': 'provider',
-  'roles.rule.provider.any': 'Any',
-  'roles.rule.model': 'model',
-  'roles.rule.model.any': 'Any',
-  'roles.rule.role': 'role',
-  'roles.rule.role.inherit': 'inherit (built-in: root chain)',
-  'roles.rule.roleSelectPlaceholder': 'Select role',
-  'roles.rule.roleUndeclared.short': ' (undeclared)',
-  'roles.addRule': 'Add rule',
-  'roles.removeRule': 'Remove this rule',
   'validation.blocked': 'Configuration validation failed; save was blocked: ',
   'validation.roleIdFormat': 'Role id "{id}" does not match /^[a-z0-9-]{1,32}$/',
   'validation.roleIdReserved': '"inherit" is a reserved role id and cannot be declared',
   'validation.roleIdDuplicate': 'Duplicate role id "{id}"',
-  'validation.ruleRoleUndeclared': 'Rule references undeclared role "{role}"',
-  'validation.ruleRoleRequired': 'Rule has no role selected: pick a target role, or remove the row',
-  'validation.roleChainRequired': 'Role "{id}" has no model config: add at least one chain entry',
+  'validation.chainIdFormat': 'Chain id "{id}" does not match /^[A-Za-z0-9][A-Za-z0-9-]{0,31}$/',
+  'validation.chainIdDuplicate': 'Duplicate chain id "{id}"',
+  'validation.chainLabelRequired': 'Chain "{id}" is missing a display label',
+  'validation.chainEntriesRequired': 'The default degradation chain cannot be empty: add at least one selector.',
   'validation.allDayRequired': 'The default model must be exactly one official model (Flash or Pro)',
   'validation.slotChainRequired': 'Time-slot row has no models: add at least one chain entry',
   'validation.slotWindow': 'Time-slot start/end must use HH:mm format',
@@ -471,27 +417,11 @@ export const en = {
   'catalog.outside.tooltip': 'Not in the current model catalog; you can keep the original value and save it (new entries are restricted to the catalog).',
   'catalog.outside.short': ' (outside catalog)',
   'catalog.unconfigured.short': ' (not configured)',
-  'status.title': 'Runtime status (read-only)',
-  'status.switches.label': 'Recent switches: ',
-  'status.switches.empty': 'No fallback switches in this session yet.',
-  'status.switches.error': 'Switch history read failed: {message}',
-  'status.switches.compact': 'last {count} · {from} → {to} ({role} · {reason})',
-  'status.switches.compact.roleInject': 'last {count} · {role} → {to} ({reason})',
+  // One shared reason key family for every seat (qc1 F-004): the
+  // conversation node resolves reasons through this same map.
   'status.switches.reason.trigger-code': 'trigger code',
   'status.switches.reason.always-cap': 'always-mode cap',
-  // One shared reason key family for every seat (qc1 F-004): role-inject
-  // resolves from the same `status.switches.reason.*` family as the other
-  // reasons — the conversation node reads it through the same shared map.
   'status.switches.reason.role-inject': 'role inject',
-  'general.title': 'Model failover',
-  'general.enabled': 'Enabled',
-  'general.disabled': 'Disabled',
-  'general.unknown': 'Unknown',
-  'general.unavailable': 'Status channel unavailable',
-  'general.switch': 'Last switch: {from} → {to} ({role} · {reason})',
-  'general.switch.roleInject': 'Last switch: {role} → {to} ({reason})',
-  'general.switch.empty': 'No switches this session',
-  'general.error': 'Status read failed: {message}',
   'chat.switch.title': 'Model downgraded',
   'chat.switch.summary': '{from} → {to} ({reason})',
   // Role-mapped (role-inject) summary on the conversation node (qc1 F-002 /
@@ -524,8 +454,8 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 }
 
 /**
- * Reason → locale key map for switch summaries (S-c; shared by the card's
- * status block, the General page status row, and the conversation node). All
+ * Reason → locale key map for switch summaries (shared by the conversation
+ * node). All
  * reasons resolve from ONE key family (`status.switches.reason.*`) — the
  * shared reason vocabulary must not mix dictionary families (qc1 F-004). The
  * session log is durable and forward-compatible: a reason value outside the

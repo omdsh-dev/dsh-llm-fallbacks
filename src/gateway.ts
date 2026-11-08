@@ -67,13 +67,14 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
-import SettingsForms, { type SettingsNamespace } from '@deepseek-ai/dsh-settings'
+import SettingsForms, { type SettingsNamespace, type SettingsPathOp } from '@deepseek-ai/dsh-settings'
 import { TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import type { TypertContribution } from '@deepseek-ai/dsh-typert-registry'
 import { Config } from './schema'
 import { detectLegacyKeys } from './config'
 import type { FallbacksConfig } from './config'
 import { PRESETS, isAllDayConforming } from './time-slots'
+import { CHAIN_ID_PATTERN } from './config'
 import { parseSelector } from './selectors'
 import type { FallbacksSeedManager, SeedRevertOutcome, SeedsIo, SeedsWireStatus } from './seeds'
 
@@ -99,52 +100,6 @@ export const FALLBACKS_SETTINGS_NAMESPACE: SettingsNamespace = 'fallbacks' as Se
  */
 export const FALLBACKS_PROFILE_ENTRY = 'llm-fallbacks'
 
-/** One exact child LLM route on the additive `subagentPolicy` wire field (T5). */
-export type SubagentPolicyRoute = { provider: string; model: string }
-
-/** Settings namespace of the host's subagent-model-selection policy. */
-export const SUBAGENT_POLICY_SETTINGS_NS = 'subagent-model-selection-settings'
-
-/**
- * The virtual all-fallbacks route the host carve-out recognizes
- * (`docs/features.md`): a subagent explicitly spawned on it is not
- * allowlist-filtered internally, so the sync always includes it.
- */
-const VIRTUAL_ALL_ROUTE: SubagentPolicyRoute = { provider: 'FallbacksChain', model: 'Auto' }
-
-/**
- * Additive `/api/fallbacks/get` host-policy snapshot (spec D4 / T5).
- * Omitted only when the snapshot is unwired (3-arg constructor) so older
- * clients and gateway unit tests keep a byte-identical `{ config,
- * legacyKeys, seeds }` payload. A wired snapshot always emits the field —
- * `{ state: 'disabled' }` included — so a write after an enabled get cannot
- * keep-last an allowlist. Never written through `set`/`reset`.
- */
-export type SubagentPolicyWire =
-  | {
-      state: 'enabled'
-      allowedModels: SubagentPolicyRoute[]
-      head?: { route: SubagentPolicyRoute; source: 'authorized' | 'injected' }
-      blockedAttempt?: { at: number; route: SubagentPolicyRoute; reason: string }
-    }
-  | { state: 'disabled' }
-  | { state: 'unprovable' }
-
-/**
- * Live host-policy snapshot the gateway projects onto the wire. Built in
- * `apply()` from the SAME T1 reader the override paths use — no second
- * policy source. Optional: the 3-arg constructor (gateway unit tests)
- * omits the field entirely.
- */
-export type SubagentPolicySnapshotFn = () => {
-  policy:
-    | { state: 'disabled' }
-    | { state: 'enabled'; allowedModels: readonly SubagentPolicyRoute[] }
-    | { state: 'unprovable' }
-  head?: { route: SubagentPolicyRoute; source: 'authorized' | 'injected' }
-  blockedAttempt?: { at: number; route: SubagentPolicyRoute; reason: string }
-}
-
 /**
  * The live configuration source for the gateway (guide §7 — the same bridge
  * shape the runtime reads through). `source()` returns the live composed
@@ -169,13 +124,6 @@ export interface FallbacksReadResult {
   config: FallbacksConfig
   legacyKeys: string[]
   seeds: SeedsWireStatus[]
-  /**
-   * Host subagent-model-selection policy (spec D4). Additive — old readers
-   * ignore it; omitted only when no snapshot is wired. A wired snapshot
-   * always carries the field (`disabled` included) so keep-last cannot
-   * retain an allowlist after policy-off.
-   */
-  subagentPolicy?: SubagentPolicyWire
 }
 
 /** The `fallbacks/revert-seed` response — a read result plus the revert outcome. */
@@ -193,17 +141,13 @@ export interface FallbacksRevertResult extends FallbacksReadResult {
  */
 const CONFIG_KEYS: Record<string, true> = {
   triggerCodes: true,
-  rootChain: true,
+  chains: true,
   roles: true,
   cooldownMs: true,
   revertPolicy: true,
   maxSwitchesPerStep: true,
   presets: true,
-  // Plan fallbacks-timeslots (P5): time-slot rows + config-level tz. The
-  // READ side carries them so `get` matches the composed config (schema
-  // defaults); the WRITE side validates them — nested row-shape guards in
-  // validateConfigPatch (the ROLES_KEYS pattern, Task 3).
-  timeSlots: true,
+  // Config-level timezone for slot matching (named virtual chains).
   tz: true,
   // Plan fallbacks-half-open-recovery (P1): the single gateway surface for
   // the `recovery` key — readConfig whitelists it for `get` readback, and
@@ -215,7 +159,6 @@ const CONFIG_KEYS: Record<string, true> = {
 /** Declared nested keys of the `roles` patch — anything else is rejected (qc2 S-1). */
 const ROLES_KEYS: Record<string, true> = {
   list: true,
-  rules: true,
 }
 
 /**
@@ -231,7 +174,21 @@ const ROLES_KEYS: Record<string, true> = {
  */
 const LEGACY_KEYS: ReadonlySet<string> = new Set([
   'enabled',
+  // v1 two-block keys (named virtual chains): tolerated in a patch, stripped
+  // from every snapshot/write — never read, never re-persisted. Nested v1
+  // keys (`roles.rules`, `roles.list[].fallback`, the v1 ARRAY form of
+  // `roles.list[].chain`) are stripped by the `roles` normalizer below.
+  'rootChain',
+  'timeSlots',
 ])
+
+/** Declared nested keys of one `chains[]` row — anything else is rejected. */
+const CHAIN_KEYS: Record<string, true> = {
+  id: true,
+  label: true,
+  entries: true,
+  timeSlots: true,
+}
 
 /** Declared nested keys of one `timeSlots` row — anything else is rejected
  * (plan fallbacks-timeslots Task 3, the `ROLES_KEYS` pattern; `name` is the
@@ -268,12 +225,6 @@ export class FallbacksConfigGateway extends TypertRemoteService {
   private readonly seeds: FallbacksSeedManager
   /** The live settings service once the optional inject child activates. */
   private settings: SettingsForms | undefined
-  /**
-   * Optional host-policy snapshot (T5). When omitted the additive
-   * `subagentPolicy` field is absent on every read — the 3-arg constructor
-   * used by gateway unit tests stays byte-identical to the pre-T5 payload.
-   */
-  private readonly subagentPolicy: SubagentPolicySnapshotFn | undefined
 
   /**
    * @param ctx - owning context (the plugin fiber's ctx inside `apply`).
@@ -282,19 +233,15 @@ export class FallbacksConfigGateway extends TypertRemoteService {
    * @param seeds - the per-apply `FallbacksSeedManager` constructed in
    *   `apply()` — the gateway delegates badge state and revert to it (no
    *   copied manager logic), through the io seam built over this bridge.
-   * @param subagentPolicy - live host-policy snapshot from `apply()`; omit
-   *   to leave the additive field off the wire.
    */
   constructor(
     ctx: Context,
     bridge: FallbacksSettingsBridge,
     seeds: FallbacksSeedManager,
-    subagentPolicy?: SubagentPolicySnapshotFn,
   ) {
     super(ctx, 'fallbacks')
     this.bridge = bridge
     this.seeds = seeds
-    this.subagentPolicy = subagentPolicy
     // The settings service is optional (no settings → entry fallback). The
     // inject child activates only when a settings service is composed,
     // mirroring the plugin apply's own settings child; the returned disposer
@@ -314,13 +261,14 @@ export class FallbacksConfigGateway extends TypertRemoteService {
    * patch). No hard-gate resolver (ADR-2): the raw composed config is
    * the wire value. The removed `enabled` key never crosses the wire (the
    * read whitelist drops it — the snapshot-strip half of LEGACY_KEYS).
-   * @returns the wire-normalized composed config plus `legacyKeys` — legacy
-   *   two-block-era fields (`chains` / `roles.default` / undeclared rule
-   *   role refs) detected on the composed source (schemastery retains them,
-   *   plan Task 1 Step 1), so the client can show a migration banner (spec
-   *   §9, incremental field — old clients ignore it) — plus the additive
-   *   `seeds` badge state (spec §9.4, legacyKeys precedent — old clients
-   *   ignore it).
+   * @returns the wire-normalized composed config plus `legacyKeys` — every
+   *   v1 field detected on the composed source (`rootChain`, top-level
+   *   `timeSlots`, `roles.rules`, `roles.default`, `roles.list[].fallback`,
+   *   the v1 ARRAY form of `roles.list[].chain`, plus the older
+   *   `alwaysModeRetryCap` / `roleAutoMatch` / renamed role fields —
+   *   schemastery retains them), so the client can show a migration banner
+   *   (incremental field — old clients ignore it) — plus the additive `seeds`
+   *   badge state (legacyKeys precedent — old clients ignore it).
    */
   get(): FallbacksReadResult {
     return this.readResult()
@@ -362,11 +310,14 @@ export class FallbacksConfigGateway extends TypertRemoteService {
     // (the Plugins-page row toggle replaced it; writing it back would
     // resurrect a switch nothing reads). An all-null / enabled-only patch is
     // a no-op, like the empty patch above.
-    const normalized = Object.fromEntries(
-      Object.entries(patch).filter(([key, value]) => !LEGACY_KEYS.has(key) && value !== null),
+    const normalized = stripLegacyForWrite(
+      Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== null)),
     )
-    if (Object.keys(normalized).length === 0) return this.readResult()
-    await settings.update(FALLBACKS_PROFILE_ENTRY, normalized)
+    // A no-op patch (empty, or only legacy keys — those are stripped above)
+    // still cleans the persisted section: an explicit save is the moment a
+    // stored v1 field must go. A truly empty patch keeps the S2 no-op.
+    if (Object.keys(normalized).length === 0 && Object.keys(patch).length === 0) return this.readResult()
+    await this.writeSection(normalized)
     return this.readResult()
   }
 
@@ -416,41 +367,6 @@ export class FallbacksConfigGateway extends TypertRemoteService {
   }
 
   /**
-   * Merge the CURRENT host allowlist with the exact routes configured in this
-   * plugin's chains (every `roles.list[].chain` entry plus `rootChain`), plus
-   * the virtual `FallbacksChain/Auto` route. De-duplicated by exact
-   * provider+model with first-seen order kept (the current allowlist first).
-   * Wildcard (`provider/*`) and unparseable entries are skipped — never
-   * expanded into routes. This is the only allowlist write face; it runs
-   * exclusively from the explicit card button (never silently) and writes
-   * ONLY `allowedModels` — never `enabled`.
-   * @returns the post-write read result (the fresh `subagentPolicy` snapshot
-   *   reflects the new allowlist).
-   * @throws when no live policy snapshot is wired, the policy is not proven
-   *   enabled (`disabled` / `unprovable`), or no settings service is composed
-   *   (KD-G5: no allowlist write without a proven-enabled policy).
-   */
-  async syncAllowlist(): Promise<FallbacksReadResult> {
-    const snapshot = this.subagentPolicy
-    if (snapshot === undefined) {
-      throw new Error('fallbacks: subagent policy is unavailable — allowlist cannot be synced')
-    }
-    const { policy } = snapshot()
-    if (policy.state !== 'enabled') {
-      throw new Error(`fallbacks: subagent policy is ${policy.state} — allowlist cannot be synced`)
-    }
-    const settings = this.settings
-    if (settings === undefined) {
-      throw new Error('fallbacks: settings service is unavailable — configuration cannot be written')
-    }
-    const merged = mergedAllowlist(policy.allowedModels, this.bridge.source())
-    await settings.mutate(SUBAGENT_POLICY_SETTINGS_NS, [
-      { op: 'set', path: ['allowedModels'], value: merged },
-    ])
-    return this.readResult()
-  }
-
-  /**
    * Read the live composed config and normalize it to the typertGateway JSON
    * wire boundary. Containment (guide §10): a malformed stored patch section
    * that the non-strict settings schema let through (e.g. an unknown key)
@@ -484,26 +400,25 @@ export class FallbacksConfigGateway extends TypertRemoteService {
    */
   private readResult(): FallbacksReadResult {
     const source = this.bridge.source()
-    const result: FallbacksReadResult = {
+    return {
       config: this.readConfig(source),
       legacyKeys: detectLegacyKeys(source as unknown as Record<string, unknown>),
       seeds: this.seeds.wireStatus(this.seedsIo()),
     }
-    const projected = projectSubagentPolicy(this.subagentPolicy)
-    if (projected !== undefined) result.subagentPolicy = projected
-    return result
   }
 
   /**
-   * The io seam the seed manager writes through (spec §9.1): `read` walks
-   * the same live bridge source the gateway reads; `writeRoles` persists a
-   * full `{ list, rules }` to the plugin's profile-entry section — both
-   * arrays always computed from a fresh composed read, so the write stays
-   * correct under the settings merge's array-replace semantics and never
-   * touches operator rules. The write channel fails with the same KD-G5
-   * message as set/reset when no settings service is composed. Built fresh
-   * per call so the mutable settings capture is read at call time (the
-   * inject child swaps it when the settings service appears/disappears).
+   * The io seam the seed manager writes through (spec §9.1): `read` walks the
+   * same live bridge source the gateway reads; `writeRoles` persists the
+   * declared roles as `{ list }` — the v2 shape, whose rows are `{ id,
+   * persona, chain? }` — computed from a fresh composed read, so the write
+   * stays correct under the settings merge's replace-whole-array semantics
+   * and every operator-specified `chain` pointer survives verbatim. It goes
+   * through {@link writeSection}, so a seed write also drops any stored v1
+   * field. The write channel fails with the same KD-G5 message as set/reset
+   * when no settings service is composed. Built fresh per call so the mutable
+   * settings capture is read at call time (the inject child swaps it when the
+   * settings service appears/disappears).
    */
   private seedsIo(): SeedsIo {
     const settings = this.settings
@@ -513,111 +428,149 @@ export class FallbacksConfigGateway extends TypertRemoteService {
         if (settings === undefined) {
           throw new Error('fallbacks: settings service is unavailable — configuration cannot be written')
         }
-        return settings.update(FALLBACKS_PROFILE_ENTRY, { roles })
+        return this.writeSection(stripLegacyForWrite({ roles: roles as unknown as Record<string, unknown> }))
       },
     }
   }
+
+  /**
+   * Write a CLEANED patch and, in the same save, remove v1 fields the
+   * persisted section may still carry. `settings.update` is merge-only, so a
+   * stored `rootChain` / top-level `timeSlots` / `roles.rules` /
+   * `roles.list[].fallback` would otherwise survive every v2 save; the
+   * removals ride `settings.mutate`'s `unset` path ops, which touch only the
+   * named fields (unrelated configuration, foreign keys and redacted secrets
+   * are preserved — a wholesale `replace` rebuilt from a descriptor would not
+   * be).
+   * @param patch - already stripped of v1 fields and null values.
+   */
+  private async writeSection(patch: Record<string, unknown>): Promise<void> {
+    const settings = this.settings
+    if (settings === undefined) {
+      throw new Error('fallbacks: settings service is unavailable — configuration cannot be written')
+    }
+    await writeFallbacksSection(settings, patch)
+  }
 }
 
 /**
- * Build the synced allowlist: the current allowlist first, then every exact
- * route from the configured role chains and `rootChain`, then the virtual
- * `FallbacksChain/Auto` route. Wildcards are not routes and unparseable
- * entries are skipped (the selector parser is the single grammar authority).
+ * Persist a CLEANED patch and, in the same operation, remove the v1 fields the
+ * ACTIVE PROFILE's persisted section still holds. `settings.update` is
+ * merge-only, so a stored `rootChain` / top-level `timeSlots` / `roles.rules` /
+ * `roles.list[].fallback` would otherwise survive every v2 save; the removals
+ * ride `settings.mutate`'s path ops, which touch only the named fields
+ * (unrelated configuration, foreign keys and redacted secrets are preserved —
+ * a wholesale `replace` rebuilt from a descriptor would delete them).
+ *
+ * Exported because the plugin has TWO write entry points — the gateway
+ * (`set` / `writeRoles`) and the apply-level `SeedsIo` (`declareSeeds`,
+ * `revertSeededPersona`, the bundled preset self-declaration) — and the same
+ * logical operation must clean the same way through both.
+ * @param settings - the live settings service.
+ * @param patch - a patch; v1 fields are stripped here, callers need not.
+ * @param ns - profile entry id (defaults to the plugin's own).
  */
-function mergedAllowlist(
-  allowedModels: readonly SubagentPolicyRoute[],
-  source: FallbacksConfig,
-): SubagentPolicyRoute[] {
-  const merged: SubagentPolicyRoute[] = []
-  const seen = new Set<string>()
-  const push = (route: SubagentPolicyRoute): void => {
-    // The host's route identity key shape (upstream `modelRouteKey`): a NUL
-    // separator keeps `a/b/c` + `d` distinct from `a/b` + `c/d`.
-    const key = `${route.provider}\0${route.model}`
-    if (seen.has(key)) return
-    seen.add(key)
-    merged.push({ provider: route.provider, model: route.model })
+export async function writeFallbacksSection(
+  settings: SettingsForms,
+  patch: Record<string, unknown>,
+  ns: string = FALLBACKS_PROFILE_ENTRY,
+): Promise<void> {
+  const cleaned = stripLegacyForWrite(patch)
+  const removals = legacySectionRemovals(settings, ns)
+  if (removals.length > 0) await settings.mutate(ns, removals)
+  if (Object.keys(cleaned).length > 0) await settings.update(ns, cleaned)
+}
+
+/**
+ * `unset` path ops for every v1 field the persisted section still holds.
+ * Path-addressed on purpose: the write must not restate (and so cannot
+ * destroy) fields this plugin does not own.
+ * @param settings - the live settings service.
+ * @param ns - profile entry id.
+ */
+function legacySectionRemovals(settings: SettingsForms, ns: string): readonly SettingsPathOp[] {
+  const descriptor = settings.describe().find((candidate) => candidate.ns === ns)
+  const user = descriptor?.user
+  if (typeof user !== 'object' || user === null || Array.isArray(user)) return []
+  const section = user as Record<string, unknown>
+  const removals: SettingsPathOp[] = []
+  for (const key of LEGACY_KEYS) {
+    if (Object.hasOwn(section, key)) removals.push({ op: 'unset', path: [key] })
   }
-  for (const route of allowedModels) push(route)
-  const entries = [
-    ...source.roles.list.flatMap((role) => role.chain ?? []),
-    ...source.rootChain,
-  ]
-  for (const entry of entries) {
-    let parsed
-    try {
-      parsed = parseSelector(entry)
-    } catch {
+  const roles = section['roles']
+  if (typeof roles !== 'object' || roles === null || Array.isArray(roles)) return removals
+  const declared = roles as Record<string, unknown>
+  for (const key of ['rules', 'default']) {
+    if (Object.hasOwn(declared, key)) removals.push({ op: 'unset', path: ['roles', key] })
+  }
+  if (!Array.isArray(declared['list'])) return removals
+  // Rows are rewritten as a whole rather than unset per index: the list is the
+  // one array a v1 field lives in, and these values come from the REDACTED
+  // `describe().user` view — safe only because no role member is a
+  // schema-declared secret. Prefer per-index `unset` if `SettingsPathOp` ever
+  // expresses an array member cleanly.
+  const stale = declared['list'].some((row) => typeof row === 'object' && row !== null
+    && !Array.isArray(row)
+    && (Object.hasOwn(row as Record<string, unknown>, 'fallback')
+      || Array.isArray((row as Record<string, unknown>)['chain'])))
+  if (stale) {
+    const cleanedRoles = normalizeRoles({ list: declared['list'] }) as Record<string, unknown>
+    removals.push({ op: 'set', path: ['roles', 'list'], value: cleanedRoles['list'] ?? [] })
+  }
+  return removals
+}
+
+/**
+ * Strip the v1 two-block fields from a patch on the WRITE path (the read side
+ * filters by schema-declared keys instead). Recursive by construction: the
+ * top-level {@link LEGACY_KEYS} and `roles` — whose rows lose `fallback` and
+ * the v1 ARRAY form of `chain` — are the only places a v1 field can live.
+ * @param value - the patch (or a section being rewritten) to clean.
+ * @returns a new object; the input is never mutated.
+ */
+function stripLegacyForWrite(value: Record<string, unknown>): Record<string, unknown> {
+  const cleaned: Record<string, unknown> = {}
+  for (const [key, member] of Object.entries(value)) {
+    if (LEGACY_KEYS.has(key)) continue
+    if (key === 'roles') {
+      const roles = normalizeRoles(member)
+      if (roles !== undefined) cleaned[key] = roles
       continue
     }
-    if (parsed.model === undefined) continue
-    push({ provider: parsed.provider, model: parsed.model })
+    cleaned[key] = member
   }
-  push(VIRTUAL_ALL_ROUTE)
-  return merged
+  // `timeSlots` is a v1 TOP-LEVEL key and a v2 PER-CHAIN field: the set only
+  // strips the former, which is what the loop above already did.
+  return cleaned
 }
 
 /**
- * Project the live host-policy snapshot onto the additive wire field.
- * An unwired snapshot omits the field (3-arg constructor / old payload).
- * A wired snapshot always emits: `disabled` as `{ state: 'disabled' }`
- * (so save/reset keep-last cannot retain an allowlist), plus `unprovable`
- * and `enabled`. Never throws: a throwing snapshot fails closed to
- * `{ state: 'unprovable' }` (same outcome as an unreadable runtime policy
- * — the card must not 500 the settings page).
- */
-function projectSubagentPolicy(
-  snapshot: SubagentPolicySnapshotFn | undefined,
-): SubagentPolicyWire | undefined {
-  if (snapshot === undefined) return undefined
-  let captured: ReturnType<SubagentPolicySnapshotFn>
-  try {
-    captured = snapshot()
-  } catch {
-    return { state: 'unprovable' }
-  }
-  const { policy, head, blockedAttempt } = captured
-  if (policy.state === 'disabled') return { state: 'disabled' }
-  if (policy.state === 'unprovable') return { state: 'unprovable' }
-  const wire: SubagentPolicyWire = {
-    state: 'enabled',
-    allowedModels: policy.allowedModels.map((route) => ({
-      provider: route.provider,
-      model: route.model,
-    })),
-  }
-  if (head !== undefined) {
-    wire.head = {
-      route: { provider: head.route.provider, model: head.route.model },
-      source: head.source,
-    }
-  }
-  if (blockedAttempt !== undefined) {
-    wire.blockedAttempt = {
-      at: blockedAttempt.at,
-      route: { provider: blockedAttempt.route.provider, model: blockedAttempt.route.model },
-      reason: blockedAttempt.reason,
-    }
-  }
-  return wire
-}
-
-/**
- * Keep only the declared `roles` fields (`list` + `rules`) for the wire.
- * Legacy nested keys (e.g. `roles.default` from the two-block era) are
- * retained on the composed source by schemastery and reported via
- * `legacyKeys`, but must never ride the wire (reviewer finding T1 Important
- * #1). Non-object values pass through untouched — readConfig only filters
- * schema-declared keys, and absent fields stay omitted per the wire boundary
- * rule above.
+ * Keep only the declared `roles` fields (`list`) for the wire, and strip the
+ * v1 two-block leftovers from each row (`fallback`, and the v1 ARRAY form of
+ * `chain` — v2 declares a string pointer). Legacy nested keys (e.g.
+ * `roles.default` / `roles.rules` from earlier eras) are retained on the
+ * composed source by schemastery and reported via `legacyKeys`, but must
+ * never ride the wire (reviewer finding T1 Important #1). Non-object values
+ * pass through untouched — readConfig only filters schema-declared keys, and
+ * absent fields stay omitted per the wire boundary rule above.
  */
 function normalizeRoles(value: unknown): unknown {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return value
   const roles: Record<string, unknown> = {}
-  for (const field of ['list', 'rules']) {
-    const member = (value as Record<string, unknown>)[field]
-    if (member !== undefined) roles[field] = member
+  const list = (value as Record<string, unknown>)['list']
+  if (Array.isArray(list)) {
+    roles['list'] = list.map((item) => {
+      if (typeof item !== 'object' || item === null || Array.isArray(item)) return item
+      const row: Record<string, unknown> = {}
+      for (const [key, member] of Object.entries(item as Record<string, unknown>)) {
+        // v1 leftovers are stripped, never read: the `fallback` strategy and
+        // the ARRAY form of the `chain` pointer.
+        if (key === 'fallback') continue
+        if (key === 'chain' && Array.isArray(member)) continue
+        row[key] = member
+      }
+      return row
+    })
   }
   return roles
 }
@@ -627,9 +580,10 @@ function normalizeRoles(value: unknown): unknown {
  * top-level keys (schemastery merges them silently — the settings service
  * would accept them), and schema type violations — plus the Task 3 semantic
  * guards the permissive schema deliberately does not carry: nested `roles`
- * keys, `timeSlots` row shapes (unknown preset ids, duplicate presets, preset
- * rows carrying windows, non-`HH:mm` custom bounds, out-of-range days, empty
- * chains), and the all-day `rootChain` head conformance.
+ * keys, `chains[]` row shape (id pattern, case-sensitive uniqueness, label),
+ * per-chain `timeSlots` row shapes (unknown preset ids, duplicate presets,
+ * preset rows carrying windows, non-`HH:mm` custom bounds, out-of-range days,
+ * empty chains), and each chain's non-empty `entries` tail conformance.
  *
  * Exported (plan fallbacks-tui-settings Task 1): the TUI settings section's
  * JSON-field `parse` mirrors the gateway save rules through this single
@@ -677,31 +631,67 @@ export function validateConfigPatch(patch: unknown): void {
     // on purpose (malformed rows warn at load, P6 warn-not-crash); the
     // reject-on-save rules live here, the mirror of the resolver's
     // warn-and-skip `describeRow`.
-    if (key === 'timeSlots') {
-      const rows = (patch as Record<string, unknown>)[key]
-      if (rows !== null && rows !== undefined) {
-        validateTimeSlotsPatch(rows)
-      }
-    }
-    // All-day tail gate: `rootChain` must END with exactly one official
-    // model — Flash / Pro XOR (the card's 默认模型 panel); leading entries
-    // (默认降级链) are the ordered walk before that last-resort fallback.
-    // Empty / non-official tail (incl. the retired `deepseek-v4-flash` and
-    // the never-served legacy `deepseek-official/deepseek-pro`) rejected on
-    // save.
-    if (key === 'rootChain') {
-      const chain = (patch as Record<string, unknown>)[key]
-      if (chain !== null && chain !== undefined && (!Array.isArray(chain) || !isAllDayConforming(chain))) {
-        throw new Error(
-          'dsh-llm-fallbacks: rootChain must end with exactly one official model (deepseek-official/deepseek-flash or deepseek-official/deepseek-v4-pro)',
-        )
-      }
+    if (key === 'chains') {
+      validateChainsPatch((patch as Record<string, unknown>)[key])
     }
   }
   // Type/bounds validation (schemastery fills defaults for absent keys; null
   // is treated as missing by defaulted fields, so it validates and is dropped
   // by the caller's wire normalization).
   Config(patch as unknown as FallbacksConfig)
+}
+
+/**
+ * Reject a `chains` patch value the config model cannot express (named
+ * virtual chains): non-array rows, unknown nested keys, invalid ids
+ * ({@link CHAIN_ID_PATTERN}), duplicate ids (case-sensitive), per-chain slot
+ * rows (via {@link validateTimeSlotsPatch}), and a non-empty `entries` whose
+ * LAST entry is not exactly one official model (the reject-on-save mirror of
+ * the validator's tail-conformance warn; empty entries stay legal — the
+ * picker row registers, the walk refuses).
+ */
+function validateChainsPatch(chains: unknown): void {
+  if (!Array.isArray(chains)) {
+    throw new Error('dsh-llm-fallbacks: chains must be an array of named chains')
+  }
+  const seenIds = new Set<string>()
+  chains.forEach((chain, index) => {
+    const at = `chains[${index}]`
+    if (chain === null || typeof chain !== 'object' || Array.isArray(chain)) {
+      throw new Error(`dsh-llm-fallbacks: ${at} must be a plain object`)
+    }
+    const record = chain as Record<string, unknown>
+    for (const nestedKey of Object.keys(record)) {
+      if (!Object.hasOwn(CHAIN_KEYS, nestedKey)) {
+        throw new Error(`dsh-llm-fallbacks: unknown config key "${at}.${nestedKey}"`)
+      }
+    }
+    if (typeof record.id !== 'string' || !CHAIN_ID_PATTERN.test(record.id)) {
+      throw new Error(
+        `dsh-llm-fallbacks: ${at}.id must match /^[A-Za-z0-9][A-Za-z0-9-]{0,31}$/ (got ${JSON.stringify(record.id)})`,
+      )
+    }
+    if (seenIds.has(record.id)) {
+      throw new Error(`dsh-llm-fallbacks: ${at} duplicates chain id "${record.id}" — chain ids must be unique (case-sensitive)`)
+    }
+    seenIds.add(record.id)
+    if (typeof record.label !== 'string') {
+      throw new Error(`dsh-llm-fallbacks: ${at}.label must be a string`)
+    }
+    const entries = record.entries
+    if (entries !== undefined && entries !== null
+      && (!Array.isArray(entries) || entries.some((entry) => typeof entry !== 'string'))) {
+      throw new Error(`dsh-llm-fallbacks: ${at}.entries must be a string array`)
+    }
+    if (Array.isArray(entries) && entries.length > 0 && !isAllDayConforming(entries)) {
+      throw new Error(
+        `dsh-llm-fallbacks: ${at}.entries must end with exactly one official model (deepseek-official/deepseek-flash or deepseek-official/deepseek-v4-pro)`,
+      )
+    }
+    if (record.timeSlots !== undefined && record.timeSlots !== null) {
+      validateTimeSlotsPatch(record.timeSlots)
+    }
+  })
 }
 
 /**
@@ -835,19 +825,6 @@ export function fallbacksTypertContribution(): TypertContribution {
         parameters: [
           { name: 'id', wire: 'id', source: 'json', codec: { mode: 'src-json' } },
         ],
-        result: { mode: 'src-json' },
-      },
-      {
-        // Explicit allowlist sync (plan role-chain-allowlist-visibility T1):
-        // the only allowlist write face — user-clicked, never silent. Same
-        // hyphenated-method / implementation-alias shape as revert-seed.
-        id: 'dsh-llm-fallbacks#fallbacks/sync-allowlist',
-        service: 'fallbacks',
-        namespace: 'fallbacks',
-        method: 'sync-allowlist',
-        implementation: 'syncAllowlist',
-        invocation: { kind: 'direct' },
-        parameters: [],
         result: { mode: 'src-json' },
       },
     ],

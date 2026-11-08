@@ -4,32 +4,27 @@
  * module must stay free of `@deepseek-ai/*` value imports so the client
  * bundle never reaches schemastery).
  *
- * Two-block config model (plan fallbacks-role-config-model): block 1
- * `rootChain` — the root agent's single fallback chain (empty = no
- * degradation) — plus block 2 declared role entities: `roles.list`
- * (id/persona/prompt?/permissions?/chain?/fallback) and
- * `roles.rules` enum references into the declared ids (or the built-in
- * `'inherit'` role). The legacy `chains` / `roles.default` keys are gone
- * from the schema and type (zero residual, migration table excepted); the
- * runtime consumes the new shape directly and flags surviving legacy keys
- * at startup via `detectLegacyKeys` (see `src/index.ts` apply()).
+ * Named virtual chains (config v2, plan named-virtual-chains): N named
+ * chains each selectable as `FallbacksChain/<chain id>`, carrying their own
+ * `entries` (默认降级链 + 链尾) and `timeSlots`. Declared roles keep identity
+ * (`id`/`persona`/`prompt?`/`permissions?`) plus an OPTIONAL `chain`
+ * POINTER — a manually specified chain id (「指定降级链」), never an auto
+ * mode: absent/empty = NOT SPECIFIED, the plugin does not intervene and the
+ * child inherits the delegating agent's route. The v1 two-block model
+ * (`rootChain` + per-role inline chains + `roles.rules`) is deleted; the
+ * runtime consumes the v2 shape directly and flags surviving v1 keys at
+ * startup via `detectLegacyKeys` (warn-only migration — no auto-write).
  *
- * Spec §4 is authoritative for field names and default values — notably
+ * Spec §1 is authoritative for field names and default values — notably
  * `triggerCodes` defaults to dsh's stable failure codes `['AUTH', 'QUOTA',
- * 'RATE_LIMIT']` (there is no `QUOTA_EXCEEDED` code in dsh), and an
- * unconfigured install (empty `rootChain`, no time slots, empty roles) is a
- * no-op pass-through exactly like an uninstalled plugin (AC-8 —
- * {@link isFallbackActive}). There is NO config-level `enabled` switch
- * (plan fallbacks-web-ux-alignment T2): the Plugins-page row toggle is the
- * master switch (row disable = fiber destroy), and the runtime gates re-key
- * to content presence. A stored profile still carrying the removed
- * `enabled:` key loads cleanly — the gateway tolerates and strips it (the
- * advisor LEGACY_KEYS mechanism), it is never read and never re-persisted.
+ * 'RATE_LIMIT']`. An unconfigured install (empty `chains`) is a no-op
+ * pass-through exactly like an uninstalled plugin — there is NO config-level
+ * `enabled` switch: the Plugins-page row toggle is the master switch and the
+ * runtime gates re-key to `isFallbackActive` (`chains.length > 0`). Nothing
+ * pre-creates a default chain: empty `chains` is the ONLY first-run state.
  *
  * This module is pure logic: it must not import any `@deepseek-ai/*` package
- * (types included) — `FallbacksConfig` is the plugin's own type. Task 3
- * registers the schemastery schema (see `./schema.ts`) with
- * `installSettingsSection` under the `fallbacks` settings namespace.
+ * (types included) — `FallbacksConfig` is the plugin's own type.
  *
  * @module dsh-llm-fallbacks/config
  */
@@ -44,33 +39,33 @@ export type RecoveryPolicy = 'timer' | 'half-open'
 /** How a cooled-down model comes back (spec §4). */
 export type RevertPolicy = 'cooldown-expiry' | 'never'
 
-/** A single role rule: match on provider/model patterns (spec §3). */
-export interface FallbacksRoleRule {
-  /**
-   * Legacy persisted wire field (PR #62 feedback): rules are subagent-only,
-   * so this constraint is IGNORED at match time — root requests never
-   * match rules. Kept in the type/schema so pre-feedback `settings.yaml`
-   * files that carry `origin` still parse, validate, and save unchanged.
-   */
-  origin?: 'root' | 'subagent'
-  provider?: string
-  model?: string
-  role: string
+/** Chain id format (v2): case-sensitive, uppercase allowed so the migrated
+ * default id is exactly `Auto`. Deliberately NOT {@link ROLE_ID_PATTERN},
+ * which keeps governing role ids. */
+export const CHAIN_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9-]{0,31}$/
+
+/**
+ * One named virtual chain (v2). `id` doubles as the picker model id —
+ * renaming it would orphan every saved selection, so only `label` is
+ * editable in the UI. The LAST `entries` element is the 链尾: exactly one
+ * official model. The FIRST matching `timeSlots` row REPLACES `entries`.
+ */
+export interface NamedChain {
+  id: string
+  /** Settings tab title + picker display prefix (display-only). */
+  label: string
+  /** 默认降级链 + 链尾. */
+  entries: string[]
+  /** 分时 rows scoped to this chain; first match replaces {@link entries}. */
+  timeSlots?: SlotRowConfig[]
 }
 
 /**
- * Chain-append strategy of a declared role entity: `inherit-root` (the
- * default) runs the role's own chain and then appends `rootChain`;
- * `none` uses only the role's own chain.
- */
-export type FallbackStrategy = 'inherit-root' | 'none'
-
-/**
- * A declared role entity (plan fallbacks-role-config-model Task 1).
+ * A declared role entity (v2): identity + an optional chain POINTER.
  *
  * `prompt` / `permissions` are schema-reserved for the next iteration
- * (fallbacks-explicit-role-tool) — no consumer this round, and writing them
- * does NOT change this round's degradation behavior.
+ * — no consumer this round, and writing them does NOT change this
+ * round's degradation behavior.
  */
 export interface FallbacksRole {
   id: string
@@ -80,23 +75,28 @@ export interface FallbacksRole {
   prompt?: string
   /** Reserved for next iteration — no consumer this round. */
   permissions?: { allow?: string[]; deny?: string[] }
-  chain?: string[]
-  fallback?: FallbackStrategy
+  /**
+   * Manually specified named chain id for children dispatched under this
+   * role (「指定降级链」) — a POINTER into `chains[]`, never a chain
+   * definition. Absent or empty ⇒ NOT SPECIFIED: the plugin does not
+   * intervene and the child inherits the delegating agent's route. The
+   * plugin never picks a chain on its own.
+   */
+  chain?: string
 }
 
-/** Role grouping for fallback chains: declared entities + enum references. */
+/** Role grouping (v2): declared entities only — `rules` is deleted. */
 export interface FallbacksRoles {
   list: FallbacksRole[]
-  rules: FallbacksRoleRule[]
 }
 
 /**
- * The full `fallbacks` settings shape (two-block config model, verbatim
+ * The full `fallbacks` settings shape (named virtual chains, verbatim
  * field names).
  */
 export interface FallbacksConfig {
   triggerCodes: string[]
-  rootChain: string[]
+  chains: NamedChain[]
   roles: FallbacksRoles
   cooldownMs: number
   revertPolicy: RevertPolicy
@@ -105,21 +105,12 @@ export interface FallbacksConfig {
    * Preset-role injection switch: `'bundled'` declares the 5 preset roles
    * (spec §9.2) as seed rows on apply; `'none'` disables declaration.
    * Optional on purpose — a required field would break library consumers
-   * that construct `FallbacksConfig` literals with the existing 8 keys
-   * (additive, non-breaking). The value domain is guarded by the schema
-   * (`Config` in `src/schema.ts`), NOT by `validateFallbacksConfig`, and
-   * every resolved config carries a value via the schema default.
+   * that construct `FallbacksConfig` literals. The value domain is guarded
+   * by the schema (`Config` in `src/schema.ts`), NOT by
+   * `validateFallbacksConfig`, and every resolved config carries a value
+   * via the schema default.
    */
   presets?: 'bundled' | 'none'
-  /**
-   * Extra time-slot rows (plan fallbacks-timeslots Task 1, P5): the FIRST
-   * matching row's chain becomes the effective root chain at request time;
-   * `rootChain` (the all-day chain) is always the last row.
-   * Optional on purpose, mirroring `presets` — additive, non-breaking for
-   * library consumers. Malformed rows warn once and are skipped by the
-   * resolver; the gateway rejects them on save (Task 3).
-   */
-  timeSlots?: SlotRowConfig[]
   /**
    * Config-level timezone for slot matching (default `Asia/Shanghai`,
    * UTC+8). Not per-slot.
@@ -130,60 +121,56 @@ export interface FallbacksConfig {
    * 1): `'timer'` restores the preferred candidate when the cooldown
    * expires (today's behavior); `'half-open'` leaves the route half-open
    * for one logged probe instead. Optional on purpose, mirroring
-   * `presets` — a required field would break library consumers that
-   * construct `FallbacksConfig` literals with the existing keys
-   * (additive, non-breaking). The value domain is guarded by the schema
-   * (`Config` in `src/schema.ts`), NOT by `validateFallbacksConfig`, and
-   * every resolved config carries a value via the schema default.
+   * `presets`. The value domain is guarded by the schema, NOT by
+   * `validateFallbacksConfig`, and every resolved config carries a value
+   * via the schema default.
    */
   recovery?: RecoveryPolicy
 }
 
 /**
- * Spec §4 defaults — `Config({})` must equal this (no-op install).
- * There is no `enabled` default (the key is removed — the Plugins-page row
- * toggle is the master switch): an unconfigured install (empty rootChain,
- * no time slots, empty roles) behaves exactly like an uninstalled plugin
- * (AC-3 / no-op invariant, {@link isFallbackActive}).
+ * Spec §1 defaults — `Config({})` must equal this (no-op install).
+ * Empty `chains` is the ONLY first-run state: nothing pre-creates an
+ * `Auto` chain and nothing seeds `entries` — the picker row appears only
+ * after the user creates a chain in the card. The migrated/seeded default
+ * chain (`{ id: 'Auto', label: '默认链', entries, timeSlots }`) exists only
+ * in the migration table (docs) applied by hand — warn-only migration.
  */
 export const defaultFallbacksConfig: FallbacksConfig = {
   triggerCodes: ['AUTH', 'QUOTA', 'RATE_LIMIT'],
-  rootChain: [],
-  roles: { list: [], rules: [] },
+  chains: [],
+  roles: { list: [] },
   cooldownMs: 300_000,
   revertPolicy: 'cooldown-expiry',
   maxSwitchesPerStep: 8,
   presets: 'bundled',
-  timeSlots: [],
   tz: 'Asia/Shanghai',
   recovery: 'timer',
 }
 
+/** Role id format (aligned with yet-another-subagent `isValidProfileId`). */
+export const ROLE_ID_PATTERN = /^[a-z0-9-]{1,32}$/
+
 /**
- * Reserved role id: legal as a rule target (`roles.rules[].role`) and as
- * the no-rule-match fallback, but FORBIDDEN in `roles.list[].id`.
+ * Reserved role id: FORBIDDEN in `roles.list[].id` (the validator's reserved
+ * warn) and in seed declarations (`seeds.ts` reserved-id skip). `rules` that
+ * could target it are deleted (v2), but the id itself stays reserved so a
+ * declared role can never shadow the "no specific role" meaning.
  */
 export const INHERIT_ROLE_ID = 'inherit'
 
 /**
- * The no-op gate (AC-8), re-keyed from the removed `enabled` switch to
- * CONTENT PRESENCE (plan fallbacks-web-ux-alignment T2): the plugin
- * intervenes exactly when something is configured — a non-empty `rootChain`
- * (the all-day chain), at least one time-slot row, or at least one declared
- * role. An inactive config is a pass-through exactly like an uninstalled
- * plugin; the Plugins-page row toggle remains the master switch (row
- * disable = fiber destroy). ONE helper for every runtime gate — the former
- * `config.enabled` sites (request waterfalls, picker-row registration, TUI
- * summary, General-row badge) all read through this.
+ * The no-op gate (AC-8): the plugin intervenes exactly when at least one
+ * named chain is configured. Roles alone no longer activate (a role
+ * without a chain is pure identity). An inactive config is a pass-through
+ * exactly like an uninstalled plugin; the Plugins-page row toggle remains
+ * the master switch (row disable = fiber destroy). A non-empty chain with
+ * empty `entries` still registers the picker row (content presence) but
+ * refuses to delegate (conformance gate in the walk).
  */
 export function isFallbackActive(config: FallbacksConfig): boolean {
-  return config.rootChain.length > 0
-    || (config.timeSlots?.length ?? 0) > 0
-    || config.roles.list.length > 0
+  return config.chains.length > 0
 }
-
-/** Role id format (aligned with yet-another-subagent `isValidProfileId`). */
-export const ROLE_ID_PATTERN = /^[a-z0-9-]{1,32}$/
 
 /**
  * Minimal logger surface {@link validateFallbacksConfig} warns through —
@@ -196,122 +183,105 @@ export interface FallbacksConfigLogger {
 
 /**
  * Validate a fallbacks config (pure, warn-only — never throws, never
- * mutates): role id format/uniqueness/reserved word, rule role references
- * (declared ids + the built-in `'inherit'`), the `fallback` enum,
- * `rootChain`/role-chain selector legality, and the role model-config
- * requirement (a declared role with a missing/empty chain warns — a role
- * without a model config is meaningless, plan fallbacks-feedback-round
- * T2). `persona` is free text and is deliberately not
- * validated. Each violation emits one `llm-fallbacks: ...` warn and "does
- * not take effect" — the config stays usable (spec §4 / AC-4
- * warn-not-crash semantics).
+ * mutates). Per chain: id format (case-sensitive, {@link CHAIN_ID_PATTERN})
+ * + cross-chain uniqueness, tail conformance (the LAST entry must be
+ * exactly one official model — a non-conforming chain's slot rows and
+ * delegate stay inert), selector legality per entry, and the slot-row
+ * guards (unknown preset, duplicate preset per chain, preset rows carrying
+ * their own windows). Per role (after the chain loop, so the declared id
+ * set is complete): the existing id format/reserved/duplicate warns, and a
+ * non-empty `chain` pointer naming no declared chain id earns ONE warn and
+ * behaves as NOT SPECIFIED. Each violation emits one `llm-fallbacks: ...`
+ * warn — the config stays usable (warn-not-crash semantics). `persona` and
+ * `label` are free text and deliberately not validated.
  */
 export function validateFallbacksConfig(config: FallbacksConfig, logger: FallbacksConfigLogger): void {
+  const declaredChainIds = new Set<string>()
+  for (const chain of config.chains) {
+    if (!CHAIN_ID_PATTERN.test(chain.id)) {
+      logger.warn(`llm-fallbacks: invalid chain id "${chain.id}" — must match /^[A-Za-z0-9][A-Za-z0-9-]{0,31}$/`)
+    }
+    if (declaredChainIds.has(chain.id)) {
+      logger.warn(`llm-fallbacks: duplicate chain id "${chain.id}" — chain ids must be unique (case-sensitive)`)
+    }
+    declaredChainIds.add(chain.id)
+    // Per-chain tail conformance: the LAST entry (链尾) must be exactly one
+    // official model — otherwise that chain's slot rows and delegate stay
+    // inert (PR #62 semantics, per chain).
+    if (chain.entries.length > 0 && !isAllDayConforming(chain.entries)) {
+      logger.warn(
+        `llm-fallbacks: chain "${chain.id}" must end with exactly one official model (deepseek-official/deepseek-flash or deepseek-official/deepseek-v4-pro) — its time-slot rows and the virtual picker delegate stay inert until the tail conforms`,
+      )
+    }
+    for (const entry of chain.entries) {
+      try {
+        parseSelector(entry)
+      } catch (error) {
+        logger.warn(
+          `llm-fallbacks: ignoring invalid chain "${chain.id}" entry "${entry}": ${(error as Error).message}`,
+        )
+      }
+    }
+    // Slot-row guards, moved inside the chain loop (per chain): at most ONE
+    // row per preset id per chain, known preset ids only, and preset rows
+    // must not carry their own windows/day masks. The schema keeps the row
+    // shape permissive on purpose — malformed rows warn here, never fail
+    // composition; the resolver skips them defensively at request time.
+    if (Array.isArray(chain.timeSlots)) {
+      const seenSlotPresets = new Set<string>()
+      for (const row of chain.timeSlots) {
+        if (row.kind !== 'preset') continue
+        const preset = row.preset
+        if (typeof preset !== 'string' || !Object.hasOwn(PRESETS, preset)) {
+          logger.warn(
+            `llm-fallbacks: chain "${chain.id}" has an unknown time-slot preset ${JSON.stringify(preset)} — row ignored`,
+          )
+          continue
+        }
+        if (seenSlotPresets.has(preset)) {
+          logger.warn(
+            `llm-fallbacks: chain "${chain.id}" has a duplicate time-slot preset "${preset}" — only the first row takes effect`,
+          )
+          continue
+        }
+        seenSlotPresets.add(preset)
+        if (row.start !== undefined || row.end !== undefined || (row.days !== undefined && row.days.length > 0)) {
+          logger.warn(
+            `llm-fallbacks: chain "${chain.id}" preset "${preset}" carries its own window/day fields — preset windows are fixed code constants; the row is ignored`,
+          )
+        }
+      }
+    }
+  }
   const declaredIds = new Set<string>()
   for (const role of config.roles.list) {
     // Client-canonical trim alignment (qc2 S-3): the UI rebuilds ids with
-    // `row.id.trim()` (rowsToRoles) and validates the trimmed value, so the
-    // host validator must too — a padded id in YAML resolves exactly like
-    // the UI's canonical form (format/reserved/duplicate checks + the
-    // declared-id set), never as a raw-string mismatch that would produce a
-    // duplicate/undeclared warn against a trimmed sibling. Warn messages
-    // still name the raw stored id so the user can locate it in the file.
+    // `row.id.trim()` and validates the trimmed value, so the host
+    // validator must too. Warn messages still name the raw stored id.
     const id = role.id.trim()
     if (!ROLE_ID_PATTERN.test(id)) {
       logger.warn(`llm-fallbacks: invalid role id "${role.id}" — must match /^[a-z0-9-]{1,32}$/`)
     }
-    if (id === INHERIT_ROLE_ID) {
+    if (id === 'inherit') {
       logger.warn(`llm-fallbacks: role id "${role.id}" is reserved — "inherit" cannot be declared in roles.list`)
     }
     if (declaredIds.has(id)) {
       logger.warn(`llm-fallbacks: duplicate role id "${role.id}" — role ids must be unique`)
     }
     declaredIds.add(id)
-    for (const entry of role.chain ?? []) {
-      try {
-        parseSelector(entry)
-      } catch (error) {
-        logger.warn(
-          `llm-fallbacks: ignoring invalid chain entry "${entry}" in role "${role.id}": ${(error as Error).message}`,
-        )
-      }
-    }
-    // A declared role with no model config is meaningless: the settings
-    // card blocks saving one, and hand-written YAML gets this startup warn
-    // (warn-only — never throws; the runtime still falls back to
-    // rootChain defensively, plan fallbacks-feedback-round T2).
-    if ((role.chain ?? []).length === 0) {
+    // A non-empty chain pointer naming no declared chain id: ONE warn, and
+    // the pointer behaves as NOT SPECIFIED (the child inherits the
+    // delegating agent's route). Warn-not-crash — no error reaches the
+    // child. Runs after the chain loop so the declared id set is complete.
+    if (role.chain !== undefined && role.chain !== '' && !declaredChainIds.has(role.chain)) {
       logger.warn(
-        `llm-fallbacks: role "${role.id}" has no model config — declare at least one chain entry, or use the built-in "inherit" rule target instead`,
+        `llm-fallbacks: role "${role.id}" specifies unknown chain "${role.chain}" — the child inherits the delegating agent's route`,
       )
-    }
-    if (role.fallback !== undefined && role.fallback !== 'inherit-root' && role.fallback !== 'none') {
-      logger.warn(
-        `llm-fallbacks: role "${role.id}" has invalid fallback "${String(role.fallback)}" — expected "inherit-root" or "none"`,
-      )
-    }
-  }
-  // P6: `rootChain` is the all-day chain — its LAST entry (默认模型) must
-  // be exactly one official model (Flash / Pro XOR; leading 默认降级链
-  // entries allowed). A non-empty chain whose tail is not official (incl.
-  // the retired `deepseek-v4-flash` and the never-served legacy
-  // `deepseek-official/deepseek-pro`) earns ONE startup warn; slot rows
-  // stay inert. The empty default stays quiet.
-  if (config.rootChain.length > 0 && !isAllDayConforming(config.rootChain)) {
-    logger.warn(
-      'llm-fallbacks: rootChain must end with exactly one official model (deepseek-official/deepseek-flash or deepseek-official/deepseek-v4-pro) — time-slot rows and the virtual picker row stay inert until the all-day chain tail conforms',
-    )
-  }
-  for (const entry of config.rootChain) {
-    try {
-      parseSelector(entry)
-    } catch (error) {
-      logger.warn(`llm-fallbacks: ignoring invalid rootChain entry "${entry}": ${(error as Error).message}`)
-    }
-  }
-  const validTargets = new Set([...declaredIds, INHERIT_ROLE_ID])
-  for (const rule of config.roles.rules) {
-    // Same canonical trim as the declared side (rowsToRules trims rule
-    // roles on the client) — a padded reference resolves against a padded
-    // declaration exactly as the UI would.
-    if (!validTargets.has(rule.role.trim())) {
-      logger.warn(
-        `llm-fallbacks: rule references undeclared role "${rule.role}" — expected one of roles.list ids or "inherit"`,
-      )
-    }
-  }
-  // P4 guards for time-slot rows (warn on load; the gateway rejects on
-  // save): at most ONE row per preset id, known preset ids only, and preset
-  // rows must not carry their own windows/day masks (windows are code
-  // constants). The schema keeps the row shape permissive on purpose —
-  // malformed rows must warn here, never fail composition (P6
-  // warn-not-crash); the resolver skips them defensively at request time.
-  if (Array.isArray(config.timeSlots)) {
-    const seenSlotPresets = new Set<string>()
-    for (const row of config.timeSlots) {
-      if (row.kind !== 'preset') continue
-      const preset = row.preset
-      if (typeof preset !== 'string' || !Object.hasOwn(PRESETS, preset)) {
-        logger.warn(`llm-fallbacks: unknown time-slot preset ${JSON.stringify(preset)} — row ignored`)
-        continue
-      }
-      if (seenSlotPresets.has(preset)) {
-        logger.warn(`llm-fallbacks: duplicate time-slot preset "${preset}" — only the first row takes effect`)
-        continue
-      }
-      seenSlotPresets.add(preset)
-      if (row.start !== undefined || row.end !== undefined || (row.days !== undefined && row.days.length > 0)) {
-        logger.warn(
-          `llm-fallbacks: preset "${preset}" carries its own window/day fields — preset windows are fixed code constants; the row is ignored`,
-        )
-      }
     }
   }
   // Review point 3 (PR #87): with `recovery: 'half-open'` and a cooldown at
-  // or above the 1-hour escalation cap, `escalatedCooldownMs` degenerates to
-  // `max(ms, min(cap, ms × 2^(n-1)))` = `ms` for every n — escalation is
-  // silently inert (every suppression stays flat at cooldownMs). Same class
-  // as the other inert-configuration warns: one startup warn, never throws.
+  // or above the 1-hour escalation cap, escalation is silently inert. Same
+  // class as the other inert-configuration warns: one startup warn.
   if ((config.recovery ?? 'timer') === 'half-open' && config.cooldownMs >= ESCALATION_CAP_MS) {
     logger.warn(
       `llm-fallbacks: recovery "half-open" escalation is inert — cooldownMs (${config.cooldownMs} ms) is at or above the 1-hour escalation cap (${ESCALATION_CAP_MS} ms), so every suppression stays flat at cooldownMs`,
@@ -320,46 +290,38 @@ export function validateFallbacksConfig(config: FallbacksConfig, logger: Fallbac
 }
 
 /**
- * Detect legacy (two-block-era) leftovers in a config SOURCE — the composed
- * object `source()` returns, or a raw settings document. Recognizes the
- * removed `chains` key, the removed always-mode retry cap and dispatch
- * role-auto-match keys (`alwaysModeRetryCap` / `roleAutoMatch` — direction
- * C, virtual-chain-only fallback), the removed `roles.default` field, the
- * removed role-entity fields `roles.list[].label` / `roles.list[].description`
- * (renamed to `persona`), and `roles.rules[].role` values that reference no
- * declared `roles.list` id and are not the built-in `'inherit'`. Returns
- * descriptive key/role names; the gateway attaches them as `get().legacyKeys`
- * so the client can show a migration banner (spec §9 — the source is read
- * directly because schemastery retains unknown keys, verified plan Task 1
- * Step 1).
+ * Detect legacy config leftovers in a config SOURCE — the composed object
+ * `source()` returns, or a raw settings document. Two generations:
+ *
+ * - Older removals: `alwaysModeRetryCap`, `roleAutoMatch` (direction C),
+ *   `roles.default`, and the renamed role-entity fields
+ *   `roles.list[].label` / `roles.list[].description`.
+ * - v1 two-block keys (named-virtual-chains): `rootChain`, top-level
+ *   `timeSlots`, `roles.rules`, `roles.list[].fallback`, and the v1 ARRAY
+ *   form of `roles.list[].chain` (an array where v2 declares a string —
+ *   stripped rather than coerced).
+ *
+ * Returns descriptive key names; the gateway attaches them as
+ * `get().legacyKeys` so the client can show a migration banner. Warn-only:
+ * no legacy value is ever read or re-persisted.
  */
 export function detectLegacyKeys(source: Record<string, unknown>): string[] {
   const keys: string[] = []
-  if (Object.hasOwn(source, 'chains')) keys.push('chains')
   if (Object.hasOwn(source, 'alwaysModeRetryCap')) keys.push('alwaysModeRetryCap')
   if (Object.hasOwn(source, 'roleAutoMatch')) keys.push('roleAutoMatch')
+  if (Object.hasOwn(source, 'rootChain')) keys.push('rootChain')
+  if (Object.hasOwn(source, 'timeSlots')) keys.push('timeSlots')
   const roles = source.roles
   if (isRecordLike(roles)) {
     if (Object.hasOwn(roles, 'default')) keys.push('roles.default')
-    const declared = new Set<string>()
+    if (Object.hasOwn(roles, 'rules')) keys.push('roles.rules')
     if (Array.isArray(roles.list)) {
       for (const item of roles.list) {
         if (!isRecordLike(item)) continue
-        if (typeof item.id === 'string') declared.add(item.id)
         if (Object.hasOwn(item, 'label')) keys.push('roles.list[].label')
         if (Object.hasOwn(item, 'description')) keys.push('roles.list[].description')
-      }
-    }
-    if (Array.isArray(roles.rules)) {
-      for (const rule of roles.rules) {
-        if (
-          isRecordLike(rule)
-          && typeof rule.role === 'string'
-          && rule.role !== INHERIT_ROLE_ID
-          && !declared.has(rule.role)
-        ) {
-          keys.push(`roles.rules[].role: ${rule.role}`)
-        }
+        if (Object.hasOwn(item, 'fallback')) keys.push('roles.list[].fallback')
+        if (Array.isArray(item.chain)) keys.push('roles.list[].chain')
       }
     }
   }

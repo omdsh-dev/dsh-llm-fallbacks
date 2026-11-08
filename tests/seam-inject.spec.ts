@@ -1,17 +1,18 @@
 /**
- * Subagent virtual-chain mount, design dsh-022-rc1-upgrade §1.3 (direction C):
- * the dispatch seam stamps `FallbacksChain/Auto` onto a child's creation
- * options (`SubagentStartRequest.agentOptions`, which rc.1's
+ * Subagent role-chain stamp, `injectRoleChain` (named virtual chains §3):
+ * the dispatch seam stamps `{ provider: 'FallbacksChain', model:
+ * <role.chain> }` onto a child's creation options
+ * (`SubagentStartRequest.agentOptions`, which rc.1's
  * `resolveChildAgentOptions` merges over the parent's route when
  * `manager.startLocal` creates the child).
  *
- * The five conditions are pinned as one case each, plus what the mount must
- * NOT do: an explicit spawn route is the authorized route (never touched), an
- * external backend keeps pure inheritance, and a contained failure (a throwing
- * config read) forwards the caller's own spec. The record and the card label
- * are asserted through their observable surfaces: `SubagentSeamRecord`
- * (`virtualRouteInjected`, sticky across the resume rewrite) and the
- * `chainHeads` map (`injected` / `authorized`).
+ * The FOUR conditions are pinned as one case each, plus what the stamp must
+ * NOT do: an explicit spawn route wins untouched, an external backend keeps
+ * pure inheritance, an undeclared pointer behaves as NOT SPECIFIED, and a
+ * contained failure (a throwing config read) forwards the caller's own spec.
+ * NO host-policy consultation: the seam never reads a policy and the record
+ * carries no `virtualRouteInjected` flag — the mapping is the user's STATIC
+ * config.
  *
  * Driven the way the host drives it: `subagents` is provided, the seam is
  * installed, and a CONSUMER fiber injects the service and calls
@@ -22,9 +23,8 @@
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
+import { OFFICIAL_FLASH } from '../src/time-slots.ts'
 import type { FallbacksConfig } from '../src/config.ts'
-import type { EffectiveChainHead } from '../src/state.ts'
-import type { EffectivePolicy } from '../src/subagent-policy.ts'
 import {
   installSubagentSeam,
   subagentSeamOf,
@@ -32,14 +32,14 @@ import {
   type SubagentSeam,
   type SubagentStartRequestView,
 } from '../src/subagents-seam.ts'
-import { FALLBACKS_CHAIN_MODEL, FALLBACKS_PROVIDER } from '../src/virtual-adapter.ts'
+import { FALLBACKS_PROVIDER } from '../src/virtual-adapter.ts'
 import { cfg } from './support/harness.ts'
 
-/** Declared taxonomy: `coder` owns the chain the mount labels as its head. */
+/** Declared taxonomy: `coder` owns the chain the stamp points at. */
 const ROLE_IDS = new Map([['coder', 'coder']])
 
-/** The chain under test for the `coder` role. */
-const CODER_CHAIN = 'anthropic/claude-sonnet-4'
+/** The named chain under test for the `coder` role. */
+const CHAIN_ID = 'daily'
 
 /** A LOCAL backend — `prepareContinuable` is what routes a start through `manager.startLocal`. */
 const LOCAL_PROVIDER = { prepareContinuable: () => undefined }
@@ -47,11 +47,11 @@ const LOCAL_PROVIDER = { prepareContinuable: () => undefined }
 /** An EXTERNAL backend: no `prepareContinuable`, so the runtime mints its own child id. */
 const EXTERNAL_PROVIDER = { tag: 'external' }
 
-/** A rooted config with a walkable `coder` role chain. */
+/** A config with one declared chain and a `coder` role pointing at it. */
 function activeConfig(overrides: Partial<FallbacksConfig> = {}): FallbacksConfig {
   return cfg({
-    rootChain: ['deepseek-official/deepseek-flash'],
-    roles: { list: [{ id: 'coder', persona: '', chain: [CODER_CHAIN] }], rules: [] },
+    chains: [{ id: CHAIN_ID, label: 'Test', entries: [OFFICIAL_FLASH], timeSlots: [] }],
+    roles: { list: [{ id: 'coder', persona: '', chain: CHAIN_ID }] },
     ...overrides,
   })
 }
@@ -145,43 +145,36 @@ afterEach(async () => {
 interface InstallOptions {
   provider?: Record<string, unknown>
   config?: () => FallbacksConfig
-  policyFor?: (agentId: string) => EffectivePolicy
+  roleIds?: () => ReadonlyMap<string, string>
   debug?: (message: string) => void
 }
 
-/** Install the seam over a fake runtime; returns the fake, the seam and the head labels. */
-function install(options: InstallOptions = {}): {
-  fake: FakeSubagents
-  seam: SubagentSeam
-  chainHeads: Map<string, EffectiveChainHead>
-} {
+/** Install the seam over a fake runtime. */
+function install(options: InstallOptions = {}): { fake: FakeSubagents; seam: SubagentSeam } {
   const fake = fakeSubagents(options.provider ?? LOCAL_PROVIDER)
   ctx.provide('subagents', fake.service)
-  const chainHeads = new Map<string, EffectiveChainHead>()
   const seam = installSubagentSeam(ctx, {
-    roleIds: () => ROLE_IDS,
+    roleIds: options.roleIds ?? (() => ROLE_IDS),
     source: options.config ?? (() => activeConfig()),
-    policyFor: options.policyFor ?? (() => ({ state: 'disabled' })),
-    chainHeads,
     ...(options.debug === undefined ? {} : { debug: options.debug }),
   })
-  return { fake, seam, chainHeads }
+  return { fake, seam }
 }
 
-describe('mount: the five conditions (§1.3)', () => {
-  it('stamps the virtual route on a local dispatch child and records the mount + head label', async () => {
-    const { fake, seam, chainHeads } = install()
+describe('stamp: the four conditions (§3)', () => {
+  it('stamps the role chain on a local dispatch child (specified + declared + no explicit route + local)', async () => {
+    const { fake, seam } = install()
     const spec = activationSpec()
 
     const result = await startThroughWrapper(ctx, spec)
 
-    // The native call received the caller's OWN spec shape plus the virtual
-    // pair in `request.agentOptions` — the field rc.1 merges over the parent's
-    // route when the child is created.
+    // The native call received the caller's OWN spec shape plus the named
+    // chain pair in `request.agentOptions` — the field rc.1 merges over the
+    // parent's route when the child is created.
     const received = fake.activations[0]!
     expect(received.request.agentOptions).toEqual({
       provider: FALLBACKS_PROVIDER,
-      model: FALLBACKS_CHAIN_MODEL,
+      model: CHAIN_ID,
     })
     expect(received.childId).toEqual(expect.any(String))
     // The caller's object is never mutated.
@@ -190,47 +183,37 @@ describe('mount: the five conditions (§1.3)', () => {
 
     const childId = String(received.childId)
     expect(result).toMatchObject({ childId })
-    expect(seam.records.get(childId)).toMatchObject({ role: 'coder', virtualRouteInjected: true })
-    // The card label: the head this child's chain will actually be served by.
-    expect(chainHeads.get(childId)).toEqual({
+    // No mount verdict exists any more — the record is the role only.
+    expect(seam.records.get(childId)).toEqual({
+      role: 'coder',
       at: expect.any(Number),
-      route: { provider: 'anthropic', model: 'claude-sonnet-4' },
-      source: 'injected',
+      firstNoticePending: true,
     })
   })
 
-  it('does not inject when the config is inactive (nothing to walk)', async () => {
-    const { fake, seam } = install({
-      // The role still resolves (its id map is live), but nothing is configured.
-      config: () => cfg({ rootChain: [], roles: { list: [], rules: [] } }),
-    })
-    const spec = activationSpec()
+  it('does not stamp when no role resolves (NOT SPECIFIED: spec forwarded unchanged)', async () => {
+    const { fake } = install()
 
-    await startThroughWrapper(ctx, spec)
+    await startThroughWrapper(ctx, activationSpec({ executeAs: 'nobody' }))
 
     const received = fake.activations[0]!
     expect(received.request.agentOptions).toBeUndefined()
-    expect(seam.records.get(String(received.childId))?.virtualRouteInjected).toBeUndefined()
   })
 
-  it('does not inject when the resolved role chain has no dispatchable exact head', async () => {
-    const { fake, seam } = install({
-      config: () => activeConfig({
-        rootChain: [],
-        roles: { list: [{ id: 'coder', persona: '', chain: ['anthropic/*'] }], rules: [] },
-      }),
+  it('does not stamp when the role declares NO chain (plugin does not intervene)', async () => {
+    const { fake } = install({
+      config: () => activeConfig({ roles: { list: [{ id: 'coder', persona: '' }] } }),
     })
 
     await startThroughWrapper(ctx, activationSpec())
 
     const received = fake.activations[0]!
     expect(received.request.agentOptions).toBeUndefined()
-    expect(seam.records.get(String(received.childId))?.virtualRouteInjected).toBeUndefined()
   })
 
-  it('skips the mount when the subagent policy is unprovable (fail-closed)', async () => {
-    const { fake, seam, chainHeads } = install({
-      policyFor: () => ({ state: 'unprovable' }),
+  it('does not stamp when the pointer names an UNDECLARED chain (behaves as NOT SPECIFIED)', async () => {
+    const { fake } = install({
+      config: () => activeConfig({ roles: { list: [{ id: 'coder', persona: '', chain: 'ghost-chain' }] } }),
       debug: () => {},
     })
 
@@ -238,53 +221,21 @@ describe('mount: the five conditions (§1.3)', () => {
 
     const received = fake.activations[0]!
     expect(received.request.agentOptions).toBeUndefined()
-    expect(seam.records.get(String(received.childId))?.virtualRouteInjected).toBeUndefined()
-    expect(chainHeads.size).toBe(0)
   })
 
-  it('declines the mount when the allowlist excludes every route of the role chain (empty intersection)', async () => {
-    const { fake, seam, chainHeads } = install({
-      policyFor: () => ({ state: 'enabled', allowedModels: [{ provider: 'b', model: '2' }] }),
-      debug: () => {},
-    })
+  it('does not stamp when the config has no chains at all (inactive)', async () => {
+    const { fake } = install({ config: () => cfg({ chains: [], roles: { list: [{ id: 'coder', persona: '', chain: CHAIN_ID }] } }) })
 
     await startThroughWrapper(ctx, activationSpec())
 
-    // The first attempt would be a plugin-originated route outside the
-    // allowlist, so the child is never mounted and the host seed stands.
     const received = fake.activations[0]!
     expect(received.request.agentOptions).toBeUndefined()
-    expect(seam.records.get(String(received.childId))?.virtualRouteInjected).toBeUndefined()
-    expect(chainHeads.size).toBe(0)
-  })
-
-  it('mounts on the first ALLOWLISTED route of the role chain, not necessarily its head', async () => {
-    const { fake, chainHeads } = install({
-      config: () => activeConfig({
-        roles: { list: [{ id: 'coder', persona: '', chain: [CODER_CHAIN, 'b/2'] }], rules: [] },
-      }),
-      policyFor: () => ({ state: 'enabled', allowedModels: [{ provider: 'b', model: '2' }] }),
-    })
-
-    await startThroughWrapper(ctx, activationSpec())
-
-    const received = fake.activations[0]!
-    expect(received.request.agentOptions).toEqual({
-      provider: FALLBACKS_PROVIDER,
-      model: FALLBACKS_CHAIN_MODEL,
-    })
-    // The chain head (`anthropic/claude-sonnet-4`) is rejected, so the label
-    // names the route the walk will actually start on.
-    expect(chainHeads.get(String(received.childId))).toMatchObject({
-      route: { provider: 'b', model: '2' },
-      source: 'injected',
-    })
   })
 })
 
 describe('never touched: explicit routes and external backends', () => {
-  it('leaves an explicit spawn route alone and labels it authorized', async () => {
-    const { fake, seam, chainHeads } = install()
+  it('leaves an explicit spawn route alone (explicit wins)', async () => {
+    const { fake, seam } = install()
     const spec = activationSpec({ agentOptions: { provider: 'openai', model: 'gpt-4o' } })
 
     await startThroughWrapper(ctx, spec)
@@ -292,15 +243,12 @@ describe('never touched: explicit routes and external backends', () => {
     const received = fake.activations[0]!
     expect(received.request.agentOptions).toEqual({ provider: 'openai', model: 'gpt-4o' })
     const childId = String(received.childId)
-    expect(seam.records.get(childId)?.virtualRouteInjected).toBeUndefined()
-    expect(chainHeads.get(childId)).toMatchObject({
-      route: { provider: 'openai', model: 'gpt-4o' },
-      source: 'authorized',
-    })
+    // The role record is still written (identity is independent of routing).
+    expect(seam.records.get(childId)).toMatchObject({ role: 'coder' })
   })
 
-  it('does not inject on an EXTERNAL backend (pure inheritance, documented degradation)', async () => {
-    const { fake, seam, chainHeads } = install({ provider: EXTERNAL_PROVIDER })
+  it('does not stamp on an EXTERNAL backend (pure inheritance)', async () => {
+    const { fake, seam } = install({ provider: EXTERNAL_PROVIDER })
 
     await startThroughWrapper(ctx, activationSpec())
 
@@ -308,8 +256,7 @@ describe('never touched: explicit routes and external backends', () => {
     expect(received.childId).toBeUndefined()
     expect(received.request.agentOptions).toBeUndefined()
     // The record is keyed off the RESOLVED child id (the runtime minted it).
-    expect(seam.records.get(fake.mintedChildId)?.virtualRouteInjected).toBeUndefined()
-    expect(chainHeads.size).toBe(0)
+    expect(seam.records.get(fake.mintedChildId)).toMatchObject({ role: 'coder' })
   })
 
   it('forwards the caller’s own spec when the config read throws (contained degrade)', async () => {
@@ -326,25 +273,22 @@ describe('never touched: explicit routes and external backends', () => {
 
     const received = fake.activations[0]!
     expect(received.request.agentOptions).toBeUndefined()
-    // The reservation survives (it is seam bookkeeping, not the mount), and the
+    // The reservation survives (it is seam bookkeeping, not the stamp), and the
     // failure reports exactly one contained line.
     expect(received.childId).toEqual(expect.any(String))
     expect(debug).toHaveLength(1)
   })
 })
 
-describe('resume + record stickiness', () => {
+describe('resume + record', () => {
   it('hands a resume the caller’s own spec and writes only the role record (I-000081)', async () => {
-    const { fake, seam, chainHeads } = install()
+    const { fake, seam } = install()
     await startThroughWrapper(ctx, activationSpec({ agentOptions: { provider: 'openai', model: 'gpt-4o' } }))
     const childId = String(fake.activations[0]!.childId)
-    const authorized = chainHeads.get(childId)!
-    expect(authorized.source).toBe('authorized')
 
     // A resume: the caller reserves the SAME child id and carries no Assignment
     // header at all — the record is the only role memory. The activation
-    // creates nothing, so it is NOT a fresh mount: it must not stamp the
-    // virtual pair, record a mount verdict or claim a chain head (I-000081).
+    // creates nothing, so it is NOT a fresh dispatch: it must not stamp.
     const resume = { provider: 'spawn', label: 'resume', childId, request: { prompt: [] } }
     await startThroughWrapper(ctx, resume)
 
@@ -354,39 +298,19 @@ describe('resume + record stickiness', () => {
       at: expect.any(Number),
       firstNoticePending: true,
     })
-    // The spawn's own label stands — the resume writes none.
-    expect(chainHeads.get(childId)).toBe(authorized)
   })
 
-  it('keeps the spawn mount verdict on a resume of a mounted child (sticky)', async () => {
-    const { fake, seam, chainHeads } = install()
+  it('a resume of a stamped child injects nothing', async () => {
+    const { fake } = install()
     await startThroughWrapper(ctx, activationSpec())
     const childId = String(fake.activations[0]!.childId)
-    const injected = chainHeads.get(childId)!
-    expect(injected.source).toBe('injected')
+    expect(fake.activations[0]!.request.agentOptions).toEqual({ provider: FALLBACKS_PROVIDER, model: CHAIN_ID })
 
     const resume = { provider: 'spawn', label: 'resume', childId, request: { prompt: [] } }
     await startThroughWrapper(ctx, resume)
 
+    // The native call received the resume UNCHANGED — byte-identical object.
     expect(fake.activations[1]).toBe(resume)
-    // The mount happened at spawn; a resume adds no verdict and no label of
-    // its own, so the spawn's sticky `true` and its head label both survive.
-    expect(seam.records.get(childId)).toMatchObject({ role: 'coder', virtualRouteInjected: true })
-    expect(chainHeads.get(childId)).toBe(injected)
-  })
-
-  it('keeps the mount verdict across a rewrite that carries no verdict of its own', async () => {
-    const { fake, seam } = install()
-    await startThroughWrapper(ctx, activationSpec())
-    const childId = String(fake.activations[0]!.childId)
-    expect(seam.records.get(childId)?.virtualRouteInjected).toBe(true)
-
-    // A second dispatch under the same reserved id (a resume, so it never
-    // mounts) rewrites the record without a verdict of its own: the sticky
-    // flag must survive the rewrite.
-    await startThroughWrapper(ctx, activationSpec({ childId }))
-
-    expect(seam.records.get(childId)).toMatchObject({ virtualRouteInjected: true })
   })
 
   it('exposes the install through the root-shared seam handle (subagentSeamOf)', () => {

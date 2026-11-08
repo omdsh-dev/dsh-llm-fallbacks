@@ -21,7 +21,7 @@ import { LlmAdapter, LlmError, LlmRuntime, type GenerateOptions, type StreamChun
 import { SessionId } from '@deepseek-ai/dsh-session/types'
 import { apply, stateStore } from '../src/index.ts'
 import { FallbackStateStore } from '../src/state.ts'
-import { FALLBACKS_CHAIN_MODEL, FALLBACKS_PROVIDER } from '../src/virtual-adapter.ts'
+import { FALLBACKS_PROVIDER } from '../src/virtual-adapter.ts'
 import { walkChain } from '../src/chain-walk.ts'
 import { MemorySettings } from './support/memory-settings.ts'
 import { installLlmRetryStub } from './support/llm-retry-stub.ts'
@@ -30,6 +30,8 @@ import {
   cfg,
   dispatchRequest,
   dispatchRequestError,
+  CHAIN_ID,
+  chainOf,
   llmRetryEvents,
   makeAgent,
   normalPolicy,
@@ -70,7 +72,7 @@ describe('the plugin stays off llm-retry’s waterfall (normal mode)', () => {
   it('lets llm-retry own a retryable code: it backs off, the plugin never decides', async () => {
     const { agent } = makeAgent('coexist-normal', { provider: 'mock', model: 'gpt-4o' })
     installLlmRetryStub(ctx)
-    apply(ctx, cfg({ rootChain: ['other/gpt-4o'] }))
+    apply(ctx, cfg({ chains: [chainOf(['other/gpt-4o'])] }))
     const policy = normalPolicy({ maxRetries: 2, retryableCodes: ['RATE_LIMIT'] })
 
     const action = await dispatchRequestError(ctx, agent, {
@@ -88,7 +90,7 @@ describe('the plugin stays off llm-retry’s waterfall (normal mode)', () => {
   it('leaves a non-retryable code to the loop (the stub delegates, the plugin is silent)', async () => {
     const { agent } = makeAgent('coexist-auth', { provider: 'mock', model: 'gpt-4o' })
     installLlmRetryStub(ctx)
-    apply(ctx, cfg({ rootChain: ['other/gpt-4o'] }))
+    apply(ctx, cfg({ chains: [chainOf(['other/gpt-4o'])] }))
 
     const action = await dispatchRequestError(ctx, agent, {
       failure: { message: 'bad key', code: 'AUTH' },
@@ -103,7 +105,7 @@ describe('the plugin stays off llm-retry’s waterfall (normal mode)', () => {
   it('leaves the request build untouched (no plugin override on agent/request)', async () => {
     const { agent } = makeAgent('coexist-request', { provider: 'mock', model: 'gpt-4o' })
     installLlmRetryStub(ctx)
-    apply(ctx, cfg({ rootChain: ['other/gpt-4o'] }))
+    apply(ctx, cfg({ chains: [chainOf(['other/gpt-4o'])] }))
 
     expect(await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' }))
       .toEqual({ provider: 'mock', model: 'gpt-4o' })
@@ -112,7 +114,7 @@ describe('the plugin stays off llm-retry’s waterfall (normal mode)', () => {
   it('always mode: llm-retry backs off with nothing downstream to honor', async () => {
     const { agent } = makeAgent('coexist-always', { provider: 'mock', model: 'gpt-4o' })
     installLlmRetryStub(ctx)
-    apply(ctx, cfg({ rootChain: ['other/gpt-4o'] }))
+    apply(ctx, cfg({ chains: [chainOf(['other/gpt-4o'])] }))
 
     const action = await dispatchRequestError(ctx, agent, {
       failure: { message: 'busy', code: 'SERVER' },
@@ -135,11 +137,17 @@ describe('a retry re-enters the walk, which resumes past the cooled head', () =>
     // The chain under test rides a slot row so the all-day tail stays
     // conforming (the picker row's documented gate).
     const config = cfg({
-      rootChain: ['deepseek-official/deepseek-flash'],
-      timeSlots: [{ kind: 'custom', start: '00:00', end: '23:59', chain: ['a/down', 'b/down', 'c/ok'] }],
+      chains: [{
+        id: CHAIN_ID,
+        label: CHAIN_ID,
+        entries: ['deepseek-official/deepseek-flash'],
+        // The chain under test rides a slot row so its all-day tail stays
+        // conforming (the per-chain gate).
+        timeSlots: [{ kind: 'custom', start: '00:00', end: '23:59', chain: ['a/down', 'b/down', 'c/ok'] }],
+      }],
     })
     const deps = walkDeps({ readConfig: () => config, getLlm: () => ctx.llm, states })
-    const options = { provider: FALLBACKS_PROVIDER, model: FALLBACKS_CHAIN_MODEL, messages: [], sessionId: SessionId('s1') }
+    const options = { provider: FALLBACKS_PROVIDER, model: CHAIN_ID, messages: [], sessionId: SessionId('s1') }
 
     // Walk 1: both failing heads are walked once, then the healthy route answers.
     await collect(walkChain(deps, options))

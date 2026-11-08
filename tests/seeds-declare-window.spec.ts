@@ -92,7 +92,7 @@ function track(ctx: Context): Context {
 }
 
 /** The raw user-layer roles section of the fallbacks settings namespace. */
-function userSection(ctx: Context): { roles: { list: Array<{ id: string; persona: string }>; rules: unknown[] } } | undefined {
+function userSection(ctx: Context): { roles: { list: Array<{ id: string; persona: string }> } } | undefined {
   return ctx.settings.describe().find((d) => d.ns === FALLBACKS_PROFILE_ENTRY)?.user
 }
 
@@ -132,7 +132,7 @@ describe('seeds declare window — service visibility ordering (issue #105)', ()
     // TUI children: the 5 bundled rows materialize as the two-key shape.
     await vi.waitFor(() => {
       expect(userSection(ctx)).toEqual({
-        roles: { list: presetRoles.map((preset) => ({ id: preset.id, persona: preset.persona })), rules: [] },
+        roles: { list: presetRoles.map((preset) => ({ id: preset.id, persona: preset.persona })) },
       })
     })
   })
@@ -144,7 +144,7 @@ describe('seeds declare window — service visibility ordering (issue #105)', ()
     // (presets-integration multi-fiber pattern): each fiber's manager is
     // fresh, so every fired declare emits its own scout conflict warn.
     ;(ctx.settings as unknown as MemorySettings).seed(FALLBACKS_PROFILE_ENTRY, {
-      roles: { list: [{ id: 'scout', persona: 'operator persona' }], rules: [] },
+      roles: { list: [{ id: 'scout', persona: 'operator persona' }] },
     })
     const logs = captureLogs(ctx)
     const trees = new CommandTreesRegistry()

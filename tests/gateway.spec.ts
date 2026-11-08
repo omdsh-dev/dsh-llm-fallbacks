@@ -77,7 +77,11 @@ function track(ctx: Context): Context {
 
 /** Full entry (plugin-row) config shape, merged over the schema defaults. */
 function entryConfig(overrides: Partial<FallbacksConfig> = {}): FallbacksConfig {
-  return { ...defaultFallbacksConfig, ...overrides }
+  const composed = { ...defaultFallbacksConfig, ...overrides }
+  // Schema-shape rows: every chain carries its (defaulted) slot rows, exactly
+  // as the schema composes them, so wire round-trips compare equal.
+  composed.chains = composed.chains.map((chain) => ({ timeSlots: [], ...chain }))
+  return composed
 }
 
 /**
@@ -167,7 +171,7 @@ function invokeConfig(result: unknown): FallbacksConfig {
 describe('no settings service (entry fallback)', () => {
   it('get returns the entry composed value; the gateway is a registered service', () => {
     const ctx = track(new Context())
-    const entry = entryConfig({ rootChain: ['other/gpt-4o'], cooldownMs: 120_000 })
+    const entry = entryConfig({ chains: [{ id: 'daily', label: '日常', entries: ['other/gpt-4o'] }], cooldownMs: 120_000 })
     const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entry), makeSeeds())
 
     expect(ctx.reflect.props['fallbacks']).toEqual({ type: 'service' })
@@ -179,7 +183,7 @@ describe('no settings service (entry fallback)', () => {
     // incremental field, exactly like `legacyKeys` — a client that predates
     // seeds (or ignores the field) keeps reading config/legacyKeys unchanged.
     const ctx = track(new Context())
-    const entry = entryConfig({ rootChain: ['other/gpt-4o'] })
+    const entry = entryConfig({ chains: [{ id: 'daily', label: '日常', entries: ['other/gpt-4o'] }] })
     const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entry), makeSeeds())
 
     const result = gateway.get()
@@ -224,7 +228,7 @@ describe('no settings service (entry fallback)', () => {
     const seededCtx = track(new Context())
     const operatorRow: FallbacksConfig = {
       ...entryConfig(),
-      roles: { list: [{ id: 'architect', persona: 'operator edit' }], rules: [] },
+      roles: { list: [{ id: 'architect', persona: 'operator edit' }] },
     }
     const seededBridge = installFallbacksBridge(seededCtx, operatorRow)
     const seeded = makeSeeds()
@@ -266,7 +270,7 @@ describe('with a settings service (set writes the profile-entry section)', () =>
   it('set writes the profile-entry section (describe visible), the composed value changes live, and set returns it', async () => {
     const ctx = track(new Context())
     await ctx.plugin(MemorySettings)
-    const entry = entryConfig({ rootChain: ['other/gpt-4o'], cooldownMs: 120_000 })
+    const entry = entryConfig({ chains: [{ id: 'daily', label: '日常', entries: ['other/gpt-4o'] }], cooldownMs: 120_000 })
     const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entry), makeSeeds())
     await waitRegistered(ctx)
     // The gateway's own inject child must have captured the settings service.
@@ -370,7 +374,7 @@ describe('with a settings service (set writes the profile-entry section)', () =>
   it('reset clears the user layer (section {}) and returns the composition-defaults config', async () => {
     const ctx = track(new Context())
     await ctx.plugin(MemorySettings)
-    const entry = entryConfig({ rootChain: ['other/gpt-4o'], cooldownMs: 120_000 })
+    const entry = entryConfig({ chains: [{ id: 'daily', label: '日常', entries: ['other/gpt-4o'] }], cooldownMs: 120_000 })
     const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entry), makeSeeds())
     await waitRegistered(ctx)
     await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
@@ -430,7 +434,7 @@ describe('with a settings service (set writes the profile-entry section)', () =>
     // An operator edit flips the badge to override; the set response reports
     // the POST-WRITE state (the merge keeps the rows — set is not a reset).
     await ctx.settings.update(FALLBACKS_PROFILE_ENTRY, {
-      roles: { list: [{ id: 'architect', persona: 'operator edit' }], rules: [] },
+      roles: { list: [{ id: 'architect', persona: 'operator edit' }] },
     })
     const setResult = await gateway.set({ cooldownMs: 120_000 })
     expect(setResult.seeds).toEqual([{ id: 'architect', overridden: true, source: 'external' }])
@@ -547,16 +551,17 @@ describe('set validation (Config schema, unknown-key rejection unchanged)', () =
     await expect(gateway.set({ cooldownMs: 'nope' } as never)).rejects.toThrow(/cooldownMs/)
   })
 
-  it('rejects the removed legacy chains key (new CONFIG_KEYS set)', async () => {
+  it('tolerates the v1 legacy keys in a patch and strips them from the write', async () => {
     const ctx = track(new Context())
     await ctx.plugin(MemorySettings)
     const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()), makeSeeds())
     await waitRegistered(ctx)
     await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
 
-    await expect(gateway.set({ chains: { default: ['other/gpt-4o'] } } as never)).rejects.toThrow(
-      /unknown config key "chains"/,
-    )
+    await gateway.set({ rootChain: ['other/gpt-4o'], timeSlots: [] } as never)
+    const user = ctx.settings.describe().find((d) => d.ns === FALLBACKS_PROFILE_ENTRY)?.user as Record<string, unknown> | undefined
+    expect(user?.rootChain).toBeUndefined()
+    expect(user?.timeSlots).toBeUndefined()
     // Nothing was persisted: the user layer stays absent.
     // Nothing persisted ⇒ the double lists no section descriptor at all
     // (the 0.1.7 form service keys descriptors by written profile entries).
@@ -592,7 +597,7 @@ describe('set validation (Config schema, unknown-key rejection unchanged)', () =
     expect(ctx.settings.describe().find((d) => d.ns === FALLBACKS_PROFILE_ENTRY)?.user).toBeUndefined()
   })
 
-  it('accepts only the declared roles nested keys (list/rules patch passes)', async () => {
+  it('rejects the removed roles.rules nested key; a list-only patch passes', async () => {
     const ctx = track(new Context())
     await ctx.plugin(MemorySettings)
     const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()), makeSeeds())
@@ -600,16 +605,18 @@ describe('set validation (Config schema, unknown-key rejection unchanged)', () =
     await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
 
     await gateway.set({
-      roles: { list: [{ id: 'coder', persona: 'Coding subagent' }], rules: [{ role: 'coder' }] },
+      roles: { list: [{ id: 'coder', persona: 'Coding subagent', chain: 'daily' }] },
     } as never)
     const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_PROFILE_ENTRY)!
     expect(descriptor.user).toEqual({
       roles: {
-        list: [{ id: 'coder', persona: 'Coding subagent' }],
-        rules: [{ role: 'coder' }],
+        list: [{ id: 'coder', persona: 'Coding subagent', chain: 'daily' }],
       },
     })
     expect(gateway.get().legacyKeys).toEqual([])
+
+    // The removed roles.rules nested key is rejected before anything is written.
+    await expect(gateway.set({ roles: { rules: [] } } as never)).rejects.toThrow(/unknown config key "roles\.rules"/)
   })
 })
 
@@ -618,7 +625,7 @@ describe('set validation (Config schema, unknown-key rejection unchanged)', () =
 //    (gateway reject-on-save guards — the load side stays warn-not-crash)
 // ---------------------------------------------------------------------------
 
-describe('timeSlots + all-day set guards (plan fallbacks-timeslots Task 3)', () => {
+describe('chains set guards (named virtual chains)', () => {
   async function mountGateway(): Promise<{ gateway: FallbacksConfigGateway; ctx: Context }> {
     const ctx = track(new Context())
     await ctx.plugin(MemorySettings)
@@ -628,131 +635,61 @@ describe('timeSlots + all-day set guards (plan fallbacks-timeslots Task 3)', () 
     return { gateway, ctx }
   }
 
-  it('accepts a conforming all-day chain (Flash or Pro, length 1)', async () => {
+  it('accepts conforming chains (Flash or Pro tails; empty entries stay legal)', async () => {
     const { gateway } = await mountGateway()
-    const flash = await gateway.set({ rootChain: [OFFICIAL_FLASH] })
-    expect(flash.config.rootChain).toEqual([OFFICIAL_FLASH])
-    const pro = await gateway.set({ rootChain: [OFFICIAL_PRO] })
-    expect(pro.config.rootChain).toEqual([OFFICIAL_PRO])
+    const flash = await gateway.set({ chains: [{ id: 'a', label: 'A', entries: [OFFICIAL_FLASH] }] })
+    expect(flash.config.chains).toEqual([{ id: 'a', label: 'A', entries: [OFFICIAL_FLASH], timeSlots: [] }])
+    const pro = await gateway.set({ chains: [{ id: 'a', label: 'A', entries: [OFFICIAL_PRO] }] })
+    expect(pro.config.chains).toEqual([{ id: 'a', label: 'A', entries: [OFFICIAL_PRO], timeSlots: [] }])
+    const empty = await gateway.set({ chains: [{ id: 'a', label: 'A', entries: [] }] })
+    expect(empty.config.chains).toEqual([{ id: 'a', label: 'A', entries: [], timeSlots: [] }])
   })
 
-  it('rejects a non-conforming all-day chain on save (legacy multi-model, empty, and the retired v4-flash — P6)', async () => {
+  it('rejects non-conforming chains, invalid ids, duplicate ids, and missing labels', async () => {
     const { gateway } = await mountGateway()
-    await expect(gateway.set({ rootChain: ['openai/gpt-4o', 'anthropic/claude-3-5-sonnet'] })).rejects
-      .toThrow(/rootChain must end with exactly one official model/)
-    await expect(gateway.set({ rootChain: ['openai/gpt-4o'] })).rejects
-      .toThrow(/rootChain must end with exactly one official model/)
-    // The retired v4-flash id is no longer a legal tail (its sibling
-    // deepseek-v4-pro IS — OFFICIAL_PRO, covered by the accepts test).
-    await expect(gateway.set({ rootChain: ['deepseek-official/deepseek-v4-flash'] })).rejects
-      .toThrow(/rootChain must end with exactly one official model/)
-    // The empty default is the "no all-day" state — also rejected on save:
-    // everything saved through the gateway is tail-conforming.
-    await expect(gateway.set({ rootChain: [] })).rejects.toThrow(/rootChain must end with exactly one official model/)
-    // Nothing was persisted: the composed rootChain stays the entry default.
-    expect(gateway.get().config.rootChain).toEqual([])
+    await expect(gateway.set({ chains: [{ id: 'a', label: 'A', entries: ['openai/gpt-4o'] }] })).rejects
+      .toThrow(/entries must end with exactly one official model/)
+    await expect(gateway.set({ chains: [{ id: 'a', label: 'A', entries: ['deepseek-official/deepseek-v4-flash'] }] })).rejects
+      .toThrow(/entries must end with exactly one official model/)
+    await expect(gateway.set({ chains: [{ id: '-bad', label: 'A' }] })).rejects
+      .toThrow(/id must match/)
+    await expect(gateway.set({ chains: [{ id: 'a', label: '1' }, { id: 'a', label: '2' }] })).rejects
+      .toThrow(/duplicates chain id "a"/)
+    await expect(gateway.set({ chains: [{ id: 'a' }] })).rejects
+      .toThrow(/label must be a string/)
+    await expect(gateway.set({ chains: 'nope' } as never)).rejects.toThrow(/chains must be an array/)
+    // Nothing was persisted.
+    expect(gateway.get().config.chains).toEqual([])
   })
 
-  it('accepts valid preset rows (frozen windows, models-only) and custom rows', async () => {
+  it('rejects unknown nested keys inside a chain row and inside its slot rows', async () => {
     const { gateway } = await mountGateway()
-    const patch = {
-      timeSlots: [
-        { kind: 'preset', preset: 'liang-peak', chain: ['openai/gpt-4o'] },
-        { kind: 'custom', start: '22:00', end: '02:00', days: [1, 3, 5], chain: ['anthropic/claude-3-5-sonnet'] },
-        { kind: 'custom', start: '09:00', end: '10:00', chain: ['openai/gpt-4o'] },
-      ],
-    }
-    const result = await gateway.set(patch as never)
-    // The composed rows carry the schema's materialized `days: []` (absent
-    // array fields compose as []) — the shape every `get` and card load sees.
-    expect(result.config.timeSlots).toEqual([
-      { kind: 'preset', preset: 'liang-peak', days: [], chain: ['openai/gpt-4o'] },
-      { kind: 'custom', start: '22:00', end: '02:00', days: [1, 3, 5], chain: ['anthropic/claude-3-5-sonnet'] },
-      { kind: 'custom', start: '09:00', end: '10:00', days: [], chain: ['openai/gpt-4o'] },
-    ])
+    await expect(gateway.set({ chains: [{ id: 'a', label: 'A', bogus: 1 }] } as never)).rejects
+      .toThrow(/unknown config key "chains\[0\]\.bogus"/)
+    await expect(gateway.set({ chains: [{ id: 'a', label: 'A', timeSlots: [{ kind: 'custom', start: '09:00', end: '10:00', chain: ['openai/gpt-4o'], bogus: 1 }] }] } as never)).rejects
+      .toThrow(/unknown config key "timeSlots\[0\]\.bogus"/)
   })
 
-  it('rejects unknown nested keys inside a timeSlots row (ROLES_KEYS pattern)', async () => {
+  it('rejects bad slot rows inside a chain (preset/window/day/chain rules)', async () => {
     const { gateway } = await mountGateway()
-    await expect(gateway.set({
-      timeSlots: [{ kind: 'custom', start: '09:00', end: '10:00', chain: ['openai/gpt-4o'], bogus: 1 }],
-    } as never)).rejects.toThrow(/unknown config key "timeSlots\[0\]\.bogus"/)
-  })
-
-  it('rejects an unknown preset id on save', async () => {
-    const { gateway } = await mountGateway()
-    await expect(gateway.set({
-      timeSlots: [{ kind: 'preset', preset: 'not-a-preset', chain: ['openai/gpt-4o'] }],
-    } as never)).rejects.toThrow(/preset must be one of the four frozen preset ids/)
-  })
-
-  it('rejects a duplicate preset row on save (two locked liang-peak rows)', async () => {
-    const { gateway } = await mountGateway()
-    const patch = {
-      timeSlots: [
-        { kind: 'preset', preset: 'liang-peak', chain: [OFFICIAL_FLASH] },
-        { kind: 'preset', preset: 'liang-peak', chain: [OFFICIAL_PRO] },
-      ],
-    }
-    await expect(gateway.set(patch as never)).rejects.toThrow(/duplicates preset "liang-peak"/)
-  })
-
-  it('rejects a preset row carrying its own window/day fields (windows are code constants — P4)', async () => {
-    const { gateway } = await mountGateway()
-    await expect(gateway.set({
-      timeSlots: [{ kind: 'preset', preset: 'glm-peak', start: '10:00', end: '11:00', chain: ['openai/gpt-4o'] }],
-    } as never)).rejects.toThrow(/cannot carry start\/end\/days/)
-    await expect(gateway.set({
-      timeSlots: [{ kind: 'preset', preset: 'glm-peak', days: [1, 2], chain: ['openai/gpt-4o'] }],
-    } as never)).rejects.toThrow(/cannot carry start\/end\/days/)
-  })
-
-  it('rejects custom rows with a non-HH:mm or missing window', async () => {
-    const { gateway } = await mountGateway()
-    await expect(gateway.set({
-      timeSlots: [{ kind: 'custom', start: '9:00', end: '10:00', chain: ['openai/gpt-4o'] }],
-    } as never)).rejects.toThrow(/requires HH:mm start and end/)
-    await expect(gateway.set({
-      timeSlots: [{ kind: 'custom', start: '09:00', chain: ['openai/gpt-4o'] }],
-    } as never)).rejects.toThrow(/requires HH:mm start and end/)
-  })
-
-  it('rejects out-of-range day entries', async () => {
-    const { gateway } = await mountGateway()
-    await expect(gateway.set({
-      timeSlots: [{ kind: 'custom', start: '09:00', end: '10:00', days: [7], chain: ['openai/gpt-4o'] }],
-    } as never)).rejects.toThrow(/days must be an array of integers 0–6/)
-    await expect(gateway.set({
-      timeSlots: [{ kind: 'custom', start: '09:00', end: '10:00', days: ['1'], chain: ['openai/gpt-4o'] }],
-    } as never)).rejects.toThrow(/days must be an array of integers 0–6/)
-  })
-
-  it('rejects an empty chain and an unknown kind', async () => {
-    const { gateway } = await mountGateway()
-    await expect(gateway.set({
-      timeSlots: [{ kind: 'custom', start: '09:00', end: '10:00', chain: [] }],
-    } as never)).rejects.toThrow(/chain must be a non-empty string array/)
-    await expect(gateway.set({
-      timeSlots: [{ kind: 'weird', chain: ['openai/gpt-4o'] }],
-    } as never)).rejects.toThrow(/kind must be "preset" or "custom"/)
-  })
-
-  it('rejects a non-array timeSlots value', async () => {
-    const { gateway } = await mountGateway()
-    await expect(gateway.set({ timeSlots: 'nope' } as never)).rejects.toThrow(/timeSlots must be an array of slot rows/)
+    await expect(gateway.set({ chains: [{ id: 'a', label: 'A', timeSlots: [{ kind: 'preset', preset: 'not-a-preset', chain: ['openai/gpt-4o'] }] }] } as never)).rejects
+      .toThrow(/preset must be one of the four frozen preset ids/)
+    await expect(gateway.set({ chains: [{ id: 'a', label: 'A', timeSlots: [{ kind: 'preset', preset: 'glm-peak', start: '10:00', end: '11:00', chain: ['openai/gpt-4o'] }] }] } as never)).rejects
+      .toThrow(/cannot carry start\/end\/days/)
+    await expect(gateway.set({ chains: [{ id: 'a', label: 'A', timeSlots: [{ kind: 'custom', start: '9:00', end: '10:00', chain: ['openai/gpt-4o'] }] }] } as never)).rejects
+      .toThrow(/custom row requires HH:mm/)
+    await expect(gateway.set({ chains: [{ id: 'a', label: 'A', timeSlots: [{ kind: 'custom', start: '09:00', end: '10:00', days: [7], chain: ['openai/gpt-4o'] }] }] } as never)).rejects
+      .toThrow(/days must be an array of integers 0–6/)
+    await expect(gateway.set({ chains: [{ id: 'a', label: 'A', timeSlots: [{ kind: 'custom', start: '09:00', end: '10:00', chain: [] }] }] } as never)).rejects
+      .toThrow(/chain must be a non-empty string array/)
   })
 
   it('accepts tz as a config-level string and carries it through get', async () => {
     const { gateway } = await mountGateway()
     const result = await gateway.set({ tz: 'UTC' })
     expect(result.config.tz).toBe('UTC')
-    expect(gateway.get().config.tz).toBe('UTC')
   })
 })
-
-// ---------------------------------------------------------------------------
-// ④ containment: a malformed stored user layer never fails get (guide §10)
-// ---------------------------------------------------------------------------
 
 describe('containment (malformed stored user layer)', () => {
   it('a seeded removed `enabled:` line and an unknown key never reach the wire (legacy tolerance + containment)', async () => {
@@ -775,7 +712,7 @@ describe('containment (malformed stored user layer)', () => {
     // undeclared.
     expect('enabled' in result.config).toBe(false)
     expect('bogus' in result.config).toBe(false)
-    expect(result.config.rootChain).toEqual([])
+    expect(result.config.chains).toEqual([])
     expect(result.config.cooldownMs).toBe(defaultFallbacksConfig.cooldownMs)
   })
 
@@ -797,7 +734,7 @@ describe('containment (malformed stored user layer)', () => {
     // The remaining schema keys still cross the wire with their values — and
     // the removed `enabled` key never does (not a schema key any more, T2).
     expect('enabled' in result.config).toBe(false)
-    expect(result.config.rootChain).toEqual([])
+    expect(result.config.chains).toEqual([])
   })
 })
 
@@ -834,19 +771,21 @@ describe('legacy enabled: tolerance (read-accept, write-strip — plan fallbacks
     await ctx.plugin(MemorySettings)
     const settings = ctx.settings as unknown as MemorySettings
     // The stored profile carries the removed key (the upgrade shape).
-    settings.seed(FALLBACKS_PROFILE_ENTRY, { enabled: true, rootChain: ['other/gpt-4o'] })
+    settings.seed(FALLBACKS_PROFILE_ENTRY, { enabled: true, rootChain: ['other/gpt-4o'] }) // v1 keys: tolerated, stripped
     const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()), makeSeeds())
     await waitRegistered(ctx)
     await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
 
     // Read: the composed value keeps the real content, the key never crosses.
     const read = gateway.get()
-    expect(read.config.rootChain).toEqual(['other/gpt-4o'])
+    // The v1 keys never cross the wire (read whitelist)…
+    expect('rootChain' in read.config).toBe(false)
+    expect(read.legacyKeys).toContain('rootChain')
     expect('enabled' in read.config).toBe(false)
 
     // Save: a new-shape patch merges over the legacy user layer…
-    const saved = await gateway.set({ cooldownMs: 60_000 })
-    expect(saved.config.rootChain).toEqual(['other/gpt-4o'])
+    const saved = await gateway.set({ cooldownMs: 60_000, chains: [{ id: 'daily', label: '日常', entries: ['other/gpt-4o', OFFICIAL_FLASH] }] })
+    expect(saved.config.chains).toEqual([{ id: 'daily', label: '日常', entries: ['other/gpt-4o', OFFICIAL_FLASH], timeSlots: [] }])
     expect('enabled' in saved.config).toBe(false)
     // …and the plugin's own write payload never carries the key (advisor
     // parity): the landed user layer holds exactly the seed's surviving
@@ -854,7 +793,12 @@ describe('legacy enabled: tolerance (read-accept, write-strip — plan fallbacks
     // is the pre-existing seeded one, kept as inert document state the wire
     // never exposes (the plugin never re-persists the key itself).
     const user = ctx.settings.describe().find((d) => d.ns === FALLBACKS_PROFILE_ENTRY)!.user as Record<string, unknown>
-    expect(user).toMatchObject({ rootChain: ['other/gpt-4o'], cooldownMs: 60_000 })
+    expect(user).toMatchObject({ cooldownMs: 60_000 })
+    // The v1 keys are stripped from the PLUGIN'S OWN write (the patch never
+    // carries them); a pre-existing seeded line stays as inert document
+    // state the wire never exposes.
+    expect(user.chains).toBeDefined()
+    expect(user).not.toContain('timeSlots')
   })
 })
 
@@ -873,18 +817,16 @@ describe('get legacyKeys detection (two-block-era leftovers)', () => {
     })
   })
 
-  it('detects the removed chains / roles.default keys on the composed source', () => {
+  it('detects the removed roles.default / roles.rules keys on the composed source', () => {
     const ctx = track(new Context())
     const legacy = {
       ...entryConfig(),
-      chains: { default: ['other/gpt-4o'], reviewer: ['openai/gpt-4o-mini'] },
-      roles: { default: 'default', rules: [] },
+      roles: { default: 'default', rules: [{ role: 'ghost' }] },
     } as never
     const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, legacy), makeSeeds())
-    expect(gateway.get().legacyKeys).toEqual(['chains', 'roles.default'])
+    expect(gateway.get().legacyKeys).toEqual(['roles.default', 'roles.rules'])
     // The wire config itself is the new shape — legacy keys never cross.
-    expect('chains' in gateway.get().config).toBe(false)
-    expect(gateway.get().config.rootChain).toEqual([])
+    expect('rootChain' in gateway.get().config).toBe(false)
     // Nested legacy keys are stripped too (reviewer T1 Important #1): the
     // wire roles object carries only its declared list/rules fields — a
     // consumer like Task 2's parseFallbacksConfig never misreads
@@ -892,17 +834,17 @@ describe('get legacyKeys detection (two-block-era leftovers)', () => {
     // (wire boundary rule), so the legacy `{ default, rules }` object
     // normalizes to `{ rules }` — no `default`, and no invented `list`.
     expect('default' in gateway.get().config.roles).toBe(false)
-    expect(Object.keys(gateway.get().config.roles)).toEqual(['rules'])
+    expect(Object.keys(gateway.get().config.roles)).toEqual([])
   })
 
-  it('detects undeclared rule role references (roles.rules[].role)', () => {
+  it('detects the removed roles.rules key (whole-family legacy)', () => {
     const ctx = track(new Context())
     const legacy = {
       ...entryConfig(),
-      roles: { list: [{ id: 'coder' }], rules: [{ role: 'ghost' }, { role: 'coder' }, { role: 'inherit' }] },
+      roles: { list: [{ id: 'coder' }], rules: [{ role: 'ghost' }] },
     } as never
     const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, legacy), makeSeeds())
-    expect(gateway.get().legacyKeys).toEqual(['roles.rules[].role: ghost'])
+    expect(gateway.get().legacyKeys).toEqual(['roles.rules'])
   })
 
   it('seeded legacy user layer survives the settings merge — composed source retains the keys and get reports them (qc3 F-2b)', async () => {
@@ -915,7 +857,7 @@ describe('get legacyKeys detection (two-block-era leftovers)', () => {
     // entry-base composition tests prove only the schema-defaults path).
     const settings = ctx.settings as unknown as MemorySettings
     settings.seed(FALLBACKS_PROFILE_ENTRY, {
-      chains: { default: ['other/gpt-4o'] },
+      rootChain: ['other/gpt-4o'],
       roles: { default: 'reviewer', rules: [{ role: 'reviewer' }] },
     })
     const bridge = installFallbacksBridge(ctx, entryConfig())
@@ -926,17 +868,17 @@ describe('get legacyKeys detection (two-block-era leftovers)', () => {
     // (apply/onChange/decide/getSnapshot in src/index.ts) still carries the
     // legacy keys through the settings merge.
     const composed = bridge.source() as unknown as Record<string, unknown>
-    expect(Object.hasOwn(composed, 'chains')).toBe(true)
+    expect(Object.hasOwn(composed, 'rootChain')).toBe(true)
     const roles = composed.roles as Record<string, unknown>
     expect(Object.hasOwn(roles, 'default')).toBe(true)
     expect(Array.isArray(roles.rules)).toBe(true)
 
-    // get() reports all three legacy classes (spec §9) — the migration
-    // banner source for a real upgraded user.
-    expect(gateway.get().legacyKeys).toEqual(['chains', 'roles.default', 'roles.rules[].role: reviewer'])
+    // get() reports the v1 legacy classes — the migration banner source for
+    // a real upgraded user.
+    expect(gateway.get().legacyKeys).toEqual(['rootChain', 'roles.default', 'roles.rules'])
     // The wire config stays the new shape (legacy keys never cross).
     const wire = gateway.get().config
-    expect('chains' in wire).toBe(false)
+    expect('rootChain' in wire).toBe(false)
     expect('default' in wire.roles).toBe(false)
   })
 })
@@ -946,28 +888,73 @@ describe('get legacyKeys detection (two-block-era leftovers)', () => {
 // ---------------------------------------------------------------------------
 
 describe('set/reset return post-write legacyKeys (W-1/F-1)', () => {
-  it('a save on a legacy user layer keeps reporting the legacy keys (merge, not overwrite)', async () => {
+  it('an explicit save REMOVES the persisted v1 fields and keeps unrelated configuration', async () => {
     const ctx = track(new Context())
     await ctx.plugin(MemorySettings)
     const settings = ctx.settings as unknown as MemorySettings
     settings.seed(FALLBACKS_PROFILE_ENTRY, {
-      chains: { default: ['other/gpt-4o'] },
-      roles: { default: 'reviewer', rules: [{ role: 'reviewer' }] },
+      rootChain: ['other/gpt-4o'],
+      timeSlots: [{ kind: 'custom', name: 'old', start: '09:00', end: '10:00', chain: ['openai/gpt-4o'] }],
+      roles: {
+        default: 'reviewer',
+        rules: [{ role: 'reviewer' }],
+        list: [{ id: 'coder', persona: 'p', fallback: 'none', vendorNote: 'keep me' }],
+      },
+      'x-vendor': { keep: true },
     })
     const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()), makeSeeds())
     await waitRegistered(ctx)
     await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
 
-    expect(gateway.get().legacyKeys).toEqual(['chains', 'roles.default', 'roles.rules[].role: reviewer'])
+    // Before the save the banner reports every v1 field the file carries.
+    expect(gateway.get().legacyKeys).toEqual([
+      'rootChain',
+      'timeSlots',
+      'roles.default',
+      'roles.rules',
+      'roles.list[].fallback',
+    ])
 
-    // A new-shape save MERGES over the user layer: the legacy keys survive
-    // the write, so the post-write response re-reports them — the client
-    // banner stays honest instead of flickering off against server truth.
+    // The save is merge-only, so the removals ride path ops: only the named
+    // v1 fields go, everything else (including a foreign key) stays.
     const result = await gateway.set({ cooldownMs: 120_000 })
     expect(result.config.cooldownMs).toBe(120_000)
-    expect(result.legacyKeys).toEqual(['chains', 'roles.default', 'roles.rules[].role: reviewer'])
+    expect(result.legacyKeys).toEqual([])
+    expect(settings.get(FALLBACKS_PROFILE_ENTRY)).toEqual({
+      cooldownMs: 120_000,
+      roles: { list: [{ id: 'coder', persona: 'p', vendorNote: 'keep me' }] },
+      'x-vendor': { keep: true },
+    })
     // The next get agrees (no flicker window).
-    expect(gateway.get().legacyKeys).toEqual(['chains', 'roles.default', 'roles.rules[].role: reviewer'])
+    expect(gateway.get().legacyKeys).toEqual([])
+  })
+
+  it('strips a third-party nested-legacy patch without touching foreign members', async () => {
+    const ctx = track(new Context())
+    await ctx.plugin(MemorySettings)
+    const settings = ctx.settings as unknown as MemorySettings
+    // A section that already holds a foreign key at both levels.
+    settings.seed(FALLBACKS_PROFILE_ENTRY, {
+      'x-vendor': { keep: true },
+      roles: { list: [{ id: 'old', persona: 'p', vendorNote: 'keep me' }] },
+    })
+    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()), makeSeeds())
+    await waitRegistered(ctx)
+    await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
+
+    // The patch a v1-era client would send: a v1 row field plus an unknown
+    // member the schema retains.
+    await gateway.set({
+      roles: {
+        list: [{ id: 'coder', persona: 'p', fallback: 'inherit-root', vendorNote: 'mine' }],
+      } as never,
+    })
+
+    const persisted = settings.get(FALLBACKS_PROFILE_ENTRY)!
+    expect(persisted).toEqual({
+      'x-vendor': { keep: true },
+      roles: { list: [{ id: 'coder', persona: 'p', vendorNote: 'mine' }] },
+    })
   })
 
   it('reset drops the user layer but re-reports legacy keys carried by the entry base', async () => {
@@ -975,7 +962,7 @@ describe('set/reset return post-write legacyKeys (W-1/F-1)', () => {
     await ctx.plugin(MemorySettings)
     const legacy = {
       ...entryConfig(),
-      chains: { default: ['other/gpt-4o'] },
+      rootChain: ['other/gpt-4o'],
     } as never
     const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, legacy), makeSeeds())
     await waitRegistered(ctx)
@@ -984,8 +971,8 @@ describe('set/reset return post-write legacyKeys (W-1/F-1)', () => {
     const result = await gateway.reset()
     // settings.replace({}) cleared the user layer; the entry base still
     // carries the legacy key, and the post-write source re-reports it.
-    expect(result.legacyKeys).toEqual(['chains'])
-    expect(gateway.get().legacyKeys).toEqual(['chains'])
+    expect(result.legacyKeys).toEqual(['rootChain'])
+    expect(gateway.get().legacyKeys).toEqual(['rootChain'])
   })
 })
 
@@ -1016,10 +1003,12 @@ describe('removed config keys on the real gateway wire (direction C)', () => {
     expect('roleAutoMatch' in first.config).toBe(false)
     // …and the migration banner reports both (the user rewrites the file;
     // the plugin never rewrites it automatically).
-    expect(first.legacyKeys).toEqual(['alwaysModeRetryCap', 'roleAutoMatch'])
+    expect(first.legacyKeys).toEqual(['alwaysModeRetryCap', 'roleAutoMatch', 'rootChain'])
 
-    // A new-shape save merges over the user layer, so the legacy keys
-    // survive and the post-write response keeps reporting them (W-1/F-1).
+    // A save removes the v1 two-block fields it owns (`rootChain`, `enabled`)
+    // but leaves unknown keys alone — `alwaysModeRetryCap` / `roleAutoMatch`
+    // are other eras' keys, not this plan's v1 surface, so the banner keeps
+    // reporting them until the operator edits them out.
     const result = await gateway.set({ cooldownMs: 120_000 })
     expect('alwaysModeRetryCap' in result.config).toBe(false)
     expect('roleAutoMatch' in result.config).toBe(false)
@@ -1172,13 +1161,13 @@ describe('typertGateway endpoint claims + payload contract', () => {
 
     const setResult = await connection.handler!(
       'fallbacks/set',
-      { args: { patch: { revertPolicy: 'never', rootChain: [OFFICIAL_FLASH] } } },
+      { args: { patch: { revertPolicy: 'never', chains: [{ id: 'daily', label: '日常', entries: [OFFICIAL_FLASH] }] } } },
       signal,
     )
     expect(setResult.ok).toBe(true)
     if (setResult.ok) {
       expect(setResult.value).toMatchObject({
-        config: { revertPolicy: 'never', rootChain: [OFFICIAL_FLASH], cooldownMs: 120_000 },
+        config: { revertPolicy: 'never', chains: [{ id: 'daily', label: '日常', entries: [OFFICIAL_FLASH], timeSlots: [] }], cooldownMs: 120_000 },
       })
     }
 
@@ -1186,7 +1175,7 @@ describe('typertGateway endpoint claims + payload contract', () => {
     const gotAgain = await connection.handler!('fallbacks/get', { args: {} }, signal)
     expect(gotAgain).toMatchObject({
       ok: true,
-      value: { config: { revertPolicy: 'never', rootChain: [OFFICIAL_FLASH] } },
+      value: { config: { revertPolicy: 'never', chains: [{ id: 'daily', label: '日常', entries: [OFFICIAL_FLASH], timeSlots: [] }] } },
     })
 
     // reset clears the user layer back to the composition base.
@@ -1194,7 +1183,7 @@ describe('typertGateway endpoint claims + payload contract', () => {
     expect(resetResult.ok).toBe(true)
     if (resetResult.ok) {
       expect(resetResult.value).toMatchObject({
-        config: { rootChain: [], cooldownMs: 120_000 },
+        config: { chains: [], cooldownMs: 120_000 },
       })
     }
   })
@@ -1258,7 +1247,7 @@ describe('typertGateway endpoint claims + payload contract', () => {
     }
     // The rejected write persisted nothing: the composed config is unchanged.
     const got = await connection.handler!('fallbacks/get', { args: {} }, signal)
-    expect(got).toMatchObject({ ok: true, value: { config: { rootChain: [] } } })
+    expect(got).toMatchObject({ ok: true, value: { config: { chains: [] } } })
   })
 })
 
@@ -1294,18 +1283,18 @@ describe('composed plugin (apply wires the gateway)', () => {
       const result = await ctx.typertGateway.invoke({
         namespace: 'fallbacks',
         method: 'set',
-        args: { patch: { cooldownMs: 120_000, rootChain: [OFFICIAL_FLASH] } },
+        args: { patch: { cooldownMs: 120_000, chains: [{ id: 'daily', label: '日常', entries: [OFFICIAL_FLASH] }] } },
         peer,
       })
       expect(invokeConfig(result).cooldownMs).toBe(120_000)
-      expect(invokeConfig(result).rootChain).toEqual([OFFICIAL_FLASH])
+      expect(invokeConfig(result).chains).toEqual([{ id: 'daily', label: '日常', entries: [OFFICIAL_FLASH], timeSlots: [] }])
     })
 
     const after = await ctx.typertGateway.invoke({ namespace: 'fallbacks', method: 'get', args: {}, peer })
-    expect(invokeConfig(after)).toEqual({ ...entry, rootChain: [OFFICIAL_FLASH] })
+    expect(invokeConfig(after)).toEqual({ ...entry, chains: [{ id: 'daily', label: '日常', entries: [OFFICIAL_FLASH], timeSlots: [] }] })
     // describe shows the user layer written through the gateway.
     const descriptor = ctx.settings.describe().find((d) => d.ns === FALLBACKS_PROFILE_ENTRY)!
-    expect(descriptor.user).toEqual({ cooldownMs: 120_000, rootChain: [OFFICIAL_FLASH] })
+    expect(descriptor.user).toEqual({ cooldownMs: 120_000, chains: [{ id: 'daily', label: '日常', entries: [OFFICIAL_FLASH] }] })
 
     // reset through the gateway returns the composition base (entry).
     const reset = await ctx.typertGateway.invoke({ namespace: 'fallbacks', method: 'reset', args: {}, peer })
@@ -1318,203 +1307,3 @@ describe('composed plugin (apply wires the gateway)', () => {
 // ---------------------------------------------------------------------------
 // T5 fix round 1: explicit disabled projection + subagentPolicy write-omission
 // ---------------------------------------------------------------------------
-
-describe('subagentPolicy wire projection (plan dsh-012 T5 fix round 1)', () => {
-  const disabledSnapshot: SubagentPolicySnapshotFn = () => ({ policy: { state: 'disabled' } })
-
-  it('the 3-arg constructor still omits the field (byte-identical pre-T5 payload)', () => {
-    const ctx = track(new Context())
-    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()), makeSeeds())
-    expect(gateway.get()).toEqual({ config: entryConfig(), legacyKeys: [], seeds: [] })
-    expect('subagentPolicy' in gateway.get()).toBe(false)
-  })
-
-  it('a wired disabled snapshot emits { state: "disabled" } (never an active allowlist)', () => {
-    const ctx = track(new Context())
-    const gateway = new FallbacksConfigGateway(
-      ctx,
-      installFallbacksBridge(ctx, entryConfig()),
-      makeSeeds(),
-      disabledSnapshot,
-    )
-    expect(gateway.get().subagentPolicy).toEqual({ state: 'disabled' })
-    expect(gateway.get()).toEqual({
-      config: entryConfig(),
-      legacyKeys: [],
-      seeds: [],
-      subagentPolicy: { state: 'disabled' },
-    })
-  })
-
-  it('set/reset with a wired disabled snapshot keep emitting { state: "disabled" }', async () => {
-    const ctx = track(new Context())
-    await ctx.plugin(MemorySettings)
-    const gateway = new FallbacksConfigGateway(
-      ctx,
-      installFallbacksBridge(ctx, entryConfig()),
-      makeSeeds(),
-      disabledSnapshot,
-    )
-    await waitRegistered(ctx)
-    await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
-
-    const setResult = await gateway.set({ cooldownMs: 120_000 })
-    expect(setResult.subagentPolicy).toEqual({ state: 'disabled' })
-    expect(gateway.get().subagentPolicy).toEqual({ state: 'disabled' })
-
-    const resetResult = await gateway.reset()
-    expect(resetResult.subagentPolicy).toEqual({ state: 'disabled' })
-  })
-
-  it('rejects a subagentPolicy patch (read-only wire field; never written)', async () => {
-    const ctx = track(new Context())
-    await ctx.plugin(MemorySettings)
-    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, entryConfig()), makeSeeds())
-    await waitRegistered(ctx)
-    await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
-
-    await expect(gateway.set({ subagentPolicy: { state: 'disabled' } } as never))
-      .rejects.toThrow(/unknown config key "subagentPolicy"/)
-    // Nothing persisted ⇒ the double lists no section descriptor at all
-    // (the 0.1.7 form service keys descriptors by written profile entries).
-    expect(ctx.settings.describe().find((d) => d.ns === FALLBACKS_PROFILE_ENTRY)?.user).toBeUndefined()
-  })
-})
-
-// ---------------------------------------------------------------------------
-// syncAllowlist (plan role-chain-allowlist-visibility T1)
-// ---------------------------------------------------------------------------
-
-describe('syncAllowlist (explicit host-allowlist write)', () => {
-  const POLICY_NS = 'subagent-model-selection-settings'
-
-  /** A snapshot reading the allowlist the gateway writes (fresh post-write). */
-  function policySnapshotOf(
-    ctx: Context,
-    state: 'enabled' | 'disabled' | 'unprovable' = 'enabled',
-  ): SubagentPolicySnapshotFn {
-    return () => {
-      if (state !== 'enabled') return { policy: { state } }
-      const stored = (ctx.settings as unknown as MemorySettings).get(POLICY_NS as never)
-      const allowed = Array.isArray(stored?.allowedModels) ? stored.allowedModels : []
-      return { policy: { state: 'enabled', allowedModels: allowed as { provider: string; model: string }[] } }
-    }
-  }
-
-  const SYNC_ENTRY = entryConfig({
-    rootChain: ['openai/gpt-4o', OFFICIAL_FLASH],
-    roles: {
-      list: [
-        // `not-a-selector` is unparseable — the merge must skip it, never throw.
-        { id: 'reviewer', persona: '', chain: ['openai/gpt-4o', 'anthropic/claude-3-5-sonnet', 'zai/*', 'not-a-selector'], fallback: 'none' },
-        { id: 'coder', persona: '', chain: ['zai/glm-4'], fallback: 'inherit-root' },
-      ],
-      rules: [],
-    },
-  })
-
-  /** Wire the gateway with a settings double pre-seeded with one allowed route. */
-  async function mountEnabled(ctx: Context): Promise<FallbacksConfigGateway> {
-    await ctx.plugin(MemorySettings)
-    ;(ctx.settings as unknown as MemorySettings).seed(POLICY_NS as never, {
-      allowedModels: [{ provider: 'policy-test', model: 'alpha' }],
-    })
-    const gateway = new FallbacksConfigGateway(
-      ctx,
-      installFallbacksBridge(ctx, SYNC_ENTRY),
-      makeSeeds(),
-      policySnapshotOf(ctx),
-    )
-    await waitRegistered(ctx)
-    await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
-    return gateway
-  }
-
-  it('merges the current allowlist with exact role/root routes plus the virtual route (deduped, first-seen order)', async () => {
-    const ctx = track(new Context())
-    const gateway = await mountEnabled(ctx)
-
-    const result = await gateway.syncAllowlist()
-
-    const expected = [
-      { provider: 'policy-test', model: 'alpha' },
-      { provider: 'openai', model: 'gpt-4o' },
-      { provider: 'anthropic', model: 'claude-3-5-sonnet' },
-      { provider: 'zai', model: 'glm-4' },
-      { provider: 'deepseek-official', model: 'deepseek-flash' },
-      { provider: 'FallbacksChain', model: 'Auto' },
-    ]
-    const stored = (ctx.settings as unknown as MemorySettings).get(POLICY_NS as never)!
-    // Only `allowedModels` is written — never `enabled`.
-    expect(Object.keys(stored)).toEqual(['allowedModels'])
-    expect(stored.allowedModels).toEqual(expected)
-    // The wildcard `zai/*` and the unparseable `not-a-selector` were skipped
-    // and the duplicate `openai/gpt-4o` appears once. The response carries
-    // the fresh post-write snapshot.
-    expect((stored.allowedModels as { provider: string }[]).map(route => route.provider))
-      .not.toContain('not-a-selector')
-    expect(result.subagentPolicy).toEqual({ state: 'enabled', allowedModels: expected })
-  })
-
-  it('refuses when the policy is disabled — and writes nothing', async () => {
-    const ctx = track(new Context())
-    await ctx.plugin(MemorySettings)
-    const gateway = new FallbacksConfigGateway(
-      ctx,
-      installFallbacksBridge(ctx, SYNC_ENTRY),
-      makeSeeds(),
-      policySnapshotOf(ctx, 'disabled'),
-    )
-    await waitRegistered(ctx)
-    await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
-
-    await expect(gateway.syncAllowlist()).rejects.toThrow(/disabled/)
-    expect((ctx.settings as unknown as MemorySettings).get(POLICY_NS as never)).toBeUndefined()
-  })
-
-  it('refuses when the policy is unprovable — and writes nothing', async () => {
-    const ctx = track(new Context())
-    await ctx.plugin(MemorySettings)
-    const gateway = new FallbacksConfigGateway(
-      ctx,
-      installFallbacksBridge(ctx, SYNC_ENTRY),
-      makeSeeds(),
-      policySnapshotOf(ctx, 'unprovable'),
-    )
-    await waitRegistered(ctx)
-    await vi.waitFor(() => expect(settingsOf(gateway)).toBeDefined())
-
-    await expect(gateway.syncAllowlist()).rejects.toThrow(/unprovable/)
-    expect((ctx.settings as unknown as MemorySettings).get(POLICY_NS as never)).toBeUndefined()
-  })
-
-  it('refuses when no live policy snapshot is wired', async () => {
-    const ctx = track(new Context())
-    const gateway = new FallbacksConfigGateway(ctx, installFallbacksBridge(ctx, SYNC_ENTRY), makeSeeds())
-    await expect(gateway.syncAllowlist()).rejects.toThrow(/subagent policy is unavailable/)
-  })
-
-  it('throws the KD-G5 settings-unavailable error when no settings service is composed', async () => {
-    const ctx = track(new Context())
-    const gateway = new FallbacksConfigGateway(
-      ctx,
-      installFallbacksBridge(ctx, SYNC_ENTRY),
-      makeSeeds(),
-      () => ({ policy: { state: 'enabled', allowedModels: [] } }),
-    )
-    await expect(gateway.syncAllowlist()).rejects.toThrow(/settings service is unavailable/)
-  })
-
-  it('registers the fallbacks/sync-allowlist typert invocation (no parameters, src-json result)', () => {
-    const invocation = fallbacksTypertContribution().invocations
-      .find(entry => entry.method === 'sync-allowlist')
-    expect(invocation).toMatchObject({
-      id: 'dsh-llm-fallbacks#fallbacks/sync-allowlist',
-      service: 'fallbacks',
-      namespace: 'fallbacks',
-      implementation: 'syncAllowlist',
-      parameters: [],
-      result: { mode: 'src-json' },
-    })
-  })
-})

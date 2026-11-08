@@ -41,9 +41,9 @@ import type {} from '@deepseek-ai/dsh-client-locale/client'
 // value import.
 import type {} from '@deepseek-ai/dsh-client-ui-plugin-manager/client'
 // Type-only: the settings domain's slot-contract merge (the
-// 'settings.general.item' entry — the General page status row's registration
-// target). Same empty type-only pattern; the ui-settings package is already
-// a type-only peer (`peerDependencies`) and a manifest inject entry.
+// 'plugins.bundle.config' keyed card seat this plugin registers into). Same
+// empty type-only pattern; the ui-settings package is already a type-only
+// peer (`peerDependencies`) and a manifest inject entry.
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 // Type-only: the conversation domain's Context merge (the `uiConversation`
 // service seat — the D1 Definition registry's home). Same empty
@@ -74,20 +74,18 @@ import type {} from '@deepseek-ai/dsh-settings/types'
 import type {} from '@deepseek-ai/dsh-llm/types'
 import type { ConnectionHandle } from '@deepseek-ai/dsh-client-connection/client'
 import { FallbacksCard } from './FallbacksCard.tsx'
-import { GeneralFallbacksRow } from './GeneralFallbacksRow.tsx'
 import {
   ConversationFallbackSwitch, fallbackSwitchDefinition,
 } from './ConversationFallbackSwitch.tsx'
 import { SubagentRoleBadge } from './SubagentRoleBadge.tsx'
 import {
   FallbacksSettingsController, FALLBACKS_SETTINGS_NS,
-  refreshCatalogIfLoaded, refreshFallbacksIfLoaded, refreshSwitchesIfLoaded,
+  refreshCatalogIfLoaded, refreshFallbacksIfLoaded,
   type FallbacksRemote,
 } from './fallbacks-store.ts'
 import { en, NS, zh } from './locales.ts'
 
 export type { FallbacksCardInjected, FallbacksCardProps } from './FallbacksCard.tsx'
-export type { GeneralFallbacksRowInjected, GeneralFallbacksRowProps } from './GeneralFallbacksRow.tsx'
 export type {
   ConversationFallbackSwitchProps, FallbacksSwitchChatData,
 } from './ConversationFallbackSwitch.tsx'
@@ -210,7 +208,6 @@ export function apply(ctx: ClientContext): void {
     const refresh = (ns?: string): void => {
       if (ns !== undefined && ns !== FALLBACKS_SETTINGS_NS) return
       refreshFallbacksIfLoaded(controller)
-      refreshSwitchesIfLoaded(controller)
     }
     const refreshCatalog = (): void => { refreshCatalogIfLoaded(controller) }
     let pendingReset = false
@@ -269,26 +266,6 @@ export function apply(ctx: ClientContext): void {
       // Hooks compartment: renderer binds `hooks.snapshot` → useSnapshot.
       inject: () => ({ controller, hooks: { snapshot: controller.store } }),
     }, FallbacksCard)
-  })
-
-  // The General settings page status row (plan fallbacks-aux-seams T1): a
-  // compact read-only row (enabled badge + recent-switch summary) in the
-  // `settings.general.item` list slot — the same registration shape as the
-  // upstream preference rows (locale language 0 / ui-theme appearance 10 /
-  // ui-conversation composer-enter 20 / ui-agent-preset agent-preset -25).
-  // id `fallbacks`, order 100: the informational row renders at the column
-  // end, after every preference row (ascending stable sort, ui-slots). The
-  // row consumes the SAME controller + useSnapshot as the card — the first
-  // mount lazy-loads (idle guards inside the row) and the pushed
-  // invalidations above keep it fresh once read; no new data path.
-  ctx.slots.inject('settings.general.item', function* () {
-    yield ctx.slots.register({
-      name: 'settings.general.item',
-      id: 'fallbacks',
-      order: 100,
-      locale: NS,
-      inject: () => ({ controller, useSnapshot }),
-    }, GeneralFallbacksRow)
   })
 
   // Conversation-level switch visibility (plan fallbacks-aux-seams T2,

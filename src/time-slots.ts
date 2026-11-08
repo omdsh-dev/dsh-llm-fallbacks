@@ -9,13 +9,13 @@
  * wires these helpers at request time (Task 2). Malformed rows NEVER
  * throw: they warn ONCE per row instance (through `console.warn` — the
  * resolver's 3-argument contract has no logger parameter) and are
- * skipped; a legacy non-empty non-conforming `rootChain` keeps the
- * legacy failure walk verbatim (P6).
+ * skipped; a non-empty non-conforming `entries` tail keeps the failure walk
+ * verbatim (the chain's delegate stays inert).
  *
  * @module dsh-llm-fallbacks/time-slots
  */
 
-import type { FallbacksConfig } from './config.ts'
+import type { NamedChain } from './config.ts'
 
 /** Official all-day selectors — the ONLY legal tails (length 1, XOR):
  * Flash (the current official default) and Pro, both selectable. The Pro
@@ -253,46 +253,43 @@ export function isAllDayConforming(chain: readonly string[]): boolean {
 }
 
 /**
- * Effective chain for a root request at `now` (P5): the FIRST extra row
- * whose descriptor contains `now` (stored order) — that row's `chain`
- * REPLACES the all-day chain (never concatenated); no match ⇒ `rootChain`
- * (the all-day row, always last and required). Malformed rows warn once
- * and are skipped; never throws.
+ * Effective chain for a request on ONE named chain at `now`: the FIRST
+ * matching row of {@link NamedChain.timeSlots} (stored order) — that row's
+ * `chain` REPLACES {@link NamedChain.entries} (never concatenated); no match
+ * ⇒ the chain's own `entries`. Malformed rows warn once and are skipped;
+ * never throws.
  *
- * P6 (qc1 F-001): without a conforming all-day the slot rows are inert, so
- * this IS the raw `rootChain` — the gate lives in {@link resolveSlotState},
- * the single source every slot surface (this, the 分时切换 log, the
- * `/fallbacks` strip, the virtual adapter delegate, its served-route anchor)
- * reads.
+ * Without a conforming entries tail the slot rows are inert, so this IS the
+ * raw `entries` — the gate lives in {@link resolveSlotState}, the single
+ * source every slot surface reads.
  */
-export function resolveEffectiveChain(config: FallbacksConfig, now: Date, tz: string): string[] {
-  const state = resolveSlotState(config, now, tz)
-  return state.winner === 'all-day' ? config.rootChain : state.winner.chain
+export function resolveEffectiveChain(chain: NamedChain, now: Date, tz: string): string[] {
+  const state = resolveSlotState(chain, now, tz)
+  return state.winner === 'all-day' ? chain.entries : state.winner.chain
 }
 
 /**
- * Slot winner + display label (P5): drives 分时切换 detection (per-root-agent
- * last-winner marker, in-process only) and the card / `/fallbacks` status
- * strip. `winner` is the matching row or `'all-day'`; `label` names the
- * slot (frozen preset label or `custom HH:mm-HH:mm`).
+ * Slot winner + display label for one named chain: drives 分时切换 detection
+ * (per-(agent, chain) last-winner marker, in-process only) and the card /
+ * `/fallbacks` status strip. `winner` is the matching row or `'all-day'`;
+ * `label` names the slot (frozen preset label or `custom HH:mm-HH:mm`).
  *
- * P6 gate (qc1 F-001): without a conforming all-day
- * (`isAllDayConforming(config.rootChain)`) the winner is ALWAYS `'all-day'`
- * — a legacy multi-model (or empty) chain earns no slot rows, so every
- * surface fed by this resolver reports the inert state and routing stays on
- * the raw `rootChain` (the legacy walk verbatim).
+ * Gate: without a conforming entries tail (`isAllDayConforming(chain.entries)`)
+ * the winner is ALWAYS `'all-day'` — a multi-model (or empty) chain earns no
+ * slot rows, so every surface fed by this resolver reports the inert state and
+ * routing stays on the raw `entries`.
  */
 export function resolveSlotState(
-  config: FallbacksConfig,
+  chain: NamedChain,
   now: Date,
   tz: string,
 ): { winner: SlotRowConfig | 'all-day'; label: string } {
-  if (!isAllDayConforming(config.rootChain)) {
+  if (!isAllDayConforming(chain.entries)) {
     return { winner: 'all-day', label: 'all-day' }
   }
   const clock = wallClock(now, tz)
   const seenPresets = new Set<string>()
-  const rows = Array.isArray(config.timeSlots) ? config.timeSlots : []
+  const rows = Array.isArray(chain.timeSlots) ? chain.timeSlots : []
   for (const row of rows) {
     if (typeof row !== 'object' || row === null) {
       warnMalformed(row, 'row is not an object')

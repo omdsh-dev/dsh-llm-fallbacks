@@ -1,29 +1,29 @@
 /**
- * Config schema invariants for the two-block config model (plan
- * fallbacks-role-config-model Task 1): no-op defaults (AC-8), role id
- * format/uniqueness/reserved-word warnings, rule role reference warnings
- * (declared ids + built-in 'inherit'), the `fallback` enum, selector
- * legality, and `detectLegacyKeys` over the three legacy classes
- * (`chains` / `roles.default` / undeclared `roles.rules[].role`).
+ * Config v2 invariants (named virtual chains, plan named-virtual-chains
+ * T1): no-op defaults (empty `chains`), chain id format/uniqueness
+ * (case-sensitive), per-chain tail conformance + selector legality +
+ * slot-row guards, role id checks (format/uniqueness/reserved word),
+ * the role chain POINTER unknown-id warn, and `detectLegacyKeys` over
+ * both legacy generations (older removals + v1 two-block keys).
  *
- * `validateFallbacksConfig` is warn-only by contract (spec §4 / AC-4 —
- * warn, never throw, never take effect); every case asserts the exact
- * warning text so the message surface is pinned.
+ * `validateFallbacksConfig` is warn-only by contract (warn, never throw,
+ * never take effect); every case asserts the exact warning text so the
+ * message surface is pinned.
  */
 
 import { describe, expect, it, vi } from 'vitest'
 import { Config } from '../src/schema.ts'
 import { unwrapConfig } from './support/unwrap-config.ts'
 import {
-  INHERIT_ROLE_ID,
   defaultFallbacksConfig,
   detectLegacyKeys,
   isFallbackActive,
   validateFallbacksConfig,
   type FallbacksConfig,
-  type FallbacksRole,
+  type NamedChain,
 } from '../src/config.ts'
 import { ESCALATION_CAP_MS } from '../src/recovery.ts'
+import { OFFICIAL_FLASH, OFFICIAL_PRO, type SlotRowConfig } from '../src/time-slots.ts'
 
 /** Warn-only logger double: collects every `llm-fallbacks: ...` warn. */
 function warnLogger() {
@@ -35,79 +35,68 @@ function messagesOf(logger: { warn: ReturnType<typeof vi.fn> }): string[] {
   return logger.warn.mock.calls.map((call) => String(call[0]))
 }
 
-function role(overrides: Partial<FallbacksRole> = {}): FallbacksRole {
-  return { id: 'coder', persona: 'Coding subagent', ...overrides }
+function chain(overrides: Partial<NamedChain> = {}): NamedChain {
+  return { id: 'daily', label: '日常', entries: [OFFICIAL_FLASH], timeSlots: [], ...overrides }
 }
 
-describe('fallbacks Config schema (two-block model)', () => {
-  it('resolves the empty section to the spec defaults (AC-8 no-op invariant)', () => {
+function slotRow(overrides: Partial<SlotRowConfig> = {}): SlotRowConfig {
+  return { kind: 'preset', preset: 'liang-peak', chain: [OFFICIAL_PRO], ...overrides }
+}
+
+describe('fallbacks Config schema (named virtual chains)', () => {
+  it('resolves the empty section to the spec defaults (no-op invariant)', () => {
     expect(unwrapConfig(Config({} as FallbacksConfig))).toEqual(defaultFallbacksConfig)
   })
 
   it('layers partial input over the spec defaults', () => {
     const resolved = unwrapConfig(Config({
       cooldownMs: 1_000,
-      rootChain: ['other/gpt-4o'],
-      roles: {
-        list: [{ id: 'reviewer', persona: '' }],
-        rules: [{ role: 'reviewer' }],
-      },
+      chains: [{ id: 'daily', label: '日常', entries: [OFFICIAL_FLASH], timeSlots: [] }],
+      roles: { list: [{ id: 'reviewer', persona: '', chain: 'daily' }] },
     } as unknown as FallbacksConfig))
     expect(resolved.cooldownMs).toBe(1_000)
-    expect(resolved.rootChain).toEqual(['other/gpt-4o'])
+    expect(resolved.chains).toEqual([
+      { id: 'daily', label: '日常', entries: [OFFICIAL_FLASH], timeSlots: [] },
+    ])
     expect(resolved.roles.list).toEqual([{
       id: 'reviewer',
       persona: '',
-      // schemastery fills absent object/array fields with empty defaults —
-      // semantically "no own chain / no permissions", same as absent.
+      // schemastery fills absent object fields with empty defaults —
+      // semantically "no permissions", same as absent.
       permissions: { allow: [], deny: [] },
-      chain: [],
-      fallback: 'inherit-root',
+      chain: 'daily',
     }])
-    expect(resolved.roles.rules).toEqual([{ role: 'reviewer' }])
-    // The config-level `enabled` switch is retired (plan
-    // fallbacks-web-ux-alignment T2): no feature-switch key exists any more;
-    // activity re-keys to content presence (`isFallbackActive`).
     expect('enabled' in resolved).toBe(false)
     expect(resolved.triggerCodes).toEqual(['AUTH', 'QUOTA', 'RATE_LIMIT'])
     expect(isFallbackActive(resolved)).toBe(true)
   })
 
-  it('composed role entities carry the fallback default and keep string-optional fields absent', () => {
+  it('composed role entities keep string-optional fields absent (prompt, chain)', () => {
     const resolved = unwrapConfig(Config({
       roles: { list: [{ id: 'coder', persona: 'd' }] },
     } as unknown as FallbacksConfig))
     expect(resolved.roles.list[0]).toEqual({
       id: 'coder',
       persona: 'd',
-      // absent object/array fields compose to empty defaults (schemastery);
-      // a string-optional field (prompt) stays absent.
       permissions: { allow: [], deny: [] },
-      chain: [],
-      fallback: 'inherit-root',
     })
     expect('prompt' in resolved.roles.list[0]).toBe(false)
+    expect('chain' in resolved.roles.list[0]).toBe(false)
   })
 
-  it('keeps role id mandatory and rule role mandatory in the schema', () => {
+  it('keeps chain id/label and role id mandatory in the schema', () => {
+    expect(() => Config({ chains: [{ label: 'x' }] } as unknown as FallbacksConfig)).toThrow(/id/)
+    expect(() => Config({ chains: [{ id: 'x' }] } as unknown as FallbacksConfig)).toThrow(/label/)
     expect(() => Config({ roles: { list: [{ persona: 'x' }] } } as unknown as FallbacksConfig))
       .toThrow(/id/)
-    expect(() => Config({ roles: { rules: [{ provider: 'openai' }] } } as unknown as FallbacksConfig))
-      .toThrow(/role/)
   })
 
-  it('defaults the presets switch to bundled (spec §9.4 config key)', () => {
-    // The 9th field rides the schema default exactly like the other
-    // optional fields — `Config({})` must carry `presets: 'bundled'`.
+  it('defaults the presets switch to bundled', () => {
     const resolved = unwrapConfig(Config({} as FallbacksConfig))
     expect(resolved.presets).toBe('bundled')
   })
 
   it('rejects a presets value outside the bundled|none union at schema resolve', () => {
-    // Same semantics as the revertPolicy union (spec §9.4): the value
-    // domain is guarded by the schema — NOT by validateFallbacksConfig.
-    // The matcher pins the rejecting stage AND the exact union, so a
-    // subset-list regression (e.g. a single-const union) fails here.
     expect(() => Config({ presets: 'sometimes' } as unknown as FallbacksConfig)).toThrow(TypeError)
     expect(() => Config({ presets: 'sometimes' } as unknown as FallbacksConfig)).toThrow(
       /presets expected "bundled" \| "none"/,
@@ -115,11 +104,6 @@ describe('fallbacks Config schema (two-block model)', () => {
   })
 
   it('rejects a recovery value outside the timer|half-open union at schema resolve', () => {
-    // Same semantics as the presets union (plan fallbacks-half-open-recovery
-    // Task 1): the value domain is guarded by the schema — NOT by
-    // validateFallbacksConfig. The matcher pins the rejecting stage AND the
-    // exact union, so a subset-list regression (e.g. a single-const union)
-    // fails here.
     expect(() => Config({ recovery: 'sometimes' } as unknown as FallbacksConfig)).toThrow(TypeError)
     expect(() => Config({ recovery: 'sometimes' } as unknown as FallbacksConfig)).toThrow(
       /recovery expected "timer" \| "half-open"/,
@@ -127,30 +111,161 @@ describe('fallbacks Config schema (two-block model)', () => {
   })
 })
 
-describe('removed config keys under direction C (virtual-chain-only fallback)', () => {
-  it('defaultFallbacksConfig carries neither alwaysModeRetryCap nor roleAutoMatch', () => {
-    expect('alwaysModeRetryCap' in defaultFallbacksConfig).toBe(false)
-    expect('roleAutoMatch' in defaultFallbacksConfig).toBe(false)
+describe('isFallbackActive (v2 content presence)', () => {
+  it('is false for the empty default — empty chains is the only first-run state', () => {
+    expect(isFallbackActive(defaultFallbacksConfig)).toBe(false)
   })
 
-  it('Config({}) resolves to defaultFallbacksConfig — neither removed key reappears', () => {
-    expect(unwrapConfig(Config({} as FallbacksConfig))).toEqual(defaultFallbacksConfig)
+  it('is true with one chain, even with empty entries (picker row registers, walk refuses)', () => {
+    expect(isFallbackActive({ ...defaultFallbacksConfig, chains: [chain({ entries: [] })] })).toBe(true)
   })
 
-  it('detectLegacyKeys reports both removed keys', () => {
-    expect(detectLegacyKeys({
-      alwaysModeRetryCap: 5,
-      roleAutoMatch: false,
-      rootChain: [],
-      roles: { list: [], rules: [] },
-    })).toEqual(['alwaysModeRetryCap', 'roleAutoMatch'])
+  it('roles alone no longer activate (a role without a chain is pure identity)', () => {
+    expect(isFallbackActive({ ...defaultFallbacksConfig, roles: { list: [{ id: 'coder', persona: '' }] } })).toBe(false)
+  })
+})
+
+describe('validateFallbacksConfig — chain ids (format / case-sensitive uniqueness)', () => {
+  it('accepts valid ids (uppercase allowed) and free-text labels without a single warn', () => {
+    const { logger } = warnLogger()
+    validateFallbacksConfig({
+      ...defaultFallbacksConfig,
+      chains: [
+        chain({ id: 'Auto', label: '默认链' }),
+        chain({ id: 'a1-B2', label: '任意 label，含特殊字符 !@#' }),
+        chain({ id: 'a'.repeat(32) }), // boundary: exactly 32 chars is legal
+      ],
+      roles: { list: [] },
+    }, logger)
+    expect(messagesOf({ warn: logger.warn })).toEqual([])
   })
 
-  it('detectLegacyKeys leaves a clean config unflagged', () => {
-    expect(detectLegacyKeys({
-      rootChain: ['other/gpt-4o'],
-      roles: { list: [{ id: 'coder' }], rules: [{ role: 'coder' }] },
-    })).toEqual([])
+  it('warns on invalid id formats (leading dash, underscore, too long, empty)', () => {
+    const { logger } = warnLogger()
+    validateFallbacksConfig({
+      ...defaultFallbacksConfig,
+      chains: [
+        chain({ id: '-bad' }),
+        chain({ id: 'under_score' }),
+        chain({ id: 'x'.repeat(33) }),
+        chain({ id: '' }),
+      ],
+      roles: { list: [] },
+    }, logger)
+    const messages = messagesOf({ warn: logger.warn })
+    expect(messages).toHaveLength(4)
+    for (const bad of ['-bad', 'under_score', 'x'.repeat(33)]) {
+      expect(messages).toContain(
+        `llm-fallbacks: invalid chain id "${bad}" — must match /^[A-Za-z0-9][A-Za-z0-9-]{0,31}$/`,
+      )
+    }
+  })
+
+  it('warns on duplicate chain ids (case-sensitive set)', () => {
+    const { logger } = warnLogger()
+    validateFallbacksConfig({
+      ...defaultFallbacksConfig,
+      chains: [chain({ id: 'daily' }), chain({ id: 'daily', label: '另一条' })],
+      roles: { list: [] },
+    }, logger)
+    expect(messagesOf({ warn: logger.warn })).toContain(
+      'llm-fallbacks: duplicate chain id "daily" — chain ids must be unique (case-sensitive)',
+    )
+  })
+})
+
+describe('validateFallbacksConfig — per-chain entries (tail conformance + selector legality)', () => {
+  it('warns when a non-empty chain tail is not exactly one official model', () => {
+    const { logger } = warnLogger()
+    validateFallbacksConfig({
+      ...defaultFallbacksConfig,
+      chains: [chain({ entries: [OFFICIAL_PRO, 'other/gpt-4o'] })],
+      roles: { list: [] },
+    }, logger)
+    expect(messagesOf({ warn: logger.warn })).toEqual([
+      `llm-fallbacks: chain "daily" must end with exactly one official model (deepseek-official/deepseek-flash or deepseek-official/deepseek-v4-pro) — its time-slot rows and the virtual picker delegate stay inert until the tail conforms`,
+    ])
+  })
+
+  it('an empty chain stays quiet (registers the picker row, refuses to delegate)', () => {
+    const { logger } = warnLogger()
+    validateFallbacksConfig({ ...defaultFallbacksConfig, chains: [chain({ entries: [] })], roles: { list: [] } }, logger)
+    expect(messagesOf({ warn: logger.warn })).toEqual([])
+  })
+
+  it('warns on invalid entries per chain, naming the chain id', () => {
+    const { logger } = warnLogger()
+    validateFallbacksConfig({
+      ...defaultFallbacksConfig,
+      chains: [chain({ entries: ['bogus', OFFICIAL_FLASH] }), chain({ id: 'other', label: 'o', entries: ['provider/', OFFICIAL_PRO] })],
+      roles: { list: [] },
+    }, logger)
+    const messages = messagesOf({ warn: logger.warn })
+    expect(messages).toEqual([
+      'llm-fallbacks: ignoring invalid chain "daily" entry "bogus": invalid selector "bogus": expected "provider/model" or "provider/*"',
+      'llm-fallbacks: ignoring invalid chain "other" entry "provider/": invalid selector "provider/": expected "provider/model" or "provider/*"',
+    ])
+  })
+
+  it('never throws — every violation is a warn (warn-not-crash semantics)', () => {
+    const { logger } = warnLogger()
+    expect(() => validateFallbacksConfig({
+      ...defaultFallbacksConfig,
+      chains: [chain({ id: 'bad id', entries: ['garbage'] })],
+      roles: { list: [{ id: 'Bad Id', persona: '', chain: 'ghost' }] },
+    }, logger)).not.toThrow()
+    expect(messagesOf({ warn: logger.warn }).length).toBeGreaterThan(0)
+  })
+})
+
+describe('validateFallbacksConfig — per-chain slot-row guards', () => {
+  it('warns on an unknown preset, naming the chain', () => {
+    const { logger } = warnLogger()
+    validateFallbacksConfig({
+      ...defaultFallbacksConfig,
+      chains: [chain({ timeSlots: [slotRow({ preset: 'nope' as SlotRowConfig['preset'] })] })],
+      roles: { list: [] },
+    }, logger)
+    expect(messagesOf({ warn: logger.warn })).toEqual([
+      'llm-fallbacks: chain "daily" has an unknown time-slot preset "nope" — row ignored',
+    ])
+  })
+
+  it('warns on a duplicate preset within one chain but not across chains', () => {
+    const { logger } = warnLogger()
+    validateFallbacksConfig({
+      ...defaultFallbacksConfig,
+      chains: [
+        chain({ timeSlots: [slotRow(), slotRow()] }),
+        chain({ id: 'other', label: 'o', timeSlots: [slotRow()] }),
+      ],
+      roles: { list: [] },
+    }, logger)
+    expect(messagesOf({ warn: logger.warn })).toEqual([
+      'llm-fallbacks: chain "daily" has a duplicate time-slot preset "liang-peak" — only the first row takes effect',
+    ])
+  })
+
+  it('warns when a preset row carries its own window/day fields', () => {
+    const { logger } = warnLogger()
+    validateFallbacksConfig({
+      ...defaultFallbacksConfig,
+      chains: [chain({ timeSlots: [slotRow({ start: '09:00', end: '12:00', days: [1] })] })],
+      roles: { list: [] },
+    }, logger)
+    expect(messagesOf({ warn: logger.warn })).toEqual([
+      'llm-fallbacks: chain "daily" preset "liang-peak" carries its own window/day fields — preset windows are fixed code constants; the row is ignored',
+    ])
+  })
+
+  it('accepts custom rows and one preset row per chain without a warn', () => {
+    const { logger } = warnLogger()
+    validateFallbacksConfig({
+      ...defaultFallbacksConfig,
+      chains: [chain({ timeSlots: [slotRow(), slotRow({ kind: 'custom', start: '22:00', end: '06:00', days: [], chain: [OFFICIAL_FLASH] })] })],
+      roles: { list: [] },
+    }, logger)
+    expect(messagesOf({ warn: logger.warn })).toEqual([])
   })
 })
 
@@ -159,14 +274,12 @@ describe('validateFallbacksConfig — role ids (format / uniqueness / reserved w
     const { logger } = warnLogger()
     validateFallbacksConfig({
       ...defaultFallbacksConfig,
+      chains: [chain()],
       roles: {
         list: [
-          // Roles carry a chain so the role model-config requirement (T2)
-          // does not fire — the zero-warn assertion pins id/persona.
-          role({ id: 'coder', persona: '任意 persona，含特殊字符 !@#', chain: ['openai/gpt-4o'] }),
-          role({ id: 'a1-b2', persona: '', chain: ['other/gpt-4o-mini'] }),
+          { id: 'coder', persona: '任意 persona，含特殊字符 !@#', chain: 'daily' },
+          { id: 'a1-b2', persona: '' },
         ],
-        rules: [],
       },
     }, logger)
     expect(messagesOf({ warn: logger.warn })).toEqual([])
@@ -176,17 +289,15 @@ describe('validateFallbacksConfig — role ids (format / uniqueness / reserved w
     const { logger } = warnLogger()
     validateFallbacksConfig({
       ...defaultFallbacksConfig,
+      chains: [chain()],
       roles: {
         list: [
-          // Chains ride every role so the count pins the format warns only
-          // (the role model-config warn fires on chain-less roles — T2).
-          role({ id: 'Bad-Id', chain: ['openai/gpt-4o'] }),
-          role({ id: 'under_score', chain: ['openai/gpt-4o'] }),
-          role({ id: 'x'.repeat(33), chain: ['openai/gpt-4o'] }),
-          role({ id: '', chain: ['openai/gpt-4o'] }),
-          role({ id: 'a'.repeat(32), chain: ['openai/gpt-4o'] }), // boundary: exactly 32 chars is legal
+          { id: 'Bad-Id', persona: '' },
+          { id: 'under_score', persona: '' },
+          { id: 'x'.repeat(33), persona: '' },
+          { id: '', persona: '' },
+          { id: 'a'.repeat(32), persona: '' }, // boundary: exactly 32 chars is legal
         ],
-        rules: [],
       },
     }, logger)
     const messages = messagesOf({ warn: logger.warn })
@@ -194,26 +305,18 @@ describe('validateFallbacksConfig — role ids (format / uniqueness / reserved w
     for (const bad of ['Bad-Id', 'under_score', 'x'.repeat(33)]) {
       expect(messages).toContain(`llm-fallbacks: invalid role id "${bad}" — must match /^[a-z0-9-]{1,32}$/`)
     }
-    expect(messages.some((m) => m.includes('"a'.repeat(32) + '"'))).toBe(false)
   })
 
-  it('warns on duplicate role ids', () => {
+  it('warns on duplicate role ids and the reserved id "inherit"', () => {
     const { logger } = warnLogger()
     validateFallbacksConfig({
       ...defaultFallbacksConfig,
-      roles: { list: [role({ id: 'coder' }), role({ id: 'coder' })], rules: [] },
+      chains: [chain()],
+      roles: { list: [{ id: 'coder', persona: '' }, { id: 'coder', persona: '' }, { id: 'inherit', persona: '' }] },
     }, logger)
     const messages = messagesOf({ warn: logger.warn })
     expect(messages).toContain('llm-fallbacks: duplicate role id "coder" — role ids must be unique')
-  })
-
-  it('warns when the reserved id "inherit" is declared as a list id', () => {
-    const { logger } = warnLogger()
-    validateFallbacksConfig({
-      ...defaultFallbacksConfig,
-      roles: { list: [role({ id: INHERIT_ROLE_ID })], rules: [] },
-    }, logger)
-    expect(messagesOf({ warn: logger.warn })).toContain(
+    expect(messages).toContain(
       'llm-fallbacks: role id "inherit" is reserved — "inherit" cannot be declared in roles.list',
     )
   })
@@ -222,183 +325,60 @@ describe('validateFallbacksConfig — role ids (format / uniqueness / reserved w
     const { logger } = warnLogger()
     validateFallbacksConfig({
       ...defaultFallbacksConfig,
+      chains: [chain()],
       roles: {
         list: [
-          // A padded-but-valid id trims to the canonical form the UI
-          // rebuilds (row.id.trim()): no format warn, and a rule
-          // referencing the canonical id resolves — no undeclared warn.
-          // Chains ride both roles so the count pins the format warn only
-          // (the role model-config warn fires on chain-less roles — T2).
-          role({ id: ' coder ', chain: ['openai/gpt-4o'] }),
-          // Whitespace that survives trim (internal space) is still a
-          // format violation — the raw stored id names the offending value.
-          role({ id: 'bad id', chain: ['openai/gpt-4o'] }),
+          { id: ' coder ', persona: '' },
+          { id: 'bad id', persona: '' },
         ],
-        rules: [{ role: 'coder' }],
       },
     }, logger)
     const messages = messagesOf({ warn: logger.warn })
-    // The whitespace id warns as FORMAT (not duplicate/undeclared).
     expect(messages).toContain('llm-fallbacks: invalid role id "bad id" — must match /^[a-z0-9-]{1,32}$/')
     expect(messages).toHaveLength(1)
     expect(messages.some((m) => m.includes('duplicate role id'))).toBe(false)
-    expect(messages.some((m) => m.includes('undeclared role'))).toBe(false)
-  })
-
-  it('a padded id and its canonical twin are duplicates (trimmed dedup set)', () => {
-    const { logger } = warnLogger()
-    validateFallbacksConfig({
-      ...defaultFallbacksConfig,
-      roles: {
-        list: [role({ id: 'coder ' }), role({ id: 'coder' })],
-        rules: [],
-      },
-    }, logger)
-    expect(messagesOf({ warn: logger.warn })).toContain(
-      'llm-fallbacks: duplicate role id "coder" — role ids must be unique',
-    )
   })
 })
 
-describe('validateFallbacksConfig — rule role references', () => {
-  it('accepts declared ids and the built-in "inherit" as rule targets', () => {
+describe('validateFallbacksConfig — role chain POINTER', () => {
+  it('accepts a role chain naming a declared chain id without a warn', () => {
     const { logger } = warnLogger()
     validateFallbacksConfig({
       ...defaultFallbacksConfig,
-      roles: {
-        // A chain rides the declared role so the role model-config warn
-        // (T2) does not fire — the zero-warn pins the rule targets.
-        list: [role({ id: 'coder', chain: ['openai/gpt-4o'] })],
-        rules: [{ role: 'coder' }, { role: 'inherit' }],
-      },
+      chains: [chain()],
+      roles: { list: [{ id: 'coder', persona: '', chain: 'daily' }] },
     }, logger)
     expect(messagesOf({ warn: logger.warn })).toEqual([])
   })
 
-  it('warns on an undeclared rule role reference (the rule does not take effect)', () => {
+  it('warns exactly once when the pointer names no declared chain (behaves as NOT SPECIFIED)', () => {
     const { logger } = warnLogger()
     validateFallbacksConfig({
       ...defaultFallbacksConfig,
-      roles: {
-        list: [role({ id: 'coder' })],
-        rules: [{ role: 'ghost' }],
-      },
+      chains: [chain()],
+      roles: { list: [{ id: 'coder', persona: '', chain: 'ghost' }] },
     }, logger)
-    expect(messagesOf({ warn: logger.warn })).toContain(
-      'llm-fallbacks: rule references undeclared role "ghost" — expected one of roles.list ids or "inherit"',
-    )
+    expect(messagesOf({ warn: logger.warn })).toEqual([
+      'llm-fallbacks: role "coder" specifies unknown chain "ghost" — the child inherits the delegating agent\'s route',
+    ])
   })
-})
 
-describe('validateFallbacksConfig — fallback enum', () => {
-  it('accepts inherit-root and none without a warn', () => {
+  it('absent or empty pointer stays quiet (NOT SPECIFIED)', () => {
     const { logger } = warnLogger()
     validateFallbacksConfig({
       ...defaultFallbacksConfig,
-      roles: {
-        // Chains ride both roles so the role model-config warn (T2) does
-        // not fire — the zero-warn pins the fallback enum values.
-        list: [
-          role({ id: 'a', fallback: 'inherit-root', chain: ['openai/gpt-4o'] }),
-          role({ id: 'b', fallback: 'none', chain: ['other/gpt-4o-mini'] }),
-        ],
-        rules: [],
-      },
+      chains: [chain()],
+      roles: { list: [{ id: 'a', persona: '' }, { id: 'b', persona: '', chain: '' }] },
     }, logger)
     expect(messagesOf({ warn: logger.warn })).toEqual([])
   })
 
-  it('warns on a fallback value outside the enum', () => {
+  it('resolves pointers declared AFTER the referencing role (chain loop first)', () => {
     const { logger } = warnLogger()
     validateFallbacksConfig({
       ...defaultFallbacksConfig,
-      roles: {
-        list: [{ ...role({ id: 'a' }), fallback: 'sometimes' as FallbacksRole['fallback'] }],
-        rules: [],
-      },
-    }, logger)
-    expect(messagesOf({ warn: logger.warn })).toContain(
-      'llm-fallbacks: role "a" has invalid fallback "sometimes" — expected "inherit-root" or "none"',
-    )
-  })
-})
-
-describe('validateFallbacksConfig — selector legality (rootChain + role chains)', () => {
-  it('warns on invalid rootChain entries without throwing', () => {
-    const { logger } = warnLogger()
-    validateFallbacksConfig({
-      ...defaultFallbacksConfig,
-      rootChain: ['other/gpt-4o', 'bogus', 'provider/', 'openai/gpt-4o'],
-    }, logger)
-    const messages = messagesOf({ warn: logger.warn })
-    // P6 (plan fallbacks-timeslots): a non-empty non-conforming all-day
-    // chain earns the conformance warn FIRST, then per-entry selector warns.
-    expect(messages).toHaveLength(3)
-    expect(messages[0]).toContain('rootChain must end with exactly one official model')
-    expect(messages[1]).toContain('ignoring invalid rootChain entry "bogus"')
-    expect(messages[2]).toContain('ignoring invalid rootChain entry "provider/"')
-  })
-
-  it('warns on invalid role chain entries, naming the role', () => {
-    const { logger } = warnLogger()
-    validateFallbacksConfig({
-      ...defaultFallbacksConfig,
-      roles: {
-        list: [role({ id: 'coder', chain: ['mistral/*', 'nope'] })],
-        rules: [],
-      },
-    }, logger)
-    const messages = messagesOf({ warn: logger.warn })
-    expect(messages).toHaveLength(1)
-    expect(messages[0]).toContain('llm-fallbacks: ignoring invalid chain entry "nope" in role "coder"')
-  })
-
-  it('never throws — every violation is a warn (AC-4 warn-not-crash semantics)', () => {
-    const { logger } = warnLogger()
-    expect(() => validateFallbacksConfig({
-      ...defaultFallbacksConfig,
-      rootChain: ['garbage'],
-      roles: {
-        list: [role({ id: 'Bad Id', chain: ['also-bad'] })],
-        rules: [{ role: 'missing' }],
-      },
-    }, logger)).not.toThrow()
-    expect(messagesOf({ warn: logger.warn }).length).toBeGreaterThan(0)
-  })
-})
-
-describe('validateFallbacksConfig — role model config (chain required semantics, plan fallbacks-feedback-round T2)', () => {
-  it('warns when a role declares no chain, naming the role, without throwing', () => {
-    const { logger } = warnLogger()
-    expect(() => validateFallbacksConfig({
-      ...defaultFallbacksConfig,
-      roles: { list: [role({ id: 'coder' })], rules: [] },
-    }, logger)).not.toThrow()
-    const messages = messagesOf({ warn: logger.warn })
-    expect(messages).toHaveLength(1)
-    expect(messages[0]).toBe(
-      'llm-fallbacks: role "coder" has no model config — declare at least one chain entry, or use the built-in "inherit" rule target instead',
-    )
-  })
-
-  it('warns on an explicit empty chain array, naming the role', () => {
-    const { logger } = warnLogger()
-    validateFallbacksConfig({
-      ...defaultFallbacksConfig,
-      roles: { list: [role({ id: 'coder', chain: [] })], rules: [] },
-    }, logger)
-    const messages = messagesOf({ warn: logger.warn })
-    expect(messages).toHaveLength(1)
-    expect(messages[0]).toBe(
-      'llm-fallbacks: role "coder" has no model config — declare at least one chain entry, or use the built-in "inherit" rule target instead',
-    )
-  })
-
-  it('does not warn when a role declares at least one chain entry', () => {
-    const { logger } = warnLogger()
-    validateFallbacksConfig({
-      ...defaultFallbacksConfig,
-      roles: { list: [role({ id: 'coder', chain: ['openai/gpt-4o'] })], rules: [] },
+      chains: [chain({ id: 'late' })],
+      roles: { list: [{ id: 'coder', persona: '', chain: 'late' }] },
     }, logger)
     expect(messagesOf({ warn: logger.warn })).toEqual([])
   })
@@ -433,50 +413,55 @@ describe('validateFallbacksConfig — half-open escalation inertness (PR #87 rev
   })
 })
 
-describe('detectLegacyKeys — three legacy classes', () => {
-  it('returns [] for a clean two-block config (no legacy keys, declared rule roles)', () => {
+describe('detectLegacyKeys — v1 two-block keys + older removals', () => {
+  it('returns [] for a clean v2 config', () => {
     expect(detectLegacyKeys({
-      // A riding `enabled:` line is NOT flagged — the removed key is
-      // silently stripped by the gateway (no banner entry, T2).
-      enabled: true,
-      rootChain: ['other/gpt-4o'],
-      roles: { list: [{ id: 'coder' }], rules: [{ role: 'coder' }, { role: 'inherit' }] },
+      triggerCodes: ['AUTH'],
+      chains: [{ id: 'Auto', label: '默认链', entries: [OFFICIAL_FLASH] }],
+      roles: { list: [{ id: 'coder', persona: '', chain: 'Auto' }] },
     })).toEqual([])
   })
 
-  it('detects the removed chains key', () => {
-    expect(detectLegacyKeys({ chains: { default: ['other/gpt-4o'] } })).toContain('chains')
-  })
-
-  it('detects the removed roles.default field', () => {
-    expect(detectLegacyKeys({ roles: { default: 'default', rules: [] } })).toContain('roles.default')
-  })
-
-  it('detects undeclared rule role references (role names), in rule order', () => {
+  it('detects the v1 keys: rootChain, top-level timeSlots, roles.rules', () => {
     expect(detectLegacyKeys({
-      roles: {
-        list: [{ id: 'coder' }],
-        rules: [{ role: 'coder' }, { role: 'ghost' }, { role: 'inherit' }, { role: 'other-ghost' }],
-      },
-    })).toEqual(['roles.rules[].role: ghost', 'roles.rules[].role: other-ghost'])
+      rootChain: [OFFICIAL_FLASH],
+      timeSlots: [],
+      roles: { list: [], rules: [{ role: 'coder' }] },
+    })).toEqual(['rootChain', 'timeSlots', 'roles.rules'])
   })
 
-  it('collects all three classes from one legacy source, deduplicated by occurrence', () => {
-    expect(detectLegacyKeys({
-      chains: { default: ['a/b'] },
-      roles: { default: 'reviewer', list: [], rules: [{ role: 'reviewer' }, { role: 'inherit' }] },
-    })).toEqual(['chains', 'roles.default', 'roles.rules[].role: reviewer'])
-  })
-
-  it('detects the removed role-entity label / description fields (renamed to persona)', () => {
+  it('detects roles.list[].fallback and the v1 ARRAY form of roles.list[].chain', () => {
     expect(detectLegacyKeys({
       roles: {
         list: [
-          { id: 'coder', label: 'Coder', description: 'Code review subagent' },
-          { id: 'cheap', description: 'Cost first' },
+          { id: 'a', fallback: 'inherit-root', chain: ['other/gpt-4o'] },
+          { id: 'b', chain: 'Auto' }, // v2 string pointer — NOT flagged
         ],
-        rules: [],
       },
-    })).toEqual(['roles.list[].label', 'roles.list[].description', 'roles.list[].description'])
+    })).toEqual(['roles.list[].fallback', 'roles.list[].chain'])
+  })
+
+  it('detects the older removals: alwaysModeRetryCap, roleAutoMatch, roles.default, renamed role fields', () => {
+    expect(detectLegacyKeys({
+      alwaysModeRetryCap: 5,
+      roleAutoMatch: false,
+      roles: {
+        default: 'reviewer',
+        list: [{ id: 'coder', label: 'Coder', description: 'Code review subagent' }],
+      },
+    })).toEqual([
+      'alwaysModeRetryCap',
+      'roleAutoMatch',
+      'roles.default',
+      'roles.list[].label',
+      'roles.list[].description',
+    ])
+  })
+
+  it('collects every class from one legacy source, in field order', () => {
+    expect(detectLegacyKeys({
+      rootChain: [OFFICIAL_FLASH],
+      roles: { default: 'reviewer', list: [{ id: 'a', chain: ['x/y'] }], rules: [] },
+    })).toEqual(['rootChain', 'roles.default', 'roles.rules', 'roles.list[].chain'])
   })
 })

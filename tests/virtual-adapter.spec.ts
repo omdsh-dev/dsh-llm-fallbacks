@@ -1,14 +1,14 @@
 /**
- * Virtual `FallbacksChain/Auto` adapter tests (plan fallbacks-virtual-chain
- * Task 1; PR #62 feedback round): the P2 registration lifecycle (listed
- * whenever enabled — conformance is NOT part of registration; idempotent
- * transition-reconcile; multi-fiber dedupe; slot/chain edits never churn)
- * and the P1/P3 adapter contract (one catalog row; `stream()` is a thin
- * head-delegate through the host LLM runtime, gated on a conforming
- * all-day; `resolveModel` proxies the current effective head with a
- * permissive fallback; `imageRequestPricing` delegates to the SAME head,
- * never throwing; `providerRetryPolicy` mirrors the head's captured policy,
- * never throwing).
+ * Virtual `FallbacksChain` adapter tests (named virtual chains, plan
+ * named-virtual-chains T2): the registration lifecycle (listed whenever
+ * `chains` is non-empty — conformance is NOT part of registration; idempotent
+ * transition-reconcile; multi-fiber dedupe; slot edits never churn) and the
+ * adapter contract (ONE row PER chain, the row id BEING the chain id;
+ * `stream()` walks the selected chain through the host LLM runtime, gated on
+ * a conforming entries tail; `resolveModel`/`imageRequestPricing` resolve the
+ * chain FROM the model argument and follow its effective head, permissive
+ * fallback, never throwing; `providerRetryPolicy` returns `undefined` — the
+ * documented degradation: the host captures the policy once per provider).
  *
  * Runs against the REAL `LlmRuntime` (`@deepseek-ai/dsh-llm`) with a stub
  * head adapter for `deepseek-official`, so the registration boundary, the
@@ -30,11 +30,10 @@ import {
 } from '@deepseek-ai/dsh-llm'
 import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import { apply } from '../src/index.ts'
-import { defaultFallbacksConfig, type FallbacksConfig } from '../src/config.ts'
-import { OFFICIAL_FLASH } from '../src/time-slots.ts'
+import { defaultFallbacksConfig, type FallbacksConfig, type NamedChain } from '../src/config.ts'
+import { OFFICIAL_FLASH, type SlotRowConfig } from '../src/time-slots.ts'
 import { UNDISPATCHABLE_HEAD_CODE } from '../src/chain-walk.ts'
 import {
-  FALLBACKS_CHAIN_MODEL,
   FALLBACKS_PROVIDER,
   FallbacksChainAdapter,
   installFallbacksAdapter,
@@ -46,6 +45,14 @@ import { alwaysPolicy, cfg, dispatchRequest, makeAgent } from './support/harness
 
 const HEAD_PROVIDER = 'deepseek-official'
 const HEAD_MODEL = 'deepseek-flash'
+
+/** The chain id under test (the model id on the wire; the migrated default). */
+const CHAIN_ID = 'Auto'
+
+/** A named chain fixture. */
+function vChain(entries: readonly string[] = [OFFICIAL_FLASH], timeSlots: SlotRowConfig[] = [], id = CHAIN_ID): NamedChain {
+  return { id, label: id === CHAIN_ID ? 'Test' : 'Other', entries: [...entries], timeSlots }
+}
 
 /** Minimal durable image ref for pricing calls (shape only — the opaque id is never dereferenced). */
 const IMAGE_REF: ImageAttachmentRef = {
@@ -158,7 +165,7 @@ afterEach(async () => {
 
 describe('registration lifecycle (P2)', () => {
   it('registers the virtual route whenever enabled (conformance-independent)', async () => {
-    apply(ctx, cfg({ rootChain: [OFFICIAL_FLASH] }))
+    apply(ctx, cfg({ chains: [vChain()] }))
     await vi.waitFor(() => expect(listed()).toBe(true))
     expect(ctx.llm.listProviders().find((provider) => provider.id === FALLBACKS_PROVIDER)).toEqual({
       id: FALLBACKS_PROVIDER,
@@ -170,7 +177,7 @@ describe('registration lifecycle (P2)', () => {
     // The removed switch is inert: a stored profile still carrying
     // `enabled: false` with a configured chain is ACTIVE (the row toggle is
     // the master switch), so the virtual route registers.
-    apply(ctx, cfg({ rootChain: [OFFICIAL_FLASH], ...({ enabled: false } as object) }))
+    apply(ctx, cfg({ chains: [vChain()], ...({ enabled: false } as object) }))
     await vi.waitFor(() => expect(listed()).toBe(true))
   })
 
@@ -178,7 +185,7 @@ describe('registration lifecycle (P2)', () => {
     // PR #62 feedback let an enabled-only (contentless) config show the row;
     // T2 re-keyed the gate to content presence — an empty config is a
     // pass-through exactly like an uninstalled plugin, so nothing registers.
-    apply(ctx, cfg({ rootChain: [] }))
+    apply(ctx, cfg({ chains: [] }))
     // Give any (incorrect) registration a beat before asserting.
     await vi.waitFor(() => {
       expect(ctx.llm.listProviders().filter((provider) => provider.id === FALLBACKS_PROVIDER)).toHaveLength(0)
@@ -186,24 +193,24 @@ describe('registration lifecycle (P2)', () => {
     expect(listed()).toBe(false)
   })
 
-  it('shows the row for a legacy multi-model rootChain (enabled-only gate, PR #62 feedback)', async () => {
-    apply(ctx, cfg({ rootChain: ['other/gpt-4o', 'other/gpt-5'] }))
+  it('shows the row for a non-conforming chain (conformance gates the delegate, not the row)', async () => {
+    apply(ctx, cfg({ chains: [vChain(['other/gpt-4o', 'other/gpt-5'])] }))
     await vi.waitFor(() => expect(listed()).toBe(true))
   })
 
   it('is a clean no-op without an llm service', async () => {
     const bare = new Context()
     try {
-      expect(() => apply(bare, cfg({ rootChain: [OFFICIAL_FLASH] }))).not.toThrow()
+      expect(() => apply(bare, cfg({ chains: [vChain()] }))).not.toThrow()
     } finally {
       await bare.fiber.dispose()
     }
   })
 
   it('dedupes a duplicate registration (DUPLICATE_ADAPTER caught, first fiber owns the route)', async () => {
-    apply(ctx, cfg({ rootChain: [OFFICIAL_FLASH] }))
+    apply(ctx, cfg({ chains: [vChain()] }))
     await vi.waitFor(() => expect(listed()).toBe(true))
-    expect(() => apply(ctx, cfg({ rootChain: [OFFICIAL_FLASH] }))).not.toThrow()
+    expect(() => apply(ctx, cfg({ chains: [vChain()] }))).not.toThrow()
     expect(ctx.llm.listProviders().filter((provider) => provider.id === FALLBACKS_PROVIDER)).toHaveLength(1)
     expect(listed()).toBe(true)
   })
@@ -212,26 +219,26 @@ describe('registration lifecycle (P2)', () => {
     // The live gate is content presence (T2): clearing the all-day chain
     // (the only configured content) deactivates the plugin; writing a chain
     // back re-activates it. No `enabled` write exists any more.
-    apply(ctx, cfg({ rootChain: [OFFICIAL_FLASH] }))
+    apply(ctx, cfg({ chains: [vChain()] }))
     await vi.waitFor(() => expect(listed()).toBe(true))
 
-    await ctx.settings.update(FALLBACKS_PROFILE_ENTRY, { rootChain: [] })
+    await ctx.settings.update(FALLBACKS_PROFILE_ENTRY, { chains: [] })
     expect(listed()).toBe(false)
 
-    await ctx.settings.update(FALLBACKS_PROFILE_ENTRY, { rootChain: [OFFICIAL_FLASH] })
+    await ctx.settings.update(FALLBACKS_PROFILE_ENTRY, { chains: [vChain()] })
     await vi.waitFor(() => expect(listed()).toBe(true))
   })
 
   it('all-day conformance loss keeps the row registered (enabled-only gate)', async () => {
-    apply(ctx, cfg({ rootChain: [OFFICIAL_FLASH] }))
+    apply(ctx, cfg({ chains: [vChain()] }))
     await vi.waitFor(() => expect(listed()).toBe(true))
 
-    await ctx.settings.update(FALLBACKS_PROFILE_ENTRY, { rootChain: ['other/gpt-4o', 'other/gpt-5'] })
+    await ctx.settings.update(FALLBACKS_PROFILE_ENTRY, { chains: [vChain(['other/gpt-4o', 'other/gpt-5'])] })
     expect(listed()).toBe(true)
   })
 
   it('slot-row edits never churn registration', async () => {
-    apply(ctx, cfg({ rootChain: [OFFICIAL_FLASH] }))
+    apply(ctx, cfg({ chains: [vChain()] }))
     await vi.waitFor(() => expect(listed()).toBe(true))
     const updated: number[] = []
     ctx.events.on('llm/adapters-updated', () => updated.push(updated.length))
@@ -246,30 +253,48 @@ describe('registration lifecycle (P2)', () => {
 })
 
 describe('adapter contract (P1/P3)', () => {
-  it('advertises exactly the one virtual catalog row', async () => {
-    apply(ctx, cfg({ rootChain: [OFFICIAL_FLASH] }))
+  it('advertises ONE row per chain, the row id being the chain id', async () => {
+    apply(ctx, cfg({ chains: [vChain()] }))
     await vi.waitFor(() => expect(listed()).toBe(true))
     expect(await ctx.llm.listModels(FALLBACKS_PROVIDER)).toEqual([
       {
         provider: FALLBACKS_PROVIDER,
-        id: FALLBACKS_CHAIN_MODEL,
+        id: CHAIN_ID,
         // All-day winner (no extra slots) — host picker trigger is this name.
-        name: `${FALLBACKS_CHAIN_MODEL}: DeepSeek Flash[all-day]`,
+        name: `Test: DeepSeek Flash[all-day]`,
       },
     ])
+    // A config with TWO chains advertises two rows (id = chain id, label
+    // prefix per chain) — on a FRESH context, because the first apply's
+    // adapter instance owns this context's route and reads ITS config.
+    const two = new Context()
+    new LlmRuntime(two)
+    try {
+      apply(two, cfg({ chains: [vChain(), vChain([OFFICIAL_FLASH], [], 'night')] }))
+      await vi.waitFor(() => expect(listedOn(two)).toBe(true))
+      const rows = await two.llm.listModels(FALLBACKS_PROVIDER)
+      // No head stub on this context: the display name falls back to the id.
+      expect(rows.map((row) => [row.id, row.name])).toEqual([
+        [CHAIN_ID, 'Test: deepseek-flash[all-day]'],
+        ['night', 'Other: deepseek-flash[all-day]'],
+      ])
+    } finally {
+      await two.fiber.dispose()
+    }
   })
-  it('pickerDisplayName annotates the matching slot + head display name', () => {
+  it('pickerDisplayName annotates the matching slot + head display name with the chain label', () => {
     const now = new Date('2026-08-18T02:00:00Z')
-    const name = pickerDisplayName(cfg({
-      rootChain: [OFFICIAL_FLASH],
-      timeSlots: [{ kind: 'preset', preset: 'liang-peak', days: [], chain: [OFFICIAL_FLASH] }],
-    }), now, 'DeepSeek Flash')
-    expect(name).toBe(`${FALLBACKS_CHAIN_MODEL}: DeepSeek Flash[Liang Peak]`)
+    const name = pickerDisplayName(
+      vChain([OFFICIAL_FLASH], [{ kind: 'preset', preset: 'liang-peak', days: [], chain: [OFFICIAL_FLASH] }]),
+      now,
+      'DeepSeek Flash',
+    )
+    expect(name).toBe('Test: DeepSeek Flash[Liang Peak]')
   })
 
-  it('pickerDisplayName stays bare Auto when the all-day chain is non-conforming', () => {
-    expect(pickerDisplayName(cfg({ rootChain: ['openai/gpt-4o'] }))).toBe(FALLBACKS_CHAIN_MODEL)
-    expect(pickerDisplayName(cfg({ rootChain: [] }))).toBe(FALLBACKS_CHAIN_MODEL)
+  it('pickerDisplayName stays the bare chain label when the entries are non-conforming or empty', () => {
+    expect(pickerDisplayName(vChain(['openai/gpt-4o']))).toBe('Test')
+    expect(pickerDisplayName(vChain([]))).toBe('Test')
   })
 
   it('resolveModel proxies the current effective head metadata', async () => {
@@ -279,13 +304,13 @@ describe('adapter contract (P1/P3)', () => {
       inputModalities: ['text'],
       reasoning: { efforts: [{ id: 'high', name: 'High' }], defaultEffort: 'high' },
     }
-    apply(ctx, cfg({ rootChain: [OFFICIAL_FLASH] }))
+    apply(ctx, cfg({ chains: [vChain()] }))
     await vi.waitFor(() => expect(listed()).toBe(true))
 
-    const info = await ctx.llm.resolveModelInfo(FALLBACKS_PROVIDER, FALLBACKS_CHAIN_MODEL)
+    const info = await ctx.llm.resolveModelInfo(FALLBACKS_PROVIDER, CHAIN_ID)
     expect(info).toMatchObject({
       provider: FALLBACKS_PROVIDER,
-      id: FALLBACKS_CHAIN_MODEL,
+      id: CHAIN_ID,
       name: HEAD_MODEL,
       context: { contextWindow: 131_072 },
       defaultMaxTokens: 8192,
@@ -301,12 +326,12 @@ describe('adapter contract (P1/P3)', () => {
     const bare = new Context()
     try {
       new LlmRuntime(bare)
-      apply(bare, cfg({ rootChain: [OFFICIAL_FLASH] }))
+      apply(bare, cfg({ chains: [vChain()] }))
       await vi.waitFor(() => expect(bare.llm.listProviders().some((provider) => provider.id === FALLBACKS_PROVIDER)).toBe(true))
-      expect(await bare.llm.resolveModelInfo(FALLBACKS_PROVIDER, FALLBACKS_CHAIN_MODEL)).toEqual({
+      expect(await bare.llm.resolveModelInfo(FALLBACKS_PROVIDER, CHAIN_ID)).toEqual({
         provider: FALLBACKS_PROVIDER,
-        id: FALLBACKS_CHAIN_MODEL,
-        name: FALLBACKS_CHAIN_MODEL,
+        id: CHAIN_ID,
+        name: CHAIN_ID,
       })
     } finally {
       await bare.fiber.dispose()
@@ -314,13 +339,13 @@ describe('adapter contract (P1/P3)', () => {
   })
 
   it('stream() delegates to the effective head through the host runtime', async () => {
-    apply(ctx, cfg({ rootChain: [OFFICIAL_FLASH] }))
+    apply(ctx, cfg({ chains: [vChain()] }))
     await vi.waitFor(() => expect(listed()).toBe(true))
 
     const chunks = await collect(
       ctx.llm.stream({
         provider: FALLBACKS_PROVIDER,
-        model: FALLBACKS_CHAIN_MODEL,
+        model: CHAIN_ID,
         messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
       }),
     )
@@ -344,8 +369,7 @@ describe('adapter contract (P1/P3)', () => {
     apply(
       ctx,
       cfg({
-        rootChain: [OFFICIAL_FLASH],
-        timeSlots: [{ kind: 'custom', start: '00:00', end: '23:59', chain: ['other/*', 'anthropic/claude-sonnet-4'] }],
+        chains: [vChain([OFFICIAL_FLASH], [{ kind: 'custom', start: '00:00', end: '23:59', chain: ['other/*', 'anthropic/claude-sonnet-4'] }])],
       }),
     )
     await vi.waitFor(() => expect(listed()).toBe(true))
@@ -355,13 +379,13 @@ describe('adapter contract (P1/P3)', () => {
 
     // resolveModel proxies the SAME head's metadata (name comes from the
     // anthropic stub — proof the proxy followed the chain past the wildcard).
-    const info = await ctx.llm.resolveModelInfo(FALLBACKS_PROVIDER, FALLBACKS_CHAIN_MODEL)
-    expect(info).toMatchObject({ provider: FALLBACKS_PROVIDER, id: FALLBACKS_CHAIN_MODEL, name: 'Claude Sonnet 4' })
+    const info = await ctx.llm.resolveModelInfo(FALLBACKS_PROVIDER, CHAIN_ID)
+    expect(info).toMatchObject({ provider: FALLBACKS_PROVIDER, id: CHAIN_ID, name: 'Claude Sonnet 4' })
 
     // stream() delegates to the SAME head — the virtual route never streams
     // itself and never touches the leading wildcard entry.
     const chunks = await collect(
-      ctx.llm.stream({ provider: FALLBACKS_PROVIDER, model: FALLBACKS_CHAIN_MODEL, messages: [] }),
+      ctx.llm.stream({ provider: FALLBACKS_PROVIDER, model: CHAIN_ID, messages: [] }),
     )
     expect(chunks).toEqual([
       { type: 'text-delta', index: 0, text: 'hello from head' },
@@ -385,8 +409,7 @@ describe('adapter contract (P1/P3)', () => {
     apply(
       ctx,
       cfg({
-        rootChain: [OFFICIAL_FLASH],
-        timeSlots: [{ kind: 'custom', start: '00:00', end: '23:59', chain: ['other/*', 'anthropic/claude-sonnet-4'] }],
+        chains: [vChain([OFFICIAL_FLASH], [{ kind: 'custom', start: '00:00', end: '23:59', chain: ['other/*', 'anthropic/claude-sonnet-4'] }])],
       }),
     )
     await vi.waitFor(() => expect(listed()).toBe(true))
@@ -396,11 +419,11 @@ describe('adapter contract (P1/P3)', () => {
     const { agent } = makeAgent('root-route-delegate', { provider: 'mock', model: 'gpt-4o' }, { origin: 'root' })
     const served = await dispatchRequest(ctx, agent, {
       provider: FALLBACKS_PROVIDER,
-      model: FALLBACKS_CHAIN_MODEL,
+      model: CHAIN_ID,
     })
     // The served route is byte-identical to the seed, and it is what the
     // session records (the host's notice listener reads this value).
-    expect(served).toEqual({ provider: FALLBACKS_PROVIDER, model: FALLBACKS_CHAIN_MODEL })
+    expect(served).toEqual({ provider: FALLBACKS_PROVIDER, model: CHAIN_ID })
     expect(agent.session.requestHeader()?.config).toEqual(served)
 
     // Streaming the SERVED config is the root path's only way to a real model.
@@ -415,15 +438,9 @@ describe('adapter contract (P1/P3)', () => {
   })
 
   it('stream() hands a stale-registered call to the walk, which owns the pre-attempt guards', async () => {
-    const config: FallbacksConfig = {
-      ...defaultFallbacksConfig,
-      enabled: true,
-      rootChain: [OFFICIAL_FLASH],
-      presets: 'none',
-    }
-    // Tripwire for the OLD contract: the adapter used to refuse here itself
-    // (root/all-day semantics), which threw EMPTY_EFFECTIVE_CHAIN for a child
-    // that had a perfectly walkable role chain. The guards now live in the walk.
+    const config: FallbacksConfig = { ...defaultFallbacksConfig, chains: [vChain()], presets: 'none' }
+    // Tripwire for the OLD contract: the adapter never refuses here itself —
+    // the guards live in the walk.
     const walked: GenerateOptions[] = []
     installFallbacksAdapter(ctx, () => config, (options) => {
       walked.push(options)
@@ -432,9 +449,9 @@ describe('adapter contract (P1/P3)', () => {
     await vi.waitFor(() => expect(listed()).toBe(true))
 
     // Stale registration (no reconcile ran): the live config loses its chain.
-    config.rootChain = []
+    config.chains = []
     const chunks = await collect(
-      ctx.llm.stream({ provider: FALLBACKS_PROVIDER, model: FALLBACKS_CHAIN_MODEL, messages: [] }),
+      ctx.llm.stream({ provider: FALLBACKS_PROVIDER, model: CHAIN_ID, messages: [] }),
     )
     expect(walked).toHaveLength(1)
     expect(chunks).toEqual([])
@@ -445,11 +462,10 @@ describe('adapter contract (P1/P3)', () => {
     apply(
       ctx,
       cfg({
-        rootChain: [OFFICIAL_FLASH],
-        timeSlots: [{
+        chains: [vChain([OFFICIAL_FLASH], [{
           kind: 'custom', start: '00:00', end: '23:59',
-          chain: [`${FALLBACKS_PROVIDER}/${FALLBACKS_CHAIN_MODEL}`],
-        }],
+          chain: [`${FALLBACKS_PROVIDER}/${CHAIN_ID}`],
+        }])],
       }),
     )
     await vi.waitFor(() => expect(listed()).toBe(true))
@@ -458,7 +474,7 @@ describe('adapter contract (P1/P3)', () => {
     vi.setSystemTime(new Date('2026-08-18T04:00:00Z'))
 
     const chunks = await collect(
-      ctx.llm.stream({ provider: FALLBACKS_PROVIDER, model: FALLBACKS_CHAIN_MODEL, messages: [] }),
+      ctx.llm.stream({ provider: FALLBACKS_PROVIDER, model: CHAIN_ID, messages: [] }),
     )
     expect(chunks.at(-1)).toMatchObject({
       type: 'finish',
@@ -472,11 +488,11 @@ describe('adapter contract (P1/P3)', () => {
     // requires a conforming all-day: the effective head is undefined for a
     // legacy multi-model rootChain, so stream() throws UNDISPATCHABLE and
     // resolveModel falls back to the permissive default.
-    apply(ctx, cfg({ rootChain: ['other/gpt-4o', 'other/gpt-5'] }))
+    apply(ctx, cfg({ chains: [vChain(['other/gpt-4o', 'other/gpt-5'])] }))
     await vi.waitFor(() => expect(listed()).toBe(true))
 
     const chunks = await collect(
-      ctx.llm.stream({ provider: FALLBACKS_PROVIDER, model: FALLBACKS_CHAIN_MODEL, messages: [] }),
+      ctx.llm.stream({ provider: FALLBACKS_PROVIDER, model: CHAIN_ID, messages: [] }),
     )
     expect(chunks.at(-1)).toMatchObject({
       type: 'finish',
@@ -484,19 +500,27 @@ describe('adapter contract (P1/P3)', () => {
     })
     expect(stub.calls).toHaveLength(0)
 
-    expect(await ctx.llm.resolveModelInfo(FALLBACKS_PROVIDER, FALLBACKS_CHAIN_MODEL)).toEqual({
+    // resolveModel NEVER throws for a non-conforming chain: permissive default.
+    expect(await ctx.llm.resolveModelInfo(FALLBACKS_PROVIDER, CHAIN_ID)).toEqual({
       provider: FALLBACKS_PROVIDER,
-      id: FALLBACKS_CHAIN_MODEL,
-      name: FALLBACKS_CHAIN_MODEL,
+      id: CHAIN_ID,
+      name: CHAIN_ID,
     })
+
+    // Metadata NEVER throws for an unknown chain id either (permissive default).
+    expect(await ctx.llm.resolveModelInfo(FALLBACKS_PROVIDER, 'deleted-chain')).toEqual({
+      provider: FALLBACKS_PROVIDER,
+      id: 'deleted-chain',
+      name: 'deleted-chain',
+    })
+    expect(ctx.llm.imageRequestPricing(FALLBACKS_PROVIDER, 'deleted-chain')).toBeUndefined()
   })
 
   it('stream() refuses a wildcard head (no real pair to delegate)', async () => {
     apply(
       ctx,
       cfg({
-        rootChain: [OFFICIAL_FLASH],
-        timeSlots: [{ kind: 'custom', start: '00:00', end: '23:59', chain: [`${HEAD_PROVIDER}/*`] }],
+        chains: [vChain([OFFICIAL_FLASH], [{ kind: 'custom', start: '00:00', end: '23:59', chain: [`${HEAD_PROVIDER}/*`] }])],
       }),
     )
     await vi.waitFor(() => expect(listed()).toBe(true))
@@ -505,7 +529,7 @@ describe('adapter contract (P1/P3)', () => {
     vi.setSystemTime(new Date('2026-08-18T04:00:00Z'))
 
     const chunks = await collect(
-      ctx.llm.stream({ provider: FALLBACKS_PROVIDER, model: FALLBACKS_CHAIN_MODEL, messages: [] }),
+      ctx.llm.stream({ provider: FALLBACKS_PROVIDER, model: CHAIN_ID, messages: [] }),
     )
     expect(chunks.at(-1)).toMatchObject({
       type: 'finish',
@@ -534,16 +558,16 @@ describe('catalog availability of selectable routes (rc.2 modelAvailable gate, T
   }
 
   it('the virtual picker row the card composes is advertised (FallbacksChain / Auto)', async () => {
-    apply(ctx, cfg({ rootChain: [OFFICIAL_FLASH] }))
+    apply(ctx, cfg({ chains: [vChain()] }))
     await vi.waitFor(() => expect(listed()).toBe(true))
     // The adapter's `listModels` override (src/virtual-adapter.ts) is the
     // advertisement the GUI gate reads — the row the picker offers when the
     // card's Default model panel is filled.
-    expect(await advertised(FALLBACKS_PROVIDER, FALLBACKS_CHAIN_MODEL)).toBe(true)
+    expect(await advertised(FALLBACKS_PROVIDER, CHAIN_ID)).toBe(true)
   })
 
   it('a real chain model is advertised by its own provider (catalog-served, GUI-selectable)', async () => {
-    apply(ctx, cfg({ rootChain: [OFFICIAL_FLASH] }))
+    apply(ctx, cfg({ chains: [vChain()] }))
     await vi.waitFor(() => expect(listed()).toBe(true))
     // Chain entries picked in the card come from the aggregate model catalog,
     // i.e. from a provider's own `listModels` rows — the head pair resolves.
@@ -563,10 +587,10 @@ describe('catalog availability of selectable routes (rc.2 modelAvailable gate, T
 describe('imageRequestPricing (0.1.2 adoption)', () => {
   it('delegates to the SAME effective head stream() dispatches (route-accurate)', async () => {
     stub.pricing = stubPricing()
-    apply(ctx, cfg({ rootChain: [OFFICIAL_FLASH] }))
+    apply(ctx, cfg({ chains: [vChain()] }))
     await vi.waitFor(() => expect(listed()).toBe(true))
 
-    const pricing = ctx.llm.imageRequestPricing(FALLBACKS_PROVIDER, FALLBACKS_CHAIN_MODEL)
+    const pricing = ctx.llm.imageRequestPricing(FALLBACKS_PROVIDER, CHAIN_ID)
     // The head adapter's own pricing came back — queried for the HEAD pair,
     // never the virtual `FallbacksChain/Auto` arguments.
     expect(pricing?.priceImages([IMAGE_REF])).toEqual([STUB_PRICE])
@@ -575,18 +599,18 @@ describe('imageRequestPricing (0.1.2 adoption)', () => {
 
   it('returns undefined for an unknown or undispatchable head (never throws)', async () => {
     // Undispatchable: a legacy non-conforming all-day chain has no head.
-    apply(ctx, cfg({ rootChain: ['other/gpt-4o', 'other/gpt-5'] }))
+    apply(ctx, cfg({ chains: [vChain(['other/gpt-4o', 'other/gpt-5'])] }))
     await vi.waitFor(() => expect(listed()).toBe(true))
-    expect(ctx.llm.imageRequestPricing(FALLBACKS_PROVIDER, FALLBACKS_CHAIN_MODEL)).toBeUndefined()
+    expect(ctx.llm.imageRequestPricing(FALLBACKS_PROVIDER, CHAIN_ID)).toBeUndefined()
 
     // Unknown: the head pair resolves but no adapter is registered for it.
     const bare = new Context()
     try {
       new LlmRuntime(bare)
-      apply(bare, cfg({ rootChain: [OFFICIAL_FLASH] }))
+      apply(bare, cfg({ chains: [vChain()] }))
       await vi.waitFor(() =>
         expect(bare.llm.listProviders().some((provider) => provider.id === FALLBACKS_PROVIDER)).toBe(true))
-      expect(bare.llm.imageRequestPricing(FALLBACKS_PROVIDER, FALLBACKS_CHAIN_MODEL)).toBeUndefined()
+      expect(bare.llm.imageRequestPricing(FALLBACKS_PROVIDER, CHAIN_ID)).toBeUndefined()
     } finally {
       await bare.fiber.dispose()
     }
@@ -596,119 +620,70 @@ describe('imageRequestPricing (0.1.2 adoption)', () => {
     // Direct construction — the registration lifecycle can never reach a
     // registered route whose `llm` vanished, so the guard is unit-tested
     // on the class directly.
-    const config: FallbacksConfig = {
-      ...defaultFallbacksConfig,
-      enabled: true,
-      rootChain: [OFFICIAL_FLASH],
-      presets: 'none',
-    }
+    const config: FallbacksConfig = { ...defaultFallbacksConfig, chains: [vChain()], presets: 'none' }
     const adapter = new FallbacksChainAdapter(() => config, () => undefined, unusedWalk)
-    expect(adapter.imageRequestPricing(FALLBACKS_PROVIDER, FALLBACKS_CHAIN_MODEL)).toBeUndefined()
+    expect(adapter.imageRequestPricing(FALLBACKS_PROVIDER, CHAIN_ID)).toBeUndefined()
   })
 
   it('degrades to undefined when the head adapter pricing throws', async () => {
-    apply(ctx, cfg({ rootChain: [OFFICIAL_FLASH] }))
+    apply(ctx, cfg({ chains: [vChain()] }))
     await vi.waitFor(() => expect(listed()).toBe(true))
     vi.spyOn(stub, 'imageRequestPricing').mockImplementation(() => {
       throw new Error('head pricing exploded')
     })
     // The runtime lookup would propagate the throw; the virtual override
     // must absorb it into the meter's neutral estimate.
-    expect(ctx.llm.imageRequestPricing(FALLBACKS_PROVIDER, FALLBACKS_CHAIN_MODEL)).toBeUndefined()
+    expect(ctx.llm.imageRequestPricing(FALLBACKS_PROVIDER, CHAIN_ID)).toBeUndefined()
   })
 
   it('registers nothing with no configured content — the pricing face is moot (T2)', async () => {
     // An empty config never registers the virtual route (content presence),
     // so there is no `FallbacksChain` row to answer a pricing lookup with.
-    apply(ctx, cfg({ rootChain: [] }))
+    apply(ctx, cfg({ chains: [] }))
     // Give any (incorrect) registration a beat before asserting.
     await vi.waitFor(() => {
       expect(ctx.llm.listProviders().filter((provider) => provider.id === FALLBACKS_PROVIDER)).toHaveLength(0)
     })
-    expect(ctx.llm.imageRequestPricing(FALLBACKS_PROVIDER, FALLBACKS_CHAIN_MODEL)).toBeUndefined()
+    expect(ctx.llm.imageRequestPricing(FALLBACKS_PROVIDER, CHAIN_ID)).toBeUndefined()
   })
 })
 
 /**
- * Retry attribution (`dsh-llm` `prepareRoutes`): the host captures
+ * Retry policy (`dsh-llm` `prepareRoutes`): the host captures
  * `adapter.providerRetryPolicy(provider) ?? resolveRetryPolicy(void 0, …)`
- * ONCE, when a route is registered — so a virtual route declaring no policy
- * of its own silently hands `FallbacksChain` the permissive normal default
- * and drops the `retryPolicy` the user configured on the head actually served
- * by the delegate. The proxy answers with the SAME captured object the head's
- * own route returns; an unresolvable head answers `undefined` (the host
- * default) rather than a fabricated policy — and never throws, because that
- * throw happens INSIDE `registerAdapter` and would take the whole virtual
- * route down.
+ * ONCE per provider at registration. The adapter stays ONE `FallbacksChain`
+ * provider carrying N chain rows, so the virtual route can no longer mirror a
+ * per-chain head's policy — it answers `undefined` and the host applies its
+ * own default. DOCUMENTED DEGRADATION (named virtual chains §2): a head's
+ * custom `retryPolicy` (including `mode: 'always'`) stops applying on the
+ * virtual route; the one-provider-per-chain alternative was rejected (picker
+ * UX + per-chain register/unregister churn).
  */
-describe('providerRetryPolicy (route-accurate retry attribution)', () => {
+describe('providerRetryPolicy (documented degradation — host default)', () => {
   /** Unmistakable head policy: `always` + a backoff the host default never has. */
   const HEAD_POLICY: ResolvedRetryPolicy = alwaysPolicy({ initialDelayMs: 1234, maxDelayMs: 4321 })
 
-  it('reports the effective head policy, not the permissive default', async () => {
+  it('returns undefined even when the head route declares a custom policy (no head mirror)', async () => {
     const local = new Context()
     try {
       new LlmRuntime(local)
       const headStub = new StubHeadAdapter()
-      // Declared BEFORE the registration below — the host captures it there.
       headStub.policy = HEAD_POLICY
       local.llm.registerAdapter([HEAD_PROVIDER], headStub)
-      apply(local, cfg({ rootChain: [OFFICIAL_FLASH] }))
+      apply(local, cfg({ chains: [vChain()] }))
       await vi.waitFor(() => expect(listedOn(local)).toBe(true))
 
+      // The control: the head route itself still answers `always`.
+      expect(local.llm.providerRetryPolicy(HEAD_PROVIDER)).toMatchObject({ mode: 'always', initialDelayMs: 1234 })
+      // The virtual route does NOT mirror it — the host captured the
+      // adapter's `undefined` answer at registration and resolved its OWN
+      // normal default (never the head's `always`).
       const virtual = local.llm.providerRetryPolicy(FALLBACKS_PROVIDER)
-      // The head route's own captured object came back — identity, not a copy.
-      expect(virtual).toBe(local.llm.providerRetryPolicy(HEAD_PROVIDER))
-      expect(virtual).toMatchObject({ mode: 'always', initialDelayMs: 1234, maxDelayMs: 4321 })
+      expect(virtual).toBeDefined()
+      expect(virtual).not.toBe(local.llm.providerRetryPolicy(HEAD_PROVIDER))
+      expect(virtual).toMatchObject({ mode: 'normal' })
     } finally {
       await local.fiber.dispose()
-    }
-  })
-
-  it('reports the runtime default for a non-conforming chain (conformance-gated, not policy-gated)', async () => {
-    // Non-conformance lives in the chain TAIL (`isAllDayConforming` reads only
-    // the last entry), while the FIRST entry is a REGISTERED official head.
-    // That combination is what makes the conformance gate observable: drop the
-    // gate and head resolution walks the raw chain to that registered head —
-    // whose captured policy IS `always` — so the proxy would echo `always`
-    // here instead of the host default, and this arm would fail. The head
-    // route's own `always` answer in the same runtime (asserted below) is the
-    // control: the proxy is gated on a conforming chain, not a blanket echo of
-    // every policy the runtime happens to hold.
-    const local = new Context()
-    try {
-      new LlmRuntime(local)
-      const headStub = new StubHeadAdapter()
-      headStub.policy = HEAD_POLICY
-      local.llm.registerAdapter([HEAD_PROVIDER], headStub)
-      apply(local, cfg({ rootChain: [OFFICIAL_FLASH, 'other/gpt-4o'] }))
-      await vi.waitFor(() => expect(listedOn(local)).toBe(true))
-
-      expect(local.llm.providerRetryPolicy(HEAD_PROVIDER)).toMatchObject({ mode: 'always' })
-      expect(local.llm.providerRetryPolicy(FALLBACKS_PROVIDER)).toMatchObject({
-        mode: 'normal',
-        maxRetries: 5,
-        initialDelayMs: 500,
-        maxDelayMs: 10_000,
-        jitterRatio: 0.1,
-      })
-    } finally {
-      await local.fiber.dispose()
-    }
-  })
-
-  it('absorbs an unregistered head provider instead of failing registration', async () => {
-    // The chain resolves to a conforming head but no adapter owns that route,
-    // so the runtime's own lookup throws `NO_ADAPTER` — inside the plugin's
-    // `registerAdapter` call. Absorbing it is what keeps the row selectable.
-    const bare = new Context()
-    try {
-      new LlmRuntime(bare)
-      apply(bare, cfg({ rootChain: [OFFICIAL_FLASH] }))
-      await vi.waitFor(() => expect(listedOn(bare)).toBe(true))
-      expect(bare.llm.providerRetryPolicy(FALLBACKS_PROVIDER)).toMatchObject({ mode: 'normal', maxRetries: 5 })
-    } finally {
-      await bare.fiber.dispose()
     }
   })
 
@@ -716,12 +691,7 @@ describe('providerRetryPolicy (route-accurate retry attribution)', () => {
     // Direct construction: the registration lifecycle cannot reach a
     // registered route whose `llm` vanished, so the guard is unit-tested on
     // the class directly (mirrors the pricing guard above).
-    const config: FallbacksConfig = {
-      ...defaultFallbacksConfig,
-      enabled: true,
-      rootChain: [OFFICIAL_FLASH],
-      presets: 'none',
-    }
+    const config: FallbacksConfig = { ...defaultFallbacksConfig, chains: [vChain()], presets: 'none' }
     const adapter = new FallbacksChainAdapter(() => config, () => undefined, unusedWalk)
     expect(adapter.providerRetryPolicy(FALLBACKS_PROVIDER)).toBeUndefined()
   })
@@ -771,15 +741,15 @@ describe('delegated history provenance (R-004)', () => {
 
   /** A durable assistant message as the loop records it on the virtual route. */
   function virtualRouteHistory(replayState?: unknown) {
-    return assistantOn(FALLBACKS_PROVIDER, FALLBACKS_CHAIN_MODEL, replayState)
+    return assistantOn(FALLBACKS_PROVIDER, CHAIN_ID, replayState)
   }
 
   /** Delegate one request with `messages`; return the history the head adapter saw. */
   async function delegatedHistory(messages: ReturnType<typeof assistantOn>[]) {
-    apply(ctx, cfg({ rootChain: [OFFICIAL_FLASH] }))
+    apply(ctx, cfg({ chains: [vChain()] }))
     await vi.waitFor(() => expect(listed()).toBe(true))
     await collect(
-      ctx.llm.stream({ provider: FALLBACKS_PROVIDER, model: FALLBACKS_CHAIN_MODEL, messages }),
+      ctx.llm.stream({ provider: FALLBACKS_PROVIDER, model: CHAIN_ID, messages }),
     )
     expect(stub.calls).toHaveLength(1)
     return stub.calls[0]!.options.messages
@@ -842,7 +812,7 @@ describe('delegated history provenance (R-004)', () => {
     const unreadable = { someAdapterPrivateShape: 'unrecognised' }
     const [delegated] = await delegatedHistory([virtualRouteHistory(unreadable)])
     expect(delegated).toMatchObject({
-      source: { kind: 'model', provider: FALLBACKS_PROVIDER, model: FALLBACKS_CHAIN_MODEL },
+      source: { kind: 'model', provider: FALLBACKS_PROVIDER, model: CHAIN_ID },
     })
     expect((delegated?.source as { replayState?: unknown }).replayState).toBeUndefined()
   })

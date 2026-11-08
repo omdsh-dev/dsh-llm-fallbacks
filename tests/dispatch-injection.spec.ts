@@ -1,12 +1,11 @@
 /**
- * Dispatch-seam mount, wired through the REAL plugin `apply()` (design
- * dsh-022-rc1-upgrade §1.3, direction C).
+ * Dispatch-seam role-chain stamp, wired through the REAL plugin `apply()`
+ * (named virtual chains §3).
  *
  * `tests/seam-inject.spec.ts` pins the seam's own decision matrix; this suite
- * pins the WIRING: the seam installed by `apply()` gets the live config, the
- * shared policy reader and the card's `chainHeads` map, so a role-bearing
- * dispatch really lands on the virtual route and the bookkeeping lands in the
- * plugin's own maps (cleaned up on `agent/disposed`).
+ * pins the WIRING: the seam installed by `apply()` gets the live config, so a
+ * role-bearing dispatch really lands on the role's named chain and the record
+ * is cleaned up on `agent/disposed`.
  *
  * The dispatch side is driven the way the host drives it: a consumer fiber
  * reads `ctx.subagents` and calls `startActivation` through the wrapper.
@@ -16,15 +15,16 @@
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
+import { OFFICIAL_FLASH } from '../src/time-slots.ts'
 import type { FallbacksConfig } from '../src/config.ts'
-import { apply, chainHeads } from '../src/index.ts'
+import { apply } from '../src/index.ts'
 import { subagentSeamOf, type SubagentActivationSpecView } from '../src/subagents-seam.ts'
-import { FALLBACKS_CHAIN_MODEL, FALLBACKS_PROVIDER } from '../src/virtual-adapter.ts'
+import { FALLBACKS_PROVIDER } from '../src/virtual-adapter.ts'
 import { MemorySettings } from './support/memory-settings.ts'
 import { cfg } from './support/harness.ts'
 
-/** Declared taxonomy: `coder` owns the chain the mount labels as its head. */
-const CODER_CHAIN = 'anthropic/claude-sonnet-4'
+/** The named chain the `coder` role points at. */
+const CHAIN_ID = 'daily'
 
 /** A LOCAL backend — `prepareContinuable` routes the start through `manager.startLocal`. */
 const LOCAL_PROVIDER = { prepareContinuable: () => undefined }
@@ -35,8 +35,8 @@ const EXTERNAL_PROVIDER = { tag: 'external' }
 /** A rooted, walkable config. */
 function activeConfig(overrides: Partial<FallbacksConfig> = {}): FallbacksConfig {
   return cfg({
-    rootChain: ['deepseek-official/deepseek-flash'],
-    roles: { list: [{ id: 'coder', persona: '', chain: [CODER_CHAIN] }], rules: [] },
+    chains: [{ id: CHAIN_ID, label: 'Test', entries: [OFFICIAL_FLASH], timeSlots: [] }],
+    roles: { list: [{ id: 'coder', persona: '', chain: CHAIN_ID }] },
     ...overrides,
   })
 }
@@ -125,8 +125,8 @@ function mount(config: FallbacksConfig = activeConfig(), provider: Record<string
   return fake
 }
 
-describe('dispatch-seam mount through apply()', () => {
-  it('stamps the virtual route, records the mount and labels the chain head', async () => {
+describe('dispatch-seam stamp through apply()', () => {
+  it('stamps the role chain and records the role', async () => {
     const fake = mount()
 
     const result = await activate(ctx, activationSpec())
@@ -134,22 +134,14 @@ describe('dispatch-seam mount through apply()', () => {
     const received = fake.activations[0]!
     expect(received.request.agentOptions).toEqual({
       provider: FALLBACKS_PROVIDER,
-      model: FALLBACKS_CHAIN_MODEL,
+      model: CHAIN_ID,
     })
     const childId = String(received.childId)
     expect(result).toMatchObject({ childId })
-    expect(subagentSeamOf(ctx)?.records.get(childId)).toMatchObject({
-      role: 'coder',
-      virtualRouteInjected: true,
-    })
-    expect(chainHeads(ctx)?.get(childId)).toEqual({
-      at: expect.any(Number),
-      route: { provider: 'anthropic', model: 'claude-sonnet-4' },
-      source: 'injected',
-    })
+    expect(subagentSeamOf(ctx)?.records.get(childId)).toMatchObject({ role: 'coder' })
   })
 
-  it('leaves an explicit spawn route untouched and labels it authorized', async () => {
+  it('leaves an explicit spawn route untouched (explicit wins)', async () => {
     const fake = mount()
 
     await activate(ctx, activationSpec({ agentOptions: { provider: 'openai', model: 'gpt-4o' } }))
@@ -157,14 +149,10 @@ describe('dispatch-seam mount through apply()', () => {
     const received = fake.activations[0]!
     expect(received.request.agentOptions).toEqual({ provider: 'openai', model: 'gpt-4o' })
     const childId = String(received.childId)
-    expect(subagentSeamOf(ctx)?.records.get(childId)?.virtualRouteInjected).toBeUndefined()
-    expect(chainHeads(ctx)?.get(childId)).toMatchObject({
-      route: { provider: 'openai', model: 'gpt-4o' },
-      source: 'authorized',
-    })
+    expect(subagentSeamOf(ctx)?.records.get(childId)).toMatchObject({ role: 'coder' })
   })
 
-  it('never mounts a dispatch that declares no role (the native path is byte-identical)', async () => {
+  it('never stamps a dispatch that declares no role (the native path is byte-identical)', async () => {
     const fake = mount()
     const spec = activationSpec({ executeAs: 'nobody' })
 
@@ -173,21 +161,19 @@ describe('dispatch-seam mount through apply()', () => {
     // No role → the caller's OWN spec object reaches the runtime, untouched.
     expect(fake.activations[0]).toBe(spec)
     expect(subagentSeamOf(ctx)?.records.size).toBe(0)
-    expect(chainHeads(ctx)?.size).toBe(0)
   })
 
-  it('does not mount on an external backend (pure inheritance)', async () => {
+  it('does not stamp on an external backend (pure inheritance)', async () => {
     const fake = mount(activeConfig(), EXTERNAL_PROVIDER)
 
     await activate(ctx, activationSpec())
 
     const received = fake.activations[0]!
     expect(received.request.agentOptions).toBeUndefined()
-    expect(chainHeads(ctx)?.size).toBe(0)
   })
 
-  it('does not mount when the config has no walkable chain at all', async () => {
-    const fake = mount(cfg({ rootChain: [], roles: { list: [], rules: [] } }))
+  it('does not stamp when the config has no chains at all', async () => {
+    const fake = mount(cfg({ chains: [], roles: { list: [] } }))
 
     await activate(ctx, activationSpec())
 
@@ -198,11 +184,10 @@ describe('dispatch-seam mount through apply()', () => {
     const fake = mount()
     await activate(ctx, activationSpec())
     const childId = String(fake.activations[0]!.childId)
-    expect(chainHeads(ctx)?.has(childId)).toBe(true)
+    expect(subagentSeamOf(ctx)?.records.has(childId)).toBe(true)
 
     ctx.emit('agent/disposed', { agent: { id: childId } })
 
-    expect(chainHeads(ctx)?.has(childId)).toBe(false)
     expect(subagentSeamOf(ctx)?.records.has(childId)).toBe(false)
   })
 })

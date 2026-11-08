@@ -1,18 +1,18 @@
 ---
 module: dsh-llm-fallbacks
 date: 2026-08-11
-last_updated: 2026-11-06
+last_updated: 2026-11-08
 problem_type: architecture_pattern
 category: architecture-patterns
 severity: low
-plan_id: dsh-022-rc1-upgrade
+plan_id: named-virtual-chains
 applies_when:
   - Implementing model- or request-level automatic recovery or route switching in dsh
   - Mapping omp retry.modelFallback / retry.fallbackChains semantics onto the dsh stream seam
   - Extending or maintaining the dsh-llm-fallbacks plugin
   - Exposing plugin configuration to web settings clients (own gateway channel /api/fallbacks/get|set|reset)
   - Mounting subagents on a virtual route, or coordinating with dsh model selection
-  - Understanding the two-block config model (rootChain / roles.list / roles.rules / inherit) or migrating legacy chains / roles.default
+  - Understanding the named-chain config model (chains[] + a role chain POINTER) or migrating the v1 two-block keys
   - Understanding the role-seeds capability (companion-declared roles, seed default + override + revert)
 tags:
   - dsh
@@ -28,10 +28,11 @@ tags:
 # dsh LLM fallback architecture: the chain walk inside the virtual adapter
 
 How omp's `retry.modelFallback` / `retry.fallbackChains` semantics land on dsh: the
-fallback decision runs inside the virtual `FallbacksChain/Auto` adapter's `stream()`
-(`src/chain-walk.ts`), and the configuration, settings, seed and routing surfaces
-around it. Direction C of the dsh 0.2.2-rc.1 upgrade: only a session routed to the
-virtual row has a chain.
+config holds N **named virtual chains**, the virtual adapter advertises one
+`FallbacksChain/<chain id>` picker row per chain, and the fallback decision runs
+inside that row's `stream()` (`src/chain-walk.ts`) — plus the configuration,
+settings, seed and routing surfaces around it. Only a session routed to one of those
+rows has a chain.
 
 ## Context
 
@@ -56,13 +57,13 @@ the adapter the request already resolves to.
 ### The walk is the fallback engine (decision and application at one seam)
 
 1. **One walk per virtual call.** `FallbacksChainAdapter.stream()` returns
-   `walkChain` (`src/chain-walk.ts`). Start resolves the session's agent view, its
-   role and the chain tail, then throws synchronously before the first chunk when no
-   attempt can start: `EMPTY_EFFECTIVE_CHAIN`, `UNDISPATCHABLE_EFFECTIVE_HEAD`
-   (wildcard, malformed or self-route head — the recursion guard), or
-   `LLM_UNAVAILABLE`. A ROOT walk additionally requires the all-day tail to conform
-   (exactly one official model); a subagent walks its role chain, so the all-day
-   shape never gates a child.
+   `walkChain` (`src/chain-walk.ts`). Start takes the chain id from `options.model`
+   (the row id IS the chain id) and throws synchronously before the first chunk when
+   no attempt can start: `UNKNOWN_CHAIN` (a chain deleted or renamed while a session
+   still selects it), `EMPTY_EFFECTIVE_CHAIN`, `UNDISPATCHABLE_EFFECTIVE_HEAD`
+   (non-conforming tail, wildcard, malformed or self-route head — the recursion
+   guard), or `LLM_UNAVAILABLE`. Every walk requires ITS chain's tail to conform;
+   there is no root/child split.
 2. **Per attempt**: a nested `llm.stream({ ...options, provider, model })`, every
    chunk yielded as it arrives. The first yielded chunk **commits** the attempt.
 3. **Uncommitted trigger-code failure**: the finish is swallowed, the route is booked
@@ -93,15 +94,16 @@ the adapter the request already resolves to.
 
 ### Scope: only the virtual row walks
 
-A session has plugin fallback **iff** its model selection routes to
-`FallbacksChain/Auto` — the root agent by selection, an inheriting subagent by seam
-mount. A real provider/model selection, root or subagent, gets `llm-retry` only;
+A session has plugin fallback **iff** its model selection routes to one of the
+`FallbacksChain/<chain id>` rows — the root agent by selection, a subagent whose role
+points at that chain by seam stamp. A real provider/model selection, root or
+subagent, gets `llm-retry` only;
 nothing in this plugin rewrites its route. This is the locked product decision, not a
 degradation: the alternative (a listener rewriting `agent/request`) is rejected at
 runtime.
 
-The row is visible whenever content is configured (`isFallbackActive`: a `rootChain`,
-a `timeSlots` row, or a declared role) — conformance gates the delegate, not the row.
+The rows are visible whenever a chain is configured (`isFallbackActive` =
+`chains.length > 0`) — conformance gates the delegate, not the row.
 No **model-selection coordination** is needed, and the former registration-order
 clobber is gone by construction: the walk dispatches each attempt itself inside the
 virtual request, so an active session selection can never be re-applied over a
@@ -110,119 +112,134 @@ documented degradation, and the card's `status.selectionNote` line.
 
 ### Subagent mount at the dispatch seam
 
-An inheriting local child reaches the same row through
-`SubagentStartRequest.agentOptions`: the seam stamps
-`{ provider: 'FallbacksChain', model: 'Auto' }`, which the host merges over the
-parent's route when the child is created. All five conditions must hold:
+A local child reaches a named chain through `SubagentStartRequest.agentOptions`: the
+seam stamps `{ provider: 'FallbacksChain', model: <role.chain> }`, which the host
+merges over the parent's route when the child is created. Four conditions must hold:
 
-1. a dispatch role resolved (the child request's `**Execute as**: <id>` header, or the
-   seam record of a reserved child on a resume);
-2. the request carries **no** explicit `agentOptions.provider` / `.model` — an
+1. a role resolved at dispatch (the explicit `agentPreset` header, or the child
+   prompt's `**Execute as**: <id>` header — two stages, no rules stage);
+2. that role's `chain` POINTER is non-empty **and** names a declared `chains[].id` —
+   an absent pointer, an empty string or an undeclared id all mean NOT SPECIFIED, and
+   the plugin does not intervene;
+3. the request carries **no** explicit `agentOptions.provider` / `.model` — an
    explicit pair is **authorized** and never touched;
-3. the backend is local;
-4. the config is active and the resolved role's concatenated chain has a dispatchable
-   exact head (`roleChainEntries` + `firstDispatchableExactHead` — the same two calls
-   the walk starts from);
-5. the host subagent policy is not `unprovable` (fail-closed: never mount a route
-   whose switches the plugin could not prove).
+4. the backend is local.
 
-Mounting is creation-time only, so a resumed child's own durable selection always
-wins. External (acp) backends create no local agent and cannot resolve the virtual
-provider out of process — they keep pure inheritance, i.e. no chain. The seam record
-carries `virtualRouteInjected` (sticky across record rewrites), which is also the flag
-that makes the walk intersect a mounted child's candidates with the host allowlist in
-candidate order: an empty intersection records a blocked switch and exhausts the walk,
-and an `unprovable` policy fails closed. Chain-head bookkeeping labels the source —
-`injected` for a mount, `authorized` for a request that already carried a route.
+There is **no host-policy consultation**: the mapping is the operator's static config,
+not the plugin choosing a route — no allowlist intersection, no `unprovable`
+fail-closed branch, no blocked-switch record, no `virtualRouteInjected` marker. The
+accepted degradation that follows: a switch INSIDE a stamped child's chain is not
+filtered by the host allowlist (the chain is hand-written config, every entry an
+explicit choice).
 
-### Config model and chain resolution (two blocks)
+The seam does **not** double-gate conformance: a declared but non-conforming chain is
+stamped and the walk's own gate refuses it (one gate, in the walk). Mounting is
+creation-time only, so a resumed child's own durable selection always wins and is never
+re-stamped. External (acp) backends create no local agent and cannot resolve the
+virtual provider out of process — they keep pure inheritance, i.e. no chain.
+### Config model and chain resolution (named chains)
 
-**Block 1 — `rootChain`**: one chain for the root agent; empty means the root does not
-degrade. **Block 2 — declared role entities**: `roles.list` (`id` / `persona` /
-`chain?` / `fallback`, plus the reserved `prompt?` / `permissions?`, which have no
-consumer) and `roles.rules` (`provider?` / `model?` → a declared id or the built-in
-`'inherit'`). Rules are **subagent-only**: a root request never matches one and always
-resolves to `'inherit'`, so a root carries its own chain through `rootChain` alone (the
-per-rule `origin` field survives in the type and schema for old settings files but is
-ignored at match time). There is deliberately no `system` reserved word: the current
-model is always filtered as same-as-current, and the UI says "default: current system
-model".
+**The chain list — `chains[]`**: each entry is `{ id, label, entries, timeSlots? }`.
+`id` is the picker model id (`FallbacksChain/<id>`), case-sensitive and unique,
+constrained by `/^[A-Za-z0-9][A-Za-z0-9-]{0,31}$/`; `label` is display-only (tab title
+and picker prefix) so renaming it can never orphan a saved selection; `entries` is the
+默认降级链 followed by the 默认模型 tail (exactly one official model, Flash XOR Pro);
+`timeSlots` are scoped to that chain. Empty `chains` is the ONLY first-run state — no
+chain is pre-created and no picker row appears until one is configured.
 
-**Role resolution is three ordered stages, first hit wins** (`resolveDeclaredRole` in
+**Role entities — `roles.list[] = { id, persona, chain? }`**: identity plus ONE manual
+pointer. `chain` names a `chains[].id`; it is never a chain definition and never an
+auto mode. Absent/empty = NOT SPECIFIED (the plugin does not intervene, the child
+inherits the delegating agent's route); an undeclared id warns once at startup and
+behaves as NOT SPECIFIED. `prompt` / `permissions` stay schema-reserved with no
+consumer, and `'inherit'` stays a reserved id. The v1 `fallback` append policy,
+per-role inline chains and the whole `roles.rules` matcher are deleted, so the
+namespace holds plain ids only.
+
+**Role resolution is two ordered stages, first hit wins** (`resolveDeclaredRole` in
 `src/role-resolution.ts`): the explicit `agentPreset` session header → the
-dispatch-declared role the seam resolved from the child prompt → the deterministic
-`roles.rules` match (`resolveRole`, ordered, first match wins, omitted fields
-unconstrained). An absent, `'inherit'`, undeclared or since-removed reference falls
-through silently — a stale reference is not an error. Ids are normalized by trim, so a
-padded YAML id and its trimmed rule reference resolve to the same role. A matched rule
-whose target is not declared warns and falls back to `'inherit'`. There is **no LLM
-auto-match stage**: its only host point was the deleted `agent/request` inject, and a
-nested completion inside the walk would be one extra request per failure. Resolution is
-pure and synchronous — the walk must throw its pre-attempt errors before the first
-chunk.
+dispatch-declared role the seam resolved from the child prompt (`**Execute as**: <id>`,
+header region only, ambiguity ⇒ no role). An absent, empty, `'inherit'`, undeclared or
+since-removed reference falls through silently — a stale reference is not an error.
+Ids are normalized by trim, so a padded YAML id and its trimmed header resolve to the
+same role. There is **no LLM auto-match stage** (its only host point was the deleted
+`agent/request` inject, and a nested completion inside the walk would be one extra
+request per failure) and no rules stage. Resolution is pure and synchronous — the walk
+must throw its pre-attempt errors before the first chunk.
 
-**Chain resolution is append-not-replace**:
-`candidates = [role chain, rootChain tail]` — the role's own entries first, the root
-chain as the fallback behind them; `fallback: 'none'` means the role chain alone (empty
-chain + `none` = pass-through); `'inherit'`, no match and unknown ids all resolve to the
-`rootChain` (an unknown target warns once). For a ROOT-origin walk the trailing chain is
-**slot-effective**: the first matching `timeSlots` row's chain replaces the all-day
-`rootChain` at request time (`resolveEffectiveChain`), while a subagent walk keeps the
-raw `rootChain` — a role chain is not slot-rotated. Chain-key specificity (exact
-provider/model keys → `provider/*` keys → role chain → default key) and `roles.default`
-are deleted, so the namespace holds role names only; `provider/*` stays a valid chain
-entry (changed provider, request model kept) even though the settings GUI no longer
-offers a wildcard checkbox.
+**Chain resolution is per chain, replace-not-append**: `resolveChain(entries, provider,
+model)` walks the SELECTED chain's own `entries` — there is nothing to concatenate.
+Slot rotation is scoped to that chain: the first matching `timeSlots` row's chain
+REPLACES the chain's `entries` at request time (`resolveEffectiveChain` in
+`src/time-slots.ts`), no match falls back to the chain's own entries, and two chains
+never share slot state (the rotation log is keyed per `(agent, chain)`). Chain-key
+specificity (exact provider/model keys → `provider/*` keys → role chain → default key)
+and `roles.default` are deleted; `provider/*` stays a valid chain entry (changed
+provider, request model kept) even though the settings GUI no longer offers a wildcard
+checkbox.
 
 **Decision hot path (single pass)**: `resolveChainViews` produces `all` plus wildcard
-provenance in one traversal (an unknown role warns at most once per decision);
-`hasWildcardEntry` uses the same concatenation as resolution; catalog existence probes
-are built only when a wildcard entry is reachable (a pure-exact chain probes nothing);
-`selectCandidates` filters in place. Defensive warns go through the injected logger.
-
-### Removed mechanisms (direction C)
+provenance in one traversal; `hasWildcardEntry` uses the same source as resolution;
+catalog existence probes are built only when a wildcard entry is reachable (a
+pure-exact chain probes nothing); `selectCandidates` filters in place. Defensive warns
+go through the injected logger.
+### Removed mechanisms
 
 | Removed | Why, and what replaced it |
 |---|---|
 | `agent/request` / `agent/request-error` listeners, `pendingSwitch`, `stepFailures`, `appliedTurnStep` | rc.1 rejects the override and reuses the captured selection; the walk owns the switch and forgets per-call bookkeeping with the walk |
 | `alwaysModeRetryCap` | No successor: the cap is per walk, and an llm-retry re-entry is a fresh walk that starts past the cooled head |
 | `roleAutoMatch` and its automatch module | No auto-match stage; resolution stays pure and synchronous |
-| The override and authorized-route modules | Replaced by the pure allowlist module `src/route-allowlist.ts` |
-| Config-level `enabled` switch | Content presence (`isFallbackActive`) is the gate |
+| `roles.rules`, per-role inline chain arrays, the `fallback` (`inherit-root` / `none`) append policy | Named chains + one manual pointer per role: a child's chain is decided by config the operator can read off, not by a match |
+| The override / authorized-route modules and the subagent-policy allowlist module | Native chains make the indirection pointless — a switch inside a chain is not allowlist-filtered (documented degradation) |
+| Config-level `enabled` switch | Content presence (`isFallbackActive` = `chains.length > 0`) is the gate |
+| The read-only status surfaces — the card's 运行状态 block and its switch-history read, the General-page status row, the host-policy status area with its sync button, the `subagentPolicy` wire field | One settings surface: the card. Switch history renders in the transcript row, the config summary in `/fallbacks config` |
 | Half-open success closure via a plugin-scope `session/event` subscription | The walk observes success itself: a normal, non-aborted finish at the attempt boundary |
-
 ### Legacy configuration: detection only, never rewriting
 
-Legacy keys are banner-reported, not migrated. `detectLegacyKeys` recognizes
-`chains`, `alwaysModeRetryCap`, `roleAutoMatch`, `roles.default`,
-`roles.list[].label` / `.description` (renamed to `persona`), and `roles.rules[].role`
-values naming no declared id. Three channels react, and the plugin never edits
-configuration:
+Legacy keys are banner-reported, not migrated: the migration is **warn-only** and the
+plugin never rewrites the user's file. `detectLegacyKeys` recognizes the v1 two-block
+surface — `rootChain`, the top-level `timeSlots` array, `roles.rules`,
+`roles.list[].fallback`, and the ARRAY form of `roles.list[].chain` — plus the older
+`enabled`, `chains`, `alwaysModeRetryCap`, `roleAutoMatch`, `roles.default` and the
+`label` / `description` role fields. Three channels react:
 
 1. **Startup warn** — one `llm-fallbacks: legacy config keys detected …` line that
    points at the migration table in `docs/configuration.md`.
 2. **Gateway + UI banner** — `get()` carries `legacyKeys: string[]`; a non-empty list
    renders the migration banner (zh/en), the form stays editable, and a save writes the
    new shape. Save is merge-only, so it cannot remove a user-layer legacy key.
-3. **Migration table** in `docs/configuration.md` — per-key before/after.
+3. **Migration table** in `docs/configuration.md` — per-key before/after, including the
+   conventional migrated chain `{ id: 'Auto', label: '默认链', entries: <old rootChain>,
+   timeSlots: <old rows> }`.
 
 schemastery retains unknown keys in the composed object (top level, nested objects and
 list items all pass through), so reading the composed object is an accurate legacy
 probe. `validateConfigPatch` rejects unknown keys by own-key membership regardless of
-that retention.
-
+that retention, and the v1 keys are stripped from every snapshot and every write — a
+save can never re-persist them.
 ### Validation (warn-not-crash, two surfaces)
 
-- **Host `validateFallbacksConfig`** — pure, never throws, never mutates: id format
-  `/^[a-z0-9-]{1,32}$/`, uniqueness, `'inherit'` banned in `roles.list`, rule
-  references ∈ declared ∪ `{'inherit'}`, `fallback` enum, selector legality;
-  `persona` is free text and unchecked. One warn per violation; the offending config is
-  inert but the plugin stays usable. It runs once at startup (with `detectLegacyKeys`);
-  live settings patches are covered by the settings schema, and runtime resolution
-  tolerates bad values defensively rather than re-validating on every change.
+- **Host `validateFallbacksConfig`** — pure, never throws, never mutates: per chain the
+  id pattern, case-sensitive uniqueness, a non-empty `label`, the 默认模型 tail
+  conformance (only when `entries` is non-empty) and the per-chain slot guards (no
+  repeated preset, a frozen preset carries no windows, `HH:mm` custom bounds, 0–6
+  integer days, a non-empty row chain); per role the id format
+  `/^[a-z0-9-]{1,32}$/`, uniqueness and the `'inherit'` reservation, plus one warn for
+  a `chain` pointer naming no declared chain. `persona` is free text and unchecked. One
+  warn per violation; the offending item is inert but the plugin stays usable, and a
+  half-open escalation that cannot bite (cooldown at or above the 1-hour cap) warns
+  once. It runs once at startup (with `detectLegacyKeys`); live settings patches are
+  covered by the settings schema, and runtime resolution tolerates bad values
+  defensively rather than re-validating on every change.
+- **Gateway `validateChainsPatch`** — rejects on save exactly what the startup
+  validator warns about, with one asymmetry worth remembering: an EMPTY `entries` array
+  is **accepted** (the picker row still registers, the walk refuses with
+  `EMPTY_EFFECTIVE_CHAIN`), while a non-empty one must end with an official model.
 - **Client `validateDraft`** — the same rules plus selector legality, per-row inline
-  errors, and a blocked save that never touches the gateway.
-
+  errors under their owning block, and a per-tab save that never touches the gateway
+  while its chain is invalid. The card is stricter than the gateway in one respect
+  only: its own Save also requires a 默认模型 tail.
 ### Cooldown, safety valves and half-open recovery
 
 `cooldownMs` keeps a switched-away or failed route out of candidacy;
@@ -277,22 +294,22 @@ not readable or writable over the wire by default — and patching that list is 
 The generic pattern (wire contract, optional-settings injection, unknown-key rejection,
 no-revision principle, `present` flag) → `.mstar/knowledge/architecture-patterns/dsh-gateway-settings-channel.md`.
 
-**Entry surfaces**: the official plugin-config card (`settings.plugin.item`, replacing
-the old standalone settings section), a read-only general status row
-(`settings.general.item`, order 100), the session-scoped `/fallbacks` diagnostic
-command (origin, role, chain role, chain, inherit, slot winner, recent switches,
+**Entry surfaces**: the official plugin-config card (`settings.plugin.item`, the only
+settings surface — chain tabs with a per-tab Save, role cards with the 指定降级链
+pointer, the advanced group), the session-scoped `/fallbacks` diagnostic command
+(origin, resolved dispatch role + its chain pointer, every declared chain with tail and
+current slot label and the calling agent's selection marked, recent switches,
 cooldowns), and the transcript switch row (`conversationEvents` +
-`conversation.chat.node`, pure render). Card = edit, row = summary, command = in-session
-diagnosis, transcript row = recovery visibility. Mount table →
+`conversation.chat.node`, pure render). Card = the single edit surface, command =
+in-session diagnosis, transcript row = recovery visibility. Mount table →
 `.mstar/knowledge/architecture-patterns/dsh-mount-point-map.md`; transcript pattern →
 `.mstar/knowledge/architecture-patterns/dsh-conversation-surface-mounting.md`.
 
-The card's read-only status block is the **recent-switch line only**, read from the
-session's raw event history (`sessions.history`, newest first, capped at 5, reloaded on
-session switch, error-isolated from settings state) — never from `ctx.sessionHistory`,
-whose public snapshot holds projected conversation only. The plugin writes no new
-durable events, so the line shows only switches already in history; the effective-model
-line and the `selectionNote` degradation line were retired with the old routing model.
+The card carries **no status block and no policy area**: the 运行状态（只读） panel and
+its switch-history read are gone, as is the General-page status row — a read-only
+duplicate of an editable form was maintenance without an audience. Switch history is
+visible where it happens (the transcript row); the config readback is `/fallbacks
+config`; the topology readback is the card's own chain tabs.
 
 ### Catalog-driven provider/model selection
 
@@ -312,17 +329,19 @@ line and the `selectionNote` degradation line were retired with the old routing 
 ### Consumer surface: library re-exports + named service
 
 - **Library API**: `src/index.ts` re-exports the runtime surface —
-  `resolveRole`, `resolveChain`, `resolveChainViews`, `resolveCandidate`,
-  `selectCandidates`, `annotateCandidates`, `createCandidateFilter`,
-  `hasWildcardEntry`, `parseSelector`, `validateFallbacksConfig`, `detectLegacyKeys`
-  plus `INHERIT_ROLE_ID` / `ROLE_ID_PATTERN` / `defaultFallbacksConfig` /
-  `SelectorError` and the types — so a consumer writes
-  `import { resolveRole } from 'dsh-llm-fallbacks'`. `tests/export-surface.spec.ts`
-  pins the list (`LIBRARY_EXPORT_KEYS` SSOT + `expectTypeOf` pins).
+  `resolveChain`, `resolveChainViews`, `resolveCandidate`, `selectCandidates`,
+  `annotateCandidates`, `createCandidateFilter`, `hasWildcardEntry`, `parseSelector`,
+  `validateFallbacksConfig`, `detectLegacyKeys` plus `INHERIT_ROLE_ID` /
+  `ROLE_ID_PATTERN` / `CHAIN_ID_PATTERN` / `defaultFallbacksConfig` / `SelectorError`
+  and the types (`NamedChain`, the chain-pointer `FallbacksRole`, …) — so a consumer
+  writes `import { resolveChain } from 'dsh-llm-fallbacks'`. Role resolution is a
+  seam-internal step, not a library function. `tests/export-surface.spec.ts` pins the
+  list (`LIBRARY_EXPORT_KEYS` SSOT + `expectTypeOf` pins).
 - **Named service `llm-fallbacks`**: `ctx.get('llm-fallbacks') !== undefined` is the
-  reactive capability probe (cordis lifecycle handles readiness and withdrawal). 10
-  members: `name`, `version`, the four pure functions above, the three seed methods
-  (`declareSeeds` / `getEffectiveRoles` / `revertSeededPersona`), and `getAgentRole`.
+  reactive capability probe (cordis lifecycle handles readiness and withdrawal). Six
+  members: `name`, `version`, `resolveChain`, `validateFallbacksConfig`,
+  `detectLegacyKeys`, plus the three seed methods (`declareSeeds` /
+  `getEffectiveRoles` / `revertSeededPersona`) and `getAgentRole`.
   No state-bearing fields — seed methods close over the per-apply seed manager and
   `getAgentRole` over the fiber's own seam, so state dies with the fiber. Multi-fiber
   dedupe guard (mirrors the gateway/typert pattern) and `createRequire` for the runtime
@@ -354,14 +373,15 @@ split state — so the capability belongs here).
   `SeedDeclareOutcome`, `seeds` wire badge) and never silently merged. Removing a
   declaration drops the seed-default/revert affordance only — no row or chain is
   deleted.
-- **Chain belongs to the operator**: every seed write path preserves or omits
-  `chain` / `fallback` byte-for-byte; a new role's chain is empty (the card relaxes
-  `roleChainRequired` for seeded ids only).
+- **Chain belongs to the operator**: every seed write path preserves or omits the
+  `chain` POINTER byte-for-byte (an array-form pointer from a v1 file is stripped, never
+  coerced), and a newly materialized row carries no pointer at all — a seeded role is
+  NOT SPECIFIED until the operator points it at one of their chains.
 - **Service surface**: strictly additive (see above), gateway wire adds
   `seeds: Array<{id, overridden}>` plus the `fallbacks/revert-seed` endpoint (business
-  failures are values; only an unavailable settings service throws). Defensive
-  `roleRows()` / `roleRules()` containment guards on both read and write paths keep
-  malformed composed configs from crashing.
+  failures are values; only an unavailable settings service throws). A defensive
+  `roleRows()` containment guard on both read and write paths keeps a malformed
+  composed config from crashing.
 - **Known limit**: the settings user layer has no cross-writer revision guard
   (last-writer-wins, same channel limit as `set`/`reset`) — bounded and recoverable,
   see the gateway doc.
@@ -404,8 +424,16 @@ re-exported from the package root.
   is needed.
 - Real-model sessions have no plugin fallback, and external-backend subagents have no
   chain — both are the locked scope, not bugs.
-- Seam injection changes a child's visible route; the injected/authorized labels state
-  it rather than hiding it.
+- **`providerRetryPolicy` returns `undefined`**: the host captures a provider's retry
+  policy ONCE at registration, so one virtual provider cannot mirror N heads' policies.
+  A head provider's custom `retryPolicy` therefore stops applying on the virtual route
+  and the host default takes over. The one-provider-per-chain alternative was rejected
+  (picker UX plus per-chain register/unregister churn).
+- A switch INSIDE a stamped child's chain is not host-allowlist-filtered — the chain is
+  hand-written config, not a route the plugin chose.
+- The migration is warn-only: v1 keys are reported and stripped from writes, but the
+  plugin never rewrites the user's file, so nothing is migrated until the operator edits
+  it (there is no auto-created default chain).
 - One virtual call registers one outer `llm/stream` plus one inner stream per attempt,
   so N attempts appear as N+1 nested streams; a pre-output failed attempt is unmetered.
 - Half-open flags and escalation counters are session-scoped in memory: a restart resets
@@ -428,8 +456,8 @@ the cap is per walk.
   (retry, fallback, degradation, load-based routing).
 - Reasoning about the virtual row, the chain walk, the switch log or selector syntax.
 - Adding a web settings surface over the plugin's own gateway channel.
-- Changing the two-block config model (rootChain / declared roles / rules / inherit) or
-  migrating `chains` / `roles.default`.
+- Changing the named-chain config model (`chains[]`, the role `chain` pointer, per-chain
+  slots) or migrating the v1 two-block keys.
 - Extending the mount-only install story (zero dsh source diff, no patch/autopatch,
   upgrade without re-patching).
 
@@ -440,16 +468,24 @@ the cap is per walk.
   rule, exactly-one-finish, pre-attempt throws, abort, recursion guard),
   `tests/virtual-adapter.spec.ts`, `tests/coexist-llm-retry.spec.ts`,
   `tests/runtime-recovery.spec.ts`, `tests/recovery.spec.ts`, `tests/cooldown.spec.ts`.
-- Subagent routing: `tests/seam-inject.spec.ts` (the five conditions),
-  `tests/route-allowlist.spec.ts`, `tests/subagent-policy.spec.ts`,
-  `tests/role-resolution.spec.ts`, `tests/dispatch-injection.spec.ts`.
-- Configuration and surfaces: `tests/config.spec.ts`, `tests/gateway.spec.ts`,
-  `tests/command.spec.ts`, `tests/fallbacks-card.spec.tsx`,
-  `tests/fallbacks-store.spec.ts`, `tests/general-row.spec.tsx`.
+- Subagent routing: `tests/seam-inject.spec.ts` (the four conditions),
+  `tests/subagents-seam.spec.ts`, `tests/role-resolution.spec.ts`,
+  `tests/dispatch-injection.spec.ts`, `tests/agent-team-roles.spec.ts`.
+- Configuration and surfaces: `tests/config.spec.ts`, `tests/time-slots.spec.ts`,
+  `tests/gateway.spec.ts`, `tests/command.spec.ts`, `tests/tui-settings.spec.ts`,
+  `tests/fallbacks-card.spec.tsx`, `tests/fallbacks-store.spec.ts`.
 - Seeds and presets: `tests/seeds.spec.ts`, `tests/seeds-integration.spec.ts`,
   `tests/presets.spec.ts`, `tests/service.spec.ts`, `tests/export-surface.spec.ts`.
 - Real-host end-to-end script: `docs/verification.md` §4.
 
 *Source: plans `llm-fallbacks-settings-runtime`, `fallbacks-virtual-chain`,
 `fallbacks-role-seeds`, `fallbacks-preset-roles`, `dsh-012-subagent-routing`,
-`dsh-022-rc1-upgrade` (direction C) — verified against the implementation.*
+`dsh-022-rc1-upgrade` (direction C), `named-virtual-chains` — verified against the
+implementation.*
+
+**2026-11-08 refresh (plan named-virtual-chains)**: the two-block config model is
+replaced by N named virtual chains (one `FallbacksChain/<chain id>` picker row each,
+per-chain time slots), roles keep identity plus a manual chain POINTER, and the rule
+matcher, per-role chains, the `fallback` append policy, the host subagent-policy
+gating, and the two read-only status surfaces are deleted. v1 keys survive only as
+`detectLegacyKeys` history and as rows in the docs migration table.*

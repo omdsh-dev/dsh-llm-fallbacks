@@ -13,11 +13,11 @@ This document defines the **consumer surface** `dsh-llm-fallbacks` exposes: (1) 
 ```ts
 import { resolveRole, resolveChain, validateFallbacksConfig } from 'dsh-llm-fallbacks'
 
-// resolveRole: matches roles.rules in origin/provider/model order → role id (no match → 'inherit')
-const role = resolveRole(agent, config.roles.rules, roleIds)
+// resolveDeclaredRole: explicit preset → dispatch-declared role (no rules any more); undefined = NOT SPECIFIED
+const role = resolveDeclaredRole(agentPreset, roleIds, { dispatchRole })
 
-// resolveChain: concatenates the role chain + rootChain and returns surviving candidates (same as the decision path)
-const candidates = resolveChain(config.roles.list, config.rootChain, role, provider, model)
+// resolveChain: walks ONE chain's entries and returns surviving candidates (same as the decision path)
+const candidates = resolveChain(chain.entries, provider, model)
 
 // validateFallbacksConfig: validates the config; problems are warned via logger.warn (never throws)
 validateFallbacksConfig(config, logger)
@@ -27,12 +27,12 @@ validateFallbacksConfig(config, logger)
 
 | Export | Description |
 |---|---|
-| `resolveRole(agent, rules, roleIds, warn?, servedRoute?)` | Matches `roles.rules` in `origin`/`provider`/`model` order and returns the matched role id; returns the built-in `'inherit'` when no rule matches or a referenced role is undeclared. `servedRoute` is the optional route the request was **actually served by** (omitted by every non-virtual caller, which leaves the behavior unchanged); when it is present a rule matches if it matches **either whole pair** — the recorded one or the served one, never a mix of the two — so a rule keyed on the real chain head keeps matching for a delegated child whose recorded pair is the virtual `FallbacksChain/Auto` row. |
+| `resolveDeclaredRole(agentPreset, roleIds, { dispatchRole })` | Two ordered stages (explicit preset → dispatch-declared role), each canonicalized by trim + the declared-id map; returns the declared RAW id, or `undefined` = NOT SPECIFIED (no rules any more — the rules stage is deleted). |
 | `resolveCandidate(entry, failing, modelExists?)` | Resolves a single chain entry into a candidate; `provider/*` wildcards expand to the failing models; returns `null` for invalid entries or failed existence probes. |
-| `resolveChainViews(roles, rootChain, role, provider, model, warn?)` | Single-pass resolution of a role's concatenated chain, returning the unfiltered candidate views `{ all, wildcard }` (`wildcard[i]` marks whether candidate `all[i]` came from a wildcard entry). |
+| `resolveChainViews(entries, provider, model, warn?)` | Single-pass resolution over ONE chain's entries, returning the unfiltered candidate views `{ all, wildcard }` (`wildcard[i]` marks whether candidate `all[i]` came from a wildcard entry). |
 | `selectCandidates(all, wildcard, filter?, modelExists?)` | Applies the filter and existence probes to the candidate views, returning the list of surviving candidates. |
-| `resolveChain(roles, rootChain, role, provider, model, filter?, modelExists?, warn?)` | Full chain resolution (same as the decision path): concatenates the role chain + `rootChain` (`fallback: 'none'` appends nothing), returning the surviving candidates. |
-| `hasWildcardEntry(roles, rootChain, role)` | Detects whether a role's concatenated chain contains `provider/*` wildcard entries — callers use it to decide whether catalog existence probes are needed (same source as resolution, no over-approximation). |
+| `resolveChain(entries, provider, model, filter?, modelExists?, warn?)` | Full chain resolution (same as the decision path): walks the given entries, returning the surviving candidates. |
+| `hasWildcardEntry(entries)` | Detects whether the given entries contain `provider/*` wildcard entries — callers use it to decide whether catalog existence probes are needed (same source as resolution, no over-approximation). |
 | `createCandidateFilter(options)` | Builds a candidate filter: skips the current model, models in cooldown, models that already failed earlier in the same walk, and missing model ids. |
 | `annotateCandidates(candidates, surviving, options)` | Annotates each candidate with its skip reason (`skip` undefined = surviving), for visibility / logging. |
 | `validateFallbacksConfig(config, logger)` | Validates config legality (undeclared role references, illegal chains, etc.); problems are warned via `logger.warn` (never throws). |

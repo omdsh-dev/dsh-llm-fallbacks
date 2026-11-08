@@ -36,8 +36,8 @@ import { settle } from './support/settle.ts'
 
 /** Declared taxonomy: `coder` and `scout` declare a persona, `reviewer` only whitespace. */
 const ROLES: FallbacksRole[] = [
-  { id: 'coder', persona: 'Coder persona', chain: [] },
-  { id: 'scout', persona: 'Scout persona', chain: [] },
+  { id: 'coder', persona: 'Coder persona' },
+  { id: 'scout', persona: 'Scout persona' },
   { id: 'reviewer', persona: '   ' },
 ]
 
@@ -526,7 +526,7 @@ describe('role persona — real cordis + real dsh-system-prompt', () => {
         return { childId: id }
       },
     })
-    apply(ctx, cfg({ roles: { list: [{ id: 'coder', persona: 'Coder persona', chain: [] }], rules: [] } }))
+    apply(ctx, cfg({ roles: { list: [{ id: 'coder', persona: 'Coder persona' }] } }))
     await settle()
 
     // Read `subagents` the way the host does — from a CONSUMER fiber (a
@@ -560,7 +560,7 @@ describe('role persona — real cordis + real dsh-system-prompt', () => {
     // per `agent/created`. Nothing is re-installed here — a roles list captured
     // once at install time assembles the FIRST text below.
     await ctx.settings.update(FALLBACKS_PROFILE_ENTRY, {
-      roles: { list: [{ id: 'coder', persona: 'Coder persona v2', chain: [] }], rules: [] },
+      roles: { list: [{ id: 'coder', persona: 'Coder persona v2' }] },
     })
 
     await wrapper.subagents.startActivation({ provider: 'spawn', label: 'child-apply-2', request })

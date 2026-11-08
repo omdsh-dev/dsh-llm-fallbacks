@@ -1,62 +1,45 @@
 /**
- * Client-half store unit tests (plan Task 5 + llm-fallbacks-settings-gateway
- * Task 2, Validation Plan client row).
- *
- * Covers the testable client surface: config parsing (the gateway `config`
- * value folded against spec §4 defaults, malformed values rejected), the
- * rootChain/role/rule row editors' pure round-trips, and the controller's
+ * Client-half store unit tests (named virtual chains, plan
+ * named-virtual-chains T5): config parsing (the gateway `config` value
+ * folded against spec defaults, malformed values rejected), the per-chain
+ * / role / slot row editors' pure round-trips, the role chain POINTER
+ * merge, `deriveEffectiveModel` per chain, and the controller's
  * load/save/reset lifecycle over the plugin gateway channel — a fake
  * `connection.rpc` for `/api/fallbacks/get|set|reset` plus `api` mocks for
- * describe (writable + namespace directory) / llm catalog / session history.
- * The `settings-conflict` branch is gone (KD-G3): set/reset failures surface
- * the message in the error banner state, and a get failure is the
- * channel-unreachable `present: false` skeleton (KD-G5), never a page error.
- * Component rendering has no DOM test environment here — the section's
- * build-level validation is the client bundle (build-client) + tsc; runtime
- * UI verification lands with T8.
+ * describe (writable + namespace directory) / llm catalog. The
+ * switch-history read and the host-policy view are GONE with the status
+ * surfaces; set/reset failures surface the message in the error banner
+ * state, and a get failure is the channel-unreachable `present: false`
+ * skeleton (KD-G5), never a page error.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
-import type {
-  SessionFollowFrame, SettingsNamespaceView,
-} from '@deepseek-ai/dsh-api-remotes/client'
-import type { SessionEventLikeEntry } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { ClientConnectionRpc } from '@deepseek-ai/dsh-client-connection/client'
-import { defaultFallbacksConfig, type FallbacksConfig } from '../src/config.ts'
-import type { FallbacksSwitchEventData } from '../src/events.ts'
-import { KNOWN_TRIGGER_CODES, TRIGGER_CODE_LABELS } from '../src/client/locales.ts'
+import { defaultFallbacksConfig, type FallbacksConfig, type NamedChain } from '../src/config.ts'
+import { OFFICIAL_FLASH, OFFICIAL_PRO } from '../src/time-slots.ts'
 import { apply as applyClient } from '../src/client/index.ts'
 import {
+  chainsToDrafts,
   classifyModel,
   classifyProvider,
   configuredProvidersOf,
   deriveEffectiveModel,
-  detectLegacyClientKeys,
-  extractRecentSwitches,
+  draftToChain,
   mergeRoleExtras,
+  newChainId,
   FALLBACKS_SETTINGS_NS,
   FallbacksSettingsController,
   parseFallbacksConfig,
   refreshCatalogIfLoaded,
   refreshFallbacksIfLoaded,
-  refreshSwitchesIfLoaded,
+  roleChainOptions,
   rolesToRows,
-  rootChainToRows,
   rowsToRoles,
-  rowsToRootChain,
-  rowsToRules,
   rowsToTimeSlots,
-  ruleRoleOptions,
-  rulesToRows,
   selectorRowToRaw,
   timeSlotsToRows,
-  RECENT_SWITCH_LIMIT,
-  SWITCHES_HISTORY_PAGE,
   type CatalogLookup,
-  type FallbacksSwitchSnapshot,
-  type RoleRow,
-  type RootChainRow,
 } from '../src/client/fallbacks-store.ts'
 import type { SlotRowConfig } from '../src/time-slots.ts'
 
@@ -115,31 +98,9 @@ function makeApi() {
     },
     llm: {
       listConfigurableProviders: vi.fn(),
-    },
-    session: {
       modelCatalog: vi.fn(),
-      follow: vi.fn(),
     },
   }
-}
-
-/**
- * A `session/follow` answer: yields the opening snapshot carrying `records`
- * (the tail page the switches read consumes), then idles — the store cancels
- * the stream right after the snapshot.
- */
-function followAnswer(records: readonly SessionEventLikeEntry[]): AsyncIterable<SessionFollowFrame> {
-  return (async function* (): AsyncGenerator<SessionFollowFrame> {
-    yield { type: 'snapshot', records, hasMore: false } as unknown as SessionFollowFrame
-    await Promise.withResolvers().promise
-  })()
-}
-
-/** A `session/follow` answer whose first frame read rejects (business or transport failure). */
-function followThrow(error: Error): AsyncIterable<SessionFollowFrame> {
-  return (async function* (): AsyncGenerator<SessionFollowFrame> {
-    throw error
-  })()
 }
 
 /**
@@ -203,37 +164,6 @@ function makeRemote(ctx: Context, namespaces: { settings?: unknown; llm?: unknow
   }
 }
 
-/** One `fallbacks/switch` history entry with a deterministic seq/time. */
-function switchEntry(seq: number, overrides: Partial<FallbacksSwitchEventData> = {}): SessionEventLikeEntry {
-  return {
-    type: 'event',
-    event: {
-      type: 'fallbacks/switch',
-      seq,
-      time: 1_700_000_000_000 + seq * 1000,
-      data: {
-        turn: 1,
-        step: 1,
-        from: { provider: 'openai', model: 'gpt-4o' },
-        to: { provider: 'anthropic', model: 'claude-3-5-sonnet' },
-        role: 'inherit',
-        reason: 'trigger-code',
-        ...overrides,
-      },
-    },
-  }
-}
-
-/** A non-switch history entry (must be filtered out by the extraction). */
-function otherEntry(seq: number, type = 'assistant/message'): SessionEventLikeEntry {
-  return { type: 'event', event: { type, seq, time: 1_700_000_000_000, data: {} } } as unknown as SessionEventLikeEntry
-}
-
-/** A packed Assistant chunk run (0.1.2 history pages interleave these with scalar events). */
-function chunksEntry(seq: number): SessionEventLikeEntry {
-  return { type: 'chunks', event: { type: 'chunkrow/text-chunks', seq, time: 1_700_000_000_000, data: {} } } as unknown as SessionEventLikeEntry
-}
-
 /** A catalog fixture: two providers, one with advertised models, one without. */
 function catalogFixture(): CatalogLookup {
   return {
@@ -274,2068 +204,222 @@ function error(code: string, message: string, details?: unknown) {
   return { ok: false as const, error: { code, message, details: details ?? {} } }
 }
 
-describe('parseFallbacksConfig (descriptor read, redactSecrets face)', () => {
-  it('passes a complete config through unchanged', () => {
-    // No `enabled` key (plan fallbacks-web-ux-alignment T2): the descriptor
-    // read keeps only declared keys — the removed switch is not one.
-    const config: FallbacksConfig = {
-      triggerCodes: ['AUTH'],
-      rootChain: ['openai/gpt-4o', 'openai/*'],
-      roles: {
-        list: [{
-          id: 'reviewer',
-          persona: 'Deep review pass',
-          chain: ['anthropic/claude-3-5-sonnet'],
-          fallback: 'none',
-        }],
-        rules: [{ origin: 'subagent', provider: 'openai', role: 'reviewer' }],
-      },
-      cooldownMs: 60_000,
-      revertPolicy: 'never',
-      maxSwitchesPerStep: 4,
-      presets: 'bundled',
-      // P5 keys (plan fallbacks-timeslots Task 1): the fold mirrors the
-      // host defaults, so a truly complete config carries them.
-      timeSlots: [],
-      tz: 'Asia/Shanghai',
-      // P1 key (plan fallbacks-half-open-recovery Task 1): the fold mirrors
-      // the host default, so a truly complete config carries it.
-      recovery: 'timer',
-    }
-    expect(parseFallbacksConfig(config)).toEqual(config)
-  })
 
-  it('folds spec §4 defaults for missing optional fields', () => {
-    const parsed = parseFallbacksConfig({})
-    expect(parsed).toEqual(defaultFallbacksConfig)
-  })
-
-  it('drops unknown extra fields and keeps only declared keys', () => {
-    // A surviving removed `enabled:` line is just another unknown key at the
-    // descriptor read (the gateway strips it before the wire; the fold
-    // tolerates it either way — plan fallbacks-web-ux-alignment T2).
-    const parsed = parseFallbacksConfig({ enabled: false, extra: 'junk' })
-    expect(parsed).toEqual(defaultFallbacksConfig)
-    expect('extra' in parsed).toBe(false)
-    expect('enabled' in parsed).toBe(false)
-  })
-
-  it('rejects a non-object descriptor value', () => {
-    expect(() => parseFallbacksConfig('nope')).toThrow(TypeError)
-    expect(() => parseFallbacksConfig(null)).toThrow(TypeError)
-    expect(() => parseFallbacksConfig([])).toThrow(TypeError)
-  })
-
-  it('rejects malformed typed fields', () => {
-    expect(() => parseFallbacksConfig({ triggerCodes: 'AUTH' })).toThrow(TypeError)
-    expect(() => parseFallbacksConfig({ triggerCodes: [1] })).toThrow(TypeError)
-    expect(() => parseFallbacksConfig({ rootChain: 'openai/gpt-4o' })).toThrow(TypeError)
-    expect(() => parseFallbacksConfig({ rootChain: [1] })).toThrow(TypeError)
-    expect(() => parseFallbacksConfig({ roles: { list: [{ persona: 'no id' }] } })).toThrow(TypeError)
-    expect(() => parseFallbacksConfig({ roles: { list: [{ id: 'a', chain: 'openai/gpt-4o' }] } })).toThrow(TypeError)
-    expect(() => parseFallbacksConfig({ roles: { list: [{ id: 'a', fallback: 'sometimes' }] } })).toThrow(TypeError)
-    expect(() => parseFallbacksConfig({ roles: { list: [{ id: 'a', permissions: { allow: 'read' } }] } })).toThrow(TypeError)
-    expect(() => parseFallbacksConfig({ roles: { rules: [{ provider: 'openai' }] } })).toThrow(TypeError)
-    expect(() => parseFallbacksConfig({ roles: { rules: [{ origin: 'host', role: 'x' }] } })).toThrow(TypeError)
-    expect(() => parseFallbacksConfig({ revertPolicy: 'sometimes' })).toThrow(TypeError)
-    expect(() => parseFallbacksConfig({ presets: 'sometimes' })).toThrow(TypeError)
-    expect(() => parseFallbacksConfig({ recovery: 'sometimes' })).toThrow(TypeError)
-    expect(() => parseFallbacksConfig({ cooldownMs: 'soon' })).toThrow(TypeError)
-    // The removed `enabled` key is no longer a declared field — any value
-    // folds to defaults instead of throwing (accepted-and-ignored, T2).
-    expect(parseFallbacksConfig({ enabled: 'yes' })).toEqual(defaultFallbacksConfig)
-  })
-
-  it('preserves schema-reserved prompt/permissions fields on a read (no row editing this round)', () => {
-    const parsed = parseFallbacksConfig({
-      roles: { list: [{ id: 'architect', persona: 'D', prompt: 'think hard', permissions: { allow: ['files.read'] } }] },
-    })
-    expect(parsed.roles.list[0]).toEqual({
-      id: 'architect',
-      persona: 'D',
-      prompt: 'think hard',
-      permissions: { allow: ['files.read'] },
-      chain: [],
-      fallback: 'inherit-root',
-    })
-  })
-})
-
-describe('rootChain/role/rule row editors (pure round-trips)', () => {
-  it('round-trips the rootChain through one flat selector row; empty rows drop out', () => {
-    const rootChain = ['openai/gpt-4o', 'openai/*']
-    const rows = rootChainToRows(rootChain)
-    expect(rows).toHaveLength(1)
-    expect(rowsToRootChain(rows)).toEqual(rootChain)
-    // A row with no selectors (and a row whose only selector is empty) must
-    // not leak into output.
-    const emptyRows: RootChainRow[] = [
-      { selectors: [] },
-      { selectors: [{ wildcard: false, provider: null, model: null }] },
-    ]
-    expect(rowsToRootChain([...rows, ...emptyRows])).toEqual(rootChain)
-  })
-
-  it('round-trips an empty rootChain as a single empty row (add-selector affordance)', () => {
-    const rows = rootChainToRows([])
-    expect(rows).toHaveLength(1)
-    expect(rows[0]!.selectors).toEqual([])
-    expect(rowsToRootChain(rows)).toEqual([])
-  })
-
-  it('serializes selector rows to provider/model and provider/* wire strings', () => {
-    expect(selectorRowToRaw({ wildcard: false, provider: { kind: 'catalog', id: 'openai' }, model: { kind: 'catalog', id: 'gpt-4o' } }))
-      .toBe('openai/gpt-4o')
-    expect(selectorRowToRaw({ wildcard: true, provider: { kind: 'catalog', id: 'openai' }, model: null }))
-      .toBe('openai/*')
-    // Outside raw values serialize verbatim.
-    expect(selectorRowToRaw({ wildcard: false, provider: { kind: 'outside', raw: 'other' }, model: { kind: 'outside', raw: 'gpt-4o' } }))
-      .toBe('other/gpt-4o')
-    // A row with no provider serializes to '' (dropped).
-    expect(selectorRowToRaw({ wildcard: false, provider: null, model: null })).toBe('')
-  })
-
-  it('round-trips role rules through rows; empty optional fields drop out', () => {
-    // PR #62 feedback: the editor rows carry no origin (rules are
-    // subagent-only); a persisted wire `origin` on the source rules is
-    // ignored by the row projection.
-    const rules = [
-      { origin: 'subagent' as const, provider: 'openai', model: '', role: 'reviewer' },
-      { provider: undefined, model: undefined, role: 'default' },
-    ]
-    const rows = rulesToRows(rules)
-    expect(rows[0]).toEqual({ provider: { kind: 'outside', raw: 'openai' }, model: null, role: 'reviewer' })
-    expect(rows[1]).toEqual({ provider: null, model: null, role: 'default' })
-    expect(rowsToRules(rows)).toEqual([
-      { provider: 'openai', role: 'reviewer' },
-      { role: 'default' },
-    ])
-  })
-
-  it('round-trips declared role entities through rows (id/persona/chain/fallback)', () => {
-    const roles = [
-      {
-        id: 'reviewer',
-        persona: 'Deep review pass',
-        chain: ['openai/gpt-4o', 'openai/*'],
-        fallback: 'none' as const,
-      },
-      {
-        id: 'architect',
-        persona: '',
-        chain: [],
-        fallback: 'inherit-root' as const,
-      },
-    ]
-    const rows = rolesToRows(roles)
-    expect(rows).toEqual<RoleRow[]>([
-      {
-        id: 'reviewer',
-        persona: 'Deep review pass',
-        selectors: [
-          { wildcard: false, provider: { kind: 'outside', raw: 'openai' }, model: { kind: 'outside', raw: 'gpt-4o' } },
-          { wildcard: true, provider: { kind: 'outside', raw: 'openai' }, model: null },
-        ],
-        fallback: 'none',
-        // UI-only collapse state (PR #62 UX round 2) — role cards start
-        // collapsed and the flag never serializes back.
-        collapsed: true,
-        // UI-only seeded-persona brief disclosure (plan
-        // role-card-seeded-ux) — starts collapsed, never serializes back.
-        personaOpen: false,
-      },
-      { id: 'architect', persona: '', selectors: [], fallback: 'inherit-root', collapsed: true, personaOpen: false },
-    ])
-    expect(rowsToRoles(rows)).toEqual(roles)
-  })
-
-  it('classifies a role chain against the catalog like any selector list', () => {
-    const catalog = catalogFixture()
-    const rows = rolesToRows([{ id: 'reviewer', persona: 'R', chain: ['openai/gpt-4o'], fallback: 'inherit-root' }], catalog)
-    expect(rows[0]!.selectors[0]).toEqual({
-      wildcard: false,
-      provider: { kind: 'catalog', id: 'openai' },
-      model: { kind: 'catalog', id: 'gpt-4o' },
-    })
-    expect(rowsToRoles(rows)).toEqual([{ id: 'reviewer', persona: 'R', chain: ['openai/gpt-4o'], fallback: 'inherit-root' }])
-  })
-
-  it('ruleRoleOptions offers the built-in inherit target plus every declared id in order', () => {
-    expect(ruleRoleOptions({ list: [] })).toEqual(['inherit'])
-    expect(ruleRoleOptions({ list: [{ id: 'reviewer', persona: '' }, { id: 'architect', persona: '' }] }))
-      .toEqual(['inherit', 'reviewer', 'architect'])
-    // The same page's role edits are reflected immediately (derived, never cached).
-    expect(ruleRoleOptions({ list: [{ id: 'reviewer', persona: '' }, { id: 'c', persona: '' }] }))
-      .toEqual(['inherit', 'reviewer', 'c'])
-  })
-
-  it('ruleRoleOptions canonicalizes ids and dedupes the offer set (qc3 F-3)', () => {
-    // Mid-edit duplicate ids must not render duplicate <option> entries
-    // (React key collision): trimmed to the canonical form and offered once;
-    // save-time validation still blocks the duplicate draft.
-    expect(ruleRoleOptions({ list: [
-      { id: ' reviewer ', persona: '' },
-      { id: 'reviewer', persona: '' },
-      { id: 'architect', persona: '' },
-    ] })).toEqual(['inherit', 'reviewer', 'architect'])
-  })
-
-  it('mergeRoleExtras re-attaches prompt/permissions from the original list by (trimmed) id', () => {
-    // The schema-reserved prompt/permissions never round-trip through rows;
-    // the merge is what keeps them alive across a save (T2 reviewer minor
-    // #2). The reviewer row's edited id carries surrounding whitespace —
-    // the merge matches the canonical (trimmed) id, exactly like the rest
-    // of the rowsToRoles pipeline. A brand-new row has no original and
-    // keeps no extras.
-    const originalRoles = [
-      {
-        id: 'reviewer', persona: 'Deep review pass',
-        prompt: 'You review', permissions: { allow: ['files.read'] },
-        chain: ['openai/gpt-4o'], fallback: 'inherit-root' as const,
-      },
-      {
-        id: 'architect', persona: 'Designs systems',
-        chain: [], fallback: 'none' as const,
-      },
-    ]
-    const rows: RoleRow[] = [
-      {
-        id: ' reviewer ', persona: 'Deep review pass v2',
-        selectors: [
-          { wildcard: false, provider: { kind: 'outside', raw: 'openai' }, model: { kind: 'outside', raw: 'gpt-4o' } },
-        ],
-        fallback: 'inherit-root',
-      },
-      { id: 'coder', persona: '', selectors: [], fallback: 'inherit-root' },
-    ]
-    expect(mergeRoleExtras(rows, originalRoles)).toEqual([
-      {
-        id: 'reviewer', persona: 'Deep review pass v2',
-        prompt: 'You review', permissions: { allow: ['files.read'] },
-        chain: ['openai/gpt-4o'], fallback: 'inherit-root',
-      },
-      { id: 'coder', persona: '', chain: [], fallback: 'inherit-root' },
-    ])
-  })
-
-  it('detectLegacyClientKeys flags undeclared rule role references (test fallback)', () => {
-    // Declared refs + the built-in inherit target are clean.
-    expect(detectLegacyClientKeys({
-      ...defaultFallbacksConfig,
-      roles: {
-        list: [{ id: 'reviewer', persona: '', chain: [], fallback: 'inherit-root' }],
-        rules: [{ role: 'reviewer' }, { role: 'inherit' }],
-      },
-    })).toEqual([])
-    // An undeclared rule role is the only legacy leftover that survives wire normalization.
-    expect(detectLegacyClientKeys({
-      ...defaultFallbacksConfig,
-      roles: { list: [], rules: [{ role: 'reviewer' }] },
-    })).toEqual(['roles.rules[].role: reviewer'])
-  })
-})
-
-describe('catalog classification (spec §2.5 D-3)', () => {
-  it('classifies catalog provider/model ids as catalog selections', () => {
-    const catalog = catalogFixture()
-    expect(classifyProvider('openai', catalog)).toEqual({ kind: 'catalog', id: 'openai' })
-    expect(classifyModel('openai', 'gpt-4o', catalog)).toEqual({ kind: 'catalog', id: 'gpt-4o' })
-  })
-
-  it('keeps out-of-catalog values verbatim as outside selections', () => {
-    const catalog = catalogFixture()
-    // Unknown provider; known provider with an unknown model.
-    expect(classifyProvider('other', catalog)).toEqual({ kind: 'outside', raw: 'other' })
-    expect(classifyModel('openai', 'gpt-5', catalog)).toEqual({ kind: 'outside', raw: 'gpt-5' })
-    // A model id another provider advertises is still outside under this provider.
-    expect(classifyModel('anthropic', 'gpt-4o', catalog)).toEqual({ kind: 'outside', raw: 'gpt-4o' })
-  })
-
-  it('classifies everything as outside when no catalog is available yet', () => {
-    expect(classifyProvider('openai', undefined)).toEqual({ kind: 'outside', raw: 'openai' })
-    expect(classifyModel('openai', 'gpt-4o', undefined)).toEqual({ kind: 'outside', raw: 'gpt-4o' })
-  })
-
-  it('round-trips the rootChain with outside values losslessly (D-3 mixed dropdown carrier)', () => {
-    const catalog = catalogFixture()
-    const rootChain = ['other/gpt-4o', 'openai/gpt-4o', 'openai/*', 'anthropic/claude-3-5-sonnet']
-    const rows = rootChainToRows(rootChain, catalog)
-    const selectors = rows[0]!.selectors
-    // Unknown provider → both parts outside, verbatim.
-    expect(selectors[0]).toEqual({
-      wildcard: false,
-      provider: { kind: 'outside', raw: 'other' },
-      model: { kind: 'outside', raw: 'gpt-4o' },
-    })
-    // Known provider + known model → catalog.
-    expect(selectors[1]).toEqual({
-      wildcard: false,
-      provider: { kind: 'catalog', id: 'openai' },
-      model: { kind: 'catalog', id: 'gpt-4o' },
-    })
-    // Wildcard entry → model null.
-    expect(selectors[2]).toEqual({ wildcard: true, provider: { kind: 'catalog', id: 'openai' }, model: null })
-    // Round-trip: the original strings come back unchanged.
-    expect(rowsToRootChain(rows)).toEqual(rootChain)
-  })
-
-  it('round-trips role rules with outside values losslessly', () => {
-    // PR #62 feedback: the editor drops the legacy `origin` field — a
-    // persisted `origin: root` rule re-serializes WITHOUT it.
-    const catalog = catalogFixture()
-    const rules = [
-      { provider: 'other', model: 'gpt-4o', role: 'x' },
-      { role: 'y', provider: 'openai', model: 'gpt-4o' },
-    ]
-    const rows = rulesToRows(rules, catalog)
-    expect(rows[0]).toEqual({ provider: { kind: 'outside', raw: 'other' }, model: { kind: 'outside', raw: 'gpt-4o' }, role: 'x' })
-    expect(rows[1]).toEqual({ provider: { kind: 'catalog', id: 'openai' }, model: { kind: 'catalog', id: 'gpt-4o' }, role: 'y' })
-    expect(rowsToRules(rows)).toEqual(rules)
-  })
-
-  it('preserves a malformed entry verbatim instead of dropping it', () => {
-    // A selector line that never matched `provider/model` keeps its raw text
-    // as a bare outside value — the runtime config-warning path is unchanged.
-    const rows = rootChainToRows(['gpt-4o'], catalogFixture())
-    expect(rows[0]!.selectors[0]).toEqual({ wildcard: false, provider: { kind: 'outside', raw: 'gpt-4o' }, model: null })
-    expect(rowsToRootChain(rows)).toEqual(['gpt-4o'])
-  })
-
-  it('round-trips time-slot rows losslessly (Task 3 editor carrier)', () => {
-    const catalog = catalogFixture()
-    // The composed shape every card load accepts: `days` materialized on
-    // every row (schemastery composes absent arrays as []).
-    const timeSlots: SlotRowConfig[] = [
-      { kind: 'preset', preset: 'liang-peak', days: [], chain: ['openai/gpt-4o', 'openai/*'] },
-      { kind: 'custom', start: '22:00', end: '02:00', days: [1, 5], chain: ['anthropic/claude-3-5-sonnet'] },
-      { kind: 'custom', start: '09:00', end: '10:00', days: [], chain: ['openai/gpt-4o'] },
-    ]
-    const rows = timeSlotsToRows(timeSlots, catalog)
-    expect(rows[0]!.kind).toBe('preset')
-    expect(rows[0]!.preset).toBe('liang-peak')
-    expect(rows[0]!.days).toEqual([])
-    // UI-only collapse state (PR #62 UX round 4 part C) — slot rows default
-    // collapsed like role cards; the flag never serializes back.
-    expect(rows[0]!.collapsed).toBe(true)
-    // The wildcard entry reads back as a wildcard selector row (the GUI
-    // conversion hint path, same as role chains).
-    expect(rows[0]!.selectors[1]).toEqual({ wildcard: true, provider: { kind: 'catalog', id: 'openai' }, model: null })
-    expect(rows[1]!.days).toEqual([1, 5])
-    // Round-trip: the original rows come back unchanged (blank selectors
-    // drop out, but there are none here).
-    expect(rowsToTimeSlots(rows)).toEqual(timeSlots)
-  })
-
-  it('serializes an unknown row kind verbatim and drops blank selectors (dirty-check honesty)', () => {
-    // A hand-written YAML row with an unknown kind reads back unchanged —
-    // the card's dirty check stays quiet; save validation rejects it.
-    const rows = timeSlotsToRows([{ kind: 'weird', start: '09:00', end: '10:00', chain: ['openai/gpt-4o'] }])
-    expect(rows[0]!.kind).toBe('weird')
-    expect(rowsToTimeSlots(rows)).toEqual([{ kind: 'weird', start: '09:00', end: '10:00', days: [], chain: ['openai/gpt-4o'] }])
-    // Blank selector rows serialize to nothing (the chain-required
-    // validation surfaces the empty result).
-    const blank = timeSlotsToRows([{ kind: 'custom', start: '09:00', end: '10:00', days: [], chain: [] }])
-    expect(rowsToTimeSlots(blank)).toEqual([{ kind: 'custom', start: '09:00', end: '10:00', days: [], chain: [] }])
-  })
-})
-
-describe('extractRecentSwitches (spec §2.5 D-5 raw event face)', () => {
-  it('filters only `fallbacks/switch` events out of a mixed page', () => {
-    const entries = [
-      otherEntry(3),
-      switchEntry(5, { to: { provider: 'anthropic', model: 'claude-3-5-sonnet' } }),
-      otherEntry(4, 'tool/result'),
-      switchEntry(7, { to: { provider: 'google', model: 'gemini-2.0-flash' } }),
-    ]
-    const extracted = extractRecentSwitches(entries)
-    expect(extracted).toHaveLength(2)
-    expect(extracted.map(item => item.seq)).toEqual([7, 5])
-  })
-
-  it('skips packed Assistant chunk runs (`chunks` entries) interleaved on the page', () => {
-    // 0.1.2 history pages interleave packed chunk runs with scalar events;
-    // the chunk run carries the highest seq, so reading it as a scalar entry
-    // would mis-order or leak it into the summary.
-    const extracted = extractRecentSwitches([switchEntry(4), chunksEntry(9), switchEntry(2)])
-    expect(extracted.map(item => item.seq)).toEqual([4, 2])
-  })
-
-  it('orders by event seq descending (newest first)', () => {
-    const entries = [switchEntry(2), switchEntry(10), switchEntry(5)]
-    const extracted = extractRecentSwitches(entries)
-    expect(extracted.map(item => item.seq)).toEqual([10, 5, 2])
-  })
-
-  it('carries the durable payload plus the raw seq and time', () => {
-    const [item] = extractRecentSwitches([switchEntry(9, { role: 'reviewer', reason: 'always-cap' })])
-    expect(item).toEqual<FallbacksSwitchSnapshot>({
-      seq: 9,
-      time: 1_700_000_000_000 + 9000,
-      turn: 1,
-      step: 1,
-      from: { provider: 'openai', model: 'gpt-4o' },
-      to: { provider: 'anthropic', model: 'claude-3-5-sonnet' },
-      role: 'reviewer',
-      reason: 'always-cap',
-    })
-  })
-
-  it(`caps at the default N=${RECENT_SWITCH_LIMIT} (newest wins)`, () => {
-    const entries = Array.from({ length: 9 }, (_, index) => switchEntry(index + 1))
-    const extracted = extractRecentSwitches(entries)
-    expect(extracted).toHaveLength(RECENT_SWITCH_LIMIT)
-    expect(extracted.map(item => item.seq)).toEqual([9, 8, 7, 6, 5])
-  })
-
-  it('shows the actual count when the page holds fewer than N (no multi-page backfill)', () => {
-    const extracted = extractRecentSwitches([switchEntry(3), switchEntry(1)])
-    expect(extracted).toHaveLength(2)
-    expect(extracted.map(item => item.seq)).toEqual([3, 1])
-  })
-
-  it('returns an empty list for a page without switch events', () => {
-    expect(extractRecentSwitches([otherEntry(1), otherEntry(2)])).toEqual([])
-    expect(extractRecentSwitches([])).toEqual([])
-  })
-})
-
-describe('deriveEffectiveModel (spec §2.5 D-6 display value)', () => {
-  // The former `enabled: true` fixture flag is gone (plan
-  // fallbacks-web-ux-alignment T2): activity is content presence, so the
-  // fixture is "active" by carrying a non-empty rootChain.
-  const activeConfig: FallbacksConfig = {
+/** A v2 config fixture: two named chains + a role pointing at the first. */
+function v2Config(overrides: Partial<FallbacksConfig> = {}): FallbacksConfig {
+  return {
     ...defaultFallbacksConfig,
-    rootChain: ['openai/gpt-4o', 'openai/*'],
+    chains: [
+      { id: 'Auto', label: '默认链', entries: ['openai/gpt-4o', OFFICIAL_FLASH], timeSlots: [] },
+      { id: 'night', label: '夜间', entries: [OFFICIAL_PRO], timeSlots: [] },
+    ],
+    roles: { list: [{ id: 'coder', persona: 'Coder', chain: 'Auto' }] },
+    ...overrides,
   }
+}
 
-  it('① no configured content → unavailable even when switches exist', () => {
-    const view = deriveEffectiveModel(defaultFallbacksConfig, [{
-      seq: 2, time: 1, turn: 1, step: 1,
-      from: { provider: 'openai', model: 'gpt-4o' },
-      to: { provider: 'anthropic', model: 'claude-3-5-sonnet' },
-      role: 'inherit', reason: 'trigger-code',
-    }])
-    expect(view).toEqual({ kind: 'unavailable' })
+describe('parseFallbacksConfig (descriptor read, v2)', () => {
+  it('returns the spec defaults for an empty descriptor', () => {
+    expect(parseFallbacksConfig({})).toEqual(defaultFallbacksConfig)
   })
 
-  it('① empty rootChain → unavailable', () => {
-    const config = { ...activeConfig, rootChain: [] }
-    expect(deriveEffectiveModel(config, [])).toEqual({ kind: 'unavailable' })
-  })
-
-  it('② a recent switch exists → the latest one\'s target (`to`)', () => {
-    const switches: FallbacksSwitchSnapshot[] = [
-      { seq: 9, time: 1, turn: 1, step: 1, from: { provider: 'openai', model: 'gpt-4o' }, to: { provider: 'google', model: 'gemini-2.0-flash' }, role: 'inherit', reason: 'always-cap' },
-      { seq: 3, time: 1, turn: 1, step: 1, from: { provider: 'openai', model: 'gpt-4o' }, to: { provider: 'anthropic', model: 'claude-3-5-sonnet' }, role: 'inherit', reason: 'trigger-code' },
-    ]
-    // The store keeps switches newest-first, so [0] is the latest.
-    expect(deriveEffectiveModel(activeConfig, switches)).toEqual({
-      kind: 'switched',
-      provider: 'google',
-      model: 'gemini-2.0-flash',
-    })
-  })
-
-  it('③ no switches → the config\'s primary target (first rootChain entry)', () => {
-    expect(deriveEffectiveModel(activeConfig, [])).toEqual({
-      kind: 'config',
-      provider: 'openai',
-      model: 'gpt-4o',
-    })
-  })
-
-  it('③ a wildcard first entry derives as provider/*', () => {
-    const config = { ...activeConfig, rootChain: ['anthropic/*'] }
-    expect(deriveEffectiveModel(config, [])).toEqual({ kind: 'config', provider: 'anthropic', model: '*' })
-  })
-
-  it('③ a malformed first entry stays verbatim rather than mis-parsed', () => {
-    const config = { ...activeConfig, rootChain: ['gpt-4o'] }
-    expect(deriveEffectiveModel(config, [])).toEqual({ kind: 'config', provider: 'gpt-4o', model: '*' })
-  })
-})
-
-describe('FallbacksSettingsController', () => {
-  it('loads the config over the gateway into a ready state (describe stays for writable + directory)', async () => {
-    const api = makeApi()
-    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
-    const { rpc, call, get } = makeRpc({ ...defaultFallbacksConfig })
-    const controller = new FallbacksSettingsController(api, rpc)
-    await controller.load()
-    const state = controller.store.getSnapshot()
-    expect(state.status).toBe('ready')
-    expect(state.writable).toBe(true)
-    expect(state.present).toBe(true)
-    // No `enabled` key on the wire or in the folded config (plan
-    // fallbacks-web-ux-alignment T2 — the removed switch never crosses the
-    // gateway; activity re-keys to content presence).
-    expect('enabled' in state.config).toBe(false)
-    // describe is still called (writable + namespace directory)…
-    expect(api.settings.describe).toHaveBeenCalledWith()
-    // …but the config itself rides the gateway channel, never describe.
-    expect(call).toHaveBeenCalledWith('/api', 'fallbacks/get', { args: {} })
-    expect(get).toHaveBeenCalledTimes(1)
-  })
-
-  it('drops the removed alwaysModeRetryCap / roleAutoMatch descriptor keys (direction C)', () => {
-    // A version-skewed gateway could still put the removed keys on the wire;
-    // the descriptor read must neither throw nor resurrect them in the
-    // accepted config-basis.
+  it('parses the v2 shape and preserves role extras (prompt/permissions)', () => {
     const parsed = parseFallbacksConfig({
-      ...defaultFallbacksConfig,
-      alwaysModeRetryCap: 5,
-      roleAutoMatch: false,
-    } as never)
-    expect('alwaysModeRetryCap' in parsed).toBe(false)
-    expect('roleAutoMatch' in parsed).toBe(false)
-  })
-
-  it('keeps the usable skeleton when the gateway get fails (ok:false → present:false, not a dead end)', async () => {
-    // KD-G5: a get failure (channel down / gateway not ready / no settings
-    // service) is NOT a page error — the section shows the channel-unreachable
-    // notice over the defaults skeleton; writable still follows describe.
-    const api = makeApi()
-    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
-    const { rpc } = makeRpc(null)
-    const controller = new FallbacksSettingsController(api, rpc)
-    await controller.load()
-    const state = controller.store.getSnapshot()
-    expect(state.status).toBe('ready')
-    expect(state.present).toBe(false)
-    expect(state.writable).toBe(true)
-    expect(state.config).toEqual(defaultFallbacksConfig)
-    expect(state.error).toBeNull()
-  })
-
-  it('keeps the usable skeleton when the gateway get throws (transport down → present:false)', async () => {
-    const api = makeApi()
-    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
-    const { rpc, get } = makeRpc()
-    get.mockRejectedValueOnce(new Error('transport down'))
-    const controller = new FallbacksSettingsController(api, rpc)
-    await controller.load()
-    const state = controller.store.getSnapshot()
-    expect(state.status).toBe('ready')
-    expect(state.present).toBe(false)
-    expect(state.config).toEqual(defaultFallbacksConfig)
-  })
-
-  it('preserves the accepted config when a follow-up get fails after a successful load (I-1)', async () => {
-    // Draft seed invariant (I-1): `accept(undefined, …)` keeps the last
-    // accepted config — a transient channel-down on a REFRESH must not
-    // clobber real server truth with the defaults skeleton. The second
-    // failed get lands present:false (channel-unreachable notice), never a
-    // page error, and `state.config` stays exactly as loaded.
-    const api = makeApi()
-    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
-    const { rpc, get } = makeRpc({ ...defaultFallbacksConfig, cooldownMs: 99_000 })
-    const controller = new FallbacksSettingsController(api, rpc)
-    await controller.load()
-    expect(controller.store.getSnapshot().present).toBe(true)
-    expect(controller.store.getSnapshot().config.cooldownMs).toBe(99_000)
-    // The channel drops before the next refresh's get resolves.
-    get.mockReturnValueOnce(Promise.resolve(failResult('fallbacks gateway is not ready')))
-    await controller.load()
-    const state = controller.store.getSnapshot()
-    expect(state.status).toBe('ready')
-    expect(state.present).toBe(false)
-    expect(state.error).toBeNull()
-    expect(state.config).toEqual({ ...defaultFallbacksConfig, cooldownMs: 99_000 })
-  })
-
-  it('keeps a read-only environment honest: writable:false disables the controls', async () => {
-    // §1.4-4: only a real read-only describe response disables the controls —
-    // the always-visible skeleton must not weaken honest read-only rendering.
-    const api = makeApi()
-    api.settings.describe.mockResolvedValue(ok({ writable: false, hasDocument: false, namespaces: [] }))
-    const { rpc } = makeRpc()
-    const controller = new FallbacksSettingsController(api, rpc)
-    await controller.load()
-    const state = controller.store.getSnapshot()
-    expect(state.status).toBe('ready')
-    expect(state.present).toBe(true)
-    expect(state.writable).toBe(false)
-    expect(state.config).toEqual(defaultFallbacksConfig)
-  })
-
-  it('surfaces a failed describe as a hard error state (no provider directory → no form)', async () => {
-    // describe failure remains a hard error: the form cannot render
-    // provider/model options without the directory (guide §9).
-    const api = makeApi()
-    api.settings.describe.mockResolvedValue(error('settings-rejected', 'read refused', { ns: 'fallbacks' }))
-    const { rpc, call } = makeRpc()
-    const controller = new FallbacksSettingsController(api, rpc)
-    await controller.load()
-    const state = controller.store.getSnapshot()
-    expect(state.status).toBe('error')
-    expect(state.error).toBe('read refused')
-    // The gateway get ran in parallel (Promise.all) — its result is
-    // DISCARDED: the describe failure throws before accept, so the get's
-    // config never lands in the store (status stays 'error', not 'ready').
-    expect(call).toHaveBeenCalledTimes(1)
-    expect(call).toHaveBeenCalledWith('/api', 'fallbacks/get', { args: {} })
-    expect(state.present).toBe(false)
-    expect(state.config).toEqual(defaultFallbacksConfig)
-  })
-
-  it('never looks for the fallbacks namespace in describe (it is off the wire)', async () => {
-    // The directory may or may not contain `fallbacks` — presence comes from
-    // the gateway get, never from describe (guide §9).
-    const api = makeApi()
-    api.settings.describe.mockResolvedValue(ok({
-      writable: true,
-      hasDocument: false,
-      namespaces: [providerNs('llm-deepseek', {})],
-    }))
-    const { rpc, get } = makeRpc({ ...defaultFallbacksConfig, cooldownMs: 7_000 })
-    const controller = new FallbacksSettingsController(api, rpc)
-    await controller.load()
-    const state = controller.store.getSnapshot()
-    expect(state.status).toBe('ready')
-    expect(state.present).toBe(true)
-    expect(state.config.cooldownMs).toBe(7_000)
-    expect(get).toHaveBeenCalledTimes(1)
-  })
-
-  it('saves the full config through the gateway set and adopts the returned composed config', async () => {
-    const api = makeApi()
-    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
-    const { rpc, call, set } = makeRpc()
-    const controller = new FallbacksSettingsController(api, rpc)
-    await controller.load()
-    const next = { ...defaultFallbacksConfig, cooldownMs: 99_000 }
-    await controller.save(next)
-    expect(call).toHaveBeenLastCalledWith('/api', 'fallbacks/set', { args: { patch: next } })
-    expect(set).toHaveBeenCalledTimes(1)
-    const state = controller.store.getSnapshot()
-    expect(state.status).toBe('ready')
-    expect(state.present).toBe(true)
-    expect(state.config.cooldownMs).toBe(99_000)
-  })
-
-  it('loads legacyKeys from the gateway get response (the migration banner source)', async () => {
-    // The wire field is authoritative: the get response's legacyKeys ride
-    // through load() → accept() into state.legacyKeys for the banner.
-    const api = makeApi()
-    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
-    const { rpc, get } = makeRpc()
-    get.mockReturnValueOnce(Promise.resolve(okResult({
-      config: { ...defaultFallbacksConfig, cooldownMs: 99_000 },
-      legacyKeys: ['chains', 'roles.default'],
-    })))
-    const controller = new FallbacksSettingsController(api, rpc)
-    await controller.load()
-    const state = controller.store.getSnapshot()
-    expect(state.status).toBe('ready')
-    expect(state.present).toBe(true)
-    expect(state.config.cooldownMs).toBe(99_000)
-    expect(state.legacyKeys).toEqual(['chains', 'roles.default'])
-  })
-
-  it('preserves legacyKeys when a follow-up get fails (the banner survives transient channel-down, T3 reviewer minor)', async () => {
-    // accept() only lets a REAL config clear/replace the wire legacyKeys: a
-    // complete get failure (config undefined) keeps the last accepted value
-    // so a transient refresh can never clear the migration banner.
-    const api = makeApi()
-    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
-    const { rpc, get } = makeRpc()
-    get.mockReturnValueOnce(Promise.resolve(okResult({
-      config: { ...defaultFallbacksConfig, cooldownMs: 99_000 },
-      legacyKeys: ['chains'],
-    })))
-    const controller = new FallbacksSettingsController(api, rpc)
-    await controller.load()
-    expect(controller.store.getSnapshot().legacyKeys).toEqual(['chains'])
-    // The channel drops before the next refresh's get resolves.
-    get.mockReturnValueOnce(Promise.resolve(failResult('fallbacks gateway is not ready')))
-    await controller.load()
-    const state = controller.store.getSnapshot()
-    expect(state.status).toBe('ready')
-    expect(state.present).toBe(false)
-    expect(state.config.cooldownMs).toBe(99_000)
-    expect(state.legacyKeys).toEqual(['chains'])
-  })
-
-  it('guards a malformed legacyKeys wire value as [] (Array.isArray guard)', async () => {
-    const api = makeApi()
-    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
-    const { rpc, get } = makeRpc()
-    // Non-array → [] ; mixed array → string entries only.
-    get.mockReturnValueOnce(Promise.resolve(okResult({ config: defaultFallbacksConfig, legacyKeys: 'chains' })))
-    const controller = new FallbacksSettingsController(api, rpc)
-    await controller.load()
-    expect(controller.store.getSnapshot().legacyKeys).toEqual([])
-
-    get.mockReturnValueOnce(Promise.resolve(okResult({ config: defaultFallbacksConfig, legacyKeys: ['chains', 7] })))
-    await controller.load()
-    expect(controller.store.getSnapshot().legacyKeys).toEqual(['chains'])
-  })
-
-  it('a save response without legacyKeys KEEPS the banner (W-1/F-1: only a get may settle legacy truth)', async () => {
-    const api = makeApi()
-    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
-    const { rpc, get } = makeRpc()
-    get.mockReturnValueOnce(Promise.resolve(okResult({
-      config: defaultFallbacksConfig,
-      legacyKeys: ['chains'],
-    })))
-    const controller = new FallbacksSettingsController(api, rpc)
-    await controller.load()
-    expect(controller.store.getSnapshot().legacyKeys).toEqual(['chains'])
-    // The gateway set response omits the field (older gateway / pre-W-1):
-    // the last accepted value is kept — a save merges over the user layer,
-    // so the server's silence must never clear the banner against truth.
-    await controller.save({ ...defaultFallbacksConfig, cooldownMs: 55_000 })
-    const state = controller.store.getSnapshot()
-    expect(state.status).toBe('ready')
-    expect(state.config.cooldownMs).toBe(55_000)
-    expect(state.legacyKeys).toEqual(['chains'])
-  })
-
-  it('a save response carrying legacyKeys lands them in state', async () => {
-    const api = makeApi()
-    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
-    const { rpc, set } = makeRpc()
-    const controller = new FallbacksSettingsController(api, rpc)
-    await controller.load()
-    set.mockReturnValueOnce(Promise.resolve(okResult({
-      config: { ...defaultFallbacksConfig, cooldownMs: 33_000 },
-      legacyKeys: ['roles.default'],
-    })))
-    await controller.save({ ...defaultFallbacksConfig, cooldownMs: 33_000 })
-    const state = controller.store.getSnapshot()
-    expect(state.config.cooldownMs).toBe(33_000)
-    expect(state.legacyKeys).toEqual(['roles.default'])
-  })
-
-  it('loads seeds from the gateway get response (the card badge source)', async () => {
-    // spec §9.4: the additive seeds field rides the get response exactly
-    // like legacyKeys — the wire value is authoritative for the badge.
-    // A blank/whitespace-only `source` counts as malformed (it would
-    // render a textless badge): the field drops, the entry still parses.
-    const api = makeApi()
-    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
-    const { rpc, get } = makeRpc()
-    get.mockReturnValueOnce(Promise.resolve(okResult({
-      config: defaultFallbacksConfig,
-      seeds: [
-        { id: 'architect', overridden: false },
-        { id: 'qa-engineer', overridden: true },
-        { id: 'writer', overridden: false, source: '' },
-        { id: 'scout', overridden: false, source: '   ' },
-      ],
-    })))
-    const controller = new FallbacksSettingsController(api, rpc)
-    await controller.load()
-    expect(controller.store.getSnapshot().seeds).toEqual([
-      { id: 'architect', overridden: false },
-      { id: 'qa-engineer', overridden: true },
-      { id: 'writer', overridden: false },
-      { id: 'scout', overridden: false },
-    ])
-  })
-
-  it('a get WITHOUT the seeds field leaves state.seeds as [] (get-authority rule)', async () => {
-    // spec §9.4: only a real get settles seed truth; an omitted field
-    // (older gateway) means "no seeds to badge" on this fresh read —
-    // load() must leave the initial [] rather than inventing state.
-    const api = makeApi()
-    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
-    const { rpc } = makeRpc() // default get response carries { config } only — no seeds
-    const controller = new FallbacksSettingsController(api, rpc)
-    await controller.load()
-    expect(controller.store.getSnapshot().seeds).toEqual([])
-  })
-
-  it('guards a malformed seeds wire value as [] (Array.isArray + shape guard)', async () => {
-    // Non-array → [] ; all-malformed entries → [] ; mixed array → the
-    // well-shaped entries only (the legacyKeys element-filter precedent).
-    const api = makeApi()
-    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
-    const { rpc, get } = makeRpc()
-    get.mockReturnValueOnce(Promise.resolve(okResult({ config: defaultFallbacksConfig, seeds: 'junk' })))
-    const controller = new FallbacksSettingsController(api, rpc)
-    await controller.load()
-    expect(controller.store.getSnapshot().seeds).toEqual([])
-
-    get.mockReturnValueOnce(Promise.resolve(okResult({
-      config: defaultFallbacksConfig,
-      seeds: [{ id: 'architect' }, 'junk', 7, null],
-    })))
-    await controller.load()
-    expect(controller.store.getSnapshot().seeds).toEqual([])
-
-    get.mockReturnValueOnce(Promise.resolve(okResult({
-      config: defaultFallbacksConfig,
-      seeds: [{ id: 'architect', overridden: true }, { id: 5 }, 'junk'],
-    })))
-    await controller.load()
-    expect(controller.store.getSnapshot().seeds).toEqual([{ id: 'architect', overridden: true }])
-  })
-
-  it('preserves seeds when a follow-up get fails (the badge survives transient channel-down)', async () => {
-    // accept() only lets a REAL config replace the wire seeds: a complete
-    // get failure (config undefined) keeps the last accepted value so a
-    // transient refresh can never clear the badge.
-    const api = makeApi()
-    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
-    const { rpc, get } = makeRpc()
-    get.mockReturnValueOnce(Promise.resolve(okResult({
-      config: defaultFallbacksConfig,
-      seeds: [{ id: 'architect', overridden: false }],
-    })))
-    const controller = new FallbacksSettingsController(api, rpc)
-    await controller.load()
-    expect(controller.store.getSnapshot().seeds).toEqual([{ id: 'architect', overridden: false }])
-    // The channel drops before the next refresh's get resolves.
-    get.mockReturnValueOnce(Promise.resolve(failResult('fallbacks gateway is not ready')))
-    await controller.load()
-    const state = controller.store.getSnapshot()
-    expect(state.present).toBe(false)
-    expect(state.seeds).toEqual([{ id: 'architect', overridden: false }])
-  })
-
-  it('a save response without seeds keeps the last badge state (W-1/F-1: only a get may settle seeds truth)', async () => {
-    const api = makeApi()
-    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
-    const { rpc, get } = makeRpc()
-    get.mockReturnValueOnce(Promise.resolve(okResult({
-      config: defaultFallbacksConfig,
-      seeds: [{ id: 'architect', overridden: false }],
-    })))
-    const controller = new FallbacksSettingsController(api, rpc)
-    await controller.load()
-    expect(controller.store.getSnapshot().seeds).toEqual([{ id: 'architect', overridden: false }])
-    // The gateway set response omits the field (older gateway): keep the
-    // last accepted value — a save merges over the user layer, so the
-    // server's silence must never clear the badge against truth.
-    await controller.save({ ...defaultFallbacksConfig, cooldownMs: 55_000 })
-    const state = controller.store.getSnapshot()
-    expect(state.config.cooldownMs).toBe(55_000)
-    expect(state.seeds).toEqual([{ id: 'architect', overridden: false }])
-  })
-
-  it('a save response carrying seeds lands them in state', async () => {
-    const api = makeApi()
-    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
-    const { rpc, set } = makeRpc()
-    const controller = new FallbacksSettingsController(api, rpc)
-    await controller.load()
-    set.mockReturnValueOnce(Promise.resolve(okResult({
-      config: { ...defaultFallbacksConfig, cooldownMs: 33_000 },
-      seeds: [{ id: 'architect', overridden: true }],
-    })))
-    await controller.save({ ...defaultFallbacksConfig, cooldownMs: 33_000 })
-    const state = controller.store.getSnapshot()
-    expect(state.config.cooldownMs).toBe(33_000)
-    expect(state.seeds).toEqual([{ id: 'architect', overridden: true }])
-  })
-
-  it('a reset response without seeds keeps the last badge state too', async () => {
-    const api = makeApi()
-    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
-    const { rpc, get } = makeRpc()
-    get.mockReturnValueOnce(Promise.resolve(okResult({
-      config: { ...defaultFallbacksConfig, cooldownMs: 99_000 },
-      seeds: [{ id: 'architect', overridden: false }],
-    })))
-    const controller = new FallbacksSettingsController(api, rpc)
-    await controller.load()
-    expect(controller.store.getSnapshot().seeds).toEqual([{ id: 'architect', overridden: false }])
-    await controller.resetToDefaults()
-    const state = controller.store.getSnapshot()
-    expect(state.config).toEqual(defaultFallbacksConfig)
-    // Same keep-last rule as save: an absent wire field never clears the
-    // badge — the next get is the only seeds-truth authority.
-    expect(state.seeds).toEqual([{ id: 'architect', overridden: false }])
-  })
-
-  it('a reset response without legacyKeys keeps the banner too', async () => {
-    const api = makeApi()
-    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
-    const { rpc, get } = makeRpc()
-    get.mockReturnValueOnce(Promise.resolve(okResult({
-      config: { ...defaultFallbacksConfig, cooldownMs: 99_000 },
-      legacyKeys: ['roles.default'],
-    })))
-    const controller = new FallbacksSettingsController(api, rpc)
-    await controller.load()
-    expect(controller.store.getSnapshot().legacyKeys).toEqual(['roles.default'])
-    await controller.resetToDefaults()
-    const state = controller.store.getSnapshot()
-    expect(state.config).toEqual(defaultFallbacksConfig)
-    // Same keep-last rule as save: an absent wire field never clears the
-    // banner — the next get is the only legacy-truth authority.
-    expect(state.legacyKeys).toEqual(['roles.default'])
-  })
-
-  it('surfaces a set rejection as the error banner (KD-G3 — no conflict branch)', async () => {
-    // The gateway merge has no revision guard: a refused write is a plain
-    // error. The old `settings-conflict` state is gone — the message lands in
-    // `state.error` and the form stays editable for retry.
-    const api = makeApi()
-    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
-    const { rpc, set } = makeRpc()
-    set.mockReturnValueOnce(Promise.resolve(failResult('changed since read')))
-    const controller = new FallbacksSettingsController(api, rpc)
-    await controller.load()
-    await controller.save(defaultFallbacksConfig)
-    const state = controller.store.getSnapshot()
-    expect(state.status).toBe('error')
-    expect(state.error).toBe('changed since read')
-    expect(state).not.toHaveProperty('conflict')
-    expect(state).not.toHaveProperty('revision')
-  })
-
-  it('surfaces a set transport throw as the error banner (KD-G3)', async () => {
-    const api = makeApi()
-    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
-    const { rpc, set } = makeRpc()
-    set.mockRejectedValueOnce(new Error('transport down'))
-    const controller = new FallbacksSettingsController(api, rpc)
-    await controller.load()
-    await controller.save(defaultFallbacksConfig)
-    const state = controller.store.getSnapshot()
-    expect(state.status).toBe('error')
-    expect(state.error).toBe('transport down')
-  })
-
-  it('resets to defaults through the gateway reset (never set)', async () => {
-    const api = makeApi()
-    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
-    const { rpc, call, set, reset } = makeRpc({ ...defaultFallbacksConfig, cooldownMs: 99_000 })
-    const controller = new FallbacksSettingsController(api, rpc)
-    await controller.load()
-    expect(controller.store.getSnapshot().config.cooldownMs).toBe(99_000)
-    await controller.resetToDefaults()
-    expect(call).toHaveBeenLastCalledWith('/api', 'fallbacks/reset', { args: {} })
-    expect(reset).toHaveBeenCalledTimes(1)
-    expect(set).not.toHaveBeenCalled()
-    const state = controller.store.getSnapshot()
-    expect(state.status).toBe('ready')
-    expect(state.present).toBe(true)
-    expect(state.config).toEqual(defaultFallbacksConfig)
-  })
-
-  it('surfaces a reset rejection as the error banner and leaves the store retryable (I-2)', async () => {
-    // KD-G3 symmetry: `resetToDefaults()` rides the same `fail()` path as
-    // `save()` — a refused gateway reset lands the message in `state.error`
-    // (the error banner), never leaves the store stuck in `saving`, and
-    // keeps the accepted config intact for retry.
-    const api = makeApi()
-    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
-    const { rpc, call, reset } = makeRpc({ ...defaultFallbacksConfig, cooldownMs: 99_000 })
-    const controller = new FallbacksSettingsController(api, rpc)
-    await controller.load()
-    reset.mockReturnValueOnce(Promise.resolve(failResult('reset refused')))
-    await controller.resetToDefaults()
-    expect(call).toHaveBeenLastCalledWith('/api', 'fallbacks/reset', { args: {} })
-    const state = controller.store.getSnapshot()
-    expect(state.status).toBe('error')
-    expect(state.error).toBe('reset refused')
-    // The refused reset did not corrupt the accepted config or flip present.
-    expect(state.present).toBe(true)
-    expect(state.config.cooldownMs).toBe(99_000)
-    // The store is not stuck in saving: a follow-up save still goes through
-    // (the error banner leaves the form editable for retry).
-    await controller.save({ ...defaultFallbacksConfig, cooldownMs: 55_000 })
-    const after = controller.store.getSnapshot()
-    expect(after.status).toBe('ready')
-    expect(after.error).toBeNull()
-    expect(after.config.cooldownMs).toBe(55_000)
-  })
-
-  it('refuses writes when the provider is not writable', async () => {
-    const api = makeApi()
-    api.settings.describe.mockResolvedValue(ok({ writable: false, hasDocument: false, namespaces: [] }))
-    const { rpc, call } = makeRpc()
-    const controller = new FallbacksSettingsController(api, rpc)
-    await controller.load()
-    await controller.save(defaultFallbacksConfig)
-    await controller.resetToDefaults()
-    // Only the load's get crossed the channel; set/reset never ran.
-    expect(call).toHaveBeenCalledTimes(1)
-    expect(call).toHaveBeenCalledWith('/api', 'fallbacks/get', { args: {} })
-  })
-
-  it('attempts a save even when the gateway get previously failed (usable skeleton save)', async () => {
-    // KD-G5 skeleton semantics: a failed read does not block a later write
-    // once the channel recovers — a successful set restores present and
-    // adopts the returned config.
-    const api = makeApi()
-    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
-    const { rpc, set } = makeRpc(null)
-    const controller = new FallbacksSettingsController(api, rpc)
-    await controller.load()
-    expect(controller.store.getSnapshot().present).toBe(false)
-    set.mockReturnValueOnce(Promise.resolve(okResult({ config: { ...defaultFallbacksConfig, cooldownMs: 33_000 } })))
-    await controller.save({ ...defaultFallbacksConfig, cooldownMs: 33_000 })
-    const state = controller.store.getSnapshot()
-    expect(state.status).toBe('ready')
-    expect(state.present).toBe(true)
-    expect(state.config.cooldownMs).toBe(33_000)
-  })
-
-  it('drops in-flight responses after dispose (generation guard)', async () => {
-    const api = makeApi()
-    const gate = Promise.withResolvers<unknown>()
-    api.settings.describe.mockReturnValue(gate.promise)
-    const { rpc, call } = makeRpc()
-    const controller = new FallbacksSettingsController(api, rpc)
-    const loading = controller.load()
-    controller.dispose()
-    gate.resolve(ok({ writable: true, hasDocument: false, namespaces: [] }))
-    await loading
-    const state = controller.store.getSnapshot()
-    // The stale response never published: the store stays on the loading
-    // state it was left in, with the initial defaults (never accepted).
-    expect(state.status).not.toBe('ready')
-    expect(state.present).toBe(false)
-    expect(state.config).toEqual(defaultFallbacksConfig)
-    // The parallel load issued the gateway get up front (Promise.all) — the
-    // generation guard discarded its result together with the describe's.
-    expect(call).toHaveBeenCalledTimes(1)
-    expect(call).toHaveBeenCalledWith('/api', 'fallbacks/get', { args: {} })
-  })
-
-  it('drops an in-flight save accept after dispose (write path never publishes)', async () => {
-    // F-002: the existing dispose test only covered the READ path. A write
-    // in flight at dispose time must not publish either — the stale save
-    // accept must not replace the frozen store's config with the response.
-    const api = makeApi()
-    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
-    const { rpc, set } = makeRpc({ ...defaultFallbacksConfig, cooldownMs: 99_000 })
-    const controller = new FallbacksSettingsController(api, rpc)
-    await controller.load()
-
-    const gate = Promise.withResolvers<{ ok: true; value: { config: FallbacksConfig } }>()
-    set.mockReturnValueOnce(gate.promise)
-    const saving = controller.save({ ...defaultFallbacksConfig, cooldownMs: 55_000 })
-    controller.dispose()
-    gate.resolve(okResult({ config: { ...defaultFallbacksConfig, cooldownMs: 55_000 } }))
-    await saving
-    const state = controller.store.getSnapshot()
-    // The stale write accept never published: the store stays frozen on the
-    // write's 'saving' state with the pre-save config (never replaced).
-    expect(state.status).toBe('saving')
-    expect(state.present).toBe(true)
-    expect(state.config.cooldownMs).toBe(99_000)
-  })
-
-  it('drops an in-flight save rejection after dispose (write path never publishes)', async () => {
-    const api = makeApi()
-    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
-    const { rpc, set } = makeRpc({ ...defaultFallbacksConfig, cooldownMs: 99_000 })
-    const controller = new FallbacksSettingsController(api, rpc)
-    await controller.load()
-
-    const gate = Promise.withResolvers<{ ok: true; value: { config: FallbacksConfig } }>()
-    set.mockReturnValueOnce(gate.promise)
-    const saving = controller.save({ ...defaultFallbacksConfig, cooldownMs: 55_000 })
-    controller.dispose()
-    gate.reject(new Error('transport down'))
-    await saving
-    const state = controller.store.getSnapshot()
-    // The stale write FAILURE never published either: no error banner after
-    // disposal — fail() sits under the same writeGeneration guard.
-    expect(state.status).not.toBe('error')
-    expect(state.error).toBeNull()
-    expect(state.config.cooldownMs).toBe(99_000)
-  })
-
-  it('drops an in-flight reset accept after dispose (write path never publishes)', async () => {
-    const api = makeApi()
-    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
-    const { rpc, reset } = makeRpc({ ...defaultFallbacksConfig, cooldownMs: 99_000 })
-    const controller = new FallbacksSettingsController(api, rpc)
-    await controller.load()
-
-    const gate = Promise.withResolvers<{ ok: true; value: { config: FallbacksConfig } }>()
-    reset.mockReturnValueOnce(gate.promise)
-    const resetting = controller.resetToDefaults()
-    controller.dispose()
-    gate.resolve(okResult({ config: defaultFallbacksConfig }))
-    await resetting
-    const state = controller.store.getSnapshot()
-    // Symmetric to the save case: the stale reset accept never published.
-    expect(state.status).toBe('saving')
-    expect(state.present).toBe(true)
-    expect(state.config.cooldownMs).toBe(99_000)
-  })
-
-  it('accepts the save response when an overlapping load with a failing get supersedes the read (write generation split)', async () => {
-    // Audit F1: load() and save() shared one generation counter, so the
-    // post-save refresh (settings/document-updated → load()) could bump the
-    // counter while the write was in flight and discard the save's accept().
-    // When that refresh's get fails, the UI kept the PRE-SAVE config even
-    // though the server accepted the write. The read/write generation split
-    // lets the write completion publish regardless of overlapping reads.
-    const api = makeApi()
-    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
-    const { rpc, get, set } = makeRpc({ ...defaultFallbacksConfig, cooldownMs: 99_000 })
-    const controller = new FallbacksSettingsController(api, rpc)
-    await controller.load()
-    expect(controller.store.getSnapshot().config.cooldownMs).toBe(99_000)
-
-    // The save's set stays in flight while the overlapping refresh runs.
-    const gate = Promise.withResolvers<{ ok: true; value: { config: FallbacksConfig } }>()
-    set.mockReturnValueOnce(gate.promise)
-    const saving = controller.save({ ...defaultFallbacksConfig, cooldownMs: 55_000 })
-
-    // The refresh overlaps the write and its get fails — the exact overlap
-    // where the shared counter dropped the save's accept().
-    get.mockReturnValueOnce(Promise.resolve(failResult('fallbacks gateway is not ready')))
-    await controller.load()
-    expect(controller.store.getSnapshot().present).toBe(false)
-
-    // The server accepted the write and returned the post-write config.
-    gate.resolve(okResult({ config: { ...defaultFallbacksConfig, cooldownMs: 55_000 } }))
-    await saving
-    const state = controller.store.getSnapshot()
-    expect(state.status).toBe('ready')
-    expect(state.present).toBe(true)
-    expect(state.config.cooldownMs).toBe(55_000)
-  })
-
-  it('drops a pre-write load whose get fails after a save accepted (mirrored race guard)', async () => {
-    // F-301: the mirror image of F1. A load STARTED before a write can
-    // settle AFTER the write's accept — when its get then fails, the old
-    // read's accept(undefined) would pull present back to false and leave
-    // the UI showing the pre-save config even though the server accepted
-    // the write. Write-wins: a read that observed the pre-write generation
-    // must not clobber the write's publish on EITHER branch.
-    const api = makeApi()
-    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
-    const { rpc, get, set } = makeRpc({ ...defaultFallbacksConfig, cooldownMs: 99_000 })
-    const controller = new FallbacksSettingsController(api, rpc)
-    await controller.load()
-    expect(controller.store.getSnapshot().config.cooldownMs).toBe(99_000)
-
-    // The load's get stays in flight while the write completes first.
-    const gate = Promise.withResolvers<unknown>()
-    get.mockReturnValueOnce(gate.promise)
-    const loading = controller.load()
-    set.mockReturnValueOnce(Promise.resolve(okResult({ config: { ...defaultFallbacksConfig, cooldownMs: 55_000 } })))
-    await controller.save({ ...defaultFallbacksConfig, cooldownMs: 55_000 })
-    expect(controller.store.getSnapshot().config.cooldownMs).toBe(55_000)
-
-    // The pre-write read settles LAST, with a FAILING get — without the
-    // guard its accept(undefined) clobbers the save's publish.
-    gate.resolve(failResult('fallbacks gateway is not ready'))
-    await loading
-    const state = controller.store.getSnapshot()
-    expect(state.status).toBe('ready')
-    expect(state.present).toBe(true)
-    expect(state.config.cooldownMs).toBe(55_000)
-  })
-
-  it('drops a pre-write load whose describe fails after a save accepted (mirrored race, failure branch)', async () => {
-    // The catch branch of load() is under the same guard: a describe
-    // failure settling after the write must not flip the store to 'error'
-    // over the write's published accept.
-    const api = makeApi()
-    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
-    const { rpc, set } = makeRpc({ ...defaultFallbacksConfig, cooldownMs: 99_000 })
-    const controller = new FallbacksSettingsController(api, rpc)
-    await controller.load()
-
-    // The refresh's describe stays in flight while the write completes.
-    const gate = Promise.withResolvers<unknown>()
-    api.settings.describe.mockReturnValueOnce(gate.promise)
-    const loading = controller.load()
-    set.mockReturnValueOnce(Promise.resolve(okResult({ config: { ...defaultFallbacksConfig, cooldownMs: 55_000 } })))
-    await controller.save({ ...defaultFallbacksConfig, cooldownMs: 55_000 })
-
-    // The stale read's describe fails — without the guard fail() flips the
-    // store to 'error' over the write's accept.
-    gate.resolve(error('read-refused', 'read refused'))
-    await loading
-    const state = controller.store.getSnapshot()
-    expect(state.status).toBe('ready')
-    expect(state.error).toBeNull()
-    expect(state.present).toBe(true)
-    expect(state.config.cooldownMs).toBe(55_000)
-  })
-
-  it('accepts the reset response when an overlapping load with a failing get supersedes the read (reset write generation split)', async () => {
-    // F-001/F-303: resetToDefaults() rides the same writeGeneration guard
-    // as save() — an overlapping refresh whose get fails must not discard
-    // the reset's accept of the post-reset defaults (write-wins symmetry).
-    const api = makeApi()
-    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
-    const { rpc, get, reset } = makeRpc({ ...defaultFallbacksConfig, cooldownMs: 99_000 })
-    const controller = new FallbacksSettingsController(api, rpc)
-    await controller.load()
-    expect(controller.store.getSnapshot().config.cooldownMs).toBe(99_000)
-
-    // The reset stays in flight while the overlapping refresh runs.
-    const gate = Promise.withResolvers<{ ok: true; value: { config: FallbacksConfig } }>()
-    reset.mockReturnValueOnce(gate.promise)
-    const resetting = controller.resetToDefaults()
-
-    // The refresh overlaps the write and its get fails.
-    get.mockReturnValueOnce(Promise.resolve(failResult('fallbacks gateway is not ready')))
-    await controller.load()
-    expect(controller.store.getSnapshot().present).toBe(false)
-
-    // The server accepted the reset and returned the composed defaults.
-    gate.resolve(okResult({ config: defaultFallbacksConfig }))
-    await resetting
-    const state = controller.store.getSnapshot()
-    expect(state.status).toBe('ready')
-    expect(state.present).toBe(true)
-    expect(state.config).toEqual(defaultFallbacksConfig)
-  })
-
-  it('loads the provider directory and model groups into the catalog snapshot (D-4)', async () => {
-    const api = makeApi()
-    api.llm.listConfigurableProviders.mockResolvedValue(ok(catalogFixture().providers))
-    api.session.modelCatalog.mockResolvedValue(ok({ groups: catalogFixture().groups, failures: [] }))
-    const controller = new FallbacksSettingsController(api, makeRpc().rpc)
-    await controller.loadCatalog()
-    const state = controller.store.getSnapshot()
-    expect(state.catalogStatus).toBe('ready')
-    expect(state.catalogError).toBeNull()
-    expect(state.providers).toEqual(catalogFixture().providers)
-    expect(state.groups).toEqual(catalogFixture().groups)
-    expect(state.catalogEpoch).toBe(1)
-    // The catalog read never touches the settings side of the store.
-    expect(state.status).toBe('idle')
-    expect(api.llm.listConfigurableProviders).toHaveBeenCalledWith()
-    expect(api.session.modelCatalog).toHaveBeenCalledWith()
-  })
-
-  it('keeps sound groups usable and reports per-provider failures as a diagnostic (D-4)', async () => {
-    const api = makeApi()
-    api.llm.listConfigurableProviders.mockResolvedValue(ok(catalogFixture().providers))
-    api.session.modelCatalog.mockResolvedValue(ok({
-      groups: catalogFixture().groups,
-      failures: [{ id: 'anthropic', name: 'Anthropic', message: 'lookup refused' }],
-    }))
-    const controller = new FallbacksSettingsController(api, makeRpc().rpc)
-    await controller.loadCatalog()
-    const state = controller.store.getSnapshot()
-    expect(state.catalogStatus).toBe('ready')
-    expect(state.groups).toEqual(catalogFixture().groups)
-    expect(state.catalogError).toContain('Anthropic')
-    expect(state.catalogError).toContain('lookup refused')
-  })
-
-  it('marks the catalog errored on a failed read without blocking the settings state', async () => {
-    const api = makeApi()
-    api.llm.listConfigurableProviders.mockResolvedValue(error('llm-rejected', 'directory read refused'))
-    const controller = new FallbacksSettingsController(api, makeRpc().rpc)
-    await controller.loadCatalog()
-    const state = controller.store.getSnapshot()
-    expect(state.catalogStatus).toBe('error')
-    expect(state.catalogError).toBe('directory read refused')
-    // Settings status untouched: the form keeps editing/saving normally.
-    expect(state.status).toBe('idle')
-    expect(state.writable).toBe(false)
-  })
-
-  it('accepts an empty catalog as ready (empty-state guidance, not an error)', async () => {
-    const api = makeApi()
-    api.llm.listConfigurableProviders.mockResolvedValue(ok([]))
-    api.session.modelCatalog.mockResolvedValue(ok({ groups: [], failures: [] }))
-    const controller = new FallbacksSettingsController(api, makeRpc().rpc)
-    await controller.loadCatalog()
-    const state = controller.store.getSnapshot()
-    expect(state.catalogStatus).toBe('ready')
-    expect(state.catalogError).toBeNull()
-    expect(state.providers).toEqual([])
-    expect(state.groups).toEqual([])
-  })
-
-  it('guards catalog refreshes on load with an independent generation (llm/adapters-updated)', async () => {
-    const api = makeApi()
-    api.llm.listConfigurableProviders.mockResolvedValue(ok(catalogFixture().providers))
-    const gate = Promise.withResolvers<unknown>()
-    api.session.modelCatalog.mockReturnValue(gate.promise)
-    const controller = new FallbacksSettingsController(api, makeRpc().rpc)
-    const first = controller.loadCatalog()
-    controller.dispose()
-    gate.resolve(ok({ groups: catalogFixture().groups, failures: [] }))
-    await first
-    const state = controller.store.getSnapshot()
-    // The stale catalog response never published after dispose.
-    expect(state.catalogStatus).not.toBe('ready')
-    expect(state.catalogEpoch).toBe(0)
-  })
-
-  it('refreshCatalogIfLoaded skips an idle catalog and refreshes an opened one', async () => {
-    const api = makeApi()
-    api.llm.listConfigurableProviders.mockResolvedValue(ok(catalogFixture().providers))
-    api.session.modelCatalog.mockResolvedValue(ok({ groups: catalogFixture().groups, failures: [] }))
-    const controller = new FallbacksSettingsController(api, makeRpc().rpc)
-    // Idle → no refetch.
-    refreshCatalogIfLoaded(controller)
-    expect(api.llm.listConfigurableProviders).not.toHaveBeenCalled()
-    await controller.loadCatalog()
-    expect(api.llm.listConfigurableProviders).toHaveBeenCalledTimes(1)
-    // Opened (ready) → refetches.
-    refreshCatalogIfLoaded(controller)
-    expect(api.llm.listConfigurableProviders).toHaveBeenCalledTimes(2)
-  })
-
-  it('refreshFallbacksIfLoaded skips an idle store and refreshes an opened one', async () => {
-    const api = makeApi()
-    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
-    const { rpc, get } = makeRpc()
-    const controller = new FallbacksSettingsController(api, rpc)
-    // Idle → no refetch (the section has never opened).
-    refreshFallbacksIfLoaded(controller)
-    expect(get).not.toHaveBeenCalled()
-    await controller.load()
-    expect(get).toHaveBeenCalledTimes(1)
-    // Opened (ready) → refetches (the settings/document-updated + connection/reset push).
-    refreshFallbacksIfLoaded(controller)
-    expect(get).toHaveBeenCalledTimes(2)
-  })
-})
-
-describe('configuredProviders derivation (Models-page `configured` join)', () => {
-  it('keeps a whole-section provider when its namespace exists (empty settingsPath)', () => {
-    const { providers } = configuredFixture()
-    const namespaces = new Map([['llm-deepseek', providerNs('llm-deepseek', {})]])
-    expect(configuredProvidersOf(providers, namespaces).map(entry => entry.provider)).toEqual(['deepseek-official'])
-  })
-
-  it('drops a provider whose settings namespace is missing', () => {
-    const { providers } = configuredFixture()
-    // No `llm-deepseek` namespace: even the empty-settingsPath provider is unconfigured.
-    expect(configuredProvidersOf(providers, new Map())).toEqual([])
-  })
-
-  it('keeps path-addressed providers whose profile resolves and drops the rest', () => {
-    const { providers } = configuredFixture()
-    const namespaces = new Map([['llm-providers', providerNs('llm-providers', {
-      providers: { openai: { apiKeyEnv: 'OPENAI_API_KEY' }, anthropic: {} },
-    })]])
-    const configured = configuredProvidersOf(providers, namespaces)
-    expect(configured.map(entry => entry.provider)).toEqual(['openai', 'anthropic'])
-    // `google` is in the directory but its profile does not resolve → not offered.
-    expect(configured.some(entry => entry.provider === 'google')).toBe(false)
-  })
-
-  it('derives an empty offer set when no provider is configured', () => {
-    const { providers } = configuredFixture()
-    const namespaces = new Map([['llm-providers', providerNs('llm-providers', { providers: {} })]])
-    expect(configuredProvidersOf(providers, namespaces)).toEqual([])
-  })
-
-  it('joins namespaces and catalog into configuredProviders (load then catalog)', async () => {
-    const api = makeApi()
-    api.settings.describe.mockResolvedValue(ok({
-      writable: true,
-      hasDocument: false,
-      namespaces: [
-        providerNs('llm-deepseek', {}),
-        providerNs('llm-providers', { providers: { openai: {}, anthropic: {} } }),
-      ],
-    }))
-    api.llm.listConfigurableProviders.mockResolvedValue(ok(configuredFixture().providers))
-    api.session.modelCatalog.mockResolvedValue(ok({ groups: [], failures: [] }))
-    const controller = new FallbacksSettingsController(api, makeRpc().rpc)
-    await controller.load()
-    // Namespaces landed first; without the catalog the join stays empty.
-    expect(controller.store.getSnapshot().configuredProviders).toEqual([])
-    await controller.loadCatalog()
-    const state = controller.store.getSnapshot()
-    expect(state.configuredProviders.map(entry => entry.provider))
-      .toEqual(['deepseek-official', 'openai', 'anthropic'])
-  })
-
-  it('joins the other way: catalog landing before namespaces', async () => {
-    const api = makeApi()
-    api.settings.describe.mockResolvedValue(ok({
-      writable: true,
-      hasDocument: false,
-      namespaces: [providerNs('llm-deepseek', {})],
-    }))
-    api.llm.listConfigurableProviders.mockResolvedValue(ok(configuredFixture().providers))
-    api.session.modelCatalog.mockResolvedValue(ok({ groups: [], failures: [] }))
-    const controller = new FallbacksSettingsController(api, makeRpc().rpc)
-    await controller.loadCatalog()
-    expect(controller.store.getSnapshot().configuredProviders).toEqual([])
-    await controller.load()
-    expect(controller.store.getSnapshot().configuredProviders.map(entry => entry.provider))
-      .toEqual(['deepseek-official'])
-  })
-
-  it('derives the join when describe has no fallbacks namespace (the normal case now)', async () => {
-    // The fallbacks namespace never appears in describe (it is off the
-    // apiproxy wire post-patch): presence comes from the gateway get, and the
-    // configured-provider join reads only the OTHER namespaces.
-    const api = makeApi()
-    api.settings.describe.mockResolvedValue(ok({
-      writable: true,
-      hasDocument: false,
-      namespaces: [providerNs('llm-deepseek', {})],
-    }))
-    api.llm.listConfigurableProviders.mockResolvedValue(ok(configuredFixture().providers))
-    api.session.modelCatalog.mockResolvedValue(ok({ groups: [], failures: [] }))
-    const controller = new FallbacksSettingsController(api, makeRpc().rpc)
-    await controller.load()
-    await controller.loadCatalog()
-    const state = controller.store.getSnapshot()
-    expect(state.status).toBe('ready')
-    expect(state.present).toBe(true)
-    expect(state.configuredProviders.map(entry => entry.provider))
-      .toEqual(['deepseek-official'])
-  })
-
-  it('keeps out-of-catalog existing values round-tripping (the configured filter never touches rows)', async () => {
-    const api = makeApi()
-    api.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
-    api.llm.listConfigurableProviders.mockResolvedValue(ok(catalogFixture().providers))
-    api.session.modelCatalog.mockResolvedValue(ok({ groups: catalogFixture().groups, failures: [] }))
-    const controller = new FallbacksSettingsController(
-      api,
-      makeRpc({ ...defaultFallbacksConfig, rootChain: ['other/gpt-4o'] }).rpc,
-    )
-    await controller.load()
-    await controller.loadCatalog()
-    const state = controller.store.getSnapshot()
-    // `other` is outside the catalog and never enters the offer set.
-    expect(state.configuredProviders.map(entry => entry.provider)).not.toContain('other')
-    // The existing rootChain value still round-trips through the row editor losslessly.
-    const rows = rootChainToRows(state.config.rootChain, { providers: state.providers, groups: state.groups })
-    expect(rowsToRootChain(rows)).toEqual(state.config.rootChain)
-  })
-
-  it('round-trips in-catalog-but-unconfigured existing values (the 未配置 read-back is lossless)', async () => {
-    const api = makeApi()
-    // `google` is in the catalog directory but its `llm-providers` profile path
-    // does not resolve — the configured join keeps it out of the offer set,
-    // yet an existing chain value referencing it must still round-trip
-    // verbatim (the synthetic 未配置 option serializes back to the raw string).
-    api.settings.describe.mockResolvedValue(ok({
-      writable: true,
-      hasDocument: false,
-      namespaces: [providerNs('llm-providers', { providers: { openai: { apiKeyEnv: 'OPENAI_API_KEY' }, anthropic: {} } })],
-    }))
-    api.llm.listConfigurableProviders.mockResolvedValue(ok(configuredFixture().providers))
-    api.session.modelCatalog.mockResolvedValue(ok({ groups: catalogFixture().groups, failures: [] }))
-    const controller = new FallbacksSettingsController(
-      api,
-      makeRpc({ ...defaultFallbacksConfig, rootChain: ['google/gemini-2.0-flash'] }).rpc,
-    )
-    await controller.load()
-    await controller.loadCatalog()
-    const state = controller.store.getSnapshot()
-    // In the directory but unconfigured (profile unresolved) → never offered.
-    expect(state.configuredProviders.map(entry => entry.provider)).not.toContain('google')
-    // Classifies as a catalog selection (in the directory) and the existing
-    // value still round-trips losslessly.
-    const rows = rootChainToRows(state.config.rootChain, { providers: state.providers, groups: state.groups })
-    expect(rows[0]!.selectors[0]!.provider).toEqual({ kind: 'catalog', id: 'google' })
-    expect(rowsToRootChain(rows)).toEqual(state.config.rootChain)
-  })
-})
-
-describe('recent-switch summary (spec §2.5 D-5)', () => {
-  it('reads one history page for the recorded current session and lands the extracted switches', async () => {
-    const api = makeApi()
-    api.session.follow.mockImplementation(() => followAnswer([otherEntry(3), switchEntry(5), switchEntry(9)]))
-    const controller = new FallbacksSettingsController(api, makeRpc().rpc)
-    controller.setCurrentSession('sess-1' as never)
-    await controller.loadSwitches()
-    const state = controller.store.getSnapshot()
-    expect(api.session.follow).toHaveBeenCalledWith({
-      address: { kind: 'session', sessionId: 'sess-1' },
-      maxMessages: SWITCHES_HISTORY_PAGE,
-    }, expect.any(AbortSignal))
-    expect(state.switchesStatus).toBe('ready')
-    expect(state.switchesError).toBeNull()
-    expect(state.switches.map(item => item.seq)).toEqual([9, 5])
-    // The switches read never touches the settings side of the store.
-    expect(state.status).toBe('idle')
-  })
-
-  it('resolves to the empty state without an RPC when there is no current session', async () => {
-    const api = makeApi()
-    const controller = new FallbacksSettingsController(api, makeRpc().rpc)
-    await controller.loadSwitches()
-    const state = controller.store.getSnapshot()
-    expect(state.switchesStatus).toBe('ready')
-    expect(state.switchesError).toBeNull()
-    expect(state.switches).toEqual([])
-    expect(api.session.follow).not.toHaveBeenCalled()
-  })
-
-  it('marks the switches read errored on a failed history without blocking the settings state', async () => {
-    const api = makeApi()
-    api.session.follow.mockImplementation(() => followThrow(new Error('history read refused')))
-    const controller = new FallbacksSettingsController(api, makeRpc().rpc)
-    controller.setCurrentSession('sess-1' as never)
-    await controller.loadSwitches()
-    const state = controller.store.getSnapshot()
-    expect(state.switchesStatus).toBe('error')
-    expect(state.switchesError).toBe('history read refused')
-    // Settings status untouched: the form keeps editing/saving normally.
-    expect(state.status).toBe('idle')
-  })
-
-  it('surfaces a transport failure as the switches error (wire message extraction)', async () => {
-    const api = makeApi()
-    api.session.follow.mockImplementation(() => followThrow(new Error('transport down')))
-    const controller = new FallbacksSettingsController(api, makeRpc().rpc)
-    controller.setCurrentSession('sess-1' as never)
-    await controller.loadSwitches()
-    const state = controller.store.getSnapshot()
-    expect(state.switchesStatus).toBe('error')
-    expect(state.switchesError).toBe('transport down')
-  })
-
-  it('drops in-flight history responses after dispose (independent generation guard)', async () => {
-    const api = makeApi()
-    const gate = Promise.withResolvers<unknown>()
-    api.session.follow.mockImplementation(() => (async function* (): AsyncGenerator<SessionFollowFrame> {
-      await gate.promise
-      yield { type: 'snapshot', records: [switchEntry(1)], hasMore: false } as unknown as SessionFollowFrame
-      await Promise.withResolvers().promise
-    })())
-    const controller = new FallbacksSettingsController(api, makeRpc().rpc)
-    controller.setCurrentSession('sess-1' as never)
-    const loading = controller.loadSwitches()
-    controller.dispose()
-    gate.resolve(undefined)
-    await loading
-    const state = controller.store.getSnapshot()
-    // The stale response never published: the block stays on the loading
-    // state it was left in.
-    expect(state.switchesStatus).not.toBe('ready')
-    expect(state.switches).toEqual([])
-  })
-
-  it('aborts a wedged follow opening on dispose (store signal reaches the stream double)', async () => {
-    // qc3 F-003: `iterator.return()` is only reachable AFTER the opening
-    // frame settles — a dispose while the first frame is still pending must
-    // cancel the stream through the store's dispose AbortSignal instead of
-    // leaving the server-side session-follow registration open until the
-    // plugin mount abort. The double fails its pending `next()` on abort
-    // exactly like the real gateway inbox does.
-    const api = makeApi()
-    let opened: AbortSignal | undefined
-    api.session.follow.mockImplementation((_request: unknown, signal?: AbortSignal) => {
-      opened = signal
-      return (async function* (): AsyncGenerator<SessionFollowFrame> {
-        await new Promise<never>((_resolve, reject) => {
-          signal?.addEventListener('abort', () => reject(signal.reason), { once: true })
-        })
-      })()
+      chains: [{ id: 'Auto', label: '默认链', entries: [OFFICIAL_FLASH], timeSlots: [{ kind: 'preset', preset: 'liang-peak', chain: [OFFICIAL_PRO] }] }],
+      roles: { list: [{ id: 'coder', persona: 'C', chain: 'Auto', prompt: 'be nice', permissions: { allow: ['a'] } }] },
+      cooldownMs: 5,
     })
-    const controller = new FallbacksSettingsController(api, makeRpc().rpc)
-    controller.setCurrentSession('sess-1' as never)
-    const loading = controller.loadSwitches()
-    // The stream double receives the store's dispose signal, still live.
-    expect(opened?.aborted).toBe(false)
-    controller.dispose()
-    // The double observes the abort (the wedged `next()` settles now).
-    expect(opened?.aborted).toBe(true)
-    await loading
-    const state = controller.store.getSnapshot()
-    // The abort-induced failure never publishes: dispose's generation guard
-    // freezes the block on the loading state it was left in.
-    expect(state.switchesStatus).not.toBe('ready')
-    expect(state.switchesStatus).not.toBe('error')
-    expect(state.switches).toEqual([])
+    expect(parsed.chains).toEqual([{
+      id: 'Auto', label: '默认链', entries: [OFFICIAL_FLASH],
+      timeSlots: [{ kind: 'preset', preset: 'liang-peak', chain: [OFFICIAL_PRO] }],
+    }])
+    expect(parsed.roles.list).toEqual([{
+      id: 'coder', persona: 'C', chain: 'Auto', prompt: 'be nice', permissions: { allow: ['a'] },
+    }])
+    expect(parsed.cooldownMs).toBe(5)
+    expect(parsed.triggerCodes).toEqual(defaultFallbacksConfig.triggerCodes)
   })
 
-  it('session switch reloads the summary for the new session once read', async () => {
-    const api = makeApi()
-    api.session.follow.mockImplementation(() => followAnswer([switchEntry(2)]))
-    const controller = new FallbacksSettingsController(api, makeRpc().rpc)
-    controller.setCurrentSession('sess-1' as never)
-    await controller.loadSwitches()
-    expect(api.session.follow).toHaveBeenCalledTimes(1)
-
-    // A different current session → immediate reload for the new id.
-    controller.setCurrentSession('sess-2' as never)
-    await Promise.resolve()
-    expect(api.session.follow).toHaveBeenCalledTimes(2)
-    expect(api.session.follow).toHaveBeenLastCalledWith({
-      address: { kind: 'session', sessionId: 'sess-2' },
-      maxMessages: SWITCHES_HISTORY_PAGE,
-    }, expect.any(AbortSignal))
-
-    // The same id again → no reload.
-    controller.setCurrentSession('sess-2' as never)
-    await Promise.resolve()
-    expect(api.session.follow).toHaveBeenCalledTimes(2)
+  it('an empty role chain pointer stays absent (NOT SPECIFIED)', () => {
+    const parsed = parseFallbacksConfig({ roles: { list: [{ id: 'a', persona: '', chain: '' }] } })
+    expect(parsed.roles.list[0]).toEqual({ id: 'a', persona: '' })
   })
 
-  it('recording the current session before the block is read only stores the id (first read stays with the section mount)', async () => {
-    const api = makeApi()
-    api.session.follow.mockImplementation(() => followAnswer([]))
-    const controller = new FallbacksSettingsController(api, makeRpc().rpc)
-    controller.setCurrentSession('sess-1' as never)
-    // Idle block: recording must not trigger a read.
-    expect(api.session.follow).not.toHaveBeenCalled()
-    await controller.loadSwitches()
-    expect(api.session.follow).toHaveBeenCalledWith({
-      address: { kind: 'session', sessionId: 'sess-1' },
-      maxMessages: SWITCHES_HISTORY_PAGE,
-    }, expect.any(AbortSignal))
-  })
-
-  it('refreshSwitchesIfLoaded skips an idle block and refreshes an opened one', async () => {
-    const api = makeApi()
-    api.session.follow.mockImplementation(() => followAnswer([]))
-    const controller = new FallbacksSettingsController(api, makeRpc().rpc)
-    controller.setCurrentSession('sess-1' as never)
-    // Idle → no refetch.
-    refreshSwitchesIfLoaded(controller)
-    expect(api.session.follow).not.toHaveBeenCalled()
-    await controller.loadSwitches()
-    expect(api.session.follow).toHaveBeenCalledTimes(1)
-    // Opened (ready) → refetches for the tracked session.
-    refreshSwitchesIfLoaded(controller)
-    expect(api.session.follow).toHaveBeenCalledTimes(2)
-    expect(api.session.follow).toHaveBeenLastCalledWith({
-      address: { kind: 'session', sessionId: 'sess-1' },
-      maxMessages: SWITCHES_HISTORY_PAGE,
-    }, expect.any(AbortSignal))
+  it('rejects malformed descriptor shapes', () => {
+    expect(() => parseFallbacksConfig('nope')).toThrow(TypeError)
+    expect(() => parseFallbacksConfig({ chains: 'nope' })).toThrow(/named chains/)
+    expect(() => parseFallbacksConfig({ chains: [{ id: 1 }] })).toThrow(TypeError)
+    expect(() => parseFallbacksConfig({ chains: [{ id: 'a', label: 'b', entries: 'x' }] })).toThrow(TypeError)
+    expect(() => parseFallbacksConfig({ roles: { list: [{ persona: 'no id' }] } })).toThrow(/string id/)
+    expect(() => parseFallbacksConfig({ roles: { list: [{ id: 'a', chain: ['v1-array'] }] } })).toThrow(/string pointer/)
+    expect(() => parseFallbacksConfig({ cooldownMs: 'x' })).toThrow(/number/)
+    expect(() => parseFallbacksConfig({ revertPolicy: 'sometimes' })).toThrow(/cooldown-expiry\|never/)
+    expect(() => parseFallbacksConfig({ presets: 'sometimes' })).toThrow(/bundled\|none/)
+    expect(() => parseFallbacksConfig({ recovery: 'sometimes' })).toThrow(/timer\|half-open/)
   })
 })
 
-describe('known trigger codes (M-04 single source)', () => {
-  it('derives the toggle set from the host defaults', () => {
-    expect(KNOWN_TRIGGER_CODES).toEqual(defaultFallbacksConfig.triggerCodes)
+describe('per-chain row editors (pure round-trips)', () => {
+  it('chainsToDrafts classifies entries; draftToChain round-trips verbatim', () => {
+    const config = v2Config()
+    const drafts = chainsToDrafts(config.chains, catalogFixture())
+    expect(drafts.map(draft => draft.id)).toEqual(['Auto', 'night'])
+    expect(draftToChain(drafts[0]!)).toEqual(config.chains[0])
+    expect(draftToChain(drafts[1]!)).toEqual(config.chains[1])
   })
 
-  it('labels every derived code', () => {
-    for (const code of KNOWN_TRIGGER_CODES) {
-      expect(TRIGGER_CODE_LABELS[code]).toBeDefined()
-    }
+  it('draftToChain drops blank selector rows', () => {
+    const drafts = chainsToDrafts(v2Config().chains)
+    drafts[0]!.selectors = [{ wildcard: false, provider: null, model: null }, ...drafts[0]!.selectors]
+    expect(draftToChain(drafts[0]!).entries).toEqual(['openai/gpt-4o', OFFICIAL_FLASH])
+  })
+
+  it('newChainId generates a unique id', () => {
+    const chains = v2Config().chains
+    expect(newChainId(chains)).toBe('chain-3')
+    expect(newChainId([...chains, { id: 'chain-3', label: '', entries: [] }])).toBe('chain-4')
+  })
+
+  it('timeSlotsToRows/rowsToTimeSlots round-trip; kind rides VERBATIM (hand-written unknown kind)', () => {
+    const slots: SlotRowConfig[] = [
+      { kind: 'preset', preset: 'liang-peak', days: [], chain: [OFFICIAL_PRO] },
+      { kind: 'custom', start: '09:00', end: '12:00', days: [1], name: '早高峰', chain: [OFFICIAL_FLASH] },
+    ]
+    const rows = timeSlotsToRows(slots, catalogFixture())
+    expect(rowsToTimeSlots(rows)).toEqual(slots)
+    const weird = timeSlotsToRows([{ kind: 'weird', chain: [OFFICIAL_FLASH] } as unknown as SlotRowConfig])
+    expect(rowsToTimeSlots(weird)[0]).toEqual({ kind: 'weird', preset: undefined, start: '', end: '', days: [], chain: [OFFICIAL_FLASH] })
   })
 })
 
-describe('client apply disposal wiring (F-006 / M-01)', () => {
+describe('role chain POINTER (指定降级链)', () => {
+  it('rolesToRows keeps the pointer; rowsToRoles drops an empty one', () => {
+    const rows = rolesToRows(v2Config().roles.list)
+    expect(rows[0]).toMatchObject({ id: 'coder', persona: 'Coder', chain: 'Auto', collapsed: false })
+    expect(rowsToRoles([{ id: 'a', persona: '', chain: '', collapsed: false, personaOpen: false }]))
+      .toEqual([{ id: 'a', persona: '' }])
+    expect(rowsToRoles(rows)).toEqual(v2Config().roles.list)
+  })
+
+  it('mergeRoleExtras re-attaches the schema-reserved prompt/permissions by id', () => {
+    const original = parseFallbacksConfig({
+      roles: { list: [{ id: 'coder', persona: 'old', chain: 'Auto', prompt: 'keep me' }] },
+    }).roles.list
+    const rows = rolesToRows(original).map(row => ({ ...row, persona: 'new' }))
+    expect(mergeRoleExtras(rows, original)).toEqual([{ id: 'coder', persona: 'new', prompt: 'keep me', chain: 'Auto' }])
+    // A fresh row keeps no extras.
+    expect(mergeRoleExtras([{ id: 'new', persona: '', chain: '', collapsed: false, personaOpen: false }], original))
+      .toEqual([{ id: 'new', persona: '' }])
+  })
+
+  it('roleChainOptions lists every declared chain id in order', () => {
+    expect(roleChainOptions(v2Config().chains)).toEqual(['Auto', 'night'])
+    expect(roleChainOptions([])).toEqual([])
+  })
+})
+
+describe('deriveEffectiveModel (per-chain display value)', () => {
+  it('unavailable for no chain / empty entries', () => {
+    expect(deriveEffectiveModel(undefined)).toEqual({ kind: 'unavailable' })
+    expect(deriveEffectiveModel({ id: 'a', label: '', entries: [] })).toEqual({ kind: 'unavailable' })
+  })
+
+  it('config for the first entry (the dispatch head)', () => {
+    expect(deriveEffectiveModel(v2Config().chains[0])).toEqual({ kind: 'config', provider: 'openai', model: 'gpt-4o' })
+  })
+})
+
+describe('FallbacksSettingsController (v2 lifecycle)', () => {
   let ctx: Context
 
   beforeEach(() => {
     ctx = new Context()
-    // `uiConversation` service double (the D1 Definition registry's home
-    // since 0.1.2): apply() registers the `fallbacks-switch` node Definition
-    // through `ctx.uiConversation.events` (plan 3 T2 D1).
-    ctx.provide('uiConversation', { events: { register: () => () => {}, registerFallback: () => () => {} } })
   })
 
   afterEach(async () => {
     await ctx.fiber.dispose()
+    vi.restoreAllMocks()
   })
 
-
-/**
- * Sessions service double in the 0.1.7-rc.1 `SessionListState` shape: the
- * `current` field is gone — the viewed session is the row the shell retains
- * under the `mainView` source (`retainedBy.mainView > 0`), which is exactly
- * what `viewedSessionId` (src/client/index.ts) reads. `viewed()` answers the
- * id the client should follow at snapshot time; `emitViewedChange` drives the
- * list subscription the way a shell selection change does (D-5).
- */
-function sessionsDouble(viewed: () => string | undefined): {
-  sessions: { list: { getSnapshot: () => unknown; subscribe: (fn: () => void) => () => void } }
-  emitViewedChange: () => void
-} {
-  const listeners = new Set<() => void>()
-  return {
-    sessions: {
-      list: {
-        getSnapshot: () => {
-          const id = viewed()
-          return id === undefined
-            ? { ids: [], byId: {}, phase: 'ready', projectionsBySession: {} }
-            : {
-                ids: [id],
-                byId: { [id]: { id, displayTitle: id, running: false, retainedBy: { mainView: 1 } } },
-                phase: 'ready',
-                projectionsBySession: {},
-              }
-        },
-        subscribe: (fn: () => void) => {
-          listeners.add(fn)
-          return () => { listeners.delete(fn) }
-        },
-      },
-    },
-    emitViewedChange: () => {
-      for (const fn of [...listeners]) fn()
-    },
+  function mount(config?: FallbacksConfig | null, options: { writable?: boolean } = {}) {
+    const rpc = makeRpc(config)
+    const api = makeApi()
+    api.settings.describe.mockResolvedValue(ok({ writable: options.writable ?? true, namespaces: [] }))
+    api.llm.listConfigurableProviders.mockResolvedValue(ok(configuredFixture().providers))
+    api.llm.modelCatalog.mockResolvedValue(ok({ groups: catalogFixture().groups }))
+    const controller = new FallbacksSettingsController(api as never, rpc.rpc)
+    ctx.effect(() => () => controller.dispose(), 'test: controller dispose')
+    return { rpc, api, controller }
   }
-}
 
-  it('stops in-flight settings responses from publishing after the fiber is disposed', async () => {
-    // Locale service double: register + bind (bind returns a translate thunk).
-    ctx.provide('locale', { register: () => () => {}, bind: () => () => '' })
-    // Sessions service double: the apply wiring reads `list` current and
-    // subscribes to changes (D-5) — no current session in this test.
-    ctx.provide('sessions', sessionsDouble(() => undefined).sessions)
-    // Connection service double: only the gateway rpc face (never reached —
-    // describe never resolves pre-dispose).
-    const gate = Promise.withResolvers<unknown>()
-    const describe = vi.fn(() => gate.promise)
-    ctx.provide('connection', {
-      rpc: { call: vi.fn() },
-    })
-    // Remote service double: the apply wiring subscribes the pushed
-    // invalidations through `ctx.remote.$on` (20260811 remote events), and
-    // the store reads the settings namespace through it (0.1.2:
-    // `ConnectionHandle` dropped `api` — describe rides `ctx.remote`).
-    // makeRemote provides the rc.1 dotted namespace services
-    // (`remote.settings` / `remote.llm` / `remote.session`) + the assembly
-    // face, so the declared injects resolve like production.
-    const { disposers } = makeRemote(ctx, { settings: { describe } })
-    // Slots service double: run the card-registration generator and capture the
-    // injected controller — the seam apply() uses to hand the controller over.
-    let controller: FallbacksSettingsController | undefined
-    ctx.provide('slots', {
-      inject: (_name: string, thunk: () => Iterable<unknown>) => { for (const _dispose of thunk()) { /* run the registration generator */ } },
-      register: (options: { inject?: () => unknown }) => {
-        // Only the card/general-row registrations carry an inject face; the
-        // transcript node registration (plan 3 T2) is inject-less — its
-        // payload arrives through the keyed seat's `node` prop.
-        if (options.inject !== undefined) {
-          controller = (options.inject() as { controller: FallbacksSettingsController }).controller
-        }
-        return {}
-      },
-    })
-    applyClient(ctx)
-    expect(controller).toBeDefined()
+  it('load folds the gateway config into the store (chains + roles visible)', async () => {
+    const { controller } = mount(v2Config())
+    await controller.load()
+    const state = controller.store.getSnapshot()
+    expect(state.status).toBe('ready')
+    expect(state.present).toBe(true)
+    expect(state.config.chains.map(chain => chain.id)).toEqual(['Auto', 'night'])
+    expect(state.config.roles.list[0]).toMatchObject({ id: 'coder', chain: 'Auto' })
+    expect(state.subagentPolicy).toBeUndefined()
+    expect('switches' in state).toBe(false)
+  })
 
-    // A load is in flight when the plugin unloads (HMR / dispose).
-    const loading = controller!.load()
-    await ctx.fiber.dispose()
-    // Every remote `$on` disposer was invoked on teardown (qc2 S-5 / qc3
-    // S-3): the cleanup disposes all subscriptions BEFORE controller.dispose()
-    // (index.ts cleanup), so no forwarded event can reach a dead store.
-    expect(disposers).toHaveLength(2) // settings/document-updated + llm/adapters-updated
-    expect(disposers.every(entry => entry.invoked)).toBe(true)
-    // The response arrives after unload: the dispose wiring must bump the
-    // generation so the stale response never publishes to the dead store.
-    gate.resolve(ok({ writable: true, hasDocument: false, namespaces: [] }))
-    await loading
-    const state = controller!.store.getSnapshot()
-    expect(state.status).not.toBe('ready')
+  it('a get failure is the present:false skeleton (KD-G5), never a page error', async () => {
+    const { controller } = mount(null)
+    await controller.load()
+    const state = controller.store.getSnapshot()
+    expect(state.status).toBe('ready')
     expect(state.present).toBe(false)
+    expect(state.config).toEqual(defaultFallbacksConfig)
   })
 
-  it('connection/reset queued in the same tick as teardown starts no RPCs (qc3 S-2)', async () => {
-    // Locale service double: register + bind (bind returns a translate thunk).
-    ctx.provide('locale', { register: () => () => {}, bind: () => () => '' })
-    // Sessions service double: a fixed current session so switches can load.
-    ctx.provide('sessions', sessionsDouble(() => 'sess-1').sessions)
-    const describe = vi.fn().mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
-    const providers = vi.fn()
-    const models = vi.fn()
-    const history = vi.fn().mockImplementation(() => followAnswer([switchEntry(1)]))
-    ctx.provide('connection', {
-      rpc: makeRpc().rpc,
-    })
-    makeRemote(ctx, {
-      settings: { describe },
-      llm: { listConfigurableProviders: providers },
-      session: { modelCatalog: models, follow: history },
-    })
-    let controller: FallbacksSettingsController | undefined
-    ctx.provide('slots', {
-      inject: (_name: string, thunk: () => Iterable<unknown>) => { for (const _dispose of thunk()) { /* run the registration generator */ } },
-      register: (options: { inject?: () => unknown }) => {
-        // Only the card/general-row registrations carry an inject face; the
-        // transcript node registration (plan 3 T2) is inject-less — its
-        // payload arrives through the keyed seat's `node` prop.
-        if (options.inject !== undefined) {
-          controller = (options.inject() as { controller: FallbacksSettingsController }).controller
-        }
-        return {}
-      },
-    })
-    applyClient(ctx)
-    expect(controller).toBeDefined()
-    providers.mockResolvedValue(ok([]))
-    models.mockResolvedValue(ok({ groups: [], failures: [] }))
-    await controller!.load()
-    await controller!.loadSwitches()
-    await controller!.loadCatalog()
-    expect(describe).toHaveBeenCalledTimes(1)
-    expect(history).toHaveBeenCalledTimes(1)
-    expect(providers).toHaveBeenCalledTimes(1)
-
-    // The plugin unload begins (fiber dispose initiated — the teardown
-    // disposers are still pending) and a connection/reset lands in the same
-    // tick: the listener is still registered, but the queued refresh
-    // microtask is drained AFTER the cleanup latch is set, so it must be
-    // skipped — no discarded RPCs start after teardown (qc3 S-2).
-    const unloading = ctx.fiber.dispose()
-    ctx.emit('connection/reset')
-    await Promise.resolve() // drain: cleanup disposers (latch set), then the refresh microtask (skipped)
-    await unloading
-    expect(describe).toHaveBeenCalledTimes(1)
-    expect(history).toHaveBeenCalledTimes(1)
-    expect(providers).toHaveBeenCalledTimes(1)
+  it('save writes the patch and re-accepts the composed config; the per-chain save rides the accepted base', async () => {
+    const { rpc, controller } = mount(v2Config())
+    await controller.load()
+    const edited: NamedChain = { ...v2Config().chains[0]!, label: '改名' }
+    await controller.save({ ...v2Config(), chains: [edited, v2Config().chains[1]!] })
+    expect(rpc.set).toHaveBeenCalledTimes(1)
+    const patch = rpc.set.mock.calls[0]![0].args.patch as FallbacksConfig
+    expect(patch.chains[0]).toMatchObject({ id: 'Auto', label: '改名' })
+    expect(patch.chains[1]).toEqual(v2Config().chains[1])
+    expect(controller.store.getSnapshot().config.chains[0]).toMatchObject({ label: '改名' })
   })
 
-  it('llm/adapters-updated refreshes only the catalog, never the settings (D-4)', async () => {
-    // Locale service double: register + bind (bind returns a translate thunk).
-    ctx.provide('locale', { register: () => () => {}, bind: () => () => '' })
-    // Sessions service double: no current session; the wiring still subscribes.
-    ctx.provide('sessions', sessionsDouble(() => undefined).sessions)
-    // Connection service double: only the gateway rpc face.
-    const describe = vi.fn()
-    const providers = vi.fn()
-    const models = vi.fn()
-    ctx.provide('connection', {
-      rpc: { call: vi.fn() },
-    })
-    // Remote service double: the payload-free llm/adapters-updated event
-    // (20260811 forwarding) is dispatched through the recorded listener; the
-    // settings + llm + session namespaces ride it (0.1.2 remote face).
-    const { emit } = makeRemote(ctx, {
-      settings: { describe },
-      llm: { listConfigurableProviders: providers },
-      session: { modelCatalog: models },
-    })
-    let controller: FallbacksSettingsController | undefined
-    ctx.provide('slots', {
-      inject: (_name: string, thunk: () => Iterable<unknown>) => { for (const _dispose of thunk()) { /* run the registration generator */ } },
-      register: (options: { inject?: () => unknown }) => {
-        // Only the card/general-row registrations carry an inject face; the
-        // transcript node registration (plan 3 T2) is inject-less — its
-        // payload arrives through the keyed seat's `node` prop.
-        if (options.inject !== undefined) {
-          controller = (options.inject() as { controller: FallbacksSettingsController }).controller
-        }
-        return {}
-      },
-    })
-    applyClient(ctx)
-    expect(controller).toBeDefined()
-    providers.mockResolvedValue(ok([]))
-    models.mockResolvedValue(ok({ groups: [], failures: [] }))
-    await controller!.loadCatalog()
-    expect(providers).toHaveBeenCalledTimes(1)
-    // Pins the 0.1.2 catalog home: the model catalog loads through
-    // `session.modelCatalog` — re-homing it on `llm` in the double turns
-    // this red instead of silently re-greening (review IMPORTANT-1).
-    expect(models).toHaveBeenCalledTimes(1)
-
-    // A pushed llm/adapters-updated refetches the catalog and leaves the
-    // settings descriptor untouched.
-    emit('llm/adapters-updated')
-    await Promise.resolve()
-    expect(providers).toHaveBeenCalledTimes(2)
-    expect(models).toHaveBeenCalledTimes(2)
-    expect(describe).not.toHaveBeenCalled()
+  it('a save failure surfaces the message in state.error and keeps the form editable', async () => {
+    const { rpc, controller } = mount(v2Config())
+    const innerCall = rpc.call
+    rpc.rpc.call = vi.fn(((channel: string, endpoint: string, payload: unknown) => {
+      if (endpoint === 'fallbacks/set') {
+        return Promise.resolve(failResult('tail must conform'))
+      }
+      return innerCall(channel, endpoint, payload)
+    }) as never) as never
+    await controller.load()
+    await controller.save(v2Config())
+    const state = controller.store.getSnapshot()
+    expect(state.error).toBe('tail must conform')
+    expect(state.writable).toBe(true)
   })
 
-  it('a sessions.list current change reloads the status-block switches (D-5)', async () => {
-    // Locale service double: register + bind (bind returns a translate thunk).
-    ctx.provide('locale', { register: () => () => {}, bind: () => () => '' })
-    // Sessions service double: a controllable current selection with a real
-    // subscriber list, so the apply wiring's D-5 subscription can be driven.
-    let viewed: string | undefined = 'sess-1'
-    const { sessions, emitViewedChange } = sessionsDouble(() => viewed)
-    ctx.provide('sessions', sessions)
-    // Connection service double: only the gateway rpc face.
-    const history = vi.fn().mockImplementation(() => followAnswer([switchEntry(1)]))
-    ctx.provide('connection', {
-      rpc: { call: vi.fn() },
-    })
-    // Remote service double: the invalidation wiring subscribes through it;
-    // `session/follow` is the status block's face (0.1.2 remote face).
-    makeRemote(ctx, {
-      settings: { describe: vi.fn() },
-      llm: { listConfigurableProviders: vi.fn() },
-      session: { modelCatalog: vi.fn(), follow: history },
-    })
-    let controller: FallbacksSettingsController | undefined
-    ctx.provide('slots', {
-      inject: (_name: string, thunk: () => Iterable<unknown>) => { for (const _dispose of thunk()) { /* run the registration generator */ } },
-      register: (options: { inject?: () => unknown }) => {
-        // Only the card/general-row registrations carry an inject face; the
-        // transcript node registration (plan 3 T2) is inject-less — its
-        // payload arrives through the keyed seat's `node` prop.
-        if (options.inject !== undefined) {
-          controller = (options.inject() as { controller: FallbacksSettingsController }).controller
-        }
-        return {}
-      },
-    })
-    applyClient(ctx)
-    expect(controller).toBeDefined()
-
-    // The status block opened once (the section mount effect's first read).
-    await controller!.loadSwitches()
-    expect(history).toHaveBeenCalledTimes(1)
-    expect(history).toHaveBeenCalledWith({
-      address: { kind: 'session', sessionId: 'sess-1' },
-      maxMessages: SWITCHES_HISTORY_PAGE,
-    }, expect.any(AbortSignal))
-
-    // The user switches session → the list subscription reloads for the new id.
-    viewed = 'sess-2'
-    emitViewedChange()
-    await Promise.resolve()
-    expect(history).toHaveBeenCalledTimes(2)
-    expect(history).toHaveBeenLastCalledWith({
-      address: { kind: 'session', sessionId: 'sess-2' },
-      maxMessages: SWITCHES_HISTORY_PAGE,
-    }, expect.any(AbortSignal))
+  it('reset clears the user layer back to defaults', async () => {
+    const { rpc, controller } = mount(v2Config())
+    await controller.load()
+    await controller.resetToDefaults()
+    expect(rpc.reset).toHaveBeenCalledTimes(1)
+    expect(controller.store.getSnapshot().config).toEqual(defaultFallbacksConfig)
   })
 
-  it('settings/document-updated (fallbacks ns) refreshes settings + switches, never the catalog', async () => {
-    // Locale service double: register + bind (bind returns a translate thunk).
-    ctx.provide('locale', { register: () => () => {}, bind: () => () => '' })
-    // Sessions service double: a fixed current session so switches can load.
-    ctx.provide('sessions', sessionsDouble(() => 'sess-1').sessions)
-    // Connection service double: a scripted gateway rpc so load() succeeds.
-    const describe = vi.fn().mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
-    const providers = vi.fn()
-    const models = vi.fn()
-    const history = vi.fn().mockImplementation(() => followAnswer([switchEntry(1)]))
-    ctx.provide('connection', {
-      rpc: makeRpc().rpc,
-    })
-    // Remote service double: describe + llm providers + session catalog/follow ride it
-    // (0.1.2 remote face).
-    const { emit } = makeRemote(ctx, {
-      settings: { describe },
-      llm: { listConfigurableProviders: providers },
-      session: { modelCatalog: models, follow: history },
-    })
-    let controller: FallbacksSettingsController | undefined
-    ctx.provide('slots', {
-      inject: (_name: string, thunk: () => Iterable<unknown>) => { for (const _dispose of thunk()) { /* run the registration generator */ } },
-      register: (options: { inject?: () => unknown }) => {
-        // Only the card/general-row registrations carry an inject face; the
-        // transcript node registration (plan 3 T2) is inject-less — its
-        // payload arrives through the keyed seat's `node` prop.
-        if (options.inject !== undefined) {
-          controller = (options.inject() as { controller: FallbacksSettingsController }).controller
-        }
-        return {}
-      },
-    })
-    applyClient(ctx)
-    expect(controller).toBeDefined()
-    providers.mockResolvedValue(ok([]))
-    models.mockResolvedValue(ok({ groups: [], failures: [] }))
-    await controller!.load()
-    await controller!.loadSwitches()
-    await controller!.loadCatalog()
-    expect(describe).toHaveBeenCalledTimes(1)
-    expect(history).toHaveBeenCalledTimes(1)
-    expect(providers).toHaveBeenCalledTimes(1)
+})
 
-    // A pushed settings/document-updated for the fallbacks namespace
-    // refetches the descriptor + recent-switch summary and leaves the
-    // catalog untouched.
-    emit('settings/document-updated', FALLBACKS_SETTINGS_NS, 2)
-    await Promise.resolve()
-    expect(describe).toHaveBeenCalledTimes(2)
-    expect(history).toHaveBeenCalledTimes(2)
-    expect(providers).toHaveBeenCalledTimes(1)
-  })
-
-  it('settings/document-updated (foreign ns) is filtered out', async () => {
-    // Locale service double: register + bind (bind returns a translate thunk).
-    ctx.provide('locale', { register: () => () => {}, bind: () => () => '' })
-    // Sessions service double: a fixed current session so switches can load.
-    ctx.provide('sessions', sessionsDouble(() => 'sess-1').sessions)
-    const describe = vi.fn().mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
-    const history = vi.fn().mockImplementation(() => followAnswer([switchEntry(1)]))
-    ctx.provide('connection', {
-      rpc: makeRpc().rpc,
-    })
-    // Remote service double: describe + session follow ride it (0.1.2 remote face).
-    const { emit } = makeRemote(ctx, {
-      settings: { describe },
-      llm: { listConfigurableProviders: vi.fn() },
-      session: { modelCatalog: vi.fn(), follow: history },
-    })
-    let controller: FallbacksSettingsController | undefined
-    ctx.provide('slots', {
-      inject: (_name: string, thunk: () => Iterable<unknown>) => { for (const _dispose of thunk()) { /* run the registration generator */ } },
-      register: (options: { inject?: () => unknown }) => {
-        // Only the card/general-row registrations carry an inject face; the
-        // transcript node registration (plan 3 T2) is inject-less — its
-        // payload arrives through the keyed seat's `node` prop.
-        if (options.inject !== undefined) {
-          controller = (options.inject() as { controller: FallbacksSettingsController }).controller
-        }
-        return {}
-      },
-    })
-    applyClient(ctx)
-    expect(controller).toBeDefined()
-    await controller!.load()
-    await controller!.loadSwitches()
-    expect(describe).toHaveBeenCalledTimes(1)
-    expect(history).toHaveBeenCalledTimes(1)
-
-    // Any other namespace's section change is not this card's concern.
-    emit('settings/document-updated', 'some-other-ns', 7)
-    await Promise.resolve()
-    expect(describe).toHaveBeenCalledTimes(1)
-    expect(history).toHaveBeenCalledTimes(1)
-  })
-
-  it('connection/reset refreshes settings + switches + catalog (burst coalesces)', async () => {
-    // Locale service double: register + bind (bind returns a translate thunk).
-    ctx.provide('locale', { register: () => () => {}, bind: () => () => '' })
-    ctx.provide('sessions', sessionsDouble(() => 'sess-1').sessions)
-    const describe = vi.fn().mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [] }))
-    const providers = vi.fn()
-    const models = vi.fn()
-    const history = vi.fn().mockImplementation(() => followAnswer([switchEntry(1)]))
-    ctx.provide('connection', {
-      rpc: makeRpc().rpc,
-    })
-    makeRemote(ctx, {
-      settings: { describe },
-      llm: { listConfigurableProviders: providers },
-      session: { modelCatalog: models, follow: history },
-    })
-    let controller: FallbacksSettingsController | undefined
-    ctx.provide('slots', {
-      inject: (_name: string, thunk: () => Iterable<unknown>) => { for (const _dispose of thunk()) { /* run the registration generator */ } },
-      register: (options: { inject?: () => unknown }) => {
-        // Only the card/general-row registrations carry an inject face; the
-        // transcript node registration (plan 3 T2) is inject-less — its
-        // payload arrives through the keyed seat's `node` prop.
-        if (options.inject !== undefined) {
-          controller = (options.inject() as { controller: FallbacksSettingsController }).controller
-        }
-        return {}
-      },
-    })
-    applyClient(ctx)
-    expect(controller).toBeDefined()
-    providers.mockResolvedValue(ok([]))
-    models.mockResolvedValue(ok({ groups: [], failures: [] }))
-    await controller!.load()
-    await controller!.loadSwitches()
-    await controller!.loadCatalog()
-    expect(describe).toHaveBeenCalledTimes(1)
-    expect(history).toHaveBeenCalledTimes(1)
-    expect(providers).toHaveBeenCalledTimes(1)
-
-    // A connection/reset refetches all three surfaces.
-    ctx.emit('connection/reset')
-    await Promise.resolve()
-    expect(describe).toHaveBeenCalledTimes(2)
-    expect(history).toHaveBeenCalledTimes(2)
-    expect(providers).toHaveBeenCalledTimes(2)
-
-    // A burst of resets coalesces into a single refetch (microtask debounce).
-    ctx.emit('connection/reset')
-    ctx.emit('connection/reset')
-    await Promise.resolve()
-    expect(describe).toHaveBeenCalledTimes(3)
-    expect(history).toHaveBeenCalledTimes(3)
-    expect(providers).toHaveBeenCalledTimes(3)
+describe('configuredProvidersOf (Models-page `configured` join)', () => {
+  it('joins catalog providers with the settings namespace directory', () => {
+    const namespaces = new Map([
+      ['llm-providers', providerNs('llm-providers', { providers: { openai: {} } })],
+      ['llm-deepseek', providerNs('llm-deepseek', {})],
+    ])
+    const joined = configuredProvidersOf(configuredFixture().providers, namespaces)
+    // deepseek-official (settingsPath []) is always configured; openai's
+    // namespace carries the provider; anthropic/google are absent.
+    expect(joined.map(entry => entry.provider).sort()).toEqual(['deepseek-official', 'openai'])
   })
 })

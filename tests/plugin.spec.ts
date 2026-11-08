@@ -23,10 +23,11 @@ import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
 import { LlmRuntime, createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import { apply, stateStore } from '../src/index.ts'
-import { FALLBACKS_CHAIN_MODEL, FALLBACKS_PROVIDER } from '../src/virtual-adapter.ts'
+import { FALLBACKS_PROVIDER } from '../src/virtual-adapter.ts'
 import { OFFICIAL_FLASH } from '../src/time-slots.ts'
 import { MemorySettings } from './support/memory-settings.ts'
 import {
+  CHAIN_ID, chainOf,
   cfg,
   dispatchRequest,
   dispatchRequestError,
@@ -50,7 +51,7 @@ afterEach(async () => {
 describe('the loop waterfalls pass through untouched (direction C)', () => {
   it('does not handle a trigger-code failure: llm-retry / the loop own it', async () => {
     const { agent } = makeAgent('pass-through-error', { provider: 'mock', model: 'gpt-4o' })
-    apply(ctx, cfg({ rootChain: ['other/gpt-4o'] }))
+    apply(ctx, cfg({ chains: [chainOf(['other/gpt-4o'])] }))
 
     expect(await dispatchRequestError(ctx, agent, { failure: { message: 'denied', code: 'AUTH' } }))
       .toBeUndefined()
@@ -62,8 +63,9 @@ describe('the loop waterfalls pass through untouched (direction C)', () => {
   it('returns the request seed unchanged (no override, no role-inject)', async () => {
     const { agent } = makeAgent('pass-through-request', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent', agentPreset: 'coder' })
     apply(ctx, cfg({
-      rootChain: ['other/gpt-4o'],
-      roles: { list: [{ id: 'coder', persona: '', chain: ['anthropic/claude-sonnet-4'] }], rules: [] },
+      chains: [chainOf(['other/gpt-4o'])],
+      // The role POINTS at a declared chain; it carries no chain of its own.
+      roles: { list: [{ id: 'coder', persona: '', chain: CHAIN_ID }] },
     }))
 
     expect(await dispatchRequest(ctx, agent, { provider: 'mock', model: 'gpt-4o' }))
@@ -76,7 +78,7 @@ describe('no-op regression (AC-8)', () => {
   it('an unconfigured install registers no virtual row and leaves the request untouched', async () => {
     new LlmRuntime(ctx)
     const { agent } = makeAgent('noop-unconfigured', { provider: 'mock', model: 'gpt-4o' })
-    apply(ctx, cfg({ rootChain: [], timeSlots: [], roles: { list: [], rules: [] } }))
+    apply(ctx, cfg({ chains: [], roles: { list: [] } }))
 
     const listed = await ctx.llm.listModels(FALLBACKS_PROVIDER).then(rows => rows, () => 'unregistered')
     expect(listed).toBe('unregistered')
@@ -87,13 +89,13 @@ describe('no-op regression (AC-8)', () => {
 
   it('the legacy enabled: line is inert — content presence decides', async () => {
     new LlmRuntime(ctx)
-    apply(ctx, cfg({ rootChain: [OFFICIAL_FLASH], ...({ enabled: false } as object) }))
+    apply(ctx, cfg({ chains: [chainOf([OFFICIAL_FLASH])], ...({ enabled: false } as object) }))
 
     // Content present ⇒ the row registers even with a stored `enabled: false`.
     // (Registration settles one macrotask after apply — the inject child.)
     const rows = await vi.waitFor(async () => {
       const listed = await ctx.llm.listModels(FALLBACKS_PROVIDER)
-      expect(listed.map(row => row.id)).toEqual([FALLBACKS_CHAIN_MODEL])
+      expect(listed.map(row => row.id)).toEqual([CHAIN_ID])
       return listed
     })
     expect(rows).toHaveLength(1)
@@ -102,7 +104,7 @@ describe('no-op regression (AC-8)', () => {
 
 describe('per-agent state leaves no residual (spec §6)', () => {
   it('drops one agent’s state on agent/disposed and everything on plugin dispose', async () => {
-    apply(ctx, cfg({ rootChain: [OFFICIAL_FLASH] }))
+    apply(ctx, cfg({ chains: [chainOf([OFFICIAL_FLASH])] }))
     const states = stateStore(ctx)!
 
     states.get('residual-agent')
@@ -120,7 +122,7 @@ describe('model-selection composition is order-independent (no plugin listener)'
   it('passes the request through when model-selection is registered FIRST', async () => {
     const { agent } = makeAgent('ms-first', { provider: 'mock', model: 'gpt-4o' })
     installModelSelectionStub(ctx)
-    apply(ctx, cfg({ rootChain: ['other/gpt-4o'] }))
+    apply(ctx, cfg({ chains: [chainOf(['other/gpt-4o'])] }))
 
     expect(await dispatchRequestError(ctx, agent, { failure: { message: 'denied', code: 'AUTH' } }))
       .toBeUndefined()
@@ -131,7 +133,7 @@ describe('model-selection composition is order-independent (no plugin listener)'
 
   it('passes the request through when the plugin is registered FIRST', async () => {
     const { agent } = makeAgent('ms-last', { provider: 'mock', model: 'gpt-4o' })
-    apply(ctx, cfg({ rootChain: ['other/gpt-4o'] }))
+    apply(ctx, cfg({ chains: [chainOf(['other/gpt-4o'])] }))
     installModelSelectionStub(ctx)
 
     expect(await dispatchRequestError(ctx, agent, { failure: { message: 'denied', code: 'AUTH' } }))
@@ -144,7 +146,7 @@ describe('model-selection composition is order-independent (no plugin listener)'
   it('never switches a real-model route on repeated failures (no fallback outside the virtual row)', async () => {
     const { agent } = makeAgent('real-route-failure', { provider: 'mock', model: 'gpt-4o' })
     installModelSelectionStub(ctx)
-    apply(ctx, cfg({ rootChain: ['other/gpt-4o'] }))
+    apply(ctx, cfg({ chains: [chainOf(['other/gpt-4o'])] }))
 
     // The failure is reported twice (the llm-retry loop shape): the plugin
     // still never routes the request off its real model.
@@ -173,7 +175,7 @@ describe('model-selection composition is order-independent (no plugin listener)'
  */
 describe('model-selection notice on the virtual route (Task 4)', () => {
   /** The virtual picker row, exact strings (spec lock). */
-  const virtualPair = { provider: FALLBACKS_PROVIDER, model: FALLBACKS_CHAIN_MODEL }
+  const virtualPair = { provider: FALLBACKS_PROVIDER, model: CHAIN_ID }
 
   /**
    * Drive one `agent/pre-step` the way the loop does: the offered inbox batch
@@ -210,7 +212,7 @@ describe('model-selection notice on the virtual route (Task 4)', () => {
   /** The default web-profile composition: the plugin registers at bundle load, model-selection after it. */
   function compose(agentId: string): Agent {
     const { agent } = makeAgent(agentId, { provider: 'mock', model: 'gpt-4o' }, { origin: 'root' })
-    apply(ctx, cfg({ rootChain: [OFFICIAL_FLASH] }))
+    apply(ctx, cfg({ chains: [chainOf([OFFICIAL_FLASH])] }))
     installModelSelectionStub(ctx)
     return agent
   }
@@ -250,7 +252,7 @@ describe('model-selection notice on the virtual route (Task 4)', () => {
     expect(appended[0]?.source).toMatchObject({
       kind: 'model-selection',
       form: 'notice',
-      summary: 'FallbacksChain/Auto → deepseek-official/deepseek-flash',
+      summary: `FallbacksChain/${CHAIN_ID} → deepseek-official/deepseek-flash`,
     })
     expect(appended[0]?.content.some((block) => block.type === 'text' && block.text.includes('[model changed:'))).toBe(true)
 

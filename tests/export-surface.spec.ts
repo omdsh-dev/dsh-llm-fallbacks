@@ -31,7 +31,6 @@ const LIBRARY_EXPORT_KEYS = [
   'stateStore',
   'apply',
   // Library API functions (plan fallbacks-consumer-api T1).
-  'resolveRole',
   'resolveCandidate',
   'resolveChainViews',
   'selectCandidates',
@@ -73,7 +72,6 @@ describe('export surface: runtime values', () => {
     Config: 'function',
     stateStore: 'function',
     apply: 'function',
-    resolveRole: 'function',
     resolveCandidate: 'function',
     resolveChainViews: 'function',
     selectCandidates: 'function',
@@ -127,35 +125,30 @@ describe('export surface: callable smokes', () => {
     vi.restoreAllMocks()
   })
 
-  it('resolveRole resolves a rule hit from the package root (subagent + provider match)', () => {
-    // PR #62 feedback: rules are subagent-only — root requests never match.
-    const agent: index.AgentLike = {
-      options: { provider: 'openai', model: 'gpt-4o' },
-      session: { header: { origin: 'subagent' } },
-    }
+  it('resolveChain walks the given chain entries from the package root', () => {
     expect(
-      index.resolveRole(agent, [{ provider: 'openai', role: 'coder' }], new Map([['coder', 'coder']])),
-    ).toBe('coder')
+      index.resolveChain(['openai/gpt-4o', 'anthropic/claude-3-5-sonnet'], 'openai', 'gpt-4o').map(candidate => candidate.raw),
+    ).toEqual(['openai/gpt-4o', 'anthropic/claude-3-5-sonnet'])
   })
 
-  it('validateFallbacksConfig accepts a valid config without warnings', () => {
+  it('validateFallbacksConfig accepts a valid v2 config without warnings', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     const validConfig: index.FallbacksConfig = {
       ...index.defaultFallbacksConfig,
-      // Conforming all-day head (P6): rootChain must start with one official
-      // Conforming all-day head (P6): rootChain must end with one official model.
-      rootChain: ['deepseek-official/deepseek-flash'],
-      roles: {
-        list: [{ id: 'coder', persona: '', chain: ['anthropic/claude-3-5-sonnet'] }],
-        rules: [{ origin: 'root', role: 'coder' }],
-      },
+      chains: [{
+        id: 'Auto',
+        label: 'Default chain',
+        entries: ['anthropic/claude-3-5-sonnet', 'deepseek-official/deepseek-flash'],
+        timeSlots: [],
+      }],
+      roles: { list: [{ id: 'coder', persona: '', chain: 'Auto' }] },
     }
     index.validateFallbacksConfig(validConfig, { warn })
     expect(warn).not.toHaveBeenCalled()
   })
 
-  it('detectLegacyKeys flags the removed `chains` key', () => {
-    expect(index.detectLegacyKeys({ chains: [] })).toContain('chains')
+  it('detectLegacyKeys flags the removed v1 keys', () => {
+    expect(index.detectLegacyKeys({ rootChain: [], timeSlots: [] })).toEqual(['rootChain', 'timeSlots'])
   })
 })
 
@@ -166,30 +159,30 @@ describe('export surface: type exports (compile-time only)', () => {
     // INERT in CI — it exists for local `tsc` validation (a scratch tsconfig
     // including tests/, or in-editor diagnostics). Keep it in sync when the
     // type surface changes; it is NOT the CI type guard.
-    expectTypeOf<index.Origin>().toEqualTypeOf<'root' | 'subagent'>()
-    expectTypeOf<index.AgentLike>().toMatchTypeOf<{ options?: { provider?: string } }>()
     expectTypeOf<index.Selector>().toEqualTypeOf<{ provider: string; model?: string; raw: string }>()
     expectTypeOf<index.FailingModel>().toEqualTypeOf<{ provider: string; model: string }>()
-    expectTypeOf<index.FallbackStrategy>().toEqualTypeOf<'inherit-root' | 'none'>()
     expectTypeOf<index.RecoveryPolicy>().toEqualTypeOf<'timer' | 'half-open'>()
     expectTypeOf<index.RevertPolicy>().toEqualTypeOf<'cooldown-expiry' | 'never'>()
     expectTypeOf<index.CandidateSkipReason>().toEqualTypeOf<
-      'same-as-current' | 'cooldown' | 'step-failed' | 'missing-id'
+      'same-as-current' | 'cooldown' | 'step-failed' | 'context-window' | 'missing-id'
     >()
     expectTypeOf<index.FallbacksConfigLogger>().toMatchTypeOf<{ warn: (message: string) => void }>()
-    expectTypeOf<index.FallbacksRoleRule>().toMatchTypeOf<{ role: string; origin?: 'root' | 'subagent' }>()
+    expectTypeOf<index.NamedChain>().toMatchTypeOf<{
+      id: string
+      label: string
+      entries: string[]
+      timeSlots?: NonNullable<index.NamedChain['timeSlots']>
+    }>()
     expectTypeOf<index.FallbacksRole>().toMatchTypeOf<{
       id: string
-      chain?: string[]
-      fallback?: index.FallbackStrategy
+      persona: string
+      /** The manually specified named-chain POINTER (「指定降级链」). */
+      chain?: string
     }>()
-    expectTypeOf<index.FallbacksRoles>().toMatchTypeOf<{
-      list: index.FallbacksRole[]
-      rules: index.FallbacksRoleRule[]
-    }>()
+    expectTypeOf<index.FallbacksRoles>().toEqualTypeOf<{ list: index.FallbacksRole[] }>()
     expectTypeOf<index.FallbacksConfig>().toMatchTypeOf<{
       // No `enabled` key (plan fallbacks-web-ux-alignment T2 — removed).
-      rootChain: string[]
+      chains: index.NamedChain[]
       cooldownMs: number
     }>()
     expectTypeOf<index.CandidateFilterOptions>().toMatchTypeOf<{ current: index.FailingModel }>()
@@ -203,7 +196,6 @@ describe('export surface: type exports (compile-time only)', () => {
     expectTypeOf<index.FallbackSwitchReason>().toEqualTypeOf<'trigger-code' | 'always-cap'>()
     expectTypeOf<index.FallbacksSwitchEventData>().toMatchTypeOf<{ turn: number; step: number }>()
     expectTypeOf<index.AgentFallbackState>().toMatchTypeOf<{ cooldown: object; recovery: object }>()
-    expectTypeOf<index.BlockedSwitchAttempt>().toMatchTypeOf<{ route: index.FailingModel }>()
     expectTypeOf<index.FallbackStateStore>().toMatchTypeOf<object>()
     // Service contract (plan fallbacks-consumer-api T2 + fallbacks-role-seeds
     // T2 + seed-source-provenance T2): the static `provide` metadata value and
@@ -216,7 +208,6 @@ describe('export surface: type exports (compile-time only)', () => {
     expectTypeOf<index.FallbacksService>().toEqualTypeOf<{
       name: 'llm-fallbacks'
       version: string
-      resolveRole: typeof index.resolveRole
       resolveChain: typeof index.resolveChain
       validateFallbacksConfig: typeof index.validateFallbacksConfig
       detectLegacyKeys: typeof index.detectLegacyKeys

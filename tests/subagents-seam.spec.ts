@@ -67,8 +67,8 @@ const ROLE_IDS = new Map([
  * and ` padded ` pins the DECLARED RAW id lookup.
  */
 const ROLES: FallbacksRole[] = [
-  { id: 'coder', persona: '  Coder persona  ', chain: ['openai/gpt-4o'] },
-  { id: 'scout', persona: 'Scout persona', chain: [] },
+  { id: 'coder', persona: '  Coder persona  ', chain: 'daily' },
+  { id: 'scout', persona: 'Scout persona' },
   { id: 'reviewer', persona: '   ' },
   { id: ' padded ', persona: 'Padded persona' },
 ]
@@ -938,7 +938,7 @@ describe('subagent seam — install/dispose exception safety', () => {
 
   it('releases the seam fiber when apply() throws before its own dispose effect registers', async () => {
     ctx.provide('subagents', fakeSubagents({ childId: 'child-tail' }).service)
-    const config = () => cfg({ roles: { list: [{ id: 'coder', persona: '', chain: [] }], rules: [] } })
+    const config = () => cfg({ roles: { list: [{ id: 'coder', persona: '' }] } })
 
     let failedCtx: Context | undefined
     ctx.plugin({
@@ -1080,7 +1080,7 @@ describe('subagent seam — per-apply lifetime through apply()', () => {
 
   it('installs the seam and cleans the record map on agent/disposed + plugin dispose', async () => {
     const { agent } = makeAgent('child-disposed', { provider: 'mock', model: 'gpt-4o' }, { origin: 'subagent' })
-    apply(ctx, cfg({ roles: { list: [{ id: 'coder', persona: '', chain: [] }], rules: [] } }))
+    apply(ctx, cfg({ roles: { list: [{ id: 'coder', persona: '' }] } }))
     const seam = subagentSeamOf(ctx)
     expect(seam).toBeDefined()
     const record: SubagentSeamRecord = { role: 'coder', at: 1, firstNoticePending: true }
@@ -1096,7 +1096,7 @@ describe('subagent seam — per-apply lifetime through apply()', () => {
   })
 
   it('a second apply over the same context root installs no nested seam (multi-fiber dedupe, review M-3)', async () => {
-    const config = () => cfg({ roles: { list: [{ id: 'coder', persona: '', chain: [] }], rules: [] } })
+    const config = () => cfg({ roles: { list: [{ id: 'coder', persona: '' }] } })
     apply(ctx, config())
     const first = subagentSeamOf(ctx)
     expect(first).toBeDefined()
@@ -1116,7 +1116,7 @@ describe('subagent seam — per-apply lifetime through apply()', () => {
   it('multi-fiber: the wrapper has ONE owner while every applied fiber keeps its role surfaces (CF-5)', async () => {
     const fake = fakeSubagents({ childId: 'child-multi' })
     ctx.provide('subagents', fake.service)
-    const config = () => cfg({ roles: { list: [{ id: 'coder', persona: 'Coder persona', chain: [] }], rules: [] } })
+    const config = () => cfg({ roles: { list: [{ id: 'coder', persona: 'Coder persona' }] } })
 
     // TWO APPLIED FIBERS over ONE root — the composition the M-3 dedupe exists
     // for, with each fiber disposable on its own.
@@ -1182,10 +1182,10 @@ describe('subagent seam — per-apply lifetime through apply()', () => {
     await secondFiber.dispose()
   })
 
-  it('multi-fiber: a disposing fiber keeps the mount verdict a surviving child still reads', async () => {
+  it('multi-fiber: a disposing fiber keeps the role record a surviving child still reads', async () => {
     const fake = fakeSubagents({}, LOCAL_PROVIDER)
     ctx.provide('subagents', fake.service)
-    const config = () => cfg({ roles: { list: [{ id: 'coder', persona: '', chain: ['other/gpt-4o'] }], rules: [] } })
+    const config = () => cfg({ roles: { list: [{ id: 'coder', persona: '' }] } })
 
     let firstCtx: Context | undefined
     let secondCtx: Context | undefined
@@ -1215,13 +1215,13 @@ describe('subagent seam — per-apply lifetime through apply()', () => {
     const { value } = await injectSubagents(ctx)
     await startActivationOf(value)(activationSpec('mounted', assignment('coder')))
     const childId = String(fake.activations[0]!.childId)
-    expect(first.records.get(childId)).toMatchObject({ role: 'coder', virtualRouteInjected: true })
+    expect(first.records.get(childId)).toMatchObject({ role: 'coder' })
 
     // The OWNER fiber tears down. The maps are ROOT-scoped: clearing them here
     // would strip the surviving child's verdict + role, and its next walk would
     // skip the allowlist and fall back to the root chain.
     await firstFiber.dispose()
-    expect(second.records.get(childId)).toMatchObject({ role: 'coder', virtualRouteInjected: true })
+    expect(second.records.get(childId)).toMatchObject({ role: 'coder' })
 
     // …while the LAST fiber's teardown still leaves no residual state.
     await secondFiber.dispose()
@@ -1236,7 +1236,7 @@ describe('subagent seam — per-apply lifetime through apply()', () => {
     // part to the first install), and it is exactly where the reservation has to
     // happen: `index.ts` installs ONE seam per fiber, so the record a role child
     // is announced from must come from this call path.
-    apply(ctx, cfg({ roles: { list: [{ id: 'coder', persona: 'Applied persona', chain: [] }], rules: [] } }))
+    apply(ctx, cfg({ roles: { list: [{ id: 'coder', persona: 'Applied persona' }] } }))
     const seam = subagentSeamOf(ctx)!
     let atCall: SubagentSeamRecord | undefined
     fake.onActivation = (spec) => {
@@ -1258,7 +1258,7 @@ describe('subagent seam — per-apply lifetime through apply()', () => {
   it('reads the live declared-role map per activation, so a role ADDED by a settings edit resolves without a re-install', async () => {
     const fake = fakeSubagents({}, LOCAL_PROVIDER)
     ctx.provide('subagents', fake.service)
-    apply(ctx, cfg({ roles: { list: [{ id: 'coder', persona: 'Coder persona', chain: [] }], rules: [] } }))
+    apply(ctx, cfg({ roles: { list: [{ id: 'coder', persona: 'Coder persona' }] } }))
 
     const { value } = await injectSubagents(ctx)
     const start = startActivationOf(value)
@@ -1276,10 +1276,9 @@ describe('subagent seam — per-apply lifetime through apply()', () => {
     await ctx.settings.update(FALLBACKS_PROFILE_ENTRY, {
       roles: {
         list: [
-          { id: 'coder', persona: 'Coder persona', chain: [] },
-          { id: 'rookie', persona: 'Rookie persona', chain: [] },
+          { id: 'coder', persona: 'Coder persona' },
+          { id: 'rookie', persona: 'Rookie persona' },
         ],
-        rules: [],
       },
     })
     await start(activationSpec('added role', assignment('rookie')))
@@ -1293,7 +1292,7 @@ describe('subagent seam — per-apply lifetime through apply()', () => {
     // caller-reserved id and its record are the seam's creation-time guarantee.
     const fake = fakeSubagents({}, LOCAL_PROVIDER)
     ctx.provide('subagents', fake.service)
-    apply(ctx, cfg({ roles: { list: [{ id: 'coder', persona: '', chain: [] }], rules: [] } }))
+    apply(ctx, cfg({ roles: { list: [{ id: 'coder', persona: '' }] } }))
     // The service lives inside the settings inject child (seeds-declare-window):
     // wait for visibility, then read the getter through the REAL service face.
     await vi.waitFor(() => {

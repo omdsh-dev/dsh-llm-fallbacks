@@ -15,9 +15,10 @@
  * Object fields are optional by default in schemastery; `.default()` fills
  * the spec defaults, `.required()` keeps mandatory fields. Unknown keys are
  * RETAINED by the composition (verified plan Task 1 Step 1) — that is what
- * lets `detectLegacyKeys` flag two-block-era leftovers (`chains` /
- * `roles.default`) on the composed object at startup (warn + gateway
- * `legacyKeys`, see `src/index.ts` apply()).
+ * lets `detectLegacyKeys` flag v1 two-block leftovers (`rootChain` /
+ * `roles.rules` / …) on the composed object at startup (warn-only
+ * migration; the gateway strips them via LEGACY_KEYS, see
+ * `src/gateway.ts`).
  *
  * Current host contract: the whole schema is marked `volatile` (the host
  * retired `installSection` — the Loader entry Config IS the settings
@@ -47,14 +48,33 @@ declare module '@deepseek-ai/schemastery' {
 }
 
 const configSchema = z.object({
-  // No `enabled` key (plan fallbacks-web-ux-alignment T2): the Plugins-page
-  // row toggle is the master switch; the runtime gates read content presence
-  // (`isFallbackActive`). A stored `enabled:` line is schema-unknown, so
-  // schemastery retains it on the composed object — inert (nothing reads it)
-  // and stripped from every gateway snapshot/write (LEGACY_KEYS in
-  // `src/gateway.ts`), never re-persisted.
   triggerCodes: z.array(z.string()).default(['AUTH', 'QUOTA', 'RATE_LIMIT']),
-  rootChain: z.array(z.string()).default([]),
+  // Named virtual chains (v2): id (picker model id) + label (display) +
+  // entries (默认降级链 + 链尾) + per-chain timeSlots. The row shape inside
+  // timeSlots stays deliberately PERMISSIVE (plain strings, no const
+  // unions) — malformed rows must WARN at load and be skipped by the
+  // resolver, never fail schema resolve; the gateway rejects them on save.
+  chains: z
+    .array(
+      z.object({
+        id: z.string().required(),
+        label: z.string().required(),
+        entries: z.array(z.string()).default([]),
+        timeSlots: z
+          .array(
+            z.object({
+              kind: z.string(),
+              preset: z.string(),
+              start: z.string(),
+              end: z.string(),
+              days: z.array(z.number()),
+              chain: z.array(z.string()),
+            }),
+          )
+          .default([]),
+      }),
+    )
+    .default([]),
   roles: z
     .object({
       list: z
@@ -67,65 +87,31 @@ const configSchema = z.object({
               allow: z.array(z.string()),
               deny: z.array(z.string()),
             }),
-            chain: z.array(z.string()),
-            fallback: z.union([z.const('inherit-root'), z.const('none')]).default('inherit-root'),
-          }),
-        )
-        .default([]),
-      rules: z
-        .array(
-          z.object({
-            // Legacy wire field (PR #62 feedback): accepted so pre-feedback
-            // configs parse/save unchanged; ignored at match time — rules
-            // are subagent-only.
-            origin: z.union([z.const('root'), z.const('subagent')]),
-            provider: z.string(),
-            model: z.string(),
-            role: z.string().required(),
+            // Optional chain POINTER into chains[].id (「指定降级链」);
+            // absent = NOT SPECIFIED (child inherits the delegating
+            // agent's route). A v1 ARRAY value is stripped by the gateway
+            // LEGACY_KEYS path, never coerced.
+            chain: z.string(),
           }),
         )
         .default([]),
     })
-    .default({ list: [], rules: [] }),
+    .default({ list: [] }),
   cooldownMs: z.number().default(300_000),
   revertPolicy: z.union([z.const('cooldown-expiry'), z.const('never')]).default('cooldown-expiry'),
   maxSwitchesPerStep: z.number().default(8),
-  // 9th field (spec §9.4): union-of-const + default, same shape as
-  // `revertPolicy` above — illegal values fail at schema resolve, and the
-  // default guarantees every resolved config carries `presets`.
+  // Preset-role injection switch: union-of-const + default, same shape as
+  // `revertPolicy` — illegal values fail at schema resolve, and the default
+  // guarantees every resolved config carries `presets`.
   presets: z.union([z.const('bundled'), z.const('none')]).default('bundled'),
-  // 10th/11th fields (plan fallbacks-timeslots Task 1, P5): extra time-slot
-  // rows (the all-day chain keeps `rootChain`'s name) and the
-  // config-level timezone. The row shape is deliberately PERMISSIVE (plain
-  // strings, no const unions) — malformed rows (bad kind/preset/window)
-  // must WARN at load and be skipped by the resolver, never fail schema
-  // resolve (P6 warn-not-crash); the gateway rejects them on save
-  // (Task 3). Absent `days`/`chain` compose to [] — the resolver reads
-  // []/absent `days` as "all days" and an empty `chain` as malformed.
-  timeSlots: z
-    .array(
-      z.object({
-        kind: z.string(),
-        preset: z.string(),
-        start: z.string(),
-        end: z.string(),
-        days: z.array(z.number()),
-        chain: z.array(z.string()),
-      }),
-    )
-    .default([]),
   tz: z.string().default('Asia/Shanghai'),
-  // 12th field (plan fallbacks-half-open-recovery Task 1): cooldown-expiry
-  // recovery mode — `'timer'` restores the preferred candidate on expiry
-  // (today's behavior, byte-identical); `'half-open'` leaves the route
-  // half-open for one logged probe instead. Union-of-const + default, the
-  // same shape as `revertPolicy`/`presets` — illegal values fail at schema
-  // resolve, and the default guarantees every resolved config carries
-  // `recovery`.
+  // Cooldown-expiry recovery mode: `'timer'` restores the preferred
+  // candidate on expiry (today's behavior, byte-identical); `'half-open'`
+  // leaves the route half-open for one logged probe instead.
+  // Union-of-const + default, the same shape as `revertPolicy`/`presets`.
   recovery: z.union([z.const('timer'), z.const('half-open')]).default('timer'),
 })
 // Root volatile marker (see the module docblock). `extra` CLONES the schema
 // and marks the clone — exactly what schemastery's `.volatile()` does
 // (`return this.extra('volatile', true)`) — so the marked clone is the export.
 export const Config = configSchema.extra('volatile', true) as unknown as z<FallbacksConfig>
-
