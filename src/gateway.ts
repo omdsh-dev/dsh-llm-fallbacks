@@ -492,24 +492,47 @@ export async function writeFallbacksSection(
   patch: Record<string, unknown>,
   ns: string = FALLBACKS_PROFILE_ENTRY,
 ): Promise<void> {
+  const stored = storedSection(settings, ns)
   const cleaned = stripLegacyForWrite(patch)
-  const removals = legacySectionRemovals(settings, ns)
+  const removals = legacySectionRemovals(stored)
+  // A v1 profile has its whole chain in `rootChain`, which the removals above
+  // delete. A patch that does not carry `chains` would therefore leave the
+  // section with NEITHER shape: the next read migrates to `chains: []` and the
+  // user's chain silently disappears. So when a stored v1 chain exists and the
+  // patch does not replace it, materialize the migrated chains into the same
+  // write — the section becomes self-sufficient v2, and the effective config
+  // after the save equals the one before it.
+  const writes: Record<string, unknown> = { ...cleaned }
+  if (cleaned['chains'] === undefined && stored !== undefined
+    && (Object.hasOwn(stored, 'rootChain') || Object.hasOwn(stored, 'timeSlots'))) {
+    const migrated = migrateLegacyConfig({ ...stored, ...cleaned })
+    if (migrated.chains.length > 0) writes['chains'] = migrated.chains
+  }
   if (removals.length > 0) await settings.mutate(ns, removals)
-  if (Object.keys(cleaned).length > 0) await settings.update(ns, cleaned)
+  if (Object.keys(writes).length > 0) await settings.update(ns, writes)
+}
+
+/**
+ * The ACTIVE PROFILE's persisted section (the user layer), or `undefined` when
+ * the profile holds none.
+ * @param settings - the live settings service.
+ * @param ns - profile entry id.
+ */
+function storedSection(settings: SettingsForms, ns: string): Record<string, unknown> | undefined {
+  const descriptor = settings.describe().find((candidate) => candidate.ns === ns)
+  const user = descriptor?.user
+  if (typeof user !== 'object' || user === null || Array.isArray(user)) return undefined
+  return user as Record<string, unknown>
 }
 
 /**
  * `unset` path ops for every v1 field the persisted section still holds.
  * Path-addressed on purpose: the write must not restate (and so cannot
  * destroy) fields this plugin does not own.
- * @param settings - the live settings service.
- * @param ns - profile entry id.
+ * @param section - the persisted section, or `undefined` when there is none.
  */
-function legacySectionRemovals(settings: SettingsForms, ns: string): readonly SettingsPathOp[] {
-  const descriptor = settings.describe().find((candidate) => candidate.ns === ns)
-  const user = descriptor?.user
-  if (typeof user !== 'object' || user === null || Array.isArray(user)) return []
-  const section = user as Record<string, unknown>
+function legacySectionRemovals(section: Record<string, unknown> | undefined): readonly SettingsPathOp[] {
+  if (section === undefined) return []
   const removals: SettingsPathOp[] = []
   for (const key of LEGACY_KEYS) {
     if (Object.hasOwn(section, key)) removals.push({ op: 'unset', path: [key] })
