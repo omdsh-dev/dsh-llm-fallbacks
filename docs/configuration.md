@@ -299,11 +299,20 @@ If you would rather see it in text, the table below is the same transformation; 
 
 After an upgrade, legacy-format configuration is **upgraded in memory** (see the migration section above) and, while the file still holds v1 text, flagged through **three channels**. Loading does not change your file — the banner is informational, and an explicit save is what persists the v2 shape (see the end of this section).
 
-1. **UI banner** (live this round): the Fallbacks card renders a migration banner at the top of its body (when the `get` / `set` / `reset` response carries a non-empty `legacyKeys`) — "Legacy config fields detected (...): now shown in the new model — rewrite them manually following the migration table in docs/configuration.md (the plugin will not rewrite them automatically)." It does not block editing and does not touch disk by itself.
+1. **UI banner** (informational — `role="status"`, no error tone): the card renders it at the top of its body when the `get` / `set` / `reset` response carries a non-empty `legacyKeys`, with the actual field list in `{keys}`:
+   - zh: 「检测到旧格式字段（{keys}）：已自动升级为命名链——原默认降级链成为第 0 条链「默认链」，角色与人格保持不变，旧的角色数组链已置为「未指定」（可在下方重新指定）。保存一次即可固化；插件不会主动改写你的配置文件。」
+   - en: "Legacy fields detected ({keys}): automatically upgraded to named chains — your previous default chain became chain #0 「默认链」, roles and personas are unchanged, and old per-role chain arrays now read as "not specified" (re-attach them below). Save once to persist this; the plugin never rewrites your config file on its own."
+   `{keys}` lists each detected key once. The banner does not block editing and does not touch disk by itself.
 2. **Startup warn** (shipped): on plugin startup / config read, detected legacy fields are reported via `logger.warn` — `apply()` detects them through `detectLegacyKeys`, and the `legacyKeys` pipeline reports synchronously; the three channels are closed.
 3. **This document's migration table**: the "Migration mapping table" section above is the reference for rewriting by hand.
 
-**What a save removes.** An explicit save (the card's Save, `/settings`, or any gateway `set` / the service's seed write) does not merely merge: the write path strips the v1 fields from the patch AND deletes the ones already in the persisted section — `rootChain`, the top-level `timeSlots` array, `roles.rules`, `roles.default`, `enabled`, and each `roles.list[]` row's `fallback` plus the v1 ARRAY form of `chain`. Everything else is preserved: unrelated configuration, foreign keys written by other tooling, and every surviving role member. So a v2 save is the supported way to clean a v1 section — no YAML surgery required — while the plugin still never rewrites your file on its own.
+**What a save does.** An explicit save (the card's Save, `/settings`, or any gateway `set` / the service's seed write) does not merely merge, and it is what turns the in-memory upgrade into stored configuration:
+
+- it **writes the migrated `chains` array** whenever the stored section still carries a v1 chain and the save does not already supply `chains`. That is what keeps a partial save safe: changing only `cooldownMs` from a v1 profile leaves the section self-sufficient v2 — chain #0 with its entries and tail intact — instead of deleting `rootChain` and losing the chain (a patch that supplies `chains` itself wins, and no v1 chain is re-materialized once the section has none);
+- it **strips the v1 fields** from the patch AND deletes the ones already in the persisted section — `rootChain`, the top-level `timeSlots` array, `roles.rules`, `roles.default`, `enabled`, and each `roles.list[]` row's `fallback` plus the v1 ARRAY form of `chain`;
+- everything else is preserved: unrelated configuration, foreign keys written by other tooling, and every surviving role member.
+
+So one save is the supported way to clean a v1 section — no YAML surgery required — and the effective config after the save is identical to the one before it. The plugin still never rewrites your file on its own.
 
 ## Web plugin-config card usage
 
