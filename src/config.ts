@@ -91,6 +91,25 @@ export interface FallbacksRoles {
 }
 
 /**
+ * One declared role as the SCHEMA may compose it: identical to
+ * {@link FallbacksRole} except that a v1 profile still carries the ARRAY form
+ * of `chain`. The schema must accept it (composition happens in cordis BEFORE
+ * `apply()`, so a rejection there kills the fiber and no migration can run);
+ * {@link migrateLegacyConfig} narrows it to the string pointer.
+ */
+export interface FallbacksRoleSource extends Omit<FallbacksRole, 'chain'> {
+  chain?: string | string[]
+}
+
+/**
+ * The composed settings shape produced by the schemastery `Config` — the input
+ * of {@link migrateLegacyConfig}, not the shape the runtime consumes.
+ */
+export interface FallbacksConfigSource extends Omit<FallbacksConfig, 'roles'> {
+  roles: { list: FallbacksRoleSource[] }
+}
+
+/**
  * The full `fallbacks` settings shape (named virtual chains, verbatim
  * field names).
  */

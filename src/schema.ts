@@ -36,7 +36,7 @@
  */
 
 import z from '@deepseek-ai/schemastery'
-import type { FallbacksConfig } from './config.ts'
+import type { FallbacksConfigSource } from './config.ts'
 
 declare module '@deepseek-ai/schemastery' {
   namespace Schemastery {
@@ -87,11 +87,13 @@ const configSchema = z.object({
               allow: z.array(z.string()),
               deny: z.array(z.string()),
             }),
-            // Optional chain POINTER into chains[].id (「指定降级链」);
-            // absent = NOT SPECIFIED (child inherits the delegating
-            // agent's route). A v1 ARRAY value is stripped by the gateway
-            // LEGACY_KEYS path, never coerced.
-            chain: z.string(),
+            // Chain POINTER into chains[].id (「指定降级链」); absent = NOT
+            // SPECIFIED (the child inherits the delegating agent's route).
+            // The ARRAY form is a v1 profile: cordis composes this schema
+            // BEFORE apply(), so rejecting it would kill the fiber and the
+            // migration could never run. `migrateLegacyConfig` drops the array
+            // to NOT SPECIFIED; the write path never re-persists it.
+            chain: z.union([z.string(), z.array(z.string())]),
           }),
         )
         .default([]),
@@ -114,4 +116,4 @@ const configSchema = z.object({
 // Root volatile marker (see the module docblock). `extra` CLONES the schema
 // and marks the clone — exactly what schemastery's `.volatile()` does
 // (`return this.extra('volatile', true)`) — so the marked clone is the export.
-export const Config = configSchema.extra('volatile', true) as unknown as z<FallbacksConfig>
+export const Config = configSchema.extra('volatile', true) as unknown as z<FallbacksConfigSource>

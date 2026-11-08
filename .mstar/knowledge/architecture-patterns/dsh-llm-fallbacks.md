@@ -195,10 +195,16 @@ go through the injected logger.
 | Config-level `enabled` switch | Content presence (`isFallbackActive` = `chains.length > 0`) is the gate |
 | The read-only status surfaces — the card's 运行状态 block and its switch-history read, the General-page status row, the host-policy status area with its sync button, the `subagentPolicy` wire field | One settings surface: the card. Switch history renders in the transcript row, the config summary in `/fallbacks config` |
 | Half-open success closure via a plugin-scope `session/event` subscription | The walk observes success itself: a normal, non-aborted finish at the attempt boundary |
-### Legacy configuration: detection only, never rewriting
+### Legacy configuration: upgraded in memory, persisted on the next save
 
-Legacy keys are banner-reported, not migrated: the migration is **warn-only** and the
-plugin never rewrites the user's file. `detectLegacyKeys` recognizes the v1 two-block
+A v1 section is upgraded **at every config read** (`migrateLegacyConfig`) and the plugin
+never rewrites the user's file on load: `rootChain` + the top-level `timeSlots` become chain #0
+(`{ id: 'Auto', label: '默认链' }`, so a session already on `FallbacksChain/Auto` keeps its route),
+and `roles.list[]` keep their identity (`id`, `persona`, `prompt`, `permissions`) with the v1 ARRAY
+`chain` dropped to NOT SPECIFIED and `fallback` removed. The first explicit save persists that
+shape and removes the v1 keys in the same `mutate` call. The schema itself accepts the array `chain`
+because cordis composes the entry config BEFORE `apply()`, so a rejection there would kill the fiber
+before any migration could run. Detection reads the STORED view, the runtime reads the upgraded one. `detectLegacyKeys` recognizes the v1 two-block
 surface — `rootChain`, the top-level `timeSlots` array, `roles.rules`,
 `roles.list[].fallback`, and the ARRAY form of `roles.list[].chain` — plus the older
 `enabled`, `chains`, `alwaysModeRetryCap`, `roleAutoMatch`, `roles.default` and the
@@ -431,9 +437,10 @@ re-exported from the package root.
   (picker UX plus per-chain register/unregister churn).
 - A switch INSIDE a stamped child's chain is not host-allowlist-filtered — the chain is
   hand-written config, not a route the plugin chose.
-- The migration is warn-only: v1 keys are reported and stripped from writes, but the
-  plugin never rewrites the user's file, so nothing is migrated until the operator edits
-  it (there is no auto-created default chain).
+- Legacy v1 sections are upgraded in memory on read (chain #0 `Auto` from `rootChain` +
+  top-level `timeSlots`; roles keep identity, array chains become NOT SPECIFIED) and the
+  upgrade is persisted by the next explicit save — the plugin still never rewrites the
+  file on load, so a profile that is never saved keeps reporting the legacy keys.
 - One virtual call registers one outer `llm/stream` plus one inner stream per attempt,
   so N attempts appear as N+1 nested streams; a pre-output failed attempt is unmetered.
 - Half-open flags and escalation counters are session-scoped in memory: a restart resets

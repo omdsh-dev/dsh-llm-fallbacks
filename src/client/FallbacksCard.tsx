@@ -8,10 +8,11 @@
  * Discard + Save pairs. The 虚拟链 group is TAB-PER-CHAIN: underline tabs on
  * the 0.5px l2 hairline (active label = label-primary + 2px brand underline,
  * dirty pip, error "!" mark), a "+" add affordance and a "⋯" chain menu
- * (rename label / delete, ≥1 chain), WAI-ARIA tabs with roving tabindex.
- * Each tab body carries the SHIPPED block order 分时槽设置 → 默认降级链 →
- * 默认模型（链尾） plus a per-tab Discard/Save writing ONLY that chain
- * (block ids per chain, error text under the owning block).
+ * (delete, ≥1 chain), WAI-ARIA tabs with roving tabindex.
+ * Each tab body carries 链名称 (the single label editor — the ⋯ menu binds to
+ * the same draft field) followed by the SHIPPED block order 分时槽设置 →
+ * 默认降级链 → 默认模型（链尾） plus a per-tab Discard/Save writing ONLY that
+ * chain (block ids per chain, error text under the owning block).
  *
  * The 子代理 section is role cards: id + persona + 指定降级链 (a MANUAL
  * named-chain pointer; 未指定（沿用 dsh 默认） = the plugin does not
@@ -795,7 +796,6 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
   const [lastSaveChain, setLastSaveChain] = useState<number | null>(null)
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
-  const [menuRename, setMenuRename] = useState('')
   const seededConfigKey = useRef<string | null>(null)
   const firstSeedDone = useRef(false)
 
@@ -964,7 +964,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
     patchActiveDraft(draft => ({ ...draft, selectors: moveItem(draft.selectors, from, to) }))
   }
 
-  // ---- chain tab management (add / rename label / delete) ----
+  // ---- chain tab management (add / delete) — the label editor lives in the body ----
   const addChain = (): void => {
     // The id comes from the DRAFT list: the accepted config knows nothing
     // about an addition that was never saved, so deriving from it handed two
@@ -977,10 +977,8 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
     setActiveChain(added)
     setMenuOpen(false)
   }
-  const renameActiveChain = (): void => {
-    patchActiveDraft(draft => ({ ...draft, label: menuRename }))
-    setMenuOpen(false)
-  }
+  // No second rename state: the ⋯ menu edits the SAME draft label as the
+  // 链名称 field, so the two editors can never disagree or revert each other.
   const deleteActiveChain = (): void => {
     if (chainDrafts.length <= 1) return
     setChainDrafts(drafts => drafts.filter((_, index) => index !== activeChain))
@@ -1247,10 +1245,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                   aria-label={t('chains.tab.menu')}
                   data-menu-btn=""
                   disabled={!writable}
-                  onClick={() => {
-                    setMenuOpen(open => !open)
-                    setMenuRename(chainDrafts[activeChain]?.label ?? '')
-                  }}
+                  onClick={() => { setMenuOpen(open => !open) }}
                 >
                   ⋯
                 </button>
@@ -1260,14 +1255,20 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                       {t('chains.tab.renameLabel', { id: activeDraft?.id ?? '' })}
                       <input
                         className={`${css.input} ${css.menuInput}`}
-                        value={menuRename}
+                        value={activeDraft?.label ?? ''}
                         data-menu-input=""
-                        onChange={event => { setMenuRename(event.target.value) }}
+                        disabled={!writable}
+                        onChange={event => { patchActiveDraft(draft => ({ ...draft, label: event.target.value })) }}
                       />
                     </label>
                     <div className={css.menuActions}>
-                      <button type="button" className={css.outlineButton} onClick={renameActiveChain} data-menu-apply="">
-                        {t('chains.tab.renameApply')}
+                      <button
+                        type="button"
+                        className={css.outlineButton}
+                        onClick={() => { setMenuOpen(false) }}
+                        data-menu-apply=""
+                      >
+                        {t('chains.tab.renameDone')}
                       </button>
                     </div>
                     <button
@@ -1308,6 +1309,28 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
           {slotErrors.length > 0 && (
             <p className={css.error} role="alert">{`${t('validation.blocked')}${slotErrors.join('; ')}`}</p>
           )}
+
+          {/* ======== 链名称 (per chain) ======== */}
+          {/* Discoverable rename: the ⋯ menu is the secondary path, this field
+              is where a maintainer looks after clicking 「+」 and seeing the raw
+              id as the tab title. The ID is the picker model id and stays
+              fixed; only the display name is editable. */}
+          <div className={css.field} role="group" aria-labelledby={`fallbacks-chain-name-${activeDraft!.id}`}>
+            <span className={css.fieldLabel}>
+              <span id={`fallbacks-chain-name-${activeDraft!.id}`}>{t('chains.name.label')}</span>
+              <InfoHint label={t('chains.name.tooltip')} disabled={!writable} />
+            </span>
+            <input
+              className={css.input}
+              value={activeDraft!.label}
+              placeholder={activeDraft!.id}
+              aria-label={t('chains.name.label')}
+              data-chain-name=""
+              disabled={!writable}
+              onChange={event => { patchActiveDraft(draft => ({ ...draft, label: event.target.value })) }}
+            />
+            <span className={css.hint}>{t('chains.name.hint', { id: activeDraft!.id })}</span>
+          </div>
 
           {/* ======== 分时槽设置 (per chain) ======== */}
           <div className={css.field} role="group" aria-labelledby={`fallbacks-time-slots-${activeDraft!.id}`}>
