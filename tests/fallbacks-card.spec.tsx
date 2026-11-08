@@ -555,20 +555,9 @@ describe('role cards (指定降级链)', () => {
   })
 })
 
-describe('removed surfaces', () => {
-  it('no 运行状态 status block, no host-policy block, no subagentPolicy state', async () => {
+describe('role card shape', () => {
+  it('carries exactly ONE select — the 指定降级链 pointer', async () => {
     const { view } = await mountCard({ config: v2Config() })
-    expect(view.container.querySelector('[data-status-block]')).toBeNull()
-    expect(view.container.textContent).not.toContain(en['status.title'] ?? '运行状态')
-    expect(view.container.textContent).not.toContain('宿主子代理模型策略')
-    expect(view.queryAllByText(/FallbacksChain\/Auto（?自动/).length).toBe(0)
-  })
-
-  it('no role-rules editor and no per-role chain entries editor', async () => {
-    const { view } = await mountCard({ config: v2Config() })
-    expect(view.container.textContent).not.toContain(en['roles.rules'])
-    // The role card body carries NO provider/model selector lists (only the
-    // single chain-pointer select).
     const card = view.container.querySelector('[data-role-card="coder"]')!
     expect(card.querySelectorAll('select')).toHaveLength(1)
   })

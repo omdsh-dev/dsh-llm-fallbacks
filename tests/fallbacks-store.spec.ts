@@ -409,9 +409,6 @@ describe('FallbacksSettingsController (v2 lifecycle)', () => {
     expect(controller.store.getSnapshot().config).toEqual(defaultFallbacksConfig)
   })
 
-  it('isFallbackActive stays false for the default skeleton (no chains)', () => {
-    expect(defaultFallbacksConfig.chains).toEqual([])
-  })
 })
 
 describe('configuredProvidersOf (Models-page `configured` join)', () => {

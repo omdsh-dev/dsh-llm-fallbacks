@@ -19,7 +19,7 @@ import { SessionId } from '@deepseek-ai/dsh-session/types'
 import { walkChain } from '../src/chain-walk.ts'
 import { ESCALATION_CAP_MS, escalatedCooldownMs } from '../src/recovery.ts'
 import { FallbackStateStore } from '../src/state.ts'
-import { FALLBACKS_CHAIN_MODEL, FALLBACKS_PROVIDER } from '../src/virtual-adapter.ts'
+import { FALLBACKS_PROVIDER } from '../src/virtual-adapter.ts'
 import { cfg, walkDeps } from './support/harness.ts'
 
 const COOLDOWN_MS = 60_000
@@ -78,8 +78,14 @@ afterEach(async () => {
  */
 function walkOnce(states: FallbackStateStore, chain: readonly string[], recovery: 'timer' | 'half-open', info?: (message: string, ...args: unknown[]) => void) {
   const config = cfg({
-    rootChain: ['deepseek-official/deepseek-flash'],
-    timeSlots: [{ kind: 'custom', start: '00:00', end: '23:59', chain: [...chain] }],
+    chains: [{
+      id: CHAIN_ID,
+      label: CHAIN_ID,
+      entries: ['deepseek-official/deepseek-flash'],
+      // The chain under test rides a full-day slot row, so the all-day tail
+      // stays conforming (the per-chain gate).
+      timeSlots: [{ kind: 'custom', start: '00:00', end: '23:59', chain: [...chain] }],
+    }],
     cooldownMs: COOLDOWN_MS,
     recovery,
   })
@@ -90,9 +96,12 @@ function walkOnce(states: FallbackStateStore, chain: readonly string[], recovery
       states,
       ...(info === undefined ? {} : { log: { info, warn: () => {} } }),
     }),
-    { provider: FALLBACKS_PROVIDER, model: FALLBACKS_CHAIN_MODEL, messages: [], sessionId: SessionId('s1') },
+    { provider: FALLBACKS_PROVIDER, model: CHAIN_ID, messages: [], sessionId: SessionId('s1') },
   ))
 }
+
+/** The chain every walk selects (the picker row id IS the chain id). */
+const CHAIN_ID = 'Auto'
 
 describe('half-open: attempt-level success closes the circuit', () => {
   it('closes a served route’s episode on a normal finish', async () => {
@@ -188,14 +197,18 @@ describe('revertPolicy: never is structural', () => {
   it('writes an infinite suppression (the never short-circuit lives on the read side)', async () => {
     const states = new FallbackStateStore()
     const config = cfg({
-      rootChain: ['deepseek-official/deepseek-flash'],
-      timeSlots: [{ kind: 'custom', start: '00:00', end: '23:59', chain: ['a/1'] }],
+      chains: [{
+        id: CHAIN_ID,
+        label: CHAIN_ID,
+        entries: ['deepseek-official/deepseek-flash'],
+        timeSlots: [{ kind: 'custom', start: '00:00', end: '23:59', chain: ['a/1'] }],
+      }],
       revertPolicy: 'never',
       recovery: 'half-open',
     })
     await collect(walkChain(
       walkDeps({ readConfig: () => config, getLlm: () => ctx.llm, states }),
-      { provider: FALLBACKS_PROVIDER, model: FALLBACKS_CHAIN_MODEL, messages: [], sessionId: SessionId('s1') },
+      { provider: FALLBACKS_PROVIDER, model: CHAIN_ID, messages: [], sessionId: SessionId('s1') },
     ))
 
     expect(states.peek('s1')?.cooldown.peek('a/1')).toBe(Number.POSITIVE_INFINITY)

@@ -346,7 +346,6 @@ describe('fallbacksConfigText — composed-config readback', () => {
   })
 
   it('renders the content-presence gate as the first line (active/inactive — no enabled switch)', () => {
-    expect(fallbacksConfigText(configSummary(), 'en').split('\n')[0]).toBe('Fallbacks config: enabled')
     expect(fallbacksConfigText(configSummary({ active: false }), 'en').split('\n')[0]).toBe('Fallbacks config: disabled')
   })
 

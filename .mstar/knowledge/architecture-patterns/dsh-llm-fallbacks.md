@@ -473,8 +473,7 @@ the cap is per walk.
   `tests/dispatch-injection.spec.ts`, `tests/agent-team-roles.spec.ts`.
 - Configuration and surfaces: `tests/config.spec.ts`, `tests/time-slots.spec.ts`,
   `tests/gateway.spec.ts`, `tests/command.spec.ts`, `tests/tui-settings.spec.ts`,
-  `tests/fallbacks-card.spec.tsx`, `tests/fallbacks-store.spec.ts`,
-  `tests/enabled-read-sweep.spec.ts`.
+  `tests/fallbacks-card.spec.tsx`, `tests/fallbacks-store.spec.ts`.
 - Seeds and presets: `tests/seeds.spec.ts`, `tests/seeds-integration.spec.ts`,
   `tests/presets.spec.ts`, `tests/service.spec.ts`, `tests/export-surface.spec.ts`.
 - Real-host end-to-end script: `docs/verification.md` §4.
