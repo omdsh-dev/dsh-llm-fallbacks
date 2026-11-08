@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "Fallbacks",
-    "description": "Named virtual fallback chains — one FallbacksChain/<chain id> picker row per chain; select a chain on the main agent and failing LLM requests (auth, quota, rate limit) walk the chain automatically.",
+    "description": "Named fallback chains for model requests: on failure the walk switches to the next model in the chain so agent steps keep running; the main agent must select a virtual chain in the model picker for fallback to apply.",
     "detail": "docs/DETAIL.md"
   }
 }
