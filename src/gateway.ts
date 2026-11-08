@@ -505,10 +505,10 @@ function legacySectionRemovals(settings: SettingsForms, ns: string): readonly Se
   }
   if (!Array.isArray(declared['list'])) return removals
   // Rows are rewritten as a whole rather than unset per index: the list is the
-  // one array a v1 field lives in, and this rewrite is safe only because no
-  // role member is a schema-declared secret (`describe()` here is unredacted,
-  // but a redacted caller would lose one). Prefer per-index unset if
-  // `SettingsPathOp` ever expresses an object member inside an array cleanly.
+  // one array a v1 field lives in, and these values come from the REDACTED
+  // `describe().user` view — safe only because no role member is a
+  // schema-declared secret. Prefer per-index `unset` if `SettingsPathOp` ever
+  // expresses an array member cleanly.
   const stale = declared['list'].some((row) => typeof row === 'object' && row !== null
     && !Array.isArray(row)
     && (Object.hasOwn(row as Record<string, unknown>, 'fallback')
