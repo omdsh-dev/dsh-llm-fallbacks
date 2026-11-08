@@ -462,9 +462,8 @@ interface ChainSelectorReorder {
  * icon. The visible provider/model field labels are gone — the two selects
  * carry their accessible name on `aria-label` (the visible labels repeated on
  * every row and cost a whole line).
- * The GUI never offers a `provider/*` wildcard (root agent and role chains
- * alike; provider-any matching lives in the role rules) — but `provider/*`
- * stays a legal YAML entry, so a wildcard row read back from the server
+ * The GUI never offers a `provider/*` wildcard — but `provider/*` stays a
+ * legal YAML entry in any chain, so a wildcard row read back from the server
  * renders with the legacy-conversion hint and an enabled model select:
  * picking a model converts the row to an exact entry (the patch carries
  * `wildcard: false`). The provider options are the catalog providers
@@ -967,11 +966,15 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
 
   // ---- chain tab management (add / rename label / delete) ----
   const addChain = (): void => {
-    setChainDrafts(drafts => [
-      ...drafts,
-      { id: newChainId(state.config.chains), label: '', selectors: [], slots: [] },
-    ])
-    setActiveChain(chainDrafts.length)
+    // The id comes from the DRAFT list: the accepted config knows nothing
+    // about an addition that was never saved, so deriving from it handed two
+    // consecutive clicks the same `chain-N`.
+    let added = chainDrafts.length
+    setChainDrafts((drafts) => {
+      added = drafts.length
+      return [...drafts, { id: newChainId(drafts), label: '', selectors: [], slots: [] }]
+    })
+    setActiveChain(added)
     setMenuOpen(false)
   }
   const renameActiveChain = (): void => {

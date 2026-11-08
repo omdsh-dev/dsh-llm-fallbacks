@@ -380,6 +380,33 @@ describe('per-tab blocks and per-tab save isolation', () => {
     expect((view.container.querySelector('[data-chain-tab="night"] [data-error-mark]'))).toBeNull()
   })
 
+  it('two consecutive + clicks get DISTINCT ids and both persist', async () => {
+    const { view, scripted } = await mountCard({ config: v2Config() })
+    fireEvent.click(view.container.querySelector('[data-tab-add]')!)
+    fireEvent.click(view.container.querySelector('[data-tab-add]')!)
+
+    const ids = [...view.container.querySelectorAll('[data-chain-tab]')]
+      .map(tab => tab.getAttribute('data-chain-tab'))
+    expect(ids).toEqual(['Auto', 'night', 'chain-3', 'chain-4'])
+    expect(new Set(ids).size).toBe(ids.length)
+
+    // Name + give each a tail so the section is valid, then save from the
+    // last tab: both additions are in the payload with their own ids.
+    for (const id of ['chain-3', 'chain-4'] as const) {
+      fireEvent.click(view.container.querySelector(`[data-chain-tab="${id}"]`)!)
+      fireEvent.click(view.container.querySelector('[data-menu-btn]')!)
+      fireEvent.change(view.container.querySelector('[data-menu-input]')!, { target: { value: `label ${id}` } })
+      fireEvent.click(view.container.querySelector('[data-menu-apply]')!)
+      const radios = [...view.container.querySelectorAll('input[type="radio"][name^="fallbacks-chain-tail-"]')] as HTMLInputElement[]
+      fireEvent.click(radios[1]!)
+    }
+    fireEvent.click(view.container.querySelector('[data-chain-foot] button[class*="save"]')!)
+
+    await waitFor(() => expect(scripted.set).toHaveBeenCalled())
+    const chains: Array<{ id: string }> = scripted.set.mock.calls[0]![0].args.patch.chains
+    expect(chains.map(chain => chain.id)).toEqual(['Auto', 'night', 'chain-3', 'chain-4'])
+  })
+
   it('does NOT persist an invalid pending chain staged in another tab', async () => {
     const { view, scripted } = await mountCard({ config: v2Config() })
     // Add a chain, leave it unnamed (label '' + empty entries = invalid), then

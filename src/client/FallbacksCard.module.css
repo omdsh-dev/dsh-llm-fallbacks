@@ -539,8 +539,8 @@ select.input {
   margin-top: 4px;
 }
 
-/* Row editors (chains / role rules): a filled module on the page surface —
-   r12 on the module-platform fill. */
+/* Row editors (a chain's entries / a role card): a filled module on the page
+   surface — r12 on the module-platform fill. */
 .editorCard {
   display: flex;
   flex-direction: column;

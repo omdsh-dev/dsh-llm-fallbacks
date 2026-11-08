@@ -493,8 +493,12 @@ export function chainsToDrafts(chains: readonly NamedChain[], catalog?: CatalogL
   }))
 }
 
-/** Generate a fresh unique chain id for the card's `+` affordance. */
-export function newChainId(existing: readonly NamedChain[]): string {
+/**
+ * Generate a fresh unique chain id for the card's `+` affordance. Pass the
+ * DRAFT list, not the accepted config: two unsaved additions must not both
+ * claim `chain-N` (duplicate React keys, and a section the gateway rejects).
+ */
+export function newChainId(existing: readonly { id: string }[]): string {
   let index = existing.length + 1
   let id = `chain-${index}`
   while (existing.some(chain => chain.id === id)) {
