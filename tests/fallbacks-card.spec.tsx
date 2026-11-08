@@ -380,6 +380,81 @@ describe('per-tab blocks and per-tab save isolation', () => {
     expect((view.container.querySelector('[data-chain-tab="night"] [data-error-mark]'))).toBeNull()
   })
 
+  it('persists a newly ADDED chain (append survives the save)', async () => {
+    const { view, scripted } = await mountCard({ config: v2Config() })
+    fireEvent.click(view.container.querySelector('[data-tab-add]')!)
+    // The new tab is active and INVALID until named + given a tail, so its
+    // Save starts disarmed.
+    const tabIds = () => [...view.container.querySelectorAll('[data-chain-tab]')]
+      .map(tab => tab.getAttribute('data-chain-tab'))
+    expect(tabIds()).toEqual(['Auto', 'night', 'chain-3'])
+    expect((view.container.querySelector('[data-chain-foot] button[class*="save"]') as HTMLButtonElement).disabled).toBe(true)
+
+    // Name it, then pick the 默认模型 tail.
+    fireEvent.click(view.container.querySelector('[data-menu-btn]')!)
+    fireEvent.change(view.container.querySelector('[data-menu-input]')!, { target: { value: '第三条链' } })
+    fireEvent.click(view.container.querySelector('[data-menu-apply]')!)
+    const radios = [...view.container.querySelectorAll('input[type="radio"][name^="fallbacks-chain-tail-"]')] as HTMLInputElement[]
+    fireEvent.click(radios[1]!)
+    fireEvent.click(view.container.querySelector('[data-chain-foot] button[class*="save"]')!)
+
+    await waitFor(() => expect(scripted.set).toHaveBeenCalled())
+    const chains: Array<{ id: string; label: string; entries: string[] }> = scripted.set.mock.calls[0]![0].args.patch.chains
+    // The new chain is IN the payload (the append is expressible), the two
+    // accepted chains keep their values.
+    expect(chains.map(chain => chain.id)).toEqual(['Auto', 'night', 'chain-3'])
+    expect(chains[2]).toMatchObject({ id: 'chain-3', label: '第三条链', entries: [OFFICIAL_PRO] })
+    expect(chains[0]).toEqual(v2Config().chains[0])
+    expect(chains[1]).toEqual(v2Config().chains[1])
+  })
+
+  it('persists a DELETED non-last chain without duplicating the next one', async () => {
+    const { view, scripted } = await mountCard({ config: v2Config() })
+    // Delete the FIRST chain (a non-last position: the old index patch wrote
+    // the following chain into the deleted slot, producing a duplicate id the
+    // gateway rejects).
+    fireEvent.click(view.container.querySelector('[data-menu-btn]')!)
+    fireEvent.click(view.container.querySelector('[data-menu-delete]')!)
+
+    const tabs = [...view.container.querySelectorAll('[data-chain-tab]')] as HTMLButtonElement[]
+    expect(tabs.map(tab => tab.getAttribute('data-chain-tab'))).toEqual(['night'])
+    // The structural change alone arms the (otherwise clean) tab's Save.
+    const save = view.container.querySelector('[data-chain-foot] button[class*="save"]') as HTMLButtonElement
+    expect(save.disabled).toBe(false)
+    fireEvent.click(save)
+
+    await waitFor(() => expect(scripted.set).toHaveBeenCalled())
+    const chains: Array<{ id: string }> = scripted.set.mock.calls[0]![0].args.patch.chains
+    expect(chains.map(chain => chain.id)).toEqual(['night'])
+    expect(chains[0]).toEqual(v2Config().chains[1])
+  })
+
+  it('persists a deleted LAST chain (the surviving slot is not the active index)', async () => {
+    const { view, scripted } = await mountCard({ config: v2Config() })
+    fireEvent.click(view.container.querySelector('[data-chain-tab="night"]')!)
+    fireEvent.click(view.container.querySelector('[data-menu-btn]')!)
+    fireEvent.click(view.container.querySelector('[data-menu-delete]')!)
+
+    expect([...view.container.querySelectorAll('[data-chain-tab]')]).toHaveLength(1)
+    fireEvent.click(view.container.querySelector('[data-chain-foot] button[class*="save"]')!)
+
+    await waitFor(() => expect(scripted.set).toHaveBeenCalled())
+    const chains: Array<{ id: string }> = scripted.set.mock.calls[0]![0].args.patch.chains
+    expect(chains.map(chain => chain.id)).toEqual(['Auto'])
+  })
+
+  it('blocks deleting the only remaining chain (≥1 rule)', async () => {
+    const { view } = await mountCard({
+      config: { ...v2Config(), chains: [v2Config().chains[0]!] },
+    })
+    fireEvent.click(view.container.querySelector('[data-menu-btn]')!)
+    const remove = view.container.querySelector('[data-menu-delete]') as HTMLButtonElement
+    expect(remove.disabled).toBe(true)
+    // Firing the click anyway is a no-op: the tab stays.
+    fireEvent.click(remove)
+    expect([...view.container.querySelectorAll('[data-chain-tab]')]).toHaveLength(1)
+  })
+
   it('the chain save discards only the active chain', async () => {
     const { view } = await mountCard({ config: v2Config() })
     fireEvent.click(view.container.querySelector('[data-menu-btn]')!)

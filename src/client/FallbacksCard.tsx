@@ -802,8 +802,20 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
 
   const chains: NamedChain[] = chainDrafts.map(draftToChain)
   const chainsDirty = JSON.stringify(chains) !== JSON.stringify(state.config.chains)
-  const perChainDirty = chainDrafts.map((chainDraft, index) =>
-    JSON.stringify(draftToChain(chainDraft)) !== JSON.stringify(state.config.chains[index]))
+  // Keyed by chain ID, not by position: adding or deleting a chain shifts the
+  // draft indices, and the ACCEPTED array is the base every save patches.
+  const acceptedChainOf = (id: string): NamedChain | undefined =>
+    state.config.chains.find(chain => chain.id === id)
+  const perChainDirty = chainDrafts.map((chainDraft) => {
+    const accepted = acceptedChainOf(chainDraft.id)
+    // A chain with no accepted counterpart is NEW — always dirty until saved.
+    return accepted === undefined || JSON.stringify(draftToChain(chainDraft)) !== JSON.stringify(accepted)
+  })
+  // The chain LIST itself is draft state too: an added or deleted chain arms
+  // the section save even when the active tab's own fields are untouched
+  // (otherwise a deletion could never be persisted).
+  const structureDirty = chainDrafts.length !== state.config.chains.length
+    || chainDrafts.some((draft, index) => state.config.chains[index]?.id !== draft.id)
   const rolesDraft: FallbacksConfig['roles'] = { list: mergeRoleExtras(roleRows, state.config.roles.list) }
   const rolesDirty = JSON.stringify(rolesDraft) !== JSON.stringify(state.config.roles)
   const advancedDirty = JSON.stringify([
@@ -997,8 +1009,12 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
   const presetsPresent = (chainDrafts[activeChain]?.slots ?? []).some(row => row.kind === 'preset')
   const glmConfigured = state.configuredProviders.some(entry => entry.provider === 'zai-coding-cn')
   // The ACTIVE slot row of the ACTIVE chain (per-chain 分时 badge), resolved
-  // with the SAME pure helper the runtime uses against the ACCEPTED chain.
-  const acceptedChain = state.config.chains[activeChain]
+  // with the SAME pure helper the runtime uses against the ACCEPTED chain —
+  // looked up by chain ID, since the draft index need not match a position in
+  // the accepted array after an add/delete.
+  const acceptedChain = chainDrafts[activeChain] === undefined
+    ? undefined
+    : acceptedChainOf(chainDrafts[activeChain]!.id)
   const activeSlotIndex = (() => {
     if (acceptedChain === undefined) return -1
     const winner = resolveSlotState(acceptedChain, new Date(), scalars.tz)
@@ -1015,7 +1031,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
   // Whole-draft validation, bucketed per chain + roles/advanced.
   const liveErrors = validateDraft(chains, rolesDraft.list, t)
   const activeErrors = liveErrors.chains[activeChain] ?? []
-  const activeDirty = perChainDirty[activeChain] ?? false
+  const activeDirty = (perChainDirty[activeChain] ?? false) || structureDirty
 
   // Catalog reseed (llm/adapters-updated) re-classifies CLEAN section rows.
   const catalogSeededSections = useRef<{ epoch: number | null; chains: boolean; roles: boolean }>({ epoch: null, chains: false, roles: false })
@@ -1039,17 +1055,24 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.catalogStatus, state.catalogEpoch, state.config])
 
-  // Per-section saves (the ride-along protection). The chains save writes
-  // ONLY the active chain (per-tab save isolation).
+  // Per-section saves (the ride-along protection). The chains save writes the
+  // DRAFT chain list — the only shape that can express an added or deleted
+  // chain — while every OTHER existing chain keeps its ACCEPTED content, so a
+  // sibling tab's unsaved edits are never ridden along. A chain with no
+  // accepted counterpart is new and persists as its draft.
+  const chainsPatch = (): NamedChain[] => {
+    const activeId = chainDrafts[activeChain]?.id
+    return chainDrafts.map((draft) => {
+      if (draft.id === activeId) return draftToChain(draft)
+      return acceptedChainOf(draft.id) ?? draftToChain(draft)
+    })
+  }
   const saveSection = (section: 'chains' | 'sub' | 'advanced'): void => {
     if (section === 'chains') {
       if (activeErrors.length > 0) return
       setLastSaveSection('chains')
       setLastSaveChain(activeChain)
-      void controller.save({
-        ...state.config,
-        chains: state.config.chains.map((chain, index) => index === activeChain ? chains[index]! : chain),
-      })
+      void controller.save({ ...state.config, chains: chainsPatch() })
       return
     }
     if (section === 'sub') {
@@ -1068,10 +1091,18 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
     })
   }
   const discardChain = (): void => {
-    const catalog = catalogOf(state)
-    setChainDrafts(drafts => drafts.map((draft, index) => index === activeChain
-      ? (chainsToDrafts(state.config.chains, catalog)[index] ?? draft)
-      : draft))
+    const activeId = chainDrafts[activeChain]?.id
+    if (activeId === undefined) return
+    const accepted = acceptedChainOf(activeId)
+    if (accepted === undefined) {
+      // A chain with no accepted counterpart has nothing to revert TO:
+      // discarding it removes the pending row.
+      setChainDrafts(drafts => drafts.filter((_, index) => index !== activeChain))
+      setActiveChain(index => Math.max(0, index - 1))
+      return
+    }
+    const reverted = chainsToDrafts([accepted], catalogOf(state))[0]!
+    setChainDrafts(drafts => drafts.map((draft, index) => index === activeChain ? reverted : draft))
   }
   const discardSection = (section: 'sub' | 'advanced'): void => {
     if (section === 'sub') {
