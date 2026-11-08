@@ -1250,3 +1250,187 @@ select.input {
     transition: none;
   }
 }
+
+/* ============================================================
+   Chain tabs (named virtual chains, the frozen mockup): underline
+   tabs on the 0.5px l2 hairline, active label label-primary +
+   2px brand underline, dirty pip, error "!" mark, "+" add, "⋯"
+   menu, horizontal overflow with edge fades. Every color is a
+   --dsw-alias-* token (light/dark parity).
+   ============================================================ */
+.tabsWrap {
+  position: relative;
+  border-bottom: 0.5px solid var(--dsw-alias-border-l2);
+  max-width: 720px;
+}
+
+.tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding: 0 2px;
+}
+.tabs::-webkit-scrollbar { display: none; }
+
+.tab {
+  appearance: none;
+  border: none;
+  background: none;
+  font: inherit;
+  color: var(--dsw-alias-label-secondary);
+  padding: 6px 10px;
+  cursor: pointer;
+  position: relative;
+  white-space: nowrap;
+  border-radius: 6px 6px 0 0;
+}
+.tab:hover { background: var(--dsw-alias-interactive-bg-hover); }
+.tab[aria-selected='true'] {
+  color: var(--dsw-alias-label-primary);
+  font-weight: 600;
+}
+.tab[aria-selected='true']::after {
+  content: '';
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  bottom: -1px;
+  height: 2px;
+  border-radius: 2px 2px 0 0;
+  background: var(--dsw-alias-brand-primary);
+}
+.tab:focus-visible {
+  outline: 2px solid var(--dsw-alias-brand-primary);
+  outline-offset: 1px;
+}
+
+.dirtyPip {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-left: 4px;
+  border-radius: 50%;
+  background: var(--dsw-alias-state-warn-primary);
+  vertical-align: middle;
+}
+
+.errorMark {
+  display: inline-block;
+  margin-left: 4px;
+  color: var(--dsw-alias-state-error-primary);
+  font-weight: 700;
+  vertical-align: middle;
+}
+
+.tabAdd {
+  appearance: none;
+  border: none;
+  background: none;
+  font: inherit;
+  color: var(--dsw-alias-label-tertiary);
+  padding: 6px 8px;
+  cursor: pointer;
+  border-radius: 6px;
+}
+.tabAdd:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); }
+.tabAdd:disabled { color: var(--dsw-alias-label-dimmed); cursor: default; }
+.tabAdd:focus-visible {
+  outline: 2px solid var(--dsw-alias-brand-primary);
+  outline-offset: 1px;
+}
+
+.tabMenu { position: relative; display: inline-flex; }
+
+.menuBtn {
+  appearance: none;
+  border: none;
+  background: none;
+  font: inherit;
+  color: var(--dsw-alias-label-tertiary);
+  padding: 6px 8px;
+  cursor: pointer;
+  border-radius: 6px;
+}
+.menuBtn:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); }
+.menuBtn:disabled { color: var(--dsw-alias-label-dimmed); cursor: default; }
+
+.menuPanel {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 20;
+  min-width: 240px;
+  background: var(--dsw-alias-bg-layer-3);
+  border: 0.5px solid var(--dsw-alias-border-l3);
+  border-radius: var(--dsw-radius-md, 8px);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  padding: 10px;
+  display: grid;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.menuInput { width: 100%; }
+
+.menuActions { display: flex; justify-content: flex-end; }
+
+.menuItemDanger {
+  appearance: none;
+  border: none;
+  background: none;
+  font: inherit;
+  color: var(--dsw-alias-state-error-primary);
+  text-align: left;
+  padding: 6px 4px;
+  cursor: pointer;
+  border-radius: 6px;
+}
+.menuItemDanger:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover-danger); }
+.menuItemDanger:disabled { color: var(--dsw-alias-label-dimmed); cursor: default; }
+
+.fadeL,
+.fadeR {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 24px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.fadeL { left: 0; background: linear-gradient(to right, var(--dsw-alias-bg-layer-1), transparent); }
+.fadeR { right: 0; background: linear-gradient(to left, var(--dsw-alias-bg-layer-1), transparent); }
+.tabsWrap:has([data-tablist][data-scroll-left='1']) .fadeL,
+.tabsWrap:has([data-tablist][data-scroll-right='1']) .fadeR { opacity: 1; }
+
+.emptyState {
+  border: 0.5px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-md, 8px);
+  padding: 24px;
+  margin: 12px 0;
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+  color: var(--dsw-alias-label-secondary);
+}
+.emptyState strong { color: var(--dsw-alias-label-primary); }
+
+.chainBody { min-width: 0; }
+
+.chainFoot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 0;
+  border-top: 0.5px solid var(--dsw-alias-border-l2);
+  flex-wrap: wrap;
+}
+
+.chainFootHint {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  margin-left: auto;
+}

@@ -31,24 +31,21 @@
 // api-session-controller types, `SettingsNamespaceView`/`SettingsDescribeValue`
 // → dsh-settings types, `LlmConfigurableProvider` → dsh-llm types).
 import type {
-  LlmConfigurableProvider, ModelCatalog, ModelProviderGroup, SessionFollowFrame,
-  SessionFollowRequest, SessionId, SettingsDescribeValue, SettingsNamespaceView,
+  LlmConfigurableProvider, ModelCatalog, ModelProviderGroup, SessionId,
+  SettingsDescribeValue, SettingsNamespaceView,
 } from '@deepseek-ai/dsh-api-remotes/client'
-import type { SessionEventLikeEntry } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { ClientConnectionRpc } from '@deepseek-ai/dsh-client-connection/client'
 import {
   createSnapshotStore, type SnapshotStore,
 } from '@deepseek-ai/dsh-client-store'
 import type { RemoteResult } from '@deepseek-ai/dsh-typert-protocol'
 import {
-  defaultFallbacksConfig, INHERIT_ROLE_ID, isFallbackActive,
-  type FallbackStrategy, type FallbacksConfig, type FallbacksRole,
-  type FallbacksRoleRule, type FallbacksRoles,
+  defaultFallbacksConfig, isFallbackActive,
+  type FallbacksConfig, type FallbacksRole, type NamedChain,
 } from '../config.ts'
 // Type-only — `src/time-slots.ts` is a pure module (no `@deepseek-ai/*`
 // runtime imports), so the row types stay out of the client runtime graph.
 import type { PresetId, SlotRowConfig } from '../time-slots.ts'
-import type { FallbacksSwitchEventData } from '../events.ts'
 import { parseSelector } from '../selectors.ts'
 // Type-only — `src/seeds.ts` carries no `@deepseek-ai/*` value imports, so
 // this stays out of the client bundle (purity gate).
@@ -57,35 +54,15 @@ import type { SeedsWireStatus } from '../seeds.ts'
 /** The plugin's settings namespace on the host wire (settings/document-updated ns filter). */
 export const FALLBACKS_SETTINGS_NS = 'fallbacks'
 
-/** Single-page history read for the status block (spec §2.5 D-5: `HISTORY_PAGE_MESSAGES`-sized). */
-export const SWITCHES_HISTORY_PAGE = 50
-
-/** How many recent switches the status block renders (spec §2.5 D-5: N=5). */
-export const RECENT_SWITCH_LIMIT = 5
-
 /**
- * One recent `fallbacks/switch` event as the status block renders it: the
- * durable payload plus the raw event's ordering key and time (the payload
- * itself carries no seq/time — spec §5 table).
- */
-export interface FallbacksSwitchSnapshot extends FallbacksSwitchEventData {
-  /** Event seq within the session (newest-first ordering key). */
-  seq: number
-  /** Event time, Unix epoch milliseconds. */
-  time: number
-}
-
-/**
- * The status block's derived "current effective model" (spec §2.5 D-6) — a
- * **display value** derived from configuration + recent switches, never a
- * live route probe.
+ * The per-chain "current effective model" (named virtual chains §4) — a
+ * **display value** derived from one chain's entries, never a live route
+ * probe.
  */
 export type EffectiveModelView =
-  /** ① An inactive config (nothing configured) or an empty rootChain. */
+  /** ① An inactive config (no chains) or an empty entries list. */
   | { kind: 'unavailable' }
-  /** ② The most recent switch's target (`to`). */
-  | { kind: 'switched'; provider: string; model: string }
-  /** ③ No switches yet: the config's primary target (first chain entry). */
+  /** ② The chain's first entry (the dispatch head). */
   | { kind: 'config'; provider: string; model: string }
 
 /** Fallbacks settings-row snapshot. */
@@ -137,18 +114,8 @@ export interface FallbacksSettingsState {
   groups: readonly ModelProviderGroup[]
   /** Bumped on every accepted catalog read; drives row re-classification. */
   catalogEpoch: number
-  /** Recent-switch summary (spec §2.4 R-4a / §2.5 D-5). */
-  switchesStatus: 'idle' | 'loading' | 'ready' | 'error'
-  /** Switch-read diagnostic (wire message); null when none. */
-  switchesError: string | null
-  /** Most recent `fallbacks/switch` events of the current session, newest first. */
-  switches: FallbacksSwitchSnapshot[]
-  /**
-   * Host subagent-model-selection policy (spec D4 / T5). `undefined` when
-   * the gateway omitted the additive field (old payload / policy off) —
-   * the card hides the status area and never renders an active allowlist.
-   */
-  subagentPolicy: SubagentPolicyView | undefined
+  /** Current session id the conversation switch strip follows. */
+  currentSession: SessionId | undefined
 }
 
 function messageOf(error: unknown): string {
@@ -207,78 +174,6 @@ function parseSeedsWire(value: unknown): SeedsWireStatus[] {
   return entries
 }
 
-/** Source label of the effective subagent chain head (spec D4). */
-export type SubagentPolicyHeadSource = 'authorized' | 'injected'
-
-/** One exact route on the additive `subagentPolicy` wire field. */
-export type SubagentPolicyRoute = { provider: string; model: string }
-
-/**
- * Client-side view of the additive host-policy payload. Structural twin of
- * the gateway wire type — parsed from unknown, never imported from host
- * modules (`src/client/**` consumes policy only via the gateway channel).
- */
-export type SubagentPolicyView =
-  | {
-      state: 'enabled'
-      allowedModels: SubagentPolicyRoute[]
-      head?: { route: SubagentPolicyRoute; source: SubagentPolicyHeadSource }
-      blockedAttempt?: { at: number; route: SubagentPolicyRoute; reason: string }
-    }
-  | { state: 'disabled' }
-  | { state: 'unprovable' }
-
-function parsePolicyRoute(value: unknown): SubagentPolicyRoute | undefined {
-  if (!isRecord(value)) return undefined
-  if (typeof value.provider !== 'string' || value.provider.length === 0) return undefined
-  if (typeof value.model !== 'string' || value.model.length === 0) return undefined
-  return { provider: value.provider, model: value.model }
-}
-
-/**
- * Shape-guard the additive `subagentPolicy` wire field (T5). Malformed
- * payloads resolve to `undefined` (hide the status area) — the store never
- * throws on an old or misshapen field (old-payload tolerance).
- */
-export function parseSubagentPolicyWire(value: unknown): SubagentPolicyView | undefined {
-  if (!isRecord(value) || typeof value.state !== 'string') return undefined
-  if (value.state === 'disabled' || value.state === 'unprovable') {
-    return { state: value.state }
-  }
-  if (value.state !== 'enabled') return undefined
-  if (!Array.isArray(value.allowedModels)) return undefined
-  const allowedModels: SubagentPolicyRoute[] = []
-  for (const entry of value.allowedModels) {
-    const route = parsePolicyRoute(entry)
-    if (route === undefined) return undefined
-    allowedModels.push(route)
-  }
-  const view: Extract<SubagentPolicyView, { state: 'enabled' }> = {
-    state: 'enabled',
-    allowedModels,
-  }
-  if (isRecord(value.head) && (value.head.source === 'authorized' || value.head.source === 'injected')) {
-    const route = parsePolicyRoute(value.head.route)
-    if (route !== undefined) view.head = { route, source: value.head.source }
-  }
-  if (isRecord(value.blockedAttempt) && typeof value.blockedAttempt.at === 'number') {
-    const route = parsePolicyRoute(value.blockedAttempt.route)
-    if (route !== undefined) {
-      view.blockedAttempt = {
-        at: value.blockedAttempt.at,
-        route,
-        reason: typeof value.blockedAttempt.reason === 'string' ? value.blockedAttempt.reason : '',
-      }
-    }
-  }
-  return view
-}
-
-function subagentPolicyFromWire(value: unknown, fallback: SubagentPolicyView | undefined): SubagentPolicyView | undefined {
-  if (!isRecord(value) || !('subagentPolicy' in value)) return fallback
-  return parseSubagentPolicyWire(value.subagentPolicy)
-}
-
 /**
  * The provider dropdown's offer set (spec §2.5 D-4): catalog providers whose
  * settings profile resolves in the describe namespaces — the Models page's
@@ -313,9 +208,29 @@ export function parseFallbacksConfig(value: unknown): FallbacksConfig {
   if (triggerCodes !== undefined && (!Array.isArray(triggerCodes) || triggerCodes.some(code => typeof code !== 'string'))) {
     throw new TypeError('fallbacks descriptor triggerCodes must be a string array')
   }
-  const rootChain = value.rootChain
-  if (rootChain !== undefined && (!Array.isArray(rootChain) || rootChain.some(entry => typeof entry !== 'string'))) {
-    throw new TypeError('fallbacks descriptor rootChain must be a string array')
+  // Named chains (v2): { id, label, entries, timeSlots } — mechanical
+  // descriptor guard for the row shapes; the card edits them via drafts.
+  const chains = value.chains
+  if (chains !== undefined && (!Array.isArray(chains) || chains.some((chain) => {
+    if (!isRecord(chain)) return true
+    if (typeof chain.id !== 'string' || typeof chain.label !== 'string') return true
+    const entries = chain.entries
+    if (entries !== undefined && (!Array.isArray(entries) || entries.some(entry => typeof entry !== 'string'))) return true
+    const slots = chain.timeSlots
+    if (slots !== undefined && (!Array.isArray(slots) || slots.some((row) => {
+      if (!isRecord(row)) return true
+      for (const field of ['kind', 'preset', 'start', 'end'] as const) {
+        if (row[field] !== undefined && typeof row[field] !== 'string') return true
+      }
+      const rowChain = row.chain
+      if (rowChain !== undefined && (!Array.isArray(rowChain) || rowChain.some(entry => typeof entry !== 'string'))) return true
+      const days = row.days
+      if (days !== undefined && (!Array.isArray(days) || days.some(day => typeof day !== 'number'))) return true
+      return false
+    }))) return true
+    return false
+  }))) {
+    throw new TypeError('fallbacks descriptor chains must be an array of named chains ({ id, label, entries, timeSlots })')
   }
   const roles = isRecord(value.roles) ? value.roles : {}
   const list = Array.isArray(roles.list) ? roles.list : []
@@ -339,48 +254,19 @@ export function parseFallbacksConfig(value: unknown): FallbacksConfig {
       || (permissions.deny !== undefined && (!Array.isArray(permissions.deny) || permissions.deny.some(item => typeof item !== 'string'))))) {
       throw new TypeError(`fallbacks descriptor roles.list[${String(index)}].permissions must be an allow/deny string-array object`)
     }
+    // v2: `chain` is a single named-chain POINTER (string); a v1 ARRAY value
+    // is stripped by the gateway and never reaches here, but a defensive
+    // guard keeps the type honest.
     const chain = role.chain
-    if (chain !== undefined && (!Array.isArray(chain) || chain.some(entry => typeof entry !== 'string'))) {
-      throw new TypeError(`fallbacks descriptor roles.list[${String(index)}].chain must be a string array`)
-    }
-    const fallback = role.fallback
-    if (fallback !== undefined && fallback !== 'inherit-root' && fallback !== 'none') {
-      throw new TypeError(`fallbacks descriptor roles.list[${String(index)}].fallback must be inherit-root|none`)
+    if (chain !== undefined && chain !== null && typeof chain !== 'string') {
+      throw new TypeError(`fallbacks descriptor roles.list[${String(index)}].chain must be a string pointer`)
     }
     return {
       id: role.id,
       persona: persona ?? '',
       ...(prompt === undefined ? {} : { prompt }),
       ...(permissions === undefined ? {} : { permissions }),
-      chain: (chain as string[] | undefined) ?? [],
-      fallback: (fallback as FallbackStrategy | undefined) ?? 'inherit-root',
-    }
-  })
-  const rules = Array.isArray(roles.rules) ? roles.rules : []
-  const parsedRules: FallbacksRoleRule[] = rules.map((rule, index) => {
-    if (!isRecord(rule) || typeof rule.role !== 'string') {
-      throw new TypeError(`fallbacks descriptor roles.rules[${String(index)}] must have a string role`)
-    }
-    // Legacy wire field (PR #62 feedback): accepted for config
-    // compatibility (pre-feedback settings.yaml may carry it) but ignored
-    // at match time — rules are subagent-only.
-    const origin = rule.origin
-    if (origin !== undefined && origin !== 'root' && origin !== 'subagent') {
-      throw new TypeError(`fallbacks descriptor roles.rules[${String(index)}].origin must be root|subagent`)
-    }
-    const provider = rule.provider
-    const model = rule.model
-    if (provider !== undefined && typeof provider !== 'string') {
-      throw new TypeError(`fallbacks descriptor roles.rules[${String(index)}].provider must be a string`)
-    }
-    if (model !== undefined && typeof model !== 'string') {
-      throw new TypeError(`fallbacks descriptor roles.rules[${String(index)}].model must be a string`)
-    }
-    return {
-      ...(origin === undefined ? {} : { origin }),
-      ...(provider === undefined ? {} : { provider }),
-      ...(model === undefined ? {} : { model }),
-      role: rule.role,
+      ...(chain === undefined || chain === null || chain === '' ? {} : { chain }),
     }
   })
   const cooldownMs = value.cooldownMs
@@ -398,64 +284,23 @@ export function parseFallbacksConfig(value: unknown): FallbacksConfig {
   if (presets !== undefined && presets !== 'bundled' && presets !== 'none') {
     throw new TypeError('fallbacks descriptor presets must be bundled|none')
   }
-  // P5 mirror: the host schema gained `timeSlots` (11th field) — mechanical
-  // descriptor guard for the row shape; the card edits rows in Task 3.
-  const timeSlots = value.timeSlots
-  if (timeSlots !== undefined && (!Array.isArray(timeSlots) || timeSlots.some((row) => {
-    if (!isRecord(row)) return true
-    for (const field of ['kind', 'preset', 'start', 'end'] as const) {
-      if (row[field] !== undefined && typeof row[field] !== 'string') return true
-    }
-    const chain = row.chain
-    if (chain !== undefined && (!Array.isArray(chain) || chain.some(entry => typeof entry !== 'string'))) return true
-    const days = row.days
-    if (days !== undefined && (!Array.isArray(days) || days.some(day => typeof day !== 'number'))) return true
-    return false
-  }))) {
-    throw new TypeError('fallbacks descriptor timeSlots must be an array of slot rows (kind/preset/start/end strings, chain string array, days number array)')
-  }
-  // P5 mirror: the host schema gained `tz` (12th field).
   const tz = value.tz
   if (tz !== undefined && typeof tz !== 'string') {
     throw new TypeError('fallbacks descriptor tz must be a string')
   }
-  // P1 mirror: the host schema gained `recovery` (13th field) — mechanical
-  // descriptor guard mirroring `revertPolicy`/`presets`.
   const recovery = value.recovery
   if (recovery !== undefined && recovery !== 'timer' && recovery !== 'half-open') {
     throw new TypeError('fallbacks descriptor recovery must be timer|half-open')
   }
   return {
     triggerCodes: (triggerCodes as string[] | undefined) ?? [...defaultFallbacksConfig.triggerCodes],
-    rootChain: (rootChain as string[] | undefined) ?? [...defaultFallbacksConfig.rootChain],
-    roles: {
-      list: parsedList,
-      rules: parsedRules,
-    },
-    // The field-level guards above narrowed the raw values only inside the
-    // loop; the fallback merge re-narrows each field for the return type.
+    chains: (chains as NamedChain[] | undefined) ?? defaultFallbacksConfig.chains.map((chain) => ({ ...chain, timeSlots: [...(chain.timeSlots ?? [])] })),
+    roles: { list: parsedList },
     cooldownMs: (cooldownMs as number | undefined) ?? defaultFallbacksConfig.cooldownMs,
     revertPolicy: (revertPolicy as FallbacksConfig['revertPolicy'] | undefined) ?? defaultFallbacksConfig.revertPolicy,
     maxSwitchesPerStep: (maxSwitchesPerStep as number | undefined) ?? defaultFallbacksConfig.maxSwitchesPerStep,
-    // §9.4 mirror: the host default gained `presets` (9th field), so the
-    // client fold mirrors it too — `parseFallbacksConfig` output must stay
-    // equal to `defaultFallbacksConfig` (pinned invariant). Mechanical
-    // mirror of `revertPolicy`; the settings card neither consumes nor
-    // renders `presets` (R-001 re-defer — no client feature change).
     presets: (presets as FallbacksConfig['presets'] | undefined) ?? defaultFallbacksConfig.presets,
-    // P5 mirror: the host default gained `timeSlots` (10th field), so the
-    // client fold mirrors it too — `parseFallbacksConfig` output must stay
-    // equal to `defaultFallbacksConfig` (pinned invariant). Mechanical
-    // mirror of `triggerCodes`; the settings card edits rows in Task 3.
-    timeSlots: (timeSlots as SlotRowConfig[] | undefined) ?? [...(defaultFallbacksConfig.timeSlots ?? [])],
-    // P5 mirror: the host default gained `tz` (11th field), so the client
-    // fold mirrors it too — mechanical mirror of `presets`.
     tz: (tz as FallbacksConfig['tz'] | undefined) ?? defaultFallbacksConfig.tz,
-    // P1 mirror: the host default gained `recovery` (12th field), so the
-    // client fold mirrors it too — `parseFallbacksConfig` output must stay
-    // equal to `defaultFallbacksConfig` (pinned invariant). Mechanical
-    // mirror of `presets`; the settings card neither consumes nor renders
-    // `recovery` (YAML-only, plan fallbacks-half-open-recovery).
     recovery: (recovery as FallbacksConfig['recovery'] | undefined) ?? defaultFallbacksConfig.recovery,
   }
 }
@@ -508,73 +353,22 @@ export function classifyModel(provider: string, raw: string, catalog: CatalogLoo
 }
 
 /**
- * Extract the most recent `fallbacks/switch` events from one history page
- * (spec §2.5 D-5): drop packed chunk runs, filter by event type, order by
- * `seq` descending, take at most `limit`. Single-page read — fewer than
- * `limit` events show as-is; no multi-page backfill (Non-Goal).
+ * Derive the per-chain "current effective model" (named virtual chains §4):
+ * an inactive config (no chains) or empty entries → unavailable; otherwise
+ * the chain's first entry (the dispatch head). A **display value** — never a
+ * live route probe.
  */
-export function extractRecentSwitches(
-  entries: readonly SessionEventLikeEntry[],
-  limit: number = RECENT_SWITCH_LIMIT,
-): FallbacksSwitchSnapshot[] {
-  const switches: FallbacksSwitchSnapshot[] = []
-  for (const entry of entries) {
-    // Host history pages interleave packed Assistant chunk runs
-    // (`type: 'chunks'`) with scalar events; only the scalar face is read.
-    if (entry.type !== 'event') continue
-    const event = entry.event
-    if (event.type !== 'fallbacks/switch') continue
-    // The discriminated union narrows `event.data` to FallbacksSwitchEventData
-    // after the type check (src/events.ts SessionEventMap augmentation).
-    switches.push({ ...event.data, seq: event.seq, time: event.time })
-  }
-  switches.sort((a, b) => b.seq - a.seq)
-  return switches.slice(0, limit)
-}
-
-/** The config's primary target: the rootChain's first entry (spec §2.5 D-6 ③). */
-function configPrimaryTarget(config: FallbacksConfig): { provider: string; model: string } | null {
-  const firstEntry = config.rootChain[0]
-  if (firstEntry === undefined) return null
+export function deriveEffectiveModel(chain: NamedChain | undefined): EffectiveModelView {
+  const firstEntry = chain?.entries[0]
+  if (firstEntry === undefined) return { kind: 'unavailable' }
   try {
     const selector = parseSelector(firstEntry)
-    return { provider: selector.provider, model: selector.model ?? '*' }
+    return { kind: 'config', provider: selector.provider, model: selector.model ?? '*' }
   } catch {
     // A malformed entry (not `provider/model`): show it verbatim rather
     // than mis-parsing it into a plausible-looking route.
-    return { provider: firstEntry, model: '*' }
+    return { kind: 'config', provider: firstEntry, model: '*' }
   }
-}
-
-/**
- * Derive the "current effective model" (spec §2.5 D-6): ① inactive (nothing
- * configured — the removed `enabled` switch re-keyed to `isFallbackActive`)
- * / empty rootChain → unavailable; ② a recent switch exists → the latest
- * one's `to`; ③ otherwise → the config's primary target. A **display
- * value** — never a live route probe.
- *
- * INTENTIONAL D-6 CONTRACT RETENTION: after the AC-2 trim (plan
- * fallbacks-settings-visibility Task 2) the settings card's status block no
- * longer consumes this derivation, and no other production code imports it —
- * it is retained (NOT dead code to delete) as the spec §2.5 D-6 derived-value
- * surface, pinned by `tests/fallbacks-store.spec.ts` (D-6 display-value
- * contract). Keep both exports until the spec derivation is removed or gains
- * a real consumer.
- */
-export function deriveEffectiveModel(
-  config: FallbacksConfig,
-  switches: readonly FallbacksSwitchSnapshot[],
-): EffectiveModelView {
-  if (!isFallbackActive(config) || config.rootChain.length === 0) {
-    return { kind: 'unavailable' }
-  }
-  const latest = switches[0]
-  if (latest !== undefined) {
-    return { kind: 'switched', provider: latest.to.provider, model: latest.to.model }
-  }
-  const target = configPrimaryTarget(config)
-  if (target === null) return { kind: 'unavailable' }
-  return { kind: 'config', ...target }
 }
 
 /** One chain selector row: provider + model (or wildcard). */
@@ -596,7 +390,7 @@ export function selectorRowToRaw(row: ChainSelectorRow): string {
 }
 
 /** Parse one entry line into a selector row, classifying against the catalog. */
-function entryToSelectorRow(entry: string, catalog: CatalogLookup | undefined): ChainSelectorRow {
+export function entryToSelectorRow(entry: string, catalog: CatalogLookup | undefined): ChainSelectorRow {
   try {
     const selector = parseSelector(entry)
     return {
@@ -613,39 +407,11 @@ function entryToSelectorRow(entry: string, catalog: CatalogLookup | undefined): 
 }
 
 /**
- * One rootChain row in the editor: the root agent's single fallback chain
- * (block 1 of the two-block model) as an ordered selector list. There is no
- * key input — the row IS the chain.
- */
-export interface RootChainRow {
-  selectors: ChainSelectorRow[]
-}
-
-/** Project the rootChain entries into editable rows (one flat chain row). */
-export function rootChainToRows(rootChain: readonly string[], catalog?: CatalogLookup): RootChainRow[] {
-  return [{ selectors: rootChain.map(entry => entryToSelectorRow(entry, catalog)) }]
-}
-
-/** Rebuild the rootChain from edited rows; rows with no usable selector drop out. */
-export function rowsToRootChain(rows: readonly RootChainRow[]): string[] {
-  const entries: string[] = []
-  for (const row of rows) {
-    if (row.selectors.length === 0) continue
-    for (const selector of row.selectors) {
-      const raw = selectorRowToRaw(selector)
-      if (raw !== '') entries.push(raw)
-    }
-  }
-  return entries
-}
-
-/**
- * One extra time-slot row in the editor (plan fallbacks-timeslots Task 3):
- * preset rows freeze their windows (read-only summary, models-only edits);
- * custom rows edit start/end/days + chain. `kind` rides the wire VERBATIM —
- * a hand-written YAML row with an unknown kind reads back as a custom-shaped
- * row and serializes back unchanged, so the dirty check stays quiet (save
- * validation rejects it).
+ * One time-slot row in the editor: preset rows freeze their windows
+ * (read-only summary, models-only edits); custom rows edit start/end/days +
+ * chain. `kind` rides the wire VERBATIM — a hand-written YAML row with an
+ * unknown kind reads back as a custom-shaped row and serializes back
+ * unchanged, so the dirty check stays quiet (save validation rejects it).
  */
 export interface SlotEditorRow {
   kind: string
@@ -674,10 +440,8 @@ export function timeSlotsToRows(timeSlots: readonly SlotRowConfig[], catalog?: C
     days: [...(row.days ?? [])],
     name: row.name ?? '',
     // UI-only collapse state — never serialized (dropped by rowsToTimeSlots).
-    // PR #62 UX round 4 part C: time-slot rows default COLLAPSED like role
-    // cards (every re-seed — mount, save, catalog refresh — comes back
-    // collapsed); only a freshly ADDED row starts expanded (addPresetSlotRow
-    // / addCustomSlotRow set collapsed: false explicitly).
+    // Time-slot rows default COLLAPSED like role cards; only a freshly ADDED
+    // row starts expanded.
     collapsed: true,
     selectors: (row.chain ?? []).map(entry => entryToSelectorRow(entry, catalog)),
   }))
@@ -685,11 +449,10 @@ export function timeSlotsToRows(timeSlots: readonly SlotRowConfig[], catalog?: C
 
 /** Rebuild the time-slot rows from edited rows; blank selectors drop out.
  * `kind` rides verbatim (a hand-written unknown kind reads back unchanged;
- * save validation rejects it) — the cast asserts the trusted editor shape.
- * `days` is ALWAYS serialized ([] included): schemastery composes absent
- * array fields as `[]`, so the composed config every card load accepts
- * carries `days` on every row — the draft must too, or a clean card would
- * read back dirty. */
+ * save validation rejects it). `days` is ALWAYS serialized ([] included):
+ * schemastery composes absent array fields as `[]`, so the composed config
+ * every card load accepts carries `days` on every row — the draft must too,
+ * or a clean card would read back dirty. */
 export function rowsToTimeSlots(rows: readonly SlotEditorRow[]): SlotRowConfig[] {
   return rows.map(row => {
     const chain = row.selectors.map(selectorRowToRaw).filter(entry => entry !== '')
@@ -709,6 +472,53 @@ export function rowsToTimeSlots(rows: readonly SlotEditorRow[]): SlotRowConfig[]
 }
 
 /**
+ * One named-chain draft in the editor (named virtual chains): the chain's
+ * id (immutable once created), display label, 默认降级链 selector rows, and
+ * its 分时 slot rows. `label`/entries/slots are editable; the id is not.
+ */
+export interface ChainDraft {
+  id: string
+  label: string
+  selectors: ChainSelectorRow[]
+  slots: SlotEditorRow[]
+}
+
+/** Project the named chains into editable drafts (selectors classified). */
+export function chainsToDrafts(chains: readonly NamedChain[], catalog?: CatalogLookup): ChainDraft[] {
+  return chains.map(chain => ({
+    id: chain.id,
+    label: chain.label,
+    selectors: chain.entries.map(entry => entryToSelectorRow(entry, catalog)),
+    slots: timeSlotsToRows(chain.timeSlots ?? [], catalog),
+  }))
+}
+
+/** Generate a fresh unique chain id for the card's `+` affordance. */
+export function newChainId(existing: readonly NamedChain[]): string {
+  let index = existing.length + 1
+  let id = `chain-${index}`
+  while (existing.some(chain => chain.id === id)) {
+    index += 1
+    id = `chain-${index}`
+  }
+  return id
+}
+
+/** Rebuild one named chain from its draft; blank selectors drop out. */
+export function draftToChain(draft: ChainDraft): NamedChain {
+  return {
+    id: draft.id,
+    label: draft.label,
+    entries: draft.selectors.map(selectorRowToRaw).filter(entry => entry !== ''),
+    timeSlots: rowsToTimeSlots(draft.slots),
+  }
+}
+
+export function chainToChainDraftOf(chain: NamedChain, catalog?: CatalogLookup): ChainDraft {
+  return chainsToDrafts([chain], catalog)[0]!
+}
+
+/**
  * One declared-role row in the editor (block 2 `roles.list`): identity
  * fields + the role's own chain selector list + its append strategy.
  * `prompt`/`permissions` are schema-reserved for the next iteration
@@ -717,43 +527,36 @@ export function rowsToTimeSlots(rows: readonly SlotEditorRow[]): SlotRowConfig[]
 export interface RoleRow {
   id: string
   persona: string
-  selectors: ChainSelectorRow[]
-  fallback: FallbackStrategy
+  /** The MANUALLY specified named-chain POINTER (「指定降级链」); '' = NOT SPECIFIED. */
+  chain: string
   /** UI-only collapse state — never serialized (dropped by rowsToRoles). */
   collapsed: boolean
   /**
-   * UI-only seeded-persona brief disclosure (plan role-card-seeded-ux) —
-   * never serialized (dropped by rowsToRoles). Only seeded rows render the
-   * affordance (a read-only single-line brief + the expandable full text);
-   * ordinary rows ignore the flag.
+   * UI-only seeded-persona brief disclosure — never serialized (dropped by
+   * rowsToRoles). Only seeded rows render the affordance; ordinary rows
+   * ignore the flag.
    */
   personaOpen: boolean
 }
 
-/** Project the declared roles into editable rows (chain selectors classified). */
-export function rolesToRows(roles: readonly FallbacksRole[], catalog?: CatalogLookup): RoleRow[] {
+/** Project the declared roles into editable rows (chain pointer kept verbatim). */
+export function rolesToRows(roles: readonly FallbacksRole[]): RoleRow[] {
   return roles.map(role => ({
     id: role.id,
     persona: role.persona,
-    selectors: (role.chain ?? []).map(entry => entryToSelectorRow(entry, catalog)),
-    fallback: role.fallback ?? 'inherit-root',
-    // PR #62 UX round 2: role cards default collapsed — the summary row
-    // (id + first chain model) is the quiet default; the editor opens on
-    // the header click. The flag never serializes back.
-    collapsed: true,
-    // The seeded persona brief starts collapsed too (the brief's one line
-    // is the quiet default; the full text opens on the chevron).
+    chain: role.chain ?? '',
+    // Role cards default EXPANDED (the frozen mockup renders the editor).
+    collapsed: false,
     personaOpen: false,
   }))
 }
 
-/** Rebuild the declared roles from edited rows; empty selectors drop out. */
+/** Rebuild the declared roles from edited rows; an empty pointer drops out. */
 export function rowsToRoles(rows: readonly RoleRow[]): FallbacksRole[] {
   return rows.map(row => ({
     id: row.id.trim(),
     persona: row.persona,
-    chain: row.selectors.map(selectorRowToRaw).filter(entry => entry !== ''),
-    fallback: row.fallback,
+    ...(row.chain === '' ? {} : { chain: row.chain }),
   }))
 }
 
@@ -761,11 +564,9 @@ export function rowsToRoles(rows: readonly RoleRow[]): FallbacksRole[] {
  * Rebuild the declared roles from edited rows, re-attaching the
  * schema-reserved `prompt`/`permissions` fields from the last accepted
  * config by role id — they never round-trip through rows this round, so
- * without the merge a save would silently drop them (T2 reviewer minor
- * #2). The id trim matches {@link rowsToRoles}; a row whose id matches no
- * original role (a freshly added one) keeps no extras. Key order mirrors
- * `parseFallbacksConfig` so a clean draft's JSON dirty comparison never
- * flags it.
+ * without the merge a save would silently drop them. The id trim matches
+ * {@link rowsToRoles}; a row whose id matches no original role (a freshly
+ * added one) keeps no extras.
  */
 export function mergeRoleExtras(rows: readonly RoleRow[], originalRoles: readonly FallbacksRole[]): FallbacksRole[] {
   const originalById = new Map(originalRoles.map(role => [role.id, role]))
@@ -777,74 +578,18 @@ export function mergeRoleExtras(rows: readonly RoleRow[], originalRoles: readonl
       persona: role.persona,
       ...(original.prompt === undefined ? {} : { prompt: original.prompt }),
       ...(original.permissions === undefined ? {} : { permissions: original.permissions }),
-      chain: role.chain,
-      fallback: role.fallback,
+      ...(role.chain === undefined ? {} : { chain: role.chain }),
     }
   })
 }
 
 /**
- * The `roles.rules` role dropdown's offer set — the ONLY data source for the
- * rule rows' role selector: the built-in `'inherit'` target plus every
- * declared `roles.list` id, in declaration order (a role added/removed on
- * the same page is reflected immediately).
+ * The 「指定降级链」 dropdown's offer set: the NOT-SPECIFIED empty value plus
+ * every declared chain, in declaration order (option label rendered by the
+ * card as `<label>（FallbacksChain/<id>）`).
  */
-export function ruleRoleOptions(roles: Pick<FallbacksRoles, 'list'>): string[] {
-  // Canonical ids only, deduplicated (qc3 F-3): ids are trimmed exactly like
-  // rowsToRoles/rowsToRules rebuild them, and mid-edit duplicate ids must not
-  // render duplicate <option> entries (React key collision) — the dropdown
-  // offers each declared id once; save-time validation still blocks the
-  // duplicate draft.
-  return [INHERIT_ROLE_ID, ...new Set(roles.list.map(role => role.id.trim()))]
-}
-
-/**
- * Client-side legacy fallback detection (spec §9). The gateway's
- * `legacyKeys` wire field is authoritative for the migration banner; this is
- * a defensive fallback for configs that already passed wire normalization
- * yet still carry a `roles.rules` reference to an undeclared role id — the
- * only two-block-era leftover that can survive the wire (the removed
- * `chains`/`roles.default` keys never ride it).
- */
-export function detectLegacyClientKeys(config: FallbacksConfig): string[] {
-  const declared = new Set(config.roles.list.map(role => role.id))
-  const keys: string[] = []
-  for (const rule of config.roles.rules) {
-    if (rule.role !== INHERIT_ROLE_ID && !declared.has(rule.role)) {
-      keys.push(`roles.rules[].role: ${rule.role}`)
-    }
-  }
-  return keys
-}
-
-/**
- * One role-rule row in the editor (PR #62 feedback: no origin control —
- * rules are subagent-only; a persisted wire `origin` is ignored).
- */
-export interface RoleRuleRow {
-  provider: CatalogSelection
-  model: CatalogSelection
-  role: string
-}
-
-/** Project the role rules into editable rows (provider/model classified). */
-export function rulesToRows(rules: readonly FallbacksRoleRule[], catalog?: CatalogLookup): RoleRuleRow[] {
-  return rules.map(rule => ({
-    provider: classifyProvider(rule.provider ?? '', catalog),
-    model: classifyModel(rule.provider ?? '', rule.model ?? '', catalog),
-    role: rule.role,
-  }))
-}
-
-/** Rebuild the role rules from edited rows; empty provider/model drop out. */
-export function rowsToRules(rows: readonly RoleRuleRow[]): FallbacksRoleRule[] {
-  return rows
-    .map(row => ({
-      ...(row.provider === null ? {} : { provider: selectionToRaw(row.provider) }),
-      ...(row.model === null ? {} : { model: selectionToRaw(row.model) }),
-      role: row.role.trim(),
-    }))
-    .filter(rule => rule.role !== '')
+export function roleChainOptions(chains: readonly NamedChain[]): string[] {
+  return chains.map(chain => chain.id)
 }
 
 /**
@@ -872,14 +617,6 @@ export interface FallbacksLlmRemote {
 export interface FallbacksSessionRemote {
   /** Host-generation model catalog: provider groups plus per-provider failures. */
   modelCatalog(): Promise<RemoteResult<ModelCatalog>>
-  /**
-   * Live event stream for one durable session address; the opening snapshot
-   * frame carries the tail page this store reads, then the stream is
-   * cancelled (successor of the apiproxy `sessions.history` unary —
-   * `session/page` needs the follow opening frame's cursor, so a cold tail
-   * read goes through the follow opening).
-   */
-  follow(request: SessionFollowRequest, signal?: AbortSignal): AsyncIterable<SessionFollowFrame>
 }
 
 /**
@@ -912,10 +649,7 @@ export class FallbacksSettingsController {
     configuredProviders: [],
     groups: [],
     catalogEpoch: 0,
-    switchesStatus: 'idle',
-    switchesError: null,
-    switches: [],
-    subagentPolicy: undefined,
+    currentSession: undefined,
   })
 
   /** Read guard: a newer load() supersedes an older one's publish. */
@@ -927,23 +661,13 @@ export class FallbacksSettingsController {
    */
   private writeGeneration = 0
   private catalogGeneration = 0
-  private switchesGeneration = 0
   /** Every settings namespace from the last describe, keyed by ns — the configured-provider join's other input. */
   private namespaces: Map<string, SettingsNamespaceView> = new Map()
-  private currentSession: SessionId | undefined
-  /**
-   * The store's dispose signal (qc3 F-003): created alongside the store
-   * lifecycle, threaded into every `session.follow` call, aborted once in
-   * {@link dispose} — a follow opening still mid-await at plugin unload
-   * (HMR / fiber dispose, or a wedged gateway stream) is cancelled promptly
-   * instead of staying open until the mount abort or socket failure.
-   */
-  private readonly followAbort = new AbortController()
 
   /**
    * @param api - the Remote namespace faces the store reads (settings
    *   describe `writable` + namespace directory, llm provider directory,
-   *   session model catalog + follow tail page) — `ctx.remote` cast once at
+   *   session model catalog) — `ctx.remote` cast once at
    *   the mount boundary.
    * @param rpc - the connection's generic RPC caller for the host gateway
    *   channel (`/api`), injected from the connection handle.
@@ -1027,10 +751,7 @@ export class FallbacksSettingsController {
           seeds = parseSeedsWire(getResult.value.seeds)
         }
       }
-      const subagentPolicy = getResult !== undefined && getResult.ok
-        ? subagentPolicyFromWire(getResult.value, undefined)
-        : undefined
-      this.accept(config, writable, legacyKeys, seeds, subagentPolicy)
+      this.accept(config, writable, legacyKeys, seeds)
     } catch (error) {
       if (generation !== this.readGeneration) return
       if (writeGenerationAtStart !== this.writeGeneration) return
@@ -1086,98 +807,13 @@ export class FallbacksSettingsController {
   }
 
   /**
-   * Record the current session the status block reads (spec §2.5 D-5). Once
-   * the block has been read once, its summary follows session switches
-   * immediately; an idle block only records the id — the section's mount
-   * effect performs the first read.
-   * @param sessionId - the session whose history is summarized; undefined
-   *   (no current session) resolves to the empty state.
+   * Record the current session the conversation switch strip follows
+   * (switch events ride the session stream — no client history read).
    */
   setCurrentSession(sessionId: SessionId | undefined): void {
-    if (sessionId === this.currentSession) return
-    this.currentSession = sessionId
-    if (this.store.getSnapshot().switchesStatus !== 'idle') {
-      void this.loadSwitches()
-    }
-  }
-
-  /**
-   * Read the recent-switch summary for the current session (spec §2.5 D-5):
-   * one tail page (`maxMessages` = {@link SWITCHES_HISTORY_PAGE}) read from
-   * the `session/follow` opening snapshot — the host has no unary tail-page
-   * read (`session/page` needs the follow opening frame's cursor), so the
-   * stream is cancelled right after its first frame —
-   * `fallbacks/switch` events extracted newest-first capped at
-   * {@link RECENT_SWITCH_LIMIT}. No current session → honest empty ready
-   * state (no RPC); a read failure lands `switchesStatus: 'error'` and never
-   * touches the settings state (the form keeps editing/saving normally).
-   * @returns nothing; {@link store} carries success or failure.
-   */
-  async loadSwitches(): Promise<void> {
-    const generation = ++this.switchesGeneration
-    const sessionId = this.currentSession
-    if (sessionId === undefined) {
-      this.store.update((state) => {
-        state.switchesStatus = 'ready'
-        state.switchesError = null
-        state.switches = []
-      })
-      return
-    }
     this.store.update((state) => {
-      state.switchesStatus = 'loading'
-      state.switchesError = null
+      state.currentSession = sessionId
     })
-    try {
-      const frames = this.api.session.follow(
-        { address: { kind: 'session', sessionId }, maxMessages: SWITCHES_HISTORY_PAGE },
-        this.followAbort.signal,
-      )
-      const iterator = frames[Symbol.asyncIterator]()
-      let first
-      try {
-        first = await iterator.next()
-      } finally {
-        // One-shot read: cancelling after the opening snapshot propagates a
-        // stream-cancel frame through the gateway's mux client — the mux
-        // `open()` generator's `finally` sends `{ type: 'cancel', streamId }`
-        // when the consumer returns the iterator early (deepseek-harness
-        // packages/api/gateway/src/client/stream-client.ts:112-118; the
-        // worker-local carrier path delegates `return()` through `yield *`,
-        // gateway client index.ts:711-714). The store's dispose signal (qc3
-        // F-003) covers the window `return()` cannot reach — a first frame
-        // still pending at dispose: the abort fails the gateway inbox and
-        // settles the pending `next()`, closing the server-side follow
-        // registration promptly instead of at the plugin mount abort
-        // (gateway client index.ts:482-486 combines both signals when a
-        // caller signal is threaded). `return()` stays for the settled
-        // path — cheap and explicit.
-        await iterator.return?.()
-      }
-      if (generation !== this.switchesGeneration) return
-      if (first.done || first.value.type !== 'snapshot') {
-        throw new Error('session follow closed before its opening snapshot')
-      }
-      // The wire records are codec-validated SessionHistoryRecords; reading
-      // them under the client SessionEvent union is the same narrowing
-      // upstream's `historyEntries` performs (session-controller client
-      // sessions/history-records.ts).
-      const switches = extractRecentSwitches(
-        first.value.records as unknown as readonly SessionEventLikeEntry[],
-      )
-      this.store.update((state) => {
-        state.switchesStatus = 'ready'
-        state.switchesError = null
-        state.switches = switches
-      })
-    } catch (error) {
-      if (generation !== this.switchesGeneration) return
-      const wire = error as { message?: string } | null
-      this.store.update((state) => {
-        state.switchesStatus = 'error'
-        state.switchesError = typeof wire?.message === 'string' ? wire.message : messageOf(error)
-      })
-    }
   }
 
   /**
@@ -1211,31 +847,6 @@ export class FallbacksSettingsController {
   }
 
   /**
-   * Explicit "sync to host allowlist" write (plan
-   * role-chain-allowlist-visibility T2): the gateway endpoint merges the
-   * CURRENT allowlist with this plugin's exact chain routes plus the virtual
-   * `FallbacksChain/Auto` route and writes only `allowedModels`. The button
-   * click is the ONLY trigger — the store never syncs on its own.
-   * @returns true when the write landed (the card then reads the fresh
-   *   snapshot from the store); false on a refused/failed call, leaving the
-   *   last accepted state untouched. A response discarded by the write
-   *   generation guard is still a landed write — dispose() is the only
-   *   invalidator, so it must not report failure.
-   */
-  async syncAllowlist(): Promise<boolean> {
-    if (!this.store.getSnapshot().writable) return false
-    const generation = ++this.writeGeneration
-    try {
-      const result = await this.rpc.call('/api', 'fallbacks/sync-allowlist', { args: {} })
-      if (!result.ok) return false
-      if (generation === this.writeGeneration) this.acceptWire(result.value)
-      return true
-    } catch {
-      return false
-    }
-  }
-
-  /**
    * Reset to composition defaults through the gateway channel
    * (`/api/fallbacks/reset` — the fallbacks-specific third method; the host
    * clears the user layer via `settings.replace(ns, {})`, the removal path a
@@ -1265,20 +876,14 @@ export class FallbacksSettingsController {
     this.readGeneration += 1
     this.writeGeneration += 1
     this.catalogGeneration += 1
-    this.switchesGeneration += 1
     this.namespaces = new Map()
-    // qc3 F-003: the generation guard only drops settled responses; the
-    // dispose signal closes an in-flight follow stream whose opening frame
-    // has not settled (the `iterator.return()` in loadSwitches is
-    // unreachable mid-await).
-    this.followAbort.abort()
   }
 
   /**
-   * Unpack one write response (set / reset / sync-allowlist) into the store
-   * snapshot. The additive fields (legacyKeys §9, seeds §9.4, subagentPolicy
-   * D4) follow the W-1/F-1 rule: absent on the wire keeps the last accepted
-   * value — only a `get` may settle server truth.
+   * Unpack one write response (set / reset) into the store snapshot. The
+   * additive fields (legacyKeys §9, seeds §9.4) follow the W-1/F-1 rule:
+   * absent on the wire keeps the last accepted value — only a `get` may
+   * settle server truth.
    */
   private acceptWire(value: unknown): void {
     const config = value !== null && typeof value === 'object' && 'config' in value
@@ -1298,8 +903,7 @@ export class FallbacksSettingsController {
         seeds = parseSeedsWire(wireSeeds)
       }
     }
-    const subagentPolicy = subagentPolicyFromWire(value, this.store.getSnapshot().subagentPolicy)
-    this.accept(config, true, legacyKeys, seeds, subagentPolicy)
+    this.accept(config, true, legacyKeys, seeds)
   }
 
   /**
@@ -1323,7 +927,6 @@ export class FallbacksSettingsController {
     writable: boolean,
     legacyKeys: string[],
     seeds: SeedsWireStatus[],
-    subagentPolicy: SubagentPolicyView | undefined,
   ): void {
     const parsed = config === undefined ? undefined : parseFallbacksConfig(config)
     this.store.update((state) => {
@@ -1341,10 +944,6 @@ export class FallbacksSettingsController {
       // read that resolved no config (the badge is server truth, not a
       // client guess).
       state.seeds = parsed === undefined ? state.seeds : seeds
-      // Same honest rule for the host-policy snapshot: a get that resolved
-      // no config keeps the last accepted view; a real get settles even
-      // when the additive field is absent (`undefined` = off/old payload).
-      state.subagentPolicy = parsed === undefined ? state.subagentPolicy : subagentPolicy
       if (parsed !== undefined) {
         state.config = parsed
       }
@@ -1379,16 +978,4 @@ export function refreshFallbacksIfLoaded(controller: FallbacksSettingsController
 export function refreshCatalogIfLoaded(controller: FallbacksSettingsController): void {
   if (controller.store.getSnapshot().catalogStatus === 'idle') return
   void controller.loadCatalog()
-}
-
-/**
- * Refetch the recent-switch summary after `settings/document-updated`
- * (fallbacks ns) / `connection/reset` only when the status block has already
- * been read once
- * (the switches twin of {@link refreshFallbacksIfLoaded}).
- * @param controller - the fallbacks settings controller.
- */
-export function refreshSwitchesIfLoaded(controller: FallbacksSettingsController): void {
-  if (controller.store.getSnapshot().switchesStatus === 'idle') return
-  void controller.loadSwitches()
 }

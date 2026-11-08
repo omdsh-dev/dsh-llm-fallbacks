@@ -319,18 +319,15 @@ describe('conversation switch registration (D1 definition + D2 keyed seat)', () 
     expect(nodes[0].options.locale).toBe('fallbacks')
     expect(nodes[0].component).toBe(ConversationFallbackSwitch)
 
-    // The two settings registrations are untouched: plugin.item carries the
-    // rc.7 keyed-slot `key` alongside the list-slot `id` (pre-rc.7 hosts
-    // require options.id; the keyed loader ignores the extra id), and
-    // general.item keeps the list shape.
+    // The card registration is untouched; the General page status ROW is
+    // REMOVED (named virtual chains §4 — the settings.general.item slot
+    // carries no fallbacks entry any more).
     const cards = slotsLedger['plugins.bundle.config'] ?? []
     expect(cards).toHaveLength(1)
     expect(cards[0].options.key).toBe('dsh-llm-fallbacks')
     expect(cards[0].options.id).toBeUndefined()
     expect(cards[0].options).not.toHaveProperty('order')
-    const rows = slotsLedger['settings.general.item'] ?? []
-    expect(rows).toHaveLength(1)
-    expect(rows[0].options.id).toBe('fallbacks')
+    expect(slotsLedger['settings.general.item'] ?? []).toHaveLength(0)
 
     // The dictionary namespace registers with the en/zh pair.
     expect(locales['fallbacks']).toEqual({ zh, en })
