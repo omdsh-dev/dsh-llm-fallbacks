@@ -42,6 +42,7 @@
 
 import {
   LlmError,
+  ReasoningEffortId,
   type GenerateOptions,
   type LlmFailure,
   type LlmRuntime,
@@ -700,7 +701,16 @@ async function* walk(
       : `${candidate.provider}/${candidate.model} (skipped: ${skip})`)
     const first: Selector | undefined = surviving[0]
     if (first?.model === undefined) return { candidates: describeCandidates(annotated) }
-    return { target: { provider: first.provider, model: first.model }, candidates: describeCandidates(annotated) }
+    return {
+      target: {
+        provider: first.provider,
+        model: first.model,
+        // The entry's pinned effort is a property of THIS hop, so it travels
+        // with the target instead of leaking into the next candidate.
+        ...(first.effort === undefined ? {} : { effort: first.effort }),
+      },
+      candidates: describeCandidates(annotated),
+    }
   }
 
   // Attempt 1 is the chain head — unless cross-call memory already cooled it,
@@ -748,7 +758,17 @@ async function* walk(
     // The flag LATCHES: once committed, a later `usage` must not un-commit it.
     let committed = false
     let swallowed: { chunk: StreamChunk; code: string } | undefined
-    let attemptOptions = await adaptForTarget(options, target, modelInfoOf, deps.log.debug)
+    // §3.2 plus the entry's pinned effort: the pin REPLACES the caller's
+    // selection for this hop (before adaptation, so a route that does not list
+    // it loses the control entirely instead of silently falling back to the
+    // caller's).
+    const pinned = target.effort
+    let attemptOptions = await adaptForTarget(
+      pinned === undefined ? options : { ...options, reasoningEffort: ReasoningEffortId(pinned) },
+      target,
+      modelInfoOf,
+      deps.log.debug,
+    )
     // T2 reactive repair: controls already repaired ONCE on this candidate. A
     // repair is a request fix, not a chain switch — it books nothing and spends
     // no switch — so its only state is this per-candidate set, which makes a

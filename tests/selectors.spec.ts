@@ -111,12 +111,71 @@ describe('selectorKey', () => {
   })
 })
 
+describe('pinned reasoning effort (@effort suffix)', () => {
+  it('splits a trailing effort off the model segment', () => {
+    expect(parseSelector('openai/gpt-4o@high')).toEqual({
+      provider: 'openai',
+      model: 'gpt-4o',
+      effort: 'high',
+      raw: 'openai/gpt-4o@high',
+    })
+  })
+
+  it('omits the effort key when the entry carries none', () => {
+    // Absent, not `undefined`: an effort-free entry must round-trip to the
+    // exact wire string today's configs already carry.
+    expect('effort' in parseSelector('openai/gpt-4o')).toBe(false)
+  })
+
+  it('carries the effort on a wildcard entry', () => {
+    expect(parseSelector('openai/*@low')).toEqual({
+      provider: 'openai',
+      model: undefined,
+      effort: 'low',
+      raw: 'openai/*@low',
+    })
+  })
+
+  it('splits on the last @ after the first / (multi-slash model id)', () => {
+    expect(parseSelector('nvidia/minimaxai/minimax-m3@max')).toEqual({
+      provider: 'nvidia',
+      model: 'minimaxai/minimax-m3',
+      effort: 'max',
+      raw: 'nvidia/minimaxai/minimax-m3@max',
+    })
+  })
+
+  it('keeps a non-effort suffix inside the model id', () => {
+    // An invalid effort grammar is model text, never a parse error.
+    expect(parseSelector('a/b@Not An Effort')).toEqual({
+      provider: 'a',
+      model: 'b@Not An Effort',
+      raw: 'a/b@Not An Effort',
+    })
+    expect(parseSelector('a/b@').model).toBe('b@')
+    expect(parseSelector('a/b@High').model).toBe('b@High') // effort ids are lowercase
+  })
+
+  it('keeps the selector key effort-free', () => {
+    expect(selectorKey('openai', 'gpt-4o')).toBe('openai/gpt-4o')
+  })
+})
+
 describe('resolveWildcardEntry', () => {
   it('keeps the failing model id and swaps only the provider', () => {
     expect(resolveWildcardEntry('gpt-4o', 'anthropic')).toEqual({
       provider: 'anthropic',
       model: 'gpt-4o',
       raw: 'anthropic/gpt-4o',
+    })
+  })
+
+  it('carries the wildcard entry\'s pinned effort through', () => {
+    expect(resolveWildcardEntry('gpt-4o', 'anthropic', 'low')).toEqual({
+      provider: 'anthropic',
+      model: 'gpt-4o',
+      effort: 'low',
+      raw: 'anthropic/gpt-4o@low',
     })
   })
 })
