@@ -268,16 +268,6 @@
   color: var(--dsw-alias-label-tertiary);
 }
 
-/* A preset time-slot row's frozen name (plan fallbacks-timeslots Task 3):
-   the row's read-only identity at field-label size on the primary tone —
-   stronger than the `.hint` window summary below it. */
-.slotPresetName {
-  font-size: 14px;
-  line-height: 22px;
-  font-weight: 500;
-  color: var(--dsw-alias-label-primary);
-}
-
 /* The info mark (T3): a neutral 14px `i` glyph on the tertiary tone — no
    filled circle, so four marks on one screen read as information rather
    than four validation errors. The explanation still rides the self-drawn
@@ -558,11 +548,16 @@ select.input {
 
 /* Row editors (a chain's time-slot rows): a filled module on the page
    surface — r12 on the module-platform fill. */
+/* Compacted by plan settings-compact-slots-reasoning T3 (was 14px/16px +
+   14px gap): a slot row is a LIST ITEM, not a panel — the duplicated preset
+   block and the separate action footer are gone, so the padding only has to
+   hold one header line plus one chain list. `.roleCard` keeps its own
+   tighter metrics below. */
 .editorCard {
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  padding: 14px 16px;
+  gap: 8px;
+  padding: 10px 12px;
   border-radius: 12px;
   background: var(--dsw-alias-bg-module-platform);
 }
@@ -574,11 +569,6 @@ select.input {
 .roleCard {
   gap: 10px;
   padding: 6px 12px;
-}
-
-.cardFoot {
-  display: flex;
-  justify-content: flex-end;
 }
 
 .ruleGrid {
@@ -629,7 +619,7 @@ select.input {
 .collapseRow {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   min-width: 0;
 }
 
@@ -670,8 +660,10 @@ select.input {
      before any route detail is lost. */
   flex: 0 1 auto;
   min-width: 0;
-  font-size: 12px;
-  line-height: 18px;
+  /* 13px since T3: the opened slot body no longer repeats the preset name, so
+     the header alone is the row's identity. */
+  font-size: 13px;
+  line-height: 20px;
   font-weight: 500;
   color: var(--dsw-alias-label-primary);
   overflow: hidden;
@@ -689,11 +681,13 @@ select.input {
      chevron and the three 8px gaps. */
   flex: none;
   min-width: 0;
-  max-width: 50%;
+  max-width: 56%;
   margin-left: auto;
   font-size: 12px;
   line-height: 18px;
-  color: var(--dsw-alias-label-secondary);
+  /* Tertiary: the meta carries the window now (T3), so it must read as
+     metadata — the title keeps the primary tone. */
+  color: var(--dsw-alias-label-tertiary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -841,7 +835,13 @@ select.input {
 .chainBlock {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
+}
+
+/* The chain's own add affordance trails the rows (T3): 24px so it reads as the
+   list's tail rather than as a second field — the slot add row keeps 26px. */
+.chainBlock .addButtonGhost {
+  height: 24px;
 }
 
 /* Chain selector rows (provider select + model select): each entry is ONE
@@ -1177,11 +1177,17 @@ select.input {
 }
 
 /* Time-slot row actions (move up / move down / remove): icon buttons in a
-   tight cluster, right-aligned via the editorCard's `.cardFoot`. */
+   tight cluster that rides the collapse HEADER (T3 — the separate `.cardFoot`
+   line is gone), so a collapsed row keeps them reachable at no extra height. */
 .rowActions {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 2px;
+}
+
+.rowActions > .iconButton {
+  width: 24px;
+  height: 24px;
 }
 
 /* Discard (secondary outline) + Save (solid primary) — the official
@@ -1343,6 +1349,59 @@ select.input {
 
   .chevron {
     transition: none;
+  }
+}
+
+/* Custom-slot fields (T3): 名称 / 开始 / 结束 on ONE line, so a custom row costs
+   one field row instead of three stacked ones. */
+.slotFields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 88px 88px;
+  gap: 8px;
+}
+
+.slotFields .ruleCell {
+  min-width: 0;
+}
+
+/* 默认模型 panel (T3): the four legal tails as a 2-up grid — two rows of the
+   old two-radio list, carrying twice the information. The wrapper is a query
+   container so a narrow panel falls back to one column. */
+.officialHost {
+  container-type: inline-size;
+}
+
+.officialGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 2px 8px;
+}
+
+.officialGrid .optionRow {
+  min-width: 0;
+  white-space: nowrap;
+  font-size: 13px;
+  line-height: 20px;
+  padding: 5px 8px;
+}
+
+/* The wire id of one tail, right-aligned in its radio row: the label stays
+   short while the exact id (what `isAllDayConforming` compares) stays
+   visible. */
+.optionRoute {
+  margin-left: auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--dsw-alias-label-tertiary);
+  white-space: nowrap;
+}
+
+@container (max-width: 620px) {
+  .officialGrid {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 

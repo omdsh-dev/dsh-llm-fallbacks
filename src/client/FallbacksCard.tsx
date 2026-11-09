@@ -35,7 +35,7 @@ import type { LlmConfigurableProvider } from '@deepseek-ai/dsh-api-remotes/clien
 import type { InjectFace, PropsLocale, PropsRuntime, SnapshotSelectorHook } from '@deepseek-ai/dsh-client-ui-slots'
 import type { FallbacksConfig, FallbacksRole, NamedChain, RevertPolicy } from '../config.ts'
 import { CHAIN_ID_PATTERN, ROLE_ID_PATTERN, defaultFallbacksConfig } from '../config.ts'
-import { parseSelector } from '../selectors.ts'
+import { parseSelector, selectorKey } from '../selectors.ts'
 import { isOfficialAllDayId, OFFICIAL_ALL_DAY_IDS } from '../time-slots.ts'
 import {
   FallbacksSettingsController,
@@ -85,9 +85,9 @@ function collectInvalidRoleIds(rows: readonly RoleRow[]): Set<string> {
 
 // The official all-day tail set is imported from the pure `src/time-slots.ts`
 // module — the legal set is declared once and the card derives its
-// validation and the 默认模型 radio list from it. Display labels live in
-// `locales.ts` (keys parallel to OFFICIAL_ALL_DAY_IDS below).
-const ALL_DAY_LABEL_KEYS = ['allDay.flash', 'allDay.pro'] as const
+// validation and the 默认模型 radio list from it. The panel is GENERATED from
+// that tuple filtered by the configured providers (account pair first), so a
+// provider being unavailable simply removes its two rows.
 const SLOT_PRESET_IDS = ['liang-peak', 'liang-valley', 'glm-peak', 'glm-valley'] as const
 /** Custom-row day toggle order (index = weekday, 0=Sunday); display copy lives in the dictionaries. */
 const SLOT_WEEKDAYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'] as const
@@ -1227,6 +1227,38 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
   const tailError = activeErrors.includes(t('validation.allDayRequired'))
     ? t('validation.allDayRequired')
     : null
+  // The chain tail compared as a PARSED provider/model key, so a tail that
+  // pins a reasoning effort (`…@high`) still selects its radio. A malformed
+  // tail simply matches nothing (the shipped blocked-save error covers it).
+  const lastSelector = activeDraft !== undefined && activeDraft.selectors.length > 0
+    ? activeDraft.selectors[activeDraft.selectors.length - 1]
+    : undefined
+  const tailEntry = lastSelector === undefined ? undefined : selectorRowToRaw(lastSelector)
+  const tailKey = ((): string | undefined => {
+    if (tailEntry === undefined || tailEntry === '') return undefined
+    try {
+      const selector = parseSelector(tailEntry)
+      return selectorKey(selector.provider, selector.model)
+    } catch {
+      return undefined
+    }
+  })()
+  // "Show what exists": on a READY catalog only the configured providers'
+  // tails are offered (account pair first). While the catalog is unknown
+  // (loading / failed) all four stay — they are the only legal tails, and a
+  // card that cannot offer one cannot be saved either.
+  const officialProviderOf = (id: string): string => id.split('/', 1)[0]!
+  const officialTailProviderName = (id: string): string => {
+    const provider = officialProviderOf(id)
+    return state.providers.find(entry => entry.provider === provider)?.displayName ?? provider
+  }
+  const configuredProviderIds = new Set(state.configuredProviders.map(entry => entry.provider))
+  const officialTailIds = state.catalogStatus === 'ready'
+    && !['deepseek-account', 'deepseek-official'].some(provider => configuredProviderIds.has(provider))
+    ? []
+    : state.catalogStatus === 'ready'
+      ? OFFICIAL_ALL_DAY_IDS.filter(id => configuredProviderIds.has(officialProviderOf(id)))
+      : OFFICIAL_ALL_DAY_IDS
   const slotErrors = activeErrors.filter(message => message !== tailError)
 
   return (
@@ -1405,7 +1437,9 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
               <span id={`fallbacks-time-slots-${activeDraft!.id}`}>{t('timeSlots.label')}</span>
               <InfoHint label={t('timeSlots.tooltip')} disabled={!writable} />
             </span>
-            <span className={css.hint}>{t('timeSlots.hint')}</span>
+            <span className={css.hint}>
+              {t('timeSlots.hint', { tz: tzDisplayLabel(presetsPresent ? 'Asia/Shanghai' : hostTimeZone()) })}
+            </span>
             <div className={css.list}>
               {timeSlotRows.length === 0 && (
                 <span className={css.hint} data-slot-empty="">{t('timeSlots.empty')}</span>
@@ -1413,8 +1447,58 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
               {timeSlotRows.map((row, index) => {
                 const invalidWindow = invalidSlotRows.has(index)
                 const chainEmpty = row.selectors.every(selector => selectorRowToRaw(selector) === '')
-                const firstModel = row.selectors.map(selectorRowToRaw).find(entry => entry !== '')
                 const slotExpanded = !row.collapsed || !writable
+                // The collapsed row IS the slot's identity: a preset prints its
+                // short window (the panel below no longer repeats it), a custom
+                // row prints its normalized window + weekday span.
+                const slotMeta = row.kind === 'preset'
+                  ? t(`timeSlots.preset.${row.preset}.meta` as FallbacksKey)
+                  : t('timeSlots.customMeta', {
+                    start: row.start,
+                    end: row.end,
+                    days: row.days.length === 0
+                      ? t('timeSlots.days.every')
+                      : SLOT_WEEKDAYS
+                        .filter((_, dayIndex) => row.days.includes(dayIndex))
+                        .map(day => t(`timeSlots.day.${day}` as FallbacksKey))
+                        .join('、'),
+                  })
+                // Row actions ride the header (the whole .cardFoot row is gone):
+                // they stay reachable on a collapsed row and cost no extra line.
+                const rowActions = (
+                  <div className={css.rowActions}>
+                    <button
+                      type="button"
+                      className={css.iconButton}
+                      data-tip={t('timeSlots.moveUp')}
+                      aria-label={t('timeSlots.moveUp')}
+                      disabled={!writable || index === 0}
+                      onClick={() => { moveTimeSlotRow(index, -1) }}
+                    >
+                      <ChevronDownIcon className={css.chevronFlip} />
+                    </button>
+                    <button
+                      type="button"
+                      className={css.iconButton}
+                      data-tip={t('timeSlots.moveDown')}
+                      aria-label={t('timeSlots.moveDown')}
+                      disabled={!writable || index === timeSlotRows.length - 1}
+                      onClick={() => { moveTimeSlotRow(index, 1) }}
+                    >
+                      <ChevronDownIcon />
+                    </button>
+                    <button
+                      type="button"
+                      className={`${css.iconButton} ${css.iconButtonDanger}`}
+                      data-tip={t('timeSlots.remove')}
+                      aria-label={t('timeSlots.remove')}
+                      disabled={!writable}
+                      onClick={() => { removeTimeSlotRow(index) }}
+                    >
+                      <TrashIcon />
+                    </button>
+                  </div>
+                )
                 return (
                 <div
                   key={index}
@@ -1458,10 +1542,9 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                       {activeSlotIndex === index && (
                         <span className={`${css.slotTag} ${css.slotTagActive}`}>{t('timeSlots.active')}</span>
                       )}
-                      {firstModel !== undefined && (
-                        <span className={css.collapseMeta}>{firstModel}</span>
-                      )}
+                      <span className={css.collapseMeta}>{slotMeta}</span>
                     </button>
+                    {rowActions}
                     <button
                       type="button"
                       className={css.dragHandle}
@@ -1482,46 +1565,26 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                   {slotExpanded && (
                   <>
                   {row.kind === 'preset' ? (
-                    <>
-                      <div className={css.ruleGrid}>
-                        <div className={css.ruleCell}>
-                          <span className={css.ruleCellLabel}>{t('timeSlots.preset.name')}</span>
-                          <span className={css.slotPresetName}>
-                            {t(`timeSlots.preset.${row.preset}.label` as FallbacksKey)}
-                          </span>
-                        </div>
-                        <div className={css.ruleCell}>
-                          <span className={css.ruleCellLabel}>{t('timeSlots.preset.windowLabel')}</span>
-                          <span className={css.hint}>
-                            {t(`timeSlots.preset.${row.preset}.window` as FallbacksKey)}
-                          </span>
-                        </div>
-                      </div>
-                      <span className={css.hint}>{t('timeSlots.preset.chainsOnly')}</span>
-                      {(row.preset === 'glm-peak' || row.preset === 'glm-valley') && (
-                        <span className={css.hint}>{t('timeSlots.preset.glm.note')}</span>
-                      )}
-                    </>
+                    // The window is read-only metadata: the collapse row prints
+                    // it (meta) and the preset id names the freeze, so the
+                    // opened body carries only the editable chain.
+                    (row.preset === 'glm-peak' || row.preset === 'glm-valley') && (
+                      <span className={css.hint}>{t('timeSlots.preset.glm.note')}</span>
+                    )
                   ) : (
                     <>
-                      <div className={css.field}>
-                        <span className={css.ruleCellLabel}>{t('timeSlots.name')}</span>
-                        <input
-                          className={css.input}
-                          value={row.name}
-                          placeholder={t('timeSlots.name')}
-                          aria-label={t('timeSlots.name')}
-                          disabled={!writable}
-                          onChange={event => { updateTimeSlotRow(index, { name: event.target.value }) }}
-                        />
-                      </div>
-                      <div className={css.field}>
-                        <span className={css.ruleCellLabel}>{t('timeSlots.tz.label')}</span>
-                        <span className={css.hint} aria-label={t('timeSlots.tz.label')}>
-                          {tzDisplayLabel(presetsPresent ? 'Asia/Shanghai' : hostTimeZone())}
-                        </span>
-                      </div>
-                      <div className={css.ruleGrid}>
+                      <div className={css.slotFields}>
+                        <label className={css.ruleCell}>
+                          <span className={css.ruleCellLabel}>{t('timeSlots.name')}</span>
+                          <input
+                            className={css.input}
+                            value={row.name}
+                            placeholder={t('timeSlots.name')}
+                            aria-label={t('timeSlots.name')}
+                            disabled={!writable}
+                            onChange={event => { updateTimeSlotRow(index, { name: event.target.value }) }}
+                          />
+                        </label>
                         <label className={css.ruleCell}>
                           <span className={css.ruleCellLabel}>{t('timeSlots.start')}</span>
                           <input
@@ -1546,8 +1609,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                         </label>
                       </div>
                       <div className={css.field}>
-                        <span className={css.ruleCellLabel}>{t('timeSlots.days')}</span>
-                        <div className={css.dayRow}>
+                        <div className={css.dayRow} title={t('timeSlots.days.hint')} aria-label={t('timeSlots.days')}>
                           {SLOT_WEEKDAYS.map((day, dayIndex) => (
                             <label key={day} className={css.dayCell}>
                               <input
@@ -1566,7 +1628,6 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                             </label>
                           ))}
                         </div>
-                        <span className={css.hint}>{t('timeSlots.days.hint')}</span>
                       </div>
                       {(row.start !== '' || row.end !== '')
                         && !(HHMM_RE.test(row.start) && HHMM_RE.test(row.end)) && (
@@ -1597,39 +1658,6 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                       <PlusIcon />
                       {t('timeSlots.selector.add')}
                     </button>
-                  </div>
-                  <div className={css.cardFoot}>
-                    <div className={css.rowActions}>
-                      <button
-                        type="button"
-                        className={css.iconButton}
-                        data-tip={t('timeSlots.moveUp')}
-                        aria-label={t('timeSlots.moveUp')}
-                        disabled={!writable || index === 0}
-                        onClick={() => { moveTimeSlotRow(index, -1) }}
-                      >
-                        <ChevronDownIcon className={css.chevronFlip} />
-                      </button>
-                      <button
-                        type="button"
-                        className={css.iconButton}
-                        data-tip={t('timeSlots.moveDown')}
-                        aria-label={t('timeSlots.moveDown')}
-                        disabled={!writable || index === timeSlotRows.length - 1}
-                        onClick={() => { moveTimeSlotRow(index, 1) }}
-                      >
-                        <ChevronDownIcon />
-                      </button>
-                      <button
-                        type="button"
-                        className={`${css.iconButton} ${css.iconButtonDanger}`}
-                        data-tip={t('timeSlots.remove')}
-                        aria-label={t('timeSlots.remove')}
-                        onClick={() => { removeTimeSlotRow(index) }}
-                      >
-                        <TrashIcon />
-                      </button>
-                    </div>
                   </div>
                   </>
                   )}
@@ -1724,46 +1752,63 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
             </div>
           </div>
 
-          {/* ======== 默认模型（链尾） (per chain): the radio owns the LAST
-           * entries element — the two blocks cannot disagree. ======== */}
+          {/* 默认模型（链尾） (per chain): the radio owns the LAST entries
+           * element — the two blocks cannot disagree. The candidate list is
+           * GENERATED from the four legal ids, filtered by the configured
+           * providers (account pair first). A ready catalog that knows no
+           * official provider renders the explanation instead of a dead radio
+           * group; an unknown catalog shows all four (the ids are the only
+           * legal tails either way). */}
           <div className={`${css.field} ${css.blockField}`} role="group" aria-labelledby={`fallbacks-default-model-${activeDraft!.id}`}>
             <span className={css.blockHeading}>
               <span id={`fallbacks-default-model-${activeDraft!.id}`}>{t('defaultModel.label')}</span>
+              <InfoHint label={t('allDay.tooltip')} disabled={!writable} />
             </span>
-            <span className={css.hint}>{t('allDay.hint')}</span>
+            <span className={css.hint}>
+              {officialTailIds.length === 0
+                ? t('allDay.none')
+                : officialTailIds.length === 2
+                  ? t('allDay.only', { provider: officialTailProviderName(officialTailIds[0]!) })
+                  : t('allDay.hint')}
+            </span>
             {tailError !== null && (
               <p className={css.error} role="alert" data-tail-error="">{`${t('validation.blocked')}${tailError}`}</p>
             )}
-            <div className={css.list}>
-              {OFFICIAL_ALL_DAY_IDS.map(id => {
-                const chain = chains[activeChain]
-                const tail = chain !== undefined && chain.entries.length >= 1
-                  ? chain.entries[chain.entries.length - 1]
-                  : undefined
-                return (
-                  <label key={id} className={css.optionRow}>
-                    <input
-                      type="radio"
-                      name={`fallbacks-chain-tail-${activeDraft!.id}`}
-                      checked={tail === id}
-                      disabled={!writable}
-                      onChange={() => {
-                        patchActiveDraft(draft => {
-                          const selector = entryToSelectorRow(id, catalogOf(state))
-                          if (draft.selectors.length === 0) {
-                            return { ...draft, selectors: [selector] }
-                          }
-                          const selectors = draft.selectors.map(row => ({ ...row }))
-                          selectors[selectors.length - 1] = selector
-                          return { ...draft, selectors }
-                        })
-                      }}
-                    />
-                    {t(id === OFFICIAL_ALL_DAY_IDS[0] ? 'allDay.flash' : 'allDay.pro')}
-                  </label>
-                )
-              })}
-            </div>
+            {officialTailIds.length > 0 && (
+              <div className={`${css.list} ${css.officialHost}`}>
+                <div className={css.officialGrid}>
+                  {officialTailIds.map(id => {
+                    const [provider, model] = id.split('/', 2) as [string, string]
+                    return (
+                      <label key={id} className={css.optionRow} data-tail-option={id}>
+                        <input
+                          type="radio"
+                          name={`fallbacks-chain-tail-${activeDraft!.id}`}
+                          checked={tailKey === id}
+                          disabled={!writable}
+                          onChange={() => {
+                            patchActiveDraft(draft => {
+                              const selector = entryToSelectorRow(id, catalogOf(state))
+                              if (draft.selectors.length === 0) {
+                                return { ...draft, selectors: [selector] }
+                              }
+                              const selectors = draft.selectors.map(row => ({ ...row }))
+                              selectors[selectors.length - 1] = selector
+                              return { ...draft, selectors }
+                            })
+                          }}
+                        />
+                        <span>{t('allDay.option', {
+                          model: model === 'deepseek-flash' ? t('allDay.flash') : t('allDay.pro'),
+                          provider: provider === 'deepseek-account' ? t('allDay.account') : t('allDay.official'),
+                        })}</span>
+                        <span className={css.optionRoute}>{id}</span>
+                      </label>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Per-tab Discard/Save footer (the mockup): writes ONLY this

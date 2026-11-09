@@ -98,16 +98,15 @@ export const zh = {
   // Timezone picker lives inside expanded custom rows only; preset
   // windows stay frozen UTC+8. The label carries the UTC± cue.
   'timeSlots.label': '分时槽设置',
-  'timeSlots.hint': '自上而下第一条命中生效；全时段行固定最后',
+  'timeSlots.hint': '自上而下第一条命中生效 · 时区 {tz}',
   'timeSlots.empty': '当前链未配置分时槽：全天沿用默认降级链与默认模型。',
-  'timeSlots.tz.label': '时区（UTC±）',
   'timeSlots.drag': '拖拽排序（或使用上下按钮）',
   // PR #62 feedback round: collapsible slot rows — collapsed shows the
   // row name + its first model; custom rows carry an editable name.
   'timeSlots.name': '名称',
   'timeSlots.expand': '展开该行',
   'timeSlots.collapse': '收起该行',
-  'timeSlots.tooltip': '命中行的模型链成为 root 生效链（取代全时段链）；未命中任何行时使用全时段链。分时切换是路由种子而非失败决策：不消耗冷却、不计入单次请求行走的切换上限。',
+  'timeSlots.tooltip': '自上而下第一条命中生效，全时段行固定最后。命中行的模型链成为 root 生效链（取代全时段链）；未命中任何行时使用全时段链。分时切换是路由种子而非失败决策：不消耗冷却、不计入单次请求行走的切换上限。',
   'timeSlots.addPreset': '添加预设',
   'timeSlots.addCustom': '添加自定义时段',
   'timeSlots.presetPlaceholder': '选择预设',
@@ -118,17 +117,24 @@ export const zh = {
   'timeSlots.end': '结束（HH:mm）',
   'timeSlots.days': '星期',
   'timeSlots.days.hint': '不勾选 = 每天；可跨午夜',
-  'timeSlots.preset.name': '预设',
-  'timeSlots.preset.windowLabel': '时段（只读）',
-  'timeSlots.preset.chainsOnly': '预设窗口已锁定：仅可编辑模型链',
+  // Plan settings-compact-slots-reasoning T3: the collapsed slot row IS the
+  // row's identity — a preset prints this short window summary (the opened
+  // body no longer repeats the preset name or the full window), a custom row
+  // prints `timeSlots.customMeta`.
+  'timeSlots.customMeta': '{start}–{end} · {days}',
+  'timeSlots.days.every': '每天',
   'timeSlots.preset.liang-peak.label': '梁文峰',
   'timeSlots.preset.liang-peak.window': '09:00–12:00 与 14:00–18:00（周一至周五，UTC+8）',
+  'timeSlots.preset.liang-peak.meta': '09:00–12:00 · 14:00–18:00 周一–周五',
   'timeSlots.preset.liang-valley.label': '梁文谷',
   'timeSlots.preset.liang-valley.window': 'Liang Peak 之外的所有时间（UTC+8）',
+  'timeSlots.preset.liang-valley.meta': '非峰值 · UTC+8',
   'timeSlots.preset.glm-peak.label': 'GLM峰',
   'timeSlots.preset.glm-peak.window': '周一至周五 14:00–18:00（UTC+8）',
+  'timeSlots.preset.glm-peak.meta': '周一–周五 14:00–18:00',
   'timeSlots.preset.glm-valley.label': 'GLM谷',
   'timeSlots.preset.glm-valley.window': 'GLM Peak 之外的所有时间（UTC+8）',
+  'timeSlots.preset.glm-valley.meta': '非 GLM 峰值 · UTC+8',
   // PR #62 feedback: the GLM presets route to zai-coding-cn models — the
   // caveat rides every GLM preset row (shared by both GLM presets).
   'timeSlots.preset.glm.note': '仅配置了 zai-coding-cn 时有效',
@@ -155,9 +161,19 @@ export const zh = {
   // fallback chain — separate from the 默认降级链 selector list. Both tails
   // are selectable: the official catalog serves Pro as
   // `deepseek-official/deepseek-v4-pro`.
-  'allDay.hint': '全天链的最后一档兜底：官方 Flash 或 Pro 二选一',
-  'allDay.flash': '官方 Flash（deepseek-official/deepseek-flash）',
-  'allDay.pro': '官方 Pro（deepseek-official/deepseek-v4-pro）',
+  // Plan settings-compact-slots-reasoning T3: the panel is generated from the
+  // four legal ids filtered by the configured providers — `deepseek-account`
+  // first (preferred), then `deepseek-official`. `allDay.option` is the row
+  // label, `optionRoute`'s sibling (the wire id) is rendered verbatim.
+  'allDay.hint': '全天链的最后一档兜底；两款官方 provider 均可用，账号优先显示。',
+  'allDay.tooltip': '链尾必须是官方兜底模型（Flash / Pro）；这是全时段约束的判定点，其余条目是它之前的降级顺序。',
+  'allDay.only': '全天链的最后一档兜底；当前仅 {provider} 可用。',
+  'allDay.none': '无可用官方 provider：deepseek-account / deepseek-official 均未配置，链尾无法选择官方兜底模型。',
+  'allDay.option': '{model}（{provider}）',
+  'allDay.flash': 'Flash',
+  'allDay.pro': 'Pro',
+  'allDay.account': '账号',
+  'allDay.official': '官方',
   'allDay.nonconforming': '当前默认模型不合法：请选择官方 Flash 或 Pro 后保存',
   'roles.list.label': '角色实体',
   'roles.id': 'id',
@@ -326,16 +342,15 @@ export const en = {
   // Time-slot rows: extra-row list under Main agent. Timezone picker
   // lives inside expanded custom rows only; preset windows stay UTC+8.
   'timeSlots.label': 'Time slots',
-  'timeSlots.hint': 'First match from top to bottom wins; the all-day row is always last',
+  'timeSlots.hint': 'First match from top to bottom wins · timezone {tz}',
   'timeSlots.empty': 'No time slots configured: this chain runs on its default fallback chain and default model all day.',
-  'timeSlots.tz.label': 'Timezone (UTC±)',
   'timeSlots.drag': 'Drag to reorder (or use the up/down buttons)',
   // PR #62 feedback round: collapsible slot rows — collapsed shows the
   // row name + its first model; custom rows carry an editable name.
   'timeSlots.name': 'Name',
   'timeSlots.expand': 'Expand this row',
   'timeSlots.collapse': 'Collapse this row',
-  'timeSlots.tooltip': 'A matched row\'s model chain becomes the effective root chain (replacing the all-day chain); no match uses the all-day chain. A time-slot switch is a routing seed, not a failure decision: it consumes no cooldown and does not count against the per-request-walk switch cap.',
+  'timeSlots.tooltip': 'First match from top to bottom wins; the all-day row is always last. A matched row\'s model chain becomes the effective root chain (replacing the all-day chain); no match uses the all-day chain. A time-slot switch is a routing seed, not a failure decision: it consumes no cooldown and does not count against the per-request-walk switch cap.',
   'timeSlots.addPreset': 'Add preset',
   'timeSlots.addCustom': 'Add custom time slot',
   'timeSlots.presetPlaceholder': 'Select a preset',
@@ -346,17 +361,20 @@ export const en = {
   'timeSlots.end': 'End (HH:mm)',
   'timeSlots.days': 'Days',
   'timeSlots.days.hint': 'None selected = every day; may wrap midnight',
-  'timeSlots.preset.name': 'Preset',
-  'timeSlots.preset.windowLabel': 'Window (read-only)',
-  'timeSlots.preset.chainsOnly': 'Preset windows are frozen: only the model chain is editable',
+  'timeSlots.customMeta': '{start}–{end} · {days}',
+  'timeSlots.days.every': 'every day',
   'timeSlots.preset.liang-peak.label': 'Liang Peak',
   'timeSlots.preset.liang-peak.window': '09:00–12:00 & 14:00–18:00 (Monday–Friday, UTC+8)',
+  'timeSlots.preset.liang-peak.meta': '09:00–12:00 · 14:00–18:00 Mon–Fri',
   'timeSlots.preset.liang-valley.label': 'Liang Valley',
   'timeSlots.preset.liang-valley.window': 'All times outside Liang Peak (UTC+8)',
+  'timeSlots.preset.liang-valley.meta': 'Off-peak · UTC+8',
   'timeSlots.preset.glm-peak.label': 'GLM Peak',
   'timeSlots.preset.glm-peak.window': 'Monday–Friday 14:00–18:00 (UTC+8)',
+  'timeSlots.preset.glm-peak.meta': 'Mon–Fri 14:00–18:00',
   'timeSlots.preset.glm-valley.label': 'GLM Valley',
   'timeSlots.preset.glm-valley.window': 'All times outside GLM Peak (UTC+8)',
+  'timeSlots.preset.glm-valley.meta': 'Off GLM Peak · UTC+8',
   // PR #62 feedback: the GLM presets route to zai-coding-cn models — the
   // caveat rides every GLM preset row (shared by both GLM presets).
   'timeSlots.preset.glm.note': 'Only effective when zai-coding-cn is configured',
@@ -383,9 +401,15 @@ export const en = {
   // default fallback chain — separate from the default-chain selector list.
   // Both tails are selectable: the official catalog serves Pro as
   // `deepseek-official/deepseek-v4-pro`.
-  'allDay.hint': 'Last-resort fallback of the all-day chain: official Flash or Pro (pick exactly one)',
-  'allDay.flash': 'Official Flash (deepseek-official/deepseek-flash)',
-  'allDay.pro': 'Official Pro (deepseek-official/deepseek-v4-pro)',
+  'allDay.hint': 'Last-resort tail of the all-day chain; both official providers are usable, the account one is listed first.',
+  'allDay.tooltip': 'The chain tail must be an official fallback model (Flash / Pro); that is what the all-day constraint tests, and the other entries are the walk before it.',
+  'allDay.only': 'Last-resort tail of the all-day chain; only {provider} is available.',
+  'allDay.none': 'No official provider is configured (deepseek-account / deepseek-official), so the chain tail cannot be set.',
+  'allDay.option': '{model} ({provider})',
+  'allDay.flash': 'Flash',
+  'allDay.pro': 'Pro',
+  'allDay.account': 'account',
+  'allDay.official': 'official',
   'allDay.nonconforming': 'The current default model is not valid: pick official Flash or Pro before saving',
   'roles.list.label': 'Declared roles',
   'roles.list.hint': 'A role is the identity + persona; optionally point it at one named chain via 指定降级链',

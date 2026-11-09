@@ -417,6 +417,132 @@ function effortSelectOf(container: HTMLElement, rowIndex = 0): HTMLSelectElement
   return within(rows[rowIndex] as HTMLElement).getByLabelText(en['chains.selector.effortAria']) as HTMLSelectElement
 }
 
+/** `effortCatalog()` minus the official providers — the "none configured" case. */
+function catalogWithoutOfficials() {
+  const catalog = effortCatalog()
+  const drop = (id: string) => id === 'deepseek-account' || id === 'deepseek-official'
+  return {
+    providers: catalog.providers.filter(entry => !drop(entry.provider)),
+    groups: catalog.groups.filter(group => !drop(group.id)),
+  }
+}
+
+/** A chain whose only entry is NOT an official tail (the blocked-save case). */
+function nonConformingConfig(): typeof defaultFallbacksConfig {
+  return {
+    ...defaultFallbacksConfig,
+    chains: [{ id: 'Auto', label: '默认链', entries: ['openai/gpt-4o'], timeSlots: [] }],
+    roles: { list: [] },
+  }
+}
+
+describe('默认模型 panel — generated from the configured providers (T3)', () => {
+  it('lists the four legal tails, account pair first, each with its wire id', async () => {
+    const { view, props } = await mountCard({ config: v2Config(), catalog: effortCatalog() })
+    // The label template interpolates {model}/{provider}.
+    view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
+    const ids = [...view.container.querySelectorAll('[data-tail-option]')]
+      .map(option => option.getAttribute('data-tail-option'))
+    expect(ids).toEqual([
+      'deepseek-account/deepseek-flash',
+      'deepseek-account/deepseek-v4-pro',
+      'deepseek-official/deepseek-flash',
+      'deepseek-official/deepseek-v4-pro',
+    ])
+    const first = view.container.querySelector('[data-tail-option="deepseek-account/deepseek-flash"]')!
+    // Short label + provider tone + the exact id the conformance check uses.
+    expect(first.textContent).toContain(en['allDay.flash'])
+    expect(first.textContent).toContain(en['allDay.account'])
+    expect(first.textContent).toContain('deepseek-account/deepseek-flash')
+  })
+
+  it('picks an account tail and saves it as the LAST entry', async () => {
+    const { view, scripted } = await mountCard({ config: v2Config(), catalog: effortCatalog() })
+    fireEvent.click(view.container.querySelector('[data-tail-option="deepseek-account/deepseek-v4-pro"] input')!)
+    fireEvent.click(view.container.querySelector('[data-chain-foot] button[class*="save"]')!)
+    await waitFor(() => expect(scripted.set).toHaveBeenCalled())
+    const patch = scripted.set.mock.calls[0]![0].args.patch
+    expect(patch.chains[0].entries.at(-1)).toBe('deepseek-account/deepseek-v4-pro')
+  })
+
+  it('a suffixed tail still selects its radio (the comparison parses the key)', async () => {
+    const { view } = await mountCard({
+      config: { ...v2Config(), chains: [{ id: 'Auto', label: 'A', entries: [`${OFFICIAL_FLASH}@high`], timeSlots: [] }] },
+      catalog: effortCatalog(),
+    })
+    const radio = (id: string) => view.container.querySelector(`[data-tail-option="${id}"] input`) as HTMLInputElement
+    expect(radio(OFFICIAL_FLASH).checked).toBe(true)
+    expect(radio(OFFICIAL_PRO).checked).toBe(false)
+  })
+
+  it('one official provider → its two radios plus the "only this provider" hint', async () => {
+    const catalog = effortCatalog()
+    catalog.providers = catalog.providers.filter(entry => entry.provider !== 'deepseek-account')
+    const { view, props } = await mountCard({ config: v2Config(), catalog })
+    expect(view.container.querySelectorAll('[data-tail-option]')).toHaveLength(2)
+    view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
+    const hint = view.container.querySelector('[aria-labelledby="fallbacks-default-model-Auto"]')!.textContent!
+    expect(hint).toContain('only DeepSeek Official is available')
+  })
+
+  it('no official provider → no radios, the explanation, and the blocked save', async () => {
+    const { view } = await mountCard({ config: nonConformingConfig(), catalog: catalogWithoutOfficials() })
+    expect(view.container.querySelectorAll('[data-tail-option]')).toHaveLength(0)
+    const panel = view.container.querySelector('[aria-labelledby="fallbacks-default-model-Auto"]')!
+    expect(panel.textContent).toContain(en['allDay.none'])
+    expect(panel.querySelector('[data-tail-error]')).not.toBeNull()
+    expect((view.container.querySelector('[data-chain-foot] button[class*="save"]') as HTMLButtonElement).disabled).toBe(true)
+  })
+})
+
+describe('compact slot rows (Plan A)', () => {
+  /** A chain carrying one preset row and one custom row. */
+  function slotsConfig(): typeof defaultFallbacksConfig {
+    return {
+      ...defaultFallbacksConfig,
+      chains: [{
+        id: 'Auto',
+        label: '默认链',
+        entries: [OFFICIAL_FLASH],
+        timeSlots: [
+          { kind: 'preset', preset: 'liang-peak', days: [], chain: [OFFICIAL_FLASH] },
+          { kind: 'custom', start: '23:00', end: '07:00', days: [], name: '夜间', chain: [OFFICIAL_FLASH] },
+        ],
+      }],
+      roles: { list: [] },
+    }
+  }
+
+  it('deletes the action footer and folds the row actions into the header', async () => {
+    const { view } = await mountCard({ config: slotsConfig(), catalog: effortCatalog() })
+    // Slot rows mount collapsed, so the actions must already be reachable.
+    expect(view.container.querySelector('[data-chain-panel] [class*="cardFoot"]')).toBeNull()
+    const cards = [...view.container.querySelectorAll('[data-chain-panel] [class*="editorCard"]')]
+    expect(cards).toHaveLength(2)
+    for (const card of cards) {
+      const header = card.querySelector('[class*="collapseRow"]')!
+      expect(header.querySelectorAll('button[class*="iconButton"]')).toHaveLength(3)
+    }
+  })
+
+  it('drops the duplicated preset block and puts the window in the collapsed meta', async () => {
+    const { view, props } = await mountCard({ config: slotsConfig(), catalog: effortCatalog() })
+    view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
+    const cards = [...view.container.querySelectorAll('[data-chain-panel] [class*="editorCard"]')]
+    const presetCard = cards[0]!
+    // Collapsed: no rule grid, and the meta already carries the short window.
+    expect(presetCard.querySelector('[class*="ruleGrid"]')).toBeNull()
+    expect(presetCard.textContent).toContain('09:00–12:00 · 14:00–18:00 Mon–Fri')
+    // Expanded: still no duplicated preset/window block — only the chain list.
+    fireEvent.click(presetCard.querySelector('[class*="collapseToggle"]')!)
+    expect(presetCard.querySelector('[class*="ruleGrid"]')).toBeNull()
+    expect(presetCard.querySelector('[data-chain-block]')).not.toBeNull()
+    // The custom row keeps its fields on ONE line once expanded.
+    fireEvent.click(cards[1]!.querySelector('[class*="collapseToggle"]')!)
+    expect(cards[1]!.querySelector('[class*="slotFields"]')).not.toBeNull()
+  })
+})
+
 describe('per-entry reasoning effort (selector @effort)', () => {
   it('offers 跟随会话 plus the model\'s catalog tiers, and saves the pin as a suffix', async () => {
     const { view, scripted } = await mountCard({ config: effortConfig(), catalog: effortCatalog() })
@@ -529,13 +655,13 @@ describe('per-tab blocks and per-tab save isolation', () => {
   })
 
   it('the 默认模型 radio owns the LAST entry (tail) and save validation blocks a non-official tail', async () => {
-    const { view, scripted } = await mountCard({ config: v2Config() })
+    const { view, scripted } = await mountCard({ config: v2Config(), catalog: effortCatalog() })
     // Pick the official Pro: the last selector row becomes
-    // deepseek-official/deepseek-v4-pro. (The panel is catalog-driven in the
-    // next commit; this interim pass still renders the four static ids in
-    // OFFICIAL_ALL_DAY_IDS order, so the official pair is last.)
-    const radios = [...view.container.querySelectorAll('input[type="radio"][name^="fallbacks-chain-tail-"]')] as HTMLInputElement[]
-    fireEvent.click(radios[3]!)
+    // deepseek-official/deepseek-v4-pro.
+    const radio = view.container.querySelector(
+      `[data-tail-option="deepseek-official/deepseek-v4-pro"] input`,
+    ) as HTMLInputElement
+    fireEvent.click(radio)
     // The chain foot Save is armed by the dirty tab.
     const save = view.container.querySelector('[data-chain-foot] button[class*="save"]') as HTMLButtonElement
     expect(save.disabled).toBe(false)
@@ -615,7 +741,7 @@ describe('per-tab blocks and per-tab save isolation', () => {
   })
 
   it('persists a newly ADDED chain (append survives the save)', async () => {
-    const { view, scripted } = await mountCard({ config: v2Config() })
+    const { view, scripted } = await mountCard({ config: v2Config(), catalog: effortCatalog() })
     fireEvent.click(view.container.querySelector('[data-tab-add]')!)
     // The new tab is active and INVALID until named + given a tail, so its
     // Save starts disarmed.
@@ -628,8 +754,7 @@ describe('per-tab blocks and per-tab save isolation', () => {
     fireEvent.click(view.container.querySelector('[data-menu-btn]')!)
     fireEvent.change(view.container.querySelector('[data-menu-input]')!, { target: { value: '第三条链' } })
     fireEvent.click(view.container.querySelector('[data-menu-apply]')!)
-    const radios = [...view.container.querySelectorAll('input[type="radio"][name^="fallbacks-chain-tail-"]')] as HTMLInputElement[]
-    fireEvent.click(radios[3]!) // official Pro (see the tail-order note above)
+    fireEvent.click(view.container.querySelector('[data-tail-option="deepseek-official/deepseek-v4-pro"] input')!)
     fireEvent.click(view.container.querySelector('[data-chain-foot] button[class*="save"]')!)
 
     await waitFor(() => expect(scripted.set).toHaveBeenCalled())
