@@ -6,6 +6,14 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-11-09
+
+### Changed
+
+- Correct the user-facing documentation to the shipped named-chain behavior: per-chain time slots, the chain-tab settings card, the role `chain` pointer, removed keys/surfaces, and the documented retry-policy degradation.
+- Replace the outdated settings-card screenshot with figures of the current card, and stop shipping links to documentation the package does not include.
+- The collapsed role row in the Fallbacks settings card now shows the chain's label instead of its `FallbacksChain/<id>` route; the exact route stays in the row's tooltip.
+
 ## [0.8.1] - 2026-11-08
 
 ### Changed
