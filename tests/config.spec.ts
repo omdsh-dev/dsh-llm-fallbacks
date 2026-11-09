@@ -186,7 +186,7 @@ describe('validateFallbacksConfig — per-chain entries (tail conformance + sele
       roles: { list: [] },
     }, logger)
     expect(messagesOf({ warn: logger.warn })).toEqual([
-      `llm-fallbacks: chain "daily" must end with exactly one official model (deepseek-official/deepseek-flash or deepseek-official/deepseek-v4-pro) — its time-slot rows and the virtual picker delegate stay inert until the tail conforms`,
+      `llm-fallbacks: chain "daily" must end with exactly one official model (deepseek-account/deepseek-flash, deepseek-account/deepseek-v4-pro, deepseek-official/deepseek-flash or deepseek-official/deepseek-v4-pro) — its time-slot rows and the virtual picker delegate stay inert until the tail conforms`,
     ])
   })
 

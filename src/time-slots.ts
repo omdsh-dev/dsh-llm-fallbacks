@@ -16,23 +16,64 @@
  */
 
 import type { NamedChain } from './config.ts'
+import { parseSelector, selectorKey } from './selectors.ts'
 
-/** Official all-day selectors — the ONLY legal tails (length 1, XOR):
- * Flash (the current official default) and Pro, both selectable. The Pro
- * tail id is the catalog id verbatim: the official default catalog
- * still serves `deepseek-v4-pro` alongside `deepseek-flash`, so the card's Pro radio is selectable. `deepseek-v4-flash` stays retired (dropped
- * from the catalog); a hand-written legacy `deepseek-official/deepseek-pro`
- * tail — never catalog-served nor selectable — is just a non-legal tail
- * that degrades through the existing nonconforming walk. */
+/**
+ * Official all-day selectors — the ONLY legal tails (exactly one per chain):
+ * the two DeepSeek providers that can serve the official models, each with
+ * Flash and Pro. Both providers are equally usable, so the panel offers all
+ * four and the ACCOUNT pair is listed FIRST (the preferred provider).
+ *
+ * The model ids are catalog ids verbatim. `deepseek-v4-flash` stays retired
+ * (dropped from the catalog); a hand-written legacy
+ * `deepseek-official/deepseek-pro` tail — never catalog-served nor
+ * selectable — is just a non-legal tail that degrades through the existing
+ * nonconforming walk.
+ */
+export const OFFICIAL_ACCOUNT_FLASH = 'deepseek-account/deepseek-flash'
+export const OFFICIAL_ACCOUNT_PRO = 'deepseek-account/deepseek-v4-pro'
 export const OFFICIAL_FLASH = 'deepseek-official/deepseek-flash'
 export const OFFICIAL_PRO = 'deepseek-official/deepseek-v4-pro'
 
-/** The two official all-day tail ids (XOR — exactly one legal tail). */
-export const OFFICIAL_ALL_DAY_IDS = [OFFICIAL_FLASH, OFFICIAL_PRO] as const
+/**
+ * The four legal all-day tail ids, in card order: the account provider's pair
+ * first (preferred), then the official provider's. One of these — and only
+ * one — is a legal chain tail.
+ */
+export const OFFICIAL_ALL_DAY_IDS = [
+  OFFICIAL_ACCOUNT_FLASH,
+  OFFICIAL_ACCOUNT_PRO,
+  OFFICIAL_FLASH,
+  OFFICIAL_PRO,
+] as const
 
-/** Whether `id` is one of the two official all-day tail ids. */
+/** The effort-free route keys of the legal tails (see {@link isOfficialAllDayId}). */
+const OFFICIAL_TAIL_KEYS: ReadonlySet<string> = new Set(OFFICIAL_ALL_DAY_IDS)
+
+/**
+ * The legal tail ids as one human-readable phrase — `a, b, c or d`. The ONE
+ * source of the id list quoted by the startup warning and the save rejection,
+ * so a fifth id can never be added to the constant while the messages keep
+ * naming four.
+ */
+export function officialTailIdsText(): string {
+  const ids = [...OFFICIAL_ALL_DAY_IDS]
+  return `${ids.slice(0, -1).join(', ')} or ${ids[ids.length - 1]}`
+}
+
+/**
+ * Whether `id` is one of the four official all-day tail ids. Compares the
+ * PARSED `provider/model` key, so a tail carrying a pinned reasoning effort
+ * (`provider/model@effort`, the entry grammar) is still the same official
+ * route; anything unparsable is simply not a legal tail.
+ */
 export function isOfficialAllDayId(id: string): boolean {
-  return id === OFFICIAL_FLASH || id === OFFICIAL_PRO
+  try {
+    const selector = parseSelector(id)
+    return OFFICIAL_TAIL_KEYS.has(selectorKey(selector.provider, selector.model))
+  } catch {
+    return false
+  }
 }
 
 /** The four frozen preset ids (exact strings, spec lock). */
@@ -236,14 +277,15 @@ function labelOf(row: SlotRowConfig): string {
 
 /**
  * All-day conformance (P6): the all-day chain is conforming when its LAST
- * entry (the tail — the card's 默认模型 panel) is exactly one official
- * model — Flash or Pro (XOR). Leading entries (the card's 默认降级链 block)
- * are the ordered walk before that last-resort fallback. An empty chain or
- * a chain whose tail is not an official model (the retired
- * `deepseek-v4-flash` and the never-served legacy
- * `deepseek-official/deepseek-pro` included) keeps slot rows inert and
- * refuses the virtual-row
- * delegate; the legacy failure walk over the raw chain stays
+ * entry (the tail — the card's 默认模型 panel) is exactly one official model —
+ * one of the four {@link OFFICIAL_ALL_DAY_IDS}, i.e. Flash or Pro served by
+ * either DeepSeek provider. The comparison runs on the parsed
+ * `provider/model` key, so a tail that pins a reasoning effort still conforms.
+ * Leading entries (the card's 默认降级链 block) are the ordered walk before
+ * that last-resort fallback. An empty chain or a chain whose tail is not an
+ * official model (the retired `deepseek-v4-flash` and the never-served legacy
+ * `deepseek-official/deepseek-pro` included) keeps slot rows inert and refuses
+ * the virtual-row delegate; the legacy failure walk over the raw chain stays
  * verbatim.
  */
 export function isAllDayConforming(chain: readonly string[]): boolean {

@@ -73,7 +73,7 @@ import type { TypertContribution } from '@deepseek-ai/dsh-typert-registry'
 import { Config } from './schema'
 import { detectLegacyKeys, migrateLegacyConfig } from './config'
 import type { FallbacksConfig } from './config'
-import { PRESETS, isAllDayConforming } from './time-slots'
+import { PRESETS, isAllDayConforming, officialTailIdsText } from './time-slots'
 import { CHAIN_ID_PATTERN } from './config'
 import { parseSelector } from './selectors'
 import type { FallbacksSeedManager, SeedRevertOutcome, SeedsIo, SeedsWireStatus } from './seeds'
@@ -738,7 +738,7 @@ function validateChainsPatch(chains: unknown): void {
     }
     if (Array.isArray(entries) && entries.length > 0 && !isAllDayConforming(entries)) {
       throw new Error(
-        `dsh-llm-fallbacks: ${at}.entries must end with exactly one official model (deepseek-official/deepseek-flash or deepseek-official/deepseek-v4-pro)`,
+        `dsh-llm-fallbacks: ${at}.entries must end with exactly one official model (${officialTailIdsText()})`,
       )
     }
     if (record.timeSlots !== undefined && record.timeSlots !== null) {

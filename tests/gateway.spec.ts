@@ -643,12 +643,19 @@ describe('chains set guards (named virtual chains)', () => {
     return { gateway, ctx }
   }
 
-  it('accepts conforming chains (Flash or Pro tails; empty entries stay legal)', async () => {
+  it('accepts conforming chains (any of the four official tails; empty entries stay legal)', async () => {
     const { gateway } = await mountGateway()
-    const flash = await gateway.set({ chains: [{ id: 'a', label: 'A', entries: [OFFICIAL_FLASH] }] })
-    expect(flash.config.chains).toEqual([{ id: 'a', label: 'A', entries: [OFFICIAL_FLASH], timeSlots: [] }])
-    const pro = await gateway.set({ chains: [{ id: 'a', label: 'A', entries: [OFFICIAL_PRO] }] })
-    expect(pro.config.chains).toEqual([{ id: 'a', label: 'A', entries: [OFFICIAL_PRO], timeSlots: [] }])
+    for (const id of [
+      'deepseek-account/deepseek-flash',
+      'deepseek-account/deepseek-v4-pro',
+      OFFICIAL_FLASH,
+      OFFICIAL_PRO,
+      // A pinned reasoning effort is a property of the hop, not of the route.
+      `${OFFICIAL_FLASH}@high`,
+    ]) {
+      const saved = await gateway.set({ chains: [{ id: 'a', label: 'A', entries: [id] }] })
+      expect(saved.config.chains).toEqual([{ id: 'a', label: 'A', entries: [id], timeSlots: [] }])
+    }
     const empty = await gateway.set({ chains: [{ id: 'a', label: 'A', entries: [] }] })
     expect(empty.config.chains).toEqual([{ id: 'a', label: 'A', entries: [], timeSlots: [] }])
   })
@@ -656,7 +663,8 @@ describe('chains set guards (named virtual chains)', () => {
   it('rejects non-conforming chains, invalid ids, duplicate ids, and missing labels', async () => {
     const { gateway } = await mountGateway()
     await expect(gateway.set({ chains: [{ id: 'a', label: 'A', entries: ['openai/gpt-4o'] }] })).rejects
-      .toThrow(/entries must end with exactly one official model/)
+      // The rejection names every legal tail, not just the official provider's.
+      .toThrow(/deepseek-account\/deepseek-flash, deepseek-account\/deepseek-v4-pro, deepseek-official\/deepseek-flash or deepseek-official\/deepseek-v4-pro/)
     await expect(gateway.set({ chains: [{ id: 'a', label: 'A', entries: ['deepseek-official/deepseek-v4-flash'] }] })).rejects
       .toThrow(/entries must end with exactly one official model/)
     await expect(gateway.set({ chains: [{ id: '-bad', label: 'A' }] })).rejects

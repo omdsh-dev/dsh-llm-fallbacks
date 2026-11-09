@@ -13,6 +13,9 @@ import { afterEach, describe, expect, it, vi, type MockInstance } from 'vitest'
 import { Config } from '../src/schema.ts'
 import { unwrapConfig } from './support/unwrap-config.ts'
 import {
+  OFFICIAL_ACCOUNT_FLASH,
+  OFFICIAL_ACCOUNT_PRO,
+  OFFICIAL_ALL_DAY_IDS,
   OFFICIAL_FLASH,
   OFFICIAL_PRO,
   isAllDayConforming,
@@ -153,7 +156,35 @@ describe('resolveEffectiveChain — all-day last', () => {
   })
 })
 
-describe('isAllDayConforming — official Flash / Pro tail', () => {
+describe('isAllDayConforming — the four legal official tails', () => {
+  it('exposes the ids in card order: the account pair first', () => {
+    expect(OFFICIAL_ALL_DAY_IDS).toEqual([
+      'deepseek-account/deepseek-flash',
+      'deepseek-account/deepseek-v4-pro',
+      'deepseek-official/deepseek-flash',
+      'deepseek-official/deepseek-v4-pro',
+    ])
+    expect(OFFICIAL_ACCOUNT_FLASH).toBe('deepseek-account/deepseek-flash')
+    expect(OFFICIAL_ACCOUNT_PRO).toBe('deepseek-account/deepseek-v4-pro')
+  })
+
+  it('accepts each of the four ids alone as the last entry', () => {
+    for (const id of OFFICIAL_ALL_DAY_IDS) {
+      expect(isAllDayConforming([id])).toBe(true)
+      expect(isAllDayConforming(['openai/gpt-4o', id])).toBe(true)
+    }
+  })
+
+  it('accepts a suffixed tail: a pinned reasoning effort leaves the route official', () => {
+    // `provider/model@effort` (Task 1 grammar) pins the HOP, not the route —
+    // the tail is still one official model.
+    expect(isAllDayConforming([`${OFFICIAL_FLASH}@high`])).toBe(true)
+    expect(isAllDayConforming([`${OFFICIAL_ACCOUNT_FLASH}@max`])).toBe(true)
+    expect(isAllDayConforming(['openai/gpt-4o', `${OFFICIAL_PRO}@low`])).toBe(true)
+    // A pinned NON-official tail still refuses.
+    expect(isAllDayConforming(['openai/gpt-4o@high'])).toBe(false)
+  })
+
   it('accepts an official tail, with or without leading fallback entries', () => {
     expect(isAllDayConforming([OFFICIAL_FLASH])).toBe(true)
     expect(isAllDayConforming([OFFICIAL_PRO])).toBe(true)
