@@ -30,7 +30,7 @@ import { useSyncExternalStore } from 'react'
 import { cleanup, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { SubagentRoleBadge } from '../src/client/SubagentRoleBadge.tsx'
-import type { SubagentRoleBadgeProps } from '../src/client/SubagentRoleBadge.tsx'
+import type { ChainRoute, ChainRouteLookup, SubagentRoleBadgeProps } from '../src/client/SubagentRoleBadge.tsx'
 import { ROLE_PROJECTION_KEY } from '../src/role-projection-key.ts'
 import { en } from '../src/client/locales.ts'
 
@@ -104,6 +104,16 @@ function badgeProps(
   origin: 'subagent' | 'root' | 'empty' = 'subagent',
 ): SubagentRoleBadgeProps {
   return propsWithSeat(vi.fn((key: string) => projections[key]), origin)
+}
+
+/** A chain catalog reader over a fixed `chainId → route` table. */
+function chainRoutes(table: Record<string, ChainRoute>): ChainRouteLookup {
+  return (chainId) => table[chainId]
+}
+
+/** One resolved chain: label + the static effective head with its display name. */
+function chainRoute(id: string, label: string, name: string, provider = 'openai', model = 'gpt-4o'): ChainRoute {
+  return { id, label, head: { provider, model, name } }
 }
 
 /** The rendered pill (the outer span; the route is its only child span). */
@@ -394,5 +404,67 @@ describe('SubagentRoleBadge — version-skewed host', () => {
     } as never as SubagentRoleBadgeProps
     const { container } = render(<SubagentRoleBadge {...props} />)
     expect(container.firstChild).toBeNull()
+  })
+})
+
+describe('SubagentRoleBadge — FallbacksChain route display (Task 4)', () => {
+  const fc = (model: string): unknown => selection('FallbacksChain', model)
+  const baseProps = (chainRouteOf?: ChainRouteLookup) => ({
+    ...badgeProps({ [ROLE_PROJECTION_KEY]: 'coder', modelSelection: fc('chain-8') }),
+    ...(chainRouteOf === undefined ? {} : { chainRouteOf }),
+  })
+
+  it('renders the chain label and the effective head model name', () => {
+    const { container } = render(<SubagentRoleBadge {...baseProps(chainRoutes({
+      'chain-8': chainRoute('chain-8', '默认', 'DeepSeek Flash'),
+    }))} />)
+
+    const pill = pillOf(container)
+    expect(pill?.textContent).toBe('coder · [FC/默认] DeepSeek Flash')
+  })
+
+  it('keeps the whole chain, model and route in the title', () => {
+    const { container } = render(<SubagentRoleBadge {...baseProps(chainRoutes({
+      'chain-8': chainRoute('chain-8', '默认', 'DeepSeek Flash'),
+    }))} />)
+
+    expect(pillOf(container)?.getAttribute('title'))
+      .toBe('coder → FallbacksChain/chain-8 · DeepSeek Flash (openai/gpt-4o)')
+  })
+
+  it('an unknown chain renders the id and 未解析', () => {
+    const { container } = render(<SubagentRoleBadge {...baseProps(chainRoutes({}))} />)
+
+    const pill = pillOf(container)
+    expect(pill?.textContent).toBe(`coder · [FC/chain-8] ${en['subagentRole.unresolved']}`)
+    expect(pill?.getAttribute('title')).toBe('coder → FallbacksChain/chain-8 (chain not configured, or no dispatchable model)')
+  })
+
+  it('a known chain with no dispatchable head also renders 未解析 (label kept)', () => {
+    const { container } = render(<SubagentRoleBadge {...baseProps(chainRoutes({
+      'chain-8': { id: 'chain-8', label: '夜间', head: null },
+    }))} />)
+
+    const pill = pillOf(container)
+    expect(pill?.textContent).toBe(`coder · [FC/夜间] ${en['subagentRole.unresolved']}`)
+  })
+
+  it('a cold reader (undefined) falls back to today\'s FallbacksChain/<id>', () => {
+    const { container } = render(<SubagentRoleBadge {...baseProps(undefined)} />)
+
+    const pill = pillOf(container)
+    expect(pill?.textContent).toBe('coder · FallbacksChain/chain-8')
+    expect(pill?.getAttribute('title')).toBe('coder → FallbacksChain/chain-8 (request route)')
+  })
+
+  it('a non-FallbacksChain route renders today\'s string byte-identically', () => {
+    const { container } = render(<SubagentRoleBadge {...badgeProps({
+      [ROLE_PROJECTION_KEY]: 'coder',
+      modelSelection: selection('openai', 'gpt-4o'),
+    })} chainRouteOf={chainRoutes({})} />)
+
+    const pill = pillOf(container)
+    expect(pill?.textContent).toBe('coder · openai/gpt-4o')
+    expect(pill?.getAttribute('title')).toBe('coder → openai/gpt-4o (request route)')
   })
 })

@@ -251,6 +251,12 @@ export const zh = {
   // projection read as `next ?? lastUsed` — the next request's route, falling
   // back to the last used one — so the label stays neutral ("request route").
   'subagentRole.hover': '{role} → {model}（请求路由）',
+  // Plan settings-compact-slots-reasoning T4: a `FallbacksChain/<id>` route is
+  // the plugin's own virtual route, so the pill prints the chain label and the
+  // model that chain will actually dispatch (its static effective head).
+  'subagentRole.unresolved': '未解析',
+  'subagentRole.hoverChain': '{role} → {chain} · {model}（{route}）',
+  'subagentRole.hoverChainUnresolved': '{role} → {chain}（链未配置或无可用模型）',
   'defaults.prefix': '默认值',
   'save': '保存',
   'save.saving': '保存中…',
@@ -484,6 +490,9 @@ export const en = {
   // plan subagent-role-model): neutral "request route" wording because the route
   // is `modelSelection.next ?? lastUsed`.
   'subagentRole.hover': '{role} → {model} (request route)',
+  'subagentRole.unresolved': 'unresolved',
+  'subagentRole.hoverChain': '{role} → {chain} · {model} ({route})',
+  'subagentRole.hoverChainUnresolved': '{role} → {chain} (chain not configured, or no dispatchable model)',
   'defaults.prefix': 'Default',
   'save': 'Save',
   'save.saving': 'Saving…',
