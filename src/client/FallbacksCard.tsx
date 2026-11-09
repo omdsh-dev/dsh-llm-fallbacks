@@ -516,6 +516,24 @@ function ChainSelectorEditor({
   const groupMissing = providerRaw !== '' && !providerOutside && group === undefined
   // Nothing selectable: outside provider with no outside model to keep.
   const modelDisabled = disabled || providerRaw === '' || groupMissing || (providerOutside && modelRaw === '')
+  // The pinned reasoning effort (the row's third select). Its options are the
+  // selected model's catalog `reasoning.efforts`; an unset row writes NO
+  // suffix and follows the session's own selection, so the default imposes
+  // nothing. A model that reports no tiers renders a disabled 「无」 — and a
+  // pin it no longer lists stays SELECTED (never silently rewritten) with the
+  // row hint saying it will not be used.
+  const selectedModel = group?.models.find(entry => entry.id === modelRaw)
+  const efforts = selectedModel?.reasoning?.efforts ?? []
+  const effortRaw = selector.effort ?? null
+  const effortUnsupported = effortRaw !== null && !efforts.some(entry => entry.id === effortRaw)
+  // A stored pin survives even when the model no longer lists it: it stays a
+  // visible OPTION (selected) so the row and the wire string cannot disagree —
+  // the row hint below says the walk will not use it.
+  const effortChoices = effortUnsupported && effortRaw !== null
+    ? [...efforts, { id: effortRaw, name: effortRaw }]
+    : efforts
+  const effortEmpty = effortChoices.length === 0
+  const effortDisabled = disabled || modelDisabled || effortEmpty
   // Id of THIS row's strict hint (only rendered when `groupMissing`). The
   // hint became a sibling span in the compact row (plan
   // fallbacks-chain-row-compact T1), so it no longer contributes to the model
@@ -527,6 +545,7 @@ function ChainSelectorEditor({
   // renders.
   const hintInstanceId = useId().replace(/:/g, '')
   const strictHintId = groupMissing ? `fallbacks-selector-hint-${index}-${hintInstanceId}` : undefined
+  const effortHintId = `fallbacks-effort-hint-${index}-${hintInstanceId}`
 
   return (
     <div
@@ -569,7 +588,9 @@ function ChainSelectorEditor({
               // creates wildcards, but a `provider/*` entry moved onto another
               // provider stays a wildcard until a concrete model is picked
               // (only the model change converts it to an exact entry, F-004).
-              onChange({ provider: classifyProvider(event.target.value, catalog), model: null })
+              // A different provider clears the pair's pin with the model: the
+              // effort belonged to the model that is being dropped.
+              onChange({ provider: classifyProvider(event.target.value, catalog), model: null, effort: null })
             }}
           >
             <option value="">{t('chains.selector.providerPlaceholder')}</option>
@@ -614,6 +635,36 @@ function ChainSelectorEditor({
             )}
           </select>
         </div>
+        <div className={css.selectorEffortCell}>
+          <select
+            className={`${css.input} ${css.selectInput}`}
+            value={effortEmpty ? 'none' : (effortRaw ?? '')}
+            aria-label={t('chains.selector.effortAria', { index: String(index) })}
+            // A disabled select still needs to SAY why: the explanation is a
+            // hidden sibling (the strict-hint pattern, aria-describedby).
+            aria-describedby={effortEmpty ? effortHintId : undefined}
+            title={effortEmpty ? t('chains.selector.effortNoMetadata') : undefined}
+            disabled={effortDisabled}
+            onChange={event => {
+              const value = event.target.value
+              onChange({ effort: value === '' ? null : value })
+            }}
+          >
+            {effortEmpty ? (
+              <option value="none">{t('chains.selector.effortNone')}</option>
+            ) : (
+              <>
+                <option value="">{t('chains.selector.effortFollow')}</option>
+                {effortChoices.map(entry => (
+                  <option key={entry.id} value={entry.id}>{entry.name}</option>
+                ))}
+              </>
+            )}
+          </select>
+          {effortEmpty && (
+            <span id={effortHintId} className={css.srOnly}>{t('chains.selector.effortNoMetadata')}</span>
+          )}
+        </div>
         {/* Row-level hints ride the line (inline, ellipsised by CSS) instead
             of a block sibling that would re-open the row height. Each hint is
             a strip whose TEXT holder carries the truncation (`title` keeps the
@@ -636,6 +687,16 @@ function ChainSelectorEditor({
               {t('catalog.outside.hint')}
             </span>
             <InfoHint label={t('catalog.outside.tooltip')} disabled={disabled} />
+          </span>
+        )}
+        {/* A pin the selected model does not list is kept in the value (the
+            select shows it) and explained here; the walk drops it at request
+            time, so the row must not look like it took effect. */}
+        {effortUnsupported && (
+          <span className={css.selectorHint}>
+            <span className={css.selectorHintText} title={t('chains.selector.effortUnsupported')}>
+              {t('chains.selector.effortUnsupported')}
+            </span>
           </span>
         )}
         {/* The legacy-conversion hint only renders when a conversion is
@@ -893,7 +954,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
     patchActiveDraft(draft => ({
       ...draft,
       slots: draft.slots.map((row, index) => index === rowIndex
-        ? { ...row, selectors: [...row.selectors, { wildcard: false, provider: null, model: null }] }
+        ? { ...row, selectors: [...row.selectors, { wildcard: false, provider: null, model: null, effort: null }] }
         : row),
     }))
   }
@@ -961,7 +1022,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
     })
   }
   const addChainSelector = (): void => {
-    patchActiveDraft(draft => ({ ...draft, selectors: [...draft.selectors, { wildcard: false, provider: null, model: null }] }))
+    patchActiveDraft(draft => ({ ...draft, selectors: [...draft.selectors, { wildcard: false, provider: null, model: null, effort: null }] }))
   }
   const removeChainSelector = (selectorIndex: number): void => {
     patchActiveDraft(draft => ({ ...draft, selectors: draft.selectors.filter((_, index) => index !== selectorIndex) }))

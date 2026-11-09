@@ -26,6 +26,7 @@ import {
   configuredProvidersOf,
   deriveEffectiveModel,
   draftToChain,
+  entryToSelectorRow,
   mergeRoleExtras,
   newChainId,
   FALLBACKS_SETTINGS_NS,
@@ -273,8 +274,30 @@ describe('per-chain row editors (pure round-trips)', () => {
 
   it('draftToChain drops blank selector rows', () => {
     const drafts = chainsToDrafts(v2Config().chains)
-    drafts[0]!.selectors = [{ wildcard: false, provider: null, model: null }, ...drafts[0]!.selectors]
+    drafts[0]!.selectors = [{ wildcard: false, provider: null, model: null, effort: null }, ...drafts[0]!.selectors]
     expect(draftToChain(drafts[0]!).entries).toEqual(['openai/gpt-4o', OFFICIAL_FLASH])
+  })
+
+  it('reads a pinned effort from the entry and serializes it back', () => {
+    const row = entryToSelectorRow('openai/gpt-4o@high', catalogFixture())
+    expect(row).toMatchObject({ wildcard: false, effort: 'high' })
+    expect(selectorRowToRaw(row)).toBe('openai/gpt-4o@high')
+    // A wildcard entry keeps its own pin.
+    expect(selectorRowToRaw(entryToSelectorRow('anthropic/*@low', catalogFixture()))).toBe('anthropic/*@low')
+  })
+
+  it('an effort-free entry stays byte-identical to today', () => {
+    const row = entryToSelectorRow(OFFICIAL_FLASH, catalogFixture())
+    expect(row.effort).toBeNull()
+    expect(selectorRowToRaw(row)).toBe(OFFICIAL_FLASH)
+  })
+
+  it('legacy configs round-trip byte-identically (the dirty check stays quiet)', () => {
+    const config = v2Config()
+    const drafts = chainsToDrafts(config.chains, catalogFixture())
+    // JSON equality, not just deep equality: an `effort: null` that leaked into
+    // the wire string would show up here first.
+    expect(JSON.stringify(drafts.map(draftToChain))).toBe(JSON.stringify(config.chains))
   })
 
   it('newChainId generates a unique id', () => {

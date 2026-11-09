@@ -60,6 +60,14 @@ export const zh = {
   'chains.selector.modelPlaceholder': '选择 model',
   'chains.selector.wildcardLegacy': '该条目为通配（provider/*）：选择具体模型后将转为精确条目',
   'chains.selector.noModelsStrict': '该 provider 暂无可用模型（目录查询失败），请改选其他 provider。',
+  // Plan settings-compact-slots-reasoning T3: the per-entry reasoning effort
+  // column. `跟随会话` is the unset value — it writes no suffix, so the hop
+  // inherits whatever the session selected; a pinned tier overrides it.
+  'chains.selector.effortAria': '第 {index} 个选择器的推理等级',
+  'chains.selector.effortFollow': '跟随会话',
+  'chains.selector.effortNone': '无',
+  'chains.selector.effortNoMetadata': '该模型未提供推理等级元数据',
+  'chains.selector.effortUnsupported': '不支持，按会话等级发送',
   // PR #62 feedback: the main-agent section heading groups the time-slot
   // rows + the all-day chooser; the subagents heading groups roles list +
   // rules.
@@ -284,6 +292,13 @@ export const en = {
   'chains.selector.modelPlaceholder': 'Select model',
   'chains.selector.wildcardLegacy': 'This entry is a wildcard (provider/*): picking a model converts it to an exact entry',
   'chains.selector.noModelsStrict': 'No models available for this provider (catalog lookup failed); pick another provider.',
+  // See the zh comment: the unset value writes no suffix (the hop follows the
+  // session); a pinned tier overrides it.
+  'chains.selector.effortAria': 'Selector {index} reasoning effort',
+  'chains.selector.effortFollow': 'Follow session',
+  'chains.selector.effortNone': 'None',
+  'chains.selector.effortNoMetadata': 'This model reports no reasoning tiers',
+  'chains.selector.effortUnsupported': 'Not supported — sent with the session effort',
   // PR #62 feedback: the main-agent section heading groups the time-slot
   // rows + the all-day chooser; the subagents heading groups roles list +
   // rules.

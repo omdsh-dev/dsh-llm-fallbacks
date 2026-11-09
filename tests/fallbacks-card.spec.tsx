@@ -217,6 +217,10 @@ async function mountCard(options: Parameters<typeof scriptedApi>[0] = {}, preloa
   const scripted = scriptedApi(options)
   const controller = new FallbacksSettingsController(scripted.api, scripted.rpc)
   if (preload) await controller.load()
+  // A catalog fixture must be READY before the first render: the provider /
+  // model / effort selects and the 默认模型 panel are all catalog-driven, and
+  // the card's own mount effect only kicks off the load.
+  if (options.catalog !== undefined) await controller.loadCatalog()
   const props = cardProps(controller, bindSnapshotSelector(controller.store))
   const view = render(<FallbacksCard {...props} />)
   return { view, controller, scripted, props }
@@ -341,6 +345,139 @@ describe('chain tabs (named virtual chains §4)', () => {
   })
 })
 
+/**
+ * A catalog whose first model discloses two reasoning tiers and whose second
+ * model discloses none — the two branches the effort column must distinguish.
+ * `deepseek-official` is registered so the 默认模型 panel has a provider to
+ * offer (a catalog-less mount is the "unknown catalog" path, see the tail
+ * panel describe).
+ */
+function effortCatalog(): { providers: LlmConfigurableProvider[]; groups: ModelProviderGroup[] } {
+  // `settingsPath` addresses the harness's single `llm-providers` namespace, so
+  // every provider here counts as CONFIGURED (the join the tail panel filters
+  // on).
+  const provider = (id: string, displayName: string): LlmConfigurableProvider => ({
+    provider: id, displayName, settingsNs: 'llm-providers', settingsPath: ['providers', id],
+  })
+  return {
+    providers: [
+      provider('openai', 'OpenAI'),
+      provider('anthropic', 'Anthropic'),
+      provider('deepseek-official', 'DeepSeek Official'),
+      provider('deepseek-account', 'DeepSeek Account'),
+    ],
+    groups: [
+      {
+        id: 'openai',
+        name: 'OpenAI',
+        models: [
+          { id: 'gpt-4o', name: 'GPT-4o', reasoning: { efforts: [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High' }] } },
+          { id: 'plain', name: 'Plain' },
+        ],
+      },
+      {
+        id: 'anthropic',
+        name: 'Anthropic',
+        models: [
+          { id: 'claude-3-5-sonnet', name: 'Claude 3.5 Sonnet', reasoning: { efforts: [{ id: 'low', name: 'Low' }] } },
+        ],
+      },
+      {
+        id: 'deepseek-official',
+        name: 'DeepSeek Official',
+        models: [
+          { id: 'deepseek-flash', name: 'DeepSeek Flash', reasoning: { efforts: [{ id: 'off', name: 'Off' }] } },
+          { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro', reasoning: { efforts: [{ id: 'off', name: 'Off' }, { id: 'max', name: 'Max' }] } },
+        ],
+      },
+      {
+        id: 'deepseek-account',
+        name: 'DeepSeek Account',
+        models: [
+          { id: 'deepseek-flash', name: 'DeepSeek Flash', reasoning: { efforts: [{ id: 'off', name: 'Off' }] } },
+          { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro', reasoning: { efforts: [{ id: 'off', name: 'Off' }, { id: 'max', name: 'Max' }] } },
+        ],
+      },
+    ],
+  }
+}
+
+/** A chain whose HEAD row exercises the effort column. */
+function effortConfig(head = 'openai/gpt-4o'): typeof defaultFallbacksConfig {
+  return {
+    ...defaultFallbacksConfig,
+    chains: [{ id: 'Auto', label: '默认链', entries: [head, OFFICIAL_FLASH], timeSlots: [] }],
+    roles: { list: [] },
+  }
+}
+
+/** The effort select of one row inside the 默认降级链 block. */
+function effortSelectOf(container: HTMLElement, rowIndex = 0): HTMLSelectElement {
+  const rows = container.querySelectorAll('[aria-labelledby="fallbacks-root-chain-Auto"] [data-selector-row]')
+  return within(rows[rowIndex] as HTMLElement).getByLabelText(en['chains.selector.effortAria']) as HTMLSelectElement
+}
+
+describe('per-entry reasoning effort (selector @effort)', () => {
+  it('offers 跟随会话 plus the model\'s catalog tiers, and saves the pin as a suffix', async () => {
+    const { view, scripted } = await mountCard({ config: effortConfig(), catalog: effortCatalog() })
+    const select = effortSelectOf(view.container)
+    expect(select.disabled).toBe(false)
+    expect([...select.options].map(option => option.text)).toEqual([
+      en['chains.selector.effortFollow'], 'Low', 'High',
+    ])
+    // Unset by default: nothing is imposed on the hop.
+    expect(select.value).toBe('')
+
+    fireEvent.change(select, { target: { value: 'high' } })
+    fireEvent.click(view.container.querySelector('[data-chain-foot] button[class*="save"]')!)
+    await waitFor(() => expect(scripted.set).toHaveBeenCalled())
+    const patch = scripted.set.mock.calls[0]![0].args.patch
+    expect(patch.chains[0].entries[0]).toBe('openai/gpt-4o@high')
+    // The tail entry is untouched.
+    expect(patch.chains[0].entries.at(-1)).toBe(OFFICIAL_FLASH)
+  })
+
+  it('renders a disabled 无 and explains itself when the model reports no metadata', async () => {
+    const { view } = await mountCard({ config: effortConfig('openai/plain'), catalog: effortCatalog() })
+    const select = effortSelectOf(view.container)
+    expect(select.disabled).toBe(true)
+    expect([...select.options].map(option => option.text)).toEqual([en['chains.selector.effortNone']])
+    // The reason is announced, not just hovered: the described element exists.
+    const describedBy = select.getAttribute('aria-describedby')
+    expect(describedBy).not.toBeNull()
+    expect(document.getElementById(describedBy!)!.textContent).toBe(en['chains.selector.effortNoMetadata'])
+  })
+
+  it('keeps a stored pin the model no longer lists selected, with the unsupported hint', async () => {
+    const { view } = await mountCard({ config: effortConfig('openai/gpt-4o@max'), catalog: effortCatalog() })
+    const select = effortSelectOf(view.container)
+    expect(select.disabled).toBe(false)
+    expect(select.value).toBe('max')
+    // The stored value is a real option, so the control never silently shows
+    // a different tier than the string it will write.
+    expect([...select.options].map(option => option.value)).toEqual(['', 'low', 'high', 'max'])
+    const row = view.container.querySelector('[aria-labelledby="fallbacks-root-chain-Auto"] [data-selector-row]')!
+    expect(row.textContent).toContain(en['chains.selector.effortUnsupported'])
+  })
+
+  it('clears the pin when the provider changes (it belonged to the dropped model)', async () => {
+    const { view, scripted } = await mountCard({ config: effortConfig('openai/gpt-4o@high'), catalog: effortCatalog() })
+    const rows = view.container.querySelectorAll('[aria-labelledby="fallbacks-root-chain-Auto"] [data-selector-row]')
+    const provider = within(rows[0] as HTMLElement).getByLabelText(en['chains.selector.providerAria']) as HTMLSelectElement
+    fireEvent.change(provider, { target: { value: 'anthropic' } })
+    // A different provider → the row's model AND pin are dropped; pick the new
+    // pair, then pin its tier.
+    const rowsAfter = view.container.querySelectorAll('[aria-labelledby="fallbacks-root-chain-Auto"] [data-selector-row]')
+    const model = within(rowsAfter[0] as HTMLElement).getByLabelText(en['chains.selector.modelAria']) as HTMLSelectElement
+    fireEvent.change(model, { target: { value: 'claude-3-5-sonnet' } })
+    fireEvent.change(effortSelectOf(view.container), { target: { value: 'low' } })
+    fireEvent.click(view.container.querySelector('[data-chain-foot] button[class*="save"]')!)
+    await waitFor(() => expect(scripted.set).toHaveBeenCalled())
+    const patch = scripted.set.mock.calls[0]![0].args.patch
+    expect(patch.chains[0].entries[0]).toBe('anthropic/claude-3-5-sonnet@low')
+  })
+})
+
 describe('per-tab blocks and per-tab save isolation', () => {
   it('renders 分时槽设置 → 默认降级链 → 默认模型 in order, with block ids per chain', async () => {
     const { view } = await mountCard({ config: v2Config() })
@@ -393,9 +530,12 @@ describe('per-tab blocks and per-tab save isolation', () => {
 
   it('the 默认模型 radio owns the LAST entry (tail) and save validation blocks a non-official tail', async () => {
     const { view, scripted } = await mountCard({ config: v2Config() })
-    // Pick Pro: the last selector row becomes deepseek-official/deepseek-v4-pro.
+    // Pick the official Pro: the last selector row becomes
+    // deepseek-official/deepseek-v4-pro. (The panel is catalog-driven in the
+    // next commit; this interim pass still renders the four static ids in
+    // OFFICIAL_ALL_DAY_IDS order, so the official pair is last.)
     const radios = [...view.container.querySelectorAll('input[type="radio"][name^="fallbacks-chain-tail-"]')] as HTMLInputElement[]
-    fireEvent.click(radios[1]!)
+    fireEvent.click(radios[3]!)
     // The chain foot Save is armed by the dirty tab.
     const save = view.container.querySelector('[data-chain-foot] button[class*="save"]') as HTMLButtonElement
     expect(save.disabled).toBe(false)
@@ -489,7 +629,7 @@ describe('per-tab blocks and per-tab save isolation', () => {
     fireEvent.change(view.container.querySelector('[data-menu-input]')!, { target: { value: '第三条链' } })
     fireEvent.click(view.container.querySelector('[data-menu-apply]')!)
     const radios = [...view.container.querySelectorAll('input[type="radio"][name^="fallbacks-chain-tail-"]')] as HTMLInputElement[]
-    fireEvent.click(radios[1]!)
+    fireEvent.click(radios[3]!) // official Pro (see the tail-order note above)
     fireEvent.click(view.container.querySelector('[data-chain-foot] button[class*="save"]')!)
 
     await waitFor(() => expect(scripted.set).toHaveBeenCalled())
