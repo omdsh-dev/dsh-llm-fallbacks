@@ -670,27 +670,60 @@ describe('role cards (指定降级链)', () => {
     await waitFor(() => expect(scripted.set).toHaveBeenCalled())
     const card = view.container.querySelector('[data-role-card="coder"]') as HTMLElement
     // The post-save re-seed rebuilds the rows from the accepted config:
-    // collapsed again, with the saved route on the collapse meta.
+    // collapsed again, with the saved chain's LABEL on the collapse meta (the
+    // exact route stays in the title tooltip).
     await waitFor(() => expect(card.querySelector('[aria-expanded]')!.getAttribute('aria-expanded')).toBe('false'))
     expect(card.querySelector('select')).toBeNull()
-    expect(card.textContent).toContain('FallbacksChain/night')
+    expect(card.textContent).toContain('夜间')
+    expect(card.textContent).not.toContain('FallbacksChain/night')
+    expect(card.querySelector('[class*="collapseMeta"]')!.getAttribute('title')).toBe('FallbacksChain/night')
     // Re-opening the card shows the ACCEPTED pointer, not the stale draft.
     fireEvent.click(card.querySelector('[class*="collapseRow"] [aria-expanded="false"]')!)
     expect((card.querySelector('[data-role-chain-select]') as HTMLSelectElement).value).toBe('night')
   })
 
-  it('the collapsed meta names the specified route or 未指定降级链 — never an auto mode', async () => {
+  it('the collapsed meta names the chain label or 未指定降级链 — never an auto mode', async () => {
     const { view } = await mountCard({
       config: { ...v2Config(), roles: { list: [{ id: 'coder', persona: '' }] } },
     })
     const card = view.container.querySelector('[data-role-card="coder"]')!
-    expect(card.textContent).toContain(en['roles.chainMeta.unspecified'])
+    const meta = () => card.querySelector('[class*="collapseMeta"]') as HTMLElement
+    expect(meta().textContent).toBe(en['roles.chainMeta.unspecified'])
+    // No pointer, no route tooltip.
+    expect(meta().getAttribute('title')).toBe(en['roles.chainMeta.unspecified'])
     expect(card.textContent).not.toContain('自动')
-    // Pick a chain → meta shows the route.
+    // Pick a chain → the meta shows its LABEL, the title keeps the route.
     expandRoleCards(view.container)
     const select = card.querySelector('[data-role-chain-select]') as HTMLSelectElement
     fireEvent.change(select, { target: { value: 'Auto' } })
-    expect(card.textContent).toContain('FallbacksChain/Auto')
+    expect(meta().textContent).toBe('默认链')
+    expect(meta().getAttribute('title')).toBe('FallbacksChain/Auto')
+  })
+
+  it('a dangling pointer renders the raw chain id', async () => {
+    const { view } = await mountCard({
+      config: { ...v2Config(), roles: { list: [{ id: 'coder', persona: '', chain: 'ghost' }] } },
+    })
+    const card = view.container.querySelector('[data-role-card="coder"]')!
+    const meta = card.querySelector('[class*="collapseMeta"]') as HTMLElement
+    // The chain is gone: no label to show, but never a blank meta.
+    expect(meta.textContent).toBe('ghost')
+    expect(meta.getAttribute('title')).toBe('FallbacksChain/ghost')
+  })
+
+  it('a chain with a blank label falls back to the raw chain id', async () => {
+    const { view } = await mountCard({
+      config: {
+        ...v2Config(),
+        chains: [...v2Config().chains, { id: 'blank', label: '', entries: [OFFICIAL_PRO], timeSlots: [] }],
+        roles: { list: [{ id: 'coder', persona: '', chain: 'blank' }] },
+      },
+    })
+    const card = view.container.querySelector('[data-role-card="coder"]')!
+    const meta = card.querySelector('[class*="collapseMeta"]') as HTMLElement
+    // A blank label has nothing to show: the id, never an empty meta.
+    expect(meta.textContent).toBe('blank')
+    expect(meta.getAttribute('title')).toBe('FallbacksChain/blank')
   })
 })
 
@@ -748,23 +781,23 @@ describe('role card shape', () => {
     expect(card.querySelector('select')).toBeNull()
     expect(card.querySelector('textarea')).toBeNull()
     expect(card.querySelector('[class*="cardFoot"]')).toBeNull()
-    // Role id on the left, the current chain route on the right.
+    // Role id on the left, the current chain's label on the right.
     expect(row.textContent).toContain('coder')
-    expect(row.textContent).toContain('FallbacksChain/Auto')
+    expect(row.textContent).toContain('默认链')
     // The delete action is a SIBLING of the collapse button (never nested:
     // a nested button is invalid HTML and double-activates the row).
     const buttons = [...row.querySelectorAll('button')]
     expect(buttons).toHaveLength(2)
     expect(buttons[0]!.getAttribute('aria-expanded')).toBe('false')
     expect(buttons[0]!.contains(buttons[1]!)).toBe(false)
-    // F3: both row controls name the ROLE (id + chain route), not a generic
+    // F3: both row controls name the ROLE (id + chain label), not a generic
     // action — otherwise every row of the list sounds identical. The module
     // `t` seat does not interpolate, so this rerenders with the concrete one.
     view.rerender(<FallbacksCard {...props} t={interpolatingT} />)
     const namedRow = view.container.querySelector('[data-role-card="coder"] [class*="collapseRow"]') as HTMLElement
     const named = [...namedRow.querySelectorAll('button')]
     expect(named[0]!.getAttribute('aria-label')).toBe('Expand role coder')
-    expect(named[1]!.getAttribute('aria-label')).toBe('Remove role coder (FallbacksChain/Auto)')
+    expect(named[1]!.getAttribute('aria-label')).toBe('Remove role coder (默认链)')
     // The visible bubble stays short — a nowrap tooltip carrying the identity
     // would overflow the row's trailing edge.
     expect(named[1]!.getAttribute('data-tip')).toBe('Remove this role')

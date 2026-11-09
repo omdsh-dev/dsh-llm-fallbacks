@@ -1773,15 +1773,21 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
               const seed = seedInfo.get(row.id.trim())
               const seedBadge = seedBadgeLabel(seed, t)
               const personaBlank = row.persona.trim() === ''
-              // Collapse meta: the role's specified chain route, honest even
-              // when collapsed (the mockup).
+              // Collapse meta: the chain's operator label, honest even when
+              // collapsed — the opaque route id only when no label exists.
+              const pointerChain = chains.find(chain => chain.id === row.chain)
               const chainRoute = row.chain === ''
                 ? t('roles.chainMeta.unspecified')
+                : pointerChain !== undefined && pointerChain.label.trim() !== ''
+                  ? pointerChain.label
+                  : row.chain
+              const chainTitle = row.chain === ''
+                ? chainRoute
                 : `FallbacksChain/${row.chain}`
               const roleExpanded = !row.collapsed || !writable
               // A pointer naming a chain deleted elsewhere stays visible as a
               // synthetic option so the dangling reference is honest.
-              const chainOutside = row.chain !== '' && !chains.some(chain => chain.id === row.chain)
+              const chainOutside = row.chain !== '' && pointerChain === undefined
               return (
               <div key={index} className={`${css.editorCard} ${css.roleCard}`} data-role-card={row.id}>
                 <div className={css.collapseRow}>
@@ -1798,7 +1804,7 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
                     {seedBadge !== null && (
                       <span className={css.seedBadge} title={seedBadge}>{seedBadge}</span>
                     )}
-                    <span className={css.collapseMeta} title={chainRoute}>{chainRoute}</span>
+                    <span className={css.collapseMeta} title={chainTitle}>{chainRoute}</span>
                   </button>
                   {/* SIBLING of the collapse button, never nested: a nested
                     * button is invalid HTML and double-activates the row.
