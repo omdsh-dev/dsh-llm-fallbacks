@@ -75,8 +75,11 @@ fallbacks:
     - RATE_LIMIT
     - CONTEXT_WINDOW_EXCEEDED  # fail over when the request does not fit
   chains:
-    - anthropic/claude-3-5-sonnet          # walked first
-    - deepseek-official/deepseek-flash  # last resort (Flash or Pro)
+    - id: Auto                             # picker model id: FallbacksChain/Auto
+      label: Default chain                 # tab title + picker display prefix
+      entries:
+        - anthropic/claude-3-5-sonnet      # Default fallback chain, walked first
+        - deepseek-official/deepseek-flash # LAST = Default model (Flash XOR Pro)
 ```
 
 **Ordering — on a virtual-route session the fallback runs before compaction.** With `CONTEXT_WINDOW_EXCEEDED` in `triggerCodes`, a `FallbacksChain / <chain id>` request that overflows is handled inside the walk while the attempt has emitted nothing, so the conversation moves to a larger-context candidate and the context is not compacted. The failure only reaches the harness's compaction plugin when the walk itself cannot continue (no larger candidate, or the switch cap is reached) — then the last terminal failure is re-emitted verbatim and the host's normal error path, compaction included, runs. This applies **only** to sessions on the virtual route; a session on a real provider/model has no chain, so its overflow goes straight to compaction as before. Leave the code out of `triggerCodes` to have compaction tried first on virtual-route sessions too.
@@ -101,11 +104,11 @@ slot rotation logs and UI say **time-slot switch**; the failure walk keeps
 **fallback switch**; the conversation notice Model downgraded stays on the
 failure path only.
 
-- **Match order**: at every request on that chain, the first row whose window contains the current moment (in `fallbacks.tz`, default `Asia/Shanghai` / UTC+8) wins — that row's chain **replaces** the chain's `entries`. No row matches → the chain's own entries are used. A chain's LAST entry is always **required** to be exactly one official model (Flash / Pro XOR; leading 默认降级链 entries are walked first).
+- **Match order**: at every request on that chain, the first row whose window contains the current moment (in `fallbacks.tz`, default `Asia/Shanghai` / UTC+8) wins — that row's chain **replaces** the chain's `entries`. No row matches → the chain's own entries are used. A NON-EMPTY `entries` tail must be exactly one official model (Flash / Pro XOR; leading Default fallback chain (默认降级链) entries are walked first). The gateway accepts an EMPTY `entries` — the row registers and the walk refuses it with `EMPTY_EFFECTIVE_CHAIN` — and the card additionally requires a tail before its Save arms.
 - **Presets** (frozen, not user-editable): `liang-peak` = Monday–Friday 09:00–12:00 **and** 14:00–18:00; `liang-valley` = every other UTC+8 time; `glm-peak` = Monday–Friday 14:00–18:00; `glm-valley` = every other time. One preset id = one row; the card picker never offers a duplicate.
 - **Custom rows**: `start` / `end` (`HH:mm`, may wrap midnight) + optional `days` (0=Sunday…6=Saturday; omitted/empty = every day) + models.
 - **Next-request apply**: a slot boundary crossing never preempts an in-flight step — the new row takes effect on the next root request. Rotation is mount-only: info log + card/`/fallbacks` status line, no durable switch event.
-- **Flat settings card** (the official Plugins-page form language): the card is always open — no collapsible chrome and no feature switch — and one footer **Save/Discard** pair writes the whole validated draft. The Main agent section groups Time slots (extra rows — add preset / add custom / remove / reorder by buttons or **drag**; preset rows show a read-only window summary and edit models only; custom rows carry an editable name; the **timezone picker** lives here and **locks to Asia/Shanghai while any preset row exists**, since preset windows are frozen UTC+8 constants), Default fallback chain (walked first when no slot matches) and Default model (the official Flash | Pro last-resort fallback). Rows are collapsible to name + first model (content disclosure). There is no `timeSlots.enabled` master switch (adding a row is the opt-in) and no `rootMode` control.
+- **Settings card — tab per chain**: the Virtual chains (虚拟链) section is a chain tab strip (a dirty tab carries a pip, an invalid one a red `!`; `＋` adds a chain, `⋯` renames the label or deletes the chain and at least one remains), and the selected tab opens a Chain name (链名称) field (display-only; the id is the immutable picker route) plus the shipped block order **Time slots (分时槽设置) → Default fallback chain (默认降级链) → Default model (默认模型)**. Time slots rows are per chain (add preset / add custom / remove / reorder by buttons or **drag**; a preset row shows a read-only window summary and edits its selector list only; a custom row carries an editable name, `start`/`end`/`days` and a read-only timezone display), and the tab's own Discard/Save pair writes ONLY that chain (hint: "Saves this chain only: selectors · tail · time slots · name"). The Subagents (子代理) section holds one collapsed role card per role (id + its specified chain route) with its own save pair, and Advanced options (高级选项) is a collapsible disclosure. There is no Main agent section, no feature switch, no timezone picker, no `timeSlots.enabled` master switch and no `rootMode` control.
 
 Row shape, save rules and the frozen-window table → [docs/configuration.md](configuration.md) → Time slots.
 
@@ -120,8 +123,7 @@ mechanisms share that header, and they are not the same thing:
   makes the child a role child: the role's `persona` is installed on it, its own
   session shows one `[role: <id>]` notice row, and the web session header shows
   a role badge.
-- **Chain stamping** also runs at dispatch, in the same two ordered stages
-  (explicit `agentPreset` → the declared `**Execute as**` header). A resolved
+- **Chain stamping** runs at the same dispatch over the same resolved role. A
   role whose `chain` pointer names a declared chain stamps the child onto
   `FallbacksChain / <role.chain>` — local backends only, and only when the
   spawn request carries no explicit `provider`/`model` route (an explicit route
@@ -141,7 +143,7 @@ header, so nothing Agent-Team-specific is required.
 
 ### Role resolution in the walk
 
-An agent's role is resolved at DISPATCH, in **two ordered stages** (first hit wins) — explicit (`agentPreset` matches a declared role id) → **dispatch-declared role** (the role the dispatch seam resolved from the child's prompt header `**Execute as**: <id>` — a normally delegated Assignment or an Agent Team teammate's initial prompt — trimmed and looked up in the live declared-role set, so an absent header, the reserved `inherit` and a since-removed id all fall through silently). The resolved role's `chain` POINTER decides the chain the child mounts — never a chain definition, and never picked by the plugin. There is no rule matching, no LLM auto-match stage and no `roleAutoMatch` key any more.
+An agent's role is resolved at DISPATCH from one source: the child prompt header `**Execute as**: <id>` — a normally delegated Assignment or an Agent Team teammate's initial prompt — trimmed and looked up in the live declared-role set, so an absent header, the reserved `inherit` and a since-removed id all resolve to NOT SPECIFIED. The resolved role's `chain` POINTER decides the chain the child mounts — never a chain definition, and never picked by the plugin. There is no rule matching, no LLM auto-match stage and no `roleAutoMatch` key any more.
 
 ### Role persona on the child
 
@@ -155,7 +157,7 @@ A child dispatched with a declared role gets exactly one plugin notice row in it
 
 A subagent **session** shows a compact badge next to the session's agent-preset (mode) chip in the web session header, reading `role · provider/model`; hover shows `role → provider/model (request route)`. The two halves are independent facts and each is omitted when its own source is absent:
 
-- **Role**: shown only for a child **dispatched with a declared role** — the `**Execute as**: <id>` field of its Assignment, the same declaration that carries the persona, and the badge's ONLY role source (policy on or off). Only the DECLARED header is read, so a child whose role came from another stage (`agentPreset` match, or a role rule) but which declares no Assignment header is still routed as that role yet shows **no role** — the badge never reports a role inferred after the fact. An `inherit`/unresolved dispatch omits the role half; it does not hide the badge.
+- **Role**: shown only for a child **dispatched with a declared role** — the `**Execute as**: <id>` field of its Assignment, the same declaration that carries the persona, and the badge's ONLY role source. Only the DECLARED header is read, so a child with no Assignment header shows **no role** even when it inherits a route from its parent — the badge never reports a role inferred after the fact. An `inherit`/unresolved dispatch omits the role half; it does not hide the badge.
 - **Model**: the host's own `modelSelection` projection, read as `next ?? lastUsed` — the route the child's next request will use, falling back to the route its latest recorded request ran on. It renders for any subagent session that has a recorded route, declared role or not.
 
 A **root** session never shows the badge (its composer owns the model control). The badge is durable: both halves are read from the child's own session record, so it is still shown for a **settled** subagent session and **after a host restart**.
@@ -173,12 +175,11 @@ header get the same persona installation, the same routing-role resolution, the
 same `[role: <id>]` notice row and the same badge, and the role still has to be
 declared in `roles.list` to resolve. No per-mechanism configuration exists.
 
-- **The header is the only role carrier.** Resolution is two ordered stages —
-  the explicit `agentPreset` session header, then the dispatch-declared role —
-  and a teammate whose prompt omits the declaration, or names an id that is not
-  currently declared, resolves to NOT SPECIFIED, exactly like a normally
-  delegated child without one. There is no rules stage: what the role then
-  contributes is its optional `chain` POINTER (「指定降级链」), which mounts the
+- **The header is the only role carrier.** Resolution reads that declared
+  header only, and a teammate whose prompt omits the declaration, or names an id
+  that is not currently declared, resolves to NOT SPECIFIED, exactly like a
+  normally delegated child without one. There is no rule matching: what the role
+  then contributes is its optional `chain` POINTER (「指定降级链」), which mounts the
   child on `FallbacksChain/<chain id>`.
 - **Names stay arbitrary (but unique inside one Team).** Any number of
   differently named teammates can carry the same role; there is **no
@@ -190,7 +191,7 @@ declared in `roles.list` to resolve. No per-mechanism configuration exists.
   reserved id for a non-local provider (`UNSUPPORTED_CAPABILITY`), so member
   creation fails and no role is delivered.
 
-Full resolution reference (stages, chain composition) → [docs/configuration.md](configuration.md#subagent-role-resolution-and-chain-mounting).
+Full resolution reference (dispatch source, chain composition) → [docs/configuration.md](configuration.md#role-resolution-and-chain-composition).
 
 ## FallbacksChain in the model picker
 
@@ -202,11 +203,11 @@ There is **no `rootMode` switch** — no config key, YAML field, settings toggle
 
 Notes:
 
-- **Picker label**: the row's catalog `name` (what the composer trigger shows) is live — `Auto: DeepSeek Flash[Liang Peak]` / `Auto: DeepSeek Flash[all-day]` (catalog display name, not the model id); the id stays `Auto`. Bare `Auto` if the all-day tail is not conforming. Refresh by reopening the picker.
+- **Picker label**: the row's catalog `name` (what the composer trigger shows) is live — `` `${chain.label}: <head>[<slot>]` ``, e.g. `默认链: DeepSeek Flash[all-day]` (the chain's label, not its id; catalog display name rather than the model id). Bare `<chain label>` when that chain's tail is non-conforming or its head is unresolvable. Refresh by reopening the picker.
 - **One walk for every origin**: the same `stream()` walk serves the root agent and a stamped subagent session on the selection — the walk uses THAT chain's slot-effective entries; there is no origin split.
-- **Conformance gate on the tail**: a successful virtual-route request requires the all-day chain to be **tail-conforming** — its last entry must be exactly one official model (`deepseek-official/deepseek-flash` or `deepseek-official/deepseek-v4-pro`, the card's Default model panel); leading entries (Default fallback chain) are walked first. Deactivating the plugin (the Plugins-page row switch, or clearing all configured content) hides the row again (slot-row/chain edits never churn registration).
+- **Conformance gate on the tail**: a successful virtual-route request requires the SELECTED chain to be **tail-conforming** — a non-empty `entries` tail must be exactly one official model (`deepseek-official/deepseek-flash` or `deepseek-official/deepseek-v4-pro`, the card's Default model (默认模型) panel), while an empty `entries` fails the walk with `EMPTY_EFFECTIVE_CHAIN`; leading entries (the Default fallback chain, 默认降级链) are walked first. Deactivating the plugin (the Plugins-page row switch, or clearing all configured content) hides the rows again (slot-row/chain edits never churn registration).
 - **Stale selection**: if the row disappears (plugin deactivated) while `FallbacksChain / <chain id>` is selected, the session keeps showing it as the current model with `routable: false` — pick a real model from the catalog to continue (host-native catalog semantics).
-- **Capabilities and retry policy follow the head**: the row's model metadata (context window, modalities, reasoning) mirrors the current effective head, and `providerRetryPolicy` returns **that head's** policy — so a user's `llm-deepseek.retryPolicy` applies on this route too, not the permissive default. The host captures the policy once at registration, so a later policy edit or a slot-driven head-provider rotation shows up only after the plugin re-registers. Retry events are keyed by the virtual provider — the route the runtime actually sees. Full semantics → [docs/configuration.md](configuration.md).
+- **Capabilities follow the head; retry policy does not**: the row's model metadata (context window, modalities, reasoning) mirrors the current effective head, but `providerRetryPolicy` returns `undefined` (documented degradation) — the host captures the policy once per provider at registration, so the virtual route cannot mirror a per-chain head's policy and the host's own default applies; a head provider's custom `retryPolicy` (including `mode: 'always'`) does not apply on this route. Retry events are keyed by the virtual provider — the route the runtime actually sees. Full semantics → [docs/configuration.md](configuration.md).
 
 ### Preset roles
 

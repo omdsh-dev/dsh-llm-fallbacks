@@ -1,0 +1,127 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="1296" viewBox="0 0 960 1296" font-family='-apple-system, "SF Pro Text", "Segoe UI", system-ui, sans-serif' role="img" aria-label="Fallbacks settings card (illustration)">
+<rect width="960" height="1296" fill="#F5F6FC"/>
+<rect x="40" y="28" width="880" height="1240" rx="16" fill="#FFFFFF" stroke="#E6E7EF" stroke-width="1"/>
+<rect x="76" y="282" width="808" height="100" rx="12" fill="#F7F8FC" stroke="none"/>
+<rect x="76" y="390" width="808" height="238" rx="12" fill="#F7F8FC" stroke="none"/>
+<rect x="76" y="1160" width="808" height="42" rx="12" fill="#F7F8FC" stroke="none"/>
+<text x="76" y="80" font-size="16" font-weight="600" fill="#16181D">Virtual chains</text>
+<text x="192.8288" y="79" font-size="12" font-weight="400" fill="#8A8A94">Each chain is a standalone virtual route with its own time slots, default chain and chain tail.</text>
+<text x="88" y="112" font-size="13" font-weight="600" fill="#16181D">Default</text>
+<rect x="84" y="124.5" width="50.587999999999994" height="2.5" rx="1.25" fill="#4D6BFE" stroke="none" stroke-width="1"/>
+<text x="154.588" y="112" font-size="13" font-weight="400" fill="#5C5C66">Coding</text>
+<text x="216.75799999999998" y="112" font-size="14" font-weight="400" fill="#8A8A94">＋</text>
+<text x="242.75799999999998" y="112" font-size="14" font-weight="400" fill="#8A8A94">⋯</text>
+<line x1="76" y1="128" x2="884" y2="128" stroke="#E3E4EE" stroke-width="0.5"/>
+<text x="76" y="150" font-size="14" font-weight="600" fill="#16181D">Chain name</text>
+<rect x="76" y="160" width="808" height="34" rx="8" fill="#FFFFFF" stroke="#E1E2EC" stroke-width="1"/>
+<text x="88" y="181.5" font-size="13" font-weight="400" fill="#16181D">Default</text>
+<text x="76" y="210" font-size="12" font-weight="400" fill="#8A8A94">Display only (tab title and picker prefix); the id "Auto" is the picker route and cannot change after creation.</text>
+<line x1="76" y1="224" x2="884" y2="224" stroke="#E3E4EE" stroke-width="0.5"/>
+<text x="76" y="250" font-size="14" font-weight="600" fill="#16181D">Time slots</text>
+<text x="76" y="270" font-size="12" font-weight="400" fill="#8A8A94">First match from top to bottom wins; the all-day row is always last</text>
+<path d="M92 293.5 l4 4 l-4 4" fill="none" stroke="#8A8A94" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="110" y="302" font-size="14" font-weight="500" fill="#16181D">Liang Peak</text>
+<rect x="192.3996" y="288" width="62.1338" height="18" rx="999" fill="#FDEEEE" stroke="#D64545" stroke-width="1"/>
+<text x="199.3996" y="301" font-size="11" font-weight="500" fill="#D64545">High Cost</text>
+<rect x="260.53340000000003" y="288" width="27.1274" height="18" rx="999" fill="#FDF6E7" stroke="#B7791F" stroke-width="1"/>
+<text x="267.53340000000003" y="301" font-size="11" font-weight="500" fill="#B7791F">x2</text>
+<text x="92" y="324" font-size="12" font-weight="400" fill="#5C5C66">Preset</text>
+<text x="92" y="344" font-size="14" font-weight="500" fill="#16181D">Liang Peak</text>
+<text x="352" y="324" font-size="12" font-weight="400" fill="#5C5C66">Window (read-only)</text>
+<text x="352" y="344" font-size="12" font-weight="400" fill="#8A8A94">09:00–12:00 &amp; 14:00–18:00 (Monday–Friday, UTC+8)</text>
+<text x="92" y="368" font-size="12" font-weight="400" fill="#8A8A94">Preset windows are frozen: only the model chain is editable</text>
+<path d="M92 403.5 l4 4 l-4 4" fill="none" stroke="#8A8A94" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="110" y="412" font-size="13" font-weight="500" fill="#16181D">Night</text>
+<text x="92" y="436" font-size="12" font-weight="400" fill="#5C5C66">Name</text>
+<rect x="92" y="442" width="300" height="34" rx="8" fill="#FFFFFF" stroke="#E1E2EC" stroke-width="1"/>
+<text x="104" y="463.5" font-size="13" font-weight="400" fill="#16181D">Night</text>
+<text x="92" y="494" font-size="12" font-weight="400" fill="#5C5C66">Timezone (UTC±)</text>
+<text x="92" y="512" font-size="12" font-weight="400" fill="#8A8A94">Asia/Shanghai (UTC+8)</text>
+<text x="92" y="532" font-size="12" font-weight="400" fill="#5C5C66">Start (HH:mm)</text>
+<rect x="92" y="538" width="220" height="34" rx="8" fill="#FFFFFF" stroke="#E1E2EC" stroke-width="1"/>
+<text x="104" y="559.5" font-size="13" font-weight="400" fill="#16181D">22:00</text>
+<text x="352" y="532" font-size="12" font-weight="400" fill="#5C5C66">End (HH:mm)</text>
+<rect x="352" y="538" width="220" height="34" rx="8" fill="#FFFFFF" stroke="#E1E2EC" stroke-width="1"/>
+<text x="364" y="559.5" font-size="13" font-weight="400" fill="#16181D">02:00</text>
+<text x="92" y="588" font-size="12" font-weight="400" fill="#5C5C66">Days</text>
+<rect x="132" y="574" width="33.1862" height="24" rx="6" fill="#FFFFFF" stroke="#E1E2EC" stroke-width="1"/>
+<text x="148.5931" y="590" font-size="11" font-weight="400" fill="#5C5C66" text-anchor="middle">Sun</text>
+<rect x="171.18619999999999" y="574" width="35.9912" height="24" rx="6" fill="#EEF2FF" stroke="#4D6BFE" stroke-width="1"/>
+<text x="189.18179999999998" y="590" font-size="11" font-weight="500" fill="#4D6BFE" text-anchor="middle">Mon</text>
+<rect x="213.17739999999998" y="574" width="33.1862" height="24" rx="6" fill="#EEF2FF" stroke="#4D6BFE" stroke-width="1"/>
+<text x="229.77049999999997" y="590" font-size="11" font-weight="500" fill="#4D6BFE" text-anchor="middle">Tue</text>
+<rect x="252.36359999999996" y="574" width="35.9912" height="24" rx="6" fill="#EEF2FF" stroke="#4D6BFE" stroke-width="1"/>
+<text x="270.3592" y="590" font-size="11" font-weight="500" fill="#4D6BFE" text-anchor="middle">Wed</text>
+<rect x="294.35479999999995" y="574" width="33.1862" height="24" rx="6" fill="#EEF2FF" stroke="#4D6BFE" stroke-width="1"/>
+<text x="310.94789999999995" y="590" font-size="11" font-weight="500" fill="#4D6BFE" text-anchor="middle">Thu</text>
+<rect x="333.54099999999994" y="574" width="30.493399999999998" height="24" rx="6" fill="#EEF2FF" stroke="#4D6BFE" stroke-width="1"/>
+<text x="348.7876999999999" y="590" font-size="11" font-weight="500" fill="#4D6BFE" text-anchor="middle">Fri</text>
+<rect x="370.03439999999995" y="574" width="30.493399999999998" height="24" rx="6" fill="#FFFFFF" stroke="#E1E2EC" stroke-width="1"/>
+<text x="385.2810999999999" y="590" font-size="11" font-weight="400" fill="#5C5C66" text-anchor="middle">Sat</text>
+<text x="92" y="616" font-size="12" font-weight="400" fill="#8A8A94">None selected = every day; may wrap midnight</text>
+<rect x="76" y="640" width="240" height="32" rx="8" fill="#FFFFFF" stroke="#E1E2EC" stroke-width="1"/>
+<text x="88" y="660.5" font-size="13" font-weight="400" fill="#5C5C66">Select a preset</text>
+<path d="M299 655 l4 4.5 l4 -4.5" fill="none" stroke="#8A8A94" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+<rect x="328" y="640" width="99.76" height="32" rx="8" fill="#FFFFFF" stroke="#E1E2EC" stroke-width="1" opacity="0.4"/>
+<text x="352" y="660.2" font-size="12" font-weight="400" fill="#5C5C66">Add preset</text>
+<path d="M340 652 h8 M344 648 v8" fill="none" stroke="#5C5C66" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="457.76" y="660.2" font-size="12" font-weight="400" fill="#5C5C66">Add custom time slot</text>
+<path d="M445.76 652 h8 M449.76 648 v8" fill="none" stroke="#5C5C66" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+<line x1="76" y1="690" x2="884" y2="690" stroke="#E3E4EE" stroke-width="0.5"/>
+<text x="76" y="706" font-size="14" font-weight="600" fill="#16181D">Default fallback chain</text>
+<text x="96" y="739" font-size="12" font-weight="400" fill="#8A8A94">1</text>
+<rect x="116" y="718" width="260" height="32" rx="8" fill="#FFFFFF" stroke="#E1E2EC" stroke-width="1"/>
+<text x="128" y="738.5" font-size="13" font-weight="400" fill="#16181D">opencode-go</text>
+<path d="M359 733 l4 4.5 l4 -4.5" fill="none" stroke="#8A8A94" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+<rect x="392" y="718" width="460" height="32" rx="8" fill="#FFFFFF" stroke="#E1E2EC" stroke-width="1"/>
+<text x="404" y="738.5" font-size="13" font-weight="400" fill="#16181D">DeepSeek V4.1 Flash</text>
+<path d="M835 733 l4 4.5 l4 -4.5" fill="none" stroke="#8A8A94" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="862" y="739" font-size="15" font-weight="400" fill="#8A8A94">⋯</text>
+<text x="96" y="779" font-size="12" font-weight="400" fill="#8A8A94">2</text>
+<rect x="116" y="758" width="260" height="32" rx="8" fill="#FFFFFF" stroke="#E1E2EC" stroke-width="1"/>
+<text x="128" y="778.5" font-size="13" font-weight="400" fill="#16181D">zai-coding-cn</text>
+<path d="M359 773 l4 4.5 l4 -4.5" fill="none" stroke="#8A8A94" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+<rect x="392" y="758" width="460" height="32" rx="8" fill="#FFFFFF" stroke="#E1E2EC" stroke-width="1"/>
+<text x="404" y="778.5" font-size="13" font-weight="400" fill="#16181D">GLM-5.3</text>
+<path d="M835 773 l4 4.5 l4 -4.5" fill="none" stroke="#8A8A94" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="862" y="779" font-size="15" font-weight="400" fill="#8A8A94">⋯</text>
+<text x="96" y="819" font-size="12" font-weight="400" fill="#8A8A94">3</text>
+<rect x="116" y="798" width="260" height="32" rx="8" fill="#FFFFFF" stroke="#E1E2EC" stroke-width="1"/>
+<text x="128" y="818.5" font-size="13" font-weight="400" fill="#16181D">deepseek-official</text>
+<path d="M359 813 l4 4.5 l4 -4.5" fill="none" stroke="#8A8A94" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+<rect x="392" y="798" width="460" height="32" rx="8" fill="#FFFFFF" stroke="#E1E2EC" stroke-width="1"/>
+<text x="404" y="818.5" font-size="13" font-weight="400" fill="#16181D">DeepSeek V4.1 Pro</text>
+<path d="M835 813 l4 4.5 l4 -4.5" fill="none" stroke="#8A8A94" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="862" y="819" font-size="15" font-weight="400" fill="#8A8A94">⋯</text>
+<text x="96" y="857.2" font-size="12" font-weight="400" fill="#5C5C66">Add selector</text>
+<path d="M84 849 h8 M88 845 v8" fill="none" stroke="#5C5C66" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+<line x1="76" y1="882" x2="884" y2="882" stroke="#E3E4EE" stroke-width="0.5"/>
+<text x="76" y="898" font-size="14" font-weight="600" fill="#16181D">Default model</text>
+<text x="76" y="916" font-size="12" font-weight="400" fill="#8A8A94">Last-resort fallback of the all-day chain: official Flash or Pro (pick exactly one)</text>
+<circle cx="92" cy="946" r="8" fill="#FFFFFF" stroke="#4D6BFE" stroke-width="1.4"/>
+<circle cx="92" cy="946" r="4.2" fill="#4D6BFE" stroke="none" stroke-width="1"/>
+<text x="110" y="951" font-size="13" font-weight="400" fill="#16181D">Official Flash (deepseek-official/deepseek-flash)</text>
+<circle cx="92" cy="984" r="8" fill="#FFFFFF" stroke="#C6C8D6" stroke-width="1.4"/>
+<text x="110" y="989" font-size="13" font-weight="400" fill="#16181D">Official Pro (deepseek-official/deepseek-v4-pro)</text>
+<line x1="76" y1="1016" x2="884" y2="1016" stroke="#E3E4EE" stroke-width="0.5"/>
+<rect x="76" y="1032" width="65.56" height="26" rx="8" fill="#FFFFFF" stroke="#E1E2EC" stroke-width="1"/>
+<text x="87" y="1049.2" font-size="12" font-weight="400" fill="#5C5C66">Discard</text>
+<rect x="149.56" y="1032" width="49" height="26" rx="8" fill="#16181D" stroke="none" stroke-width="1"/>
+<text x="160.56" y="1049" font-size="12" font-weight="400" fill="#FFFFFF">Save</text>
+<text x="884" y="1049" font-size="12" font-weight="400" fill="#8A8A94" text-anchor="end">Saves this chain only: selectors · tail · time slots · name</text>
+<line x1="76" y1="1068" x2="884" y2="1068" stroke="#E3E4EE" stroke-width="0.5"/>
+<text x="76" y="1102" font-size="16" font-weight="600" fill="#16181D">Subagents</text>
+<rect x="835" y="1090" width="49" height="26" rx="8" fill="#16181D" stroke="none" stroke-width="1"/>
+<text x="846" y="1107" font-size="12" font-weight="400" fill="#FFFFFF">Save</text>
+<rect x="761.44" y="1090" width="65.56" height="26" rx="8" fill="#FFFFFF" stroke="#E1E2EC" stroke-width="1"/>
+<text x="772.44" y="1107.2" font-size="12" font-weight="400" fill="#5C5C66">Discard</text>
+<text x="76" y="1130" font-size="13" font-weight="500" fill="#16181D">Declared roles</text>
+<path d="M92 1177.5 l4 4 l-4 4" fill="none" stroke="#8A8A94" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="110" y="1185.5" font-size="13" font-weight="500" fill="#16181D">reviewer</text>
+<rect x="176.6092" y="1172" width="55.7188" height="18" rx="999" fill="#EFF0F6" stroke="none" stroke-width="1"/>
+<text x="184.6092" y="1185" font-size="11" font-weight="500" fill="#5C5C66">bundled</text>
+<path d="M857 1176 h10 M860.5 1176 v-2 h3 v2 M858.5 1177 l0.7 9 h6.6 l0.7 -9" fill="none" stroke="#8A8A94" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="844" y="1185.5" font-size="12" font-weight="400" fill="#5C5C66" text-anchor="end">No chain specified</text>
+<text x="96" y="1229.2" font-size="12" font-weight="400" fill="#5C5C66">Add role</text>
+<path d="M84 1221 h8 M88 1217 v8" fill="none" stroke="#5C5C66" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

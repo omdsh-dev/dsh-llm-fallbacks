@@ -2,11 +2,12 @@
 # the profile's bundle stack (`dsh.profile.bundles` order — dsh-base first,
 # this bundle after the llm-retry bundle; later layers win per row).
 #
-# Insert position matters for the host waterfall: the profile must list the
-# llm-retry bundle BEFORE dsh-llm-fallbacks, so this plugin's
-# `agent/request-error` listener composes after llm-retry and only intervenes
-# once retry policy is exhausted (normal mode) or delegates downstream first
-# (always mode). See plan Risk table.
+# Insert position matters for composition: the profile must list the llm-retry
+# bundle BEFORE dsh-llm-fallbacks, because the plugin applies against services
+# those layers provide (`llm`, `subagents`) and `add` appends to the end. It
+# registers NO request-waterfall listener, so there is no listener-ordering
+# contest with llm-retry: retries stay llm-retry's, and this plugin only walks
+# its own `FallbacksChain/<chain id>` route.
 #
 # A patch replaces the targeted row's whole `config` rather than merging into
 # it, so a user-level override must restate every field it keeps. The row

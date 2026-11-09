@@ -47,7 +47,7 @@ dsh plugin --profile web add .
 
 A dsh profile is composed of ordered bundle layers: `@deepseek-ai/dsh-base` (contains the llm-retry plugin) → `@deepseek-ai/dsh-web-app` → `@mstar-harness/dsh` → `dsh-llm-fallbacks` (appended by `add`).
 
-The plugin registers **no** listener on the request waterfalls, so there is no ordering contest with llm-retry to lose: llm-retry alone decides when a failed request is retried, and this plugin's chain walk runs inside the virtual `FallbacksChain/Auto` route's own `stream()`. A retryable failure therefore reaches the walk only as an llm-retry re-entry, which is a fresh request. Keep `dsh-llm-fallbacks` after `@deepseek-ai/dsh-base` anyway — the plugin applies against services that layer provides (`llm`, `subagents`), and `add` appends to the end.
+The plugin registers **no** listener on the request waterfalls, so there is no ordering contest with llm-retry to lose: llm-retry alone decides when a failed request is retried, and this plugin's chain walk runs inside the selected `FallbacksChain/<chain id>` route's own `stream()`. A retryable failure therefore reaches the walk only as an llm-retry re-entry, which is a fresh request. Keep `dsh-llm-fallbacks` after `@deepseek-ai/dsh-base` anyway — the plugin applies against services that layer provides (`llm`, `subagents`), and `add` appends to the end.
 
 ## 3. Registry install
 
@@ -135,7 +135,7 @@ And the layer **before** it includes llm-retry (from `@deepseek-ai/dsh-base`) �
 Then **restart the dsh web session** (`dsh web`, or restart the running session) so that both the host half and the client half (the plugin config card) load:
 
 - The web settings GUI's Settings → **插件配置** page should show the **Fallbacks card**, **always available** — the card skeleton also renders on first open (before any `fallbacks` config exists).
-- The card is readable, editable, and saveable; it renders as the flat always-open form (no feature switch — the config-level `enabled` key was removed) with one Save/Discard footer; with nothing configured the behavior is a no-op (see [docs/configuration.md](configuration.md)).
+- The card is readable, editable, and saveable; it has **no feature switch** (the config-level `enabled` key was removed) and uses the shipped tab-per-chain form: a chain tab strip with a per-chain Discard/Save pair, a Subagents (子代理) section with its own save pair and collapsed role cards, and a collapsible Advanced options (高级选项) disclosure; with nothing configured the behavior is a no-op (see [docs/configuration.md](configuration.md)).
 - In-session, type `/fallbacks` directly to inspect the current session's diagnostics (role → chain → recent switches → cooldown); see the README's `/fallbacks` section.
 
 ## 8. Uninstall

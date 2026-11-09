@@ -31,6 +31,9 @@
     "scripts",
     "docs/DETAIL.md",
     "docs/DETAIL.zh.md",
+    "docs/*.md",
+    "docs/assets/card-en.svg",
+    "docs/assets/card-zh.svg",
     "docs/preview.svg",
     "docs/preview.zh.svg"
   ],
