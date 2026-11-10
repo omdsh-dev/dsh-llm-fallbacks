@@ -696,9 +696,13 @@ async function* walk(
     // 行为可见性: the log shows the attempt order AND why each candidate was
     // skipped; survivors (including the target) are unlabelled.
     const annotated = annotateCandidates(candidates, surviving, { current: from, cooldown, failed, minContextWindow, contextWindowOf })
-    const describeCandidates = (list: readonly AnnotatedCandidate[]): string[] => list.map(({ candidate, skip }) => skip === undefined
-      ? `${candidate.provider}/${candidate.model}`
-      : `${candidate.provider}/${candidate.model} (skipped: ${skip})`)
+    // The log names the route AND its pinned effort when it carries one: `a/b`
+    // and `a/b@high` are different requests on the same route, and an operator
+    // reading the attempt order must be able to tell them apart.
+    const describeCandidate = ({ candidate, skip }: AnnotatedCandidate): string =>
+      `${candidate.provider}/${candidate.model}${candidate.effort === undefined ? '' : `@${candidate.effort}`}`
+      + (skip === undefined ? '' : ` (skipped: ${skip})`)
+    const describeCandidates = (list: readonly AnnotatedCandidate[]): string[] => list.map(describeCandidate)
     const first: Selector | undefined = surviving[0]
     if (first?.model === undefined) return { candidates: describeCandidates(annotated) }
     return {

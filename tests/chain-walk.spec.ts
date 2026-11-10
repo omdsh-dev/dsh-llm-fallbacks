@@ -482,6 +482,22 @@ describe('pinned effort on chain entries (selector @effort)', () => {
     expect(adapter.calls[1]!.reasoningEffort).toBe('low')
   })
 
+  it('names the pinned effort in the switch log (a/b and a/b@high are not the same attempt)', async () => {
+    const info = vi.fn()
+    adapter.respond = (options) => (options.model === '1' ? { failure: { code: 'AUTH' } } : { chunks: [STOP] })
+
+    await walk(
+      { readConfig: chainCfg(['a/1@low', 'b/2@high']), log: { info, warn: () => {} } },
+    )
+
+    const switchLine = info.mock.calls.find(call => String(call[0]).includes('fallback switch'))
+    expect(switchLine).toBeDefined()
+    // The candidates ride as the last argument (the `%o` slot).
+    const candidates = switchLine!.at(-1) as string[]
+    expect(candidates).toContain('a/1@low (skipped: same-as-current)')
+    expect(candidates).toContain('b/2@high')
+  })
+
   it('does not leak a pin to the next entry that carries none', async () => {
     adapter.efforts = () => [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High' }]
     adapter.respond = (options) => (options.model === '1' ? { failure: { code: 'AUTH' } } : { chunks: [STOP] })
