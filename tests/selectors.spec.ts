@@ -157,7 +157,11 @@ describe('pinned reasoning effort (@effort suffix)', () => {
   })
 
   it('keeps the selector key effort-free', () => {
-    expect(selectorKey('openai', 'gpt-4o')).toBe('openai/gpt-4o')
+    // A parsed pin lives on the HOP, not on the route: the key of the pinned
+    // entry equals the key of the same entry without a pin.
+    const pinned = parseSelector('openai/gpt-4o@high')
+    expect(selectorKey(pinned.provider, pinned.model)).toBe('openai/gpt-4o')
+    expect(selectorKey(pinned.provider, pinned.model)).toBe(selectorKey('openai', 'gpt-4o'))
   })
 })
 

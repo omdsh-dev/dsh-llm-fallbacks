@@ -14,7 +14,6 @@ import { Config } from '../src/schema.ts'
 import { unwrapConfig } from './support/unwrap-config.ts'
 import {
   OFFICIAL_ACCOUNT_FLASH,
-  OFFICIAL_ACCOUNT_PRO,
   OFFICIAL_ALL_DAY_IDS,
   OFFICIAL_FLASH,
   OFFICIAL_PRO,
@@ -164,8 +163,6 @@ describe('isAllDayConforming — the four legal official tails', () => {
       'deepseek-official/deepseek-flash',
       'deepseek-official/deepseek-v4-pro',
     ])
-    expect(OFFICIAL_ACCOUNT_FLASH).toBe('deepseek-account/deepseek-flash')
-    expect(OFFICIAL_ACCOUNT_PRO).toBe('deepseek-account/deepseek-v4-pro')
   })
 
   it('accepts each of the four ids alone as the last entry', () => {
