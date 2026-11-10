@@ -6,6 +6,12 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.8.4] - 2026-11-10
+
+### Fixed
+
+- A matched time-slot row now contributes only its priority segment: the chain's default fallback entries and the official tail stay behind it, so every slot keeps the official fallback.
+
 ## [0.8.3] - 2026-11-10
 
 ### Changed
