@@ -66,7 +66,7 @@ type ProjectionReader = (key: string) => unknown
 /**
  * The virtual route provider this plugin owns (`FallbacksChain/<chain id>`).
  * Declared here rather than imported from `src/virtual-adapter.ts`: that host
- * module value-imports `@deepseek-ai/dsh-llm`, which the client bundle's
+ * module value-imports the host `dsh-llm` package, which the client bundle's
  * purity gate refuses to inline — the same reason the client half never
  * imports the host walk.
  */
@@ -88,11 +88,17 @@ export interface ChainRoute {
 
 /**
  * Chain catalog lookup injected by the client registration closure
- * (`src/client/index.ts`): `undefined` = the chain is unknown to this client
- * (cold catalog, or an id that no longer exists). The badge itself never loads
- * anything — no RPC, no effect, no hook.
+ * (`src/client/index.ts`). The three return values are deliberately distinct:
+ *
+ * - `undefined` — the catalog is NOT loaded yet (cold); the pill must keep
+ *   today's raw `FallbacksChain/<id>` route instead of claiming anything.
+ * - `null` — the catalog IS loaded and the chain does not exist (deleted id,
+ *   stale selection); the pill prints the unresolved state.
+ * - a {@link ChainRoute} — resolved.
+ *
+ * The badge itself never loads anything — no RPC, no effect, no hook.
  */
-export type ChainRouteLookup = (chainId: string) => ChainRoute | undefined
+export type ChainRouteLookup = (chainId: string) => ChainRoute | null | undefined
 
 /**
  * Props delivered by the actions slot outlet: runtime share + locale seat,
@@ -199,8 +205,13 @@ export function SubagentRoleBadge(props: SubagentRoleBadgeProps): ReactNode {
   // model it will actually dispatch. Everything else — and a COLD catalog, where
   // no reader was injected — renders exactly as before.
   const isVirtual = pair !== undefined && pair.provider === FALLBACKS_PROVIDER
-  const chain = isVirtual && chainRouteOf !== undefined ? chainRouteOf(pair.model) : undefined
-  const cold = isVirtual && chainRouteOf === undefined
+  // `undefined` = the reader has nothing loaded (cold) and `null` = loaded but
+  // the chain is gone; only the second one may print the unresolved state.
+  const lookup = isVirtual && chainRouteOf !== undefined ? chainRouteOf(pair.model) : undefined
+  const cold = isVirtual && lookup === undefined
+  // `null` (loaded, chain gone) folds into "no chain" here: the render branch
+  // below prints the unresolved state for it.
+  const chain: ChainRoute | undefined = lookup === null ? undefined : lookup
   const chainId = pair === undefined ? '' : pair.model
   const chainLabel = chain === undefined ? chainId : (chain.label !== '' ? chain.label : chain.id)
   const head = chain?.head ?? null

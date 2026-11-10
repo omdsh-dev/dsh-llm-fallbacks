@@ -149,7 +149,7 @@ function viewedSessionId(state: SessionListState): SessionId | undefined {
 /**
  * The provider route the virtual adapter owns. Duplicated from
  * `src/virtual-adapter.ts` on purpose: that host module value-imports
- * `@deepseek-ai/dsh-llm`, and the client bundle's purity gate refuses to inline
+ * the host `dsh-llm` package, and the client bundle's purity gate refuses to inline
  * any such import (see `scripts/build-client.ts`), so the client half cannot
  * reach the constant.
  */
@@ -186,18 +186,25 @@ function firstDispatchableHead(entries: readonly string[]): { provider: string; 
  * settings-compact-slots-reasoning T4, design §11 Option A): the chain label
  * plus the STATIC effective head, read from the plugin's shared client store.
  *
- * No RPC and no load trigger: before any surface has loaded the config the
- * store holds the empty defaults, every lookup misses, and the pill keeps
- * today's raw `FallbacksChain/<id>`. `undefined` = "this client does not know
- * that chain" (cold catalog, or an id that no longer exists) — never a guess.
+ * No RPC and no load trigger. The return value distinguishes the two "no
+ * chain" states the pill must render differently:
+ * - `undefined` — the config is NOT loaded (`idle` / `loading`) or the last
+ *   load failed (`error`, whose config is only the default skeleton). The pill
+ *   keeps today's raw `FallbacksChain/<id>` instead of claiming the chain is
+ *   missing.
+ * - `null` — the config IS loaded and this id does not exist (deleted chain,
+ *   stale selection). The pill prints the unresolved state.
  * @param getSnapshot - read the live settings state (the shared controller).
  * @returns the lookup the badge receives as a prop.
  */
 function chainRouteLookup(getSnapshot: () => FallbacksSettingsState): ChainRouteLookup {
-  return (chainId: string): ChainRoute | undefined => {
+  return (chainId: string): ChainRoute | null | undefined => {
     const snapshot = getSnapshot()
+    // Not loaded (or the load failed, leaving only the default skeleton):
+    // claim nothing — the pill keeps the raw route.
+    if (snapshot.status !== 'ready' && snapshot.status !== 'saving') return undefined
     const chain = snapshot.config.chains.find(entry => entry.id === chainId)
-    if (chain === undefined) return undefined
+    if (chain === undefined) return null // loaded, and this chain is gone
     const head = isAllDayConforming(chain.entries)
       ? firstDispatchableHead(resolveEffectiveChain(chain, new Date(), snapshot.config.tz ?? 'Asia/Shanghai'))
       : null
