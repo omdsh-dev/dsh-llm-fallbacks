@@ -33,7 +33,6 @@ import {
   EMPTY_EFFECTIVE_CHAIN_CODE,
   LLM_UNAVAILABLE_CODE,
   UNKNOWN_CHAIN_CODE,
-  UNDISPATCHABLE_HEAD_CODE,
   walkChain,
   type ChainWalkDeps,
 } from '../src/chain-walk.ts'
@@ -112,7 +111,7 @@ class ScriptedAdapter extends LlmAdapter {
 let ctx: Context
 let adapter: ScriptedAdapter
 
-const ROUTES = ['a', 'b', 'c', 'w', 'other']
+const ROUTES = ['a', 'b', 'c', 'w', 'other', 'deepseek-official']
 
 beforeEach(() => {
   ctx = new Context()
@@ -373,8 +372,9 @@ describe('candidate order and filters (design §3.1 step 2)', () => {
       states,
     }, { sessionId: SessionId('s1') })
 
-    // b/2 is cooled → never dispatched; c/3 fails and is not revisited.
-    expect(dispatched()).toEqual(['a/1', 'c/3'])
+    // b/2 is cooled → never dispatched; c/3 fails and is not revisited; the
+    // inherited official tail closes the walk.
+    expect(dispatched()).toEqual(['a/1', 'c/3', OFFICIAL_FLASH])
   })
 
   it('starts past a cooled head on a re-entry (cross-call memory)', async () => {
@@ -416,13 +416,14 @@ describe('candidate order and filters (design §3.1 step 2)', () => {
 
     await walk({ readConfig: chainCfg(['a/1', 'w/*']) })
 
-    // `w/*` resolves against the head's model id (1), which w does not list.
-    expect(dispatched()).toEqual(['a/1'])
+    // `w/*` resolves against the head's model id (1), which w does not list,
+    // so the inherited official tail is the next attempt.
+    expect(dispatched()).toEqual(['a/1', OFFICIAL_FLASH])
 
     adapter.calls.length = 0
     adapter.catalog = (provider) => (provider === 'w' ? [{ id: '1' }] : [{ id: '1' }])
     await walk({ readConfig: chainCfg(['a/1', 'w/*']) })
-    expect(dispatched()).toEqual(['a/1', 'w/1'])
+    expect(dispatched()).toEqual(['a/1', 'w/1', OFFICIAL_FLASH])
   })
 
 })
@@ -755,12 +756,14 @@ describe('terminal behavior (design §3.1 step 4, §6.1.1/§6.1.3)', () => {
     adapter.respond = (options) => ({ failure: { code: 'AUTH', message: `${options.model} down` } })
 
     const chunks = await walk({ readConfig: chainCfg(['a/1', 'b/2']) })
-
-    expect(dispatched()).toEqual(['a/1', 'b/2'])
+    // The slot rows are only the priority segment: the inherited all-day
+    // entries (default chain + official tail) follow them, so exhaustion
+    // happens at the official tail, not after the slot row.
+    expect(dispatched()).toEqual(['a/1', 'b/2', OFFICIAL_FLASH])
     expect(finishes(chunks)).toHaveLength(1)
     expect(chunks.at(-1)).toMatchObject({
       type: 'finish',
-      reason: { kind: 'error', failure: { code: 'AUTH', message: '2 down' } },
+      reason: { kind: 'error', failure: { code: 'AUTH', message: 'deepseek-flash down' } },
     })
   })
 
@@ -776,9 +779,9 @@ describe('terminal behavior (design §3.1 step 4, §6.1.1/§6.1.3)', () => {
     expect(adapter.calls).toHaveLength(0)
   })
 
-  it('throws UNDISPATCHABLE_EFFECTIVE_HEAD for a wildcard-only or self-route chain', () => {
+  it('a wildcard or self-route slot row cannot empty the walk: the official tail follows it', async () => {
     const options = { provider: FALLBACKS_PROVIDER, model: CHAIN_ID, messages: [] }
-    /** Conforming entries + full-day slot rows carrying the broken chain. */
+    /** Conforming entries + full-day slot rows carrying an undispatchable head. */
     const carried = (entries: readonly string[]) => config({
       chains: [{
         id: CHAIN_ID,
@@ -787,15 +790,16 @@ describe('terminal behavior (design §3.1 step 4, §6.1.1/§6.1.3)', () => {
         timeSlots: [{ kind: 'custom' as const, start: '00:00', end: '23:59', chain: [...entries] }],
       }],
     })
-    expect(thrownCode(() => walkChain(
-      walkDeps({ getLlm: () => ctx.llm, readConfig: carried(['a/*']) }),
-      options,
-    ))).toBe(UNDISPATCHABLE_HEAD_CODE)
-    expect(thrownCode(() => walkChain(
-      walkDeps({ getLlm: () => ctx.llm, readConfig: carried([`${FALLBACKS_PROVIDER}/${CHAIN_ID}`]) }),
-      options,
-    ))).toBe(UNDISPATCHABLE_HEAD_CODE)
-    expect(adapter.calls).toHaveLength(0)
+    for (const slotChain of [['a/*'], [`${FALLBACKS_PROVIDER}/${CHAIN_ID}`]]) {
+      adapter.calls.length = 0
+      const chunks = await collect(walkChain(
+        walkDeps({ getLlm: () => ctx.llm, readConfig: carried(slotChain) }),
+        options,
+      ))
+      // The inherited official tail is the first dispatchable exact head.
+      expect(dispatched()).toEqual([OFFICIAL_FLASH])
+      expect(chunks.at(-1)).toMatchObject({ type: 'finish', reason: { kind: 'stop' } })
+    }
   })
 
   it('throws LLM_UNAVAILABLE when the runtime is gone', () => {
@@ -829,7 +833,7 @@ describe('recursion guard (design §6.1.2)', () => {
       readConfig: chainCfg(['a/1', `${FALLBACKS_PROVIDER}/${CHAIN_ID}`, 'b/2']),
     })
 
-    expect(dispatched()).toEqual(['a/1', 'b/2'])
+    expect(dispatched()).toEqual(['a/1', 'b/2', OFFICIAL_FLASH])
     expect(adapter.calls.every((call) => call.provider !== FALLBACKS_PROVIDER)).toBe(true)
   })
 })

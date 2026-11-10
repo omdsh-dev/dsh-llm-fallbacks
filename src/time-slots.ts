@@ -296,10 +296,18 @@ export function isAllDayConforming(chain: readonly string[]): boolean {
 
 /**
  * Effective chain for a request on ONE named chain at `now`: the FIRST
- * matching row of {@link NamedChain.timeSlots} (stored order) — that row's
- * `chain` REPLACES {@link NamedChain.entries} (never concatenated); no match
- * ⇒ the chain's own `entries`. Malformed rows warn once and are skipped;
- * never throws.
+ * matching row of {@link NamedChain.timeSlots} (stored order) contributes its
+ * PRIORITY segment — the row's own `chain` entries — and the chain's
+ * {@link NamedChain.entries} (默认降级链 + official tail) always follow it, so
+ * every slot keeps the default fallback chain and the official tail behind it.
+ * The priority segment keeps its own order: a route that also appears in
+ * `entries` is promoted to its slot position, not duplicated. Route identity
+ * is the parsed `provider/model` key (an `@effort` pin is not a route), so a
+ * pinned official tail is recognized too. The official tail is the one
+ * exception — it is stripped from the priority segment and re-appended LAST,
+ * so every effective chain ends on the official model. No
+ * match ⇒ the chain's own `entries` alone. Malformed rows warn once and are
+ * skipped; never throws.
  *
  * Without a conforming entries tail the slot rows are inert, so this IS the
  * raw `entries` — the gate lives in {@link resolveSlotState}, the single
@@ -307,7 +315,39 @@ export function isAllDayConforming(chain: readonly string[]): boolean {
  */
 export function resolveEffectiveChain(chain: NamedChain, now: Date, tz: string): string[] {
   const state = resolveSlotState(chain, now, tz)
-  return state.winner === 'all-day' ? chain.entries : state.winner.chain
+  if (state.winner === 'all-day') return chain.entries
+  // Route identity is `provider/model` — an effort pin (`@high`) is a per-hop
+  // request control, not a different route. Comparing raw strings would let a
+  // pinned official tail slip into the priority segment (and then be skipped
+  // by the walk's effort-free failed set), so tail/duplicate matching runs on
+  // the parsed key; an unparsable entry keeps its raw text.
+  const routeKeyOf = (entry: string): string => {
+    try {
+      const selector = parseSelector(entry)
+      return selectorKey(selector.provider, selector.model)
+    } catch {
+      return entry
+    }
+  }
+  const tail = chain.entries[chain.entries.length - 1]
+  const tailKey = routeKeyOf(tail)
+  // The priority segment keeps its OWN order: a repeated route is promoted to
+  // its slot position, never demoted to where `entries` happens to list it.
+  // The official tail is the exception — it is always last, so it is stripped
+  // from the priority segment and re-appended once at the end.
+  const priority: string[] = []
+  const seen = new Set<string>()
+  for (const entry of state.winner.chain) {
+    const key = routeKeyOf(entry)
+    if (key === tailKey || seen.has(key)) continue
+    seen.add(key)
+    priority.push(entry)
+  }
+  const inherited = chain.entries.filter((entry) => {
+    const key = routeKeyOf(entry)
+    return key !== tailKey && !seen.has(key)
+  })
+  return [...priority, ...inherited, tail]
 }
 
 /**

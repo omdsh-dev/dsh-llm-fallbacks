@@ -48,7 +48,8 @@ export const CHAIN_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9-]{0,31}$/
  * One named virtual chain (v2). `id` doubles as the picker model id —
  * renaming it would orphan every saved selection, so only `label` is
  * editable in the UI. The LAST `entries` element is the 链尾: exactly one
- * official model. The FIRST matching `timeSlots` row REPLACES `entries`.
+ * official model. The FIRST matching `timeSlots` row contributes its priority
+ * segment, then `entries` (default chain + official tail) always follow.
  */
 export interface NamedChain {
   id: string
@@ -56,7 +57,7 @@ export interface NamedChain {
   label: string
   /** 默认降级链 + 链尾. */
   entries: string[]
-  /** 分时 rows scoped to this chain; first match replaces {@link entries}. */
+  /** 分时 rows scoped to this chain; the first match is prepended to {@link entries}. */
   timeSlots?: SlotRowConfig[]
 }
 

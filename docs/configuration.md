@@ -75,7 +75,7 @@ The plugin ships **5 bundled omp-style preset roles** — generic subagent roles
 
 ## Entry syntax
 
-**Chain entries** (the values of `chains[].entries` / `chains[].timeSlots[].chain`, ordered; a chain's LAST entry is its 默认模型 — exactly one official model; the leading 默认降级链 entries are walked first):
+**Chain entries** (the values of `chains[].entries` / `chains[].timeSlots[].chain`, ordered; a chain's LAST `entries` element is its 默认模型 — exactly one official model; the leading 默认降级链 entries are walked first. A time-slot row's `chain` is a **priority segment** walked before `entries`, so its own last element is just its last head candidate):
 
 - `provider/model` — exact switch: switch to the specified model; the model id may itself contain `/` (e.g. NVIDIA NIM `nvidia/minimaxai/minimax-m3` or Hugging Face `org/repo`-style names);
 - `provider/*` — keep the failed model id and switch the provider only; when the target provider lacks this model id the candidate is skipped (fuzzy near-match resolution is out of scope for this iteration).
@@ -94,7 +94,7 @@ Invalid/unknown entries (missing separator, empty segment, wildcard inside a mod
 **Chain composition** — a walk's candidate chain is the SELECTED chain's slot-effective entries:
 
 - the session (root or child) is routed to `FallbacksChain/<chain id>`; the walk uses that chain;
-- the first matching `timeSlots` row of THAT chain replaces its `entries` (per chain; other chains are unaffected);
+- the first matching `timeSlots` row of THAT chain contributes its **priority segment**, then the chain's `entries` (default fallback chain + official tail) always follow — an entry already present in `entries` is not repeated (per chain; other chains are unaffected);
 - a role's `chain` pointer decides the chain at DISPATCH time (the child is stamped onto `FallbacksChain/<role.chain>`), not per request.
 
 Candidate filtering (skipped on hit): the same-as-current route, in cooldown (per agent, shared across chains), already failed in this walk, or the `provider/*` entry's target provider lacks this model id.
@@ -173,7 +173,7 @@ Time slots are the wall-clock peak/valley model: each slot row — a frozen UTC+
 
 The figure shows the shipped card's structure: a **tab per chain** (`＋` adds one, `⋯` renames the label or deletes the chain), the selected tab's Chain name (链名称) field, the per-chain blocks **Time slots (分时槽设置) → Default fallback chain (默认降级链) → Default model (默认模型)**, and that chain's own Discard/Save pair (hint: "Saves this chain only: selectors · tail · time slots · name"). The Subagents (子代理) section renders one collapsed role card per role with its own save pair. The card also has a collapsible Advanced options (高级选项) disclosure below the role list (not shown in this figure).
 
-Time-slot rows are configured PER CHAIN (`chains[].timeSlots`) and rotate that chain's effective entries by wall-clock windows: the resolver (`resolveEffectiveChain` in `src/time-slots.ts`) walks the chain's rows top-to-bottom — the FIRST row whose window contains `now` (in the config-level `tz`, default `Asia/Shanghai`) wins and its `chain` **replaces** the chain's `entries` (never concatenated); no match → the chain's own `entries`. A non-conforming `entries` tail keeps the rows inert (the delegate gate every slot surface reads). Two chains never share slot state: each resolves against its own rows/entries only, and the rotation log is keyed per (agent, chain).
+Time-slot rows are configured PER CHAIN (`chains[].timeSlots`) and rotate that chain's effective entries by wall-clock windows: the resolver (`resolveEffectiveChain` in `src/time-slots.ts`) walks the chain's rows top-to-bottom — the FIRST row whose window contains `now` (in the config-level `tz`, default `Asia/Shanghai`) wins and its `chain` becomes the **priority segment** walked before the chain's `entries` (an entry already in `entries` is not repeated); the default fallback chain and the official tail always follow, so every slot keeps its last-resort fallback. No match → the chain's own `entries` alone. A non-conforming `entries` tail keeps the rows inert (the delegate gate every slot surface reads). Two chains never share slot state: each resolves against its own rows/entries only, and the rotation log is keyed per (agent, chain).
 
 **Copy split (never mix):** slot rotation is a **分时切换** / time-slot switch — a routing seed: it applies on the **next** root request (no mid-step preemption), is exempt from `cooldownMs` and does not count against `maxSwitchesPerStep`, and is mount-only (info log + card / `/fallbacks` status line; no durable `fallbacks/switch` event). The failure walk keeps **降级切换** / fallback switch and the conversation notice 模型已降级 / Model downgraded stays on the failure path only.
 
@@ -275,7 +275,7 @@ Key points:
 - There is no `enabled` key and no auto-created default chain: **empty `chains` = inactive** (the no-op pass-through); the picker rows appear only after you create a chain in the card (or YAML).
 - A chain's LAST `entries` element is its 默认模型 — exactly one official model; the leading entries are the 默认降级链 walk.
 - A role's `chain` is a pointer, never a chain definition: it names one `chains[].id`. The plugin never picks a chain on its own.
-- The first matching `timeSlots` row REPLACES that chain's `entries` — never concatenated; each chain resolves independently.
+- The first matching `timeSlots` row is the priority segment; the chain's `entries` (default fallback chain + official tail) always follow it, de-duplicated. Each chain resolves independently.
 - Switching only changes the provider/model routing of subsequent requests; it does not reset session context or tool state.
 - Each chain-target model needs its own credentials and quota configured (costs/quotas can differ between providers).
 
