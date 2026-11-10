@@ -69,16 +69,85 @@ describe('resolveEffectiveChain — first matching row wins (stored order)', () 
       ],
     })
     // 07:30 sits inside BOTH windows — the first stored row wins.
-    expect(resolveEffectiveChain(chain, at('07:30'), 'Asia/Shanghai')).toEqual(['openai/gpt-4o'])
+    expect(resolveEffectiveChain(chain, at('07:30'), 'Asia/Shanghai')).toEqual(['openai/gpt-4o', ALL_DAY])
   })
 
-  it('the winning row REPLACES the chain entries (no concatenation)', () => {
+  it('the winning row is the priority segment, then the default chain and tail', () => {
     const chain = chainOf({
+      entries: ['zai-coding-cn/glm-5.3-flash', OFFICIAL_FLASH],
       timeSlots: [custom('09:00', '10:00', ['openai/gpt-4o', 'anthropic/claude-3-5-sonnet'])],
     })
     expect(resolveEffectiveChain(chain, at('09:30'), 'Asia/Shanghai')).toEqual([
       'openai/gpt-4o',
       'anthropic/claude-3-5-sonnet',
+      'zai-coding-cn/glm-5.3-flash',
+      OFFICIAL_FLASH,
+    ])
+  })
+
+  it('dedupes a repeated route at its priority position and keeps the tail last', () => {
+    const chain = chainOf({
+      entries: ['openai/gpt-4o', 'zai-coding-cn/glm-5.3-flash', OFFICIAL_FLASH],
+      timeSlots: [custom('09:00', '10:00', ['openai/gpt-4o', 'anthropic/claude-3-5-sonnet'])],
+    })
+    // The slot order wins: openai/gpt-4o stays where the row puts it, and the
+    // default chain contributes only the routes the row did not name.
+    expect(resolveEffectiveChain(chain, at('09:30'), 'Asia/Shanghai')).toEqual([
+      'openai/gpt-4o',
+      'anthropic/claude-3-5-sonnet',
+      'zai-coding-cn/glm-5.3-flash',
+      OFFICIAL_FLASH,
+    ])
+  })
+
+  it('promotes a default-chain route to the head when the slot row names it', () => {
+    const chain = chainOf({
+      entries: ['a/1', 'b/2', OFFICIAL_FLASH],
+      timeSlots: [custom('09:00', '10:00', ['b/2'])],
+    })
+    expect(resolveEffectiveChain(chain, at('09:30'), 'Asia/Shanghai')).toEqual([
+      'b/2',
+      'a/1',
+      OFFICIAL_FLASH,
+    ])
+  })
+
+  it('keeps a pinned official tail last even when the slot row names it', () => {
+    const chain = chainOf({
+      entries: ['a/1', OFFICIAL_FLASH],
+      timeSlots: [custom('09:00', '10:00', [`${OFFICIAL_FLASH}@high`])],
+    })
+    // Route identity is effort-free: the pinned official route is the tail,
+    // never the head (the walk's failed set keys it by provider/model).
+    expect(resolveEffectiveChain(chain, at('09:30'), 'Asia/Shanghai')).toEqual([
+      'a/1',
+      OFFICIAL_FLASH,
+    ])
+  })
+
+  it('dedupes by route identity, not by the raw string', () => {
+    const chain = chainOf({
+      entries: ['a/1', 'b/2', OFFICIAL_FLASH],
+      timeSlots: [custom('09:00', '10:00', ['b/2@high'])],
+    })
+    // The pinned slot entry keeps its priority position and its pin; the
+    // unpinned entries duplicate is not repeated.
+    expect(resolveEffectiveChain(chain, at('09:30'), 'Asia/Shanghai')).toEqual([
+      'b/2@high',
+      'a/1',
+      OFFICIAL_FLASH,
+    ])
+  })
+
+  it('inherits the default chain even when the slot repeats the whole tail', () => {
+    const chain = chainOf({
+      entries: ['zai-coding-cn/glm-5.3-flash', OFFICIAL_FLASH],
+      timeSlots: [custom('09:00', '10:00', [OFFICIAL_FLASH])],
+    })
+    // The slot row only repeats the tail: the effective chain is the entries.
+    expect(resolveEffectiveChain(chain, at('09:30'), 'Asia/Shanghai')).toEqual([
+      'zai-coding-cn/glm-5.3-flash',
+      OFFICIAL_FLASH,
     ])
   })
 
@@ -86,8 +155,8 @@ describe('resolveEffectiveChain — first matching row wins (stored order)', () 
     const scoped = chainOf({ id: 'scoped', timeSlots: [custom('09:00', '10:00', ['openai/gpt-4o'])] })
     const other = chainOf({ id: 'other', timeSlots: [custom('09:00', '10:00', ['b/2'])] })
     // Same instant: each chain resolves against its OWN rows/entries only.
-    expect(resolveEffectiveChain(scoped, at('09:30'), 'Asia/Shanghai')).toEqual(['openai/gpt-4o'])
-    expect(resolveEffectiveChain(other, at('09:30'), 'Asia/Shanghai')).toEqual(['b/2'])
+    expect(resolveEffectiveChain(scoped, at('09:30'), 'Asia/Shanghai')).toEqual(['openai/gpt-4o', ALL_DAY])
+    expect(resolveEffectiveChain(other, at('09:30'), 'Asia/Shanghai')).toEqual(['b/2', ALL_DAY])
     expect(resolveEffectiveChain(chainOf(), at('09:30'), 'Asia/Shanghai')).toEqual([ALL_DAY])
   })
 })
@@ -96,8 +165,8 @@ describe('resolveEffectiveChain — custom overnight wrap (start > end)', () => 
   const chain = chainOf({ timeSlots: [custom('22:00', '02:00', ['openai/gpt-4o'])] })
 
   it('matches after midnight (wrap)', () => {
-    expect(resolveEffectiveChain(chain, at('23:30'), 'Asia/Shanghai')).toEqual(['openai/gpt-4o'])
-    expect(resolveEffectiveChain(chain, at('01:00'), 'Asia/Shanghai')).toEqual(['openai/gpt-4o'])
+    expect(resolveEffectiveChain(chain, at('23:30'), 'Asia/Shanghai')).toEqual(['openai/gpt-4o', ALL_DAY])
+    expect(resolveEffectiveChain(chain, at('01:00'), 'Asia/Shanghai')).toEqual(['openai/gpt-4o', ALL_DAY])
   })
 
   it('does not match before start or at/after end (end exclusive)', () => {
@@ -111,9 +180,9 @@ describe('resolveEffectiveChain — glm-peak is Monday–Friday 14:00–18:00 on
 
   it('matches Mon–Fri inside the window', () => {
     // 2026-08-18 = Tue, 2026-08-21 = Fri, 2026-08-24 = Mon.
-    expect(resolveEffectiveChain(chain, at('15:00'), 'Asia/Shanghai')).toEqual(['openai/gpt-4o'])
-    expect(resolveEffectiveChain(chain, at('15:00', '2026-08-21'), 'Asia/Shanghai')).toEqual(['openai/gpt-4o'])
-    expect(resolveEffectiveChain(chain, at('15:00', '2026-08-24'), 'Asia/Shanghai')).toEqual(['openai/gpt-4o'])
+    expect(resolveEffectiveChain(chain, at('15:00'), 'Asia/Shanghai')).toEqual(['openai/gpt-4o', ALL_DAY])
+    expect(resolveEffectiveChain(chain, at('15:00', '2026-08-21'), 'Asia/Shanghai')).toEqual(['openai/gpt-4o', ALL_DAY])
+    expect(resolveEffectiveChain(chain, at('15:00', '2026-08-24'), 'Asia/Shanghai')).toEqual(['openai/gpt-4o', ALL_DAY])
   })
 
   it('does not match weekends, the exclusive end, or before start', () => {
@@ -128,19 +197,19 @@ describe('resolveEffectiveChain — valley complements derive from their peak', 
   it('liang-valley matches every time liang-peak does not, including weekends', () => {
     const chain = chainOf({ timeSlots: [presetRow('liang-valley', ['openai/gpt-4o'])] })
     // Liang peak is Mon–Fri only, so weekend peak-hours are valley too.
-    expect(resolveEffectiveChain(chain, at('10:30', '2026-08-22'), 'Asia/Shanghai')).toEqual(['openai/gpt-4o'])
+    expect(resolveEffectiveChain(chain, at('10:30', '2026-08-22'), 'Asia/Shanghai')).toEqual(['openai/gpt-4o', ALL_DAY])
     // …and a weekend off-peak time IS valley.
-    expect(resolveEffectiveChain(chain, at('20:00', '2026-08-22'), 'Asia/Shanghai')).toEqual(['openai/gpt-4o'])
+    expect(resolveEffectiveChain(chain, at('20:00', '2026-08-22'), 'Asia/Shanghai')).toEqual(['openai/gpt-4o', ALL_DAY])
     // Weekday off-peak: the 12:00–14:00 gap and the night.
-    expect(resolveEffectiveChain(chain, at('13:00'), 'Asia/Shanghai')).toEqual(['openai/gpt-4o'])
-    expect(resolveEffectiveChain(chain, at('21:00'), 'Asia/Shanghai')).toEqual(['openai/gpt-4o'])
+    expect(resolveEffectiveChain(chain, at('13:00'), 'Asia/Shanghai')).toEqual(['openai/gpt-4o', ALL_DAY])
+    expect(resolveEffectiveChain(chain, at('21:00'), 'Asia/Shanghai')).toEqual(['openai/gpt-4o', ALL_DAY])
     // Weekday peak times themselves are excluded.
     expect(resolveEffectiveChain(chain, at('10:30'), 'Asia/Shanghai')).toEqual([ALL_DAY])
   })
 
   it('glm-valley matches weekends (glm-peak is Mon–Fri only)', () => {
     const chain = chainOf({ timeSlots: [presetRow('glm-valley', ['openai/gpt-4o'])] })
-    expect(resolveEffectiveChain(chain, at('15:00', '2026-08-22'), 'Asia/Shanghai')).toEqual(['openai/gpt-4o']) // Sat
+    expect(resolveEffectiveChain(chain, at('15:00', '2026-08-22'), 'Asia/Shanghai')).toEqual(['openai/gpt-4o', ALL_DAY]) // Sat
     expect(resolveEffectiveChain(chain, at('15:00'), 'Asia/Shanghai')).toEqual([ALL_DAY]) // Tue = peak
   })
 })
@@ -231,13 +300,13 @@ describe('resolveEffectiveChain — liang-peak is ONE row covering both windows'
   const chain = chainOf({ timeSlots: [presetRow('liang-peak', [OFFICIAL_PRO])] })
 
   it('matches 09:00–12:00', () => {
-    expect(resolveEffectiveChain(chain, at('09:00'), 'Asia/Shanghai')).toEqual([OFFICIAL_PRO])
-    expect(resolveEffectiveChain(chain, at('11:59'), 'Asia/Shanghai')).toEqual([OFFICIAL_PRO])
+    expect(resolveEffectiveChain(chain, at('09:00'), 'Asia/Shanghai')).toEqual([OFFICIAL_PRO, ALL_DAY])
+    expect(resolveEffectiveChain(chain, at('11:59'), 'Asia/Shanghai')).toEqual([OFFICIAL_PRO, ALL_DAY])
   })
 
   it('matches 14:00–18:00', () => {
-    expect(resolveEffectiveChain(chain, at('14:00'), 'Asia/Shanghai')).toEqual([OFFICIAL_PRO])
-    expect(resolveEffectiveChain(chain, at('17:59'), 'Asia/Shanghai')).toEqual([OFFICIAL_PRO])
+    expect(resolveEffectiveChain(chain, at('14:00'), 'Asia/Shanghai')).toEqual([OFFICIAL_PRO, ALL_DAY])
+    expect(resolveEffectiveChain(chain, at('17:59'), 'Asia/Shanghai')).toEqual([OFFICIAL_PRO, ALL_DAY])
   })
 
   it('does not match the gaps (12:00–13:59) or the exclusive ends', () => {
@@ -262,7 +331,7 @@ describe('duplicate preset rows (per chain)', () => {
     const chain = chainOf({ timeSlots: [first, second] })
     // At peak time the FIRST row wins outright — the duplicate is never
     // reached, so no resolver warn (the load-time validator still warns).
-    expect(resolveEffectiveChain(chain, at('10:30'), 'Asia/Shanghai')).toEqual(['openai/gpt-4o'])
+    expect(resolveEffectiveChain(chain, at('10:30'), 'Asia/Shanghai')).toEqual(['openai/gpt-4o', ALL_DAY])
     expect(warn).not.toHaveBeenCalled()
     // Off-peak: iteration passes the non-matching first row and reaches the
     // duplicate → skipped with exactly one warn; all-day stays last.
@@ -279,7 +348,8 @@ describe('duplicate preset rows (per chain)', () => {
     const warn = spyWarn()
     const a = chainOf({ id: 'a', timeSlots: [presetRow('liang-peak', [OFFICIAL_PRO])] })
     const b = chainOf({ id: 'b', timeSlots: [presetRow('liang-peak', [OFFICIAL_FLASH])] })
-    expect(resolveEffectiveChain(a, at('10:30'), 'Asia/Shanghai')).toEqual([OFFICIAL_PRO])
+    expect(resolveEffectiveChain(a, at('10:30'), 'Asia/Shanghai')).toEqual([OFFICIAL_PRO, ALL_DAY])
+    // b's slot row repeats its own tail, so the inherited chain is just the entries.
     expect(resolveEffectiveChain(b, at('10:30'), 'Asia/Shanghai')).toEqual([OFFICIAL_FLASH])
     expect(warn).not.toHaveBeenCalled()
   })
@@ -389,14 +459,14 @@ describe('resolveEffectiveChain — tz interpreted with Intl rules', () => {
 
   it('matches the same instant in the configured timezone only', () => {
     const chain = chainOf({ timeSlots: [custom('09:00', '12:00', ['openai/gpt-4o'])] })
-    expect(resolveEffectiveChain(chain, instant, 'Asia/Shanghai')).toEqual(['openai/gpt-4o'])
+    expect(resolveEffectiveChain(chain, instant, 'Asia/Shanghai')).toEqual(['openai/gpt-4o', ALL_DAY])
     expect(resolveEffectiveChain(chain, instant, 'America/New_York')).toEqual([ALL_DAY])
     expect(resolveEffectiveChain(chain, instant, 'UTC')).toEqual([ALL_DAY])
   })
 
   it('a custom overnight window follows the timezone too', () => {
     const chain = chainOf({ timeSlots: [custom('21:00', '23:00', ['openai/gpt-4o'])] })
-    expect(resolveEffectiveChain(chain, instant, 'America/New_York')).toEqual(['openai/gpt-4o'])
+    expect(resolveEffectiveChain(chain, instant, 'America/New_York')).toEqual(['openai/gpt-4o', ALL_DAY])
     expect(resolveEffectiveChain(chain, instant, 'Asia/Shanghai')).toEqual([ALL_DAY])
   })
 })

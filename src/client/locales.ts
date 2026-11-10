@@ -44,7 +44,7 @@ export const zh = {
   // configurable selector list (no Flash|Pro radio — that panel moved to
   // 默认模型); the preemption hints are removed.
   'rootChain.label': '默认降级链',
-  'rootChain.tooltip': '未命中任何分时槽时先走这条降级链；全部失败后落到下面的默认模型。',
+  'rootChain.tooltip': '未命中任何分时槽时直接走这条降级链；命中时它接在分时优先段之后。全部失败后落到下面的默认模型。',
   'defaultModel.label': '默认模型',
   // Compact chain rows (plan fallbacks-chain-row-compact T3): the visible
   // field labels are gone, so the two selects carry the field AND the
@@ -106,7 +106,7 @@ export const zh = {
   'timeSlots.name': '名称',
   'timeSlots.expand': '展开该行',
   'timeSlots.collapse': '收起该行',
-  'timeSlots.tooltip': '自上而下第一条命中生效，全时段行固定最后。命中行的模型链成为 root 生效链（取代全时段链）；未命中任何行时使用全时段链。分时切换是路由种子而非失败决策：不消耗冷却、不计入单次请求行走的切换上限。',
+  'timeSlots.tooltip': '自上而下第一条命中生效，全时段行固定最后。命中行的模型链是优先段，其后始终接该链的默认降级链与默认模型（官方保底）；未命中任何行时直接使用默认降级链。分时切换是路由种子而非失败决策：不消耗冷却、不计入单次请求行走的切换上限。',
   'timeSlots.addPreset': '添加预设',
   'timeSlots.addCustom': '添加自定义时段',
   'timeSlots.presetPlaceholder': '选择预设',
@@ -302,7 +302,7 @@ export const en = {
   // as a configurable selector list (no Flash|Pro radio — that panel moved
   // to 默认模型); the preemption hints are removed.
   'rootChain.label': 'Default fallback chain',
-  'rootChain.tooltip': 'Walked first whenever no time slot matches; if every entry fails, the default model below is the last fallback.',
+  'rootChain.tooltip': 'Walked first whenever no time slot matches; behind a matched slot row it follows the row\'s priority segment. Either way the default model below is the last fallback.',
   'defaultModel.label': 'Default model',
   // Compact chain rows (plan fallbacks-chain-row-compact T3) — see the zh
   // comment: the selects carry the field plus the 1-based row position.
@@ -356,7 +356,7 @@ export const en = {
   'timeSlots.name': 'Name',
   'timeSlots.expand': 'Expand this row',
   'timeSlots.collapse': 'Collapse this row',
-  'timeSlots.tooltip': 'First match from top to bottom wins; the all-day row is always last. A matched row\'s model chain becomes the effective root chain (replacing the all-day chain); no match uses the all-day chain. A time-slot switch is a routing seed, not a failure decision: it consumes no cooldown and does not count against the per-request-walk switch cap.',
+  'timeSlots.tooltip': 'First match from top to bottom wins; the all-day row is always last. A matched row contributes the priority segment: the chain\'s default fallback chain and default model (the official tail) always follow it; no match uses the default chain alone. A time-slot switch is a routing seed, not a failure decision: it consumes no cooldown and does not count against the per-request-walk switch cap.',
   'timeSlots.addPreset': 'Add preset',
   'timeSlots.addCustom': 'Add custom time slot',
   'timeSlots.presetPlaceholder': 'Select a preset',

@@ -86,7 +86,9 @@ the only seam the host cannot refuse.
   workaround (`markFallbackRouted`, later a documented degradation line) are all
   gone by construction, because no listener ever rewrites the session route.
 - Time slots are scoped to ONE chain (`chains[].timeSlots`): the first matching
-  row REPLACES that chain's `entries` (never concatenated), other chains are
+  row is the PRIORITY segment — its entries are walked before the chain's
+  `entries` (default fallback chain + official tail), which always follow and
+  are de-duplicated so the official tail stays last; other chains are
   unaffected, and the rotation log is keyed per (agent, chain id). Preset rows
   freeze windows in code constants; user edits models only; preset rows lock
   `tz` to Asia/Shanghai. Valleys complement peaks. A chain's **tail** (the last

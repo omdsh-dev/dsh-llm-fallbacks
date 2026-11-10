@@ -96,15 +96,15 @@ Time slots are configured PER CHAIN (`chains[].timeSlots`) and rotate that
 chain's own effective entries by wall-clock windows, so peak and valley hours
 can run different entries while the failure walk stays untouched (see
 [Automatic model failover](#automatic-model-failover)). Each row carries its
-own fallback chain: the first row whose window contains the current moment
-replaces the chain's `entries` for the next request on that chain, and the
-chain's own entries remain the last resort when no row matches. Two chains
-never share slot state. The copy split is strict:
+own priority segment: the first row whose window contains the current moment
+is walked before the chain's `entries` on the next request, and the chain's
+default fallback chain and official tail always follow it. No row matches →
+the chain's own `entries` alone. Two chains never share slot state. The copy split is strict:
 slot rotation logs and UI say **time-slot switch**; the failure walk keeps
 **fallback switch**; the conversation notice Model downgraded stays on the
 failure path only.
 
-- **Match order**: at every request on that chain, the first row whose window contains the current moment (in `fallbacks.tz`, default `Asia/Shanghai` / UTC+8) wins — that row's chain **replaces** the chain's `entries`. No row matches → the chain's own entries are used. A NON-EMPTY `entries` tail must be exactly one official model (Flash / Pro XOR; leading Default fallback chain (默认降级链) entries are walked first). The gateway accepts an EMPTY `entries` — the row registers and the walk refuses it with `EMPTY_EFFECTIVE_CHAIN` — and the card additionally requires a tail before its Save arms.
+- **Match order**: at every request on that chain, the first row whose window contains the current moment (in `fallbacks.tz`, default `Asia/Shanghai` / UTC+8) wins — that row's chain is the **priority segment** walked before the chain's `entries` (default fallback chain + official tail), which always follow it; an entry already present in `entries` is not repeated, so the official tail stays last. No row matches → the chain's own entries are used alone. A NON-EMPTY `entries` tail must be exactly one official model (Flash / Pro XOR; leading Default fallback chain (默认降级链) entries are walked first). The gateway accepts an EMPTY `entries` — the row registers and the walk refuses it with `EMPTY_EFFECTIVE_CHAIN` — and the card additionally requires a tail before its Save arms.
 - **Presets** (frozen, not user-editable): `liang-peak` = Monday–Friday 09:00–12:00 **and** 14:00–18:00; `liang-valley` = every other UTC+8 time; `glm-peak` = Monday–Friday 14:00–18:00; `glm-valley` = every other time. One preset id = one row; the card picker never offers a duplicate.
 - **Custom rows**: `start` / `end` (`HH:mm`, may wrap midnight) + optional `days` (0=Sunday…6=Saturday; omitted/empty = every day) + models.
 - **Next-request apply**: a slot boundary crossing never preempts an in-flight step — the new row takes effect on the next root request. Rotation is mount-only: info log + card/`/fallbacks` status line, no durable switch event.

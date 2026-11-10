@@ -33,7 +33,7 @@ A session routed to `FallbacksChain / <chain id>` — the root agent by selectio
 
 ### Peak/valley time slots
 
-Time slots are configured **per chain** and rotate that chain's effective entries by wall-clock windows: the first row whose window contains the current moment replaces the chain's default entries for the next request — the chain's own entries stay the last resort when no row matches. Rotation is a routing seed, not a failure decision: it consumes no cooldown and leaves the failure walk (fallback switch) untouched.
+Time slots are configured **per chain** and rotate that chain's effective entries by wall-clock windows: the first row whose window contains the current moment is walked first for the next request — its entries are the priority segment, and the chain's default fallback chain and official tail always follow. No row matches → the chain's own entries are used alone. Rotation is a routing seed, not a failure decision: it consumes no cooldown and leaves the failure walk (fallback switch) untouched.
 
 ![The Fallbacks settings card: one tab per chain, each with its own Time slots (分时槽设置) → Default fallback chain (默认降级链) → Default model (默认模型) blocks and Discard/Save pair](https://raw.githubusercontent.com/omdsh-dev/dsh-llm-fallbacks/main/docs/assets/card-en.svg)
 

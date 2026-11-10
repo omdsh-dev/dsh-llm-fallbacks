@@ -458,7 +458,7 @@ describe('adapter contract (P1/P3)', () => {
     expect(stub.calls).toHaveLength(0)
   })
 
-  it('stream() refuses a self-route head (recursion guard)', async () => {
+  it('stream() skips a self-route slot head and delegates to the inherited official tail', async () => {
     apply(
       ctx,
       cfg({
@@ -476,11 +476,11 @@ describe('adapter contract (P1/P3)', () => {
     const chunks = await collect(
       ctx.llm.stream({ provider: FALLBACKS_PROVIDER, model: CHAIN_ID, messages: [] }),
     )
-    expect(chunks.at(-1)).toMatchObject({
-      type: 'finish',
-      reason: { kind: 'error', failure: { code: UNDISPATCHABLE_HEAD_CODE } },
-    })
-    expect(stub.calls).toHaveLength(0)
+    // The recursion guard keeps the self-route out of the attempt order; the
+    // inherited entries tail is the dispatchable head.
+    expect(chunks.at(-1)).toMatchObject({ type: 'finish', reason: { kind: 'stop' } })
+    expect(stub.calls).toHaveLength(1)
+    expect(stub.calls[0]).toMatchObject({ provider: HEAD_PROVIDER, model: HEAD_MODEL })
   })
 
   it('stream() refuses a legacy non-conforming all-day chain (conformance gate, PR #62 feedback)', async () => {
@@ -516,7 +516,7 @@ describe('adapter contract (P1/P3)', () => {
     expect(ctx.llm.imageRequestPricing(FALLBACKS_PROVIDER, 'deleted-chain')).toBeUndefined()
   })
 
-  it('stream() refuses a wildcard head (no real pair to delegate)', async () => {
+  it('stream() skips a wildcard slot head and delegates to the inherited official tail', async () => {
     apply(
       ctx,
       cfg({
@@ -531,11 +531,10 @@ describe('adapter contract (P1/P3)', () => {
     const chunks = await collect(
       ctx.llm.stream({ provider: FALLBACKS_PROVIDER, model: CHAIN_ID, messages: [] }),
     )
-    expect(chunks.at(-1)).toMatchObject({
-      type: 'finish',
-      reason: { kind: 'error', failure: { code: UNDISPATCHABLE_HEAD_CODE } },
-    })
-    expect(stub.calls).toHaveLength(0)
+    // A wildcard head has no real pair to delegate; the inherited tail does.
+    expect(chunks.at(-1)).toMatchObject({ type: 'finish', reason: { kind: 'stop' } })
+    expect(stub.calls).toHaveLength(1)
+    expect(stub.calls[0]).toMatchObject({ provider: HEAD_PROVIDER, model: HEAD_MODEL })
   })
 })
 

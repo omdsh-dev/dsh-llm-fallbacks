@@ -33,7 +33,7 @@ dsh（DeepSeek Harness）的自动模型降级插件：插件注册 N 条**命�
 
 ### 峰谷无忧（分时切换）
 
-分时槽按链配置（`chains[].timeSlots`），按墙钟窗口轮换该链自己的生效条目：第一个窗口包含当前时刻的行会在下一个请求取代该链的 `entries`；无行命中时，该链自己的条目作为最后兜底。轮换是路由种子而非失败决策：不消耗冷却，也不影响失败降级（fallback switch）。
+分时槽按链配置（`chains[].timeSlots`），按墙钟窗口轮换该链自己的生效条目：第一个窗口包含当前时刻的行作为优先段，在下一个请求里先于该链的 `entries` 走；默认降级链与默认模型（官方保底）始终接在其后。无行命中时，该链自己的条目作为最后兜底。轮换是路由种子而非失败决策：不消耗冷却，也不影响失败降级（fallback switch）。
 
 ![Fallbacks 设置卡片：每条链一个 tab，各自带 分时槽设置 → 默认降级链 → 默认模型 区块与保存按钮](https://raw.githubusercontent.com/omdsh-dev/dsh-llm-fallbacks/main/docs/assets/card-zh.svg)
 
@@ -114,7 +114,7 @@ fallbacks:
 
 - **没有功能开关**：只要配置了链（`chains` 非空）插件才介入；空配置是完全的 no-op，Plugins 页的行开关是总开关。
 - **每条链的末项（默认模型）必须恰好是一个官方模型**——四个 id 之一：`deepseek-account/deepseek-flash`、`deepseek-account/deepseek-v4-pro`、`deepseek-official/deepseek-flash` 或 `deepseek-official/deepseek-v4-pro`；前部「默认降级链」条目优先进走。该要求只针对非空 `entries`：空 `entries` 网关也会接受（行仍出现在选择器中，walk 以 `EMPTY_EFFECTIVE_CHAIN` 拒绝），而卡片要求选好链尾才允许保存。
-- **分时槽与角色都是可选的**：第一个窗口命中的分时行会在下一个请求取代该链自己的 `entries`；角色是已声明的身份加一个可选的 `chain` 指针（「指定降级链」），root 请求完全不受角色影响。
+- **分时槽与角色都是可选的**：第一个窗口命中的分时行是优先段，在该链的 `entries`（默认降级链 + 官方保底）之前走；角色是已声明的身份加一个可选的 `chain` 指针（「指定降级链」），root 请求完全不受角色影响。
 
 完整参考（字段、条目语法、选择器规则、迁移）→ [docs/configuration.md](docs/configuration.md)。
 
