@@ -370,22 +370,37 @@ export function deriveEffectiveModel(chain: NamedChain | undefined): EffectiveMo
   }
 }
 
-/** One chain selector row: provider + model (or wildcard). */
+/** One chain selector row: provider + model (or wildcard), plus its pin. */
 export interface ChainSelectorRow {
   /** `provider/*` wildcard entry: the model part is absent. */
   wildcard: boolean
   provider: CatalogSelection
   /** Null when wildcard (or the entry carries no model part). */
   model: CatalogSelection
+  /**
+   * Pinned reasoning effort of this hop (`provider/model@effort`), `null` when
+   * the entry follows the session's own selection. A null NEVER writes a
+   * suffix, so an effort-free row serializes exactly as it did before the
+   * column existed.
+   */
+  effort: string | null
 }
 
-/** Serialize one selector row to its wire string (`provider/model` | `provider/*`). */
+/**
+ * Serialize one selector row to its wire string
+ * (`provider/model[@effort]` | `provider/*[@effort]`). The suffix is written
+ * ONLY for a pinned effort, so an effort-free row stays byte-identical to the
+ * pre-@effort wire form.
+ */
 export function selectorRowToRaw(row: ChainSelectorRow): string {
   const provider = selectionToRaw(row.provider)
   if (provider === '') return ''
-  if (row.wildcard) return `${provider}/*`
+  const suffix = row.effort === null ? '' : `@${row.effort}`
+  if (row.wildcard) return `${provider}/*${suffix}`
   const model = selectionToRaw(row.model)
-  return model === '' ? provider : `${provider}/${model}`
+  // A bare provider (model not picked yet) has no effort select to pin from;
+  // the suffix would make the string unparsable, so it is never appended.
+  return model === '' ? provider : `${provider}/${model}${suffix}`
 }
 
 /** Parse one entry line into a selector row, classifying against the catalog. */
@@ -396,12 +411,13 @@ export function entryToSelectorRow(entry: string, catalog: CatalogLookup | undef
       wildcard: selector.model === undefined,
       provider: classifyProvider(selector.provider, catalog),
       model: selector.model === undefined ? null : classifyModel(selector.provider, selector.model, catalog),
+      effort: selector.effort ?? null,
     }
   } catch {
     // A malformed entry (not `provider/model`): keep it verbatim as a
     // bare outside value so a save never drops it — the runtime's
     // config-warning semantics are unchanged.
-    return { wildcard: false, provider: { kind: 'outside', raw: entry.trim() }, model: null }
+    return { wildcard: false, provider: { kind: 'outside', raw: entry.trim() }, model: null, effort: null }
   }
 }
 

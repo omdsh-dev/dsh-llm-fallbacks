@@ -449,6 +449,68 @@ describe('effort rule (design §3.2)', () => {
   })
 })
 
+describe('pinned effort on chain entries (selector @effort)', () => {
+  it('overrides the caller\'s effort on the entry\'s own hop', async () => {
+    adapter.efforts = () => [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High' }]
+    adapter.respond = (options) => (options.model === '1' ? { failure: { code: 'AUTH' } } : { chunks: [STOP] })
+
+    await walk(
+      { readConfig: chainCfg(['a/1@low', 'b/2@high']) },
+      { reasoningEffort: 'max' as GenerateOptions['reasoningEffort'] },
+    )
+
+    // `max` is not disclosed anywhere: an ignored pin would be dropped and the
+    // hop would carry no effort at all.
+    expect(adapter.calls.map((call) => call.reasoningEffort)).toEqual(['low', 'high'])
+    // The suffix is a request control, never part of the route.
+    expect(dispatched()).toEqual(['a/1', 'b/2'])
+  })
+
+  it('drops a pinned effort the route does not list instead of the caller\'s', async () => {
+    // `a/1` lists only `low`, so its `@high` pin is dropped — and the dropped
+    // pin must not fall back to the caller's own `low` (a pin REPLACES the
+    // selection for that hop, it is not a preference).
+    adapter.efforts = () => [{ id: 'low', name: 'Low' }]
+    adapter.respond = (options) => (options.model === '1' ? { failure: { code: 'AUTH' } } : { chunks: [STOP] })
+
+    await walk(
+      { readConfig: chainCfg(['a/1@high', 'b/2@low']) },
+      { reasoningEffort: 'low' as GenerateOptions['reasoningEffort'] },
+    )
+
+    expect('reasoningEffort' in adapter.calls[0]!).toBe(false)
+    expect(adapter.calls[1]!.reasoningEffort).toBe('low')
+  })
+
+  it('names the pinned effort in the switch log (a/b and a/b@high are not the same attempt)', async () => {
+    const info = vi.fn()
+    adapter.respond = (options) => (options.model === '1' ? { failure: { code: 'AUTH' } } : { chunks: [STOP] })
+
+    await walk(
+      { readConfig: chainCfg(['a/1@low', 'b/2@high']), log: { info, warn: () => {} } },
+    )
+
+    const switchLine = info.mock.calls.find(call => String(call[0]).includes('fallback switch'))
+    expect(switchLine).toBeDefined()
+    // The candidates ride as the last argument (the `%o` slot).
+    const candidates = switchLine!.at(-1) as string[]
+    expect(candidates).toContain('a/1@low (skipped: same-as-current)')
+    expect(candidates).toContain('b/2@high')
+  })
+
+  it('does not leak a pin to the next entry that carries none', async () => {
+    adapter.efforts = () => [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High' }]
+    adapter.respond = (options) => (options.model === '1' ? { failure: { code: 'AUTH' } } : { chunks: [STOP] })
+
+    await walk(
+      { readConfig: chainCfg(['a/1@low', 'b/2']) },
+      { reasoningEffort: 'high' as GenerateOptions['reasoningEffort'] },
+    )
+
+    expect(adapter.calls.map((call) => call.reasoningEffort)).toEqual(['low', 'high'])
+  })
+})
+
 describe('per-target parameter adaptation (plan 2026-11-07 T2)', () => {
   it('drops an inherited effort the next candidate does not list', async () => {
     adapter.efforts = (_provider, model) => (model === '1'

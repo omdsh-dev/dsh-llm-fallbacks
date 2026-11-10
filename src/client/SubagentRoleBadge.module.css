@@ -11,22 +11,92 @@
  * (the component returns null), so the actions row collapses cleanly. */
 
 .badge {
-  display: inline-block;
-  max-width: 240px;
+  /* T4: the pill is a three-segment flex line, so each half truncates on its
+   * own — a single ellipsis clips the model name first, which is the half the
+   * reader came for. 320px holds label + model; the pill still shrinks inside
+   * a crowded header row (`flex: 0 1 auto`). */
+  display: inline-flex;
+  align-items: baseline;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 320px;
   padding: 0 8px;
   border-radius: 999px;
   font-size: 12px;
   line-height: 20px;
   overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
   vertical-align: middle;
   background: var(--dsw-alias-bg-module-platform);
   color: var(--dsw-alias-label-primary);
 }
 
+/* The role half: identity, primary tone. It does NOT shrink to feed the route
+ * (a clipped role name is the one loss the pill cannot afford) but caps at
+ * 120px. */
+.role {
+  flex: 0 0 auto;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The separator is its own item so flex never collapses its spacing away. */
+.sep {
+  flex: none;
+}
+
 /* The route half of the pill (plan subagent-role-model): same geometry, muted
  * so the role id stays the primary read. */
 .route {
+  display: inline-flex;
+  align-items: baseline;
+  min-width: 0;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+/* A non-virtual route keeps the shipped single-span rendering: one nowrap line
+ * clipped with an ellipsis (the FC branch splits its own segments instead). */
+.plain {
+  display: inline;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* `[FC/` and `]` are fixed glyphs: never clipped, never ellipsized — clipping
+ * them turns the tag into noise. The chain LABEL alone truncates between them. */
+.fcPrefix,
+.fcClose {
+  flex: none;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.fcName {
+  flex: 0 0 auto;
+  min-width: 0;
+  max-width: 96px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+/* The model name is the answer to "which model am I actually on": one step
+ * stronger than the raw route it replaces, and the segment that gives width
+ * back first (min 56px, then it ellipsizes). */
+.model {
+  flex: 1 1 auto;
+  min-width: 56px;
+  margin-left: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--dsw-alias-label-secondary);
+}
+
+/* The unresolved state reads as missing data, not as a model name. */
+.unresolved {
   color: var(--dsw-alias-label-tertiary);
 }

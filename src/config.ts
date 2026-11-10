@@ -30,7 +30,7 @@
  */
 
 import { parseSelector } from './selectors.ts'
-import { PRESETS, isAllDayConforming } from './time-slots.ts'
+import { PRESETS, isAllDayConforming, officialTailIdsText } from './time-slots.ts'
 import type { SlotRowConfig } from './time-slots.ts'
 import { ESCALATION_CAP_MS } from './recovery.ts'
 
@@ -229,7 +229,7 @@ export function validateFallbacksConfig(config: FallbacksConfig, logger: Fallbac
     // inert (PR #62 semantics, per chain).
     if (chain.entries.length > 0 && !isAllDayConforming(chain.entries)) {
       logger.warn(
-        `llm-fallbacks: chain "${chain.id}" must end with exactly one official model (deepseek-official/deepseek-flash or deepseek-official/deepseek-v4-pro) — its time-slot rows and the virtual picker delegate stay inert until the tail conforms`,
+        `llm-fallbacks: chain "${chain.id}" must end with exactly one official model (${officialTailIdsText()}) — its time-slot rows and the virtual picker delegate stay inert until the tail conforms`,
       )
     }
     for (const entry of chain.entries) {

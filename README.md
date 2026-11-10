@@ -113,7 +113,7 @@ fallbacks:
 Three rules of thumb:
 
 - **There is no feature switch**: the plugin intervenes exactly when a chain is configured (`chains` non-empty). An empty section is a complete no-op, and the Plugins-page row toggle is the master switch.
-- **A chain's LAST entry (默认模型) must be exactly one official model** — `deepseek-official/deepseek-flash` **or** `deepseek-official/deepseek-v4-pro` (XOR); the leading Default fallback chain (默认降级链) entries are walked first. That applies to a NON-EMPTY `entries`: an empty one is accepted by the gateway (the row still appears, its walk refuses with `EMPTY_EFFECTIVE_CHAIN`), while the card requires a tail before its Save arms.
+- **A chain's LAST entry (默认模型) must be exactly one official model** — one of four ids: `deepseek-account/deepseek-flash`, `deepseek-account/deepseek-v4-pro`, `deepseek-official/deepseek-flash` or `deepseek-official/deepseek-v4-pro`; the leading Default fallback chain (默认降级链) entries are walked first. That applies to a NON-EMPTY `entries`: an empty one is accepted by the gateway (the row still appears, its walk refuses with `EMPTY_EFFECTIVE_CHAIN`), while the card requires a tail before its Save arms.
 - **Slots and roles are optional**: each chain's first matching time-slot row replaces that chain's entries; a role's `chain` pointer (or nothing) decides which chain a dispatched child mounts.
 
 Full reference (keys, entry syntax, selector rules, migration) → [docs/configuration.md](docs/configuration.md).

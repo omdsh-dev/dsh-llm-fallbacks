@@ -63,15 +63,59 @@ const MODEL_SELECTION_PROJECTION_KEY = 'modelSelection'
 /** The keyed-hook seat the session kit binds: `useProjection(key) → value | undefined`. */
 type ProjectionReader = (key: string) => unknown
 
-/** Props delivered by the actions slot outlet: runtime share + locale seat. */
-export type SubagentRoleBadgeProps =
-  PropsRuntime<'conversation.session.header.actions'> & PropsLocale<'fallbacks'>
+/**
+ * The virtual route provider this plugin owns (`FallbacksChain/<chain id>`).
+ * Declared here rather than imported from `src/virtual-adapter.ts`: that host
+ * module value-imports the host `dsh-llm` package, which the client bundle's
+ * purity gate refuses to inline — the same reason the client half never
+ * imports the host walk.
+ */
+const FALLBACKS_PROVIDER = 'FallbacksChain'
+
+/** One chain as the header pill may print it: label + static effective head. */
+export interface ChainRoute {
+  /** The chain id (the model half of the `FallbacksChain/<id>` selection). */
+  id: string
+  /** Operator-facing label; blank when the config never named the chain. */
+  label: string
+  /**
+   * The chain's FIRST dispatchable exact head with its catalog display name,
+   * or `null` when the chain resolves to none (empty / non-conforming /
+   * wildcard-only) — the pill then prints the unresolved state.
+   */
+  head: { provider: string; model: string; name: string } | null
+}
 
 /**
- * `provider/model` of one model selection, or `undefined` when the value's
- * fields are absent or foreign.
+ * Chain catalog lookup injected by the client registration closure
+ * (`src/client/index.ts`). The three return values are deliberately distinct:
+ *
+ * - `undefined` — the catalog is NOT loaded yet (cold); the pill must keep
+ *   today's raw `FallbacksChain/<id>` route instead of claiming anything.
+ * - `null` — the catalog IS loaded and the chain does not exist (deleted id,
+ *   stale selection); the pill prints the unresolved state.
+ * - a {@link ChainRoute} — resolved.
+ *
+ * The badge itself never loads anything — no RPC, no effect, no hook.
  */
-function selectionRoute(value: unknown): string | undefined {
+export type ChainRouteLookup = (chainId: string) => ChainRoute | null | undefined
+
+/**
+ * Props delivered by the actions slot outlet: runtime share + locale seat,
+ * plus the chain catalog lookup the client plugin's registration closure
+ * injects (absent = a cold catalog; the pill then keeps today's raw route).
+ */
+export type SubagentRoleBadgeProps =
+  PropsRuntime<'conversation.session.header.actions'> & PropsLocale<'fallbacks'> & {
+    /** Chain label + static effective head for one `FallbacksChain/<id>` route. */
+    chainRouteOf?: ChainRouteLookup
+  }
+
+/**
+ * The `provider` + `model` of one model selection, or `undefined` when the
+ * value's fields are absent or foreign.
+ */
+function selectionRoute(value: unknown): { provider: string; model: string } | undefined {
   if (typeof value !== 'object' || value === null) return undefined
   const { provider, model } = value as { provider?: unknown; model?: unknown }
   if (typeof provider !== 'string' || typeof model !== 'string') return undefined
@@ -81,7 +125,7 @@ function selectionRoute(value: unknown): string | undefined {
   const trimmedModel = model.trim()
   if (trimmedProvider === '' || trimmedModel === '') return undefined
   // Never capped: the pill BODY truncates for display, the title keeps this whole.
-  return `${trimmedProvider}/${trimmedModel}`
+  return { provider: trimmedProvider, model: trimmedModel }
 }
 
 /** Display form of a route in the pill body; the title keeps the full route. */
@@ -91,12 +135,12 @@ function displayRoute(route: string): string {
 }
 
 /**
- * `provider/model` the child's NEXT request will use, falling back to the route
- * its latest recorded request ran on (`modelSelection.next` → `lastUsed`), or
+ * The route the child's NEXT request will use, falling back to the route its
+ * latest recorded request ran on (`modelSelection.next` → `lastUsed`), or
  * `undefined` when neither carries a route — the badge then renders the role
  * alone instead of a wrong route.
  */
-function modelSelectionRoute(value: unknown): string | undefined {
+function modelSelectionRoute(value: unknown): { provider: string; model: string } | undefined {
   if (typeof value !== 'object' || value === null) return undefined
   const { next, lastUsed } = value as { next?: unknown; lastUsed?: unknown }
   return selectionRoute(next) ?? selectionRoute(lastUsed)
@@ -114,7 +158,7 @@ type SessionsHook = <T>(
  * @returns the badge element, or `null` when there is nothing to show.
  */
 export function SubagentRoleBadge(props: SubagentRoleBadgeProps): ReactNode {
-  const { t } = props
+  const { t, chainRouteOf } = props
   // Session standard kit seats (see docblock): runtime-guaranteed for
   // `scope: 'session'` slots, absent from this program's peer types — read
   // structurally and guarded. The seats are capabilities of the HOST
@@ -151,17 +195,70 @@ export function SubagentRoleBadge(props: SubagentRoleBadgeProps): ReactNode {
   const declared = readRoleProjectionValue(rawRole)
   const role = declared === INHERIT_ROLE_ID ? undefined : declared
   // Route is a SECOND, independent fact: either one alone still renders.
-  const model = modelSelectionRoute(rawModelSelection)
-  if (role === undefined && model === undefined) return null
+  const pair = modelSelectionRoute(rawModelSelection)
+  const route = pair === undefined ? undefined : `${pair.provider}/${pair.model}`
+  if (role === undefined && route === undefined) return null
 
-  const title = role !== undefined && model !== undefined
-    ? t('subagentRole.hover', { role, model })
-    : role ?? model
+  // The plugin's own virtual route names a CHAIN, not a model: printing the raw
+  // id (`FallbacksChain/chain-8`) tells a reader nothing, so an injected chain
+  // catalog (a prop, never a hook) lets the pill show the chain's label and the
+  // model it will actually dispatch. Everything else — and a COLD catalog, where
+  // no reader was injected — renders exactly as before.
+  const isVirtual = pair !== undefined && pair.provider === FALLBACKS_PROVIDER
+  // `undefined` = the reader has nothing loaded (cold) and `null` = loaded but
+  // the chain is gone; only the second one may print the unresolved state.
+  const lookup = isVirtual && chainRouteOf !== undefined ? chainRouteOf(pair.model) : undefined
+  const cold = isVirtual && lookup === undefined
+  // `null` (loaded, chain gone) folds into "no chain" here: the render branch
+  // below prints the unresolved state for it.
+  const chain: ChainRoute | undefined = lookup === null ? undefined : lookup
+  const chainId = pair === undefined ? '' : pair.model
+  const chainLabel = chain === undefined ? chainId : (chain.label !== '' ? chain.label : chain.id)
+  const head = chain?.head ?? null
+
+  let title: string
+  if (route === undefined) {
+    // Role-only pill (the route-less session): the role IS the title, exactly
+    // as before.
+    title = role!
+  } else if (role === undefined) {
+    // No role half: the route half speaks for itself (today's behaviour).
+    title = chain !== undefined && head !== null
+      ? `${FALLBACKS_PROVIDER}/${chainId} · ${head.name}`
+      : route!
+  } else if (isVirtual && !cold && head === null) {
+    title = t('subagentRole.hoverChainUnresolved', { role, chain: `${FALLBACKS_PROVIDER}/${chainId}` })
+  } else if (isVirtual && !cold && head !== null) {
+    title = t('subagentRole.hoverChain', {
+      role,
+      chain: `${FALLBACKS_PROVIDER}/${chainId}`,
+      model: head.name,
+      route: `${head.provider}/${head.model}`,
+    })
+  } else {
+    // Every other route — and the cold-catalog virtual one — keeps the shipped
+    // hover, which names the full request route.
+    title = t('subagentRole.hover', { role, model: route! })
+  }
+
   return (
     <span className={css.badge} title={title}>
-      {role}
-      {role !== undefined && model !== undefined && ' · '}
-      {model !== undefined && <span className={css.route}>{displayRoute(model)}</span>}
+      {role !== undefined && <span className={css.role}>{role}</span>}
+      {role !== undefined && route !== undefined && <span className={css.sep}> · </span>}
+      {route !== undefined && (!isVirtual || cold ? (
+        <span className={`${css.route} ${css.plain}`}>{displayRoute(route)}</span>
+      ) : (
+        // Three independently truncating segments: the bracket glyphs never
+        // clip, the label caps at 96px, and the model absorbs the remainder.
+        <span className={css.route}>
+          <span className={css.fcPrefix}>[FC/</span>
+          <span className={css.fcName}>{chainLabel}</span>
+          <span className={css.fcClose}>{'] '}</span>
+          {head !== null
+            ? <span className={css.model}>{head.name}</span>
+            : <span className={`${css.model} ${css.unresolved}`}>{t('subagentRole.unresolved')}</span>}
+        </span>
+      ))}
     </span>
   )
 }

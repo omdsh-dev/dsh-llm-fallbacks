@@ -113,7 +113,7 @@ fallbacks:
 三条要点：
 
 - **没有功能开关**：只要配置了链（`chains` 非空）插件才介入；空配置是完全的 no-op，Plugins 页的行开关是总开关。
-- **每条链的末项（默认模型）必须恰好是一个官方模型**——`deepseek-official/deepseek-flash` **或** `deepseek-official/deepseek-v4-pro`（XOR）；前部「默认降级链」条目优先进走。该要求只针对非空 `entries`：空 `entries` 网关也会接受（行仍出现在选择器中，walk 以 `EMPTY_EFFECTIVE_CHAIN` 拒绝），而卡片要求选好链尾才允许保存。
+- **每条链的末项（默认模型）必须恰好是一个官方模型**——四个 id 之一：`deepseek-account/deepseek-flash`、`deepseek-account/deepseek-v4-pro`、`deepseek-official/deepseek-flash` 或 `deepseek-official/deepseek-v4-pro`；前部「默认降级链」条目优先进走。该要求只针对非空 `entries`：空 `entries` 网关也会接受（行仍出现在选择器中，walk 以 `EMPTY_EFFECTIVE_CHAIN` 拒绝），而卡片要求选好链尾才允许保存。
 - **分时槽与角色都是可选的**：第一个窗口命中的分时行会在下一个请求取代该链自己的 `entries`；角色是已声明的身份加一个可选的 `chain` 指针（「指定降级链」），root 请求完全不受角色影响。
 
 完整参考（字段、条目语法、选择器规则、迁移）→ [docs/configuration.md](docs/configuration.md)。

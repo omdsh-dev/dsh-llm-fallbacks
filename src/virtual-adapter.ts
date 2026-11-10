@@ -50,6 +50,12 @@ export const FALLBACKS_PROVIDER = 'FallbacksChain'
 export interface EffectiveHead {
   provider: string
   model: string
+  /**
+   * Pinned reasoning effort the naming entry carries, when it has one. A
+   * property of the HOP, not of the route: {@link selectorKey} and every
+   * route identity stay effort-free.
+   */
+  effort?: string
 }
 
 /**
@@ -75,7 +81,11 @@ export function firstDispatchableExactHead(
     }
     if (selector.model === undefined) continue // wildcard: no real pair to delegate
     if (selector.provider === FALLBACKS_PROVIDER) continue // self-route: recursion guard
-    return { provider: selector.provider, model: selector.model }
+    return {
+      provider: selector.provider,
+      model: selector.model,
+      ...(selector.effort === undefined ? {} : { effort: selector.effort }),
+    }
   }
   return undefined
 }

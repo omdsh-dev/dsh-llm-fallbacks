@@ -51,7 +51,9 @@ export function resolveCandidate(
     return null
   }
   if (selector.model === undefined) {
-    const resolved = resolveWildcardEntry(failing.model, selector.provider)
+    // The wildcard swaps only the provider: the entry's own pinned effort (if
+    // any) rides through to the resolved hop.
+    const resolved = resolveWildcardEntry(failing.model, selector.provider, selector.effort)
     if (modelExists && !modelExists(resolved.provider, resolved.model!)) return null
     return resolved
   }
