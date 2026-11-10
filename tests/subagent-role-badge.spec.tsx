@@ -106,10 +106,17 @@ function badgeProps(
   return propsWithSeat(vi.fn((key: string) => projections[key]), origin)
 }
 
-/** A chain catalog reader over a fixed `chainId → route` table. */
+/**
+ * A LOADED chain catalog reader over a fixed `chainId → route` table. An id
+ * that is not in the table resolves to `null` — loaded, chain missing — which
+ * is the state that prints `未解析`.
+ */
 function chainRoutes(table: Record<string, ChainRoute>): ChainRouteLookup {
-  return (chainId) => table[chainId]
+  return (chainId) => (chainId in table ? table[chainId]! : null)
 }
+
+/** A COLD catalog reader: nothing loaded yet, so every lookup is `undefined`. */
+const coldLookup: ChainRouteLookup = () => undefined
 
 /** One resolved chain: label + the static effective head with its display name. */
 function chainRoute(id: string, label: string, name: string, provider = 'openai', model = 'gpt-4o'): ChainRoute {
@@ -432,7 +439,7 @@ describe('SubagentRoleBadge — FallbacksChain route display (Task 4)', () => {
       .toBe('coder → FallbacksChain/chain-8 · DeepSeek Flash (openai/gpt-4o)')
   })
 
-  it('an unknown chain renders the id and 未解析', () => {
+  it('a loaded catalog that does not know the chain renders the id and 未解析', () => {
     const { container } = render(<SubagentRoleBadge {...baseProps(chainRoutes({}))} />)
 
     const pill = pillOf(container)
@@ -449,8 +456,18 @@ describe('SubagentRoleBadge — FallbacksChain route display (Task 4)', () => {
     expect(pill?.textContent).toBe(`coder · [FC/夜间] ${en['subagentRole.unresolved']}`)
   })
 
-  it('a cold reader (undefined) falls back to today\'s FallbacksChain/<id>', () => {
+  it('no reader at all falls back to today\'s FallbacksChain/<id>', () => {
     const { container } = render(<SubagentRoleBadge {...baseProps(undefined)} />)
+
+    const pill = pillOf(container)
+    expect(pill?.textContent).toBe('coder · FallbacksChain/chain-8')
+    expect(pill?.getAttribute('title')).toBe('coder → FallbacksChain/chain-8 (request route)')
+  })
+
+  it('a COLD reader (nothing loaded yet) also falls back to the raw route', () => {
+    // `undefined` means "not loaded", NOT "missing": printing 未解析 here would
+    // claim the chain is gone on every first render.
+    const { container } = render(<SubagentRoleBadge {...baseProps(coldLookup)} />)
 
     const pill = pillOf(container)
     expect(pill?.textContent).toBe('coder · FallbacksChain/chain-8')
