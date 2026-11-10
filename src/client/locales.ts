@@ -67,7 +67,7 @@ export const zh = {
   'chains.selector.effortFollow': '跟随会话',
   'chains.selector.effortNone': '无',
   'chains.selector.effortNoMetadata': '该模型未提供推理等级元数据',
-  'chains.selector.effortUnsupported': '不支持，按会话等级发送',
+  'chains.selector.effortUnsupported': '不支持，按路由默认发送',
   // PR #62 feedback: the main-agent section heading groups the time-slot
   // rows + the all-day chooser; the subagents heading groups roles list +
   // rules.
@@ -320,7 +320,7 @@ export const en = {
   'chains.selector.effortFollow': 'Follow session',
   'chains.selector.effortNone': 'None',
   'chains.selector.effortNoMetadata': 'This model reports no reasoning tiers',
-  'chains.selector.effortUnsupported': 'Not supported — sent with the session effort',
+  'chains.selector.effortUnsupported': 'Not supported — sent with the route default',
   // PR #62 feedback: the main-agent section heading groups the time-slot
   // rows + the all-day chooser; the subagents heading groups roles list +
   // rules.
