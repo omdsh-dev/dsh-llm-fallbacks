@@ -128,10 +128,12 @@ export const CONTEXT_WINDOW_EXCEEDED_CODE = 'CONTEXT_WINDOW_EXCEEDED'
  * already tried to drop the offending control, and a request the route refuses
  * for its own shape says nothing about the route's health.
  *
- * This set governs the FORWARDING path only. A code the operator lists in
- * `triggerCodes` is handled by the swallowed-trigger path, which keeps its
- * pre-existing booking set ({@link SWALLOWED_REQUEST_SCOPED_CODES}): the
- * exclusion must never change an already-listed code's cooldown behavior.
+ * This set governs the FORWARDING path, and only for a code the operator has
+ * NOT listed in `triggerCodes`. A listed code keeps its pre-existing booking
+ * on BOTH paths ({@link SWALLOWED_REQUEST_SCOPED_CODES}): the forwarding branch
+ * also serves a listed code whose failure arrived after output, where the
+ * swallow decision is out of reach — the exclusion must never change an
+ * already-listed code's cooldown behavior.
  */
 export const REQUEST_SCOPED_CODES: ReadonlySet<string> = new Set([
   CONTEXT_WINDOW_EXCEEDED_CODE,
@@ -672,12 +674,23 @@ async function* walk(
    *
    * @param requestScoped - the codes request-scoped on THIS path: the swallowed
    *   trigger path keeps {@link SWALLOWED_REQUEST_SCOPED_CODES}, a forwarded
-   *   failure takes {@link REQUEST_SCOPED_CODES}.
+   *   failure takes {@link forwardedRequestScoped}.
    */
   const bookFailure = (failed: EffectiveHead, code: string, requestScoped: ReadonlySet<string>): void => {
     failedKeys.add(selectorKey(failed.provider, failed.model))
     if (!requestScoped.has(code)) coolRoute(failed)
   }
+
+  /**
+   * Request-scoped codes for a FORWARDED failure — selected by trigger
+   * membership, because this branch serves both an unlisted code and a LISTED
+   * code whose failure arrived after output (a committed attempt never reaches
+   * the swallow decision). Unlisted ⇒ the forwarding-path exclusion; listed ⇒
+   * the pre-existing trigger set, so an operator-listed code keeps its cooldown
+   * on either path.
+   */
+  const forwardedRequestScoped = (code: string): ReadonlySet<string> =>
+    config.triggerCodes.includes(code) ? SWALLOWED_REQUEST_SCOPED_CODES : REQUEST_SCOPED_CODES
 
   /**
    * Expand the chain from the route that just failed and return the next
@@ -844,10 +857,11 @@ async function* walk(
             // Every forwarded failure is booked at the attempt boundary: a
             // post-output failure is never replayed inside this walk, and a
             // non-trigger failure ends it, so the cooldown is the only memory
-            // that lets an llm-retry re-entry resume past this head. Forwarding
-            // is where the request-scoped exclusion applies; a code the operator
-            // listed is handled by the swallowed path below instead.
-            bookFailure(target, failure.code, REQUEST_SCOPED_CODES)
+            // that lets an llm-retry re-entry resume past this head. The
+            // request-scoped exclusion applies only to an UNLISTED code — a
+            // listed code reaches here too when it fails after output, and it
+            // keeps the pre-existing trigger booking.
+            bookFailure(target, failure.code, forwardedRequestScoped(failure.code))
           }
           for (const pending of pendingUsage) yield pending
           pendingUsage.length = 0

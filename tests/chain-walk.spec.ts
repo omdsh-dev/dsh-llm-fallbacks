@@ -1124,6 +1124,28 @@ describe('bookkeeping (design §3.3)', () => {
     },
   )
 
+  it.each(['INVALID_REQUEST', 'UNSUPPORTED_REASONING_EFFORT'])(
+    'keeps the pre-existing trigger booking when a listed %s fails AFTER output',
+    async (code) => {
+      const states = new FallbackStateStore()
+      adapter.respond = (options) => options.model === '1'
+        ? { chunks: [TEXT], failure: { code, message: 'rejected mid-stream' } }
+        : { chunks: [STOP] }
+      const deps = { readConfig: chainCfg(['a/1', 'a/2'], { triggerCodes: [code] }), states }
+
+      // Committed: the failure is forwarded verbatim and this walk ends…
+      const first = await walk(deps, { sessionId: SessionId('s1') })
+      expect(dispatched()).toEqual(['a/1'])
+      expect(first.at(-1)).toMatchObject({ type: 'finish', reason: { kind: 'error', failure: { code } } })
+      // …yet a LISTED code keeps its pre-existing booking on this path too, so
+      // the next walk resumes past the head instead of retrying it.
+      expect(states.peek('s1')?.cooldown.peek('a/1')).toBeTypeOf('number')
+      adapter.calls.length = 0
+      await walk(deps, { sessionId: SessionId('s1') })
+      expect(dispatched()).toEqual(['a/2'])
+    },
+  )
+
   it('logs the switch with the annotated candidate order', async () => {
     adapter.respond = (options) => (options.model === '1' ? { failure: { code: 'AUTH' } } : { chunks: [STOP] })
     const info = vi.fn()
