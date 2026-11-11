@@ -1103,6 +1103,27 @@ describe('bookkeeping (design §3.3)', () => {
     expect(dispatched()).toEqual(['a/1'])
   })
 
+  it.each(['INVALID_REQUEST', 'UNSUPPORTED_REASONING_EFFORT'])(
+    'keeps the pre-existing trigger booking when an operator lists %s',
+    async (code) => {
+      const states = new FallbackStateStore()
+      adapter.respond = (options) => options.model === '1'
+        ? { failure: { code, message: 'request-scoped on the FORWARDING path only' } }
+        : { chunks: [STOP] }
+
+      await walk({
+        readConfig: chainCfg(['a/1', 'a/2'], { triggerCodes: [code] }),
+        states,
+      }, { sessionId: SessionId('s1') })
+
+      // Listed, so the swallowed trigger path owns it: switch + cooldown exactly
+      // as before this plan — the forwarded-failure exclusion must not change an
+      // already-listed code's booking.
+      expect(dispatched()).toEqual(['a/1', 'a/2'])
+      expect(states.peek('s1')?.cooldown.peek('a/1')).toBeTypeOf('number')
+    },
+  )
+
   it('logs the switch with the annotated candidate order', async () => {
     adapter.respond = (options) => (options.model === '1' ? { failure: { code: 'AUTH' } } : { chunks: [STOP] })
     const info = vi.fn()
