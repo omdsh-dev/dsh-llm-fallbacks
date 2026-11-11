@@ -32,7 +32,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { SubagentRoleBadge } from '../src/client/SubagentRoleBadge.tsx'
 import type { ChainRoute, ChainRouteLookup, SubagentRoleBadgeProps } from '../src/client/SubagentRoleBadge.tsx'
 import { FallbacksSettingsController, type FallbacksSettingsState } from '../src/client/fallbacks-store.ts'
-import { chainRouteLookup } from '../src/client/index.ts'
+import { chainRouteLookup } from '../src/client/chain-route-lookup.ts'
 import { bindSnapshotSelector } from '../src/client/use-snapshot.ts'
 import { defaultFallbacksConfig } from '../src/config.ts'
 import { ROLE_PROJECTION_KEY } from '../src/role-projection-key.ts'
@@ -511,6 +511,8 @@ describe('SubagentRoleBadge — shared store load repaints the pill', () => {
   function coldController(
     chains: Array<{ id: string; label: string; entries: string[] }>,
     groups: unknown[],
+    /** Optional hold before the gateway get settles (to observe an in-flight refresh). */
+    beforeGet?: () => Promise<void>,
   ): FallbacksSettingsController {
     const config = { ...defaultFallbacksConfig, chains }
     const api = {
@@ -518,7 +520,12 @@ describe('SubagentRoleBadge — shared store load repaints the pill', () => {
       llm: { listConfigurableProviders: async () => ({ ok: true, value: [] }) },
       session: { modelCatalog: async () => ({ ok: true, value: { groups, failures: [] } }) },
     }
-    const rpc = { call: async () => ({ ok: true, value: { config } }) }
+    const rpc = {
+      call: async () => {
+        await beforeGet?.()
+        return { ok: true, value: { config } }
+      },
+    }
     return new FallbacksSettingsController(api as never, rpc as never)
   }
 
@@ -563,6 +570,52 @@ describe('SubagentRoleBadge — shared store load repaints the pill', () => {
     const pill = pillOf(container)
     expect(pill?.textContent).toBe('coder · [FC/默认] GPT-4o')
     expect(pill?.getAttribute('title')).toBe('coder → FallbacksChain/chain-8 · GPT-4o (openai/gpt-4o)')
+  })
+
+  it('keeps the resolved pill while a pushed refresh is in flight (ready → loading)', async () => {
+    // A pushed invalidation refetches through `load()`, which publishes
+    // `loading` BEFORE its response lands. The already-resolved pill must not
+    // fall back to the raw route for that one round trip.
+    let hold: Promise<void> | undefined
+    const controller = coldController(
+      [{ id: 'chain-8', label: '默认', entries: ['openai/gpt-4o', OFFICIAL_FLASH] }],
+      [{ id: 'openai', name: 'OpenAI', models: [{ id: 'gpt-4o', name: 'GPT-4o' }] }],
+      () => hold ?? Promise.resolve(),
+    )
+    const lookup = chainRouteLookup(() => controller.store.getSnapshot())
+    // Record the status each render looked up at: proves the loading snapshot
+    // really repainted the mounted pill (rather than the test reading stale DOM).
+    const seenStatus: string[] = []
+    const props: SubagentRoleBadgeProps = {
+      ...badgeProps({ [ROLE_PROJECTION_KEY]: 'coder', modelSelection: selection('FallbacksChain', 'chain-8') }),
+      chainRouteOf: (chainId: string) => {
+        seenStatus.push(controller.store.getSnapshot().status)
+        return lookup(chainId)
+      },
+      useSnapshot: bindSnapshotSelector(controller.store),
+    }
+    const { container } = render(<SubagentRoleBadge {...props} />)
+    await act(async () => {
+      await controller.load()
+      await controller.loadCatalog()
+    })
+    expect(pillOf(container)?.textContent).toBe('coder · [FC/默认] GPT-4o')
+
+    let release!: () => void
+    hold = new Promise<void>((resolve) => { release = resolve })
+    let refresh!: Promise<void>
+    await act(async () => { refresh = controller.load() })
+    expect(controller.store.getSnapshot().status).toBe('loading')
+    expect(seenStatus).toContain('loading')
+    expect(pillOf(container)?.textContent).toBe('coder · [FC/默认] GPT-4o')
+    expect(pillOf(container)?.textContent).not.toContain('FallbacksChain/')
+
+    await act(async () => {
+      release()
+      await refresh
+    })
+    expect(controller.store.getSnapshot().status).toBe('ready')
+    expect(pillOf(container)?.textContent).toBe('coder · [FC/默认] GPT-4o')
   })
 
   it('renders the resolved pill through a non-subscribing snapshot seat', () => {
