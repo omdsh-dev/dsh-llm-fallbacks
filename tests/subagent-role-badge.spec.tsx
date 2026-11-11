@@ -27,11 +27,16 @@
  */
 
 import { useSyncExternalStore } from 'react'
-import { cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { SubagentRoleBadge } from '../src/client/SubagentRoleBadge.tsx'
 import type { ChainRoute, ChainRouteLookup, SubagentRoleBadgeProps } from '../src/client/SubagentRoleBadge.tsx'
+import { FallbacksSettingsController, type FallbacksSettingsState } from '../src/client/fallbacks-store.ts'
+import { chainRouteLookup } from '../src/client/index.ts'
+import { bindSnapshotSelector } from '../src/client/use-snapshot.ts'
+import { defaultFallbacksConfig } from '../src/config.ts'
 import { ROLE_PROJECTION_KEY } from '../src/role-projection-key.ts'
+import { OFFICIAL_FLASH } from '../src/time-slots.ts'
 import { en } from '../src/client/locales.ts'
 
 afterEach(cleanup)
@@ -85,18 +90,29 @@ function propsWithSeat(
   useProjection: (key: string) => unknown,
   origin: 'subagent' | 'root' | 'empty' = 'subagent',
   useSessions: unknown = sessionsSeat(origin),
+  useSnapshot: unknown = noopSnapshot,
 ): SubagentRoleBadgeProps {
   return {
     t,
     sessionId: 'viewed-session',
     useProjection: useProjection as never,
     useSessions: useSessions as never,
+    useSnapshot: useSnapshot as never,
     useWorkspaces: undefined as never,
     useConversation: undefined as never,
     useInput: undefined as never,
     inputActions: undefined as never,
   } as never as SubagentRoleBadgeProps
 }
+
+/**
+ * The settings-store seat a never-notifying host binds: a plain read of the
+ * cold skeleton, no subscription. The badge must render through it — the seat
+ * only exists to repaint the pill, it is never a data source.
+ */
+const idleSnapshotState = { status: 'idle', catalogStatus: 'idle', catalogEpoch: 0 } as FallbacksSettingsState
+const noopSnapshot = ((selector: (state: FallbacksSettingsState) => unknown) =>
+  selector(idleSnapshotState)) as SubagentRoleBadgeProps['useSnapshot']
 
 /** The scripted seat: a `key → value` map lookup, no React hook involved. */
 function badgeProps(
@@ -483,5 +499,82 @@ describe('SubagentRoleBadge — FallbacksChain route display (Task 4)', () => {
     const pill = pillOf(container)
     expect(pill?.textContent).toBe('coder · openai/gpt-4o')
     expect(pill?.getAttribute('title')).toBe('coder → openai/gpt-4o (request route)')
+  })
+})
+
+describe('SubagentRoleBadge — shared store load repaints the pill', () => {
+  /**
+   * One controller over scripted Remote faces. The store starts COLD (`idle`)
+   * exactly like a fresh page: the client warms it at apply time, after this
+   * badge has already rendered once.
+   */
+  function coldController(
+    chains: Array<{ id: string; label: string; entries: string[] }>,
+    groups: unknown[],
+  ): FallbacksSettingsController {
+    const config = { ...defaultFallbacksConfig, chains }
+    const api = {
+      settings: { describe: async () => ({ ok: true, value: { writable: true, namespaces: [] } }) },
+      llm: { listConfigurableProviders: async () => ({ ok: true, value: [] }) },
+      session: { modelCatalog: async () => ({ ok: true, value: { groups, failures: [] } }) },
+    }
+    const rpc = { call: async () => ({ ok: true, value: { config } }) }
+    return new FallbacksSettingsController(api as never, rpc as never)
+  }
+
+  /** The badge props over ONE controller: the real lookup + the bound store hook. */
+  function storeBadgeProps(controller: FallbacksSettingsController): SubagentRoleBadgeProps {
+    return {
+      ...badgeProps({ [ROLE_PROJECTION_KEY]: 'coder', modelSelection: selection('FallbacksChain', 'chain-8') }),
+      chainRouteOf: chainRouteLookup(() => controller.store.getSnapshot()),
+      useSnapshot: bindSnapshotSelector(controller.store),
+    }
+  }
+
+  it('keeps the raw FallbacksChain/<id> while the store is idle', () => {
+    const controller = coldController(
+      [{ id: 'chain-8', label: '默认', entries: ['openai/gpt-4o', OFFICIAL_FLASH] }],
+      [{ id: 'openai', name: 'OpenAI', models: [{ id: 'gpt-4o', name: 'GPT-4o' }] }],
+    )
+    expect(controller.store.getSnapshot().status).toBe('idle')
+
+    const { container } = render(<SubagentRoleBadge {...storeBadgeProps(controller)} />)
+
+    const pill = pillOf(container)
+    expect(pill?.textContent).toBe('coder · FallbacksChain/chain-8')
+    expect(pill?.getAttribute('title')).toBe('coder → FallbacksChain/chain-8 (request route)')
+  })
+
+  it('repaints the SAME mounted badge when the warmed store turns ready', async () => {
+    const controller = coldController(
+      [{ id: 'chain-8', label: '默认', entries: ['openai/gpt-4o', OFFICIAL_FLASH] }],
+      [{ id: 'openai', name: 'OpenAI', models: [{ id: 'gpt-4o', name: 'GPT-4o' }] }],
+    )
+    const { container } = render(<SubagentRoleBadge {...storeBadgeProps(controller)} />)
+    // Cold first render: the hook translates to nothing yet.
+    expect(pillOf(container)?.textContent).toBe('coder · FallbacksChain/chain-8')
+
+    // The client-start warm-up lands after the mount — no remount, no rerender.
+    await act(async () => {
+      await controller.load()
+      await controller.loadCatalog()
+    })
+
+    const pill = pillOf(container)
+    expect(pill?.textContent).toBe('coder · [FC/默认] GPT-4o')
+    expect(pill?.getAttribute('title')).toBe('coder → FallbacksChain/chain-8 · GPT-4o (openai/gpt-4o)')
+  })
+
+  it('renders through a non-subscribing snapshot seat (no crash, raw first render)', () => {
+    // The seat is a repaint trigger, never a value source: a host that binds a
+    // plain reader must still render the pill.
+    const props = {
+      ...badgeProps({ [ROLE_PROJECTION_KEY]: 'coder', modelSelection: selection('FallbacksChain', 'chain-8') }),
+      chainRouteOf: chainRoutes({ 'chain-8': chainRoute('chain-8', '默认', 'DeepSeek Flash') }),
+      useSnapshot: ((selector: (state: FallbacksSettingsState) => unknown) =>
+        selector(idleSnapshotState)) as never,
+    }
+    const { container } = render(<SubagentRoleBadge {...props} />)
+    expect(pillOf(container)?.textContent).toBe('coder · [FC/默认] DeepSeek Flash')
   })
 })

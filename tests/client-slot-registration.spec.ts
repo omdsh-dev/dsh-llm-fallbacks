@@ -12,6 +12,25 @@ import { apply as applyClient, inject } from '../src/client/index.ts'
 
 let ctx: Context
 
+/** Remote-namespace spies: the client-start store warm-up must call each once. */
+let spies: {
+  describe: ReturnType<typeof vi.fn>
+  listConfigurableProviders: ReturnType<typeof vi.fn>
+  modelCatalog: ReturnType<typeof vi.fn>
+  rpcCall: ReturnType<typeof vi.fn>
+}
+
+/** The slots double every `applyClient` test needs (the registrations run at apply). */
+function provideSlots(registered: Array<{ name: string; key?: string; id?: string }> = []): void {
+  ctx.provide('slots', {
+    inject: (_name: string, thunk: () => Iterable<unknown>) => { for (const _dispose of thunk()) { /* run the registration generator */ } },
+    register: (options: { name: string; key?: string; id?: string }) => {
+      registered.push(options)
+      return {}
+    },
+  })
+}
+
 beforeEach(() => {
   ctx = new Context()
   // `uiConversation` service double (the D1 Definition registry's home since
@@ -28,22 +47,35 @@ beforeEach(() => {
       subscribe: () => () => {},
     },
   })
+  spies = {
+    describe: vi.fn(async () => ({ ok: true as const, value: { writable: false, namespaces: [] } })),
+    listConfigurableProviders: vi.fn(async () => ({ ok: true as const, value: [] })),
+    modelCatalog: vi.fn(async () => ({ ok: true as const, value: { groups: [], failures: [] } })),
+    rpcCall: vi.fn(async () => ({ ok: true as const, value: { config: undefined } })),
+  }
   ctx.provide('connection', {
     api: {
       settings: { describe: vi.fn(), update: vi.fn(), replace: vi.fn(), mutate: vi.fn() },
       llm: { providers: vi.fn(), models: vi.fn(), discoverModels: vi.fn() },
       sessions: { history: vi.fn() },
     },
-    rpc: { call: vi.fn() },
+    rpc: { call: spies.rpcCall },
   })
   // rc.1 dotted-namespace contract: each client Remote namespace is a
   // child-fiber service named `remote.<ns>` (upstream `remoteServiceKey`);
   // provide the dotted services (empty faces — this spec never reads
   // namespaces) so the declared injects resolve like production.
-  ctx.provide('remote.llm', {})
-  ctx.provide('remote.settings', {})
-  ctx.provide('remote.session', {})
-  ctx.provide('remote', { $on: () => () => {} })
+  ctx.provide('remote.llm', { listConfigurableProviders: spies.listConfigurableProviders })
+  ctx.provide('remote.settings', { describe: spies.describe })
+  ctx.provide('remote.session', { modelCatalog: spies.modelCatalog })
+  // The assembly face forwards namespace reads to the dotted child services,
+  // mirroring the traceable proxy (`ctx.remote.settings` → `ctx['remote.settings']`).
+  ctx.provide('remote', {
+    $on: () => () => {},
+    get settings() { return ctx.get('remote.settings') as unknown },
+    get llm() { return ctx.get('remote.llm') as unknown },
+    get session() { return ctx.get('remote.session') as unknown },
+  })
 })
 
 afterEach(async () => {
@@ -64,17 +96,32 @@ describe('client slot registration', () => {
 
   it('registers the plugins.bundle.config card with package-name key', () => {
     const registered: Array<{ name: string; key?: string; id?: string }> = []
-    ctx.provide('slots', {
-      inject: (_name: string, thunk: () => Iterable<unknown>) => { for (const _dispose of thunk()) { /* run the registration generator */ } },
-      register: (options: { name: string; key?: string; id?: string }) => {
-        registered.push(options)
-        return {}
-      },
-    })
+    provideSlots(registered)
     applyClient(ctx)
     const card = registered.find((entry) => entry.name === 'plugins.bundle.config')
     expect(card).toBeDefined()
     expect(card!.key).toBe('dsh-llm-fallbacks')
     expect(card!.id).toBeUndefined()
+  })
+
+  it('warms the shared settings store once at client start (badge repaint trigger)', async () => {
+    // The settings card's mount used to be the only load trigger, so the
+    // session-header badge stayed cold for any session that never opened the
+    // plugin page. apply() now loads config + catalog once; the `refresh*IfLoaded`
+    // invalidations keep it fresh without a retry loop.
+    provideSlots()
+    applyClient(ctx)
+
+    expect(spies.describe).toHaveBeenCalledTimes(1)
+    expect(spies.rpcCall).toHaveBeenCalledWith('/api', 'fallbacks/get', { args: {} })
+    expect(spies.listConfigurableProviders).toHaveBeenCalledTimes(1)
+    expect(spies.modelCatalog).toHaveBeenCalledTimes(1)
+
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(spies.describe).toHaveBeenCalledTimes(1)
+    expect(spies.listConfigurableProviders).toHaveBeenCalledTimes(1)
+    expect(spies.modelCatalog).toHaveBeenCalledTimes(1)
   })
 })

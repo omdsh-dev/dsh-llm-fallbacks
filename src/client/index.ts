@@ -197,7 +197,7 @@ function firstDispatchableHead(entries: readonly string[]): { provider: string; 
  * @param getSnapshot - read the live settings state (the shared controller).
  * @returns the lookup the badge receives as a prop.
  */
-function chainRouteLookup(getSnapshot: () => FallbacksSettingsState): ChainRouteLookup {
+export function chainRouteLookup(getSnapshot: () => FallbacksSettingsState): ChainRouteLookup {
   return (chainId: string): ChainRoute | null | undefined => {
     const snapshot = getSnapshot()
     // Not loaded (or the load failed, leaving only the default skeleton):
@@ -257,6 +257,12 @@ export function apply(ctx: ClientContext): void {
   // The card's uSES selector hook, bound once to the controller's store and
   // handed to the renderer through the inject face (advisor pattern).
   const useSnapshot = bindSnapshotSelector(controller.store)
+  // The badge reads this store but the settings card's mount was the only load
+  // trigger, so warm it once at client start: without this the pill is cold for
+  // every session that never opens the plugin page. Pushed invalidations and
+  // the `refresh*IfLoaded` guards keep it fresh afterwards (no retry loop).
+  void controller.load()
+  void controller.loadCatalog()
 
   // Pushed invalidations converge every open surface without polling. The
   // 20260811 dsh snapshot dropped the client-side settings/catalog events;
@@ -402,10 +408,11 @@ export function apply(ctx: ClientContext): void {
   // the role sits next to the agent-preset chip instead of the far-right
   // utilities strip. (`dsh-client-ui-open-in-app` is a utilities-row occupant,
   // not an actions-row one.)
-  // The chain catalog rides the REGISTRATION CLOSURE (`chainRouteOf` is a prop,
-  // not a hook — the badge's hook order stays exactly as it was). The reader
-  // reads the plugin's shared controller snapshot: cold states miss every
-  // lookup and the pill keeps the raw route.
+  // The chain catalog rides the REGISTRATION CLOSURE: `chainRouteOf` stays the
+  // value source (cold states miss every lookup and the pill keeps the raw
+  // route), while the bound `useSnapshot` hook is the repaint trigger — the
+  // store loads after this registration, so without a subscription the pill
+  // would keep its cold first render until an unrelated re-render.
   const chainRouteOf = chainRouteLookup(() => controller.store.getSnapshot())
   ctx.slots.inject('conversation.session.header.actions', function* () {
     yield ctx.slots.register({
@@ -413,6 +420,6 @@ export function apply(ctx: ClientContext): void {
       id: 'fallbacks-subagent-role',
       order: -5,
       locale: NS,
-    }, props => createElement(SubagentRoleBadge, { ...props, chainRouteOf }))
+    }, props => createElement(SubagentRoleBadge, { ...props, chainRouteOf, useSnapshot }))
   })
 }
