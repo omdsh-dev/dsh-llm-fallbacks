@@ -6,6 +6,14 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.8.6] - 2026-11-11
+
+### Fixed
+
+- Keep the subagent session-header pill on its resolved chain label while a pushed config refresh is in flight, instead of flashing the raw `FallbacksChain/<id>` route.
+- Opening the fallbacks settings card after a failed background load now retries the read instead of showing a dead error state.
+- Warm the chain catalog at client start and repaint the session-header role badge when it loads, so a subagent session shows the chain label and real model name instead of the raw `FallbacksChain/<id>` route.
+
 ## [0.8.5] - 2026-11-11
 
 ### Fixed
