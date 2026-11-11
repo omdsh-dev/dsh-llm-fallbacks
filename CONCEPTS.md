@@ -48,7 +48,7 @@ fallbacks 配置的自明结构：`chains`（命名虚拟链列表）+ `roles.li
 *Avoid:* 「压缩先行、插件只在压缩预算耗尽后才看到该错误」（2026-09-09 实测证伪：列入触发码后首次超限即降级，未发生压缩）
 
 ### 路由级 vs 请求级失败（route-scoped / request-scoped）
-失败归因的二分，决定切换是否冷却 from 路由：**路由级**（缺省，`PendingSwitch.scope` 省略即此）= provider/model 本身不健康（AUTH/QUOTA/RATE_LIMIT…），照旧 `suppress` + 恢复计数；**请求级**（被转发失败上的 `REQUEST_SCOPED_CODES`：`CONTEXT_WINDOW_EXCEEDED`、`UNSUPPORTED_REASONING_EFFORT`、`INVALID_REQUEST`）= 路由健康、这一次请求有问题——step 级记账（本步失败集合 + 切换计数）保留，但**不写**冷却与半开恢复计数（冷却健康路由会把下一条短提示词无谓地推给 fallback，并浪费一次半开探针）。码一旦列入 `triggerCodes` 即不适用该排除：被吞掉与提交后转发两条路径都按路由级记账（冷却 + 恢复计数），吞掉路径内部仍以 `SWALLOWED_REQUEST_SCOPED_CODES`（仅 `CONTEXT_WINDOW_EXCEEDED`）为准。
+失败归因的二分，决定切换是否冷却 from 路由：**路由级**（缺省，`PendingSwitch.scope` 省略即此）= provider/model 本身不健康（AUTH/QUOTA/RATE_LIMIT…），照旧 `suppress` + 恢复计数；**请求级**（被转发失败上的 `REQUEST_SCOPED_CODES`：`CONTEXT_WINDOW_EXCEEDED`、`UNSUPPORTED_REASONING_EFFORT`、`INVALID_REQUEST`）= 路由健康、这一次请求有问题——step 级记账（本步失败集合 + 切换计数）保留，但**不写**冷却与半开恢复计数（冷却健康路由会把下一条短提示词无谓地推给 fallback，并浪费一次半开探针）。两个参数拒绝码一旦列入 `triggerCodes` 即不适用该排除：被吞掉与提交后转发两条路径都按路由级记账（冷却 + 恢复计数）。`CONTEXT_WINDOW_EXCEEDED` 不受成员影响，两条路径都保持请求级：吞掉路径的 `SWALLOWED_REQUEST_SCOPED_CODES` 与转发路径的 `REQUEST_SCOPED_CODES` 都含它。
 *Avoid:* 把请求级切换当「不记账」（step 级记账仍在，只是不冷却路由）
 
 ### documented degradation（文档化降级）
