@@ -11,8 +11,10 @@
  * swallowed, booked (cooldown / recovery) and the walk advances; anything
  * else — a normal finish, an aborted finish, a non-trigger failure, or any
  * failure after the attempt already yielded output — is forwarded verbatim
- * and ends the walk. A `usage` chunk is metadata, so it neither commits the
- * attempt nor stops the advance.
+ * and ends the walk. Every FAILED attempt is booked at the attempt boundary
+ * (a path-specific request-scoped exclusion applies), so an llm-retry re-entry
+ * after a forwarded failure resumes past the failed head. A `usage` chunk is
+ * metadata, so it neither commits the attempt nor stops the advance.
  *
  * A pre-output parameter rejection (`UNSUPPORTED_REASONING_EFFORT`, or a
  * `max_tokens`-shaped `INVALID_REQUEST`) is repaired first: the SAME candidate
@@ -117,12 +119,35 @@ export const LLM_UNAVAILABLE_CODE = 'LLM_UNAVAILABLE'
 export const CONTEXT_WINDOW_EXCEEDED_CODE = 'CONTEXT_WINDOW_EXCEEDED'
 
 /**
- * Failure codes whose switch is REQUEST-scoped: the route is healthy and the
- * request was the problem, so a switch records the per-call failed key but
- * writes no cooldown and no recovery counter. Cooling the route down would
+ * Failure codes whose FORWARDED failure is REQUEST-scoped: the route is healthy
+ * and the request was the problem, so booking records the per-call failed key
+ * but writes no cooldown and no recovery counter. Cooling the route down would
  * send the next SHORT prompt to the fallback for no reason.
+ *
+ * The two adapter-side parameter rejections join it: the reactive repair has
+ * already tried to drop the offending control, and a request the route refuses
+ * for its own shape says nothing about the route's health.
+ *
+ * This set governs the FORWARDING path, and only for a code the operator has
+ * NOT listed in `triggerCodes`. A listed code keeps its pre-existing booking
+ * on BOTH paths ({@link SWALLOWED_REQUEST_SCOPED_CODES}): the forwarding branch
+ * also serves a listed code whose failure arrived after output, where the
+ * swallow decision is out of reach — the exclusion must never change an
+ * already-listed code's cooldown behavior.
  */
-export const REQUEST_SCOPED_CODES: ReadonlySet<string> = new Set([CONTEXT_WINDOW_EXCEEDED_CODE])
+export const REQUEST_SCOPED_CODES: ReadonlySet<string> = new Set([
+  CONTEXT_WINDOW_EXCEEDED_CODE,
+  'UNSUPPORTED_REASONING_EFFORT',
+  'INVALID_REQUEST',
+])
+
+/**
+ * Request-scoped codes on the SWALLOWED trigger path — the pre-existing set
+ * (only the context-window rejection). An operator-listed
+ * `UNSUPPORTED_REASONING_EFFORT` / `INVALID_REQUEST` therefore keeps the
+ * cooldown and recovery bookkeeping it has always had.
+ */
+const SWALLOWED_REQUEST_SCOPED_CODES: ReadonlySet<string> = new Set([CONTEXT_WINDOW_EXCEEDED_CODE])
 
 /**
  * The exact-route capabilities a walk reads from `resolveModelInfo`: the
@@ -642,15 +667,30 @@ async function* walk(
 
   /**
    * Book one failed attempt at the attempt boundary (§3.3): the per-call
-   * failed key, plus the route-scoped cooldown (a request-scoped code leaves
-   * the healthy route uncooled). Booking is INDEPENDENT of the swallow/switch
-   * decision — a failure after output is forwarded and ends this walk, yet the
-   * next walk must still see that head as dead.
+   * failed key, plus the route-scoped cooldown unless `requestScoped` names the
+   * code. Booking is INDEPENDENT of the swallow/switch decision — a failure
+   * after output is forwarded and ends this walk, yet the next walk must still
+   * see that head as dead.
+   *
+   * @param requestScoped - the codes request-scoped on THIS path: the swallowed
+   *   trigger path keeps {@link SWALLOWED_REQUEST_SCOPED_CODES}, a forwarded
+   *   failure takes {@link forwardedRequestScoped}.
    */
-  const bookFailure = (failed: EffectiveHead, code: string): void => {
+  const bookFailure = (failed: EffectiveHead, code: string, requestScoped: ReadonlySet<string>): void => {
     failedKeys.add(selectorKey(failed.provider, failed.model))
-    if (!REQUEST_SCOPED_CODES.has(code)) coolRoute(failed)
+    if (!requestScoped.has(code)) coolRoute(failed)
   }
+
+  /**
+   * Request-scoped codes for a FORWARDED failure — selected by trigger
+   * membership, because this branch serves both an unlisted code and a LISTED
+   * code whose failure arrived after output (a committed attempt never reaches
+   * the swallow decision). Unlisted ⇒ the forwarding-path exclusion; listed ⇒
+   * the pre-existing trigger set, so an operator-listed code keeps its cooldown
+   * on either path.
+   */
+  const forwardedRequestScoped = (code: string): ReadonlySet<string> =>
+    config.triggerCodes.includes(code) ? SWALLOWED_REQUEST_SCOPED_CODES : REQUEST_SCOPED_CODES
 
   /**
    * Expand the chain from the route that just failed and return the next
@@ -813,10 +853,15 @@ async function* walk(
             if (chunk.reason.kind !== 'aborted' && state !== undefined) {
               deps.states.observeSuccess(state, key)
             }
-          } else if (config.triggerCodes.includes(failure.code)) {
-            // A failure after output is forwarded verbatim and never replayed;
-            // booking it is all this walk keeps from it.
-            bookFailure(target, failure.code)
+          } else {
+            // Every forwarded failure is booked at the attempt boundary: a
+            // post-output failure is never replayed inside this walk, and a
+            // non-trigger failure ends it, so the cooldown is the only memory
+            // that lets an llm-retry re-entry resume past this head. The
+            // request-scoped exclusion applies only to an UNLISTED code — a
+            // listed code reaches here too when it fails after output, and it
+            // keeps the pre-existing trigger booking.
+            bookFailure(target, failure.code, forwardedRequestScoped(failure.code))
           }
           for (const pending of pendingUsage) yield pending
           pendingUsage.length = 0
@@ -854,7 +899,7 @@ async function* walk(
     // the adapter never produced one, so the walk has nothing to add.
     if (swallowed === undefined) return
 
-    bookFailure(target, swallowed.code)
+    bookFailure(target, swallowed.code, SWALLOWED_REQUEST_SCOPED_CODES)
     // §3.1 step 4: no surviving candidate, or the switch cap reached — the
     // last attempt's terminal failure is re-emitted verbatim.
     const next = switches < config.maxSwitchesPerStep ? await advanceFrom(target, swallowed.code) : undefined

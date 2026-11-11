@@ -1050,6 +1050,102 @@ describe('bookkeeping (design §3.3)', () => {
     expect(state.recovery.isHalfOpen('a/1')).toBe(false)
   })
 
+  it('books a forwarded pre-output TRANSPORT, so the next walk resumes past the head', async () => {
+    const states = new FallbackStateStore()
+    adapter.respond = (options) => options.model === '1'
+      ? { failure: { code: 'TRANSPORT', message: 'socket' } }
+      : { chunks: [TEXT, STOP] }
+    const deps = { readConfig: chainCfg(['a/1', 'a/2']), states }
+
+    // `TRANSPORT` is not a trigger code: the failure is forwarded verbatim and
+    // this walk ends — booking the head is all it keeps from the attempt.
+    const first = await walk(deps, { sessionId: SessionId('s1') })
+    expect(dispatched()).toEqual(['a/1'])
+    expect(finishes(first)).toHaveLength(1)
+    expect(first.at(-1)).toMatchObject({ reason: { kind: 'error', failure: { code: 'TRANSPORT' } } })
+
+    // The llm-retry re-entry (a second walk in the same session) starts past the
+    // dead head instead of re-dispatching it.
+    adapter.calls.length = 0
+    const second = await walk(deps, { sessionId: SessionId('s1') })
+    expect(dispatched()).toEqual(['a/2'])
+    expect(second).toEqual([TEXT, STOP])
+  })
+
+  it('books no cooldown for UNSUPPORTED_REASONING_EFFORT when the request carried no effort', async () => {
+    const states = new FallbackStateStore()
+    adapter.respond = () => ({ failure: { code: 'UNSUPPORTED_REASONING_EFFORT', message: 'no such effort' } })
+    const deps = { readConfig: chainCfg(['a/1', 'a/2']), states }
+
+    await walk(deps, { sessionId: SessionId('s1') })
+
+    // The request was the problem (there is no effort left to drop), so the
+    // healthy route stays uncooled and a later walk still starts at this head.
+    expect(states.peek('s1')?.cooldown.peek('a/1')).toBeUndefined()
+    adapter.respond = () => ({ chunks: [STOP] })
+    adapter.calls.length = 0
+    await walk(deps, { sessionId: SessionId('s1') })
+    expect(dispatched()).toEqual(['a/1'])
+  })
+
+  it('books no cooldown for a non-max_tokens INVALID_REQUEST', async () => {
+    const states = new FallbackStateStore()
+    adapter.respond = () => ({ failure: { code: 'INVALID_REQUEST', message: 'prompt exceeds max_tokens budget' } })
+    const deps = { readConfig: chainCfg(['a/1', 'a/2']), states }
+
+    await walk(deps, { maxTokens: 384_000, sessionId: SessionId('s1') })
+
+    // Not a `max_tokens` RANGE rejection, so it is not repaired and not cooled.
+    expect(states.peek('s1')?.cooldown.peek('a/1')).toBeUndefined()
+    adapter.respond = () => ({ chunks: [STOP] })
+    adapter.calls.length = 0
+    await walk(deps, { maxTokens: 384_000, sessionId: SessionId('s1') })
+    expect(dispatched()).toEqual(['a/1'])
+  })
+
+  it.each(['INVALID_REQUEST', 'UNSUPPORTED_REASONING_EFFORT'])(
+    'keeps the pre-existing trigger booking when an operator lists %s',
+    async (code) => {
+      const states = new FallbackStateStore()
+      adapter.respond = (options) => options.model === '1'
+        ? { failure: { code, message: 'request-scoped on the FORWARDING path only' } }
+        : { chunks: [STOP] }
+
+      await walk({
+        readConfig: chainCfg(['a/1', 'a/2'], { triggerCodes: [code] }),
+        states,
+      }, { sessionId: SessionId('s1') })
+
+      // Listed, so the swallowed trigger path owns it: switch + cooldown exactly
+      // as before this plan — the forwarded-failure exclusion must not change an
+      // already-listed code's booking.
+      expect(dispatched()).toEqual(['a/1', 'a/2'])
+      expect(states.peek('s1')?.cooldown.peek('a/1')).toBeTypeOf('number')
+    },
+  )
+
+  it.each(['INVALID_REQUEST', 'UNSUPPORTED_REASONING_EFFORT'])(
+    'keeps the pre-existing trigger booking when a listed %s fails AFTER output',
+    async (code) => {
+      const states = new FallbackStateStore()
+      adapter.respond = (options) => options.model === '1'
+        ? { chunks: [TEXT], failure: { code, message: 'rejected mid-stream' } }
+        : { chunks: [STOP] }
+      const deps = { readConfig: chainCfg(['a/1', 'a/2'], { triggerCodes: [code] }), states }
+
+      // Committed: the failure is forwarded verbatim and this walk ends…
+      const first = await walk(deps, { sessionId: SessionId('s1') })
+      expect(dispatched()).toEqual(['a/1'])
+      expect(first.at(-1)).toMatchObject({ type: 'finish', reason: { kind: 'error', failure: { code } } })
+      // …yet a LISTED code keeps its pre-existing booking on this path too, so
+      // the next walk resumes past the head instead of retrying it.
+      expect(states.peek('s1')?.cooldown.peek('a/1')).toBeTypeOf('number')
+      adapter.calls.length = 0
+      await walk(deps, { sessionId: SessionId('s1') })
+      expect(dispatched()).toEqual(['a/2'])
+    },
+  )
+
   it('logs the switch with the annotated candidate order', async () => {
     adapter.respond = (options) => (options.model === '1' ? { failure: { code: 'AUTH' } } : { chunks: [STOP] })
     const info = vi.fn()
