@@ -136,6 +136,8 @@ interface Scripted {
   set: Mock
   reset: Mock
   describe: Mock
+  providers: Mock
+  models: Mock
 }
 
 /**
@@ -208,7 +210,7 @@ function scriptedApi(options: {
       session: { modelCatalog: models, follow: history },
     } as unknown as FallbacksRemote,
     rpc: { call } as unknown as ClientConnectionRpc,
-    call, get, set, reset, describe,
+    call, get, set, reset, describe, providers, models,
   }
 }
 
@@ -1097,6 +1099,30 @@ describe('info badge (T3)', () => {
     const marks = [...view.container.querySelectorAll('[class*="infoHint"]')]
     expect(marks.length).toBeGreaterThan(1)
     for (const mark of marks) expect(mark.textContent).toBe('i')
+  })
+})
+
+describe('failed client-start warm-up', () => {
+  it('opening the card retries the dead config and catalog reads', async () => {
+    const scripted = scriptedApi({ config: v2Config() })
+    // The client warms the shared store at start (PR #197), so the card's mount
+    // can find an ALREADY failed read: both paths must be retried there.
+    scripted.describe.mockImplementationOnce(() => Promise.reject(new Error('warm describe failed')))
+    scripted.models.mockImplementationOnce(() => Promise.reject(new Error('warm catalog failed')))
+    const controller = new FallbacksSettingsController(scripted.api, scripted.rpc)
+    await controller.load()
+    await controller.loadCatalog()
+    expect(controller.store.getSnapshot().status).toBe('error')
+    expect(controller.store.getSnapshot().catalogStatus).toBe('error')
+
+    const view = render(<FallbacksCard {...cardProps(controller, bindSnapshotSelector(controller.store))} />)
+
+    // The retry lands the accepted config (the fetched chains, not the empty
+    // default skeleton) and leaves no error surface behind.
+    await waitFor(() => expect(view.container.querySelector('[data-chain-tab="Auto"]')).not.toBeNull())
+    expect(view.container.querySelector('[role="alert"]')).toBeNull()
+    expect(controller.store.getSnapshot().status).toBe('ready')
+    expect(controller.store.getSnapshot().catalogStatus).toBe('ready')
   })
 })
 

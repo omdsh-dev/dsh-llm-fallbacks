@@ -565,9 +565,10 @@ describe('SubagentRoleBadge — shared store load repaints the pill', () => {
     expect(pill?.getAttribute('title')).toBe('coder → FallbacksChain/chain-8 · GPT-4o (openai/gpt-4o)')
   })
 
-  it('renders through a non-subscribing snapshot seat (no crash, raw first render)', () => {
+  it('renders the resolved pill through a non-subscribing snapshot seat', () => {
     // The seat is a repaint trigger, never a value source: a host that binds a
-    // plain reader must still render the pill.
+    // plain reader (no notification, stale `idle` value) still gets the pill the
+    // lookup resolves.
     const props = {
       ...badgeProps({ [ROLE_PROJECTION_KEY]: 'coder', modelSelection: selection('FallbacksChain', 'chain-8') }),
       chainRouteOf: chainRoutes({ 'chain-8': chainRoute('chain-8', '默认', 'DeepSeek Flash') }),
