@@ -41,7 +41,7 @@
  *   `null` — the actions row collapses cleanly.
  */
 import type { ReactNode } from 'react'
-import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
+import type { PropsLocale, PropsRuntime, SnapshotSelectorHook } from '@deepseek-ai/dsh-client-ui-slots'
 // Type-only: pulls the conversation header slot-contract merge (the
 // `conversation.session.header.actions` entry — this file's registration
 // target and props key). Same empty type-only pattern as the other
@@ -49,6 +49,7 @@ import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import { INHERIT_ROLE_ID } from '../config.ts'
 import { ROLE_PROJECTION_KEY, readRoleProjectionValue } from '../role-projection-key.ts'
+import type { FallbacksSettingsState } from './fallbacks-store.ts'
 import css from './SubagentRoleBadge.module.css'
 
 /**
@@ -96,7 +97,9 @@ export interface ChainRoute {
  *   stale selection); the pill prints the unresolved state.
  * - a {@link ChainRoute} — resolved.
  *
- * The badge itself never loads anything — no RPC, no effect, no hook.
+ * The badge itself never loads anything — no RPC, no effect. It subscribes to
+ * the store through the injected `useSnapshot` hook so a load that lands after
+ * the first render repaints the pill.
  */
 export type ChainRouteLookup = (chainId: string) => ChainRoute | null | undefined
 
@@ -109,6 +112,8 @@ export type SubagentRoleBadgeProps =
   PropsRuntime<'conversation.session.header.actions'> & PropsLocale<'fallbacks'> & {
     /** Chain label + static effective head for one `FallbacksChain/<id>` route. */
     chainRouteOf?: ChainRouteLookup
+    /** The plugin's shared settings store hook: subscribed only to repaint. */
+    useSnapshot: SnapshotSelectorHook<FallbacksSettingsState>
   }
 
 /**
@@ -158,7 +163,7 @@ type SessionsHook = <T>(
  * @returns the badge element, or `null` when there is nothing to show.
  */
 export function SubagentRoleBadge(props: SubagentRoleBadgeProps): ReactNode {
-  const { t, chainRouteOf } = props
+  const { t, chainRouteOf, useSnapshot } = props
   // Session standard kit seats (see docblock): runtime-guaranteed for
   // `scope: 'session'` slots, absent from this program's peer types — read
   // structurally and guarded. The seats are capabilities of the HOST
@@ -187,6 +192,12 @@ export function SubagentRoleBadge(props: SubagentRoleBadgeProps): ReactNode {
   // guarded below.
   const rawRole = readProjection(ROLE_PROJECTION_KEY)
   const rawModelSelection = readProjection(MODEL_SELECTION_PROJECTION_KEY)
+
+  // Repaint trigger only: the store is warmed at client start, so it usually
+  // becomes ready AFTER this badge's first render. Unconditional at this fixed
+  // position (the hook count may not depend on the child gate or any value);
+  // the selected key is discarded and `chainRouteOf` stays the value source.
+  useSnapshot(state => `${state.status}:${state.catalogStatus}:${state.catalogEpoch}`)
 
   if (!isChild) return null
 
