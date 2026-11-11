@@ -11,8 +11,10 @@
  * swallowed, booked (cooldown / recovery) and the walk advances; anything
  * else — a normal finish, an aborted finish, a non-trigger failure, or any
  * failure after the attempt already yielded output — is forwarded verbatim
- * and ends the walk. A `usage` chunk is metadata, so it neither commits the
- * attempt nor stops the advance.
+ * and ends the walk. Every FAILED attempt is booked at the attempt boundary
+ * (request-scoped codes excepted), so an llm-retry re-entry after a forwarded
+ * failure resumes past the failed head. A `usage` chunk is metadata, so it
+ * neither commits the attempt nor stops the advance.
  *
  * A pre-output parameter rejection (`UNSUPPORTED_REASONING_EFFORT`, or a
  * `max_tokens`-shaped `INVALID_REQUEST`) is repaired first: the SAME candidate
@@ -121,8 +123,16 @@ export const CONTEXT_WINDOW_EXCEEDED_CODE = 'CONTEXT_WINDOW_EXCEEDED'
  * request was the problem, so a switch records the per-call failed key but
  * writes no cooldown and no recovery counter. Cooling the route down would
  * send the next SHORT prompt to the fallback for no reason.
+ *
+ * The two adapter-side parameter rejections join it: the reactive repair has
+ * already tried to drop the offending control, and a request the route refuses
+ * for its own shape says nothing about the route's health.
  */
-export const REQUEST_SCOPED_CODES: ReadonlySet<string> = new Set([CONTEXT_WINDOW_EXCEEDED_CODE])
+export const REQUEST_SCOPED_CODES: ReadonlySet<string> = new Set([
+  CONTEXT_WINDOW_EXCEEDED_CODE,
+  'UNSUPPORTED_REASONING_EFFORT',
+  'INVALID_REQUEST',
+])
 
 /**
  * The exact-route capabilities a walk reads from `resolveModelInfo`: the
@@ -813,9 +823,12 @@ async function* walk(
             if (chunk.reason.kind !== 'aborted' && state !== undefined) {
               deps.states.observeSuccess(state, key)
             }
-          } else if (config.triggerCodes.includes(failure.code)) {
-            // A failure after output is forwarded verbatim and never replayed;
-            // booking it is all this walk keeps from it.
+          } else {
+            // Every forwarded failure is booked at the attempt boundary: a
+            // post-output failure is never replayed inside this walk, and a
+            // non-trigger failure ends it, so the cooldown is the only memory
+            // that lets an llm-retry re-entry resume past this head. The
+            // request-scoped codes stay uncooled — bookFailure owns that rule.
             bookFailure(target, failure.code)
           }
           for (const pending of pendingUsage) yield pending
