@@ -845,11 +845,13 @@ export function FallbacksCard({ controller, useSnapshot, t }: FallbacksCardProps
   const state = useSnapshot(snapshot => snapshot)
 
   // Initial load + catalog read (the switch-history read is GONE with the
-  // status surfaces — named virtual chains §4).
+  // status surfaces — named virtual chains §4). A client-start warm-up that
+  // already failed (`error`) is retried here: the mount ran once, so this
+  // cannot loop, and an `error` otherwise stays dead until the user clicks 重试.
   useEffect(() => {
     const snapshot = controller.store.getSnapshot()
-    if (snapshot.status === 'idle') void controller.load()
-    if (snapshot.catalogStatus === 'idle') void controller.loadCatalog()
+    if (snapshot.status === 'idle' || snapshot.status === 'error') void controller.load()
+    if (snapshot.catalogStatus === 'idle' || snapshot.catalogStatus === 'error') void controller.loadCatalog()
   }, [controller])
 
   // Editors seed from `defaultFallbacksConfig` on mount; every later ready

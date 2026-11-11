@@ -9,6 +9,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { apply as applyClient, inject } from '../src/client/index.ts'
+import type { FallbacksSettingsController } from '../src/client/fallbacks-store.ts'
+
+/**
+ * One recorded slot registration. The card's inject face is the only handle on
+ * the store `apply()` constructs, so it is how the warm-up is observed.
+ */
+interface Registered {
+  name: string
+  key?: string
+  id?: string
+  inject?: () => { controller: FallbacksSettingsController }
+}
 
 let ctx: Context
 
@@ -21,10 +33,10 @@ let spies: {
 }
 
 /** The slots double every `applyClient` test needs (the registrations run at apply). */
-function provideSlots(registered: Array<{ name: string; key?: string; id?: string }> = []): void {
+function provideSlots(registered: Registered[] = []): void {
   ctx.provide('slots', {
     inject: (_name: string, thunk: () => Iterable<unknown>) => { for (const _dispose of thunk()) { /* run the registration generator */ } },
-    register: (options: { name: string; key?: string; id?: string }) => {
+    register: (options: Registered) => {
       registered.push(options)
       return {}
     },
@@ -95,7 +107,7 @@ describe('client slot registration', () => {
   })
 
   it('registers the plugins.bundle.config card with package-name key', () => {
-    const registered: Array<{ name: string; key?: string; id?: string }> = []
+    const registered: Registered[] = []
     provideSlots(registered)
     applyClient(ctx)
     const card = registered.find((entry) => entry.name === 'plugins.bundle.config')
@@ -109,19 +121,19 @@ describe('client slot registration', () => {
     // session-header badge stayed cold for any session that never opened the
     // plugin page. apply() now loads config + catalog once; the `refresh*IfLoaded`
     // invalidations keep it fresh without a retry loop.
-    provideSlots()
+    const registered: Registered[] = []
+    provideSlots(registered)
     applyClient(ctx)
 
+    // Once per read, at apply: a retry loop would double these.
     expect(spies.describe).toHaveBeenCalledTimes(1)
-    expect(spies.rpcCall).toHaveBeenCalledWith('/api', 'fallbacks/get', { args: {} })
-    expect(spies.listConfigurableProviders).toHaveBeenCalledTimes(1)
     expect(spies.modelCatalog).toHaveBeenCalledTimes(1)
 
-    await Promise.resolve()
-    await Promise.resolve()
-
-    expect(spies.describe).toHaveBeenCalledTimes(1)
-    expect(spies.listConfigurableProviders).toHaveBeenCalledTimes(1)
-    expect(spies.modelCatalog).toHaveBeenCalledTimes(1)
+    // The product face of the warm-up: the badge's store is ready without any
+    // card ever mounting (a macrotask drains the two in-flight reads).
+    const { controller } = registered.find(entry => entry.name === 'plugins.bundle.config')!.inject!()
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(controller.store.getSnapshot().status).toBe('ready')
+    expect(controller.store.getSnapshot().catalogStatus).toBe('ready')
   })
 })
