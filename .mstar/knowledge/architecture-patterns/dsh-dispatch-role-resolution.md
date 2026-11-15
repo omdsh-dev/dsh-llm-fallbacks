@@ -1,7 +1,7 @@
 ---
 module: dsh-llm-fallbacks dispatch-time role resolution
 date: 2026-08-17
-last_updated: 2026-11-08
+last_updated: 2026-11-15
 problem_type: architecture_pattern
 category: architecture-patterns
 severity: medium
@@ -43,7 +43,9 @@ subagent 分发时的两段式角色解析（显式 `agentPreset` → dispatch �
 
 实现形态：`src/role-resolution.ts` 的 `resolveDeclaredRole(agentPreset, roleIds, { dispatchRole })` 是**纯同步排序逻辑**（无 config 对象、无 IO、无 LLM）。dispatch 角色由 seam 解析后存进按子会话 id 键的记录；`/fallbacks` 诊断读同一条记录，因此不存在的记录 = 未指定（没有「事后推断角色」的路径）。
 
-### 链指针挂载（SubagentStartRequest.agentOptions，creation-time）
+### 链指针挂载（激活 spec 的顶层 agentOptions，creation-time）
+
+**激活 spec 形状（dsh 0.2.2-rc.2 起）**：`SubagentActivationSpec extends Omit<SubagentStartRequest, 'label' | 'signal'>` —— `prompt` / `agentOptions` / `parent` 直接位于 spec 顶层，**没有** `request` 字段。seam 必须读 spec 本身；任何残留的 `spec.request` 读法在 rc.3 上恒为 `undefined`，会让角色解析、persona 投递与链指针盖章三件事**一起静默失效**（无报错、无日志，只有子代理无声丢角色；2026-11-15 修复，issue I-000158）。
 
 - **挂载点** = 子代理创建请求的 `agentOptions`：seam 盖 `{ provider: 'FallbacksChain', model: <role.chain> }`，宿主在 `manager.startLocal` 创建子代理时把它 merge 到父路由之上——子代理因此被那条命名链服务。四条件：
   1. 已解析角色（上面两段之一）；
@@ -117,8 +119,8 @@ if (!isFallbackActive(config)) return undefined
 const chainId = config.roles.list.find(role => role.id === roleId)?.chain
 if (chainId === undefined || chainId === '') return undefined           // 未指定
 if (!config.chains.some(chain => chain.id === chainId)) return undefined // 未声明指针 → 未指定
-return { request: { ...spec.request,
-  agentOptions: { ...agentOptions, provider: FALLBACKS_PROVIDER, model: chainId } } }
+return { ...spec,
+  agentOptions: { ...agentOptions, provider: FALLBACKS_PROVIDER, model: chainId } }
 ```
 
 客户端开关的正确形态（AC-7 Option A：恒渲染，不依赖键是否存在；`<key>` 为任一带 schema 默认的开关）：

@@ -101,11 +101,11 @@ Candidate filtering (skipped on hit): the same-as-current route, in cooldown (pe
 
 ## Subagent role chain stamping
 
-**Role resolution** runs inside the dispatch seam (at spawn), from the declared header above. The seam then stamps the role's named chain onto the child — `request.agentOptions = { provider: 'FallbacksChain', model: <role.chain> }` (rc.1 merges these over the parent's route when the child is created) — when **all four** conditions hold:
+**Role resolution** runs inside the dispatch seam (at spawn), from the declared header above. The seam then stamps the role's named chain onto the child — `agentOptions = { provider: 'FallbacksChain', model: <role.chain> }` on the activation spec (the runtime merges these over the parent's route when the child is created) — when **all four** conditions hold:
 
 1. the `**Execute as**` header resolved a declared role;
 2. that role's `chain` is non-empty AND names a declared `chains[].id` (an undeclared pointer behaves as NOT SPECIFIED — one startup warn, the child inherits the delegating agent's route);
-3. the request carries **no** explicit `agentOptions.provider` / `agentOptions.model` — an explicit route is **authorized** and is never touched;
+3. the spec carries **no** explicit `agentOptions.provider` / `agentOptions.model` — an explicit route is **authorized** and is never touched;
 4. the backend is **local** — an external (acp) child keeps pure inheritance.
 
 There is **no host-policy consultation anywhere**: the mapping is the user's STATIC config, never a model-authored route — no allowlist intersection, no `unprovable` branch, no `virtualRouteInjected` flag, no blocked-attempt records. The seam also does NOT check tail conformance: a declared-but-non-conforming chain is still stamped and the walk's own gate refuses it (one gate, in the walk). Stamping is **creation-time only** — a resume re-attaches to the child's own durable route and writes the role record only.
