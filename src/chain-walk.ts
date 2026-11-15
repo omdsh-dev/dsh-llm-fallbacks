@@ -543,6 +543,13 @@ function logSlotRotation(deps: ChainWalkDeps, start: WalkStart): void {
 }
 
 /**
+ * The chain guards raise plugin taxonomy, not the built-in provider codes rc.3
+ * narrowed `LlmError`'s constructor to; `fromFailure` is its documented path for
+ * a code any caller may choose.
+ */
+const guardError = (message: string, code: string): LlmError => LlmError.fromFailure({ message, code })
+
+/**
  * Resolve the walk's start state, throwing the pre-attempt `LlmError`s —
  * synchronously, before any chunk, so the runtime's adapter boundary
  * normalizes them into one terminal error finish.
@@ -556,14 +563,14 @@ function resolveWalk(deps: ChainWalkDeps, options: GenerateOptions): WalkStart {
   const owner = options.sessionId
   const chain = config.chains.find((entry) => entry.id === options.model)
   if (chain === undefined) {
-    throw new LlmError(
+    throw guardError(
       `llm-fallbacks: unknown virtual chain "${String(options.model)}" — re-select a chain in the model picker`,
       UNKNOWN_CHAIN_CODE,
     )
   }
   const entries = resolveEffectiveChain(chain, now, config.tz ?? 'Asia/Shanghai')
   if (entries.length === 0) {
-    throw new LlmError(
+    throw guardError(
       'llm-fallbacks: the effective chain is empty — the virtual FallbacksChain route has no head to delegate to',
       EMPTY_EFFECTIVE_CHAIN_CODE,
     )
@@ -572,14 +579,14 @@ function resolveWalk(deps: ChainWalkDeps, options: GenerateOptions): WalkStart {
   // tail earns no delegate even though the picker row is visible. Same gate
   // for every walk — there is no origin split any more.
   if (!isAllDayConforming(chain.entries)) {
-    throw new LlmError(
+    throw guardError(
       'llm-fallbacks: the chain is not conforming (exactly one official model required) — refusing to delegate',
       UNDISPATCHABLE_HEAD_CODE,
     )
   }
   const head = firstDispatchableExactHead(entries)
   if (head === undefined) {
-    throw new LlmError(
+    throw guardError(
       'llm-fallbacks: the effective chain head cannot be dispatched (wildcard, malformed, or self-route) — refusing to delegate',
       UNDISPATCHABLE_HEAD_CODE,
     )
@@ -588,7 +595,7 @@ function resolveWalk(deps: ChainWalkDeps, options: GenerateOptions): WalkStart {
   if (llm === undefined) {
     // The route is registered on a live `llm` service; absence means the fiber
     // is tearing down. Defensive — never silently drop the call.
-    throw new LlmError(
+    throw guardError(
       'llm-fallbacks: the llm runtime is unavailable — cannot delegate the FallbacksChain call',
       LLM_UNAVAILABLE_CODE,
     )
