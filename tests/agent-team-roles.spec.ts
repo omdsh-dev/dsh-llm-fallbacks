@@ -14,7 +14,7 @@
  *
  *   ctx.subagents.startActivation({
  *     delivery: 'parent', childId, provider, label: description,
- *     request: { prompt, parent: root }, signal,
+ *     prompt, parent: root, signal,
  *   })
  *
  * — `childId` present only when the caller reserves one, which a LOCAL backend
@@ -55,7 +55,7 @@ function coderRoles() {
   return { list: [{ id: 'coder', persona: 'Coder persona', chain: 'daily' }] }
 }
 
-/** The lead session every teammate under test is spawned by (`request.parent.session.id`). */
+/** The lead session every teammate under test is spawned by (`spec.parent.session.id`). */
 const LEAD_SESSION = 'lead-session'
 
 /**
@@ -109,10 +109,8 @@ function teammateActivation(
     ...(childId === undefined ? {} : { childId }),
     provider,
     label: description,
-    request: {
-      prompt: [{ type: 'text', text: prompt }],
-      parent: { session: { id: LEAD_SESSION } },
-    },
+    prompt: [{ type: 'text', text: prompt }],
+    parent: { session: { id: LEAD_SESSION } },
     signal: new AbortController().signal,
   }
 }
@@ -289,9 +287,9 @@ describe('Agent Team teammate role delivery (teammate activation)', () => {
     })
     expect(records().get(childId)?.role).toBe('coder')
     // The runtime received a DERIVED spec: the seam stamped the role's named
-    // chain over the caller's request.
+    // chain over the caller's spec.
     expect(fake.activations[0]).not.toBe(spec)
-    expect(fake.activations[0]!.request.agentOptions).toEqual({
+    expect(fake.activations[0]!.agentOptions).toEqual({
       provider: FALLBACKS_PROVIDER,
       model: 'daily',
     })

@@ -112,7 +112,7 @@ function fakeSubagents(providers: Record<string, Record<string, unknown>> = {}):
 
 /** One caller activation (`ctx.subagents.startActivation`): the label is the child id here. */
 function activationSpec(label: string, prompt: string): Record<string, unknown> {
-  return { provider: 'spawn', label, request: { prompt: [{ type: 'text', text: prompt }] } }
+  return { provider: 'spawn', label, prompt: [{ type: 'text', text: prompt }] }
 }
 
 /** Wait one macrotask so a cordis plugin child's `apply` has run. */
@@ -480,12 +480,12 @@ describe('role notice — behavioural (public call path)', () => {
     expect(admittedMessages(await drivePreStep(ctx, agent, [claimed], 1))).toHaveLength(2)
     expect(seam.records.get('child-resume')!.firstNoticePending).toBe(false)
 
-    // A resume re-records the SAME child (the request carries no Assignment
+    // A resume re-records the SAME child (the spec carries no Assignment
     // header, so the seam's record fallback keys it again from `childId`). The
     // write must PRESERVE the cleared marker — that is what makes the
     // once-per-child guarantee outlive a re-dispatch instead of depending on
     // the child never being written twice.
-    await start({ provider: 'spawn', childId: 'child-resume', request: { prompt: [] } })
+    await start({ provider: 'spawn', childId: 'child-resume', prompt: [] })
     expect(seam.records.get('child-resume')).toMatchObject({ role: 'coder', firstNoticePending: false })
 
     const afterResume = admittedMessages(await drivePreStep(ctx, agent, [claimed], 2))
@@ -665,19 +665,19 @@ describe('role notice — behavioural (public call path)', () => {
     expect(seam.records.get('child-sticky')?.personaNotApplied).toBe(true)
 
     // A resume BEFORE the child's first non-empty pre-step re-keys the record
-    // from the fallback (its request carries no Assignment header) and carries no
+    // from the fallback (its spec carries no Assignment header) and carries no
     // verdict of its own — the role's DECLARED persona is still undelivered on
     // the dispatch the notice reports, so the rewrite must not un-report it.
-    const request = { prompt: [] }
-    await start({ provider: 'spawn', childId: 'child-sticky', request })
+    const resumeSpec = { provider: 'spawn', childId: 'child-sticky', prompt: [] }
+    await start(resumeSpec)
     expect(seam.records.get('child-sticky')).toMatchObject({ role: 'coder', personaNotApplied: true })
 
     const decision = admittedMessages(await drivePreStep(ctx, childAgent('child-sticky'), [claimedMessage()], 1))
     expect(textOf(decision[1]!)).toBe('[role: coder] (persona not applied)')
-    // Positive control: the resume really ran, and the caller's OWN request object
+    // Positive control: the resume really ran, and the caller's OWN spec object
     // reached the native path untouched — so the verdict above is the sticky
     // record, not a resume that never happened.
-    expect(fake.activations[1]!.request).toBe(request)
+    expect(fake.activations[1]).toBe(resumeSpec)
   })
 })
 
