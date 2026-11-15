@@ -4,19 +4,21 @@
  *
  * The Agent Team carrier is dynamic (plan Decision, user 2026-10-17): a
  * teammate's role is written into its spawn prompt (`**Execute as**: <id>`) and
- * resolved by the plugin's existing `subagents.startActivation` seam — there is
- * no role field on `SpawnTeammateRequest` and no name→role mapping. So this
- * file proves the ROSTER-SHAPED integration, not the seam's own header parsing
- * (that has its own unit suite in `tests/subagents-seam.spec.ts`).
+ * resolved by the plugin's existing `subagents.startActivation` seam — the
+ * activation request carries no role field and there is no name→role mapping.
+ * So this file proves the TEAMMATE-SHAPED integration, not the seam's own header
+ * parsing (that has its own unit suite in `tests/subagents-seam.spec.ts`).
  *
- * `roster.spawn` (`../deepseek-harness/packages/experimental/agent-team/src/
- * roster.ts:248-283`, dsh 0.2.1-rc.1) mints `childId = randomUUID()` and awaits
+ * A teammate is created by the ordinary `subagent` / `subagent_fork` tool (a
+ * `name` makes the child a durable teammate), which activates it through
  *
  *   ctx.subagents.startActivation({
- *     delivery: 'parent', childId, provider: request.provider,
- *     label: description, request: { prompt: request.prompt, parent: root },
- *     signal,
+ *     delivery: 'parent', childId, provider, label: description,
+ *     request: { prompt, parent: root }, signal,
  *   })
+ *
+ * — `childId` present only when the caller reserves one, which a LOCAL backend
+ * accepts and every other backend rejects.
  *
  * Every case below drives an activation through the real `apply()`
  * composition and asserts what a teammate's declared role must (or must not)
@@ -30,9 +32,8 @@
  * `spawn` exposes `prepareContinuable` (a LOCAL backend — the caller-reserved
  * `childId` IS the child's id, and the child's serial `agent/created` fires
  * INSIDE the native call); every other provider is external, so it REJECTS a
- * caller-reserved `childId` with `UNSUPPORTED_CAPABILITY` (and the roster
- * always reserves one, so a non-local teammate is refused upstream) and
- * otherwise allocates its own child id. Each provisioned child carries an
+ * caller-reserved `childId` with `UNSUPPORTED_CAPABILITY` and otherwise
+ * allocates its own child id. Each provisioned child carries an
  * ISOLATED `systemPrompt` double, so a section recorded there is evidence the
  * persona went through THAT child's own `agent.ctx` scope.
  */
@@ -69,7 +70,7 @@ const SECTION_ORDERS: Record<string, number> = { DEPLOYMENT_PERSONA_PREFIX: 0 }
  * A LOCAL backend — `prepareContinuable` is the rc.1 gate that routes a start
  * through `manager.startLocal` and that makes a caller-reserved `childId` legal
  * (any other backend rejects one with `UNSUPPORTED_CAPABILITY`). This is the
- * shape `roster.spawn` runs against.
+ * shape a local teammate activation runs against.
  */
 const LOCAL_PROVIDER = { prepareContinuable: () => undefined }
 
@@ -85,22 +86,22 @@ function teammatePrompt(executeAs: string): string {
 }
 
 /** One activation spec as a caller hands it to `ctx.subagents.startActivation`. */
-interface RosterActivation extends SubagentActivationSpecView {
+interface TeammateActivation extends SubagentActivationSpecView {
   readonly delivery: 'parent'
   readonly signal: AbortSignal
 }
 
 /**
- * One activation as `roster.spawn` hands it to the seam. `childId` is optional
- * on purpose: the roster always reserves one, and the generic external case
+ * One activation as a teammate tool hands it to the seam. `childId` is optional
+ * on purpose: a teammate tool may reserve one, and the generic external case
  * below is the caller that reserves none.
  */
-function rosterActivation(
+function teammateActivation(
   childId: string | undefined,
   prompt: string,
   description = 'teammate',
   provider = 'spawn',
-): RosterActivation {
+): TeammateActivation {
   return {
     delivery: 'parent',
     // Spread only when reserved — a present-but-undefined `childId` would be a
@@ -142,7 +143,7 @@ interface FakeSubagents {
 }
 
 /**
- * The fake rc.1 `subagents` runtime, driven the way `roster.spawn` drives it.
+ * The fake rc.1 `subagents` runtime, driven the way a teammate activation does.
  * `spawn` is the local backend; any other provider is external — it refuses a
  * caller-reserved `childId` the way rc.1 does (`UNSUPPORTED_CAPABILITY`) and
  * otherwise resolves with ITS OWN child id.
@@ -216,7 +217,7 @@ function records(): Map<string, SubagentSeamRecord> {
 async function injectSubagents(
   ctx: Context,
   rawService: Record<string, unknown>,
-): Promise<(spec: RosterActivation) => Promise<Record<string, unknown>>> {
+): Promise<(spec: TeammateActivation) => Promise<Record<string, unknown>>> {
   let consumer: Context | undefined
   ctx.plugin({
     name: 'agent-team-roles-consumer',
@@ -243,7 +244,7 @@ async function injectSubagents(
   }
   // The activation result is the runtime's own opaque object; the cases read it
   // through `toMatchObject`/`resolves` only.
-  const start = startActivation as (spec: RosterActivation) => Promise<Record<string, unknown>>
+  const start = startActivation as (spec: TeammateActivation) => Promise<Record<string, unknown>>
   return (spec) => start(spec)
 }
 
@@ -261,7 +262,7 @@ afterEach(async () => {
 /** Mount the real plugin over the fake rc.1 runtime; hand back the wrapper's start call. */
 async function mount(): Promise<{
   fake: FakeSubagents
-  activate: (spec: RosterActivation) => Promise<Record<string, unknown>>
+  activate: (spec: TeammateActivation) => Promise<Record<string, unknown>>
 }> {
   const fake = fakeSubagents(ctx)
   ctx.provide('subagents', fake.service)
@@ -270,15 +271,15 @@ async function mount(): Promise<{
   return { fake, activate: await injectSubagents(ctx, fake.service) }
 }
 
-describe('Agent Team teammate role delivery (roster-shaped activation)', () => {
+describe('Agent Team teammate role delivery (teammate activation)', () => {
   it('delivers a teammate role end to end: record at native-call time, persona, role chain stamp', async () => {
     const { fake, activate } = await mount()
 
     const childId = randomUUID()
-    const spec = rosterActivation(childId, teammatePrompt('coder'))
+    const spec = teammateActivation(childId, teammatePrompt('coder'))
     await activate(spec)
 
-    // (a) The record existed SYNCHRONOUSLY, keyed by the id the roster
+    // (a) The record existed SYNCHRONOUSLY, keyed by the id the caller
     // reserved, BEFORE the native call created the child — the only point at
     // which the child's own listeners can still read it.
     expect(fake.children[0]!.recordAtCall).toEqual({
@@ -309,8 +310,8 @@ describe('Agent Team teammate role delivery (roster-shaped activation)', () => {
     // express this).
     const first = randomUUID()
     const second = randomUUID()
-    await activate(rosterActivation(first, teammatePrompt('coder'), 'review the auth module'))
-    await activate(rosterActivation(second, teammatePrompt('coder'), 'write the migration'))
+    await activate(teammateActivation(first, teammatePrompt('coder'), 'review the auth module'))
+    await activate(teammateActivation(second, teammatePrompt('coder'), 'write the migration'))
 
     expect(fake.children.map((child) => child.childId)).toEqual([first, second])
     expect(records().size).toBe(2)
@@ -328,7 +329,7 @@ describe('Agent Team teammate role delivery (roster-shaped activation)', () => {
     const { fake, activate } = await mount()
 
     const childId = randomUUID()
-    const spec = rosterActivation(childId, 'Build the login page and report back.')
+    const spec = teammateActivation(childId, 'Build the login page and report back.')
     await activate(spec)
 
     // No role resolved: nothing recorded, and the native path received the
@@ -344,7 +345,7 @@ describe('Agent Team teammate role delivery (roster-shaped activation)', () => {
     const { fake, activate } = await mount()
 
     const childId = randomUUID()
-    const spec = rosterActivation(childId, teammatePrompt('ghost'))
+    const spec = teammateActivation(childId, teammatePrompt('ghost'))
     await activate(spec)
 
     expect(records().size).toBe(0)
@@ -357,7 +358,7 @@ describe('Agent Team teammate role delivery (roster-shaped activation)', () => {
 
     // The seam's generic external shape: a caller that reserves NO `childId`.
     // This is the shape an external backend accepts.
-    const spec = rosterActivation(undefined, teammatePrompt('coder'), 'external teammate', 'acp')
+    const spec = teammateActivation(undefined, teammatePrompt('coder'), 'external teammate', 'acp')
     await expect(activate(spec)).resolves.toMatchObject({ childId: EXTERNAL_CHILD_ID })
     expect(fake.activations[0]).toBe(spec)
 
@@ -372,14 +373,14 @@ describe('Agent Team teammate role delivery (roster-shaped activation)', () => {
     expect(records().get(EXTERNAL_CHILD_ID)?.personaNotApplied).toBeUndefined()
   })
 
-  it('refuses a roster-shaped teammate on a non-local provider, delivering no role', async () => {
+  it('refuses a caller-reserved child id on a non-local provider, delivering no role', async () => {
     const { fake, activate } = await mount()
 
     const childId = randomUUID()
-    // The REAL roster shape — `roster.spawn` always reserves a `childId` —
-    // against a provider whose backend is not local. rc.1 rejects the reserved
-    // id, so member creation fails and no role can be delivered.
-    const spec = rosterActivation(childId, teammatePrompt('coder'), 'external teammate', 'acp')
+    // The caller-reserved shape — `childId` carried on the activation — against
+    // a provider whose backend is not local. rc.1 rejects the reserved id, so
+    // the activation fails and no role can be delivered.
+    const spec = teammateActivation(childId, teammatePrompt('coder'), 'external teammate', 'acp')
     await expect(activate(spec)).rejects.toMatchObject({
       code: 'UNSUPPORTED_CAPABILITY',
       message: 'reserved child ids require a local backend',

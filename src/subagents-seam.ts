@@ -911,8 +911,8 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
           // options are already fixed and this activation only re-attaches to
           // the child's own durable route. It stamps nothing — the role
           // record is its ONLY write (I-000081). A reserved id with no record
-          // is still a NEW child (a roster teammate reserves its name up
-          // front), so it stamps like any other fresh dispatch. Limit: the
+          // is still a NEW child (a caller may reserve the id up front), so it
+          // stamps like any other fresh dispatch. Limit: the
           // record map is process-local, so a resume after a host restart
           // looks fresh.
           const resume = spec.childId !== undefined && records.has(spec.childId)
