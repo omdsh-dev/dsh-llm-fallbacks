@@ -167,19 +167,21 @@ returns the DECLARED RAW role the seam resolved, or `null` when no record exists
 ## Agent Team members
 
 Since dsh 0.2.2-rc.3 the experimental `spawn_teammate` carrier is gone: a
-teammate is an ordinary `subagent` / `subagent_fork` child, and the team bundle
-only adds the task board (`team_task_*`) and the control tools (`send_message`,
-`wait_agent`). Nobody gives a child a role or persona slot, so the carrier
-stays dynamic — the role is whatever `**Execute as**: <id>` header the model
-writes into the child's initial prompt.
+teammate is an ordinary `subagent` / `subagent_fork` child whose `name` marks it
+durable, and the team bundle adds the task board (`team_task_*`), the control tools
+(`send_message`, `wait_agent`) and its own `team:identity` / `team:policy` contributions on
+the child's context. None of that is a role or persona slot: the carrier stays
+dynamic — the role is whatever `**Execute as**: <id>` header the model writes into
+the child's initial prompt.
 
-- **The existing seam already sees every child.** Someone mints
-  `childId` and calls `ctx.subagents.startActivation({ delivery: 'parent',
-  childId, provider, label, prompt, parent, signal })` — since dsh 0.2.2-rc.2 the
-  activation spec EXTENDS `Omit<SubagentStartRequest, 'label' | 'signal'>`, so
-  `prompt` and `parent` sit on the spec itself and there is no `request`
-  member. That is the same call the plugin's wrapper intercepts, so persona,
-  notice, badge and role resolution need no Team-specific wiring.
+- **The existing seam already sees every child.** A child is created through
+  `ctx.subagents.startActivation({ delivery: 'parent', provider, label, prompt, parent,
+  signal })` — a caller may additionally reserve `childId`, which the runtime only
+  accepts on a local backend. Since dsh 0.2.2-rc.2 the activation spec EXTENDS
+  `Omit<SubagentStartRequest, 'label' | 'signal'>`, so `prompt` and `parent` sit on the spec
+  itself and there is no `request` member. That is the same call the plugin's
+  wrapper intercepts, so persona, notice, badge and role resolution need no
+  Team-specific wiring.
 - **Model selection joined the same seam** (plan
   `dsh-148-agent-team-role-delivery`): the seam's resolved role is now an
   explicit dispatch stage of `resolveRoleAtDispatch`, after the explicit
