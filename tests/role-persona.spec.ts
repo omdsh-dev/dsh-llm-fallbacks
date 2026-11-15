@@ -548,8 +548,8 @@ describe('role persona — real cordis + real dsh-system-prompt', () => {
     }
 
     const childPrompt = ['## Assignment', '', '- **Execute as**: coder', '', '## Task 1 — something', ''].join('\n')
-    const request = { prompt: [{ type: 'text', text: childPrompt }] }
-    await wrapper.subagents.startActivation({ provider: 'spawn', label: 'child-apply-1', request })
+    const prompt = [{ type: 'text', text: childPrompt }]
+    await wrapper.subagents.startActivation({ provider: 'spawn', label: 'child-apply-1', prompt })
     // The persona this production composition delivered, assembled from the
     // child's OWN scope: with no `installRolePersona` the deployment persona
     // stands here instead.
@@ -563,7 +563,7 @@ describe('role persona — real cordis + real dsh-system-prompt', () => {
       roles: { list: [{ id: 'coder', persona: 'Coder persona v2' }] },
     })
 
-    await wrapper.subagents.startActivation({ provider: 'spawn', label: 'child-apply-2', request })
+    await wrapper.subagents.startActivation({ provider: 'spawn', label: 'child-apply-2', prompt })
     expect(await assembledPersona(children[1]!.scopeKey)).toBe('Coder persona v2')
   })
 })
