@@ -6,6 +6,12 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.8.7] - 2026-11-15
+
+### Changed
+
+- Upgrade `@deepseek-ai/dsh-*` peers to `^0.2.2-rc.3`; plugin behaviour is unchanged, and a dsh host on 0.2.2-rc.3 now satisfies the declared peer line.
+
 ## [0.8.6] - 2026-11-11
 
 ### Fixed
