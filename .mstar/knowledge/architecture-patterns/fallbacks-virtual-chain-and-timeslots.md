@@ -1,7 +1,7 @@
 ---
 module: dsh-llm-fallbacks virtual chain + time slots
 date: 2026-09-24
-last_updated: 2026-11-08
+last_updated: 2026-11-15
 problem_type: architecture_pattern
 category: architecture-patterns
 severity: medium
@@ -102,6 +102,27 @@ the only seam the host cannot refuse.
   selectable). The plugin still does not probe catalog availability.
 - Gate every slot observation surface on the same conforming helper
   (`isAllDayConforming`, tail-based, per chain).
+
+## Host drift notes (dsh 0.2.2-rc.3)
+
+- **`LlmError`'s constructor is narrowed to built-in provider codes.** rc.3 types the
+  constructor's `code` as `BuiltinLlmFailureCode`, so the walk's pre-attempt guards —
+  which raise plugin taxonomy (`UNKNOWN_CHAIN`, `EMPTY_EFFECTIVE_CHAIN`,
+  `UNDISPATCHABLE_HEAD`, `LLM_UNAVAILABLE`) — no longer type-check through `new LlmError`.
+  `LlmError.fromFailure({ message, code })` is the documented path for a caller-chosen
+  code: it constructs the same `LlmError`, keeps `.code` / `.failure` and the synchronous
+  pre-iteration throw timing. `src/chain-walk.ts` funnels those throws through one local
+  `guardError` factory. Treat this as the durable pattern for any plugin-owned failure
+  code on the LLM surface, not a one-release workaround.
+- **Two spec files are red on a developer machine independently of the peer line**
+  (verified by running them on an unmodified checkout):
+  `tests/session-log-publish.spec.ts:591` fails because Node >= 24.22
+  `zstdDecompressSync` decodes every concatenated frame while the assertion witnesses
+  frame 1 only; `:784` and `tests/repair-session-logs.spec.ts:2030,2067` expect
+  `subagent-descriptor-version` but the released catalog resolved from the PATH `dsh`
+  binary (rc.3) reaches `source-kind` first. CI is green on both: it pins Node 22.23.2 and
+  skips the catalog specs when no released catalog resolves. Do not "fix" these by
+  rewriting assertions inside an unrelated plan.
 
 ## Why This Matters
 
