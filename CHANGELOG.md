@@ -6,6 +6,16 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.8.8] - 2026-11-15
+
+### Changed
+
+- Describe Agent Team teammates as children spawned through the ordinary `subagent` / `subagent_fork` tools and coordinated by the shared task board, and drop the removed `spawn_teammate` / `roster.spawn` mechanism wording from the README, the features and configuration docs, the teammate test comments and the dispatch-seam comment.
+
+### Fixed
+
+- Resolve dispatch roles again on dsh 0.2.2-rc.3: the subagent seam reads the flattened activation spec, so the role notice, role persona and the role's fallback chain are restored.
+
 ## [0.8.7] - 2026-11-15
 
 ### Changed
