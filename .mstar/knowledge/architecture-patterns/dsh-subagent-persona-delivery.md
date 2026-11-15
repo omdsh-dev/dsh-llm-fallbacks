@@ -1,6 +1,7 @@
 ---
 module: dsh-subagent
 date: 2026-10-17
+last_updated: 2026-11-15
 problem_type: architecture_pattern
 category: architecture-patterns
 severity: medium
@@ -165,22 +166,22 @@ returns the DECLARED RAW role the seam resolved, or `null` when no record exists
 
 ## Agent Team members
 
-The experimental Agent Team bundle replaces ordinary delegation with
-`spawn_teammate` / `send_message`, and it has **no role or persona slot on its
-own request**: `SpawnTeammateRequest = { name, description, prompt:
-ContentBlock[], context: 'fresh' | 'fork', provider, signal }`
-(`packages/experimental/agent-team/src/types.ts:165-172`). The carrier therefore
-stays dynamic — the role is whatever `**Execute as**: <id>` header the model
-writes into the teammate's initial prompt.
+Since dsh 0.2.2-rc.3 the experimental `spawn_teammate` carrier is gone: a
+teammate is an ordinary `subagent` / `subagent_fork` child whose `name` marks it
+durable, and the team bundle adds the task board (`team_task_*`), the control tools
+(`send_message`, `wait_agent`) and its own `team:identity` / `team:policy` contributions on
+the child's context. None of that is a role or persona slot: the carrier stays
+dynamic — the role is whatever `**Execute as**: <id>` header the model writes into
+the child's initial prompt.
 
-- **The existing seam already sees every teammate.** `roster.spawn` mints
-  `childId` and creates the member through
-  `ctx.subagents.startActivation({ delivery: 'parent', childId, provider,
-  label: description, request: { prompt, parent } })`
-  (`packages/experimental/agent-team/src/roster.ts:248-283`) — the same call the
-  plugin's wrapper already intercepts, so persona, notice, badge and role
-  resolution need no Agent-Team-specific wiring and no wrapping of the Agent
-  Team service.
+- **The existing seam already sees every child.** A child is created through
+  `ctx.subagents.startActivation({ delivery: 'parent', provider, label, prompt, parent,
+  signal })` — a caller may additionally reserve `childId`, which the runtime only
+  accepts on a local backend. Since dsh 0.2.2-rc.2 the activation spec EXTENDS
+  `Omit<SubagentStartRequest, 'label' | 'signal'>`, so `prompt` and `parent` sit on the spec
+  itself and there is no `request` member. That is the same call the plugin's
+  wrapper intercepts, so persona, notice, badge and role resolution need no
+  Team-specific wiring.
 - **Model selection joined the same seam** (plan
   `dsh-148-agent-team-role-delivery`): the seam's resolved role is now an
   explicit dispatch stage of `resolveRoleAtDispatch`, after the explicit
@@ -199,10 +200,10 @@ writes into the teammate's initial prompt.
 - **External providers deliver two outcomes.** A **generic** external (acp)
   child creates no local agent (`agent/created` never fires), so the role
   resolves and is recorded but no persona, notice row or badge is delivered. A
-  **roster-shaped teammate** cannot use a non-local provider at all:
-  `roster.spawn` always passes a reserved `childId`, and the runtime rejects it
-  with `UNSUPPORTED_CAPABILITY`
-  (`packages/subagent/subagent/src/index.ts:270-272`), so member creation fails
+  **reserved-id child** cannot use a non-local provider at all: the runtime
+  rejects a caller-reserved `childId` on any backend without
+  `prepareContinuable` with `UNSUPPORTED_CAPABILITY`
+  (`packages/subagent/subagent/src/index.ts:270-272`), so that dispatch fails
   and no role is delivered. Persona delivery stays non-durable: it is a section
   on the child's own context, so a teammate resumed after a host restart carries
   none.
@@ -213,6 +214,12 @@ writes into the teammate's initial prompt.
   through the replacement. Pin the installed surface explicitly
   (`startActivation` present, `start`/`startContinuable` absent) by resolving the
   peer's own `package.json` → `types` entry, never a hard-coded path or version.
+- The same trap applies to the spec SHAPE: a fixture that still nests
+  `request: { prompt }` proves nothing, because the runtime reads the spec's own
+  `prompt` — the seam then resolves no role and the child silently keeps the
+  deployment persona (2026-11-15, issue I-000158). Spell the fixture exactly like
+  the installed `SubagentActivationSpec` and add one case that fails when the
+  spec is nested.
 - Prove the shadow against the **real** `@deepseek-ai/dsh-system-prompt`: assert
   the ASSEMBLED prompt carries exactly one persona section with the scoped text,
   and that no extra tick is needed between the `agent/created` dispatch resolving

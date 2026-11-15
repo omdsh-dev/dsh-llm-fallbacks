@@ -11,9 +11,9 @@
  * delegating. The real service object is never mutated; readers of the
  * `subagents` service transparently receive the wrapper.
  *
- * Role source (plan Global Constraints): the child request's prompt carries
- * the Assignment header field `**Execute as**: <id>` — dsh role binding is
- * prompt-only. {@link resolveDeclaredRoleFromAssignment} is the ONE pure
+ * Role source (plan Global Constraints): the activation spec's `prompt`
+ * carries the Assignment header field `**Execute as**: <id>` — dsh role
+ * binding is prompt-only. {@link resolveDeclaredRoleFromAssignment} is the ONE pure
  * resolution point; it canonicalizes exactly like the existing trimmed-id
  * map (trim, drop ONE leading `@`, case-insensitive match against the
  * declared trimmed ids) and returns the DECLARED RAW id. Undeclared, absent,
@@ -63,12 +63,12 @@
  *
  * Role chain stamp (named virtual chains §3, `injectRoleChain`): the SAME
  * resolution point is where a dispatch child is pointed at a named chain —
- * `request.agentOptions` is stamped with `{ provider: 'FallbacksChain',
- * model: <role.chain> }` (rc.1 merges it over the parent's route when
- * `manager.startLocal` creates the child) when all FOUR conditions hold: a
- * declared role resolved, its `chain` is non-empty AND declared, the request
- * carries no explicit `agentOptions` (explicit = authorized, untouched), and
- * the backend is LOCAL. No host-policy consultation: the mapping is the
+ * the activation spec's top-level `agentOptions` is stamped with
+ * `{ provider: 'FallbacksChain', model: <role.chain> }` (the runtime merges
+ * it over the parent's route when `manager.startLocal` creates the child)
+ * when all FOUR conditions hold: a declared role resolved, its `chain` is
+ * non-empty AND declared, the spec carries no explicit `agentOptions`
+ * (explicit = authorized, untouched), and the backend is LOCAL. No host-policy consultation: the mapping is the
  * user's STATIC config, never a model-authored route — no allowlist, no
  * `unprovable` branch, no `virtualRouteInjected` flag. The seam does NOT
  * check conformance: a declared-but-non-conforming chain is still stamped and
@@ -215,19 +215,20 @@ export interface SubagentPromptBlockView {
 }
 
 /**
- * Structural view of the activation request (consumed fields only): `prompt` is
- * the role-extraction source and `parent` is the catalog-correlation join half.
- * The wrapper forwards the request OBJECT itself, so every other field (cwd,
- * agentOptions, outputSchema, maxDepth, the signal) reaches the service
- * unchanged.
+ * Structural view of the start-request fields of the flat activation spec
+ * (consumed fields only): `prompt` is the role-extraction source and `parent`
+ * is the catalog-correlation join half. The spec EXTENDS this request, so these
+ * fields are top-level spec fields; the wrapper forwards the caller's spec
+ * OBJECT itself, so every other field (cwd, outputSchema, maxDepth, the signal,
+ * `delivery`) reaches the service unchanged.
  */
 export interface SubagentStartRequestView {
   readonly prompt?: readonly SubagentPromptBlockView[]
   readonly parent?: { readonly session?: { readonly id?: string } }
   /**
-   * rc.1 `SubagentStartRequest.agentOptions` (design §1.1) — the route the
-   * caller (or the model, on the tool path) asked the child to run on. Read
-   * only: an explicit pair here is the AUTHORIZED route and is never touched.
+   * The route the caller (or the model, on the tool path) asked the child to
+   * run on. Read only: an explicit pair here is the AUTHORIZED route and is
+   * never touched.
    */
   readonly agentOptions?: {
     readonly provider?: string
@@ -236,20 +237,22 @@ export interface SubagentStartRequestView {
 }
 
 /**
- * Structural view of the activation spec (rc.1 `SubagentActivationSpec`,
- * consumed fields only): `childId` is the caller-RESERVED identity of a NEW
- * local child (rc.1 `startLocal` rejects an id that already exists with
- * `DUPLICATE_CHILD`, so `startActivation` never attaches to a child that
- * outlived an earlier activation) — also the record fallback when the request
- * carries no Assignment header — and `label` is the catalog join's other half
- * (the cataloged child membership carries this exact string). `signal`,
- * `delivery` and every future field travel with the caller's spec object.
+ * Structural view of the flat activation spec (`SubagentActivationSpec`,
+ * consumed fields only). The spec EXTENDS the start request, so `prompt`,
+ * `parent` and `agentOptions` live on the spec itself — there is no nested
+ * `request`. `childId` is the caller-RESERVED identity of a NEW local child
+ * (`startLocal` rejects an id that already exists with `DUPLICATE_CHILD`, so
+ * `startActivation` never attaches to a child that outlived an earlier
+ * activation) — also the record fallback when the spec carries no Assignment
+ * header — and `label` is the catalog join's other half (the cataloged child
+ * membership carries this exact string). `signal`, `delivery` and every future
+ * field travel with the caller's spec object.
  */
-export interface SubagentActivationSpecView {
+export interface SubagentActivationSpecView extends SubagentStartRequestView {
   readonly provider: string
   readonly label?: string
   readonly childId?: string
-  readonly request: SubagentStartRequestView
+  readonly name?: string
 }
 
 /**
@@ -479,7 +482,7 @@ export function resolveDeclaredRoleFromAssignment(
   return declared.values().next().value
 }
 
-/** Project a request's prompt content blocks to the text the Assignment arrives in. */
+/** Project the spec's prompt content blocks to the text the Assignment arrives in. */
 function promptTextOf(blocks: readonly SubagentPromptBlockView[] | undefined): string {
   if (!Array.isArray(blocks)) return ''
   return blocks
@@ -531,9 +534,9 @@ function childSessionIdOf(result: unknown): string | undefined {
   return undefined
 }
 
-/** The delegating parent's session id (`request.parent.session.id`), or `undefined`. */
-function parentSessionIdOf(request: SubagentStartRequestView | undefined): string | undefined {
-  const id = request?.parent?.session?.id
+/** The delegating parent's session id (`spec.parent.session.id`), or `undefined`. */
+function parentSessionIdOf(spec: SubagentActivationSpecView | undefined): string | undefined {
+  const id = spec?.parent?.session?.id
   return typeof id === 'string' && id !== '' ? id : undefined
 }
 
@@ -691,12 +694,12 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
   }
 
   /**
-   * `true` when the spawn request already carries an explicit `agentOptions`
+   * `true` when the spawn spec already carries an explicit `agentOptions`
    * route (either field set): the AUTHORIZED route — `injectRoleChain` never
    * stamps over it.
    */
-  const hasExplicitAgentOptions = (request: SubagentStartRequestView | undefined): boolean => {
-    const agentOptions = request?.agentOptions
+  const hasExplicitAgentOptions = (spec: SubagentActivationSpecView | undefined): boolean => {
+    const agentOptions = spec?.agentOptions
     return typeof agentOptions?.provider === 'string' || typeof agentOptions?.model === 'string'
   }
 
@@ -709,7 +712,7 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
    * 2. the role's `chain` is non-empty AND names a DECLARED `chains[].id`
    *    (an undeclared pointer behaves as NOT SPECIFIED — the validator warns
    *    at startup and the child inherits the delegating agent's route);
-   * 3. the request carries no explicit `agentOptions` (explicit wins);
+   * 3. the spec carries no explicit `agentOptions` (explicit wins);
    * 4. the backend is LOCAL (the enclosing branch).
    *
    * No host-policy consultation, no conformance check: a declared-but-
@@ -720,10 +723,10 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
   const injectRoleChain = (
     spec: SubagentActivationSpecView,
     role: string,
-  ): SubagentStartRequestView | undefined => {
+  ): SubagentActivationSpecView | undefined => {
     try {
       if (options.source === undefined) return undefined
-      if (hasExplicitAgentOptions(spec.request)) return undefined
+      if (hasExplicitAgentOptions(spec)) return undefined
       const config = options.source()
       if (!isFallbackActive(config)) return undefined
       const declared = config.roles.list.find((entry) => entry.id === role)
@@ -734,8 +737,8 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
         return undefined
       }
       return {
-        ...spec.request,
-        agentOptions: { ...spec.request?.agentOptions, provider: FALLBACKS_PROVIDER, model: chainId },
+        ...spec,
+        agentOptions: { ...spec.agentOptions, provider: FALLBACKS_PROVIDER, model: chainId },
       }
     } catch (error) {
       reportDegrade(error)
@@ -749,7 +752,7 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
     role: string,
     at: number,
   ): string | undefined => {
-    const parentSessionId = parentSessionIdOf(spec?.request)
+    const parentSessionId = parentSessionIdOf(spec)
     const label = typeof spec?.label === 'string' ? spec.label : undefined
     if (parentSessionId === undefined || label === undefined || label === '') return undefined
     const key = correlationKey(parentSessionId, label)
@@ -769,10 +772,10 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
     if (key !== undefined) pending.delete(key)
   }
 
-  /** Resolve the dispatch role from one request's prompt; contained, never throws. */
-  const resolveSeamRole = (request: SubagentStartRequestView | undefined): string | undefined => {
+  /** Resolve the dispatch role from one spec's prompt; contained, never throws. */
+  const resolveSeamRole = (spec: SubagentActivationSpecView | undefined): string | undefined => {
     try {
-      const prompt = promptTextOf(request?.prompt)
+      const prompt = promptTextOf(spec?.prompt)
       if (prompt.trim() === '') return undefined
       const role = resolveDeclaredRoleFromAssignment(prompt, options.roleIds())
       // Plan Global Constraints: ABSENT or UNDECLARED ⇒ no-op with at most ONE
@@ -871,8 +874,8 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
     const wrapper: SubagentsServiceView = Object.create(value)
     wrapper.startActivation = (spec: SubagentActivationSpecView): unknown => {
       const role =
-        resolveSeamRole(spec?.request)
-        // Resume fallback (plan Global Constraints): a resume request may carry
+        resolveSeamRole(spec)
+        // Resume fallback (plan Global Constraints): a resume spec may carry
         // no Assignment header — reuse the record of the child the caller
         // already reserved, else no-op.
         ?? (typeof spec?.childId === 'string' ? records.get(spec.childId)?.role : undefined)
@@ -917,9 +920,10 @@ export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions):
           // looks fresh.
           const resume = spec.childId !== undefined && records.has(spec.childId)
           const stamped = resume ? undefined : injectRoleChain(spec, role)
+          // The stamp spreads the caller's spec, so the assembled spec stays flat.
           effectiveSpec = stamped === undefined
             ? (reservedId === spec.childId ? spec : { ...spec, childId: reservedId })
-            : { ...spec, childId: reservedId, request: stamped }
+            : { ...stamped, childId: reservedId }
           recordChild(reservedId, role, at)
         }
       } catch (error) {

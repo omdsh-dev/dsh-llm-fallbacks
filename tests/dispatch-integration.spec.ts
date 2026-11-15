@@ -155,7 +155,7 @@ async function mountChild(config: FallbacksConfig): Promise<string> {
   const result = await service.startActivation({
     provider: 'spawn',
     label: 'task one',
-    request: { prompt: [{ type: 'text', text: '## Assignment\n\n**Execute as**: coder\n' }] },
+    prompt: [{ type: 'text', text: '## Assignment\n\n**Execute as**: coder\n' }],
   }) as { childId: string }
   views.set(result.childId, {
     id: result.childId,
@@ -178,7 +178,7 @@ function streamChild(childId: string): Promise<StreamChunk[]> {
 describe('an injected child walks its role chain (roles-only config, R-2)', () => {
   it('mounts the child and serves the first attempt from the role chain', async () => {
     const childId = await mountChild(rolesOnlyConfig())
-    expect(fake.activations[0]!.request.agentOptions).toEqual({
+    expect(fake.activations[0]!.agentOptions).toEqual({
       provider: FALLBACKS_PROVIDER,
       model: CHAIN_ID,
     })

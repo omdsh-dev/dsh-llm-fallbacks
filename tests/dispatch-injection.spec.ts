@@ -58,10 +58,8 @@ function activationSpec(overrides: {
     provider: overrides.provider ?? 'spawn',
     label: 'task one',
     ...(overrides.childId === undefined ? {} : { childId: overrides.childId }),
-    request: {
-      prompt: [{ type: 'text', text: prompt }],
-      ...(overrides.agentOptions === undefined ? {} : { agentOptions: overrides.agentOptions }),
-    },
+    prompt: [{ type: 'text', text: prompt }],
+    ...(overrides.agentOptions === undefined ? {} : { agentOptions: overrides.agentOptions }),
   }
 }
 
@@ -132,7 +130,7 @@ describe('dispatch-seam stamp through apply()', () => {
     const result = await activate(ctx, activationSpec())
 
     const received = fake.activations[0]!
-    expect(received.request.agentOptions).toEqual({
+    expect(received.agentOptions).toEqual({
       provider: FALLBACKS_PROVIDER,
       model: CHAIN_ID,
     })
@@ -147,7 +145,7 @@ describe('dispatch-seam stamp through apply()', () => {
     await activate(ctx, activationSpec({ agentOptions: { provider: 'openai', model: 'gpt-4o' } }))
 
     const received = fake.activations[0]!
-    expect(received.request.agentOptions).toEqual({ provider: 'openai', model: 'gpt-4o' })
+    expect(received.agentOptions).toEqual({ provider: 'openai', model: 'gpt-4o' })
     const childId = String(received.childId)
     expect(subagentSeamOf(ctx)?.records.get(childId)).toMatchObject({ role: 'coder' })
   })
@@ -169,7 +167,7 @@ describe('dispatch-seam stamp through apply()', () => {
     await activate(ctx, activationSpec())
 
     const received = fake.activations[0]!
-    expect(received.request.agentOptions).toBeUndefined()
+    expect(received.agentOptions).toBeUndefined()
   })
 
   it('does not stamp when the config has no chains at all', async () => {
@@ -177,7 +175,7 @@ describe('dispatch-seam stamp through apply()', () => {
 
     await activate(ctx, activationSpec())
 
-    expect(fake.activations[0]!.request.agentOptions).toBeUndefined()
+    expect(fake.activations[0]!.agentOptions).toBeUndefined()
   })
 
   it('drops the child bookkeeping on agent/disposed', async () => {
