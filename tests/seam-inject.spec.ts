@@ -30,7 +30,6 @@ import {
   subagentSeamOf,
   type SubagentActivationSpecView,
   type SubagentSeam,
-  type SubagentStartRequestView,
 } from '../src/subagents-seam.ts'
 import { FALLBACKS_PROVIDER } from '../src/virtual-adapter.ts'
 import { cfg } from './support/harness.ts'
@@ -70,16 +69,14 @@ function activationSpec(
     executeAs?: string
     agentOptions?: { provider?: string; model?: string }
   } = {},
-): SubagentActivationSpecView & { request: SubagentStartRequestView } {
+): SubagentActivationSpecView {
   const prompt = assignment(overrides.executeAs ?? 'coder')
   return {
     provider: overrides.provider ?? 'spawn',
     label: overrides.label ?? 'task one',
     ...(overrides.childId === undefined ? {} : { childId: overrides.childId }),
-    request: {
-      prompt: [{ type: 'text', text: prompt }],
-      ...(overrides.agentOptions === undefined ? {} : { agentOptions: overrides.agentOptions }),
-    },
+    prompt: [{ type: 'text', text: prompt }],
+    ...(overrides.agentOptions === undefined ? {} : { agentOptions: overrides.agentOptions }),
   }
 }
 
@@ -169,16 +166,16 @@ describe('stamp: the four conditions (§3)', () => {
     const result = await startThroughWrapper(ctx, spec)
 
     // The native call received the caller's OWN spec shape plus the named
-    // chain pair in `request.agentOptions` — the field rc.1 merges over the
-    // parent's route when the child is created.
+    // chain pair in the top-level `agentOptions` — the flat field the runtime
+    // merges over the parent's route when the child is created.
     const received = fake.activations[0]!
-    expect(received.request.agentOptions).toEqual({
+    expect(received.agentOptions).toEqual({
       provider: FALLBACKS_PROVIDER,
       model: CHAIN_ID,
     })
     expect(received.childId).toEqual(expect.any(String))
     // The caller's object is never mutated.
-    expect(spec.request.agentOptions).toBeUndefined()
+    expect(spec.agentOptions).toBeUndefined()
     expect(spec).not.toHaveProperty('childId')
 
     const childId = String(received.childId)
@@ -197,7 +194,7 @@ describe('stamp: the four conditions (§3)', () => {
     await startThroughWrapper(ctx, activationSpec({ executeAs: 'nobody' }))
 
     const received = fake.activations[0]!
-    expect(received.request.agentOptions).toBeUndefined()
+    expect(received.agentOptions).toBeUndefined()
   })
 
   it('does not stamp when the role declares NO chain (plugin does not intervene)', async () => {
@@ -208,7 +205,7 @@ describe('stamp: the four conditions (§3)', () => {
     await startThroughWrapper(ctx, activationSpec())
 
     const received = fake.activations[0]!
-    expect(received.request.agentOptions).toBeUndefined()
+    expect(received.agentOptions).toBeUndefined()
   })
 
   it('does not stamp when the pointer names an UNDECLARED chain (behaves as NOT SPECIFIED)', async () => {
@@ -220,7 +217,7 @@ describe('stamp: the four conditions (§3)', () => {
     await startThroughWrapper(ctx, activationSpec())
 
     const received = fake.activations[0]!
-    expect(received.request.agentOptions).toBeUndefined()
+    expect(received.agentOptions).toBeUndefined()
   })
 
   it('does not stamp when the config has no chains at all (inactive)', async () => {
@@ -229,7 +226,7 @@ describe('stamp: the four conditions (§3)', () => {
     await startThroughWrapper(ctx, activationSpec())
 
     const received = fake.activations[0]!
-    expect(received.request.agentOptions).toBeUndefined()
+    expect(received.agentOptions).toBeUndefined()
   })
 })
 
@@ -241,7 +238,7 @@ describe('never touched: explicit routes and external backends', () => {
     await startThroughWrapper(ctx, spec)
 
     const received = fake.activations[0]!
-    expect(received.request.agentOptions).toEqual({ provider: 'openai', model: 'gpt-4o' })
+    expect(received.agentOptions).toEqual({ provider: 'openai', model: 'gpt-4o' })
     const childId = String(received.childId)
     // The role record is still written (identity is independent of routing).
     expect(seam.records.get(childId)).toMatchObject({ role: 'coder' })
@@ -254,7 +251,7 @@ describe('never touched: explicit routes and external backends', () => {
 
     const received = fake.activations[0]!
     expect(received.childId).toBeUndefined()
-    expect(received.request.agentOptions).toBeUndefined()
+    expect(received.agentOptions).toBeUndefined()
     // The record is keyed off the RESOLVED child id (the runtime minted it).
     expect(seam.records.get(fake.mintedChildId)).toMatchObject({ role: 'coder' })
   })
@@ -272,7 +269,7 @@ describe('never touched: explicit routes and external backends', () => {
     await startThroughWrapper(ctx, spec)
 
     const received = fake.activations[0]!
-    expect(received.request.agentOptions).toBeUndefined()
+    expect(received.agentOptions).toBeUndefined()
     // The reservation survives (it is seam bookkeeping, not the stamp), and the
     // failure reports exactly one contained line.
     expect(received.childId).toEqual(expect.any(String))
@@ -289,7 +286,7 @@ describe('resume + record', () => {
     // A resume: the caller reserves the SAME child id and carries no Assignment
     // header at all — the record is the only role memory. The activation
     // creates nothing, so it is NOT a fresh dispatch: it must not stamp.
-    const resume = { provider: 'spawn', label: 'resume', childId, request: { prompt: [] } }
+    const resume = { provider: 'spawn', label: 'resume', childId, prompt: [] }
     await startThroughWrapper(ctx, resume)
 
     expect(fake.activations[1]).toBe(resume)
@@ -304,9 +301,9 @@ describe('resume + record', () => {
     const { fake } = install()
     await startThroughWrapper(ctx, activationSpec())
     const childId = String(fake.activations[0]!.childId)
-    expect(fake.activations[0]!.request.agentOptions).toEqual({ provider: FALLBACKS_PROVIDER, model: CHAIN_ID })
+    expect(fake.activations[0]!.agentOptions).toEqual({ provider: FALLBACKS_PROVIDER, model: CHAIN_ID })
 
-    const resume = { provider: 'spawn', label: 'resume', childId, request: { prompt: [] } }
+    const resume = { provider: 'spawn', label: 'resume', childId, prompt: [] }
     await startThroughWrapper(ctx, resume)
 
     // The native call received the resume UNCHANGED — byte-identical object.
@@ -316,5 +313,30 @@ describe('resume + record', () => {
   it('exposes the install through the root-shared seam handle (subagentSeamOf)', () => {
     install()
     expect(subagentSeamOf(ctx)).toBeDefined()
+  })
+})
+
+describe('flat activation spec', () => {
+  it('resolves the role from the flat spec prompt and stamps its declared chain', async () => {
+    const { fake, seam } = install({
+      config: () =>
+        cfg({
+          chains: [{ id: 'chain-x', label: 'X', entries: [OFFICIAL_FLASH], timeSlots: [] }],
+          roles: { list: [{ id: 'coder', persona: '', chain: 'chain-x' }] },
+        }),
+    })
+    // The rc.3 contract: `prompt` is a TOP-LEVEL spec field (no nested request).
+    const spec = {
+      provider: 'spawn',
+      label: 'flat',
+      prompt: [{ type: 'text', text: '## Assignment\n\n**Execute as**: coder' }],
+    }
+
+    await startThroughWrapper(ctx, spec)
+
+    const received = fake.activations[0]!
+    expect(received.agentOptions).toEqual({ provider: FALLBACKS_PROVIDER, model: 'chain-x' })
+    expect(received.prompt).toBe(spec.prompt)
+    expect(seam.records.get(String(received.childId))).toMatchObject({ role: 'coder' })
   })
 })

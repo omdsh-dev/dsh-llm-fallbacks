@@ -321,7 +321,7 @@ async function injectSubagents(ctx: Context): Promise<{ value: Record<string, un
   return { value: (captured as unknown as { subagents: Record<string, unknown> }).subagents }
 }
 
-/** A minimal parent-agent stand-in for the request's `parent.session.id` join. */
+/** A minimal parent-agent stand-in for the spec's `parent.session.id` join. */
 function parentAgent(id: string): SubagentStartRequestView['parent'] {
   return { session: { id } }
 }
@@ -331,14 +331,12 @@ function activationSpec(
   label: string,
   prompt: string,
   parent?: string,
-): { provider: string; label: string; request: SubagentStartRequestView } {
+): SubagentActivationSpecView {
   return {
     provider: 'spawn',
     label,
-    request: {
-      prompt: prompt === '' ? [] : [{ type: 'text', text: prompt }],
-      ...(parent === undefined ? {} : { parent: parentAgent(parent) }),
-    },
+    prompt: prompt === '' ? [] : [{ type: 'text', text: prompt }],
+    ...(parent === undefined ? {} : { parent: parentAgent(parent) }),
   }
 }
 
@@ -502,7 +500,7 @@ describe('subagent seam — behavioural (public call path)', () => {
     })
 
     const { value } = await injectSubagents(ctx)
-    const spec = { provider: 'spawn', label: 'resume', childId: 'child-resumed', request: { prompt: [] } }
+    const spec = { provider: 'spawn', label: 'resume', childId: 'child-resumed', prompt: [] }
     await startActivationOf(value)(spec)
 
     // The resume reused the record (role re-recorded, last-wins) and kept the
@@ -537,8 +535,11 @@ describe('subagent seam — behavioural (public call path)', () => {
     // NEGATIVE (nothing changed / nothing recorded), which the raw service also
     // satisfies — so pin the interception itself first.
     expect(value).not.toBe(fake.service)
-    const request = { prompt: [{ type: 'text', text: 'no assignment header here' }] }
-    const spec = { provider: 'spawn', label: 'plain', request }
+    const spec = {
+      provider: 'spawn',
+      label: 'plain',
+      prompt: [{ type: 'text', text: 'no assignment header here' }],
+    }
     await startActivationOf(value)(spec)
 
     // The SAME spec object reached the service, and nothing was recorded.
@@ -547,7 +548,7 @@ describe('subagent seam — behavioural (public call path)', () => {
 
     // The resume fallback's other half: a reserved id with no record and no
     // header is a no-op too (a fresh child, nothing to key).
-    const fresh = { provider: 'spawn', label: 'fresh', childId: 'child-fresh', request: { prompt: [] } }
+    const fresh = { provider: 'spawn', label: 'fresh', childId: 'child-fresh', prompt: [] }
     await startActivationOf(value)(fresh)
     expect(fake.activations[1]).toBe(fresh)
     expect(seam.records.size).toBe(0)
@@ -701,7 +702,7 @@ describe('subagent seam — behavioural (public call path)', () => {
     const { value } = await injectSubagents(ctx)
     const start = startActivationOf(value)
     // No prompt text at all (e.g. a resume): nothing to report.
-    await start({ provider: 'spawn', label: 'empty', request: { prompt: [] } })
+    await start({ provider: 'spawn', label: 'empty', prompt: [] })
     expect(debug).not.toHaveBeenCalled()
     // A prompt IS present but declares no resolvable role — an absent field,
     // then an undeclared id (and a `#`-led prompt behaves the same: the header
