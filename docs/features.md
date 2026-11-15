@@ -137,9 +137,9 @@ A child that is neither stamped nor explicitly on a virtual row has no chain
 at all — external (acp) backends always land here, because they cannot resolve
 the virtual provider out of process.
 
-The same seam serves an ordinary subagent dispatch and an Agent Team teammate
-(`spawn_teammate`): both are children dispatched with the same Assignment
-header, so nothing Agent-Team-specific is required.
+The same seam serves an ordinary subagent dispatch and an Agent Team teammate:
+both are children dispatched with the same Assignment header, so nothing
+Agent-Team-specific is required.
 
 ### Role resolution in the walk
 
@@ -164,16 +164,19 @@ A **root** session never shows the badge (its composer owns the model control). 
 
 ### Agent Team teammates
 
-With the experimental Agent Team bundle enabled, ordinary delegation is replaced
-by `spawn_teammate` / `send_message`, and role declaration rides the **dispatch
-prompt** — which the model writes, including the `**Execute as**: <id>` header,
-because the spawn request carries no role or persona field. `roster.spawn`
-creates the member through `ctx.subagents.startActivation`, the same seam the
-plugin already wraps, so the teammate flows through the resolution above
-unchanged: an ordinary dispatching agent and a teammate spawned with the same
-header get the same persona installation, the same routing-role resolution, the
-same `[role: <id>]` notice row and the same badge, and the role still has to be
-declared in `roles.list` to resolve. No per-mechanism configuration exists.
+With Agent Team enabled, the Lead creates teammates with the ordinary
+`subagent` / `subagent_fork` tools (a `name` makes the child a durable teammate)
+and coordinates them through the shared task board and `send_message`. There is
+no separate teammate spawn request, so a teammate is a child activation like any
+other: it reaches `ctx.subagents.startActivation`, the same seam the plugin
+already wraps, and role declaration rides the **dispatch prompt** — which the
+model writes, including the `**Execute as**: <id>` header, because the
+activation request carries no role or persona field. The teammate therefore
+flows through the resolution above unchanged: an ordinary dispatching agent and
+a teammate spawned with the same header get the same persona installation, the
+same routing-role resolution, the same `[role: <id>]` notice row and the same
+badge, and the role still has to be declared in `roles.list` to resolve. No
+per-mechanism configuration exists.
 
 - **The header is the only role carrier.** Resolution reads that declared
   header only, and a teammate whose prompt omits the declaration, or names an id
@@ -184,12 +187,12 @@ declared in `roles.list` to resolve. No per-mechanism configuration exists.
 - **Names stay arbitrary (but unique inside one Team).** Any number of
   differently named teammates can carry the same role; there is **no
   name→role mapping**.
-- **Non-local provider — two outcomes.** An external (acp) provider creates no
-  local agent: a normally delegated external child resolves its role but gets
-  **no persona, no notice row and no badge**, while a teammate cannot use one at
-  all — `roster.spawn` always reserves a child id and the runtime rejects a
-  reserved id for a non-local provider (`UNSUPPORTED_CAPABILITY`), so member
-  creation fails and no role is delivered.
+- **Non-local provider.** An external (acp) provider creates no local agent, so
+  a teammate resolves its role but gets **no persona, no notice row and no
+  badge**, exactly like a normally delegated external child. The role record is
+  keyed off the child id that provider allocates itself; the seam reserves an id
+  only for a local backend (a reserved id on any other backend is rejected with
+  `UNSUPPORTED_CAPABILITY`).
 
 Full resolution reference (dispatch source, chain composition) → [docs/configuration.md](configuration.md#role-resolution-and-chain-composition).
 

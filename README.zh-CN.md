@@ -58,7 +58,7 @@ subagent 的角色由分发提示词声明——Assignment 头部字段 `**Execu
 
 角色**身份**只在分发时从一个来源解析——**派发声明**的 `**Execute as**: <id>` 头部——因此分发提示词声明了已声明角色 id 的子代理会拿到该角色的 persona、恰好一行 `[role: <id>]` 通知行与徽章。完全没有声明分发头部的子代理是**未指定**：没有 persona、通知行与徽章角色半边——插件也不干预。角色还可携带**手动链指针**（「指定降级链」）：分发时 seam 把本地、无显式路由的子代理盖到 `FallbacksChain / <role.chain>` 上——带显式路由的请求属于**已授权**，插件永不改写；外部 backend 的子代理保持纯继承。没有规则匹配，也没有宿主策略咨询：映射就是你的静态配置。
 
-这一套同时覆盖**普通 subagent 分发与 Agent Team 队友**（`spawn_teammate`）：两者都是带着同一头部（由模型写入）经同一分发 seam 创建的子代理，不需要任何按机制区分的配置。
+这一套同时覆盖**普通 subagent 分发与 Agent Team 队友**：两者都是带着同一头部（由模型写入）经同一分发 seam 创建的子代理，不需要任何按机制区分的配置。
 
 → [角色化 subagent](docs/features.md#role-based-subagents)
 

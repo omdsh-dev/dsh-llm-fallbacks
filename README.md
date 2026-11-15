@@ -58,7 +58,7 @@ A subagent's role is declared in its dispatch prompt — the Assignment header `
 
 Role **identity** is resolved at dispatch from one source — the **dispatch-declared** `**Execute as**: <id>` header — so a child whose prompt declares a declared role id gets that role's persona, its one `[role: <id>]` notice row and its badge. A child with **no declared dispatch header** is NOT SPECIFIED: no persona, no notice row, no role half of the badge — and the plugin does not intervene. The role can also carry a **manual chain pointer** (「指定降级链」): at dispatch the seam stamps a local, non-explicit-route child onto `FallbacksChain / <role.chain>` — an explicit route is **authorized** and never touched, and an external-backend child keeps pure inheritance. There is no rule matching and no host-policy consultation: the mapping is your static config.
 
-This covers an **ordinary subagent dispatch and an Agent Team teammate** (`spawn_teammate`) alike: both are children dispatched with the same header, which the model writes — the same dispatch seam, no mechanism-specific configuration.
+This covers an **ordinary subagent dispatch and an Agent Team teammate** alike: both are children dispatched with the same header, which the model writes — the same dispatch seam, no mechanism-specific configuration.
 
 → [Role-based subagents](docs/features.md#role-based-subagents)
 

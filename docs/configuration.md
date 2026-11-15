@@ -114,12 +114,12 @@ There is **no host-policy consultation anywhere**: the mapping is the user's STA
 
 ### Agent Team members
 
-With the experimental Agent Team bundle enabled, ordinary delegation is replaced by `spawn_teammate` / `send_message`; a teammate's role is carried by the **same** `**Execute as**: <id>` prompt header — written by the model into its initial spawn prompt, because the spawn request has no role or persona field. `roster.spawn` creates the member through `ctx.subagents.startActivation`, so the teammate flows through the resolution above unchanged:
+With Agent Team enabled, the Lead creates members with the ordinary `subagent` / `subagent_fork` tools (a `name` makes the child a durable teammate) and coordinates them through the shared task board and `send_message`; a member's role is carried by the **same** `**Execute as**: <id>` prompt header — written by the model into its initial prompt, because the activation request has no role or persona field. The member is created through `ctx.subagents.startActivation`, so it flows through the resolution above unchanged:
 
 - **The header is the only role carrier.** A teammate whose prompt omits it, or names an id that is not currently declared, is NOT SPECIFIED — exactly like a normally delegated child without a header.
 - **Names stay arbitrary (but unique inside one Team).** Any number of differently named teammates can carry the same role; there is **no name→role mapping**.
 - **Persona and role notice follow the normal child contract**; the chain (if the role specifies one) is stamped at spawn. The persona is a scoped `deployment:persona-prefix` section on the child's own context and does not survive a host restart.
-- **Non-local provider — two outcomes.** An external (acp) provider creates no local agent, so a normally delegated external child resolves its role but gets **no persona, role notice or badge**. A **teammate cannot use one**: roster.spawn always reserves a childId, and the runtime rejects a reserved id for a non-local provider (UNSUPPORTED_CAPABILITY), so member creation fails and no role is delivered.
+- **Non-local provider.** An external (acp) provider creates no local agent, so a member resolves its role but gets **no persona, role notice or badge** — the same outcome as any other external child. The role record is keyed off the child id that provider allocates itself; the seam reserves one only for a local backend (a reserved id on any other backend is rejected with UNSUPPORTED_CAPABILITY).
 
 ### Effort and maxTokens adaptation
 
