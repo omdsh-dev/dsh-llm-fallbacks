@@ -1,7 +1,7 @@
 ---
 module: dsh-llm-fallbacks virtual chain + time slots
 date: 2026-09-24
-last_updated: 2026-11-15
+last_updated: 2026-11-16
 problem_type: architecture_pattern
 category: architecture-patterns
 severity: medium
@@ -58,8 +58,10 @@ the only seam the host cannot refuse.
   `LLM_UNAVAILABLE`), THAT chain's tail-conformance gate (no origin split), and
   one nested `llm.stream()` per attempt. The adapter keeps the catalog +
   metadata half — `listModels`, and `resolveModel` / `imageRequestPricing`
-  resolve the chain FROM the `model` argument and follow its effective head;
-  those methods never throw. `providerRetryPolicy` returns `undefined`: the host
+  resolve the chain FROM the `model` argument; display metadata (name /
+  description / modalities / context / `defaultMaxTokens`) follows its effective
+  head, while `reasoning` is CHAIN-level (see "Route reasoning is CHAIN-level"
+  below); those methods never throw. `providerRetryPolicy` returns `undefined`: the host
   captures the policy once per provider at registration, so one provider cannot
   mirror N heads' policies (documented degradation — the host default applies).
 - **Committed rule**: the first yielded chunk commits the attempt. A
@@ -102,6 +104,41 @@ the only seam the host cannot refuse.
   selectable). The plugin still does not probe catalog availability.
 - Gate every slot observation surface on the same conforming helper
   (`isAllDayConforming`, tail-based, per chain).
+
+## Route reasoning is CHAIN-level, not the head's
+
+The host validates a call against the ROUTE's advertised `reasoning` **before**
+`adapter.stream()` runs (`LlmRuntime.resolveCallWithInfo` throws
+`UNSUPPORTED_REASONING_EFFORT`; no clamping, no fallback). A virtual row that
+copies the effective head's `reasoning` therefore turns one head's metadata gap
+into a dead turn: the chain's other hops never run, and the walk's per-hop
+adaptation (`adaptForTarget` proactive drop, `repairControl` reactive repair) is
+never reached. A hand-declared `openai-completions` model with no
+`reasoningEfforts` is exactly that gap — pi-ai falls back to the installed
+catalog, and an id the catalog does not carry (for example one with a `:tag`
+suffix) reads as non-reasoning.
+
+`resolveModel` must therefore advertise what the CHAIN can serve:
+
+- `efforts` = the deduplicated union of every dispatchable hop's disclosed
+  `reasoning.efforts`, over the all-day `entries` AND every time-slot row's hop
+  list (any slot, not only the current one). Reuse the walk's own skip set
+  (malformed selector, `provider/*`, `FallbacksChain/*` self-route) so the
+  union and the head resolution cannot drift apart.
+- A hop that throws or discloses nothing contributes nothing — unknown is not
+  "supports none", the same rule the per-hop adaptation follows.
+- An empty union (no hop discloses anything) falls back to a NON-EMPTY
+  permissive set: the host admits the explicit effort and the walk drops it per
+  hop, which is exactly the "run with the hop's own default" behavior the
+  operator wants. The ids are pi-ai's `THINKING_LEVELS`
+  (`off/minimal/low/medium/high/xhigh/max`); do not invent ids outside them.
+- Never emit `defaultEffort`. The host MATERIALISES a present `defaultEffort`
+  into the request, turning an unspecified effort into a chosen one.
+
+Consequence accepted deliberately: a route may advertise a tier no hop actually
+serves, and a route on a fully-undisclosed chain lists every tier. That is the
+price of never interrupting the turn; the per-hop drop remains the authority on
+what is actually sent. The head still owns every other metadata field.
 
 ## Host drift notes (dsh 0.2.2-rc.3)
 
