@@ -6,6 +6,12 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.8.9] - 2026-11-16
+
+### Fixed
+
+- A `FallbacksChain/<chain id>` route now advertises the reasoning capability of the whole chain instead of its current head: an explicit session reasoning effort (for example `high`) is admitted and dropped per hop by the fallback walk, instead of being refused with `UNSUPPORTED_REASONING_EFFORT` before any fallback hop runs.
+
 ## [0.8.8] - 2026-11-15
 
 ### Changed
