@@ -583,16 +583,26 @@ describe('chain-level reasoning capability', () => {
 
   it('a time-slot hop\'s disclosed efforts join the union (any slot, not the current one)', async () => {
     registerHop(THINKER_PROVIDER, [{ id: 'max', name: 'Max' }])
+    // A NARROW window, deliberately NOT containing the pinned clock below: the
+    // slot hop must join the union while it is INACTIVE, so the current
+    // effective head stays the silent all-day official model. A 00:00–23:59
+    // slot (or any matching window) would make the slot hop the head, and a
+    // head-only `resolveModel` would pass this test too.
     apply(ctx, cfg({
       chains: [vChain([OFFICIAL_FLASH], [{
         kind: 'custom',
-        start: '00:00',
-        end: '23:59',
+        start: '09:00',
+        end: '10:00',
         chain: [`${THINKER_PROVIDER}/${THINKER_MODEL}`],
       }])],
     }))
     await vi.waitFor(() => expect(listed()).toBe(true))
+    // 03:00 Asia/Shanghai (the default tz) — outside the 09:00–10:00 window.
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-08-17T19:00:00Z'))
 
+    // The asserting half is unchanged: the route still advertises the effort
+    // only the inactive slot row discloses.
     expect(await routeEfforts()).toEqual(['max'])
   })
 
