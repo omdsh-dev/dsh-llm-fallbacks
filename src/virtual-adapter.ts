@@ -20,8 +20,12 @@
  * `stream()` WALKS the selected chain (cooldown / failed-set / switch cap /
  * recovery bookkeeping) in `src/chain-walk.ts` — the walk is injected at
  * install and owns the pre-attempt guards. `resolveModel` /
- * `imageRequestPricing` resolve the chain FROM the `model` argument and
- * follow its effective head (permissive default otherwise — never throw).
+ * `imageRequestPricing` resolve the chain FROM the `model` argument: the
+ * head owns the display metadata, while `reasoning` is CHAIN-level — the
+ * union of every dispatchable hop's disclosed efforts (permissive set when no
+ * hop discloses any), so an explicit session effort reaches the walk's per-hop
+ * drop instead of being refused by the host before `stream()`. Permissive
+ * default otherwise — never throw.
  * `providerRetryPolicy` returns `undefined` (documented degradation): the
  * host captures the policy ONCE per provider at registration, so the virtual
  * route cannot mirror a per-chain head's policy — the host default applies.
@@ -32,9 +36,11 @@
 import type { Context } from '@deepseek-ai/cordis'
 import {
   LlmAdapter,
+  ReasoningEffortId,
   type GenerateOptions,
   type LlmImageRequestPricing,
   type LlmModelInfo,
+  type LlmReasoningEffortInfo,
   type LlmResolvedModelInfo,
   type LlmRuntime,
   type ResolvedRetryPolicy,
@@ -42,7 +48,7 @@ import {
 } from '@deepseek-ai/dsh-llm'
 import { isFallbackActive, type FallbacksConfig, type NamedChain } from './config.ts'
 import { parseSelector, type Selector } from './selectors.ts'
-import { isAllDayConforming, resolveEffectiveChain, resolveSlotState } from './time-slots.ts'
+import { isAllDayConforming, resolveEffectiveChain, resolveSlotState, type SlotRowConfig } from './time-slots.ts'
 
 /** Provider route of the virtual adapter (exact string, spec lock). */
 export const FALLBACKS_PROVIDER = 'FallbacksChain'
@@ -59,19 +65,14 @@ export interface EffectiveHead {
 }
 
 /**
- * The FIRST DISPATCHABLE exact head of a chain — the single definition of
- * "effective head" (F-001) shared by this module's metadata paths
- * (`pickerDisplayName` / `resolveModel` / `imageRequestPricing`) and the
- * walk's head resolution (`resolveWalk` in `src/chain-walk.ts`). Walks the
- * SAME chain `resolveEffectiveChain` produces, skipping entries that can never
- * be dispatched: malformed selectors (config-warning path), `provider/*`
- * `provider/*` wildcards (no real pair), and self-routes back to
- * `FallbacksChain/*` (the P1 recursion guard). `undefined` when the chain
- * is empty or no entry is dispatchable.
+ * Every DISPATCHABLE exact hop of ONE selector list, in stored order — the one
+ * skip set the head resolution ({@link firstDispatchableExactHead}) and the
+ * chain-level capability aggregation ({@link chainReasoningEfforts}) share:
+ * malformed selectors (config-warning path), `provider/*` wildcards (no real
+ * pair), and self-routes back to `FallbacksChain/*` (the P1 recursion guard)
+ * are never dispatch targets.
  */
-export function firstDispatchableExactHead(
-  chain: readonly string[],
-): EffectiveHead | undefined {
+function* dispatchableHops(chain: readonly string[]): Generator<EffectiveHead> {
   for (const entry of chain) {
     let selector: Selector
     try {
@@ -81,12 +82,27 @@ export function firstDispatchableExactHead(
     }
     if (selector.model === undefined) continue // wildcard: no real pair to delegate
     if (selector.provider === FALLBACKS_PROVIDER) continue // self-route: recursion guard
-    return {
+    yield {
       provider: selector.provider,
       model: selector.model,
       ...(selector.effort === undefined ? {} : { effort: selector.effort }),
     }
   }
+}
+
+/**
+ * The FIRST DISPATCHABLE exact head of a chain — the single definition of
+ * "effective head" (F-001) shared by this module's metadata paths
+ * (`pickerDisplayName` / `resolveModel` / `imageRequestPricing`) and the
+ * walk's head resolution (`resolveWalk` in `src/chain-walk.ts`). Walks the
+ * SAME chain `resolveEffectiveChain` produces through the shared
+ * {@link dispatchableHops} skip set. `undefined` when the chain is empty or
+ * no entry is dispatchable.
+ */
+export function firstDispatchableExactHead(
+  chain: readonly string[],
+): EffectiveHead | undefined {
+  for (const head of dispatchableHops(chain)) return head
   return undefined
 }
 
@@ -143,6 +159,73 @@ async function resolveHeadDisplayName(llm: LlmRuntime | undefined, head: Effecti
 }
 
 /**
+ * The effort set a virtual route advertises when NO hop of the chain discloses
+ * any reasoning metadata. It exists because the host refuses an explicit effort
+ * on a `reasoning`-less route (`UNSUPPORTED_REASONING_EFFORT`, before
+ * `stream()`), so "unknown" must not read as "supports none": admission here
+ * only hands the effort to the walk, which drops it per hop. Ids are pi-ai's
+ * thinking levels — `THINKING_LEVELS` in `@deepseek-ai/dsh-llm-pi-ai`
+ * (`src/catalog.ts`), the values every pi-ai adapter publishes through
+ * `reasoning.efforts`.
+ */
+const PERMISSIVE_REASONING_EFFORTS: readonly LlmReasoningEffortInfo[] =
+  ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].map(id => ({
+    id: ReasoningEffortId(id),
+    name: `${id.charAt(0).toUpperCase()}${id.slice(1)}`,
+  }))
+
+/**
+ * Every selector a chain may dispatch at ANY time: its all-day `entries` plus
+ * each time-slot row's own hop list. Slot rows only ever take effect off a
+ * conforming all-day tail (`resolveEffectiveChain`), so a non-conforming chain
+ * contributes its `entries` alone. A hand-written row whose `chain` is not a
+ * list contributes nothing — this path never throws.
+ */
+function chainSelectors(chain: NamedChain): string[] {
+  const selectors = [...chain.entries]
+  if (!isAllDayConforming(chain.entries) || !Array.isArray(chain.timeSlots)) return selectors
+  for (const row of chain.timeSlots) {
+    const hops: unknown = (row as SlotRowConfig | null)?.chain
+    if (Array.isArray(hops)) selectors.push(...hops as string[])
+  }
+  return selectors
+}
+
+/**
+ * The CHAIN-level reasoning capability: the deduplicated union of every
+ * dispatchable hop's disclosed `reasoning.efforts`, in first-disclosure order
+ * (all-day entries, then slot rows, each in stored order — deterministic).
+ * A hop that throws or discloses no reasoning contributes nothing (unknown is
+ * not "supports none"), and `undefined` means no hop disclosed anything.
+ */
+async function chainReasoningEfforts(
+  llm: LlmRuntime,
+  chain: NamedChain,
+  signal?: AbortSignal,
+): Promise<readonly LlmReasoningEffortInfo[] | undefined> {
+  const efforts: LlmReasoningEffortInfo[] = []
+  const seen = new Set<string>()
+  for (const hop of dispatchableHops(chainSelectors(chain))) {
+    let info: LlmResolvedModelInfo
+    try {
+      info = await llm.resolveModelInfo(hop.provider, hop.model, signal)
+    } catch {
+      continue // unregistered provider or unresolvable hop: contributes nothing
+    }
+    for (const effort of info.reasoning?.efforts ?? []) {
+      if (seen.has(effort.id)) continue
+      seen.add(effort.id)
+      efforts.push({
+        id: effort.id,
+        name: effort.name,
+        ...(effort.description === undefined ? {} : { description: effort.description }),
+      })
+    }
+  }
+  return efforts.length === 0 ? undefined : efforts
+}
+
+/**
  * The virtual adapter (P1/P3). `stream()` hands the call to the injected walk
  * (see `src/chain-walk.ts`) — registration metadata stays here.
  */
@@ -178,20 +261,25 @@ export class FallbacksChainAdapter extends LlmAdapter {
 
   /**
    * Model-scoped metadata: resolve the chain FROM the `model` argument (the
-   * chain id) and follow its effective head — modalities/context-window/
-   * reasoning follow the head, the truthful answer for the CURRENT head.
-   * Permissive default for an unknown chain id or an unresolvable head;
-   * never throws.
+   * chain id). The effective head owns the display metadata (name/description/
+   * modalities/context/maxTokens) — the truthful answer for the CURRENT head —
+   * while `reasoning` is CHAIN-level: the union of every dispatchable hop's
+   * disclosed efforts, or {@link PERMISSIVE_REASONING_EFFORTS} when no hop
+   * discloses any, so an explicit effort reaches the walk's per-hop drop
+   * instead of being refused here. `defaultEffort` is never emitted — an
+   * unspecified effort must stay unspecified. Permissive default for an unknown
+   * chain id or an unresolvable head; never throws.
    */
   override async resolveModel(
     provider: string,
     model: string,
     signal?: AbortSignal,
   ): Promise<LlmResolvedModelInfo> {
-    const chain = this.readConfig().chains.find((entry) => entry.id === model)
-    const head = chain === undefined ? undefined : effectiveHeadOf(chain, new Date(), this.readConfig().tz ?? 'Asia/Shanghai')
+    const config = this.readConfig()
+    const chain = config.chains.find((entry) => entry.id === model)
+    const head = chain === undefined ? undefined : effectiveHeadOf(chain, new Date(), config.tz ?? 'Asia/Shanghai')
     const llm = this.getLlm()
-    if (head !== undefined && llm !== undefined) {
+    if (chain !== undefined && head !== undefined && llm !== undefined) {
       try {
         const info = await llm.resolveModelInfo(head.provider, head.model, signal)
         return {
@@ -202,7 +290,9 @@ export class FallbacksChainAdapter extends LlmAdapter {
           ...(info.inputModalities === undefined ? {} : { inputModalities: info.inputModalities }),
           ...(info.context === undefined ? {} : { context: info.context }),
           ...(info.defaultMaxTokens === undefined ? {} : { defaultMaxTokens: info.defaultMaxTokens }),
-          ...(info.reasoning === undefined ? {} : { reasoning: info.reasoning }),
+          reasoning: {
+            efforts: (await chainReasoningEfforts(llm, chain, signal)) ?? PERMISSIVE_REASONING_EFFORTS,
+          },
         }
       } catch {
         // Head metadata unresolvable (e.g. the head's provider is not
