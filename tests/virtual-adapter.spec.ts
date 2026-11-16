@@ -6,7 +6,8 @@
  * adapter contract (ONE row PER chain, the row id BEING the chain id;
  * `stream()` walks the selected chain through the host LLM runtime, gated on
  * a conforming entries tail; `resolveModel`/`imageRequestPricing` resolve the
- * chain FROM the model argument and follow its effective head, permissive
+ * chain FROM the model argument — display metadata follows its effective head
+ * while reasoning is CHAIN-level (see the dedicated suite below) — permissive
  * fallback, never throwing; `providerRetryPolicy` returns `undefined` — the
  * documented degradation: the host captures the policy once per provider).
  *
@@ -297,7 +298,7 @@ describe('adapter contract (P1/P3)', () => {
     expect(pickerDisplayName(vChain([]))).toBe('Test')
   })
 
-  it('resolveModel proxies the current effective head metadata', async () => {
+  it('resolveModel proxies the head display metadata, with chain-level reasoning', async () => {
     stub.info = {
       context: { contextWindow: 131_072 },
       defaultMaxTokens: 8192,
@@ -315,8 +316,11 @@ describe('adapter contract (P1/P3)', () => {
       context: { contextWindow: 131_072 },
       defaultMaxTokens: 8192,
       inputModalities: ['text'],
-      reasoning: { efforts: [{ id: 'high', name: 'High' }], defaultEffort: 'high' },
+      // The chain's union, never the head's own object: the head's
+      // `defaultEffort` is NOT copied onto the route (AC3).
+      reasoning: { efforts: [{ id: 'high', name: 'High' }] },
     })
+    expect(info.reasoning?.defaultEffort).toBeUndefined()
   })
 
   it('resolveModel falls back to a permissive default when the head is unresolvable (never throws)', async () => {
@@ -535,6 +539,111 @@ describe('adapter contract (P1/P3)', () => {
     expect(chunks.at(-1)).toMatchObject({ type: 'finish', reason: { kind: 'stop' } })
     expect(stub.calls).toHaveLength(1)
     expect(stub.calls[0]).toMatchObject({ provider: HEAD_PROVIDER, model: HEAD_MODEL })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Chain-level reasoning capability (fix/chain-reasoning-effort-fallback): the
+// virtual route must advertise what the WHOLE chain can serve, never only the
+// current head. `@deepseek-ai/dsh-llm` validates an explicit effort against
+// the route's declared `reasoning` BEFORE `adapter.stream()` runs, so a head
+// that discloses nothing used to reject the session's effort and the walk's
+// per-hop drop never ran.
+// ---------------------------------------------------------------------------
+
+describe('chain-level reasoning capability', () => {
+  const THINKER_PROVIDER = 'reasoner'
+  const THINKER_MODEL = 'thinker'
+  /** A hand-declared, non-reasoning head — the model shape that surfaced the bug. */
+  const PLAIN_HEAD = `${HEAD_PROVIDER}/plain-model`
+
+  /** Register a hop provider disclosing `efforts`; returns its stub adapter. */
+  function registerHop(provider: string, efforts: readonly { id: string; name: string }[]): StubHeadAdapter {
+    const adapter = new StubHeadAdapter({ reasoning: { efforts: [...efforts] } })
+    ctx.llm.registerAdapter([provider], adapter)
+    return adapter
+  }
+
+  /** The virtual route's advertised effort ids, in order. */
+  async function routeEfforts(): Promise<string[] | undefined> {
+    const info = await ctx.llm.resolveModelInfo(FALLBACKS_PROVIDER, CHAIN_ID)
+    return info.reasoning?.efforts.map((effort) => effort.id)
+  }
+
+  it('reports an effort a LATER hop discloses, not the silent head (AC1)', async () => {
+    registerHop(THINKER_PROVIDER, [{ id: 'high', name: 'High' }])
+    apply(ctx, cfg({ chains: [vChain([PLAIN_HEAD, `${THINKER_PROVIDER}/${THINKER_MODEL}`, OFFICIAL_FLASH])] }))
+    await vi.waitFor(() => expect(listed()).toBe(true))
+
+    expect(await routeEfforts()).toEqual(['high'])
+    // The head still owns the display metadata (AC3).
+    const info = await ctx.llm.resolveModelInfo(FALLBACKS_PROVIDER, CHAIN_ID)
+    expect(info).toMatchObject({ provider: FALLBACKS_PROVIDER, id: CHAIN_ID, name: 'plain-model' })
+  })
+
+  it('a time-slot hop\'s disclosed efforts join the union (any slot, not the current one)', async () => {
+    registerHop(THINKER_PROVIDER, [{ id: 'max', name: 'Max' }])
+    // A NARROW window, deliberately NOT containing the pinned clock below: the
+    // slot hop must join the union while it is INACTIVE, so the current
+    // effective head stays the silent all-day official model. A 00:00–23:59
+    // slot (or any matching window) would make the slot hop the head, and a
+    // head-only `resolveModel` would pass this test too.
+    apply(ctx, cfg({
+      chains: [vChain([OFFICIAL_FLASH], [{
+        kind: 'custom',
+        start: '09:00',
+        end: '10:00',
+        chain: [`${THINKER_PROVIDER}/${THINKER_MODEL}`],
+      }])],
+    }))
+    await vi.waitFor(() => expect(listed()).toBe(true))
+    // 03:00 Asia/Shanghai (the default tz) — outside the 09:00–10:00 window.
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-08-17T19:00:00Z'))
+
+    // The asserting half is unchanged: the route still advertises the effort
+    // only the inactive slot row discloses.
+    expect(await routeEfforts()).toEqual(['max'])
+  })
+
+  it('advertises a NON-EMPTY permissive set when no hop discloses reasoning (AC2)', async () => {
+    apply(ctx, cfg({ chains: [vChain()] }))
+    await vi.waitFor(() => expect(listed()).toBe(true))
+
+    expect(await routeEfforts()).toEqual(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
+    // The discriminating half: the host now ADMITS the explicit effort that it
+    // used to refuse with UNSUPPORTED_REASONING_EFFORT before `stream()`.
+    const admitted = await ctx.llm.resolveCallConfig({
+      provider: FALLBACKS_PROVIDER,
+      model: CHAIN_ID,
+      reasoningEffort: 'high',
+    })
+    expect(admitted).toMatchObject({ provider: FALLBACKS_PROVIDER, model: CHAIN_ID, reasoningEffort: 'high' })
+  })
+
+  it('deduplicates the union across hops and keeps a deterministic order', async () => {
+    registerHop('reasoner-a', [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High' }])
+    registerHop('reasoner-b', [{ id: 'high', name: 'High' }, { id: 'max', name: 'Max' }])
+    apply(ctx, cfg({
+      chains: [vChain([PLAIN_HEAD, 'reasoner-a/thinker', 'reasoner-b/thinker', OFFICIAL_FLASH])],
+    }))
+    await vi.waitFor(() => expect(listed()).toBe(true))
+
+    const first = await routeEfforts()
+    expect(first).toEqual(['low', 'high', 'max'])
+    expect(await routeEfforts()).toEqual(first)
+  })
+
+  it('a throwing hop probe contributes nothing and never fails the route', async () => {
+    const broken = registerHop('broken', [{ id: 'high', name: 'High' }])
+    vi.spyOn(broken, 'resolveModel').mockRejectedValue(new Error('capability probe exploded'))
+    registerHop(THINKER_PROVIDER, [{ id: 'medium', name: 'Medium' }])
+    apply(ctx, cfg({
+      chains: [vChain([PLAIN_HEAD, `broken/${THINKER_MODEL}`, `${THINKER_PROVIDER}/${THINKER_MODEL}`, OFFICIAL_FLASH])],
+    }))
+    await vi.waitFor(() => expect(listed()).toBe(true))
+
+    expect(await routeEfforts()).toEqual(['medium'])
   })
 })
 
