@@ -6,6 +6,12 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.8.10] - 2026-11-20
+
+### Fixed
+
+- A misconfigured model id (`UNKNOWN_MODEL`), an unusable credential (`MISSING_CREDENTIAL` / `INVALID_CREDENTIAL` / `NO_CREDENTIAL_STORE` / `ACCOUNT_SIGN_IN_REQUIRED` / `ACCOUNT_TOKEN_INVALID`), a route that cannot serve the request's shape (`MODEL_UNSUPPORTED` / `UNSUPPORTED_OPTION` / `UNSUPPORTED_CONTENT`, request-scoped: no cooldown), and an unlisted non-transient credential-refresh `INVALID_REQUEST` (expired OAuth grant, judged as `AUTH`) now advance the chain without needing a `triggerCodes` entry, so one dead head no longer ends the whole run with healthy candidates behind it. A listed `INVALID_REQUEST` keeps its own identity and booking, a removed `AUTH` still declines the OAuth case, and a transient refresh failure (network / timeout / 429 / 5xx) stays with llm-retry.
+
 ## [0.8.9] - 2026-11-16
 
 ### Fixed
