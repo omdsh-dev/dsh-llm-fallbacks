@@ -150,6 +150,58 @@ export const REQUEST_SCOPED_CODES: ReadonlySet<string> = new Set([
 const SWALLOWED_REQUEST_SCOPED_CODES: ReadonlySet<string> = new Set([CONTEXT_WINDOW_EXCEEDED_CODE])
 
 /**
+ * Failure codes no request can ever succeed on, independent of `triggerCodes`:
+ * the route itself is misconfigured, holds no usable credential, or cannot
+ * serve the request's shape at all, so a forwarded failure would end the turn
+ * with no fallback at all (observed 2026-11-20: a typo'd model id —
+ * `UNKNOWN_MODEL` — and an expired OAuth grant both stopped the whole run
+ * while a healthy candidate sat behind them).
+ *
+ * Deliberately EXCLUDED, each for a reason:
+ * - the transient family (`TRANSPORT`, `TIMEOUT`, `SERVER`, `STREAM_CLOSED`,
+ *   `RATE_LIMIT`, `MALFORMED_RESPONSE`, `EMPTY_RESPONSE`): llm-retry backs off
+ *   on the same route first; switching here would cool a healthy route on
+ *   every network blip;
+ * - `AUTH` / `QUOTA`: already in the default `triggerCodes`, so the operator
+ *   owns that decision;
+ * - `UNKNOWN` / `PI_AI_ERROR` / `HTTP_<n>`: unclassified, too broad to cool on;
+ * - `INVALID_MODEL_INFO` / `INVALID_MODEL_*` / `NO_ADAPTER` / `DISCOVERY_*`:
+ *   raised by local catalog and registration probes, never as an attempt's
+ *   terminal finish, so the walk cannot see them;
+ * - `IMAGE_OFFLOAD_REQUIRED`, `ABORTED`, `CLIENT_UPGRADE_REQUIRED`,
+ *   `MODEL_SWITCH_COMPACTION_FAILED`: handled elsewhere or not a route fault.
+ *
+ * They are ROUTE-scoped: none appears in {@link REQUEST_SCOPED_CODES}, so
+ * booking cools the dead route and an llm-retry re-entry resumes past it.
+ */
+const ROUTE_DEAD_CODES: ReadonlySet<string> = new Set([
+  'UNKNOWN_MODEL',
+  'MISSING_CREDENTIAL',
+  'INVALID_CREDENTIAL',
+  'NO_CREDENTIAL_STORE',
+  'ACCOUNT_SIGN_IN_REQUIRED',
+  'ACCOUNT_TOKEN_INVALID',
+  'MODEL_UNSUPPORTED',
+  'UNSUPPORTED_OPTION',
+  'UNSUPPORTED_CONTENT',
+])
+
+/**
+ * Pi-ai reports a credential refresh failure as `INVALID_REQUEST` (its token
+ * endpoint answered HTTP 400) — a code otherwise reserved for request shape.
+ * Nothing on that route can succeed until someone signs in again, so the
+ * failure is promoted to `AUTH` before any trigger decision; operators who
+ * remove `AUTH` from `triggerCodes` keep their choice.
+ *
+ * The subject anchor keeps a plain request-shape `INVALID_REQUEST` out, and the
+ * transient filter keeps a refresh that merely timed out in llm-retry's lane
+ * instead of cooling the route (shape borrowed from oh-my-pi's
+ * `isOAuthExpiry`).
+ */
+const OAUTH_SUBJECT = /oauth|token[\s_-]?refresh|refresh[\s_-]?token|authorization\s+grant/i
+const OAUTH_TRANSIENT = /\btimeout\b|\bnetwork\b|fetch failed|ECONN(?:REFUSED|RESET|ABORTED)|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|socket hang up|\b(?:408|425|429|5\d{2})\b|rate[ _-]?limit|too many requests|temporar(?:y|ily)|unavailable/i
+
+/**
  * The exact-route capabilities a walk reads from `resolveModelInfo`: the
  * context window (wildcard / overflow expansions) plus the two request
  * controls parameter adaptation compares against. Every field is optional — a
@@ -845,8 +897,15 @@ async function* walk(
             repair = repairable
             break
           }
-          if (config.triggerCodes.includes(failure.code)) {
-            swallowed = { chunk, code: failure.code }
+          // A credential-refresh `INVALID_REQUEST` is a dead route reported
+          // under a request-shape code; promote it before the trigger test.
+          const code = failure.code === 'INVALID_REQUEST'
+            && OAUTH_SUBJECT.test(failure.message)
+            && !OAUTH_TRANSIENT.test(failure.message)
+            ? 'AUTH'
+            : failure.code
+          if (config.triggerCodes.includes(code) || ROUTE_DEAD_CODES.has(code)) {
+            swallowed = { chunk, code }
             break
           }
         }
