@@ -217,7 +217,7 @@ const ROUTE_DEAD_CODES: ReadonlySet<string> = new Set([
  * instead of cooling the route (shape borrowed from oh-my-pi's
  * `isOAuthExpiry`).
  */
-const OAUTH_SUBJECT = /oauth|token[\s_-]?refresh|refresh[\s_-]?token|authorization\s+grant/i
+const OAUTH_SUBJECT = /oauth[\s_-]*(?:refresh|token|grant)|token[\s_-]?refresh|refresh[\s_-]?token|authorization\s+grant/i
 const OAUTH_TRANSIENT = /\btimeout\b|\bnetwork\b|fetch failed|ECONN(?:REFUSED|RESET|ABORTED)|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|socket hang up|\b(?:408|425|429|5\d{2})\b|rate[ _-]?limit|too many requests|temporar(?:y|ily)|unavailable/i
 
 /**
