@@ -1,7 +1,7 @@
 ---
 module: npm-release-pipeline
 date: 2026-08-14
-last_updated: 2026-08-30
+last_updated: 2026-11-20
 problem_type: best_practice
 category: best-practices
 severity: low
@@ -62,7 +62,7 @@ dsh-llm-fallbacks 建立 npm 发布流水线（单包），参考 mstar-harness 
 ### 工具细节
 
 - scripts 用 `tsx` 跑（node:fs/node:path only，不引 Bun API）；逻辑导出（parseArgs/autoBumpPatch/insertSection/validateReleaseVersion）供 vitest 套件——bump 分支/插入/validate 正反例全部提交进仓库（fixture 干跑不落仓 = 无保护）。
-- action pins：`checkout@v4` / `setup-node@v4` / pnpm/action-setup@v4（11.21.0）；release workflows 对齐 pnpm/action-setup → setup-node(cache: pnpm) 顺序。
+- action pins：`checkout@v5` / `setup-node@v5` / pnpm/action-setup@v5（11.21.0，均跑在 `node24`）；release workflows 对齐 pnpm/action-setup → setup-node(cache: pnpm) 顺序。
 - `git tag -a -m "release vX.Y.Z"`（git 2.55+ 无 message 拒绝 tag）。
 - 工作流权限：release-prep `contents: write, pull-requests: write`；release `contents: write, id-token: write`；无 `NPM_TOKEN`。
 
