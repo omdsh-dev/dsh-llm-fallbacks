@@ -1129,18 +1129,75 @@ describe('bookkeeping (design §3.3)', () => {
     expect(states.peek('s1')?.cooldown.peek('a/1')).toBeTypeOf('number')
   })
 
-  it.each(['MODEL_UNSUPPORTED', 'ACCOUNT_TOKEN_INVALID', 'UNSUPPORTED_OPTION'])(
-    'switches past an unlisted route-dead %s',
+  it('keeps an operator-listed INVALID_REQUEST as itself', async () => {
+    const states = new FallbackStateStore()
+    adapter.respond = (options) => options.model === '1'
+      ? {
+        failure: {
+          code: 'INVALID_REQUEST',
+          message: 'OAuth refresh failed for a: The provided authorization grant is invalid',
+        },
+      }
+      : { chunks: [STOP] }
+
+    // `AUTH` omitted, `INVALID_REQUEST` listed: promotion must not replace the
+    // listed code, and the listed (route-scoped) booking still cools a/1.
+    const chunks = await walk({
+      readConfig: chainCfg(['a/1', 'a/2'], { triggerCodes: ['INVALID_REQUEST'] }),
+      states,
+    }, { sessionId: SessionId('s1') })
+
+    expect(dispatched()).toEqual(['a/1', 'a/2'])
+    expect(chunks).toEqual([STOP])
+    expect(states.peek('s1')?.cooldown.peek('a/1')).toBeTypeOf('number')
+  })
+
+  it('declines an OAuth-shaped INVALID_REQUEST when neither code is listed', async () => {
+    adapter.respond = () => ({
+      failure: { code: 'INVALID_REQUEST', message: 'OAuth refresh failed for a: invalid_grant' },
+    })
+
+    // Promotion is not a bypass: an operator who removed AUTH keeps that choice.
+    const chunks = await walk({
+      readConfig: chainCfg(['a/1', 'a/2'], { triggerCodes: [] }),
+    }, { sessionId: SessionId('s1') })
+
+    expect(dispatched()).toEqual(['a/1'])
+    expect(chunks.at(-1)).toMatchObject({ type: 'finish', reason: { kind: 'error', failure: { code: 'INVALID_REQUEST' } } })
+  })
+
+  it.each(['MISSING_CREDENTIAL', 'INVALID_CREDENTIAL', 'NO_CREDENTIAL_STORE', 'ACCOUNT_SIGN_IN_REQUIRED', 'ACCOUNT_TOKEN_INVALID'])(
+    'switches past an unlisted route-dead %s and cools it',
     async (code) => {
+      const states = new FallbackStateStore()
       adapter.respond = (options) => options.model === '1'
         ? { failure: { code, message: `${code} on a/1` } }
         : { chunks: [STOP] }
 
-      const chunks = await walk({ readConfig: chainCfg(['a/1', 'a/2'], { triggerCodes: ['AUTH'] }) },
+      const chunks = await walk({ readConfig: chainCfg(['a/1', 'a/2'], { triggerCodes: ['AUTH'] }), states },
         { sessionId: SessionId('s1') })
 
       expect(dispatched()).toEqual(['a/1', 'a/2'])
       expect(chunks).toEqual([STOP])
+      expect(states.peek('s1')?.cooldown.peek('a/1')).toBeTypeOf('number')
+    },
+  )
+
+  it.each(['MODEL_UNSUPPORTED', 'UNSUPPORTED_OPTION', 'UNSUPPORTED_CONTENT'])(
+    'switches past an unlisted shape rejection %s without cooling the route',
+    async (code) => {
+      const states = new FallbackStateStore()
+      adapter.respond = (options) => options.model === '1'
+        ? { failure: { code, message: `${code} on a/1` } }
+        : { chunks: [STOP] }
+
+      const chunks = await walk({ readConfig: chainCfg(['a/1', 'a/2'], { triggerCodes: ['AUTH'] }), states },
+        { sessionId: SessionId('s1') })
+
+      expect(dispatched()).toEqual(['a/1', 'a/2'])
+      expect(chunks).toEqual([STOP])
+      // Request-scoped: the next request still starts at the primary.
+      expect(states.peek('s1')?.cooldown.peek('a/1')).toBeUndefined()
     },
   )
 

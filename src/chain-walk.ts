@@ -119,6 +119,21 @@ export const LLM_UNAVAILABLE_CODE = 'LLM_UNAVAILABLE'
 export const CONTEXT_WINDOW_EXCEEDED_CODE = 'CONTEXT_WINDOW_EXCEEDED'
 
 /**
+ * Shape-capability rejections: the route refuses THIS request's shape (an
+ * option it does not accept, a content type it cannot take, a model
+ * capability it lacks) but may serve the next request. They always trigger —
+ * a forwarded failure would end the turn with healthy candidates behind it —
+ * and they are REQUEST-scoped, so booking records the per-call failed key
+ * without cooling the route: the same doctrine the context-window and the two
+ * parameter rejections follow.
+ */
+const SHAPE_REJECTED_CODES: ReadonlySet<string> = new Set([
+  'MODEL_UNSUPPORTED',
+  'UNSUPPORTED_OPTION',
+  'UNSUPPORTED_CONTENT',
+])
+
+/**
  * Failure codes whose FORWARDED failure is REQUEST-scoped: the route is healthy
  * and the request was the problem, so booking records the per-call failed key
  * but writes no cooldown and no recovery counter. Cooling the route down would
@@ -126,7 +141,8 @@ export const CONTEXT_WINDOW_EXCEEDED_CODE = 'CONTEXT_WINDOW_EXCEEDED'
  *
  * The two adapter-side parameter rejections join it: the reactive repair has
  * already tried to drop the offending control, and a request the route refuses
- * for its own shape says nothing about the route's health.
+ * for its own shape says nothing about the route's health. The
+ * shape-capability rejections belong to the same family.
  *
  * This set governs the FORWARDING path, and only for a code the operator has
  * NOT listed in `triggerCodes`. A listed code keeps its pre-existing booking
@@ -139,23 +155,26 @@ export const REQUEST_SCOPED_CODES: ReadonlySet<string> = new Set([
   CONTEXT_WINDOW_EXCEEDED_CODE,
   'UNSUPPORTED_REASONING_EFFORT',
   'INVALID_REQUEST',
+  ...SHAPE_REJECTED_CODES,
 ])
 
 /**
- * Request-scoped codes on the SWALLOWED trigger path — the pre-existing set
- * (only the context-window rejection). An operator-listed
+ * Request-scoped codes on the SWALLOWED trigger path — the context-window
+ * rejection plus the shape-capability rejections. An operator-listed
  * `UNSUPPORTED_REASONING_EFFORT` / `INVALID_REQUEST` therefore keeps the
  * cooldown and recovery bookkeeping it has always had.
  */
-const SWALLOWED_REQUEST_SCOPED_CODES: ReadonlySet<string> = new Set([CONTEXT_WINDOW_EXCEEDED_CODE])
+const SWALLOWED_REQUEST_SCOPED_CODES: ReadonlySet<string> = new Set([
+  CONTEXT_WINDOW_EXCEEDED_CODE,
+  ...SHAPE_REJECTED_CODES,
+])
 
 /**
  * Failure codes no request can ever succeed on, independent of `triggerCodes`:
- * the route itself is misconfigured, holds no usable credential, or cannot
- * serve the request's shape at all, so a forwarded failure would end the turn
- * with no fallback at all (observed 2026-11-20: a typo'd model id —
- * `UNKNOWN_MODEL` — and an expired OAuth grant both stopped the whole run
- * while a healthy candidate sat behind them).
+ * the route itself is misconfigured or holds no usable credential, so a
+ * forwarded failure would end the turn with no fallback at all (observed
+ * 2026-11-20: a typo'd model id — `UNKNOWN_MODEL` — and an expired OAuth grant
+ * both stopped the whole run while a healthy candidate sat behind them).
  *
  * Deliberately EXCLUDED, each for a reason:
  * - the transient family (`TRANSPORT`, `TIMEOUT`, `SERVER`, `STREAM_CLOSED`,
@@ -164,6 +183,8 @@ const SWALLOWED_REQUEST_SCOPED_CODES: ReadonlySet<string> = new Set([CONTEXT_WIN
  *   every network blip;
  * - `AUTH` / `QUOTA`: already in the default `triggerCodes`, so the operator
  *   owns that decision;
+ * - the shape-capability codes ({@link SHAPE_REJECTED_CODES}): they trigger
+ *   too, but they say nothing about the route's health;
  * - `UNKNOWN` / `PI_AI_ERROR` / `HTTP_<n>`: unclassified, too broad to cool on;
  * - `INVALID_MODEL_INFO` / `INVALID_MODEL_*` / `NO_ADAPTER` / `DISCOVERY_*`:
  *   raised by local catalog and registration probes, never as an attempt's
@@ -181,17 +202,15 @@ const ROUTE_DEAD_CODES: ReadonlySet<string> = new Set([
   'NO_CREDENTIAL_STORE',
   'ACCOUNT_SIGN_IN_REQUIRED',
   'ACCOUNT_TOKEN_INVALID',
-  'MODEL_UNSUPPORTED',
-  'UNSUPPORTED_OPTION',
-  'UNSUPPORTED_CONTENT',
 ])
 
 /**
  * Pi-ai reports a credential refresh failure as `INVALID_REQUEST` (its token
  * endpoint answered HTTP 400) — a code otherwise reserved for request shape.
  * Nothing on that route can succeed until someone signs in again, so the
- * failure is promoted to `AUTH` before any trigger decision; operators who
- * remove `AUTH` from `triggerCodes` keep their choice.
+ * failure is judged as `AUTH` — but only after the ORIGINAL code failed to
+ * match: an operator who listed `INVALID_REQUEST` keeps its identity and
+ * booking, and one who removed `AUTH` keeps that choice too.
  *
  * The subject anchor keeps a plain request-shape `INVALID_REQUEST` out, and the
  * transient filter keeps a refresh that merely timed out in llm-retry's lane
@@ -897,14 +916,23 @@ async function* walk(
             repair = repairable
             break
           }
-          // A credential-refresh `INVALID_REQUEST` is a dead route reported
-          // under a request-shape code; promote it before the trigger test.
-          const code = failure.code === 'INVALID_REQUEST'
-            && OAUTH_SUBJECT.test(failure.message)
-            && !OAUTH_TRANSIENT.test(failure.message)
-            ? 'AUTH'
-            : failure.code
-          if (config.triggerCodes.includes(code) || ROUTE_DEAD_CODES.has(code)) {
+          // An operator-listed code keeps its identity and booking; only an
+          // unlisted OAuth-shaped `INVALID_REQUEST` is judged as `AUTH`, so
+          // `triggerCodes: ['INVALID_REQUEST']` still switches and a removed
+          // `AUTH` still declines.
+          const original = failure.code
+          const code = config.triggerCodes.includes(original) || ROUTE_DEAD_CODES.has(original)
+            ? original
+            : original === 'INVALID_REQUEST'
+              && OAUTH_SUBJECT.test(failure.message)
+              && !OAUTH_TRANSIENT.test(failure.message)
+              ? 'AUTH'
+              : original
+          if (
+            config.triggerCodes.includes(code)
+            || ROUTE_DEAD_CODES.has(code)
+            || SHAPE_REJECTED_CODES.has(code)
+          ) {
             swallowed = { chunk, code }
             break
           }
