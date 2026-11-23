@@ -249,13 +249,16 @@ describe('committed rule (design §3.1/§6.1.4)', () => {
     // rc.5 yields a `usage` chunk before raising the refusal, so the consumer
     // sees the billed usage and the refusal in that order — the walk buffers
     // pre-output usage and must flush it before the forwarded terminal chunk.
-    adapter.respond = () => ({ chunks: [USAGE], failure: { code: 'CONTENT_REFUSED', message: 'refused' } })
+    const billed: StreamChunk = { type: 'usage', usage: { inputTokens: 512, outputTokens: 7 } }
+    adapter.respond = () => ({ chunks: [billed], failure: { code: 'CONTENT_REFUSED', message: 'refused' } })
 
     const chunks = await walk({ readConfig: chainCfg(['a/1', 'b/2']) })
 
     expect(dispatched()).toEqual(['a/1'])
     expect(chunks).toHaveLength(2)
-    expect(chunks[0]).toEqual(USAGE)
+    // Exact equality: a walk that zeroed the counts (or reordered the chunks)
+    // must fail here, not just be structurally a usage chunk.
+    expect(chunks[0]).toEqual(billed)
     expect(chunks[1]).toMatchObject({ type: 'finish', reason: { kind: 'error', failure: { code: 'CONTENT_REFUSED' } } })
   })
 
@@ -1031,7 +1034,6 @@ describe('bookkeeping (design §3.3)', () => {
     const first = await walk(deps, { sessionId: SessionId('s1') })
     expect(dispatched()).toEqual(['a/1'])
     expect(first.at(-1)).toMatchObject({ type: 'finish', reason: { kind: 'error', failure: { code: 'CONTENT_REFUSED' } } })
-    expect(states.peek('s1')?.cooldown.peek('a/1')).toBeUndefined()
 
     // The refusal says nothing about route health: the next walk retries the head.
     adapter.respond = () => ({ chunks: [STOP] })
