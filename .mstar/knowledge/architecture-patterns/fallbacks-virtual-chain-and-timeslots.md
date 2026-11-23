@@ -161,6 +161,21 @@ what is actually sent. The head still owns every other metadata field.
   skips the catalog specs when no released catalog resolves. Do not "fix" these by
   rewriting assertions inside an unrelated plan.
 
+## Host drift notes (dsh 0.2.2-rc.5)
+
+- **A provider content refusal is a request fact, not route health.** rc.5 splits
+  DeepSeek's `stop_reason: "refusal"` out of `MALFORMED_RESPONSE` into the new
+  `CONTENT_REFUSED` code and drops it from the default retryable set. The walk lists it
+  in `REQUEST_SCOPED_CODES`, so an unlisted refusal is forwarded without cooling the
+  route: the provider declined that content, and the same route serves the next request.
+  An operator who lists the code in `triggerCodes` keeps the pre-existing booking on both
+  paths. Any future "provider declined this content" code belongs in the same
+  request-scoped family, never in `ROUTE_DEAD_CODES`.
+- **The pre-output `usage` chunk needs no special case.** rc.5 emits `usage` before the
+  refusal finish; the walk already buffers pre-output usage until the attempt commits or
+  a terminal chunk arrives, then flushes it in arrival order. Pinned by
+  `tests/chain-walk.spec.ts`.
+
 ## Why This Matters
 
 A refusing `stream()` would turn `installModelSelection` outer-composition into a
