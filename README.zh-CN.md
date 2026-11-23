@@ -9,7 +9,7 @@
 ![node](https://img.shields.io/badge/node-%3E%3D22-339933.svg)
 ![pnpm](https://img.shields.io/badge/pnpm-%3E%3D10-f69220.svg)
 ![dsh tui](https://img.shields.io/badge/dsh%20tui-compatible-4B32C3.svg)
-![dsh](https://img.shields.io/badge/DSH-0.2.2--rc.3-4B32C3.svg)
+![dsh](https://img.shields.io/badge/DSH-0.2.2--rc.5-4B32C3.svg)
 [![dshfind](https://dshfind.com/api/badge/omdsh-dev/dsh-llm-fallbacks?lang=zh)](https://dshfind.com/zh/plugins/omdsh-dev/dsh-llm-fallbacks?ref=badge)
 
 dsh（DeepSeek Harness）的自动模型降级插件：插件注册 N 条**命名虚拟链**，每条在模型选择器中都是一行 **`FallbacksChain / <链 id>`**——选择某条链的会话沿该链行走，llm 请求在列出的失败码上持续失败（权限错误、配额超限、限流 429 等）时，请求会在下一个可用 provider/model 上重试，任务不会因模型问题中断。选择**真实** provider/model 的会话**没有插件降级**，只由 `llm-retry` 处理。在 Fallbacks 设置卡中创建链，然后选择它的 `FallbacksChain / <id>` 行即可。

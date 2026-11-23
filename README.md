@@ -9,7 +9,7 @@
 ![node](https://img.shields.io/badge/node-%3E%3D22-339933.svg)
 ![pnpm](https://img.shields.io/badge/pnpm-%3E%3D10-f69220.svg)
 ![dsh tui](https://img.shields.io/badge/dsh%20tui-compatible-4B32C3.svg)
-![dsh](https://img.shields.io/badge/DSH-0.2.2--rc.3-4B32C3.svg)
+![dsh](https://img.shields.io/badge/DSH-0.2.2--rc.5-4B32C3.svg)
 [![dshfind](https://dshfind.com/api/badge/omdsh-dev/dsh-llm-fallbacks?lang=en)](https://dshfind.com/zh/plugins/omdsh-dev/dsh-llm-fallbacks?ref=badge)
 
 Automatic provider/model fallback chains for dsh (DeepSeek Harness): the plugin registers N **named virtual chains**, each selectable in the model picker as **`FallbacksChain / <chain id>`** — a session routed to one walks that chain, so an LLM request that keeps failing on a listed code (auth, quota, rate limiting 429, …) is retried on the next available provider/model and tasks are not interrupted by model problems. A session on any **real** provider/model has **no plugin fallback**: `llm-retry` alone handles it. Create a chain in the Fallbacks settings card, then select its `FallbacksChain / <id>` row to get it.
