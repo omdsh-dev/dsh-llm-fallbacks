@@ -249,16 +249,16 @@ describe('committed rule (design §3.1/§6.1.4)', () => {
     // rc.5 yields a `usage` chunk before raising the refusal, so the consumer
     // sees the billed usage and the refusal in that order — the walk buffers
     // pre-output usage and must flush it before the forwarded terminal chunk.
-    const billed: StreamChunk = { type: 'usage', usage: { inputTokens: 512, outputTokens: 7 } }
-    adapter.respond = () => ({ chunks: [billed], failure: { code: 'CONTENT_REFUSED', message: 'refused' } })
+    const emitted: StreamChunk = { type: 'usage', usage: { inputTokens: 512, outputTokens: 7 } }
+    adapter.respond = () => ({ chunks: [emitted], failure: { code: 'CONTENT_REFUSED', message: 'refused' } })
 
     const chunks = await walk({ readConfig: chainCfg(['a/1', 'b/2']) })
 
     expect(dispatched()).toEqual(['a/1'])
     expect(chunks).toHaveLength(2)
-    // Exact equality: a walk that zeroed the counts (or reordered the chunks)
-    // must fail here, not just be structurally a usage chunk.
-    expect(chunks[0]).toEqual(billed)
+    // An independent literal, not the adapter's own object: an in-place mutation
+    // of `emitted` (or a walk that zeroed the counts) cannot drag both sides.
+    expect(chunks[0]).toEqual({ type: 'usage', usage: { inputTokens: 512, outputTokens: 7 } })
     expect(chunks[1]).toMatchObject({ type: 'finish', reason: { kind: 'error', failure: { code: 'CONTENT_REFUSED' } } })
   })
 
