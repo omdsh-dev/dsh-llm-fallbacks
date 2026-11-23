@@ -144,6 +144,12 @@ const SHAPE_REJECTED_CODES: ReadonlySet<string> = new Set([
  * for its own shape says nothing about the route's health. The
  * shape-capability rejections belong to the same family.
  *
+ * `CONTENT_REFUSED` joins it with dsh 0.2.2-rc.5, which splits a provider
+ * content refusal (DeepSeek `stop_reason: "refusal"`) out of
+ * `MALFORMED_RESPONSE`: the provider declined THIS content, and the same route
+ * serves the next request. Cooling it would divert an unrelated next prompt to
+ * the fallback, which is why rc.5 also dropped it from the retryable set.
+ *
  * This set governs the FORWARDING path, and only for a code the operator has
  * NOT listed in `triggerCodes`. A listed code keeps its pre-existing booking
  * on BOTH paths ({@link SWALLOWED_REQUEST_SCOPED_CODES}): the forwarding branch
@@ -155,6 +161,7 @@ export const REQUEST_SCOPED_CODES: ReadonlySet<string> = new Set([
   CONTEXT_WINDOW_EXCEEDED_CODE,
   'UNSUPPORTED_REASONING_EFFORT',
   'INVALID_REQUEST',
+  'CONTENT_REFUSED',
   ...SHAPE_REJECTED_CODES,
 ])
 

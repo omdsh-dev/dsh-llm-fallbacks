@@ -245,6 +245,20 @@ describe('committed rule (design §3.1/§6.1.4)', () => {
     expect(chunks).toEqual([USAGE, TEXT, STOP])
   })
 
+  it('delivers the pre-output usage before a CONTENT_REFUSED finish (dsh 0.2.2-rc.5)', async () => {
+    // rc.5 yields a `usage` chunk before raising the refusal, so the consumer
+    // sees the billed usage and the refusal in that order — the walk buffers
+    // pre-output usage and must flush it before the forwarded terminal chunk.
+    adapter.respond = () => ({ chunks: [USAGE], failure: { code: 'CONTENT_REFUSED', message: 'refused' } })
+
+    const chunks = await walk({ readConfig: chainCfg(['a/1', 'b/2']) })
+
+    expect(dispatched()).toEqual(['a/1'])
+    expect(chunks).toHaveLength(2)
+    expect(chunks[0]).toEqual(USAGE)
+    expect(chunks[1]).toMatchObject({ type: 'finish', reason: { kind: 'error', failure: { code: 'CONTENT_REFUSED' } } })
+  })
+
   it('still forwards a failure after real output that follows a usage chunk', async () => {
     adapter.respond = () => ({ chunks: [USAGE, TEXT], failure: { code: 'AUTH', message: 'head down' } })
 
@@ -1005,6 +1019,27 @@ describe('bookkeeping (design §3.3)', () => {
     expect(states.peek('s1')?.cooldown.peek('a/1')).toBeUndefined()
   })
 
+  it('forwards a CONTENT_REFUSED refusal without cooling the route (dsh 0.2.2-rc.5)', async () => {
+    const states = new FallbackStateStore()
+    // rc.5 reports a provider content refusal as `CONTENT_REFUSED`, not
+    // `MALFORMED_RESPONSE`: the provider declined THIS content, so the route
+    // stays healthy and the next request must still start at the head.
+    adapter.respond = () => ({ failure: { code: 'CONTENT_REFUSED', message: 'image blocked by provider policy' } })
+    const deps = { readConfig: chainCfg(['a/1', 'a/2']), states }
+
+    // Unlisted, so the failure is forwarded verbatim and this walk ends here.
+    const first = await walk(deps, { sessionId: SessionId('s1') })
+    expect(dispatched()).toEqual(['a/1'])
+    expect(first.at(-1)).toMatchObject({ type: 'finish', reason: { kind: 'error', failure: { code: 'CONTENT_REFUSED' } } })
+    expect(states.peek('s1')?.cooldown.peek('a/1')).toBeUndefined()
+
+    // The refusal says nothing about route health: the next walk retries the head.
+    adapter.respond = () => ({ chunks: [STOP] })
+    adapter.calls.length = 0
+    await walk(deps, { sessionId: SessionId('s1') })
+    expect(dispatched()).toEqual(['a/1'])
+  })
+
   it('cools a head that failed after output, so the next walk resumes past it', async () => {
     adapter.respond = (options) => options.model === '1'
       ? { chunks: [TEXT], failure: { code: 'AUTH', message: 'head down' } }
@@ -1240,7 +1275,7 @@ describe('bookkeeping (design §3.3)', () => {
     expect(dispatched()).toEqual(['a/1'])
   })
 
-  it.each(['INVALID_REQUEST', 'UNSUPPORTED_REASONING_EFFORT'])(
+  it.each(['INVALID_REQUEST', 'UNSUPPORTED_REASONING_EFFORT', 'CONTENT_REFUSED'])(
     'keeps the pre-existing trigger booking when an operator lists %s',
     async (code) => {
       const states = new FallbackStateStore()
