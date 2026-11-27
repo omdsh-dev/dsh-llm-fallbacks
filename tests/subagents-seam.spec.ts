@@ -1331,4 +1331,34 @@ describe('subagent seam — per-apply lifetime through apply()', () => {
     await startActivationOf(value)(activationSpec('task two', assignment('coder'), 'parent-session'))
     expect(fb.getAgentRole('child-external')).toBe('coder')
   })
+
+  it('installs subagent seam and role persona via Context.root when ctx.root throws without inject (Cordis 4.2)', () => {
+    const fakeRoot = new Context()
+    const throwingChild = new Proxy(ctx as unknown as Record<PropertyKey, unknown>, {
+      get(target, prop, receiver) {
+        if (prop === 'root') {
+          throw new Error('cannot get property "root" without inject')
+        }
+        if (prop === Context.root) {
+          return fakeRoot
+        }
+        const value = Reflect.get(target, prop, receiver)
+        return typeof value === 'function' ? value.bind(target) : value
+      },
+    }) as unknown as Context
+
+    const seam = installSubagentSeam(throwingChild, {
+      roleIds: () => ROLE_IDS,
+      roles: () => ROLES,
+      source: () => cfg({}),
+    })
+    const persona = installRolePersona(throwingChild, {
+      records: seam.records,
+      roles: () => ROLES,
+    })
+
+    expect(seam.ownsWrapper).toBe(true)
+    persona.dispose()
+    seam.dispose()
+  })
 })

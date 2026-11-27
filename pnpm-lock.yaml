@@ -15,76 +15,76 @@ importers:
   .:
     dependencies:
       '@deepseek-ai/cordis':
-        specifier: ^4.0.5
+        specifier: ^4.0.5 || ^4.2.0-0
         version: 4.0.5(@deepseek-ai/cordis-plugin-include@1.1.0)(@deepseek-ai/cordis-plugin-loader@1.1.0)
       '@deepseek-ai/dsh-agent':
-        specifier: ^0.2.2-rc.5
+        specifier: ^0.2.2-rc.5 || ^0.2.3-0
         version: 0.2.2-rc.5(699d9482e029c9e65cab1cf84d107bd7)
       '@deepseek-ai/dsh-api-gateway':
-        specifier: ^0.2.2-rc.5
+        specifier: ^0.2.2-rc.5 || ^0.2.3-0
         version: 0.2.2-rc.5(@deepseek-ai/cordis@4.0.5)
       '@deepseek-ai/dsh-api-remotes':
-        specifier: ^0.2.2-rc.5
+        specifier: ^0.2.2-rc.5 || ^0.2.3-0
         version: 0.2.2-rc.5(@deepseek-ai/cordis@4.0.5)(@deepseek-ai/dsh-scope@0.2.2-rc.5(@deepseek-ai/cordis@4.0.5))
       '@deepseek-ai/dsh-api-session-controller':
-        specifier: ^0.2.2-rc.5
+        specifier: ^0.2.2-rc.5 || ^0.2.3-0
         version: 0.2.2-rc.5(e9ccccbb0bf6684f8b5d9d1b3481bb5d)
       '@deepseek-ai/dsh-client-connection':
-        specifier: ^0.2.2-rc.5
+        specifier: ^0.2.2-rc.5 || ^0.2.3-0
         version: 0.2.2-rc.5(@deepseek-ai/cordis@4.0.5)(@deepseek-ai/dsh-scope@0.2.2-rc.5(@deepseek-ai/cordis@4.0.5))
       '@deepseek-ai/dsh-client-locale':
-        specifier: ^0.2.2-rc.5
+        specifier: ^0.2.2-rc.5 || ^0.2.3-0
         version: 0.2.2-rc.5(@deepseek-ai/cordis@4.0.5)
       '@deepseek-ai/dsh-client-store':
-        specifier: ^0.2.2-rc.5
+        specifier: ^0.2.2-rc.5 || ^0.2.3-0
         version: 0.2.2-rc.5(@deepseek-ai/cordis@4.0.5)
       '@deepseek-ai/dsh-client-ui-chat':
-        specifier: ^0.2.2-rc.5
+        specifier: ^0.2.2-rc.5 || ^0.2.3-0
         version: 0.2.2-rc.5(@deepseek-ai/cordis@4.0.5)
       '@deepseek-ai/dsh-client-ui-conversation':
-        specifier: ^0.2.2-rc.5
+        specifier: ^0.2.2-rc.5 || ^0.2.3-0
         version: 0.2.2-rc.5(@deepseek-ai/cordis@4.0.5)
       '@deepseek-ai/dsh-client-ui-plugin-manager':
-        specifier: ^0.2.2-rc.5
+        specifier: ^0.2.2-rc.5 || ^0.2.3-0
         version: 0.2.2-rc.5(@deepseek-ai/cordis@4.0.5)
       '@deepseek-ai/dsh-client-ui-renderer':
-        specifier: ^0.2.2-rc.5
+        specifier: ^0.2.2-rc.5 || ^0.2.3-0
         version: 0.2.2-rc.5(@deepseek-ai/cordis@4.0.5)
       '@deepseek-ai/dsh-client-ui-settings':
-        specifier: ^0.2.2-rc.5
+        specifier: ^0.2.2-rc.5 || ^0.2.3-0
         version: 0.2.2-rc.5(@deepseek-ai/cordis@4.0.5)
       '@deepseek-ai/dsh-client-ui-slots':
-        specifier: ^0.2.2-rc.5
+        specifier: ^0.2.2-rc.5 || ^0.2.3-0
         version: 0.2.2-rc.5(@deepseek-ai/cordis@4.0.5)
       '@deepseek-ai/dsh-commands':
-        specifier: ^0.2.2-rc.5
+        specifier: ^0.2.2-rc.5 || ^0.2.3-0
         version: 0.2.2-rc.5(@deepseek-ai/cordis@4.0.5)(@deepseek-ai/dsh-agent@0.2.2-rc.5(699d9482e029c9e65cab1cf84d107bd7))(@deepseek-ai/dsh-attachment@0.2.2-rc.5(@deepseek-ai/cordis@4.0.5)(@deepseek-ai/dsh-brand@0.2.2-rc.5(@deepseek-ai/cordis@4.0.5))(@deepseek-ai/dsh-error@0.2.2-rc.5(@deepseek-ai/cordis@4.0.5)))(@deepseek-ai/dsh-brand@0.2.2-rc.5(@deepseek-ai/cordis@4.0.5))(@deepseek-ai/dsh-llm@0.2.2-rc.5(@deepseek-ai/cordis@4.0.5)(@deepseek-ai/dsh-error@0.2.2-rc.5(@deepseek-ai/cordis@4.0.5)))(@deepseek-ai/dsh-scope@0.2.2-rc.5(@deepseek-ai/cordis@4.0.5))(@deepseek-ai/dsh-session@0.2.2-rc.5(@deepseek-ai/cordis@4.0.5)(@deepseek-ai/dsh-error@0.2.2-rc.5(@deepseek-ai/cordis@4.0.5))(@deepseek-ai/dsh-scope@0.2.2-rc.5(@deepseek-ai/cordis@4.0.5)))(@deepseek-ai/dsh-typert-protocol@0.2.2-rc.5(@deepseek-ai/cordis@4.0.5))
       '@deepseek-ai/dsh-llm':
-        specifier: ^0.2.2-rc.5
+        specifier: ^0.2.2-rc.5 || ^0.2.3-0
         version: 0.2.2-rc.5(@deepseek-ai/cordis@4.0.5)(@deepseek-ai/dsh-error@0.2.2-rc.5(@deepseek-ai/cordis@4.0.5))
       '@deepseek-ai/dsh-llm-retry':
-        specifier: ^0.2.2-rc.5
+        specifier: ^0.2.2-rc.5 || ^0.2.3-0
         version: 0.2.2-rc.5(@deepseek-ai/cordis@4.0.5)(@deepseek-ai/dsh-agent@0.2.2-rc.5(699d9482e029c9e65cab1cf84d107bd7))(@deepseek-ai/dsh-brand@0.2.2-rc.5(@deepseek-ai/cordis@4.0.5))(@deepseek-ai/dsh-llm@0.2.2-rc.5(@deepseek-ai/cordis@4.0.5)(@deepseek-ai/dsh-error@0.2.2-rc.5(@deepseek-ai/cordis@4.0.5)))(@deepseek-ai/dsh-session-projection@0.2.2-rc.5(@deepseek-ai/cordis@4.0.5)(@deepseek-ai/dsh-session@0.2.2-rc.5(@deepseek-ai/cordis@4.0.5)(@deepseek-ai/dsh-error@0.2.2-rc.5(@deepseek-ai/cordis@4.0.5))(@deepseek-ai/dsh-scope@0.2.2-rc.5(@deepseek-ai/cordis@4.0.5))))(@deepseek-ai/dsh-session@0.2.2-rc.5(@deepseek-ai/cordis@4.0.5)(@deepseek-ai/dsh-error@0.2.2-rc.5(@deepseek-ai/cordis@4.0.5))(@deepseek-ai/dsh-scope@0.2.2-rc.5(@deepseek-ai/cordis@4.0.5)))(@deepseek-ai/dsh-timeout@0.2.2-rc.5(@deepseek-ai/cordis@4.0.5))
       '@deepseek-ai/dsh-session':
-        specifier: ^0.2.2-rc.5
+        specifier: ^0.2.2-rc.5 || ^0.2.3-0
         version: 0.2.2-rc.5(@deepseek-ai/cordis@4.0.5)(@deepseek-ai/dsh-error@0.2.2-rc.5(@deepseek-ai/cordis@4.0.5))(@deepseek-ai/dsh-scope@0.2.2-rc.5(@deepseek-ai/cordis@4.0.5))
       '@deepseek-ai/dsh-session-projection':
-        specifier: ^0.2.2-rc.5
+        specifier: ^0.2.2-rc.5 || ^0.2.3-0
         version: 0.2.2-rc.5(@deepseek-ai/cordis@4.0.5)(@deepseek-ai/dsh-session@0.2.2-rc.5(@deepseek-ai/cordis@4.0.5)(@deepseek-ai/dsh-error@0.2.2-rc.5(@deepseek-ai/cordis@4.0.5))(@deepseek-ai/dsh-scope@0.2.2-rc.5(@deepseek-ai/cordis@4.0.5)))
       '@deepseek-ai/dsh-settings':
-        specifier: ^0.2.2-rc.5
+        specifier: ^0.2.2-rc.5 || ^0.2.3-0
         version: 0.2.2-rc.5(@deepseek-ai/cordis-plugin-include@1.1.0)(@deepseek-ai/cordis@4.0.5)(@deepseek-ai/dsh-app-boot@0.2.2-rc.5(@deepseek-ai/cordis-plugin-group@1.1.0(@deepseek-ai/cordis-plugin-loader@1.1.0)(@deepseek-ai/cordis@4.0.5))(@deepseek-ai/cordis-plugin-include@1.1.0)(@deepseek-ai/cordis-plugin-loader@1.1.0)(@deepseek-ai/cordis@4.0.5)(@deepseek-ai/dsh-home-paths@0.2.2-rc.5(@deepseek-ai/cordis@4.0.5))(@deepseek-ai/dsh-launch-environment@0.2.2-rc.5(@deepseek-ai/cordis@4.0.5)))(@deepseek-ai/dsh-brand@0.2.2-rc.5(@deepseek-ai/cordis@4.0.5))(@deepseek-ai/dsh-session@0.2.2-rc.5(@deepseek-ai/cordis@4.0.5)(@deepseek-ai/dsh-error@0.2.2-rc.5(@deepseek-ai/cordis@4.0.5))(@deepseek-ai/dsh-scope@0.2.2-rc.5(@deepseek-ai/cordis@4.0.5)))(@deepseek-ai/schemastery@3.18.5)(node-addon-require-builtin@0.1.9)
       '@deepseek-ai/dsh-system-prompt':
-        specifier: ^0.2.2-rc.5
+        specifier: ^0.2.2-rc.5 || ^0.2.3-0
         version: 0.2.2-rc.5(@deepseek-ai/cordis@4.0.5)(@deepseek-ai/dsh-llm@0.2.2-rc.5(@deepseek-ai/cordis@4.0.5)(@deepseek-ai/dsh-error@0.2.2-rc.5(@deepseek-ai/cordis@4.0.5)))(@deepseek-ai/dsh-scope@0.2.2-rc.5(@deepseek-ai/cordis@4.0.5))
       '@deepseek-ai/dsh-tool-subagent':
-        specifier: ^0.2.2-rc.5
+        specifier: ^0.2.2-rc.5 || ^0.2.3-0
         version: 0.2.2-rc.5(35a331e7d1a445b9ab659889ce453e66)
       '@deepseek-ai/dsh-typert-protocol':
-        specifier: ^0.2.2-rc.5
+        specifier: ^0.2.2-rc.5 || ^0.2.3-0
         version: 0.2.2-rc.5(@deepseek-ai/cordis@4.0.5)
       '@deepseek-ai/dsh-typert-registry':
-        specifier: ^0.2.2-rc.5
+        specifier: ^0.2.2-rc.5 || ^0.2.3-0
         version: 0.2.2-rc.5(@deepseek-ai/cordis@4.0.5)
       '@deepseek-ai/schemastery':
         specifier: ^3.18.5
