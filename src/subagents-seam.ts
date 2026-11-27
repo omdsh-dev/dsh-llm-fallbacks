@@ -110,7 +110,7 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import type { Context } from '@deepseek-ai/cordis'
+import { Context } from '@deepseek-ai/cordis'
 import { isFallbackActive, type FallbacksConfig, type FallbacksRole } from './config.ts'
 import { installRoleNotice } from './role-notice.ts'
 import { installRoleProjection } from './role-projection.ts'
@@ -630,8 +630,26 @@ export function subagentSeamOf(ctx: Context): SubagentSeam | undefined {
  * `internal/get` listener is owned by this module; callers that rely on the
  * fiber teardown alone may ignore `dispose`.
  */
+/**
+ * Resolve the root context across Cordis versions and test mocks:
+ * Cordis >= 4.0.0-rc.12 / 4.2 replaces `ctx.root` with `ctx[Context.root]`
+ * and throws `cannot get property "root" without inject` on `ctx.root`.
+ */
+export function resolveRootContext(ctx: Context): Context {
+  const rootSymbol = (Context as unknown as { root?: symbol }).root ?? Symbol.for('cordis.root')
+  const keyed = (ctx as unknown as Record<PropertyKey, unknown>)[rootSymbol]
+  if (keyed !== undefined && keyed !== null) return keyed as Context
+  try {
+    const legacy = (ctx as unknown as { root?: Context }).root
+    if (legacy !== undefined && legacy !== null) return legacy
+  } catch {
+    // Cordis >= 4.0.0-rc.12 / 4.2 throws when reading `ctx.root` without inject.
+  }
+  return ctx
+}
+
 export function installSubagentSeam(ctx: Context, options: SubagentSeamOptions): SubagentSeam {
-  const root = ctx.root
+  const root = resolveRootContext(ctx)
   const state = seamStateFor(root)
   const records = state.records
   /**

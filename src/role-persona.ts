@@ -43,7 +43,7 @@
 import type { Context, Fiber } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { PERSONA_PREFIX_SECTION } from '@deepseek-ai/dsh-system-prompt'
-import { personaForRole, type SubagentSeamRecord } from './subagents-seam.ts'
+import { personaForRole, resolveRootContext, type SubagentSeamRecord } from './subagents-seam.ts'
 import type { FallbacksRole } from './config.ts'
 
 /** Options for {@link installRolePersona}. */
@@ -101,7 +101,7 @@ function rolePersonaStateFor(root: Context): Map<string, object> {
  * registrations; a fiber teardown stops it as well).
  */
 export function installRolePersona(ctx: Context, options: RolePersonaOptions): RolePersona {
-  const root = ctx.root
+  const root = resolveRootContext(ctx)
   const registered = rolePersonaStateFor(root)
   /**
    * This listener's identity in `registered`: it owns every claim it makes, and
